@@ -1,0 +1,8 @@
+# Copy to android/key.properties and fill in. That file is gitignored.
+# Create the keystore with:
+#   keytool -genkeypair -v -keystore C:\dev\mailtree-signing\mailtree-release.jks \
+#     -alias mailtree -keyalg RSA -keysize 4096 -validity 10000 -storetype PKCS12
+storePassword=<keystore password>
+keyPassword=<key password>
+keyAlias=mailtree
+storeFile=C:/dev/mailtree-signing/mailtree-release.jks

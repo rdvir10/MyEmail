@@ -1,0 +1,48 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock.bak
+*.g.dart.bak
+
+# Generated code is not committed. After a fresh clone run:
+#   dart run build_runner build --delete-conflicting-outputs
+*.freezed.dart
+*.g.dart
+
+# Android
+android/.gradle/
+android/local.properties
+android/key.properties
+android/app/debug/
+android/app/profile/
+android/app/release/
+*.iml
+.gradle/
+local.properties
+
+# Signing material. NEVER commit these. See PLAN.md "Signing".
+*.jks
+*.keystore
+key.properties
+
+# IDE
+.idea/
+.vscode/
+*.iws
+.classpath
+.project
+.settings/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# fvm
+.fvm/flutter_sdk
+
+# Local scratch
+/scratch/
