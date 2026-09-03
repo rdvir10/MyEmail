@@ -1,30 +1,64 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:mailtree/ui/folder_tree/folder_tree_panel.dart';
 
-import 'package:mailtree/main.dart';
+Widget _harness({Size size = const Size(400, 800)}) {
+  return ProviderScope(
+    child: MaterialApp(
+      home: MediaQuery(
+        data: MediaQueryData(size: size),
+        child: const Scaffold(body: FolderTreePanel()),
+      ),
+    ),
+  );
+}
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('tree renders accounts and system folders', (tester) async {
+    await tester.pumpWidget(_harness());
+    await tester.pumpAndSettle();
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    // Section headers render account names uppercased.
+    expect(find.text('PERSONAL'), findsOneWidget);
+    expect(find.text('PROJECTS'), findsOneWidget);
+    expect(find.text('INBOX'), findsWidgets);
+    expect(find.text('Search folders'), findsOneWidget);
+  });
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+  testWidgets('tapping the twisty expands a folder', (tester) async {
+    await tester.pumpWidget(_harness());
+    await tester.pumpAndSettle();
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(find.text('Receipts'), findsNothing);
+
+    final financeTile = find.ancestor(
+      of: find.text('Finance'),
+      matching: find.byType(InkWell),
+    );
+    final twisty = find.descendant(
+      of: financeTile.first,
+      matching: find.byType(IconButton),
+    );
+    await tester.tap(twisty.first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Receipts'), findsOneWidget);
+  });
+
+  testWidgets('search filters the tree and clears again', (tester) async {
+    await tester.pumpWidget(_harness());
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'travel');
+    await tester.pumpAndSettle();
+
+    expect(find.text('Travel'), findsOneWidget);
+    expect(find.text('Newsletters'), findsNothing);
+
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Newsletters'), findsOneWidget);
   });
 }
