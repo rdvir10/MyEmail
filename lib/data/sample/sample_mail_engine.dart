@@ -10,6 +10,10 @@ import '../mail_engine.dart';
 /// system folders live under `[Gmail]` and refuse structural edits, user labels
 /// nest several levels deep, and counts are uneven. Sample data that is tidier
 /// than reality hides exactly the layout bugs this is meant to catch.
+///
+/// Behaviour also mirrors IMAP where it matters for the UI: renaming or moving
+/// a folder rewrites the path (and therefore the id) of its whole subtree, and
+/// a name that collides with a sibling is refused.
 class SampleMailEngine implements MailEngine {
   SampleMailEngine() {
     for (final account in _accounts) {
@@ -21,7 +25,7 @@ class SampleMailEngine implements MailEngine {
     Account(
       id: 'acct-personal',
       displayName: 'Personal',
-      emailAddress: 'rdvir10@gmail.com',
+      emailAddress: 'personal@example.com',
       provider: MailProvider.gmail,
       authMethod: AuthMethod.appPassword,
       colorValue: 0xFF0F6CBD,
@@ -29,7 +33,7 @@ class SampleMailEngine implements MailEngine {
     Account(
       id: 'acct-side',
       displayName: 'Projects',
-      emailAddress: 'projects.rdvir@gmail.com',
+      emailAddress: 'projects@example.com',
       provider: MailProvider.gmail,
       authMethod: AuthMethod.appPassword,
       colorValue: 0xFF107C41,
@@ -51,7 +55,7 @@ class SampleMailEngine implements MailEngine {
   }
 
   @override
-  Future<MailFolder> renameFolder(String folderId, String newName) async {
+  Future<FolderRename> renameFolder(String folderId, String newName) async {
     await _latency();
     final folder = _require(folderId);
     if (!folder.capabilities.canRename) {
@@ -59,11 +63,11 @@ class SampleMailEngine implements MailEngine {
     }
     final segments = folder.path.split('/')..removeLast();
     final newPath = [...segments, newName].join('/');
-    return _replace(folder.copyWith(name: newName, path: newPath));
+    return _relocate(folder, newPath: newPath, newParentId: folder.parentId);
   }
 
   @override
-  Future<MailFolder> moveFolder(String folderId, String? newParentId) async {
+  Future<FolderRename> moveFolder(String folderId, String? newParentId) async {
     await _latency();
     final folder = _require(folderId);
     if (!folder.capabilities.canMove) {
@@ -72,16 +76,14 @@ class SampleMailEngine implements MailEngine {
     if (newParentId != null && _isDescendant(newParentId, folderId)) {
       throw FolderOperationNotSupported(folderId, 'move into own descendant');
     }
+    if (newParentId != null &&
+        !_require(newParentId).capabilities.canCreateChild) {
+      throw FolderOperationNotSupported(newParentId, 'nest under');
+    }
     final parentPath = newParentId == null ? null : _require(newParentId).path;
     final newPath =
         parentPath == null ? folder.name : '$parentPath/${folder.name}';
-    return _replace(
-      folder.copyWith(
-        path: newPath,
-        parentId: newParentId,
-        clearParent: newParentId == null,
-      ),
-    );
+    return _relocate(folder, newPath: newPath, newParentId: newParentId);
   }
 
   @override
@@ -91,21 +93,10 @@ class SampleMailEngine implements MailEngine {
     if (!folder.capabilities.canDelete) {
       throw FolderOperationNotSupported(folderId, 'delete');
     }
-    final list = _folders[folder.accountId]!;
     // Deleting a folder takes its subtree with it.
-    final doomed = <String>{folderId};
-    bool grew = true;
-    while (grew) {
-      grew = false;
-      for (final f in list) {
-        if (f.parentId != null &&
-            doomed.contains(f.parentId) &&
-            doomed.add(f.id)) {
-          grew = true;
-        }
-      }
-    }
-    list.removeWhere((f) => doomed.contains(f.id));
+    final prefix = '${folder.path}/';
+    _folders[folder.accountId]!
+        .removeWhere((f) => f.id == folderId || f.path.startsWith(prefix));
   }
 
   @override
@@ -120,10 +111,9 @@ class SampleMailEngine implements MailEngine {
     }
     final parentPath = parentId == null ? null : _require(parentId).path;
     final path = parentPath == null ? name : '$parentPath/$name';
-    final folder = MailFolder(
-      id: '$accountId:$path',
+    _assertNoConflict(accountId, path);
+    final folder = MailFolder.at(
       accountId: accountId,
-      name: name,
       path: path,
       role: FolderRole.user,
       capabilities: const FolderCapabilities.userFolder(),
@@ -137,8 +127,7 @@ class SampleMailEngine implements MailEngine {
   @override
   Future<void> markAllRead(String folderId) async {
     await _latency();
-    final folder = _require(folderId);
-    _replace(folder.copyWith(unreadCount: 0));
+    _replace(_require(folderId).copyWith(unreadCount: 0));
   }
 
   @override
@@ -152,6 +141,54 @@ class SampleMailEngine implements MailEngine {
   }
 
   // ---------------------------------------------------------------------------
+
+  /// Move [folder] to [newPath], carrying every descendant along and rewriting
+  /// their paths, ids and parent links. This is what RENAME does on IMAP.
+  FolderRename _relocate(
+    MailFolder folder, {
+    required String newPath,
+    required String? newParentId,
+  }) {
+    final accountId = folder.accountId;
+    final oldPath = folder.path;
+    final oldId = folder.id;
+    final newId = MailFolder.idFor(accountId, newPath);
+
+    if (newPath == oldPath) {
+      return FolderRename(folder: folder, oldId: oldId, newId: newId);
+    }
+    _assertNoConflict(accountId, newPath, excludingId: oldId);
+
+    final mapping = FolderRename(folder: folder, oldId: oldId, newId: newId);
+    final childPrefix = '$oldPath/';
+    late MailFolder moved;
+
+    _folders[accountId] = [
+      for (final f in _folders[accountId]!)
+        if (f.id == oldId)
+          moved = f.withPath(newPath, parentId: newParentId)
+        else if (f.path.startsWith(childPrefix))
+          f.withPath(
+            newPath + f.path.substring(oldPath.length),
+            parentId: f.parentId == null ? null : mapping.remap(f.parentId!),
+          )
+        else
+          f,
+    ];
+
+    return FolderRename(folder: moved, oldId: oldId, newId: newId);
+  }
+
+  /// Gmail label names are case-insensitive, so "travel" and "Travel" would
+  /// collide on the server. Match the stricter rule locally.
+  void _assertNoConflict(String accountId, String path, {String? excludingId}) {
+    final wanted = path.toLowerCase();
+    for (final f in _folders[accountId] ?? const <MailFolder>[]) {
+      if (f.id != excludingId && f.path.toLowerCase() == wanted) {
+        throw FolderNameConflict(accountId, path);
+      }
+    }
+  }
 
   MailFolder _require(String folderId) {
     for (final list in _folders.values) {
@@ -187,22 +224,20 @@ class SampleMailEngine implements MailEngine {
     final specs = accountId == 'acct-personal'
         ? _personalSpecs
         : _projectsSpecs;
-    return specs
-        .map(
-          (s) => MailFolder(
-            id: '$accountId:${s.path}',
-            accountId: accountId,
-            name: s.path.split('/').last,
-            path: s.path,
-            role: s.role,
-            capabilities: FolderCapabilities.forGmail(s.role),
-            parentId: s.parent == null ? null : '$accountId:${s.parent}',
-            unreadCount: s.unread,
-            totalCount: s.total,
-            sortIndex: specs.indexOf(s),
-          ),
-        )
-        .toList();
+    return [
+      for (final (i, s) in specs.indexed)
+        MailFolder.at(
+          accountId: accountId,
+          path: s.path,
+          role: s.role,
+          capabilities: FolderCapabilities.forGmail(s.role),
+          parentId:
+              s.parent == null ? null : MailFolder.idFor(accountId, s.parent!),
+          unreadCount: s.unread,
+          totalCount: s.total,
+          sortIndex: i,
+        ),
+    ];
   }
 
   static const _personalSpecs = <_Spec>[

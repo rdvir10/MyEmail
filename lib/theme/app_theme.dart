@@ -14,7 +14,6 @@ ThemeData buildTheme(Brightness brightness) {
 
   return ThemeData(
     colorScheme: scheme,
-    useMaterial3: true,
     visualDensity: VisualDensity.compact,
     scaffoldBackgroundColor: scheme.surface,
     dividerTheme: DividerThemeData(
@@ -41,15 +40,15 @@ ThemeData buildTheme(Brightness brightness) {
 }
 
 /// Icons per folder role, chosen to read like Outlook's set.
-class FolderIcons {
-  static IconData inbox = Icons.inbox_outlined;
-  static IconData drafts = Icons.drafts_outlined;
-  static IconData sent = Icons.send_outlined;
-  static IconData deleted = Icons.delete_outline;
-  static IconData junk = Icons.report_gmailerrorred_outlined;
-  static IconData archive = Icons.archive_outlined;
-  static IconData outbox = Icons.outbox_outlined;
-  static IconData unified = Icons.all_inbox_outlined;
-  static IconData folder = Icons.folder_outlined;
-  static IconData folderOpen = Icons.folder_open_outlined;
+abstract final class FolderIcons {
+  static const IconData inbox = Icons.inbox_outlined;
+  static const IconData drafts = Icons.drafts_outlined;
+  static const IconData sent = Icons.send_outlined;
+  static const IconData deleted = Icons.delete_outline;
+  static const IconData junk = Icons.report_gmailerrorred_outlined;
+  static const IconData archive = Icons.archive_outlined;
+  static const IconData outbox = Icons.outbox_outlined;
+  static const IconData unified = Icons.all_inbox_outlined;
+  static const IconData folder = Icons.folder_outlined;
+  static const IconData folderOpen = Icons.folder_open_outlined;
 }

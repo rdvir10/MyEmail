@@ -9,6 +9,10 @@ import '../../theme/app_theme.dart';
 /// Indentation is applied to the leading area rather than the whole tile, so
 /// that the row's tap target still spans the full width at any depth. Deeply
 /// nested folders are otherwise annoying to hit on a phone.
+///
+/// The row has a minimum height rather than a fixed one, so a two-line variant
+/// (name plus path in search results) still fits under large accessibility
+/// text scaling instead of clipping.
 class FolderTile extends StatelessWidget {
   const FolderTile({
     super.key,
@@ -27,6 +31,7 @@ class FolderTile extends StatelessWidget {
 
   static const double _indentPerLevel = 16;
   static const double _twistyWidth = 28;
+  static const double _minHeight = 36;
 
   @override
   Widget build(BuildContext context) {
@@ -34,68 +39,77 @@ class FolderTile extends StatelessWidget {
     final scheme = theme.colorScheme;
     final folder = row.folder;
     final count = folder.badgeCount;
-    final hasUnread = !folder.showsTotalInsteadOfUnread && folder.unreadCount > 0;
+    final hasUnread =
+        !folder.showsTotalInsteadOfUnread && folder.unreadCount > 0;
+    final accent =
+        row.accentColor == null ? scheme.primary : Color(row.accentColor!);
 
-    return Material(
-      color: isSelected
-          ? scheme.secondaryContainer.withValues(alpha: 0.7)
-          : Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        onLongPress: onLongPress,
-        child: Padding(
-          padding: EdgeInsets.only(left: 4 + row.depth * _indentPerLevel),
-          child: SizedBox(
-            height: 36,
-            child: Row(
-              children: [
-                SizedBox(
-                  width: _twistyWidth,
-                  child: row.hasChildren
-                      ? IconButton(
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints.tightFor(
-                            width: _twistyWidth,
-                            height: 32,
-                          ),
-                          iconSize: 18,
-                          icon: AnimatedRotation(
-                            turns: row.isExpanded ? 0.25 : 0,
-                            duration: const Duration(milliseconds: 120),
-                            child: const Icon(Icons.chevron_right),
-                          ),
-                          tooltip: row.isExpanded ? 'Collapse' : 'Expand',
-                          onPressed: onToggleExpand,
-                        )
-                      : null,
-                ),
-                Icon(
-                  _iconFor(row),
-                  size: 18,
-                  color: folder.role == FolderRole.user
-                      ? scheme.onSurfaceVariant
-                      : Color(row.accentColor),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _label(theme, hasUnread),
-                ),
-                if (count > 0) ...[
-                  const SizedBox(width: 8),
-                  Text(
-                    _formatCount(count),
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: hasUnread
-                          ? scheme.primary
-                          : scheme.onSurfaceVariant,
-                      fontWeight:
-                          hasUnread ? FontWeight.w700 : FontWeight.w400,
-                      fontFeatures: const [FontFeature.tabularFigures()],
-                    ),
+    return Semantics(
+      selected: isSelected,
+      expanded: row.hasChildren ? row.isExpanded : null,
+      child: Material(
+        color: isSelected
+            ? scheme.secondaryContainer.withValues(alpha: 0.7)
+            : Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          onLongPress: onLongPress,
+          child: Padding(
+            padding: EdgeInsets.only(
+              left: 4 + row.depth * _indentPerLevel,
+              top: row.subtitle == null ? 0 : 4,
+              bottom: row.subtitle == null ? 0 : 4,
+            ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: _minHeight),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: _twistyWidth,
+                    child: row.hasChildren
+                        ? IconButton(
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints.tightFor(
+                              width: _twistyWidth,
+                              height: 32,
+                            ),
+                            iconSize: 18,
+                            icon: AnimatedRotation(
+                              turns: row.isExpanded ? 0.25 : 0,
+                              duration: const Duration(milliseconds: 120),
+                              child: const Icon(Icons.chevron_right),
+                            ),
+                            tooltip: row.isExpanded ? 'Collapse' : 'Expand',
+                            onPressed: onToggleExpand,
+                          )
+                        : null,
                   ),
+                  Icon(
+                    _iconFor(row),
+                    size: 18,
+                    color: folder.role == FolderRole.user
+                        ? scheme.onSurfaceVariant
+                        : accent,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(child: _label(theme, hasUnread)),
+                  if (count > 0) ...[
+                    const SizedBox(width: 8),
+                    Text(
+                      _formatCount(count),
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: hasUnread
+                            ? scheme.primary
+                            : scheme.onSurfaceVariant,
+                        fontWeight:
+                            hasUnread ? FontWeight.w700 : FontWeight.w400,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                  const SizedBox(width: 12),
                 ],
-                const SizedBox(width: 12),
-              ],
+              ),
             ),
           ),
         ),
@@ -113,11 +127,12 @@ class FolderTile extends StatelessWidget {
       ),
     );
 
-    final subtitle = row.searchSubtitle;
+    final subtitle = row.subtitle;
     if (subtitle == null) return name;
 
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
+      mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         name,

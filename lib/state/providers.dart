@@ -1,8 +1,10 @@
+import 'package:collection/collection.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/mail_engine.dart';
 import '../data/sample/sample_mail_engine.dart';
 import '../domain/account.dart';
+import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
 import 'folder_tree.dart';
 
@@ -14,41 +16,142 @@ final accountsProvider = FutureProvider<List<Account>>((ref) async {
   return ref.watch(mailEngineProvider).loadAccounts();
 });
 
-/// Folders for every account, keyed by account id.
-final foldersProvider =
-    FutureProvider<Map<String, List<MailFolder>>>((ref) async {
-  final engine = ref.watch(mailEngineProvider);
-  final accounts = await ref.watch(accountsProvider.future);
-  final result = <String, List<MailFolder>>{};
-  for (final account in accounts) {
-    result[account.id] = await engine.loadFolders(account.id);
-  }
-  return result;
-});
-
-/// Which folders are expanded.
+/// Folders for every account, keyed by account id, and the only place that
+/// mutates them.
 ///
-/// In-memory for now. Milestone 3 persists this to Drift, along with the last
-/// selected folder, so the tree comes back the way it was left.
-class ExpandedFolders extends Notifier<Set<String>> {
+/// Each mutation goes to the engine, remaps any UI state that referenced the
+/// affected folder ids, then reloads that account's list. Reloading rather
+/// than patching locally keeps this correct for the real IMAP engine, where a
+/// rename can cascade in ways the client cannot fully predict. Optimistic
+/// updates with rollback land here in milestone 4.
+class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
   @override
-  Set<String> build() => <String>{};
-
-  void toggle(String folderId) {
-    final next = Set<String>.from(state);
-    if (!next.remove(folderId)) next.add(folderId);
-    state = next;
+  Future<Map<String, List<MailFolder>>> build() async {
+    final engine = ref.watch(mailEngineProvider);
+    final accounts = await ref.watch(accountsProvider.future);
+    // Accounts load in parallel: against a real server each one is a network
+    // round trip, and there is no reason to wait on them one at a time.
+    final lists = await Future.wait(
+      accounts.map((a) => engine.loadFolders(a.id)),
+    );
+    return {
+      for (final (i, account) in accounts.indexed) account.id: lists[i],
+    };
   }
 
-  void expand(String folderId) => state = {...state, folderId};
+  Future<void> rename(String folderId, String newName) async {
+    final result =
+        await ref.read(mailEngineProvider).renameFolder(folderId, newName);
+    _remapIds(result);
+    await _reloadAccount(result.folder.accountId);
+  }
 
-  void collapseAll() => state = <String>{};
+  Future<void> move(String folderId, String? newParentId) async {
+    final result =
+        await ref.read(mailEngineProvider).moveFolder(folderId, newParentId);
+    _remapIds(result);
+    await _reloadAccount(result.folder.accountId);
+  }
+
+  Future<void> delete(String folderId) async {
+    final folder = _current(folderId);
+    if (folder == null) return;
+    final doomed = _subtreeIds(folder);
+    await ref.read(mailEngineProvider).deleteFolder(folderId);
+    ref.read(expandedFoldersProvider.notifier).removeAll(doomed);
+    ref.read(favoriteFoldersProvider.notifier).removeAll(doomed);
+    final selected = ref.read(selectedFolderIdProvider);
+    if (selected != null && doomed.contains(selected)) {
+      ref.read(selectedFolderIdProvider.notifier).select(null);
+    }
+    await _reloadAccount(folder.accountId);
+  }
+
+  Future<MailFolder> create({
+    required String accountId,
+    required String name,
+    String? parentId,
+  }) async {
+    final created = await ref.read(mailEngineProvider).createFolder(
+          accountId: accountId,
+          name: name,
+          parentId: parentId,
+        );
+    if (parentId != null) {
+      ref.read(expandedFoldersProvider.notifier).expand(parentId);
+    }
+    await _reloadAccount(accountId);
+    return created;
+  }
+
+  Future<void> markAllRead(String folderId) async {
+    final folder = _current(folderId);
+    if (folder == null) return;
+    await ref.read(mailEngineProvider).markAllRead(folderId);
+    await _reloadAccount(folder.accountId);
+  }
+
+  Future<void> empty(String folderId) async {
+    final folder = _current(folderId);
+    if (folder == null) return;
+    await ref.read(mailEngineProvider).emptyFolder(folderId);
+    await _reloadAccount(folder.accountId);
+  }
+
+  // ---------------------------------------------------------------------------
+
+  MailFolder? _current(String folderId) {
+    for (final list in state.value?.values ?? const <List<MailFolder>>[]) {
+      for (final f in list) {
+        if (f.id == folderId) return f;
+      }
+    }
+    return null;
+  }
+
+  Set<String> _subtreeIds(MailFolder root) {
+    final prefix = '${root.path}/';
+    return {
+      root.id,
+      for (final f in state.value?[root.accountId] ?? const <MailFolder>[])
+        if (f.path.startsWith(prefix)) f.id,
+    };
+  }
+
+  void _remapIds(FolderRename r) {
+    ref.read(expandedFoldersProvider.notifier).remap(r);
+    ref.read(favoriteFoldersProvider.notifier).remap(r);
+    ref.read(selectedFolderIdProvider.notifier).remap(r);
+  }
+
+  Future<void> _reloadAccount(String accountId) async {
+    final current = state.value;
+    if (current == null) return;
+    final fresh = await ref.read(mailEngineProvider).loadFolders(accountId);
+    state = AsyncData({...current, accountId: fresh});
+  }
 }
 
-final expandedFoldersProvider =
-    NotifierProvider<ExpandedFolders, Set<String>>(ExpandedFolders.new);
+final foldersProvider =
+    AsyncNotifierProvider<Folders, Map<String, List<MailFolder>>>(Folders.new);
 
-class FavoriteFolders extends Notifier<Set<String>> {
+/// Every folder by id, including the synthetic unified Inbox when it applies.
+/// One map built per change beats a linear scan on every lookup.
+final folderIndexProvider = Provider<Map<String, MailFolder>>((ref) {
+  final folders = ref.watch(foldersProvider).value ?? const {};
+  final accounts = ref.watch(accountsProvider).value ?? const [];
+  final index = <String, MailFolder>{
+    for (final list in folders.values)
+      for (final f in list) f.id: f,
+  };
+  if (accounts.length > 1) {
+    index[kUnifiedInboxId] = buildUnifiedInbox(folders);
+  }
+  return index;
+});
+
+/// A set of folder ids that survives renames and deletes.
+abstract class FolderIdSet extends Notifier<Set<String>> {
   @override
   Set<String> build() => <String>{};
 
@@ -59,7 +162,26 @@ class FavoriteFolders extends Notifier<Set<String>> {
   }
 
   bool contains(String folderId) => state.contains(folderId);
+
+  void removeAll(Iterable<String> ids) => state = state.difference(ids.toSet());
+
+  void remap(FolderRename r) => state = state.map(r.remap).toSet();
 }
+
+/// Which folders are expanded.
+///
+/// In-memory for now. Milestone 3 persists this to Drift, along with the last
+/// selected folder, so the tree comes back the way it was left.
+class ExpandedFolders extends FolderIdSet {
+  void expand(String folderId) => state = {...state, folderId};
+
+  void collapseAll() => state = <String>{};
+}
+
+final expandedFoldersProvider =
+    NotifierProvider<ExpandedFolders, Set<String>>(ExpandedFolders.new);
+
+class FavoriteFolders extends FolderIdSet {}
 
 final favoriteFoldersProvider =
     NotifierProvider<FavoriteFolders, Set<String>>(FavoriteFolders.new);
@@ -77,17 +199,48 @@ class FolderSearchQuery extends Notifier<String> {
 final folderSearchQueryProvider =
     NotifierProvider<FolderSearchQuery, String>(FolderSearchQuery.new);
 
-/// The folder whose messages are shown. Null until folders have loaded, at
-/// which point it defaults to the unified Inbox or the single account's Inbox.
+/// The folder the user explicitly chose. Null means "nothing chosen yet", in
+/// which case [effectiveSelectedFolderIdProvider] supplies a default.
 class SelectedFolderId extends Notifier<String?> {
   @override
   String? build() => null;
 
   void select(String? folderId) => state = folderId;
+
+  void remap(FolderRename r) {
+    final current = state;
+    if (current != null) state = r.remap(current);
+  }
 }
 
 final selectedFolderIdProvider =
     NotifierProvider<SelectedFolderId, String?>(SelectedFolderId.new);
+
+/// What to show when nothing has been chosen: the unified Inbox with several
+/// accounts, otherwise the single account's Inbox found by role. Never by list
+/// position, which the server does not promise.
+final defaultFolderIdProvider = Provider<String?>((ref) {
+  final accounts = ref.watch(accountsProvider).value ?? const [];
+  final folders = ref.watch(foldersProvider).value;
+  if (folders == null || folders.isEmpty) return null;
+  if (accounts.length > 1) return kUnifiedInboxId;
+  final list = accounts.isEmpty
+      ? folders.values.first
+      : folders[accounts.first.id] ?? folders.values.first;
+  return list.firstWhereOrNull((f) => f.role == FolderRole.inbox)?.id ??
+      list.firstOrNull?.id;
+});
+
+/// The folder actually shown: the user's choice if it still exists, otherwise
+/// the default. Derived rather than assigned, so there is no listener to miss
+/// the moment folders arrive, and a deleted selection falls back on its own.
+final effectiveSelectedFolderIdProvider = Provider<String?>((ref) {
+  final chosen = ref.watch(selectedFolderIdProvider);
+  if (chosen != null && ref.watch(folderIndexProvider).containsKey(chosen)) {
+    return chosen;
+  }
+  return ref.watch(defaultFolderIdProvider);
+});
 
 /// The rendered tree. Recomputed whenever folders, expand state, favourites or
 /// the search query change.
@@ -103,17 +256,4 @@ final treeRowsProvider = Provider<List<TreeRow>>((ref) {
       searchQuery: ref.watch(folderSearchQueryProvider),
     ),
   );
-});
-
-/// Look up a folder by id across all accounts, including the synthetic
-/// unified Inbox.
-final folderByIdProvider = Provider.family<MailFolder?, String>((ref, id) {
-  final folders = ref.watch(foldersProvider).value ?? const {};
-  if (id == kUnifiedInboxId) return buildUnifiedInbox(folders);
-  for (final list in folders.values) {
-    for (final f in list) {
-      if (f.id == id) return f;
-    }
-  }
-  return null;
 });

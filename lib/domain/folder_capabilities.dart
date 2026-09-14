@@ -96,6 +96,10 @@ class FolderCapabilities {
         FolderRole.outbox =>
           const FolderCapabilities.systemFolder(canAcceptMessages: false),
         FolderRole.inbox => const FolderCapabilities.systemFolder(),
-        FolderRole.archive => const FolderCapabilities.systemFolder(),
+        // Gmail's "All Mail" is every message the account holds. Archiving is
+        // an action (remove the Inbox label), not a move into this folder, so
+        // dropping a message here would be a no-op. It stays browsable only.
+        FolderRole.archive =>
+          const FolderCapabilities.systemFolder(canAcceptMessages: false),
       };
 }

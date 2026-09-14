@@ -8,28 +8,19 @@ import '../folder_tree/folder_tree_panel.dart';
 /// Phone shows the tree in a slide-out drawer like Outlook mobile; a tablet in
 /// landscape shows it as a permanent pane. The breakpoint is on width alone, so
 /// rotating a tablet moves between the two without any state being rebuilt.
-class AppShell extends ConsumerWidget {
+///
+/// There is deliberately no logic here about which folder to show first: that
+/// is derived in [effectiveSelectedFolderIdProvider], so nothing has to be
+/// listening at the right moment for the default to take.
+class AppShell extends StatelessWidget {
   const AppShell({super.key});
 
-  static const double _tabletBreakpoint = 840;
-  static const double _treePaneWidth = 300;
+  static const double tabletBreakpoint = 840;
+  static const double treePaneWidth = 300;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    // Pick a sensible default selection once folders arrive.
-    ref.listen(foldersProvider, (previous, next) {
-      final folders = next.value;
-      if (folders == null || folders.isEmpty) return;
-      if (ref.read(selectedFolderIdProvider) != null) return;
-      final accounts = ref.read(accountsProvider).value ?? const [];
-      ref.read(selectedFolderIdProvider.notifier).select(
-            accounts.length > 1
-                ? kUnifiedInboxId
-                : folders.values.first.first.id,
-          );
-    });
-
-    final isWide = MediaQuery.sizeOf(context).width >= _tabletBreakpoint;
+  Widget build(BuildContext context) {
+    final isWide = MediaQuery.sizeOf(context).width >= tabletBreakpoint;
     return isWide ? const _WideLayout() : const _NarrowLayout();
   }
 }
@@ -44,7 +35,7 @@ class _WideLayout extends StatelessWidget {
         child: Row(
           children: [
             SizedBox(
-              width: AppShell._treePaneWidth,
+              width: AppShell.treePaneWidth,
               child: Material(
                 color: Theme.of(context).colorScheme.surfaceContainerLow,
                 child: const FolderTreePanel(),
@@ -64,9 +55,10 @@ class _NarrowLayout extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final selectedId = ref.watch(selectedFolderIdProvider);
-    final folder =
-        selectedId == null ? null : ref.watch(folderByIdProvider(selectedId));
+    final selectedId = ref.watch(effectiveSelectedFolderIdProvider);
+    final folder = selectedId == null
+        ? null
+        : ref.watch(folderIndexProvider)[selectedId];
 
     return Scaffold(
       appBar: AppBar(
@@ -75,8 +67,14 @@ class _NarrowLayout extends ConsumerWidget {
       ),
       drawer: Drawer(
         child: SafeArea(
-          child: FolderTreePanel(
-            onFolderSelected: (_) => Navigator.of(context).maybePop(),
+          // Builder gives a context below the Scaffold, so the drawer can be
+          // closed through the Scaffold's own API rather than by popping
+          // whatever happens to be on the navigator.
+          child: Builder(
+            builder: (drawerContext) => FolderTreePanel(
+              onFolderSelected: (_) =>
+                  Scaffold.of(drawerContext).closeDrawer(),
+            ),
           ),
         ),
       ),
@@ -93,9 +91,10 @@ class _MessageListPlaceholder extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final selectedId = ref.watch(selectedFolderIdProvider);
-    final folder =
-        selectedId == null ? null : ref.watch(folderByIdProvider(selectedId));
+    final selectedId = ref.watch(effectiveSelectedFolderIdProvider);
+    final folder = selectedId == null
+        ? null
+        : ref.watch(folderIndexProvider)[selectedId];
 
     if (folder == null) {
       return Center(
@@ -112,9 +111,7 @@ class _MessageListPlaceholder extends ConsumerWidget {
             Text(folder.name, style: theme.textTheme.headlineSmall),
             const SizedBox(height: 8),
             Text(
-              folder.isSynthetic
-                  ? 'Across all accounts'
-                  : folder.path.replaceFirst('[Gmail]/', ''),
+              folder.isSynthetic ? 'Across all accounts' : displayPath(folder),
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 24),

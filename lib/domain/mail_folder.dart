@@ -6,6 +6,11 @@ import 'folder_role.dart';
 /// One folder, held flat. The tree is derived from [parentId] rather than
 /// stored as nested objects, so a folder can be looked up, moved or renamed
 /// without rebuilding a nested structure.
+///
+/// A folder's [id] is derived from its [path], because on IMAP the path is the
+/// only identity a folder has. Renaming or moving therefore produces a *new*
+/// folder value with a new id; see [withPath]. There is deliberately no way to
+/// change [path] without changing [id] to match.
 @immutable
 class MailFolder {
   const MailFolder({
@@ -20,6 +25,23 @@ class MailFolder {
     this.totalCount = 0,
     this.sortIndex = 0,
   });
+
+  /// Build a folder whose id and name follow from its path.
+  MailFolder.at({
+    required this.accountId,
+    required this.path,
+    required this.role,
+    required this.capabilities,
+    this.parentId,
+    this.unreadCount = 0,
+    this.totalCount = 0,
+    this.sortIndex = 0,
+  })  : id = idFor(accountId, path),
+        name = nameFor(path);
+
+  static String idFor(String accountId, String path) => '$accountId:$path';
+
+  static String nameFor(String path) => path.split('/').last;
 
   /// Unique across all accounts: `<accountId>:<path>`.
   final String id;
@@ -52,11 +74,24 @@ class MailFolder {
 
   int get badgeCount => showsTotalInsteadOfUnread ? totalCount : unreadCount;
 
+  /// The same folder at a new path, with id and name recomputed to match.
+  MailFolder withPath(String newPath, {required String? parentId}) {
+    return MailFolder(
+      id: idFor(accountId, newPath),
+      accountId: accountId,
+      name: nameFor(newPath),
+      path: newPath,
+      role: role,
+      capabilities: capabilities,
+      parentId: parentId,
+      unreadCount: unreadCount,
+      totalCount: totalCount,
+      sortIndex: sortIndex,
+    );
+  }
+
+  /// Non-identity fields only. Path changes go through [withPath].
   MailFolder copyWith({
-    String? name,
-    String? path,
-    String? parentId,
-    bool clearParent = false,
     int? unreadCount,
     int? totalCount,
     int? sortIndex,
@@ -65,11 +100,11 @@ class MailFolder {
     return MailFolder(
       id: id,
       accountId: accountId,
-      name: name ?? this.name,
-      path: path ?? this.path,
+      name: name,
+      path: path,
       role: role,
       capabilities: capabilities ?? this.capabilities,
-      parentId: clearParent ? null : (parentId ?? this.parentId),
+      parentId: parentId,
       unreadCount: unreadCount ?? this.unreadCount,
       totalCount: totalCount ?? this.totalCount,
       sortIndex: sortIndex ?? this.sortIndex,

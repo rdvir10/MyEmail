@@ -18,7 +18,7 @@ class FolderTreePanel extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final rows = ref.watch(treeRowsProvider);
-    final selected = ref.watch(selectedFolderIdProvider);
+    final selected = ref.watch(effectiveSelectedFolderIdProvider);
     final foldersAsync = ref.watch(foldersProvider);
 
     return Column(

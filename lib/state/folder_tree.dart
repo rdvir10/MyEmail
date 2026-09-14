@@ -37,9 +37,9 @@ class FolderRow extends TreeRow {
     required this.depth,
     required this.hasChildren,
     required this.isExpanded,
-    required this.accentColor,
+    this.accentColor,
     this.inFavorites = false,
-    this.searchSubtitle,
+    this.subtitle,
   });
 
   final MailFolder folder;
@@ -49,12 +49,17 @@ class FolderRow extends TreeRow {
   final int depth;
   final bool hasChildren;
   final bool isExpanded;
-  final int accentColor;
+
+  /// The owning account's colour. Null for synthetic rows such as the unified
+  /// Inbox, which the UI paints in the theme's primary colour instead; the
+  /// state layer has no business knowing theme colours.
+  final int? accentColor;
   final bool inFavorites;
 
-  /// When searching, the folder's full path is shown beneath the name so that
-  /// two folders called "2026" can be told apart.
-  final String? searchSubtitle;
+  /// Secondary line under the name: the full path in search results (so two
+  /// folders called "2026" can be told apart) or the account name in
+  /// Favourites when more than one account is present.
+  final String? subtitle;
 
   @override
   String get key => inFavorites ? 'fav:${folder.id}' : 'folder:${folder.id}';
@@ -81,6 +86,8 @@ class FolderTreeInput {
   final bool showUnifiedInbox;
 }
 
+const kUnifiedInboxId = 'unified:inbox';
+
 /// The synthetic unified Inbox, summing every account's Inbox.
 MailFolder buildUnifiedInbox(Map<String, List<MailFolder>> foldersByAccount) {
   var unread = 0;
@@ -105,8 +112,6 @@ MailFolder buildUnifiedInbox(Map<String, List<MailFolder>> foldersByAccount) {
   );
 }
 
-const kUnifiedInboxId = 'unified:inbox';
-
 /// Flatten accounts and folders into the rows to render.
 ///
 /// Ordering within an account is Outlook's, not alphabetical: system folders
@@ -126,16 +131,13 @@ List<TreeRow> buildTreeRows(FolderTreeInput input) {
         depth: 0,
         hasChildren: false,
         isExpanded: false,
-        accentColor: 0xFF0F6CBD,
       ),
     );
   }
 
   final favorites = _favoriteRows(input);
   if (favorites.isNotEmpty) {
-    rows.add(
-      const SectionHeaderRow(title: 'Favourites', subtitle: null),
-    );
+    rows.add(const SectionHeaderRow(title: 'Favourites', subtitle: null));
     rows.addAll(favorites);
   }
 
@@ -150,12 +152,22 @@ List<TreeRow> buildTreeRows(FolderTreeInput input) {
         accentColor: account.colorValue,
       ),
     );
+    // Group once per account so the walk below is linear in the number of
+    // folders. Scanning the whole list at every node is quadratic, and this
+    // runs on every keystroke and every expand toggle.
+    final childrenOf = <String?, List<MailFolder>>{};
+    for (final f in folders) {
+      (childrenOf[f.parentId] ??= []).add(f);
+    }
+    for (final list in childrenOf.values) {
+      list.sort(_compareFolders);
+    }
     _appendSubtree(
       rows: rows,
-      folders: folders,
+      childrenOf: childrenOf,
       parentId: null,
       depth: 0,
-      input: input,
+      expandedIds: input.expandedIds,
       accentColor: account.colorValue,
     );
   }
@@ -165,18 +177,15 @@ List<TreeRow> buildTreeRows(FolderTreeInput input) {
 
 void _appendSubtree({
   required List<TreeRow> rows,
-  required List<MailFolder> folders,
+  required Map<String?, List<MailFolder>> childrenOf,
   required String? parentId,
   required int depth,
-  required FolderTreeInput input,
+  required Set<String> expandedIds,
   required int accentColor,
 }) {
-  final children = folders.where((f) => f.parentId == parentId).toList()
-    ..sort(_compareFolders);
-
-  for (final folder in children) {
-    final hasChildren = folders.any((f) => f.parentId == folder.id);
-    final isExpanded = input.expandedIds.contains(folder.id);
+  for (final folder in childrenOf[parentId] ?? const <MailFolder>[]) {
+    final hasChildren = childrenOf.containsKey(folder.id);
+    final isExpanded = expandedIds.contains(folder.id);
     rows.add(
       FolderRow(
         folder: folder,
@@ -189,10 +198,10 @@ void _appendSubtree({
     if (hasChildren && isExpanded) {
       _appendSubtree(
         rows: rows,
-        folders: folders,
+        childrenOf: childrenOf,
         parentId: folder.id,
         depth: depth + 1,
-        input: input,
+        expandedIds: expandedIds,
         accentColor: accentColor,
       );
     }
@@ -202,6 +211,10 @@ void _appendSubtree({
 /// Search ignores hierarchy and expand state: every match is shown flat, with
 /// its full path as a subtitle. Hiding a match because its parent happens to be
 /// collapsed would make the search box feel broken.
+///
+/// Matching is on the folder name only, as in Outlook. A query like
+/// "receipts 2026" finds nothing; that is deliberate, so that the results are
+/// predictable from what is visible in the tree.
 List<TreeRow> _buildSearchRows(FolderTreeInput input, String query) {
   final rows = <TreeRow>[];
   for (final account in input.accounts) {
@@ -220,6 +233,7 @@ List<TreeRow> _buildSearchRows(FolderTreeInput input, String query) {
       ),
     );
     for (final folder in matches) {
+      final path = displayPath(folder);
       rows.add(
         FolderRow(
           folder: folder,
@@ -229,9 +243,7 @@ List<TreeRow> _buildSearchRows(FolderTreeInput input, String query) {
           accentColor: account.colorValue,
           // A root folder's path is just its own name; repeating it under the
           // name is noise, so only show a path that adds something.
-          searchSubtitle: _displayPath(folder) == folder.name
-              ? null
-              : _displayPath(folder),
+          subtitle: path == folder.name ? null : path,
         ),
       );
     }
@@ -255,9 +267,7 @@ List<FolderRow> _favoriteRows(FolderTreeInput input) {
           isExpanded: false,
           accentColor: account.colorValue,
           inFavorites: true,
-          searchSubtitle: input.accounts.length > 1
-              ? account.displayName
-              : null,
+          subtitle: input.accounts.length > 1 ? account.displayName : null,
         ),
       );
     }
@@ -275,6 +285,7 @@ int _compareFolders(MailFolder a, MailFolder b) {
   return a.name.toLowerCase().compareTo(b.name.toLowerCase());
 }
 
-/// Gmail's `[Gmail]/` prefix is an implementation detail; never show it.
-String _displayPath(MailFolder folder) =>
+/// A folder's path as the user should see it. Gmail's `[Gmail]/` prefix is an
+/// implementation detail and is never shown.
+String displayPath(MailFolder folder) =>
     folder.path.replaceFirst('[Gmail]/', '').replaceAll('/', ' › ');
