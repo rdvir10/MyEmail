@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
 import '../../state/providers.dart';
+import '../accounts/add_account_screen.dart';
 import 'folder_actions.dart';
 import 'folder_tile.dart';
 
@@ -96,6 +97,15 @@ class FolderTreePanel extends ConsumerWidget {
                       };
                     },
                   ),
+          ),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.person_add_alt_1_outlined, size: 20),
+          title: const Text('Add account'),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const AddAccountScreen()),
           ),
         ),
       ],

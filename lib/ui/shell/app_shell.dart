@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/mail_message.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
+import '../accounts/add_account_screen.dart';
 import '../folder_tree/folder_tree_panel.dart';
 import '../messages/message_list_pane.dart';
 import '../messages/reading_pane.dart';
@@ -20,7 +21,7 @@ import '../messages/reading_pane.dart';
 /// There is deliberately no logic here about which folder to show first: that
 /// is derived in [effectiveSelectedFolderIdProvider], so nothing has to be
 /// listening at the right moment for the default to take.
-class AppShell extends StatelessWidget {
+class AppShell extends ConsumerWidget {
   const AppShell({super.key});
 
   static const double mediumBreakpoint = 840;
@@ -29,7 +30,14 @@ class AppShell extends StatelessWidget {
   static const double listPaneWidth = 380;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // First run: nothing configured yet, so the only sensible screen is the
+    // one that adds an account.
+    final accounts = ref.watch(accountsProvider);
+    if (accounts.hasValue && accounts.value!.isEmpty) {
+      return const AddAccountScreen(isFirstAccount: true);
+    }
+
     final width = MediaQuery.sizeOf(context).width;
     if (width >= wideBreakpoint) return const _WideLayout();
     if (width >= mediumBreakpoint) return const _MediumLayout();

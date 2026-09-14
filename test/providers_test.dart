@@ -28,6 +28,24 @@ class _SingleAccountReversedEngine implements MailEngine {
       (await _inner.loadAccounts()).take(1).toList();
 
   @override
+  Future<Account> addAccount({
+    required String displayName,
+    required String emailAddress,
+    required MailProvider provider,
+    required String secret,
+  }) =>
+      _inner.addAccount(
+        displayName: displayName,
+        emailAddress: emailAddress,
+        provider: provider,
+        secret: secret,
+      );
+
+  @override
+  Future<void> removeAccount(String accountId) =>
+      _inner.removeAccount(accountId);
+
+  @override
   Future<List<MailFolder>> loadFolders(String accountId) async =>
       (await _inner.loadFolders(accountId)).reversed.toList();
 

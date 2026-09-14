@@ -40,14 +40,20 @@ class ReadingPane extends ConsumerWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Addresses have no spaces, so an unnamed sender would
+                  // otherwise wrap mid-word on a phone; clip instead.
                   Text(
                     message.from.display,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.bodyMedium
                         ?.copyWith(fontWeight: FontWeight.w600),
                   ),
                   if (message.from.name != null)
                     Text(
                       message.from.email,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.bodySmall
                           ?.copyWith(color: scheme.onSurfaceVariant),
                     ),

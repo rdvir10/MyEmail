@@ -17,6 +17,19 @@ import '../domain/mail_message.dart';
 abstract class MailEngine {
   Future<List<Account>> loadAccounts();
 
+  /// Check the credentials against the server, then remember the account and
+  /// its secret. Throws [AuthenticationFailed] if the server refuses the
+  /// login and [ConnectionFailed] if it cannot be reached.
+  Future<Account> addAccount({
+    required String displayName,
+    required String emailAddress,
+    required MailProvider provider,
+    required String secret,
+  });
+
+  /// Forget the account and its secret. Local caches for it go too.
+  Future<void> removeAccount(String accountId);
+
   /// Every folder for one account, flat. The tree is derived from parent ids.
   Future<List<MailFolder>> loadFolders(String accountId);
 
@@ -87,6 +100,26 @@ class FolderOperationNotSupported implements Exception {
   @override
   String toString() =>
       'FolderOperationNotSupported: cannot $operation on $folderId';
+}
+
+/// The server refused the credentials. Shown to the user as-is.
+class AuthenticationFailed implements Exception {
+  const AuthenticationFailed(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// The server could not be reached at all: no network, wrong host, TLS.
+class ConnectionFailed implements Exception {
+  const ConnectionFailed(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 /// A create or rename would collide with an existing sibling. Unlike

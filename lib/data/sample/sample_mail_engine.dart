@@ -21,11 +21,52 @@ import 'sample_messages.dart';
 class SampleMailEngine implements MailEngine {
   SampleMailEngine() {
     for (final account in _accounts) {
-      _folders[account.id] = _buildFolders(account.id);
+      _folders[account.id] = _buildFolders(account.id, _specsFor(account.id));
     }
   }
 
-  static const _accounts = <Account>[
+  final List<Account> _accounts = List.of(_seedAccounts);
+
+  static const _palette = [0xFF0F6CBD, 0xFF107C41, 0xFFB4009E, 0xFFCA5010];
+
+  @override
+  Future<Account> addAccount({
+    required String displayName,
+    required String emailAddress,
+    required MailProvider provider,
+    required String secret,
+  }) async {
+    await _latency();
+    // The sample engine cannot check a password, but it can behave like a
+    // server that refuses an empty one, so the screen's error path is real.
+    if (secret.trim().isEmpty) {
+      throw const AuthenticationFailed('The server refused the password.');
+    }
+    if (_accounts.any((a) => a.emailAddress == emailAddress)) {
+      throw AuthenticationFailed('$emailAddress is already set up.');
+    }
+    final account = Account(
+      id: 'acct-${_accounts.length + 1}',
+      displayName: displayName,
+      emailAddress: emailAddress,
+      provider: provider,
+      authMethod: AuthMethod.appPassword,
+      colorValue: _palette[_accounts.length % _palette.length],
+    );
+    _accounts.add(account);
+    _folders[account.id] = _buildFolders(account.id, _freshAccountSpecs);
+    return account;
+  }
+
+  @override
+  Future<void> removeAccount(String accountId) async {
+    await _latency();
+    _accounts.removeWhere((a) => a.id == accountId);
+    _folders.remove(accountId);
+    _messages.removeWhere((key, _) => key.startsWith('$accountId:'));
+  }
+
+  static const _seedAccounts = <Account>[
     Account(
       id: 'acct-personal',
       displayName: 'Personal',
@@ -255,10 +296,13 @@ class SampleMailEngine implements MailEngine {
   Future<void> _latency() =>
       Future<void>.delayed(const Duration(milliseconds: 30));
 
-  static List<MailFolder> _buildFolders(String accountId) {
-    final specs = accountId == 'acct-personal'
-        ? _personalSpecs
-        : _projectsSpecs;
+  static List<_Spec> _specsFor(String accountId) => switch (accountId) {
+        'acct-personal' => _personalSpecs,
+        'acct-side' => _projectsSpecs,
+        _ => _freshAccountSpecs,
+      };
+
+  static List<MailFolder> _buildFolders(String accountId, List<_Spec> specs) {
     return [
       for (final (i, s) in specs.indexed)
         MailFolder.at(
@@ -292,6 +336,16 @@ class SampleMailEngine implements MailEngine {
         parent: 'Finance/Receipts', unread: 5, total: 96),
     _Spec('Travel', FolderRole.user, total: 74),
     _Spec('Newsletters', FolderRole.user, unread: 231, total: 4180),
+  ];
+
+  /// What a just-added Gmail account looks like before anything arrives.
+  static const _freshAccountSpecs = <_Spec>[
+    _Spec('INBOX', FolderRole.inbox),
+    _Spec('[Gmail]/Drafts', FolderRole.drafts),
+    _Spec('[Gmail]/Sent Mail', FolderRole.sent),
+    _Spec('[Gmail]/Trash', FolderRole.deleted),
+    _Spec('[Gmail]/Spam', FolderRole.junk),
+    _Spec('[Gmail]/All Mail', FolderRole.archive),
   ];
 
   static const _projectsSpecs = <_Spec>[

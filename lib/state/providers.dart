@@ -19,9 +19,39 @@ final mailEngineProvider = Provider<MailEngine>((ref) => SampleMailEngine());
 final uiStateStoreProvider =
     Provider<UiStateStore>((ref) => MemoryUiStateStore());
 
-final accountsProvider = FutureProvider<List<Account>>((ref) async {
-  return ref.watch(mailEngineProvider).loadAccounts();
-});
+/// The configured accounts. Adding one verifies it with the engine first;
+/// folders reload on their own because they watch this.
+class Accounts extends AsyncNotifier<List<Account>> {
+  @override
+  Future<List<Account>> build() => ref.watch(mailEngineProvider).loadAccounts();
+
+  Future<Account> add({
+    required String displayName,
+    required String emailAddress,
+    required MailProvider provider,
+    required String secret,
+  }) async {
+    final account = await ref.read(mailEngineProvider).addAccount(
+          displayName: displayName,
+          emailAddress: emailAddress,
+          provider: provider,
+          secret: secret,
+        );
+    state = AsyncData([...state.value ?? const [], account]);
+    return account;
+  }
+
+  Future<void> remove(String accountId) async {
+    await ref.read(mailEngineProvider).removeAccount(accountId);
+    state = AsyncData([
+      for (final a in state.value ?? const <Account>[])
+        if (a.id != accountId) a,
+    ]);
+  }
+}
+
+final accountsProvider =
+    AsyncNotifierProvider<Accounts, List<Account>>(Accounts.new);
 
 /// Folders for every account, keyed by account id, and the only place that
 /// mutates them.

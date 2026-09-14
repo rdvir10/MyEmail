@@ -20,6 +20,25 @@ Future<void> _pumpTree(WidgetTester tester) async {
 }
 
 void main() {
+  // Every row these tests look for must be on screen: ListView.builder does
+  // not build what is below the fold, and the tree has a footer now.
+  setUp(() {
+    final view = TestWidgetsFlutterBinding.ensureInitialized()
+        .platformDispatcher
+        .views
+        .first;
+    view.physicalSize = const Size(800, 1400);
+    view.devicePixelRatio = 1.0;
+  });
+  tearDown(() {
+    final view = TestWidgetsFlutterBinding.ensureInitialized()
+        .platformDispatcher
+        .views
+        .first;
+    view.resetPhysicalSize();
+    view.resetDevicePixelRatio();
+  });
+
   group('menu contents follow capabilities', () {
     testWidgets('a user folder gets the full menu', (tester) async {
       await _pumpTree(tester);
