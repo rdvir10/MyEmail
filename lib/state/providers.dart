@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/mail_engine.dart';
 import '../data/sample/sample_mail_engine.dart';
+import '../data/ui_state_store.dart';
 import '../domain/account.dart';
 import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
@@ -11,6 +12,12 @@ import 'folder_tree.dart';
 /// Swapped for the real IMAP engine in milestone 3. Everything above this line
 /// stays unchanged when that happens, which is the point of the seam.
 final mailEngineProvider = Provider<MailEngine>((ref) => SampleMailEngine());
+
+/// Where expand state, favourites, ordering and the last folder are kept.
+/// main() overrides this with the shared_preferences store; tests and the
+/// bare default remember within one run only.
+final uiStateStoreProvider =
+    Provider<UiStateStore>((ref) => MemoryUiStateStore());
 
 final accountsProvider = FutureProvider<List<Account>>((ref) async {
   return ref.watch(mailEngineProvider).loadAccounts();
@@ -154,10 +161,16 @@ final folderIndexProvider = Provider<Map<String, MailFolder>>((ref) {
   return index;
 });
 
-/// A set of folder ids that survives renames and deletes.
+/// A set of folder ids that survives renames, deletes and restarts.
 abstract class FolderIdSet extends Notifier<Set<String>> {
+  String get storageKey;
+
   @override
-  Set<String> build() => <String>{};
+  Set<String> build() {
+    final store = ref.watch(uiStateStoreProvider);
+    listenSelf((_, next) => store.writeIds(storageKey, next));
+    return store.readIds(storageKey);
+  }
 
   void toggle(String folderId) {
     final next = Set<String>.from(state);
@@ -172,11 +185,12 @@ abstract class FolderIdSet extends Notifier<Set<String>> {
   void remap(FolderRename r) => state = state.map(r.remap).toSet();
 }
 
-/// Which folders are expanded.
-///
-/// In-memory for now; persistence lands with the rest of the UI state so the
-/// tree comes back the way it was left.
+/// Which folders are expanded, remembered across restarts so the tree comes
+/// back the way it was left.
 class ExpandedFolders extends FolderIdSet {
+  @override
+  String get storageKey => UiStateKeys.expanded;
+
   void expand(String folderId) => state = {...state, folderId};
 
   void collapseAll() => state = <String>{};
@@ -185,7 +199,10 @@ class ExpandedFolders extends FolderIdSet {
 final expandedFoldersProvider =
     NotifierProvider<ExpandedFolders, Set<String>>(ExpandedFolders.new);
 
-class FavoriteFolders extends FolderIdSet {}
+class FavoriteFolders extends FolderIdSet {
+  @override
+  String get storageKey => UiStateKeys.favorites;
+}
 
 final favoriteFoldersProvider =
     NotifierProvider<FavoriteFolders, Set<String>>(FavoriteFolders.new);
@@ -194,7 +211,11 @@ final favoriteFoldersProvider =
 /// so this lives only on the device and overrides the engine's default.
 class FolderOrder extends Notifier<Map<String, int>> {
   @override
-  Map<String, int> build() => <String, int>{};
+  Map<String, int> build() {
+    final store = ref.watch(uiStateStoreProvider);
+    listenSelf((_, next) => store.writeOrder(UiStateKeys.order, next));
+    return store.readOrder(UiStateKeys.order);
+  }
 
   /// Fix the order of one sibling group. Every id in [orderedIds] gets its
   /// position; ids elsewhere are untouched.
@@ -233,11 +254,16 @@ class FolderSearchQuery extends Notifier<String> {
 final folderSearchQueryProvider =
     NotifierProvider<FolderSearchQuery, String>(FolderSearchQuery.new);
 
-/// The folder the user explicitly chose. Null means "nothing chosen yet", in
-/// which case [effectiveSelectedFolderIdProvider] supplies a default.
+/// The folder the user explicitly chose, remembered across restarts. Null
+/// means "nothing chosen yet", in which case
+/// [effectiveSelectedFolderIdProvider] supplies a default.
 class SelectedFolderId extends Notifier<String?> {
   @override
-  String? build() => null;
+  String? build() {
+    final store = ref.watch(uiStateStoreProvider);
+    listenSelf((_, next) => store.writeString(UiStateKeys.selected, next));
+    return store.readString(UiStateKeys.selected);
+  }
 
   void select(String? folderId) => state = folderId;
 
