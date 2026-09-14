@@ -59,17 +59,58 @@ List<MailMessage> generateSampleMessages(
   return messages;
 }
 
-/// A plain-text body to go with a generated message.
+/// A body to go with a generated message.
+///
+/// Two messages in three get an HTML body as well as the plain-text
+/// alternative, because real mail is overwhelmingly HTML and sample data that
+/// is all plain text never exercises the WebView, its remote-image blocking,
+/// or the text fallback. Some of those carry a remote image so that the
+/// "Images are blocked" path shows up.
 MailBody generateSampleBody(MailMessage message) {
   final rng = Random(message.id.hashCode);
-  final paragraphs = 1 + rng.nextInt(3);
-  final buffer = StringBuffer('Hi,\n\n${message.preview}\n');
-  for (var i = 0; i < paragraphs; i++) {
-    buffer.write('\n${_paragraphs[rng.nextInt(_paragraphs.length)]}\n');
+  final paragraphs = [
+    for (var i = 0; i < 1 + rng.nextInt(3); i++)
+      _paragraphs[rng.nextInt(_paragraphs.length)],
+  ];
+
+  final text = StringBuffer('Hi,\n\n${message.preview}\n');
+  for (final p in paragraphs) {
+    text.write('\n$p\n');
   }
-  buffer.write('\nThanks,\n${message.from.display}');
-  return MailBody(text: buffer.toString());
+  text.write('\nThanks,\n${message.from.display}');
+
+  if (rng.nextInt(3) == 0) return MailBody(text: text.toString());
+
+  final hasRemoteImage = rng.nextBool();
+  final html = StringBuffer()
+    ..write('<div style="font-family:sans-serif">')
+    ..write('<p>Hi,</p>')
+    ..write('<p>${_escape(message.preview)}</p>');
+  for (final p in paragraphs) {
+    html.write('<p>${_escape(p)}</p>');
+  }
+  if (hasRemoteImage) {
+    // A tracking pixel and a banner, the two things the blocker exists for.
+    html
+      ..write('<img src="https://tracker.example/open/${message.uid}.gif" '
+          'width="1" height="1" alt="">')
+      ..write('<p><img src="https://cdn.example/banner-${message.uid}.png" '
+          'alt="Banner" width="480"></p>');
+  }
+  html
+    ..write('<blockquote>Sent from the ${_escape(message.from.display)} '
+        'mailing system.</blockquote>')
+    ..write('<p>Thanks,<br>${_escape(message.from.display)}</p>')
+    ..write('<p><a href="https://example.com/unsubscribe">Unsubscribe</a></p>')
+    ..write('</div>');
+
+  return MailBody(text: text.toString(), html: html.toString());
 }
+
+String _escape(String s) => s
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 
 const _me = MailAddress(email: 'me@example.com', name: 'Me');
 
