@@ -1,8 +1,12 @@
+import 'dart:math';
+
 import '../../domain/account.dart';
 import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
+import '../../domain/mail_message.dart';
 import '../mail_engine.dart';
+import 'sample_messages.dart';
 
 /// In-memory stand-in for the real IMAP engine, used for layout work and tests.
 ///
@@ -41,6 +45,37 @@ class SampleMailEngine implements MailEngine {
   ];
 
   final Map<String, List<MailFolder>> _folders = {};
+
+  /// Generated lazily per folder and then held, so flags changed later
+  /// (milestone 4) stick for the rest of the run.
+  final Map<String, List<MailMessage>> _messages = {};
+
+  @override
+  Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    await _latency();
+    final all = _messages.putIfAbsent(
+      folderId,
+      () => generateSampleMessages(_require(folderId)),
+    );
+    if (offset >= all.length) return const [];
+    return List.unmodifiable(all.sublist(offset, min(all.length, offset + limit)));
+  }
+
+  @override
+  Future<MailBody> loadMessageBody(String messageId) async {
+    await _latency();
+    final folderId = messageId.substring(0, messageId.lastIndexOf('#'));
+    final message = _messages[folderId]?.firstWhere(
+      (m) => m.id == messageId,
+      orElse: () => throw StateError('No such message: $messageId'),
+    );
+    if (message == null) throw StateError('No such message: $messageId');
+    return generateSampleBody(message);
+  }
 
   @override
   Future<List<Account>> loadAccounts() async {

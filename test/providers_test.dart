@@ -4,6 +4,7 @@ import 'package:mailtree/data/mail_engine.dart';
 import 'package:mailtree/data/sample/sample_mail_engine.dart';
 import 'package:mailtree/domain/account.dart';
 import 'package:mailtree/domain/mail_folder.dart';
+import 'package:mailtree/domain/mail_message.dart';
 import 'package:mailtree/state/folder_tree.dart';
 import 'package:mailtree/state/providers.dart';
 
@@ -54,6 +55,18 @@ class _SingleAccountReversedEngine implements MailEngine {
 
   @override
   Future<void> emptyFolder(String folderId) => _inner.emptyFolder(folderId);
+
+  @override
+  Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) =>
+      _inner.loadMessages(folderId, offset: offset, limit: limit);
+
+  @override
+  Future<MailBody> loadMessageBody(String messageId) =>
+      _inner.loadMessageBody(messageId);
 }
 
 void main() {

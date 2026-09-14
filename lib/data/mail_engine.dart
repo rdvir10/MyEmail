@@ -1,5 +1,6 @@
 import '../domain/account.dart';
 import '../domain/mail_folder.dart';
+import '../domain/mail_message.dart';
 
 /// Everything the UI is allowed to know about talking to mail.
 ///
@@ -39,6 +40,17 @@ abstract class MailEngine {
   /// Permanently remove everything in the folder. Only valid where
   /// `capabilities.canEmpty` is set, which in practice means Trash and Junk.
   Future<void> emptyFolder(String folderId);
+
+  /// Messages in one folder, newest first. [offset] and [limit] page through
+  /// it; the list never loads a whole folder at once.
+  Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  });
+
+  /// The body of one message, fetched when it is opened.
+  Future<MailBody> loadMessageBody(String messageId);
 }
 
 /// The outcome of a rename or move: the folder as it now is, plus the id

@@ -142,12 +142,13 @@ void main() {
           reason: 'tree is a permanent pane');
       expect(find.byTooltip('Open navigation menu'), findsNothing,
           reason: 'no drawer button on a wide screen');
-      expect(find.text('The message list arrives in milestone 3.'),
-          findsOneWidget);
+      expect(find.text('Select a message to read'), findsOneWidget,
+          reason: 'reading pane is present but empty');
 
       await tester.tap(find.text('Newsletters'));
       await tester.pumpAndSettle();
-      expect(find.text('4180 messages, 231 unread'), findsOneWidget);
+      expect(find.text('231 unread'), findsOneWidget,
+          reason: 'folder title bar shows the unread count');
     });
   });
 }
