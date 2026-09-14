@@ -12,11 +12,15 @@ import '../messages/reading_pane.dart';
 /// Three shapes, chosen on width alone so rotating a tablet moves between
 /// them without any state being rebuilt:
 ///
-///  * phone (< 840): folder tree in a slide-out drawer, message list as the
+///  * phone (< 600): folder tree in a slide-out drawer, message list as the
 ///    body, a message opens as its own screen;
-///  * medium (840–1199): tree pane and message list side by side, a message
+///  * medium (600–1199): tree pane and message list side by side, a message
 ///    still opens as its own screen;
 ///  * wide (>= 1200, a tablet in landscape): tree, list and reading pane.
+///
+/// 600dp is Material's own threshold for a list-detail layout, and the
+/// reason it is not higher: a Pixel Tablet in portrait is 800dp wide, so an
+/// 840dp breakpoint handed an 11-inch tablet the phone's modal drawer.
 ///
 /// There is deliberately no logic here about which folder to show first: that
 /// is derived in [effectiveSelectedFolderIdProvider], so nothing has to be
@@ -24,7 +28,7 @@ import '../messages/reading_pane.dart';
 class AppShell extends ConsumerWidget {
   const AppShell({super.key});
 
-  static const double mediumBreakpoint = 840;
+  static const double mediumBreakpoint = 600;
   static const double wideBreakpoint = 1200;
   static const double treePaneWidth = 300;
   static const double listPaneWidth = 380;

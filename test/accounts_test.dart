@@ -231,9 +231,7 @@ void main() {
       expect(find.text('Welcome to MailTree'), findsNothing);
       expect(find.byType(AddAccountScreen), findsNothing);
 
-      // Phone layout: the tree is in the drawer.
-      await tester.tap(find.byTooltip('Open navigation menu'));
-      await tester.pumpAndSettle();
+      // 800dp: the tree is a pane, so no drawer to open.
       expect(find.text('ME'), findsOneWidget,
           reason: 'display name defaults to the local part, shown uppercased');
       expect(find.text('Inbox'), findsWidgets);
@@ -245,8 +243,6 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Open navigation menu'));
-      await tester.pumpAndSettle();
       await tester.tap(find.text('Add account'));
       await tester.pumpAndSettle();
 

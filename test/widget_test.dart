@@ -132,6 +132,12 @@ void main() {
   group('AppShell', () {
     testWidgets('phone layout: choosing a folder closes the drawer',
         (tester) async {
+      // A real phone: 411dp wide, below the 600dp two-pane breakpoint. The
+      // suite's default 800dp surface is a tablet in portrait now.
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 2.625;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpWidget(_appHarness());
       await tester.pumpAndSettle();
 
