@@ -26,13 +26,16 @@ class FolderCapabilities {
     this.canAcceptMessages = true,
   });
 
-  /// An ordinary user folder or Gmail label: everything is allowed.
+  /// An ordinary user folder or Gmail label: every structural edit is allowed.
+  /// "Empty" is not: bulk-deleting the contents of an ordinary folder is a
+  /// Trash and Junk affordance in Outlook, and offering it on a Gmail label
+  /// invites a very expensive mis-tap.
   const FolderCapabilities.userFolder()
       : canRename = true,
         canMove = true,
         canDelete = true,
         canCreateChild = true,
-        canEmpty = true,
+        canEmpty = false,
         canMarkAllRead = true,
         canFavorite = true,
         canAcceptMessages = true;

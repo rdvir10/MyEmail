@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state/folder_tree.dart';
 import '../../state/providers.dart';
+import 'folder_actions.dart';
 import 'folder_tile.dart';
 
 /// The folder tree itself: search box on top, rows below.
@@ -57,6 +58,11 @@ class FolderTreePanel extends ConsumerWidget {
                             onToggleExpand: () => ref
                                 .read(expandedFoldersProvider.notifier)
                                 .toggle(row.folder.id),
+                            onLongPress: () => showFolderActionsSheet(
+                              context,
+                              ref,
+                              row.folder,
+                            ),
                           ),
                       };
                     },

@@ -54,6 +54,9 @@ class FolderTile extends StatelessWidget {
         child: InkWell(
           onTap: onTap,
           onLongPress: onLongPress,
+          // Right-click opens the same menu, for the browser preview and any
+          // tablet with a mouse or trackpad attached.
+          onSecondaryTap: onLongPress,
           child: Padding(
             padding: EdgeInsets.only(
               left: 4 + row.depth * _indentPerLevel,
