@@ -7,6 +7,82 @@ import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
+import 'imap_transport.dart';
+
+/// `<accountId>:<path>`; account ids never contain a colon.
+(String accountId, String path) splitFolderId(String folderId) {
+  final i = folderId.indexOf(':');
+  if (i < 0) throw ArgumentError('Not a folder id: $folderId');
+  return (folderId.substring(0, i), folderId.substring(i + 1));
+}
+
+/// `<folderId>#<uid>`.
+(String folderId, int uid) splitMessageId(String messageId) {
+  final i = messageId.lastIndexOf('#');
+  if (i < 0) throw ArgumentError('Not a message id: $messageId');
+  return (messageId.substring(0, i), int.parse(messageId.substring(i + 1)));
+}
+
+/// A transport-level folder into the domain, with nesting resolved against
+/// the set of paths that exist. Mirrors [folderFromMailbox] for callers that
+/// have already left enough_mail types behind.
+MailFolder folderFromRemote({
+  required String accountId,
+  required RemoteFolder remote,
+  required Set<String> allPaths,
+  int sortIndex = 0,
+}) {
+  final capabilities = remote.isServerManaged
+      ? const FolderCapabilities.systemFolder(canAcceptMessages: true)
+      : FolderCapabilities.forGmail(remote.role);
+  String? parentId;
+  if (remote.role == FolderRole.user) {
+    final cut = remote.path.lastIndexOf('/');
+    if (cut > 0) {
+      final parent = remote.path.substring(0, cut);
+      if (allPaths.contains(parent)) parentId = MailFolder.idFor(accountId, parent);
+    }
+  }
+  return MailFolder.at(
+    accountId: accountId,
+    path: remote.path,
+    role: remote.role,
+    capabilities: capabilities,
+    parentId: parentId,
+    unreadCount: remote.unread,
+    totalCount: remote.total,
+    sortIndex: sortIndex,
+  );
+}
+
+/// The transport's view of a fetched header. Needs UID, FLAGS, ENVELOPE and
+/// BODYSTRUCTURE in the fetch.
+RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
+  final uid = m.uid;
+  if (uid == null) {
+    throw ArgumentError('Message has no UID; fetch with UID in the criteria');
+  }
+  final subject = m.decodeSubject()?.trim();
+  final from = m.from?.firstOrNull ?? m.sender;
+  return RemoteHeader(
+    uid: uid,
+    subject: (subject == null || subject.isEmpty) ? '(No subject)' : subject,
+    from: from == null ? const MailAddress(email: '') : addressFromMime(from),
+    to: [for (final a in m.to ?? const <em.MailAddress>[]) addressFromMime(a)],
+    date: m.decodeDate() ?? fallbackDate ?? DateTime.now(),
+    isRead: m.isSeen,
+    isFlagged: m.isFlagged,
+    hasAttachments: m.hasAttachments(),
+  );
+}
+
+RemoteFolder remoteFolderFromMailbox(em.Mailbox box) => RemoteFolder(
+      path: toModelPath(box.path, box.pathSeparator),
+      role: roleForMailbox(box),
+      isServerManaged: isServerManagedLabel(box),
+      unread: box.messagesUnseen,
+      total: box.messagesExists,
+    );
 
 /// Pure translations between enough_mail's types and the app's domain.
 ///
@@ -38,7 +114,7 @@ FolderRole roleForMailbox(em.Mailbox box) {
 /// Gmail's Starred (\Flagged) and Important (\Important) are labels the
 /// server maintains itself: browsable, droppable onto, but not renamable or
 /// deletable. They come through as user folders with locked-down capabilities.
-bool _isServerManagedLabel(em.Mailbox box) =>
+bool isServerManagedLabel(em.Mailbox box) =>
     box.flags.any((f) => f.name == 'flagged' || f.name == 'important');
 
 /// Map one server mailbox to a domain folder, or null when it is not a real
@@ -60,7 +136,7 @@ MailFolder? folderFromMailbox({
   final path = toModelPath(box.path, delimiter);
   final role = roleForMailbox(box);
 
-  final capabilities = _isServerManagedLabel(box)
+  final capabilities = isServerManagedLabel(box)
       ? const FolderCapabilities.systemFolder(canAcceptMessages: true)
       : FolderCapabilities.forGmail(role);
 

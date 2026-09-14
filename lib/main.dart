@@ -4,7 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'data/account_store.dart';
-import 'data/imap/imap_mail_engine.dart';
+import 'data/cache/mail_database.dart';
+import 'data/imap/cached_imap_engine.dart';
 import 'data/mail_engine.dart';
 import 'data/sample/sample_mail_engine.dart';
 import 'data/secure_credential_store.dart';
@@ -25,13 +26,14 @@ Future<void> main() async {
     cacheOptions: const SharedPreferencesWithCacheOptions(),
   );
 
-  // The browser preview has no Keystore and no raw sockets, so it always runs
-  // on sample data; Android talks to Gmail.
+  // The browser preview has no Keystore, no raw sockets and no SQLite, so it
+  // always runs on sample data; Android talks to Gmail through the cache.
   final MailEngine engine = (kIsWeb || _forceSample)
       ? SampleMailEngine()
-      : ImapMailEngine(
+      : CachedImapEngine(
           accountStore: PrefsAccountStore(prefs),
           credentialStore: SecureCredentialStore(),
+          cache: DriftCacheStore(MailDatabase.open()),
         );
 
   runApp(
