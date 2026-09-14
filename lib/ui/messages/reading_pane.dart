@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -5,17 +6,17 @@ import '../../domain/mail_message.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import 'date_format.dart';
+import 'html_body_view.dart';
 
-/// One open message: headers, actions, then the body.
+/// One open message: a fixed header with actions, then the body.
 ///
 /// Opening an unread message marks it read, as Outlook does; that happens
 /// after the first frame so the pane never blocks on the network. The flag
 /// and read state shown come from the live list, so a change made here or in
 /// the list is reflected immediately in both.
 ///
-/// Renders the plain-text body. The sandboxed WebView for HTML mail is an
-/// Android-only step; the seam is [MailBody.html], which this pane ignores
-/// for now.
+/// HTML bodies go into the sandboxed [HtmlBodyView] on a device; plain-text
+/// bodies, and every body in the browser preview, render as selectable text.
 class ReadingPane extends ConsumerStatefulWidget {
   const ReadingPane({super.key, required this.message});
 
@@ -66,7 +67,6 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
     // Prefer the live copy so flag changes show at once.
     final live = _listId == null
         ? null
@@ -78,13 +78,87 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     final message = live ?? widget.message;
     final body = ref.watch(messageBodyProvider(message.id));
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
+          child: _Header(
+            message: message,
+            onToggleFlag: () =>
+                _act((n) => n.setFlagged(message.id, !message.isFlagged)),
+            onToggleRead: () =>
+                _act((n) => n.setRead(message.id, !message.isRead)),
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: body.when(
+            loading: () => const Center(
+              child: SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+            error: (e, _) => Padding(
+              padding: const EdgeInsets.all(20),
+              child: Text(
+                'Could not load the message.\n$e',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+            data: (b) => _bodyView(theme, b),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _bodyView(ThemeData theme, MailBody b) {
+    final html = b.html;
+    // The WebView is a platform view: Android has it, the browser preview
+    // does not. Text is the universal fallback.
+    if (html != null && html.trim().isNotEmpty && !kIsWeb) {
+      return HtmlBodyView(html: html);
+    }
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+      child: SelectableText(
+        b.text,
+        style: theme.textTheme.bodyMedium?.copyWith(height: 1.45),
+      ),
+    );
+  }
+}
+
+class _Header extends StatelessWidget {
+  const _Header({
+    required this.message,
+    required this.onToggleFlag,
+    required this.onToggleRead,
+  });
+
+  final MailMessage message;
+  final VoidCallback onToggleFlag;
+  final VoidCallback onToggleRead;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
             Expanded(
-              child: Text(message.subject, style: theme.textTheme.titleLarge),
+              child: Text(
+                message.subject,
+                style: theme.textTheme.titleLarge,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
             IconButton(
               tooltip: message.isFlagged ? 'Remove flag' : 'Flag',
@@ -92,8 +166,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                 message.isFlagged ? Icons.flag : Icons.flag_outlined,
                 color: message.isFlagged ? scheme.error : null,
               ),
-              onPressed: () =>
-                  _act((n) => n.setFlagged(message.id, !message.isFlagged)),
+              onPressed: onToggleFlag,
             ),
             IconButton(
               tooltip: message.isRead ? 'Mark as unread' : 'Mark as read',
@@ -102,12 +175,11 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                     ? Icons.mark_email_unread_outlined
                     : Icons.mark_email_read_outlined,
               ),
-              onPressed: () =>
-                  _act((n) => n.setRead(message.id, !message.isRead)),
+              onPressed: onToggleRead,
             ),
           ],
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -142,6 +214,8 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                   const SizedBox(height: 2),
                   Text(
                     'To: ${message.to.map((a) => a.display).join(', ')}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.bodySmall
                         ?.copyWith(color: scheme.onSurfaceVariant),
                   ),
@@ -157,7 +231,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
           ],
         ),
         if (message.hasAttachments) ...[
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Row(
             children: [
               Icon(Icons.attach_file, size: 16, color: scheme.onSurfaceVariant),
@@ -170,29 +244,6 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
             ],
           ),
         ],
-        const SizedBox(height: 16),
-        const Divider(),
-        const SizedBox(height: 16),
-        body.when(
-          loading: () => const Padding(
-            padding: EdgeInsets.symmetric(vertical: 24),
-            child: Center(
-              child: SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
-          ),
-          error: (e, _) => Text(
-            'Could not load the message.\n$e',
-            style: theme.textTheme.bodySmall,
-          ),
-          data: (b) => SelectableText(
-            b.text,
-            style: theme.textTheme.bodyMedium?.copyWith(height: 1.45),
-          ),
-        ),
       ],
     );
   }
