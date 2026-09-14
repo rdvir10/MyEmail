@@ -6,6 +6,8 @@ import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
+import '../../state/quick_steps.dart';
+import '../quick_steps/quick_steps_screen.dart';
 import 'message_actions.dart';
 import 'message_tile.dart';
 
@@ -109,13 +111,25 @@ class MessageListPane extends ConsumerWidget {
     MessageActions actions,
     MailMessage message,
   ) async {
+    final steps = ref.read(quickStepsProvider);
+    final folderIndex = ref.read(folderIndexProvider);
     final choice = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
+      isScrollControlled: true,
       builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+            for (final step in steps)
+              ListTile(
+                leading: Icon(iconForQuickStep(step)),
+                title: Text(step.name),
+                subtitle: Text(describeQuickStep(step, folderIndex)),
+                onTap: () => Navigator.of(context).pop('qs:${step.id}'),
+              ),
+            if (steps.isNotEmpty) const Divider(height: 1),
             ListTile(
               leading: const Icon(Icons.drive_file_move_outline),
               title: const Text('Move to…'),
@@ -148,12 +162,40 @@ class MessageListPane extends ConsumerWidget {
               onTap: () => Navigator.of(context).pop('delete'),
             ),
             const SizedBox(height: 8),
-          ],
+            ],
+          ),
         ),
       ),
     );
     if (choice == null || !context.mounted) return;
     final notifier = ref.read(messagesProvider(actions.listId).notifier);
+
+    if (choice.startsWith('qs:')) {
+      final step = steps.firstWhere((s) => s.id == choice.substring(3));
+      try {
+        await runQuickStep(
+          step: step,
+          notifier: notifier,
+          message: message,
+          onMoved: (folderId) =>
+              ref.read(recentMoveTargetsProvider.notifier).record(folderId),
+        );
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(SnackBar(content: Text('${step.name} applied')));
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+                SnackBar(content: Text('${step.name} failed: $e')));
+        }
+      }
+      return;
+    }
+
     switch (choice) {
       case 'move':
         await actions.moveWithPrompt(context, [message]);

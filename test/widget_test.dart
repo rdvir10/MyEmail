@@ -24,6 +24,25 @@ void _useWideScreen(WidgetTester tester) {
 }
 
 void main() {
+  // The panel has a footer now (Quick Steps, Add account), so the default
+  // 800x600 surface pushes tree rows out of the build window.
+  setUp(() {
+    final view = TestWidgetsFlutterBinding.ensureInitialized()
+        .platformDispatcher
+        .views
+        .first;
+    view.physicalSize = const Size(800, 1400);
+    view.devicePixelRatio = 1.0;
+  });
+  tearDown(() {
+    final view = TestWidgetsFlutterBinding.ensureInitialized()
+        .platformDispatcher
+        .views
+        .first;
+    view.resetPhysicalSize();
+    view.resetDevicePixelRatio();
+  });
+
   group('FolderTreePanel', () {
     testWidgets('renders accounts and system folders', (tester) async {
       await tester.pumpWidget(_panelHarness());

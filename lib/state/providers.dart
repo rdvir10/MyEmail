@@ -8,6 +8,7 @@ import '../domain/account.dart';
 import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
 import 'folder_tree.dart';
+import 'quick_steps.dart';
 
 /// Swapped for the real IMAP engine in milestone 3. Everything above this line
 /// stays unchanged when that happens, which is the point of the seam.
@@ -101,6 +102,7 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     ref.read(favoriteFoldersProvider.notifier).removeAll(doomed);
     ref.read(folderOrderProvider.notifier).removeAll(doomed);
     ref.read(recentMoveTargetsProvider.notifier).removeAll(doomed);
+    ref.read(quickStepsProvider.notifier).dropFoldersIn(doomed);
     final selected = ref.read(selectedFolderIdProvider);
     if (selected != null && doomed.contains(selected)) {
       ref.read(selectedFolderIdProvider.notifier).select(null);
@@ -167,6 +169,7 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     ref.read(favoriteFoldersProvider.notifier).remap(r);
     ref.read(folderOrderProvider.notifier).remap(r);
     ref.read(recentMoveTargetsProvider.notifier).remap(r);
+    ref.read(quickStepsProvider.notifier).remapFolder(r);
     ref.read(selectedFolderIdProvider.notifier).remap(r);
   }
 

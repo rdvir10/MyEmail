@@ -6,6 +6,7 @@ import '../../state/folder_tree.dart';
 import '../../state/providers.dart';
 import '../accounts/add_account_screen.dart';
 import '../messages/message_actions.dart';
+import '../quick_steps/quick_steps_screen.dart';
 import 'folder_actions.dart';
 import 'folder_tile.dart';
 
@@ -109,6 +110,14 @@ class FolderTreePanel extends ConsumerWidget {
           ),
         ),
         const Divider(height: 1),
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.bolt_outlined, size: 20),
+          title: const Text('Quick Steps'),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const QuickStepsScreen()),
+          ),
+        ),
         ListTile(
           dense: true,
           leading: const Icon(Icons.person_add_alt_1_outlined, size: 20),
