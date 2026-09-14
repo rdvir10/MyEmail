@@ -1,4 +1,5 @@
 import '../../domain/account.dart';
+import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
 import '../account_store.dart';
@@ -268,6 +269,79 @@ class CachedImapEngine implements MailEngine {
   @override
   Future<void> setFlagged(String messageId, bool isFlagged) =>
       _setFlag(messageId, MessageFlag.flagged, isFlagged);
+
+  @override
+  Future<void> moveMessages(List<String> messageIds, String toFolderId) async {
+    if (messageIds.isEmpty) return;
+    final (toAccount, toPath) = splitFolderId(toFolderId);
+    for (final group in _groupByFolder(messageIds).entries) {
+      final (accountId, fromPath) = splitFolderId(group.key);
+      if (accountId != toAccount) {
+        throw FolderOperationNotSupported(
+          group.key,
+          'move messages between accounts',
+        );
+      }
+      if (fromPath == toPath) continue;
+      final t = await _transport(accountId);
+      await t.moveMessages(fromPath, group.value, toPath);
+      await cache.deleteUids(accountId, fromPath, group.value.toSet());
+      // The destination picks the new messages up on its next sync; it may
+      // not be cached at all yet, and guessing UIDs would be worse.
+      await _syncIfCached(accountId, t, toPath);
+    }
+  }
+
+  @override
+  Future<void> deleteMessages(List<String> messageIds) async {
+    if (messageIds.isEmpty) return;
+    for (final group in _groupByFolder(messageIds).entries) {
+      final (accountId, fromPath) = splitFolderId(group.key);
+      final t = await _transport(accountId);
+      final trash = await _trashPath(accountId, t);
+
+      if (trash == null || fromPath == trash) {
+        // Already in Trash, or the account has none: delete for good.
+        await t.storeFlag(fromPath,
+            uids: group.value, flag: MessageFlag.deleted, set: true);
+        await t.expunge(fromPath);
+      } else {
+        await t.moveMessages(fromPath, group.value, trash);
+        await _syncIfCached(accountId, t, trash);
+      }
+      await cache.deleteUids(accountId, fromPath, group.value.toSet());
+    }
+  }
+
+  /// Message ids grouped by the folder they live in, so one folder is one
+  /// server round trip rather than one per message.
+  static Map<String, List<int>> _groupByFolder(List<String> messageIds) {
+    final byFolder = <String, List<int>>{};
+    for (final id in messageIds) {
+      final (folderId, uid) = splitMessageId(id);
+      (byFolder[folderId] ??= []).add(uid);
+    }
+    return byFolder;
+  }
+
+  Future<String?> _trashPath(String accountId, ImapTransport t) async {
+    final remote = folderLists.read(accountId) ?? await t.listFolders();
+    for (final f in remote) {
+      if (f.role == FolderRole.deleted) return f.path;
+    }
+    return null;
+  }
+
+  /// Sync a folder only if something is already cached for it; an untouched
+  /// folder is left to its first open.
+  Future<void> _syncIfCached(
+    String accountId,
+    ImapTransport t,
+    String path,
+  ) async {
+    if (await cache.readFolderState(accountId, path) == null) return;
+    await _sync(accountId, t).sync(path);
+  }
 
   Future<void> _setFlag(String messageId, MessageFlag flag, bool set) async {
     final (folderId, uid) = splitMessageId(messageId);

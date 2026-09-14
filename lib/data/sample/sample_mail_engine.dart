@@ -119,6 +119,98 @@ class SampleMailEngine implements MailEngine {
   }
 
   @override
+  Future<void> moveMessages(List<String> messageIds, String toFolderId) async {
+    await _latency();
+    final target = _require(toFolderId);
+    for (final id in messageIds) {
+      final fromId = id.substring(0, id.lastIndexOf('#'));
+      if (fromId == toFolderId) continue;
+      final source = _require(fromId);
+      if (source.accountId != target.accountId) {
+        throw FolderOperationNotSupported(
+          fromId,
+          'move messages between accounts',
+        );
+      }
+      final list = _messages[fromId];
+      final i = list?.indexWhere((m) => m.id == id) ?? -1;
+      if (list == null || i < 0) continue;
+      final message = list.removeAt(i);
+
+      final destination = _messages.putIfAbsent(
+        toFolderId,
+        () => generateSampleMessages(target),
+      );
+      final uid = destination.isEmpty
+          ? 1
+          : destination.map((m) => m.uid).reduce(max) + 1;
+      destination.insert(
+        0,
+        MailMessage(
+          id: MailMessage.idFor(toFolderId, uid),
+          accountId: message.accountId,
+          folderId: toFolderId,
+          uid: uid,
+          subject: message.subject,
+          from: message.from,
+          to: message.to,
+          date: message.date,
+          preview: message.preview,
+          isRead: message.isRead,
+          isFlagged: message.isFlagged,
+          hasAttachments: message.hasAttachments,
+        ),
+      );
+      _adjustCounts(source, removed: message);
+      _adjustCounts(target, added: message);
+    }
+  }
+
+  @override
+  Future<void> deleteMessages(List<String> messageIds) async {
+    // Gmail's convention: into Trash from anywhere else, gone from Trash.
+    final byFolder = <String, List<String>>{};
+    for (final id in messageIds) {
+      (byFolder[id.substring(0, id.lastIndexOf('#'))] ??= []).add(id);
+    }
+    for (final entry in byFolder.entries) {
+      final source = _require(entry.key);
+      final trash = _folders[source.accountId]!
+          .where((f) => f.role == FolderRole.deleted)
+          .firstOrNull;
+      if (trash == null || trash.id == source.id) {
+        await _latency();
+        final list = _messages[entry.key];
+        if (list == null) continue;
+        for (final id in entry.value) {
+          final i = list.indexWhere((m) => m.id == id);
+          if (i >= 0) _adjustCounts(_require(entry.key), removed: list.removeAt(i));
+        }
+      } else {
+        await moveMessages(entry.value, trash.id);
+      }
+    }
+  }
+
+  void _adjustCounts(
+    MailFolder folder, {
+    MailMessage? added,
+    MailMessage? removed,
+  }) {
+    var unread = folder.unreadCount;
+    var total = folder.totalCount;
+    if (added != null) {
+      total += 1;
+      if (!added.isRead) unread += 1;
+    }
+    if (removed != null) {
+      total = max(0, total - 1);
+      if (!removed.isRead) unread = max(0, unread - 1);
+    }
+    _replace(folder.copyWith(unreadCount: unread, totalCount: total));
+  }
+
+  @override
   Future<void> setRead(String messageId, bool isRead) =>
       _setFlags(messageId, isRead: isRead);
 

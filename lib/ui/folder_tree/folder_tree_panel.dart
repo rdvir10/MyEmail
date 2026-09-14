@@ -5,6 +5,7 @@ import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
 import '../../state/providers.dart';
 import '../accounts/add_account_screen.dart';
+import '../messages/message_actions.dart';
 import 'folder_actions.dart';
 import 'folder_tile.dart';
 
@@ -93,6 +94,14 @@ class FolderTreePanel extends ConsumerWidget {
                                       accountId: row.folder.accountId,
                                       zone: zone,
                                     ),
+                            onDropMessages: row.folder.isSynthetic
+                                ? null
+                                : (dragged) => _dropMessages(
+                                      context,
+                                      ref,
+                                      dragged,
+                                      row.folder.id,
+                                    ),
                           ),
                       };
                     },
@@ -110,6 +119,21 @@ class FolderTreePanel extends ConsumerWidget {
         ),
       ],
     );
+  }
+
+  /// Messages dropped onto a folder are moved there. The action is the same
+  /// one the swipe and the menu use, so the snackbar and the rollback on
+  /// failure behave identically.
+  Future<void> _dropMessages(
+    BuildContext context,
+    WidgetRef ref,
+    DraggedMessages dragged,
+    String toFolderId,
+  ) async {
+    final listId = ref.read(effectiveSelectedFolderIdProvider);
+    if (listId == null) return;
+    await MessageActions(ref, listId)
+        .moveTo(context, dragged.messages, toFolderId);
   }
 
   Future<void> _drop(

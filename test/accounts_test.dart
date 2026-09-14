@@ -90,6 +90,14 @@ class _EmptyEngine implements MailEngine {
   @override
   Future<void> setFlagged(String messageId, bool isFlagged) =>
       _inner.setFlagged(messageId, isFlagged);
+
+  @override
+  Future<void> moveMessages(List<String> messageIds, String toFolderId) =>
+      _inner.moveMessages(messageIds, toFolderId);
+
+  @override
+  Future<void> deleteMessages(List<String> messageIds) =>
+      _inner.deleteMessages(messageIds);
 }
 
 void main() {

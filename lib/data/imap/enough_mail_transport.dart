@@ -163,6 +163,46 @@ class EnoughMailTransport implements ImapTransport {
       });
 
   @override
+  Future<List<int>?> moveMessages(
+    String fromPath,
+    List<int> uids,
+    String toPath,
+  ) =>
+      _run((c) async {
+        if (uids.isEmpty) return null;
+        await _ensureSelected(c, fromPath);
+        final target = toServerPath(toPath, _delimiter);
+        final sequence = em.MessageSequence.fromIds(uids, isUid: true);
+
+        if (c.serverInfo.supportsMove) {
+          final result =
+              await c.uidMove(sequence, targetMailboxPath: target);
+          return _copiedUids(result);
+        }
+
+        // No MOVE: copy, mark the originals deleted, expunge. Not atomic, so
+        // a failure between steps leaves a copy in both places rather than
+        // losing the message, which is the right way round.
+        final result = await c.uidCopy(sequence, targetMailboxPath: target);
+        await c.uidStore(
+          sequence,
+          [em.MessageFlags.deleted],
+          action: em.StoreAction.add,
+          silent: true,
+        );
+        await c.expunge();
+        return _copiedUids(result);
+      });
+
+  static List<int>? _copiedUids(em.GenericImapResult result) {
+    // UIDPLUS servers report the new UIDs; others say nothing.
+    final code = result.responseCodeCopyUid;
+    if (code == null) return null;
+    final list = code.targetSequence.toList();
+    return list.isEmpty ? null : list;
+  }
+
+  @override
   Future<void> expunge(String path) => _run((c) async {
         await _ensureSelected(c, path);
         await c.expunge();

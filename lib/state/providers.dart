@@ -100,6 +100,7 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     ref.read(expandedFoldersProvider.notifier).removeAll(doomed);
     ref.read(favoriteFoldersProvider.notifier).removeAll(doomed);
     ref.read(folderOrderProvider.notifier).removeAll(doomed);
+    ref.read(recentMoveTargetsProvider.notifier).removeAll(doomed);
     final selected = ref.read(selectedFolderIdProvider);
     if (selected != null && doomed.contains(selected)) {
       ref.read(selectedFolderIdProvider.notifier).select(null);
@@ -165,6 +166,7 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     ref.read(expandedFoldersProvider.notifier).remap(r);
     ref.read(favoriteFoldersProvider.notifier).remap(r);
     ref.read(folderOrderProvider.notifier).remap(r);
+    ref.read(recentMoveTargetsProvider.notifier).remap(r);
     ref.read(selectedFolderIdProvider.notifier).remap(r);
   }
 
@@ -273,6 +275,46 @@ class FolderOrder extends Notifier<Map<String, int>> {
 
 final folderOrderProvider =
     NotifierProvider<FolderOrder, Map<String, int>>(FolderOrder.new);
+
+/// The last folders messages were moved into, most recent first.
+///
+/// Outlook's Move-to sheet puts these at the top, which is most of what
+/// anyone ever uses. Capped at ten and persisted like the rest of the UI
+/// state; ids that no longer exist are filtered when the sheet is built.
+class RecentMoveTargets extends Notifier<List<String>> {
+  static const maxEntries = 10;
+
+  @override
+  List<String> build() {
+    final store = ref.watch(uiStateStoreProvider);
+    listenSelf((_, next) =>
+        store.writeString(UiStateKeys.recentMoves, next.join(' ')));
+    final raw = store.readString(UiStateKeys.recentMoves) ?? '';
+    return raw.isEmpty ? const [] : raw.split(' ');
+  }
+
+  void record(String folderId) {
+    state = [
+      folderId,
+      ...state.where((id) => id != folderId),
+    ].take(maxEntries).toList();
+  }
+
+  void remap(FolderRename r) => state = [
+        for (final id in state) r.remap(id),
+      ];
+
+  void removeAll(Iterable<String> ids) {
+    final gone = ids.toSet();
+    state = [
+      for (final id in state)
+        if (!gone.contains(id)) id,
+    ];
+  }
+}
+
+final recentMoveTargetsProvider =
+    NotifierProvider<RecentMoveTargets, List<String>>(RecentMoveTargets.new);
 
 /// The folder-search box contents.
 class FolderSearchQuery extends Notifier<String> {

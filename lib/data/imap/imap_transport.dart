@@ -63,6 +63,18 @@ abstract class ImapTransport {
     required bool set,
   });
 
+  /// Move messages to another folder, returning the UIDs they were given
+  /// there when the server says (UIDPLUS / MOVE report it; not every server
+  /// does, hence nullable).
+  ///
+  /// Implementations use UID MOVE where the server offers it and fall back to
+  /// COPY, +FLAGS \Deleted, EXPUNGE otherwise.
+  Future<List<int>?> moveMessages(
+    String fromPath,
+    List<int> uids,
+    String toPath,
+  );
+
   Future<void> expunge(String path);
 
   Future<void> createFolder(String path);

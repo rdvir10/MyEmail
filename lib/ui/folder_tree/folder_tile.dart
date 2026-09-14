@@ -32,6 +32,7 @@ class FolderTile extends StatefulWidget {
     this.onLongPress,
     this.onAutoExpand,
     this.onDrop,
+    this.onDropMessages,
   });
 
   final FolderRow row;
@@ -49,6 +50,9 @@ class FolderTile extends StatefulWidget {
   /// Called with a folder that was dropped here and where on the row it
   /// landed. Null disables receiving drops.
   final void Function(DraggedFolder dragged, DropZone zone)? onDrop;
+
+  /// Called with messages dropped onto this folder. Null disables it.
+  final void Function(DraggedMessages dragged)? onDropMessages;
 
   static const double indentPerLevel = 16;
   static const double twistyWidth = 28;
@@ -191,6 +195,24 @@ class _FolderTileState extends State<FolderTile> {
         onLeave: _onLeave,
         onAcceptWithDetails: _onAccept,
         builder: (_, _, _) => _withDropIndicator(context, inner),
+      );
+    }
+
+    if (widget.onDropMessages != null) {
+      final inner = child;
+      child = DragTarget<DraggedMessages>(
+        onWillAcceptWithDetails: (d) =>
+            canDropMessagesOn(d.data.messages, row.folder),
+        onAcceptWithDetails: (d) => widget.onDropMessages!(d.data),
+        builder: (context, candidates, _) => candidates.isEmpty
+            ? inner
+            : ColoredBox(
+                color: Theme.of(context)
+                    .colorScheme
+                    .primaryContainer
+                    .withValues(alpha: 0.6),
+                child: inner,
+              ),
       );
     }
 

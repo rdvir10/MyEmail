@@ -70,6 +70,12 @@ class _RefusingEngine implements MailEngine {
   @override
   Future<MailBody> loadMessageBody(String messageId) =>
       _inner.loadMessageBody(messageId);
+  @override
+  Future<void> moveMessages(List<String> messageIds, String toFolderId) =>
+      _inner.moveMessages(messageIds, toFolderId);
+  @override
+  Future<void> deleteMessages(List<String> messageIds) =>
+      _inner.deleteMessages(messageIds);
 }
 
 void main() {

@@ -45,6 +45,59 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
   Future<void> setFlagged(String messageId, bool isFlagged) =>
       _setFlags(messageId, isFlagged: isFlagged);
 
+  /// Move messages out of this list. The rows go at once and come back if
+  /// the engine refuses, so a failed move never silently loses a message
+  /// from view.
+  Future<void> move(List<String> messageIds, String toFolderId) =>
+      _removeThen(
+        messageIds,
+        () => ref.read(mailEngineProvider).moveMessages(messageIds, toFolderId),
+        touchedFolderIds: [toFolderId],
+      );
+
+  Future<void> delete(List<String> messageIds) => _removeThen(
+        messageIds,
+        () => ref.read(mailEngineProvider).deleteMessages(messageIds),
+      );
+
+  Future<void> _removeThen(
+    List<String> messageIds,
+    Future<void> Function() op, {
+    List<String> touchedFolderIds = const [],
+  }) async {
+    final current = state.value;
+    if (current == null || messageIds.isEmpty) return;
+    final ids = messageIds.toSet();
+    final removed = [
+      for (final m in current)
+        if (ids.contains(m.id)) m,
+    ];
+    if (removed.isEmpty) return;
+
+    state = AsyncData([
+      for (final m in current)
+        if (!ids.contains(m.id)) m,
+    ]);
+    try {
+      await op();
+    } catch (_) {
+      state = AsyncData(current);
+      rethrow;
+    }
+
+    for (final accountId in removed.map((m) => m.accountId).toSet()) {
+      await ref.read(foldersProvider.notifier).refreshAccount(accountId);
+    }
+    // Every other list that showed these messages, and the destination.
+    for (final folderId in {
+      ...removed.map((m) => m.folderId),
+      ...touchedFolderIds,
+      kUnifiedInboxId,
+    }) {
+      if (folderId != this.folderId) ref.invalidate(messagesProvider(folderId));
+    }
+  }
+
   Future<void> _setFlags(
     String messageId, {
     bool? isRead,

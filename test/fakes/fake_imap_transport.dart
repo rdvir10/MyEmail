@@ -152,8 +152,40 @@ class FakeImapTransport implements ImapTransport {
     }
   }
 
+  /// Set false to model a server without MOVE or UIDPLUS, which cannot say
+  /// what UIDs the copies were given.
+  bool reportsCopyUids = true;
+
+  @override
+  Future<List<int>?> moveMessages(
+    String fromPath,
+    List<int> uids,
+    String toPath,
+  ) async {
+    _online();
+    calls.add('UID MOVE $fromPath ${uids.join(',')} $toPath');
+    final from = _require(fromPath);
+    final to = _require(toPath);
+    final newUids = <int>[];
+    for (final uid in uids) {
+      final m = from.messages.remove(uid);
+      if (m == null) continue;
+      final moved = to.deliver(
+        subject: m.subject,
+        from: m.from,
+        date: m.date,
+        isRead: m.isRead,
+        body: m.body,
+      );
+      newUids.add(moved.uid);
+    }
+    from.bump();
+    return reportsCopyUids ? newUids : null;
+  }
+
   @override
   Future<void> expunge(String path) async {
+    _online();
     calls.add('EXPUNGE $path');
     _require(path).messages.removeWhere((_, m) => m.isDeleted);
   }

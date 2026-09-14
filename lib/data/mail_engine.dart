@@ -70,6 +70,14 @@ abstract class MailEngine {
 
   /// Set or clear \Flagged.
   Future<void> setFlagged(String messageId, bool isFlagged);
+
+  /// Move messages into [toFolderId]. Every message must come from the same
+  /// account as the destination; IMAP cannot move between mailboxes.
+  Future<void> moveMessages(List<String> messageIds, String toFolderId);
+
+  /// Delete messages the way the provider expects: into Trash from anywhere
+  /// else, and permanently when already in Trash.
+  Future<void> deleteMessages(List<String> messageIds);
 }
 
 /// The outcome of a rename or move: the folder as it now is, plus the id

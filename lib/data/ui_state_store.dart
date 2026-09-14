@@ -26,6 +26,7 @@ abstract final class UiStateKeys {
   static const favorites = 'tree.favorites';
   static const order = 'tree.order';
   static const selected = 'tree.selected';
+  static const recentMoves = 'move.recents';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.
