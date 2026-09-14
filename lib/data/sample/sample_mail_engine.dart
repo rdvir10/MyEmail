@@ -119,6 +119,31 @@ class SampleMailEngine implements MailEngine {
   }
 
   @override
+  Future<void> setRead(String messageId, bool isRead) =>
+      _setFlags(messageId, isRead: isRead);
+
+  @override
+  Future<void> setFlagged(String messageId, bool isFlagged) =>
+      _setFlags(messageId, isFlagged: isFlagged);
+
+  Future<void> _setFlags(String messageId, {bool? isRead, bool? isFlagged}) async {
+    await _latency();
+    final folderId = messageId.substring(0, messageId.lastIndexOf('#'));
+    final list = _messages[folderId];
+    final i = list?.indexWhere((m) => m.id == messageId) ?? -1;
+    if (list == null || i < 0) throw StateError('No such message: $messageId');
+    final before = list[i];
+    final after = before.copyWith(isRead: isRead, isFlagged: isFlagged);
+    list[i] = after;
+    if (after.isRead != before.isRead) {
+      final folder = _require(folderId);
+      _replace(folder.copyWith(
+        unreadCount: max(0, folder.unreadCount + (after.isRead ? -1 : 1)),
+      ));
+    }
+  }
+
+  @override
   Future<List<Account>> loadAccounts() async {
     await _latency();
     return List.unmodifiable(_accounts);

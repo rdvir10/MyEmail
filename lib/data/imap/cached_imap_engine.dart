@@ -248,6 +248,30 @@ class CachedImapEngine implements MailEngine {
     return _sync(accountId, t).body(path, uid);
   }
 
+  @override
+  Future<void> setRead(String messageId, bool isRead) =>
+      _setFlag(messageId, MessageFlag.seen, isRead);
+
+  @override
+  Future<void> setFlagged(String messageId, bool isFlagged) =>
+      _setFlag(messageId, MessageFlag.flagged, isFlagged);
+
+  Future<void> _setFlag(String messageId, MessageFlag flag, bool set) async {
+    final (folderId, uid) = splitMessageId(messageId);
+    final (accountId, path) = splitFolderId(folderId);
+    final t = await _transport(accountId);
+    await t.storeFlag(path, uids: [uid], flag: flag, set: set);
+    final cached = await cache.readMessage(accountId, path, uid);
+    if (cached != null) {
+      await cache.updateFlags(accountId, path, {
+        uid: (
+          isRead: flag == MessageFlag.seen ? set : cached.isRead,
+          isFlagged: flag == MessageFlag.flagged ? set : cached.isFlagged,
+        ),
+      });
+    }
+  }
+
   // --- plumbing --------------------------------------------------------------
 
   Future<ImapTransport> _transport(String accountId) async {

@@ -85,6 +85,14 @@ class _SingleAccountReversedEngine implements MailEngine {
   @override
   Future<MailBody> loadMessageBody(String messageId) =>
       _inner.loadMessageBody(messageId);
+
+  @override
+  Future<void> setRead(String messageId, bool isRead) =>
+      _inner.setRead(messageId, isRead);
+
+  @override
+  Future<void> setFlagged(String messageId, bool isFlagged) =>
+      _inner.setFlagged(messageId, isFlagged);
 }
 
 void main() {

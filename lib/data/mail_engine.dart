@@ -64,6 +64,12 @@ abstract class MailEngine {
 
   /// The body of one message, fetched when it is opened.
   Future<MailBody> loadMessageBody(String messageId);
+
+  /// Set or clear \Seen. The folder's unread count follows on next load.
+  Future<void> setRead(String messageId, bool isRead);
+
+  /// Set or clear \Flagged.
+  Future<void> setFlagged(String messageId, bool isFlagged);
 }
 
 /// The outcome of a rename or move: the folder as it now is, plus the id

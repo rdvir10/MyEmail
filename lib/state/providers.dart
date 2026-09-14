@@ -138,6 +138,9 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     await _reloadAccount(folder.accountId);
   }
 
+  /// Re-read one account's folders, e.g. after a flag change moved a count.
+  Future<void> refreshAccount(String accountId) => _reloadAccount(accountId);
+
   // ---------------------------------------------------------------------------
 
   MailFolder? _current(String folderId) {
