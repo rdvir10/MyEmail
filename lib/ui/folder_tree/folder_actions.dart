@@ -29,7 +29,11 @@ Future<void> showFolderActionsSheet(
     context: context,
     showDragHandle: true,
     isScrollControlled: true,
-    builder: (_) => _FolderActionsSheet(folder: folder, actions: actions),
+    builder: (_) => _FolderActionsSheet(
+      folder: folder,
+      actions: actions,
+      isFavorite: isFavorite,
+    ),
   );
   if (chosen == null || !context.mounted) return;
 
@@ -50,7 +54,7 @@ Future<void> showFolderActionsSheet(
     case _FolderAction.newSubfolder:
       await _promptForName(
         context,
-        title: 'New folder in ${folder.name}',
+        title: 'New folder in ${folder.displayName}',
         confirmLabel: 'Create',
         onSubmit: (name) => folders.create(
           accountId: folder.accountId,
@@ -70,7 +74,7 @@ Future<void> showFolderActionsSheet(
     case _FolderAction.empty:
       final ok = await _confirm(
         context,
-        title: 'Empty ${folder.name}?',
+        title: 'Empty ${folder.displayName}?',
         body: 'All ${folder.totalCount} messages will be permanently deleted.',
         confirmLabel: 'Empty',
       );
@@ -156,10 +160,25 @@ void _snack(BuildContext context, String message) {
 }
 
 class _FolderActionsSheet extends StatelessWidget {
-  const _FolderActionsSheet({required this.folder, required this.actions});
+  const _FolderActionsSheet({
+    required this.folder,
+    required this.actions,
+    required this.isFavorite,
+  });
 
   final MailFolder folder;
   final List<_FolderAction> actions;
+  final bool isFavorite;
+
+  String _labelFor(_FolderAction action) =>
+      action == _FolderAction.favorite && isFavorite
+          ? 'Remove from Favourites'
+          : action.label;
+
+  IconData _iconFor(_FolderAction action) =>
+      action == _FolderAction.favorite && isFavorite
+          ? Icons.star
+          : action.icon;
 
   @override
   Widget build(BuildContext context) {
@@ -179,8 +198,9 @@ class _FolderActionsSheet extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(folder.name, style: theme.textTheme.titleMedium),
-                    if (path != folder.name)
+                    Text(folder.displayName,
+                        style: theme.textTheme.titleMedium),
+                    if (folder.parentId != null)
                       Text(
                         path,
                         style: theme.textTheme.bodySmall?.copyWith(
@@ -194,12 +214,12 @@ class _FolderActionsSheet extends StatelessWidget {
               for (final action in actions)
                 ListTile(
                   leading: Icon(
-                    action.icon,
+                    _iconFor(action),
                     color: action == _FolderAction.delete
                         ? theme.colorScheme.error
                         : null,
                   ),
-                  title: Text(action.label),
+                  title: Text(_labelFor(action)),
                   onTap: () => Navigator.of(context).pop(action),
                 ),
               const SizedBox(height: 8),
@@ -417,7 +437,7 @@ class _MoveFolderSheet extends ConsumerWidget {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-            child: Text('Move ${folder.name} to',
+            child: Text('Move ${folder.displayName} to',
                 style: theme.textTheme.titleMedium),
           ),
           const Divider(),

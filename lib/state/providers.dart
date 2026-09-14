@@ -39,18 +39,20 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     };
   }
 
-  Future<void> rename(String folderId, String newName) async {
+  Future<FolderRename> rename(String folderId, String newName) async {
     final result =
         await ref.read(mailEngineProvider).renameFolder(folderId, newName);
     _remapIds(result);
     await _reloadAccount(result.folder.accountId);
+    return result;
   }
 
-  Future<void> move(String folderId, String? newParentId) async {
+  Future<FolderRename> move(String folderId, String? newParentId) async {
     final result =
         await ref.read(mailEngineProvider).moveFolder(folderId, newParentId);
     _remapIds(result);
     await _reloadAccount(result.folder.accountId);
+    return result;
   }
 
   Future<void> delete(String folderId) async {
@@ -60,6 +62,7 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     await ref.read(mailEngineProvider).deleteFolder(folderId);
     ref.read(expandedFoldersProvider.notifier).removeAll(doomed);
     ref.read(favoriteFoldersProvider.notifier).removeAll(doomed);
+    ref.read(folderOrderProvider.notifier).removeAll(doomed);
     final selected = ref.read(selectedFolderIdProvider);
     if (selected != null && doomed.contains(selected)) {
       ref.read(selectedFolderIdProvider.notifier).select(null);
@@ -121,6 +124,7 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
   void _remapIds(FolderRename r) {
     ref.read(expandedFoldersProvider.notifier).remap(r);
     ref.read(favoriteFoldersProvider.notifier).remap(r);
+    ref.read(folderOrderProvider.notifier).remap(r);
     ref.read(selectedFolderIdProvider.notifier).remap(r);
   }
 
@@ -170,8 +174,8 @@ abstract class FolderIdSet extends Notifier<Set<String>> {
 
 /// Which folders are expanded.
 ///
-/// In-memory for now. Milestone 3 persists this to Drift, along with the last
-/// selected folder, so the tree comes back the way it was left.
+/// In-memory for now; persistence lands with the rest of the UI state so the
+/// tree comes back the way it was left.
 class ExpandedFolders extends FolderIdSet {
   void expand(String folderId) => state = {...state, folderId};
 
@@ -185,6 +189,36 @@ class FavoriteFolders extends FolderIdSet {}
 
 final favoriteFoldersProvider =
     NotifierProvider<FavoriteFolders, Set<String>>(FavoriteFolders.new);
+
+/// Local ordering of user folders, by id. IMAP has no notion of folder order,
+/// so this lives only on the device and overrides the engine's default.
+class FolderOrder extends Notifier<Map<String, int>> {
+  @override
+  Map<String, int> build() => <String, int>{};
+
+  /// Fix the order of one sibling group. Every id in [orderedIds] gets its
+  /// position; ids elsewhere are untouched.
+  void setOrder(List<String> orderedIds) {
+    state = {
+      ...state,
+      for (final (i, id) in orderedIds.indexed) id: i,
+    };
+  }
+
+  void removeAll(Iterable<String> ids) {
+    final gone = ids.toSet();
+    state = {
+      for (final e in state.entries)
+        if (!gone.contains(e.key)) e.key: e.value,
+    };
+  }
+
+  void remap(FolderRename r) =>
+      state = {for (final e in state.entries) r.remap(e.key): e.value};
+}
+
+final folderOrderProvider =
+    NotifierProvider<FolderOrder, Map<String, int>>(FolderOrder.new);
 
 /// The folder-search box contents.
 class FolderSearchQuery extends Notifier<String> {
@@ -242,8 +276,8 @@ final effectiveSelectedFolderIdProvider = Provider<String?>((ref) {
   return ref.watch(defaultFolderIdProvider);
 });
 
-/// The rendered tree. Recomputed whenever folders, expand state, favourites or
-/// the search query change.
+/// The rendered tree. Recomputed whenever folders, expand state, favourites,
+/// ordering or the search query change.
 final treeRowsProvider = Provider<List<TreeRow>>((ref) {
   final accounts = ref.watch(accountsProvider).value ?? const [];
   final folders = ref.watch(foldersProvider).value ?? const {};
@@ -253,6 +287,7 @@ final treeRowsProvider = Provider<List<TreeRow>>((ref) {
       foldersByAccount: folders,
       expandedIds: ref.watch(expandedFoldersProvider),
       favoriteIds: ref.watch(favoriteFoldersProvider),
+      orderOverrides: ref.watch(folderOrderProvider),
       searchQuery: ref.watch(folderSearchQueryProvider),
     ),
   );

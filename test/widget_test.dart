@@ -32,7 +32,11 @@ void main() {
       // Section headers render account names uppercased.
       expect(find.text('PERSONAL'), findsOneWidget);
       expect(find.text('PROJECTS'), findsOneWidget);
-      expect(find.text('INBOX'), findsWidgets);
+      // System folders show Outlook's names, not Gmail's.
+      expect(find.text('Inbox'), findsWidgets);
+      expect(find.text('INBOX'), findsNothing);
+      expect(find.text('Deleted'), findsWidgets);
+      expect(find.text('Trash'), findsNothing);
       expect(find.text('Search folders'), findsOneWidget);
     });
 

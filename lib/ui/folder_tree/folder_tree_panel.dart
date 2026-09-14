@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
 import '../../state/providers.dart';
 import 'folder_actions.dart';
@@ -44,7 +45,22 @@ class FolderTreePanel extends ConsumerWidget {
                     itemBuilder: (context, i) {
                       final row = rows[i];
                       return switch (row) {
-                        SectionHeaderRow() => _SectionHeader(row: row),
+                        SectionHeaderRow() => _SectionHeader(
+                            row: row,
+                            canAcceptRoot: row.accountId == null
+                                ? null
+                                : (d) => canDropOnRoot(d.folder, row.accountId!),
+                            onDropToRoot: row.accountId == null
+                                ? null
+                                : (d) => _drop(
+                                      context,
+                                      ref,
+                                      dragged: d,
+                                      target: null,
+                                      accountId: row.accountId!,
+                                      zone: DropZone.into,
+                                    ),
+                          ),
                         FolderRow() => FolderTile(
                             key: ValueKey(row.key),
                             row: row,
@@ -58,11 +74,24 @@ class FolderTreePanel extends ConsumerWidget {
                             onToggleExpand: () => ref
                                 .read(expandedFoldersProvider.notifier)
                                 .toggle(row.folder.id),
+                            onAutoExpand: () => ref
+                                .read(expandedFoldersProvider.notifier)
+                                .expand(row.folder.id),
                             onLongPress: () => showFolderActionsSheet(
                               context,
                               ref,
                               row.folder,
                             ),
+                            onDrop: row.folder.isSynthetic
+                                ? null
+                                : (dragged, zone) => _drop(
+                                      context,
+                                      ref,
+                                      dragged: dragged,
+                                      target: row.folder,
+                                      accountId: row.folder.accountId,
+                                      zone: zone,
+                                    ),
                           ),
                       };
                     },
@@ -71,6 +100,30 @@ class FolderTreePanel extends ConsumerWidget {
         ),
       ],
     );
+  }
+
+  Future<void> _drop(
+    BuildContext context,
+    WidgetRef ref, {
+    required DraggedFolder dragged,
+    required target,
+    required String accountId,
+    required DropZone zone,
+  }) async {
+    try {
+      await performFolderDrop(
+        ref,
+        dragged: dragged.folder,
+        target: target,
+        accountId: accountId,
+        zone: zone,
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('Could not move folder: $e')));
+    }
   }
 }
 
@@ -118,15 +171,23 @@ class _FolderSearchFieldState extends ConsumerState<_FolderSearchField> {
   }
 }
 
+/// A section heading. Account headers double as a drop target meaning "move
+/// this folder to the top level of the account".
 class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({required this.row});
+  const _SectionHeader({
+    required this.row,
+    this.canAcceptRoot,
+    this.onDropToRoot,
+  });
 
   final SectionHeaderRow row;
+  final bool Function(DraggedFolder dragged)? canAcceptRoot;
+  final void Function(DraggedFolder dragged)? onDropToRoot;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
+    final header = Padding(
       padding: const EdgeInsets.fromLTRB(12, 16, 12, 6),
       child: Row(
         children: [
@@ -168,6 +229,19 @@ class _SectionHeader extends StatelessWidget {
           ),
         ],
       ),
+    );
+
+    if (canAcceptRoot == null || onDropToRoot == null) return header;
+
+    return DragTarget<DraggedFolder>(
+      onWillAcceptWithDetails: (d) => canAcceptRoot!(d.data),
+      onAcceptWithDetails: (d) => onDropToRoot!(d.data),
+      builder: (context, candidates, _) => candidates.isEmpty
+          ? header
+          : ColoredBox(
+              color: theme.colorScheme.primaryContainer.withValues(alpha: 0.6),
+              child: header,
+            ),
     );
   }
 }

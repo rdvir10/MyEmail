@@ -39,6 +39,7 @@ class FolderRow extends TreeRow {
     required this.isExpanded,
     this.accentColor,
     this.inFavorites = false,
+    this.flat = false,
     this.subtitle,
   });
 
@@ -55,6 +56,11 @@ class FolderRow extends TreeRow {
   /// state layer has no business knowing theme colours.
   final int? accentColor;
   final bool inFavorites;
+
+  /// True for rows shown out of their tree position (Favourites, search
+  /// results). Reordering by dropping before or after such a row would be
+  /// meaningless, so only "drop into" applies there.
+  final bool flat;
 
   /// Secondary line under the name: the full path in search results (so two
   /// folders called "2026" can be told apart) or the account name in
@@ -74,6 +80,7 @@ class FolderTreeInput {
     required this.foldersByAccount,
     required this.expandedIds,
     required this.favoriteIds,
+    this.orderOverrides = const {},
     this.searchQuery = '',
     this.showUnifiedInbox = true,
   });
@@ -82,6 +89,10 @@ class FolderTreeInput {
   final Map<String, List<MailFolder>> foldersByAccount;
   final Set<String> expandedIds;
   final Set<String> favoriteIds;
+
+  /// Local reordering of user folders, by id. IMAP has no folder order, so
+  /// this never reaches the server; it overrides [MailFolder.sortIndex].
+  final Map<String, int> orderOverrides;
   final String searchQuery;
   final bool showUnifiedInbox;
 }
@@ -115,8 +126,8 @@ MailFolder buildUnifiedInbox(Map<String, List<MailFolder>> foldersByAccount) {
 /// Flatten accounts and folders into the rows to render.
 ///
 /// Ordering within an account is Outlook's, not alphabetical: system folders
-/// first in a fixed order, then user folders. Sorting user folders by
-/// [MailFolder.sortIndex] keeps any manual arrangement, which is local-only
+/// first in a fixed order, then user folders. Sorting user folders by their
+/// effective sort index keeps any manual arrangement, which is local-only
 /// because IMAP has no concept of folder order.
 List<TreeRow> buildTreeRows(FolderTreeInput input) {
   final query = input.searchQuery.trim().toLowerCase();
@@ -141,6 +152,7 @@ List<TreeRow> buildTreeRows(FolderTreeInput input) {
     rows.addAll(favorites);
   }
 
+  final compare = folderComparator(input.orderOverrides);
   for (final account in input.accounts) {
     final folders = input.foldersByAccount[account.id] ?? const <MailFolder>[];
     if (folders.isEmpty) continue;
@@ -160,7 +172,7 @@ List<TreeRow> buildTreeRows(FolderTreeInput input) {
       (childrenOf[f.parentId] ??= []).add(f);
     }
     for (final list in childrenOf.values) {
-      list.sort(_compareFolders);
+      list.sort(compare);
     }
     _appendSubtree(
       rows: rows,
@@ -212,17 +224,21 @@ void _appendSubtree({
 /// its full path as a subtitle. Hiding a match because its parent happens to be
 /// collapsed would make the search box feel broken.
 ///
-/// Matching is on the folder name only, as in Outlook. A query like
+/// Matching is on the folder's shown name (and its server name, so "trash"
+/// still finds Deleted), not its path, as in Outlook. A query like
 /// "receipts 2026" finds nothing; that is deliberate, so that the results are
 /// predictable from what is visible in the tree.
 List<TreeRow> _buildSearchRows(FolderTreeInput input, String query) {
   final rows = <TreeRow>[];
+  final compare = folderComparator(input.orderOverrides);
   for (final account in input.accounts) {
     final folders = input.foldersByAccount[account.id] ?? const <MailFolder>[];
     final matches = folders
-        .where((f) => f.name.toLowerCase().contains(query))
+        .where((f) =>
+            f.displayName.toLowerCase().contains(query) ||
+            f.name.toLowerCase().contains(query))
         .toList()
-      ..sort(_compareFolders);
+      ..sort(compare);
     if (matches.isEmpty) continue;
     rows.add(
       SectionHeaderRow(
@@ -233,7 +249,6 @@ List<TreeRow> _buildSearchRows(FolderTreeInput input, String query) {
       ),
     );
     for (final folder in matches) {
-      final path = displayPath(folder);
       rows.add(
         FolderRow(
           folder: folder,
@@ -241,9 +256,10 @@ List<TreeRow> _buildSearchRows(FolderTreeInput input, String query) {
           hasChildren: false,
           isExpanded: false,
           accentColor: account.colorValue,
-          // A root folder's path is just its own name; repeating it under the
-          // name is noise, so only show a path that adds something.
-          subtitle: path == folder.name ? null : path,
+          flat: true,
+          // Only a nested folder needs its path shown; for a root folder the
+          // path is just the name again.
+          subtitle: folder.parentId == null ? null : displayPath(folder),
         ),
       );
     }
@@ -253,11 +269,12 @@ List<TreeRow> _buildSearchRows(FolderTreeInput input, String query) {
 
 List<FolderRow> _favoriteRows(FolderTreeInput input) {
   final rows = <FolderRow>[];
+  final compare = folderComparator(input.orderOverrides);
   for (final account in input.accounts) {
     final folders = input.foldersByAccount[account.id] ?? const <MailFolder>[];
     final favorites =
         folders.where((f) => input.favoriteIds.contains(f.id)).toList()
-          ..sort(_compareFolders);
+          ..sort(compare);
     for (final folder in favorites) {
       rows.add(
         FolderRow(
@@ -267,6 +284,7 @@ List<FolderRow> _favoriteRows(FolderTreeInput input) {
           isExpanded: false,
           accentColor: account.colorValue,
           inFavorites: true,
+          flat: true,
           subtitle: input.accounts.length > 1 ? account.displayName : null,
         ),
       );
@@ -275,14 +293,35 @@ List<FolderRow> _favoriteRows(FolderTreeInput input) {
   return rows;
 }
 
-int _compareFolders(MailFolder a, MailFolder b) {
-  final byRole = a.role.sortOrder.compareTo(b.role.sortOrder);
-  if (byRole != 0) return byRole;
-  if (a.role == FolderRole.user && b.role == FolderRole.user) {
-    final byIndex = a.sortIndex.compareTo(b.sortIndex);
-    if (byIndex != 0) return byIndex;
-  }
-  return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+/// A folder's effective position among its siblings: the local override if
+/// the user has rearranged, otherwise whatever the engine supplied.
+int effectiveSortIndex(MailFolder f, Map<String, int> overrides) =>
+    overrides[f.id] ?? f.sortIndex;
+
+/// System folders in Outlook's fixed order, then user folders by effective
+/// sort index, then by name as a tiebreak.
+Comparator<MailFolder> folderComparator(Map<String, int> overrides) {
+  return (a, b) {
+    final byRole = a.role.sortOrder.compareTo(b.role.sortOrder);
+    if (byRole != 0) return byRole;
+    if (a.role == FolderRole.user && b.role == FolderRole.user) {
+      final byIndex = effectiveSortIndex(a, overrides)
+          .compareTo(effectiveSortIndex(b, overrides));
+      if (byIndex != 0) return byIndex;
+    }
+    return a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase());
+  };
+}
+
+/// The children of [parentId] in display order. Used by drag and drop to
+/// work out where a dropped folder lands among its new siblings.
+List<MailFolder> sortedChildren(
+  List<MailFolder> folders,
+  String? parentId,
+  Map<String, int> overrides,
+) {
+  return folders.where((f) => f.parentId == parentId).toList()
+    ..sort(folderComparator(overrides));
 }
 
 /// A folder's path as the user should see it. Gmail's `[Gmail]/` prefix is an

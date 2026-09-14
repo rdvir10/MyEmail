@@ -62,7 +62,7 @@ class _NarrowLayout extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(folder?.name ?? 'MailTree'),
+        title: Text(folder?.displayName ?? 'MailTree'),
         centerTitle: false,
       ),
       drawer: Drawer(
@@ -108,7 +108,7 @@ class _MessageListPlaceholder extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(folder.name, style: theme.textTheme.headlineSmall),
+            Text(folder.displayName, style: theme.textTheme.headlineSmall),
             const SizedBox(height: 8),
             Text(
               folder.isSynthetic ? 'Across all accounts' : displayPath(folder),

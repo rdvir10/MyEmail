@@ -44,7 +44,7 @@ void main() {
     testWidgets('a Gmail system folder gets only what Gmail allows',
         (tester) async {
       await _pumpTree(tester);
-      await _openMenuFor(tester, find.text('Sent Mail').first);
+      await _openMenuFor(tester, find.text('Sent').first);
 
       expect(find.byType(BottomSheet), findsOneWidget);
       expect(find.text('Add to Favourites'), findsOneWidget);
@@ -54,9 +54,9 @@ void main() {
       expect(find.text('New subfolder'), findsNothing);
     });
 
-    testWidgets('Trash offers Empty folder', (tester) async {
+    testWidgets('Deleted (Gmail Trash) offers Empty folder', (tester) async {
       await _pumpTree(tester);
-      await _openMenuFor(tester, find.text('Trash').first);
+      await _openMenuFor(tester, find.text('Deleted').first);
 
       expect(find.text('Empty folder'), findsOneWidget);
       expect(find.text('Delete'), findsNothing);
@@ -187,6 +187,14 @@ void main() {
       expect(find.text('FAVOURITES'), findsOneWidget);
       expect(find.text('Travel'), findsNWidgets(2),
           reason: 'once in Favourites, once in the account tree');
+
+      // The menu now offers the reverse.
+      await _openMenuFor(tester, find.text('Travel').last);
+      expect(find.text('Remove from Favourites'), findsOneWidget);
+      expect(find.text('Add to Favourites'), findsNothing);
+      await tester.tap(find.text('Remove from Favourites'));
+      await tester.pumpAndSettle();
+      expect(find.text('FAVOURITES'), findsNothing);
     });
 
     testWidgets('move to top level re-parents the subtree', (tester) async {

@@ -68,6 +68,10 @@ class MailFolder {
 
   bool get isSynthetic => accountId.isEmpty;
 
+  /// What the user sees: Outlook's name for a system role, otherwise the
+  /// folder's own name. [name] stays the server's leaf name for IMAP use.
+  String get displayName => role.displayName ?? name;
+
   /// Trash and Junk show a total rather than an unread count, matching Outlook.
   bool get showsTotalInsteadOfUnread =>
       role == FolderRole.deleted || role == FolderRole.junk;

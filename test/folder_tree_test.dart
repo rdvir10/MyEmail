@@ -147,9 +147,21 @@ void main() {
       expect(rows.single.subtitle, isNull);
     });
 
-    test('hides the Gmail namespace prefix', () async {
-      final rows = _folderRows(buildTreeRows(await _input(query: 'sent')));
-      expect(rows.first.subtitle, isNot(contains('[Gmail]')));
+    test('system folders show Outlook names and match on both names',
+        () async {
+      final bySent = _folderRows(buildTreeRows(await _input(query: 'sent')));
+      expect(bySent.first.folder.displayName, 'Sent');
+      expect(bySent.first.folder.name, 'Sent Mail',
+          reason: 'the server name is kept for IMAP');
+      expect(bySent.first.subtitle, isNull,
+          reason: 'a root folder shows no path, so no [Gmail] leaks out');
+
+      final byOutlook =
+          _folderRows(buildTreeRows(await _input(query: 'deleted')));
+      final byGmail = _folderRows(buildTreeRows(await _input(query: 'trash')));
+      expect(byOutlook.first.folder.role, FolderRole.deleted);
+      expect(byGmail.first.folder.role, FolderRole.deleted,
+          reason: 'a Gmail user typing the Gmail name still finds it');
     });
 
     test('no matches yields no rows', () async {
