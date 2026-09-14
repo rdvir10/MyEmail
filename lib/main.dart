@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'data/account_store.dart';
 import 'data/cache/mail_database.dart';
+import 'data/folder_list_store.dart';
 import 'data/imap/cached_imap_engine.dart';
 import 'data/mail_engine.dart';
 import 'data/sample/sample_mail_engine.dart';
@@ -34,6 +35,7 @@ Future<void> main() async {
           accountStore: PrefsAccountStore(prefs),
           credentialStore: SecureCredentialStore(),
           cache: DriftCacheStore(MailDatabase.open()),
+          folderLists: PrefsFolderListStore(prefs),
         );
 
   runApp(

@@ -5,6 +5,7 @@ import '../account_store.dart';
 import '../cache/cache_store.dart';
 import '../cache/folder_sync.dart';
 import '../credential_store.dart';
+import '../folder_list_store.dart';
 import '../mail_engine.dart';
 import 'enough_mail_transport.dart';
 import 'imap_mapping.dart';
@@ -13,20 +14,23 @@ import 'imap_transport.dart';
 /// The engine that ships: an [ImapTransport] per account, a [FolderSync] per
 /// account keeping the [CacheStore] current, and reads served from the cache.
 ///
-/// If the server cannot be reached, message lists and bodies still come from
-/// whatever was cached, so the app is readable offline. Folder structure is
-/// live only; caching the folder list is a later refinement.
+/// If the server cannot be reached, the folder list, message lists and
+/// bodies still come from whatever was cached, so the app opens and is
+/// readable offline.
 class CachedImapEngine implements MailEngine {
   CachedImapEngine({
     required this.accountStore,
     required this.credentialStore,
     required this.cache,
+    FolderListStore? folderLists,
     ImapTransport Function(Account account, String secret)? transportFactory,
-  }) : _transportFactory = transportFactory ?? _defaultTransport;
+  })  : folderLists = folderLists ?? MemoryFolderListStore(),
+        _transportFactory = transportFactory ?? _defaultTransport;
 
   final AccountStore accountStore;
   final CredentialStore credentialStore;
   final CacheStore cache;
+  final FolderListStore folderLists;
   final ImapTransport Function(Account account, String secret) _transportFactory;
 
   final Map<String, ImapTransport> _transports = {};
@@ -92,6 +96,7 @@ class CachedImapEngine implements MailEngine {
     _syncs.remove(accountId);
     await credentialStore.deleteSecret(accountId);
     await cache.deleteAccount(accountId);
+    await folderLists.delete(accountId);
     await accountStore.write([
       for (final a in accountStore.read())
         if (a.id != accountId) a,
@@ -102,8 +107,16 @@ class CachedImapEngine implements MailEngine {
 
   @override
   Future<List<MailFolder>> loadFolders(String accountId) async {
-    final t = await _transport(accountId);
-    final remote = await t.listFolders();
+    List<RemoteFolder> remote;
+    try {
+      final t = await _transport(accountId);
+      remote = await t.listFolders();
+      await folderLists.write(accountId, remote);
+    } on ConnectionFailed {
+      final cached = folderLists.read(accountId);
+      if (cached == null) rethrow;
+      remote = cached;
+    }
     final paths = {for (final r in remote) r.path};
     return [
       for (final (i, r) in remote.indexed)

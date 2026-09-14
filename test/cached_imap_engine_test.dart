@@ -107,6 +107,22 @@ void main() {
       expect(byPath['[Gmail]/Trash']!.capabilities.canEmpty, isTrue);
     });
 
+    test('offline, the last folder list is served; with none, it fails',
+        () async {
+      seedGmail();
+      final a = await addAccount();
+      final online = await engine.loadFolders(a.id);
+
+      server.offline = true;
+      final offline = await engine.loadFolders(a.id);
+      expect(offline.map((f) => f.path), online.map((f) => f.path));
+      expect(offline.firstWhere((f) => f.path == 'Work/Invoices').parentId,
+          '${a.id}:Work');
+
+      await engine.folderLists.delete(a.id);
+      await expectLater(engine.loadFolders(a.id), throwsA(isA<ConnectionFailed>()));
+    });
+
     test('rename cascades to the cache and reports the new ids', () async {
       seedGmail();
       server.folder('Work/Invoices').deliver();
