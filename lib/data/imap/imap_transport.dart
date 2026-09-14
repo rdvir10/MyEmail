@@ -49,6 +49,15 @@ abstract class ImapTransport {
 
   Future<MailBody> fetchBody(String path, int uid);
 
+  /// UIDs in the folder whose subject, sender or body contain [query].
+  ///
+  /// Server-side: IMAP SEARCH, so it covers mail that was never cached.
+  /// Newest first, capped at [limit].
+  Future<List<int>> searchUids(String path, String query, {int limit = 100});
+
+  /// Headers for specific UIDs, for turning search hits into rows.
+  Future<List<RemoteHeader>> fetchHeadersByUids(String path, List<int> uids);
+
   Future<void> storeFlag(
     String path, {
     required List<int> uids,

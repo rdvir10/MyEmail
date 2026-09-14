@@ -7,9 +7,11 @@ import '../../state/folder_tree.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import '../../state/quick_steps.dart';
+import '../../state/search_providers.dart';
 import '../quick_steps/quick_steps_screen.dart';
 import 'message_actions.dart';
 import 'message_tile.dart';
+import 'search_bar.dart';
 
 /// The list of messages in the selected folder.
 ///
@@ -44,7 +46,92 @@ class MessageListPane extends ConsumerWidget {
     };
     final selectedId = ref.watch(selectedMessageIdProvider);
     final actions = MessageActions(ref, folderId);
+    final searching = ref.watch(searchQueryProvider).trim().isNotEmpty;
 
+    final body = searching
+        ? _searchResults(context, ref, actions, accountColors, selectedId)
+        : _folderList(context, ref, folderId, folder, isUnified,
+            accountColors, selectedId, actions);
+
+    return Column(
+      children: [
+        const MessageSearchBar(),
+        const Divider(height: 1),
+        Expanded(child: body),
+      ],
+    );
+  }
+
+  /// Search hits, which may come from any folder, so each row shows where it
+  /// lives. Swipe and drag are deliberately not offered here: the row's list
+  /// is the search, not a folder, and moving out of a result set reads as a
+  /// bug rather than a feature.
+  Widget _searchResults(
+    BuildContext context,
+    WidgetRef ref,
+    MessageActions actions,
+    Map<String, Color> accountColors,
+    String? selectedId,
+  ) {
+    final theme = Theme.of(context);
+    final index = ref.watch(folderIndexProvider);
+    return ref.watch(searchResultsProvider).when(
+          loading: () => const Center(
+            child: SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          ),
+          error: (e, _) => Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text('Search failed.\n$e',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodySmall),
+            ),
+          ),
+          data: (results) {
+            if (results == null) return const SizedBox.shrink();
+            if (results.isEmpty) {
+              return Center(
+                child: Text('No messages found',
+                    style: theme.textTheme.bodySmall),
+              );
+            }
+            return ListView.separated(
+              itemCount: results.length,
+              separatorBuilder: (_, _) => const Divider(height: 1, indent: 28),
+              itemBuilder: (context, i) {
+                final m = results[i];
+                return MessageTile(
+                  key: ValueKey('search:${m.id}'),
+                  message: m,
+                  isSelected: m.id == selectedId,
+                  accountColor: accountColors[m.accountId],
+                  folderLabel: index[m.folderId]?.displayName,
+                  onTap: () {
+                    ref.read(selectedMessageIdProvider.notifier).select(m.id);
+                    onOpen(m);
+                  },
+                );
+              },
+            );
+          },
+        );
+  }
+
+  Widget _folderList(
+    BuildContext context,
+    WidgetRef ref,
+    String folderId,
+    dynamic folder,
+    bool isUnified,
+    Map<String, Color> accountColors,
+    String? selectedId,
+    MessageActions actions,
+  ) {
+    final theme = Theme.of(context);
     return ref.watch(messagesProvider(folderId)).when(
           loading: () => const Center(
             child: SizedBox(

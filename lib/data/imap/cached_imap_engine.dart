@@ -79,12 +79,16 @@ class CachedImapEngine implements MailEngine {
     // Prove the credentials before storing anything: LIST is the cheapest
     // command that needs a successful login.
     final transport = _transportFactory(account, secret);
+    final List<RemoteFolder> folders;
     try {
-      await transport.listFolders();
+      folders = await transport.listFolders();
     } catch (_) {
       await transport.close();
       rethrow;
     }
+    // Keep what the probe already fetched: the tree can then render, and a
+    // search can pick its targets, without a second round trip.
+    await folderLists.write(account.id, folders);
     _transports[account.id] = transport;
     await credentialStore.writeSecret(account.id, secret);
     await accountStore.write([...existing, account]);
@@ -311,6 +315,113 @@ class CachedImapEngine implements MailEngine {
       }
       await cache.deleteUids(accountId, fromPath, group.value.toSet());
     }
+  }
+
+  @override
+  Future<List<MailMessage>> searchMessages(
+    String query,
+    SearchScope scope, {
+    int limit = 100,
+  }) async {
+    if (query.trim().isEmpty) return const [];
+    final targets = await _searchTargets(scope);
+    final results = await Future.wait([
+      for (final (accountId, path) in targets)
+        _searchOneFolder(accountId, path, query, limit),
+    ]);
+    final merged = [for (final r in results) ...r]
+      ..sort((a, b) => b.date.compareTo(a.date));
+    return merged.take(limit).toList();
+  }
+
+  Future<List<MailMessage>> _searchOneFolder(
+    String accountId,
+    String path,
+    String query,
+    int limit,
+  ) async {
+    try {
+      final t = await _transport(accountId);
+      final uids = await t.searchUids(path, query, limit: limit);
+      if (uids.isEmpty) return const [];
+      final folderId = MailFolder.idFor(accountId, path);
+
+      // Anything already cached needs no round trip, and brings its preview
+      // along; only the rest is fetched.
+      final rows = <MailMessage>[];
+      final missing = <int>[];
+      for (final uid in uids) {
+        final cached = await cache.readMessage(accountId, path, uid);
+        if (cached != null) {
+          rows.add(cached.toMailMessage(accountId: accountId, folderId: folderId));
+        } else {
+          missing.add(uid);
+        }
+      }
+      if (missing.isNotEmpty) {
+        final headers = await t.fetchHeadersByUids(path, missing);
+        for (final h in headers) {
+          rows.add(
+            MailMessage(
+              id: MailMessage.idFor(folderId, h.uid),
+              accountId: accountId,
+              folderId: folderId,
+              uid: h.uid,
+              subject: h.subject,
+              from: h.from,
+              to: h.to,
+              date: h.date,
+              preview: '',
+              isRead: h.isRead,
+              isFlagged: h.isFlagged,
+              hasAttachments: h.hasAttachments,
+            ),
+          );
+        }
+      }
+      return rows;
+    } on ConnectionFailed {
+      // One unreachable account should not sink a search across the others.
+      return const [];
+    }
+  }
+
+  /// The (account, folder path) pairs a scope covers.
+  Future<List<(String, String)>> _searchTargets(SearchScope scope) async {
+    if (scope.folderId != null) {
+      final (accountId, path) = splitFolderId(scope.folderId!);
+      return [(accountId, path)];
+    }
+    final accountIds = scope.accountId != null
+        ? [scope.accountId!]
+        : [for (final a in accountStore.read()) a.id];
+    final targets = <(String, String)>[];
+    for (final accountId in accountIds) {
+      List<RemoteFolder> remote;
+      final cached = folderLists.read(accountId);
+      if (cached != null) {
+        remote = cached;
+      } else {
+        try {
+          remote = await (await _transport(accountId)).listFolders();
+        } on ConnectionFailed {
+          // One unreachable account contributes nothing rather than sinking
+          // a search across the others.
+          continue;
+        }
+      }
+      for (final f in remote) {
+        // All Mail holds a copy of everything, so including it would double
+        // every hit; Spam and Trash are not what "search my mail" means.
+        if (f.role == FolderRole.archive ||
+            f.role == FolderRole.junk ||
+            f.role == FolderRole.deleted) {
+          continue;
+        }
+        targets.add((accountId, f.path));
+      }
+    }
+    return targets;
   }
 
   /// Message ids grouped by the folder they live in, so one folder is one

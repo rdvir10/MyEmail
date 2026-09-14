@@ -117,6 +117,38 @@ class FakeImapTransport implements ImapTransport {
   }
 
   @override
+  Future<List<int>> searchUids(
+    String path,
+    String query, {
+    int limit = 100,
+  }) async {
+    _online();
+    calls.add('UID SEARCH $path TEXT "$query"');
+    final words = query.toLowerCase().split(RegExp(r'\s+'));
+    final hits = [
+      for (final m in _require(path).ordered)
+        if (words.every(
+            (w) => '${m.subject} ${m.from} ${m.body}'.toLowerCase().contains(w)))
+          m.uid,
+    ]..sort((a, b) => b.compareTo(a));
+    return hits.take(limit).toList();
+  }
+
+  @override
+  Future<List<RemoteHeader>> fetchHeadersByUids(
+    String path,
+    List<int> uids,
+  ) async {
+    _online();
+    calls.add('UID FETCH $path ${uids.join(',')}');
+    final folder = _require(path);
+    return [
+      for (final uid in uids)
+        if (folder.messages[uid] case final m?) m.header,
+    ];
+  }
+
+  @override
   Future<MailBody> fetchBody(String path, int uid) async {
     _online();
     calls.add('UID FETCH $path $uid BODY');

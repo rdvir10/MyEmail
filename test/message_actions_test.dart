@@ -76,6 +76,14 @@ class _RefusingEngine implements MailEngine {
   @override
   Future<void> deleteMessages(List<String> messageIds) =>
       _inner.deleteMessages(messageIds);
+
+  @override
+  Future<List<MailMessage>> searchMessages(
+    String query,
+    SearchScope scope, {
+    int limit = 100,
+  }) =>
+      _inner.searchMessages(query, scope, limit: limit);
 }
 
 void main() {

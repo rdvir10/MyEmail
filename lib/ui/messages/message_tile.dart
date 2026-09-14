@@ -14,7 +14,11 @@ class MessageTile extends StatelessWidget {
     required this.onTap,
     this.accountColor,
     this.onLongPress,
+    this.folderLabel,
   });
+
+  /// Shown as a chip in search results, where hits come from many folders.
+  final String? folderLabel;
 
   final MailMessage message;
   final bool isSelected;
@@ -114,6 +118,23 @@ class MessageTile extends StatelessWidget {
                       const SizedBox(height: 2),
                       Row(
                         children: [
+                          if (folderLabel != null) ...[
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: scheme.surfaceContainerHighest,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                folderLabel!,
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: scheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                          ],
                           Expanded(
                             child: Text(
                               message.preview,

@@ -254,6 +254,32 @@ String htmlToText(String html) {
   return s.trim();
 }
 
+/// An IMAP SEARCH criteria string for a free-text query.
+///
+/// Matches subject, sender or body, which is what people expect a mail
+/// search box to do. Words are ANDed, since IMAP's default is to combine
+/// criteria with AND and each word narrows the result the way a search box
+/// should. Quotes in the query are escaped so they cannot close the string
+/// and inject further criteria.
+String buildSearchCriteria(String query) {
+  final words = query
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((w) => w.isNotEmpty)
+      .toList();
+  if (words.isEmpty) return 'ALL';
+  return [
+    'CHARSET UTF-8',
+    for (final word in words)
+      // OR takes exactly two arguments, so three fields nest as
+      // OR OR <a> <b> <c>.
+      'OR OR SUBJECT ${_quote(word)} FROM ${_quote(word)} BODY ${_quote(word)}',
+  ].join(' ');
+}
+
+String _quote(String value) =>
+    '"${value.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}"';
+
 /// The first line or so of a body, for the message list.
 String previewFromText(String text, {int maxLength = 140}) {
   final flat = text.replaceAll(RegExp(r'\s+'), ' ').trim();

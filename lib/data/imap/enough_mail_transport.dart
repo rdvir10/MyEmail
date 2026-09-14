@@ -118,6 +118,35 @@ class EnoughMailTransport implements ImapTransport {
       });
 
   @override
+  Future<List<int>> searchUids(String path, String query, {int limit = 100}) =>
+      _run((c) async {
+        await _ensureSelected(c, path);
+        final result = await c.uidSearchMessages(
+          searchCriteria: buildSearchCriteria(query),
+        );
+        final seq = result.matchingSequence;
+        if (seq == null) return const [];
+        // Highest UID is newest, and that is the end the user wants.
+        final uids = seq.toList()..sort((a, b) => b.compareTo(a));
+        return uids.take(limit).toList();
+      });
+
+  @override
+  Future<List<RemoteHeader>> fetchHeadersByUids(
+    String path,
+    List<int> uids,
+  ) =>
+      _run((c) async {
+        if (uids.isEmpty) return const [];
+        await _ensureSelected(c, path);
+        final result = await c.uidFetchMessages(
+          em.MessageSequence.fromIds(uids, isUid: true),
+          _headerCriteria,
+        );
+        return _headers(result);
+      });
+
+  @override
   Future<MailBody> fetchBody(String path, int uid) => _run((c) async {
         await _ensureSelected(c, path);
         final result = await c.uidFetchMessage(uid, 'BODY.PEEK[]');

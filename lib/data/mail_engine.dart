@@ -78,6 +78,48 @@ abstract class MailEngine {
   /// Delete messages the way the provider expects: into Trash from anywhere
   /// else, and permanently when already in Trash.
   Future<void> deleteMessages(List<String> messageIds);
+
+  /// Search the server for [query] within [scope], newest first.
+  Future<List<MailMessage>> searchMessages(
+    String query,
+    SearchScope scope, {
+    int limit = 100,
+  });
+}
+
+/// Where a search looks.
+///
+/// [folder] is one folder; [account] is every folder of one account;
+/// [everywhere] is every account. Folders that only duplicate mail (Gmail's
+/// All Mail) or hold none of the user's own (Spam, Trash) are skipped in the
+/// wider scopes, or every hit would appear two or three times.
+class SearchScope {
+  const SearchScope.folder(String this.folderId)
+      : accountId = null,
+        isEverywhere = false;
+
+  const SearchScope.account(String this.accountId)
+      : folderId = null,
+        isEverywhere = false;
+
+  const SearchScope.everywhere()
+      : folderId = null,
+        accountId = null,
+        isEverywhere = true;
+
+  final String? folderId;
+  final String? accountId;
+  final bool isEverywhere;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SearchScope &&
+      other.folderId == folderId &&
+      other.accountId == accountId &&
+      other.isEverywhere == isEverywhere;
+
+  @override
+  int get hashCode => Object.hash(folderId, accountId, isEverywhere);
 }
 
 /// The outcome of a rename or move: the folder as it now is, plus the id

@@ -211,6 +211,53 @@ class SampleMailEngine implements MailEngine {
   }
 
   @override
+  Future<List<MailMessage>> searchMessages(
+    String query,
+    SearchScope scope, {
+    int limit = 100,
+  }) async {
+    await _latency();
+    final needle = query.trim().toLowerCase();
+    if (needle.isEmpty) return const [];
+    final words = needle.split(RegExp(r'\s+'));
+
+    final folders = <MailFolder>[];
+    if (scope.folderId != null) {
+      folders.add(_require(scope.folderId!));
+    } else {
+      final accountIds = scope.accountId != null
+          ? [scope.accountId!]
+          : _accounts.map((a) => a.id);
+      for (final accountId in accountIds) {
+        for (final f in _folders[accountId] ?? const <MailFolder>[]) {
+          if (f.role == FolderRole.archive ||
+              f.role == FolderRole.junk ||
+              f.role == FolderRole.deleted) {
+            continue;
+          }
+          folders.add(f);
+        }
+      }
+    }
+
+    final hits = <MailMessage>[];
+    for (final folder in folders) {
+      final list = _messages.putIfAbsent(
+        folder.id,
+        () => generateSampleMessages(folder),
+      );
+      for (final m in list) {
+        final haystack =
+            '${m.subject} ${m.from.display} ${m.from.email} ${m.preview}'
+                .toLowerCase();
+        if (words.every(haystack.contains)) hits.add(m);
+      }
+    }
+    hits.sort((a, b) => b.date.compareTo(a.date));
+    return hits.take(limit).toList();
+  }
+
+  @override
   Future<void> setRead(String messageId, bool isRead) =>
       _setFlags(messageId, isRead: isRead);
 
