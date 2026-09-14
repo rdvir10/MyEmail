@@ -13,6 +13,8 @@ void main() {
       );
       expect(htmlHasRemoteContent('<div style="background:url(https://x/b.png)">'),
           isTrue);
+      expect(htmlHasRemoteContent('<style>@import "https://x/f.css";</style>'),
+          isTrue);
     });
 
     test('ignores inline and relative content', () {
@@ -20,6 +22,54 @@ void main() {
       expect(htmlHasRemoteContent('<img src="data:image/png;base64,AAAA">'),
           isFalse);
       expect(htmlHasRemoteContent('<img src="cid:part1">'), isFalse);
+    });
+  });
+
+  group('stripRemoteContent', () {
+    test('neutralises remote image sources but keeps the tag', () {
+      final out = stripRemoteContent(
+          '<img alt="a" src="https://t.example/p.gif" width=1>');
+      expect(out, contains('data-blocked-src="https://t.example/p.gif"'));
+      expect(out, isNot(contains(' src=')));
+      expect(out, contains('alt="a"'));
+    });
+
+    test('handles srcset, poster, background and protocol-relative urls', () {
+      final out = stripRemoteContent(
+          '<img srcset="//c/a.png 1x" poster=http://v/p.jpg background="https://b/x">');
+      expect(out, contains('data-blocked-srcset="//c/a.png 1x"'));
+      expect(out, contains('data-blocked-poster=http://v/p.jpg'));
+      expect(out, contains('data-blocked-background="https://b/x"'));
+    });
+
+    test('leaves inline, cid and relative sources alone', () {
+      const html = '<img src="data:image/png;base64,AA"><img src="cid:x">'
+          '<img src="/local.png">';
+      expect(stripRemoteContent(html), html);
+    });
+
+    test('keeps anchors clickable', () {
+      const html = '<a href="https://example.com/x">link</a>';
+      expect(stripRemoteContent(html), html);
+    });
+
+    test('removes remote stylesheets, css urls and imports', () {
+      const html = '<link rel="stylesheet" href="https://x/s.css">'
+          '<div style="background:url(https://x/b.png)">t</div>'
+          "<style>@import url('//x/f.css'); p{color:red}</style>";
+      final out = stripRemoteContent(html);
+      expect(out, isNot(contains('<link')));
+      expect(out, contains('background:none'));
+      expect(out, isNot(contains('@import')));
+      expect(out, contains('p{color:red}'));
+    });
+
+    test('is idempotent and a no-op on clean html', () {
+      const clean = '<p>Hi <b>there</b></p>';
+      expect(stripRemoteContent(clean), clean);
+      const dirty = '<img src="https://t/x.png">';
+      final once = stripRemoteContent(dirty);
+      expect(stripRemoteContent(once), once);
     });
   });
 

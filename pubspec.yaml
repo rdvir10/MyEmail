@@ -41,8 +41,8 @@ dependencies:
   flutter_secure_storage: ^11.1.1
   drift: ^2.35.0
   drift_flutter: ^0.3.1
-  flutter_inappwebview: ^6.1.5
   url_launcher: ^6.3.2
+  webview_flutter: ^4.14.1
 
 dev_dependencies:
   flutter_test:
