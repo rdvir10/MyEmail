@@ -1,5 +1,5 @@
 import 'package:flutter/foundation.dart'
-    show defaultTargetPlatform, kIsWeb, TargetPlatform;
+    show debugPrint, defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -57,8 +57,19 @@ Future<void> main() async {
     // the schedule has to match what the settings screen says. Doing both here
     // also repairs the case where Android dropped the work while the app was
     // not running.
-    await notifier.ensureReady();
-    await applyBackgroundSchedule(await syncState.readPrefs());
+    //
+    // Caught, not allowed to propagate: this runs before runApp, so anything
+    // thrown here is an app that does not start. A mail client that will not
+    // open because the notification channel failed is a far worse outcome
+    // than one whose notifications are not working, and the Notifications
+    // screen is where the second is noticed and retried.
+    try {
+      await notifier.ensureReady();
+      await applyBackgroundSchedule(await syncState.readPrefs());
+    } catch (e, stack) {
+      debugPrint('[mailtree] notification setup failed at startup: $e');
+      debugPrint('$stack');
+    }
   }
 
   runApp(
