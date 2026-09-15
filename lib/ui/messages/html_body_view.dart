@@ -31,13 +31,13 @@ class HtmlBodyView extends StatefulWidget {
 class _HtmlBodyViewState extends State<HtmlBodyView> {
   late final WebViewController _controller;
   bool _showRemote = false;
+  Brightness _brightness = Brightness.light;
 
   @override
   void initState() {
     super.initState();
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.disabled)
-      ..setBackgroundColor(Colors.white)
       ..setNavigationDelegate(
         NavigationDelegate(
           onNavigationRequest: (request) {
@@ -56,6 +56,15 @@ class _HtmlBodyViewState extends State<HtmlBodyView> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = Theme.of(context).brightness;
+    if (next == _brightness) return;
+    _brightness = next;
+    _load();
+  }
+
+  @override
   void didUpdateWidget(HtmlBodyView old) {
     super.didUpdateWidget(old);
     if (old.html != widget.html) {
@@ -67,7 +76,13 @@ class _HtmlBodyViewState extends State<HtmlBodyView> {
   void _load() {
     final source =
         _showRemote ? widget.html : stripRemoteContent(widget.html);
-    _controller.loadHtmlString(wrapHtmlForDisplay(source));
+    // The WebView's own background shows during the load and behind a short
+    // body. Matching it to the document avoids a white flash on a dark screen.
+    _controller
+      ..setBackgroundColor(
+        readsAsDark(source, _brightness) ? const Color(0xFF1C1B1F) : Colors.white,
+      )
+      ..loadHtmlString(wrapHtmlForDisplay(source, brightness: _brightness));
   }
 
   @override
@@ -180,22 +195,56 @@ String stripRemoteContent(String html) {
   return s;
 }
 
+/// Whether a message can safely be shown on a dark background.
+///
+/// Only when the app is dark *and* the message brings no colours of its own.
+/// A sender who set `color:#000` on their own white background is invisible
+/// the moment the background is darkened underneath them, and there is no way
+/// to know which of their declarations to keep. So a message that styles
+/// itself stays on the light sheet it was written for, exactly as Outlook and
+/// Gmail do it, and only an unstyled one follows the app.
+bool readsAsDark(String html, Brightness brightness) =>
+    brightness == Brightness.dark && !messageBringsItsOwnColours(html);
+
+/// Does this HTML set any colour or background of its own?
+///
+/// Deliberately generous about what counts. A false positive costs a light
+/// message on a dark screen, which is merely unfashionable; a false negative
+/// costs black text on a near-black background, which is unreadable.
+bool messageBringsItsOwnColours(String html) => RegExp(
+      r'''(\bbgcolor\s*=|(?<![-\w])color\s*:|background(-color)?\s*:|<font\b)''',
+      caseSensitive: false,
+    ).hasMatch(html);
+
 /// The message HTML inside a minimal document: a viewport for phone widths,
 /// a readable default font, and images that never overflow. Anything the
 /// message brings of its own still applies, since this only sets defaults.
-String wrapHtmlForDisplay(String html) {
+String wrapHtmlForDisplay(
+  String html, {
+  Brightness brightness = Brightness.light,
+}) {
   final hasHtmlTag = RegExp(r'<html[\s>]', caseSensitive: false).hasMatch(html);
   final body = hasHtmlTag ? _extractBody(html) : html;
+  final dark = readsAsDark(html, brightness);
+  final fg = dark ? '#e6e1e5' : '#1c1b1f';
+  final bg = dark ? '#1c1b1f' : '#fff';
+  final rule = dark ? '#5a585c' : '#ccc';
+  final quoted = dark ? '#b6b0b6' : '#444';
   return '<!doctype html><html><head>'
       '<meta charset="utf-8">'
       '<meta name="viewport" content="width=device-width, initial-scale=1">'
       '<style>'
+      // Tells the WebView which form controls and scrollbars to draw, so a
+      // dark message does not get a light scrollbar down the side of it.
+      ':root{color-scheme:${dark ? 'dark' : 'light'}}'
       'body{margin:12px 16px;font:15px/1.45 -apple-system,Roboto,sans-serif;'
-      'color:#1c1b1f;background:#fff;word-wrap:break-word;overflow-wrap:anywhere}'
+      'color:$fg;background:$bg;word-wrap:break-word;overflow-wrap:anywhere}'
+      'a{color:${dark ? '#a8c8ff' : '#0f6cbd'}}'
       'img{max-width:100%;height:auto}'
       'table{max-width:100%}'
       'pre{white-space:pre-wrap}'
-      'blockquote{margin:8px 0;padding-left:12px;border-left:3px solid #ccc;color:#444}'
+      'blockquote{margin:8px 0;padding-left:12px;'
+      'border-left:3px solid $rule;color:$quoted}'
       '</style></head><body>$body</body></html>';
 }
 

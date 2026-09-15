@@ -65,7 +65,31 @@ class _HtmlEditorState extends State<HtmlEditor> {
           },
         ),
       );
-    _web.loadHtmlString(_editorDocument(widget.controller.initialHtml));
+    // Loading waits for didChangeDependencies: the document needs to know
+    // which palette to start in, and the theme is not reachable from initState.
+  }
+
+  bool _loaded = false;
+  Brightness _brightness = Brightness.light;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = Theme.of(context).brightness;
+    final dark = next == Brightness.dark;
+    _web.setBackgroundColor(dark ? const Color(0xFF1C1B1F) : Colors.white);
+    if (!_loaded) {
+      _loaded = true;
+      _brightness = next;
+      _web.loadHtmlString(
+        _editorDocument(widget.controller.initialHtml, dark: dark),
+      );
+      return;
+    }
+    if (next == _brightness) return;
+    _brightness = next;
+    // Repaint, never reload: the message being written lives in the document.
+    widget.controller._setTheme(dark ? 'dark' : 'light');
   }
 
   @override
@@ -136,6 +160,12 @@ class HtmlEditorController extends ChangeNotifier {
     await _web?.runJavaScript('window.mailtreeFocus();');
   }
 
+  /// Switch palettes in place. Safe before the page has loaded: the document
+  /// starts in the right one, so a dropped call changes nothing.
+  Future<void> _setTheme(String name) async {
+    await _web?.runJavaScript('window.mailtreeSetTheme(${jsonEncode(name)});');
+  }
+
   /// Strings come back from the WebView JSON-encoded on Android and bare on
   /// some platforms; handle both rather than assuming.
   static String _decodeJsString(Object? result) {
@@ -153,26 +183,53 @@ class HtmlEditorController extends ChangeNotifier {
 
 /// The editor document: the body is the editable surface, and a small script
 /// exposes the three things Dart needs.
-String _editorDocument(String bodyHtml) {
+String _editorDocument(String bodyHtml, {required bool dark}) {
   return '''
-<!doctype html><html><head>
+<!doctype html><html data-theme="${dark ? 'dark' : 'light'}"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
+  /* Both palettes ship in the document and the theme attribute picks one, so
+     following the system at night never means reloading the document and
+     throwing away what has been typed. */
+  :root{
+    color-scheme:light;
+    --fg:#1c1b1f; --bg:#fff; --muted:#555; --rule:#ccc;
+    --quote-fg:#1c1b1f; --quote-bg:transparent; --quote-pad:0;
+    --blocked-bg:#eee; --blocked-rule:#bbb; --link:#0f6cbd;
+  }
+  html[data-theme="dark"]{
+    color-scheme:dark;
+    --fg:#e6e1e5; --bg:#1c1b1f; --muted:#b6b0b6; --rule:#5a585c;
+    /* The quote holds the sender's own HTML, authored against a light
+       background. Darkening underneath it turns their black text invisible,
+       so in dark mode it keeps a light sheet of its own and the text you are
+       actually writing is the part that goes dark. */
+    --quote-fg:#1c1b1f; --quote-bg:#f4f2f5; --quote-pad:10px;
+    --blocked-bg:#ddd; --blocked-rule:#aaa; --link:#a8c8ff;
+  }
   html,body{margin:0;padding:0;height:100%}
   body{
     box-sizing:border-box;padding:12px 16px;
-    font:15px/1.45 -apple-system,Roboto,sans-serif;color:#1c1b1f;background:#fff;
+    font:15px/1.45 -apple-system,Roboto,sans-serif;
+    color:var(--fg);background:var(--bg);
     outline:none;word-wrap:break-word;overflow-wrap:anywhere;
     -webkit-tap-highlight-color:transparent;
   }
+  a{color:var(--link)}
   img{max-width:100%;height:auto}
-  blockquote{margin:8px 0;padding-left:12px;border-left:2px solid #ccc;color:#444}
-  .mailtree-signature{color:#555}
+  blockquote{margin:8px 0;padding-left:12px;border-left:2px solid var(--rule)}
+  .mailtree-signature{color:var(--muted)}
+  .mailtree-quote{
+    color:var(--quote-fg);background:var(--quote-bg);
+    padding:var(--quote-pad);border-radius:6px;margin-top:8px;
+  }
+  .mailtree-quote a{color:#0f6cbd}
   /* A blocked remote image still needs to occupy space, or the quote
      reflows as the user types and the layout jumps. */
   img[data-blocked-src],img[data-blocked-srcset]{
-    min-width:24px;min-height:24px;background:#eee;border:1px dashed #bbb;
+    min-width:24px;min-height:24px;
+    background:var(--blocked-bg);border:1px dashed var(--blocked-rule);
   }
 </style></head>
 <body contenteditable="true">$bodyHtml</body>
@@ -183,6 +240,12 @@ String _editorDocument(String bodyHtml) {
   }
 
   window.mailtreeGetHtml = function () { return document.body.innerHTML; };
+
+  // Repainting rather than reloading: a theme change mid-message must not
+  // discard what has been written.
+  window.mailtreeSetTheme = function (name) {
+    document.documentElement.setAttribute('data-theme', name);
+  };
 
   window.mailtreeFormat = function (command, value) {
     document.execCommand(command, false, value);

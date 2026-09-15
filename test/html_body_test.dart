@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mailtree/ui/messages/html_body_view.dart';
 
@@ -95,6 +96,67 @@ void main() {
       final out = wrapHtmlForDisplay('<html><head></head><p>Loose</p></html>');
       expect(out, contains('<p>Loose</p>'));
       expect('<html'.allMatches(out).length, 1);
+    });
+  });
+
+  group('dark mode', () {
+    test('a message that sets no colours follows the app into dark', () {
+      final out = wrapHtmlForDisplay(
+        '<p>Just some words.</p>',
+        brightness: Brightness.dark,
+      );
+      expect(out, contains('background:#1c1b1f'));
+      expect(out, contains('color-scheme:dark'));
+    });
+
+    test('a message that styles itself keeps the light sheet it was written for',
+        () {
+      // Darkening underneath a sender who set their own black text makes it
+      // invisible, and there is no way to know which declarations to keep.
+      const styled = '<div style="color:#000">Black on their own white</div>';
+      final out = wrapHtmlForDisplay(styled, brightness: Brightness.dark);
+      expect(out, contains('background:#fff'));
+      expect(out, isNot(contains('color-scheme:dark')));
+    });
+
+    test('the light theme is never darkened, whatever the message says', () {
+      expect(
+        wrapHtmlForDisplay('<p>Plain</p>', brightness: Brightness.light),
+        contains('background:#fff'),
+      );
+    });
+
+    test('every way a message declares a colour counts', () {
+      for (final html in [
+        '<td bgcolor="#ffffff">x</td>',
+        '<p style="color:#111">x</p>',
+        '<div style="background-color:#fff">x</div>',
+        '<div style="background:#eee">x</div>',
+        '<font color="red">x</font>',
+        '<style>p{color:#333}</style><p>x</p>',
+      ]) {
+        expect(messageBringsItsOwnColours(html), isTrue, reason: html);
+      }
+    });
+
+    test('a hyphenated property is not mistaken for a colour declaration', () {
+      // `border-color` and `outline-color` are not the text colour, and
+      // treating them as one would keep ordinary messages on a light sheet.
+      expect(
+        messageBringsItsOwnColours('<p style="border-color:red">x</p>'),
+        isFalse,
+      );
+      expect(messageBringsItsOwnColours('<p>plain text</p>'), isFalse);
+      expect(messageBringsItsOwnColours('<b>bold</b> and <i>italic</i>'), isFalse);
+    });
+
+    test('readsAsDark needs both a dark app and an unstyled message', () {
+      expect(readsAsDark('<p>x</p>', Brightness.dark), isTrue);
+      expect(readsAsDark('<p>x</p>', Brightness.light), isFalse);
+      expect(
+        readsAsDark('<p style="color:#000">x</p>', Brightness.dark),
+        isFalse,
+      );
     });
   });
 }
