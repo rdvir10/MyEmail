@@ -130,6 +130,23 @@ class CachedImapEngine implements MailEngine {
     ]);
   }
 
+  /// Drop every open connection. Not part of [MailEngine]: the app holds one
+  /// engine for its whole life and has nothing to close it for. The background
+  /// pass does — it runs in an isolate Android tears down afterwards, and a
+  /// socket left open there is a wakelock nobody asked for.
+  Future<void> close() async {
+    final open = _transports.values.toList();
+    _transports.clear();
+    _syncs.clear();
+    for (final t in open) {
+      try {
+        await t.close();
+      } catch (_) {
+        // Already gone. Closing is best-effort by definition.
+      }
+    }
+  }
+
   // --- folders ---------------------------------------------------------------
 
   @override

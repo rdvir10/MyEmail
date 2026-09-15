@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/imap/imap_mapping.dart';
 import '../../domain/mail_message.dart';
 import '../../state/message_providers.dart';
+import '../../state/notification_providers.dart';
 import '../../state/providers.dart';
 import '../../domain/draft.dart';
 import '../accounts/add_account_screen.dart';
@@ -27,7 +29,7 @@ import '../messages/reading_pane.dart';
 /// There is deliberately no logic here about which folder to show first: that
 /// is derived in [effectiveSelectedFolderIdProvider], so nothing has to be
 /// listening at the right moment for the default to take.
-class AppShell extends ConsumerWidget {
+class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
 
   static const double mediumBreakpoint = 600;
@@ -36,7 +38,61 @@ class AppShell extends ConsumerWidget {
   static const double listPaneWidth = 380;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends ConsumerState<AppShell> {
+  /// The message a notification tap asked for, still waiting for its folder
+  /// to load. Cleared as soon as it has been shown.
+  String? _pendingMessageId;
+
+  @override
+  void initState() {
+    super.initState();
+    // After the first frame: the notifier may have to talk to the platform,
+    // and selecting a folder during a build is a provider modification while
+    // the tree is being built.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _openLaunchMessage());
+  }
+
+  /// A tap on a new-mail notification launched the app. Select that message's
+  /// folder and remember which message to open once the list arrives.
+  Future<void> _openLaunchMessage() async {
+    final payload =
+        await ref.read(mailNotifierProvider).takeLaunchPayload();
+    if (payload == null || !mounted) return;
+    final String folderId;
+    try {
+      (folderId, _) = splitMessageId(payload);
+    } on ArgumentError {
+      return; // Not a message id. Opening the app was the whole effect.
+    } on FormatException {
+      return;
+    }
+    ref.read(selectedFolderIdProvider.notifier).select(folderId);
+    ref.read(selectedMessageIdProvider.notifier).select(payload);
+    setState(() => _pendingMessageId = payload);
+  }
+
+  /// On the phone and medium layouts a message is its own screen, so the
+  /// selection alone is not enough: something has to push it. The wide layout
+  /// needs none of this, because its reading pane follows the selection.
+  void _pushPendingIfResolved(double width) {
+    final pending = _pendingMessageId;
+    if (pending == null || width >= AppShell.wideBreakpoint) {
+      if (pending != null) _pendingMessageId = null;
+      return;
+    }
+    final message = ref.watch(selectedMessageProvider);
+    if (message == null || message.id != pending) return;
+    _pendingMessageId = null;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _pushMessage(context, message);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     // First run: nothing configured yet, so the only sensible screen is the
     // one that adds an account.
     final accounts = ref.watch(accountsProvider);
@@ -45,8 +101,10 @@ class AppShell extends ConsumerWidget {
     }
 
     final width = MediaQuery.sizeOf(context).width;
-    if (width >= wideBreakpoint) return const _WideLayout();
-    if (width >= mediumBreakpoint) return const _MediumLayout();
+    _pushPendingIfResolved(width);
+
+    if (width >= AppShell.wideBreakpoint) return const _WideLayout();
+    if (width >= AppShell.mediumBreakpoint) return const _MediumLayout();
     return const _NarrowLayout();
   }
 }

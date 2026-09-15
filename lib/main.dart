@@ -1,4 +1,5 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -9,8 +10,13 @@ import 'data/folder_list_store.dart';
 import 'data/imap/cached_imap_engine.dart';
 import 'data/mail_engine.dart';
 import 'data/sample/sample_mail_engine.dart';
+import 'data/notifications/android_mail_notifier.dart';
+import 'data/notifications/mail_notifier.dart';
 import 'data/secure_credential_store.dart';
+import 'data/sync/background_worker.dart';
+import 'data/sync/sync_state_store.dart';
 import 'data/ui_state_store.dart';
+import 'state/notification_providers.dart';
 import 'state/providers.dart';
 import 'theme/app_theme.dart';
 import 'ui/shell/app_shell.dart';
@@ -38,11 +44,33 @@ Future<void> main() async {
           folderLists: PrefsFolderListStore(prefs),
         );
 
+  // The browser preview has no WorkManager and no notification channel, so it
+  // keeps the recording fake and never schedules anything.
+  final onAndroid =
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+  final MailNotifier notifier =
+      onAndroid ? AndroidMailNotifier() : FakeMailNotifier(permitted: false);
+  final syncState = PrefsSyncStateStore();
+
+  if (onAndroid) {
+    // The channel has to exist before the background isolate posts to it, and
+    // the schedule has to match what the settings screen says. Doing both here
+    // also repairs the case where Android dropped the work while the app was
+    // not running.
+    await notifier.ensureReady();
+    await applyBackgroundSchedule(await syncState.readPrefs());
+  }
+
   runApp(
     ProviderScope(
       overrides: [
         uiStateStoreProvider.overrideWithValue(PrefsUiStateStore(prefs)),
         mailEngineProvider.overrideWithValue(engine),
+        mailNotifierProvider.overrideWithValue(notifier),
+        syncStateStoreProvider.overrideWithValue(syncState),
+        if (onAndroid)
+          backgroundSchedulerProvider
+              .overrideWithValue(const WorkManagerScheduler()),
       ],
       child: const MailTreeApp(),
     ),

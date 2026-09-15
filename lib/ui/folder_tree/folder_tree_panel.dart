@@ -7,6 +7,7 @@ import '../../state/providers.dart';
 import '../accounts/add_account_screen.dart';
 import '../messages/message_actions.dart';
 import '../quick_steps/quick_steps_screen.dart';
+import '../settings/notifications_screen.dart';
 import 'folder_actions.dart';
 import 'folder_tile.dart';
 
@@ -124,6 +125,14 @@ class FolderTreePanel extends ConsumerWidget {
           title: const Text('Add account'),
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute<void>(builder: (_) => const AddAccountScreen()),
+          ),
+        ),
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.notifications_none, size: 20),
+          title: const Text('Notifications'),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const NotificationsScreen()),
           ),
         ),
       ],

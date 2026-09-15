@@ -3,6 +3,14 @@
          debug manifest; a release build without it cannot reach any server. -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- Android 13+ will not show a notification without this being granted at
+         runtime. The Notifications screen asks for it when the switch is
+         turned on, not on first launch. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- WorkManager reschedules the background mail check after a reboot;
+         without this the periodic pass silently stops until the app is
+         opened again. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 
     <application
         android:label="MailTree"
