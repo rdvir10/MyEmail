@@ -1,0 +1,261 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+
+/// A rich-text editor backed by a `contenteditable` WebView.
+///
+/// This is a WebView and not a Flutter editor because the quoted original has
+/// to be editable in place: the caret goes anywhere in it, including inside
+/// the quote, the way Outlook desktop behaves. A Flutter editor would have to
+/// parse the original into its own model first, and no Dart model represents
+/// arbitrary mail HTML without destroying it.
+///
+/// The document has JavaScript on, because the bridge needs it. Everything
+/// placed into it has already been through `sanitiseForEditing`, which strips
+/// scripts, handlers and remote fetches before it gets here.
+///
+/// Height: the editor fills what it is given. A contenteditable cannot report
+/// its own height to Flutter without polling, so the host bounds it.
+class HtmlEditor extends StatefulWidget {
+  const HtmlEditor({
+    super.key,
+    required this.controller,
+    this.onReady,
+  });
+
+  final HtmlEditorController controller;
+  final VoidCallback? onReady;
+
+  @override
+  State<HtmlEditor> createState() => _HtmlEditorState();
+}
+
+class _HtmlEditorState extends State<HtmlEditor> {
+  late final WebViewController _web;
+
+  @override
+  void initState() {
+    super.initState();
+    _web = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(Colors.white)
+      ..addJavaScriptChannel(
+        'MailTree',
+        onMessageReceived: (message) {
+          widget.controller._onBridgeMessage(message.message);
+        },
+      )
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          // Nothing in an editor should navigate. Tapping a link in the quote
+          // must not replace the document being written.
+          onNavigationRequest: (request) {
+            final uri = Uri.tryParse(request.url);
+            final isBootstrap =
+                uri != null && (uri.scheme == 'about' || uri.scheme == 'data');
+            return isBootstrap
+                ? NavigationDecision.navigate
+                : NavigationDecision.prevent;
+          },
+          onPageFinished: (_) {
+            widget.controller._attach(_web);
+            widget.onReady?.call();
+          },
+        ),
+      );
+    _web.loadHtmlString(_editorDocument(widget.controller.initialHtml));
+  }
+
+  @override
+  Widget build(BuildContext context) => WebViewWidget(controller: _web);
+}
+
+/// Drives the editor from Dart: read the document, apply formatting, learn
+/// what the caret is sitting in.
+class HtmlEditorController extends ChangeNotifier {
+  HtmlEditorController({required this.initialHtml});
+
+  final String initialHtml;
+
+  WebViewController? _web;
+  final _readyCompleter = Completer<void>();
+  Set<String> _activeFormats = const {};
+
+  /// Which formats apply where the caret is, so the toolbar can light up.
+  Set<String> get activeFormats => _activeFormats;
+
+  Future<void> get ready => _readyCompleter.future;
+
+  bool get isReady => _web != null;
+
+  void _attach(WebViewController web) {
+    _web = web;
+    if (!_readyCompleter.isCompleted) _readyCompleter.complete();
+  }
+
+  void _onBridgeMessage(String raw) {
+    try {
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      if (data['type'] == 'formats') {
+        final formats = (data['value'] as List<dynamic>).cast<String>().toSet();
+        if (formats.length != _activeFormats.length ||
+            !formats.containsAll(_activeFormats)) {
+          _activeFormats = formats;
+          notifyListeners();
+        }
+      }
+    } on FormatException {
+      // A malformed bridge message is not worth crashing the editor over.
+    }
+  }
+
+  /// The document as HTML, for sending or saving.
+  Future<String> getHtml() async {
+    final web = _web;
+    if (web == null) return initialHtml;
+    final result =
+        await web.runJavaScriptReturningResult('window.mailtreeGetHtml();');
+    return _decodeJsString(result);
+  }
+
+  /// Apply a formatting command. Names match `document.execCommand`, which is
+  /// deprecated in the spec but is still the only thing every Android WebView
+  /// implements for contenteditable; there is no replacement to migrate to.
+  Future<void> format(String command, [String? value]) async {
+    final encoded = value == null ? 'null' : jsonEncode(value);
+    await _web?.runJavaScript('window.mailtreeFormat(${jsonEncode(command)}, $encoded);');
+  }
+
+  Future<void> insertHtml(String html) async {
+    await _web?.runJavaScript('window.mailtreeInsert(${jsonEncode(html)});');
+  }
+
+  Future<void> focus() async {
+    await _web?.runJavaScript('window.mailtreeFocus();');
+  }
+
+  /// Strings come back from the WebView JSON-encoded on Android and bare on
+  /// some platforms; handle both rather than assuming.
+  static String _decodeJsString(Object? result) {
+    final s = result?.toString() ?? '';
+    if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) {
+      try {
+        return jsonDecode(s) as String;
+      } on FormatException {
+        return s;
+      }
+    }
+    return s;
+  }
+}
+
+/// The editor document: the body is the editable surface, and a small script
+/// exposes the three things Dart needs.
+String _editorDocument(String bodyHtml) {
+  return '''
+<!doctype html><html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html,body{margin:0;padding:0;height:100%}
+  body{
+    box-sizing:border-box;padding:12px 16px;
+    font:15px/1.45 -apple-system,Roboto,sans-serif;color:#1c1b1f;background:#fff;
+    outline:none;word-wrap:break-word;overflow-wrap:anywhere;
+    -webkit-tap-highlight-color:transparent;
+  }
+  img{max-width:100%;height:auto}
+  blockquote{margin:8px 0;padding-left:12px;border-left:2px solid #ccc;color:#444}
+  .mailtree-signature{color:#555}
+  /* A blocked remote image still needs to occupy space, or the quote
+     reflows as the user types and the layout jumps. */
+  img[data-blocked-src],img[data-blocked-srcset]{
+    min-width:24px;min-height:24px;background:#eee;border:1px dashed #bbb;
+  }
+</style></head>
+<body contenteditable="true">$bodyHtml</body>
+<script>
+(function () {
+  function post(payload) {
+    if (window.MailTree) window.MailTree.postMessage(JSON.stringify(payload));
+  }
+
+  window.mailtreeGetHtml = function () { return document.body.innerHTML; };
+
+  window.mailtreeFormat = function (command, value) {
+    document.execCommand(command, false, value);
+    document.body.focus();
+    reportFormats();
+  };
+
+  window.mailtreeInsert = function (html) {
+    document.execCommand('insertHTML', false, html);
+    reportFormats();
+  };
+
+  window.mailtreeFocus = function () {
+    document.body.focus();
+    placeCaret();
+  };
+
+  var FORMATS = ['bold', 'italic', 'underline',
+                 'insertUnorderedList', 'insertOrderedList'];
+
+  function reportFormats() {
+    var active = [];
+    for (var i = 0; i < FORMATS.length; i++) {
+      try {
+        if (document.queryCommandState(FORMATS[i])) active.push(FORMATS[i]);
+      } catch (e) { /* not every command is queryable everywhere */ }
+    }
+    post({type: 'formats', value: active});
+  }
+
+  // Start where the compose builder asked, which is above the quote.
+  function placeCaret() {
+    var marker = document.getElementById('mailtree-caret');
+    var range = document.createRange();
+    if (marker) {
+      range.setStartBefore(marker);
+    } else {
+      range.selectNodeContents(document.body);
+      range.collapse(true);
+    }
+    range.collapse(true);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  document.addEventListener('selectionchange', reportFormats);
+  document.body.addEventListener('input', reportFormats);
+
+  // Keep the caret visible as the soft keyboard resizes the viewport. The
+  // WebView does not scroll to the caret on its own when the document is
+  // taller than the visible area.
+  function keepCaretVisible() {
+    var sel = window.getSelection();
+    if (!sel.rangeCount) return;
+    var rect = sel.getRangeAt(0).getBoundingClientRect();
+    if (!rect || (rect.top === 0 && rect.bottom === 0)) return;
+    var margin = 24;
+    if (rect.bottom > window.innerHeight - margin) {
+      window.scrollBy(0, rect.bottom - window.innerHeight + margin);
+    } else if (rect.top < margin) {
+      window.scrollBy(0, rect.top - margin);
+    }
+  }
+  document.body.addEventListener('input', keepCaretVisible);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', keepCaretVisible);
+  }
+
+  placeCaret();
+  reportFormats();
+})();
+</script>
+</html>
+''';
+}

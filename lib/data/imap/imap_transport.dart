@@ -84,6 +84,11 @@ abstract class ImapTransport {
     String toPath,
   );
 
+  /// Put a sent message into the Sent folder. Gmail does this itself for
+  /// mail sent through its SMTP, so the engine only calls this where the
+  /// provider does not.
+  Future<void> appendMessage(String path, String mimeText, {bool seen = true});
+
   Future<void> expunge(String path);
 
   Future<void> createFolder(String path);
@@ -93,7 +98,7 @@ abstract class ImapTransport {
   Future<void> close();
 }
 
-enum MessageFlag { seen, flagged, deleted }
+enum MessageFlag { seen, flagged, deleted, answered }
 
 @immutable
 class RemoteFolder {

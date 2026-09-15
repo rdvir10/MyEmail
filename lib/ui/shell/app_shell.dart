@@ -4,7 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/mail_message.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
+import '../../domain/draft.dart';
 import '../accounts/add_account_screen.dart';
+import '../compose/open_compose.dart';
 import '../folder_tree/folder_tree_panel.dart';
 import '../messages/message_list_pane.dart';
 import '../messages/reading_pane.dart';
@@ -79,6 +81,7 @@ class _NarrowLayout extends ConsumerWidget {
         ),
       ),
       body: MessageListPane(onOpen: (m) => _pushMessage(context, m)),
+      floatingActionButton: const _ComposeButton(),
     );
   }
 }
@@ -109,6 +112,7 @@ class _MediumLayout extends StatelessWidget {
           ],
         ),
       ),
+      floatingActionButton: const _ComposeButton(),
     );
   }
 }
@@ -152,6 +156,7 @@ class _WideLayout extends ConsumerWidget {
           ],
         ),
       ),
+      floatingActionButton: const _ComposeButton(),
     );
   }
 }
@@ -235,4 +240,20 @@ void _pushMessage(BuildContext context, MailMessage message) {
   Navigator.of(context).push(
     MaterialPageRoute<void>(builder: (_) => MessageScreen(message: message)),
   );
+}
+
+/// New message, on every layout. Outlook puts it bottom-right and so does
+/// every mail app; putting it anywhere else would be novelty for its own sake.
+class _ComposeButton extends ConsumerWidget {
+  const _ComposeButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return FloatingActionButton(
+      tooltip: 'New message',
+      onPressed: () =>
+          openCompose(context, ref, kind: ComposeKind.newMessage),
+      child: const Icon(Icons.edit_outlined),
+    );
+  }
 }

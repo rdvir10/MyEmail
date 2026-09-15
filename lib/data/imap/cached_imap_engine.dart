@@ -2,9 +2,11 @@ import '../../domain/account.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/draft.dart';
 import '../account_store.dart';
 import '../cache/cache_store.dart';
 import '../cache/folder_sync.dart';
+import '../compose/smtp_sender.dart';
 import '../credential_store.dart';
 import '../folder_list_store.dart';
 import '../mail_engine.dart';
@@ -25,6 +27,7 @@ class CachedImapEngine implements MailEngine {
     required this.cache,
     FolderListStore? folderLists,
     ImapTransport Function(Account account, String secret)? transportFactory,
+    this._senderFactory,
   })  : folderLists = folderLists ?? MemoryFolderListStore(),
         _transportFactory = transportFactory ?? _defaultTransport;
 
@@ -33,6 +36,7 @@ class CachedImapEngine implements MailEngine {
   final CacheStore cache;
   final FolderListStore folderLists;
   final ImapTransport Function(Account account, String secret) _transportFactory;
+  final SmtpSender Function(Account account, String secret)? _senderFactory;
 
   final Map<String, ImapTransport> _transports = {};
   final Map<String, FolderSync> _syncs = {};
@@ -469,6 +473,76 @@ class CachedImapEngine implements MailEngine {
       });
     }
   }
+
+  @override
+  Future<void> sendDraft(Draft draft) async {
+    if (!draft.hasRecipients) {
+      throw const SendFailed('Add at least one recipient.');
+    }
+    final account = accountStore.read().firstWhere(
+          (a) => a.id == draft.accountId,
+          orElse: () => throw StateError('Unknown account ${draft.accountId}'),
+        );
+    final secret = await credentialStore.readSecret(account.id);
+    if (secret == null) {
+      throw AuthenticationFailed(
+        'No password is stored for ${account.emailAddress}.',
+      );
+    }
+
+    final message = buildMimeMessage(draft: draft, account: account);
+    await _senderFor(account, secret).send(message);
+
+    // Gmail files sent mail into Sent itself, so appending would leave two
+    // copies. Other providers do not, hence the per-provider check.
+    if (_needsSentCopy(account.provider)) {
+      final sentPath = await _folderPathForRole(account.id, FolderRole.sent);
+      if (sentPath != null) {
+        try {
+          final t = await _transport(account.id);
+          await t.appendMessage(sentPath, message.renderMessage());
+        } catch (_) {
+          // The message is already away; failing to file a copy is not worth
+          // telling the user the send failed.
+        }
+      }
+    }
+
+    // Mark the message being answered as \Answered, which is what makes
+    // other clients show the reply arrow.
+    final originalId = draft.originalMessageId;
+    if (originalId != null && draft.kind != ComposeKind.forward) {
+      try {
+        final (folderId, uid) = splitMessageId(originalId);
+        final (accountId, path) = splitFolderId(folderId);
+        final t = await _transport(accountId);
+        await t.storeFlag(path, uids: [uid], flag: MessageFlag.answered,
+            set: true);
+      } catch (_) {
+        // Cosmetic; never fail a successful send over it.
+      }
+    }
+  }
+
+  static bool _needsSentCopy(MailProvider provider) =>
+      provider != MailProvider.gmail;
+
+  Future<String?> _folderPathForRole(String accountId, FolderRole role) async {
+    final remote = folderLists.read(accountId);
+    if (remote == null) return null;
+    for (final f in remote) {
+      if (f.role == role) return f.path;
+    }
+    return null;
+  }
+
+  SmtpSender _senderFor(Account account, String secret) =>
+      _senderFactory?.call(account, secret) ??
+      SmtpSender(
+        host: SmtpSender.smtpHostFor(account.provider),
+        user: account.emailAddress,
+        secret: secret,
+      );
 
   // --- plumbing --------------------------------------------------------------
 

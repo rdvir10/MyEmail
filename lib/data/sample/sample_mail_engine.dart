@@ -1,10 +1,13 @@
 import 'dart:math';
 
 import '../../domain/account.dart';
+import '../../domain/draft.dart';
 import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
+import '../compose/quote_builder.dart';
+import '../imap/imap_mapping.dart';
 import '../mail_engine.dart';
 import 'sample_messages.dart';
 
@@ -255,6 +258,48 @@ class SampleMailEngine implements MailEngine {
     }
     hits.sort((a, b) => b.date.compareTo(a.date));
     return hits.take(limit).toList();
+  }
+
+  @override
+  Future<void> sendDraft(Draft draft) async {
+    await _latency();
+    if (!draft.hasRecipients) {
+      throw const SendFailed('Add at least one recipient.');
+    }
+    final sent = (_folders[draft.accountId] ?? const <MailFolder>[])
+        .where((f) => f.role == FolderRole.sent)
+        .firstOrNull;
+    if (sent == null) return;
+
+    final list = _messages.putIfAbsent(
+      sent.id,
+      () => generateSampleMessages(sent),
+    );
+    final uid = list.isEmpty ? 1 : list.map((m) => m.uid).reduce(max) + 1;
+    final account =
+        _accounts.firstWhere((a) => a.id == draft.accountId);
+    list.insert(
+      0,
+      MailMessage(
+        id: MailMessage.idFor(sent.id, uid),
+        accountId: draft.accountId,
+        folderId: sent.id,
+        uid: uid,
+        subject: draft.subject.trim().isEmpty
+            ? '(No subject)'
+            : draft.subject.trim(),
+        from: MailAddress(
+          email: account.emailAddress,
+          name: account.displayName,
+        ),
+        to: draft.to,
+        date: DateTime.now(),
+        preview: previewFromText(plainTextFromHtml(draft.htmlBody)),
+        isRead: true,
+        hasAttachments: draft.attachments.isNotEmpty,
+      ),
+    );
+    _replace(sent.copyWith(totalCount: sent.totalCount + 1));
   }
 
   @override

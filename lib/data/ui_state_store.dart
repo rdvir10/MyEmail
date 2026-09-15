@@ -28,6 +28,7 @@ abstract final class UiStateKeys {
   static const selected = 'tree.selected';
   static const recentMoves = 'move.recents';
   static const quickSteps = 'quicksteps.v1';
+  static const signatures = 'signatures.v1';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.

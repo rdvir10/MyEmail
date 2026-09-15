@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mailtree/data/mail_engine.dart';
 import 'package:mailtree/data/sample/sample_mail_engine.dart';
 import 'package:mailtree/domain/account.dart';
+import 'package:mailtree/domain/draft.dart';
 import 'package:mailtree/domain/folder_role.dart';
 import 'package:mailtree/domain/mail_folder.dart';
 import 'package:mailtree/domain/mail_message.dart';
@@ -106,6 +107,9 @@ class _EmptyEngine implements MailEngine {
     int limit = 100,
   }) =>
       _inner.searchMessages(query, scope, limit: limit);
+
+  @override
+  Future<void> sendDraft(Draft draft) => _inner.sendDraft(draft);
 }
 
 void main() {

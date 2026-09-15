@@ -1,4 +1,5 @@
 import '../domain/account.dart';
+import '../domain/draft.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
 
@@ -85,6 +86,13 @@ abstract class MailEngine {
     SearchScope scope, {
     int limit = 100,
   });
+
+  /// Send the draft over SMTP, copy it into Sent, and mark the message it
+  /// answers as \Answered when there is one.
+  ///
+  /// Throws [SendFailed] when the server refuses, [AuthenticationFailed] when
+  /// it refuses the login, and [ConnectionFailed] when it cannot be reached.
+  Future<void> sendDraft(Draft draft);
 }
 
 /// Where a search looks.

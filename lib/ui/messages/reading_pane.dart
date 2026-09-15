@@ -2,9 +2,11 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/draft.dart';
 import '../../domain/mail_message.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
+import '../compose/open_compose.dart';
 import 'date_format.dart';
 import 'html_body_view.dart';
 
@@ -89,6 +91,12 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                 _act((n) => n.setFlagged(message.id, !message.isFlagged)),
             onToggleRead: () =>
                 _act((n) => n.setRead(message.id, !message.isRead)),
+            onCompose: (kind) => openCompose(
+              context,
+              ref,
+              kind: kind,
+              original: message,
+            ),
           ),
         ),
         const Divider(height: 1),
@@ -137,11 +145,13 @@ class _Header extends StatelessWidget {
     required this.message,
     required this.onToggleFlag,
     required this.onToggleRead,
+    required this.onCompose,
   });
 
   final MailMessage message;
   final VoidCallback onToggleFlag;
   final VoidCallback onToggleRead;
+  final void Function(ComposeKind kind) onCompose;
 
   @override
   Widget build(BuildContext context) {
@@ -159,6 +169,21 @@ class _Header extends StatelessWidget {
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
               ),
+            ),
+            IconButton(
+              tooltip: 'Reply',
+              icon: const Icon(Icons.reply),
+              onPressed: () => onCompose(ComposeKind.reply),
+            ),
+            IconButton(
+              tooltip: 'Reply all',
+              icon: const Icon(Icons.reply_all),
+              onPressed: () => onCompose(ComposeKind.replyAll),
+            ),
+            IconButton(
+              tooltip: 'Forward',
+              icon: const Icon(Icons.forward),
+              onPressed: () => onCompose(ComposeKind.forward),
             ),
             IconButton(
               tooltip: message.isFlagged ? 'Remove flag' : 'Flag',

@@ -232,6 +232,21 @@ class EnoughMailTransport implements ImapTransport {
   }
 
   @override
+  Future<void> appendMessage(
+    String path,
+    String mimeText, {
+    bool seen = true,
+  }) =>
+      _run((c) async {
+        final box = await _box(c, path);
+        await c.appendMessageText(
+          mimeText,
+          targetMailbox: box,
+          flags: seen ? [em.MessageFlags.seen] : const [],
+        );
+      });
+
+  @override
   Future<void> expunge(String path) => _run((c) async {
         await _ensureSelected(c, path);
         await c.expunge();
@@ -381,5 +396,6 @@ class EnoughMailTransport implements ImapTransport {
         MessageFlag.seen => em.MessageFlags.seen,
         MessageFlag.flagged => em.MessageFlags.flagged,
         MessageFlag.deleted => em.MessageFlags.deleted,
+        MessageFlag.answered => em.MessageFlags.answered,
       };
 }

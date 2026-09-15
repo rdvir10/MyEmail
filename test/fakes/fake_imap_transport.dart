@@ -215,6 +215,21 @@ class FakeImapTransport implements ImapTransport {
     return reportsCopyUids ? newUids : null;
   }
 
+  /// Messages appended by a send, so tests can assert a Sent copy was filed.
+  final List<String> appended = [];
+
+  @override
+  Future<void> appendMessage(
+    String path,
+    String mimeText, {
+    bool seen = true,
+  }) async {
+    _online();
+    calls.add('APPEND $path');
+    appended.add(mimeText);
+    folder(path).deliver(subject: 'appended', isRead: seen);
+  }
+
   @override
   Future<void> expunge(String path) async {
     _online();
@@ -326,6 +341,7 @@ class FakeMessage {
   bool isRead;
   bool isFlagged;
   bool isDeleted = false;
+  bool isAnswered = false;
   final String body;
   final String? html;
   int modSeq;
@@ -338,6 +354,8 @@ class FakeMessage {
         isFlagged = set;
       case MessageFlag.deleted:
         isDeleted = set;
+      case MessageFlag.answered:
+        isAnswered = set;
     }
     modSeq = newModSeq;
   }
