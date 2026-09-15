@@ -29,6 +29,9 @@ abstract final class UiStateKeys {
   static const recentMoves = 'move.recents';
   static const quickSteps = 'quicksteps.v1';
   static const signatures = 'signatures.v1';
+  // Notification preferences are deliberately NOT here: they are read by the
+  // background isolate, which cannot see this store's cache. See SyncStateKeys.
+  static const paneWidths = 'panes.v1';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.

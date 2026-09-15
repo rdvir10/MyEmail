@@ -167,7 +167,7 @@ void main() {
           reason: 'tree is a permanent pane');
       expect(find.byTooltip('Open navigation menu'), findsNothing,
           reason: 'no drawer button on a wide screen');
-      expect(find.text('Select a message to read'), findsOneWidget,
+      expect(find.textContaining('Select a message'), findsOneWidget,
           reason: 'reading pane is present but empty');
 
       await tester.tap(find.text('Newsletters'));

@@ -5,6 +5,7 @@ import '../../data/imap/imap_mapping.dart';
 import '../../domain/mail_message.dart';
 import '../../state/message_providers.dart';
 import '../../state/notification_providers.dart';
+import '../../state/pane_widths.dart';
 import '../../state/providers.dart';
 import '../../domain/draft.dart';
 import '../accounts/add_account_screen.dart';
@@ -144,30 +145,42 @@ class _NarrowLayout extends ConsumerWidget {
   }
 }
 
-class _MediumLayout extends StatelessWidget {
+class _MediumLayout extends ConsumerWidget {
   const _MediumLayout();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
       body: SafeArea(
-        child: Row(
-          children: [
-            const _TreePane(),
-            const VerticalDivider(width: 1),
-            Expanded(
-              child: Column(
-                children: [
-                  const _FolderTitleBar(),
-                  Expanded(
-                    child: MessageListPane(
-                      onOpen: (m) => _pushMessage(context, m),
-                    ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final panes = ref
+                .watch(paneWidthsProvider)
+                .fitted(constraints.maxWidth, hasReadingPane: false);
+            final notifier = ref.read(paneWidthsProvider.notifier);
+            return Row(
+              children: [
+                _TreePane(width: panes.tree),
+                PaneDivider(
+                  onDrag: notifier.dragTree,
+                  onReset: notifier.reset,
+                  label: 'Folder pane width',
+                ),
+                Expanded(
+                  child: Column(
+                    children: [
+                      const _FolderTitleBar(),
+                      Expanded(
+                        child: MessageListPane(
+                          onOpen: (m) => _pushMessage(context, m),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
-            ),
-          ],
+                ),
+              ],
+            );
+          },
         ),
       ),
       floatingActionButton: const _ComposeButton(),
@@ -181,37 +194,47 @@ class _WideLayout extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final open = ref.watch(selectedMessageProvider);
-    final theme = Theme.of(context);
 
     return Scaffold(
       body: SafeArea(
-        child: Row(
-          children: [
-            const _TreePane(),
-            const VerticalDivider(width: 1),
-            SizedBox(
-              width: AppShell.listPaneWidth,
-              child: Column(
-                children: [
-                  const _FolderTitleBar(),
-                  // Opening a message on the wide layout only changes which
-                  // one the reading pane shows; there is nothing to push.
-                  Expanded(child: MessageListPane(onOpen: (_) {})),
-                ],
-              ),
-            ),
-            const VerticalDivider(width: 1),
-            Expanded(
-              child: open == null
-                  ? Center(
-                      child: Text(
-                        'Select a message to read',
-                        style: theme.textTheme.bodySmall,
-                      ),
-                    )
-                  : ReadingPane(key: ValueKey(open.id), message: open),
-            ),
-          ],
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final panes = ref
+                .watch(paneWidthsProvider)
+                .fitted(constraints.maxWidth, hasReadingPane: true);
+            final notifier = ref.read(paneWidthsProvider.notifier);
+            return Row(
+              children: [
+                _TreePane(width: panes.tree),
+                PaneDivider(
+                  onDrag: notifier.dragTree,
+                  onReset: notifier.reset,
+                  label: 'Folder pane width',
+                ),
+                SizedBox(
+                  width: panes.list,
+                  child: Column(
+                    children: [
+                      const _FolderTitleBar(),
+                      // Opening a message on the wide layout only changes which
+                      // one the reading pane shows; there is nothing to push.
+                      Expanded(child: MessageListPane(onOpen: (_) {})),
+                    ],
+                  ),
+                ),
+                PaneDivider(
+                  onDrag: notifier.dragList,
+                  onReset: notifier.reset,
+                  label: 'Message list width',
+                ),
+                Expanded(
+                  child: open == null
+                      ? const _NothingOpen()
+                      : ReadingPane(key: ValueKey(open.id), message: open),
+                ),
+              ],
+            );
+          },
         ),
       ),
       floatingActionButton: const _ComposeButton(),
@@ -219,15 +242,111 @@ class _WideLayout extends ConsumerWidget {
   }
 }
 
+/// What the reading pane shows before anything is chosen. On a tablet this is
+/// a third of the screen, so it names the folder in view rather than leaving
+/// the largest pane blank.
+class _NothingOpen extends ConsumerWidget {
+  const _NothingOpen();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final selectedId = ref.watch(effectiveSelectedFolderIdProvider);
+    final folder =
+        selectedId == null ? null : ref.watch(folderIndexProvider)[selectedId];
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.drafts_outlined,
+            size: 40,
+            color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.4),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            folder == null
+                ? 'Select a message to read'
+                : 'Select a message in ${folder.displayName}',
+            style: theme.textTheme.bodyMedium
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The draggable edge between two panes.
+///
+/// It looks like the one-pixel divider it replaces but takes a wider slice of
+/// the screen for the gesture, because a one-pixel drag target is unusable
+/// with a finger and this is the layout a tablet is held in. Double-tapping
+/// puts the panes back, since a divider has no undo.
+class PaneDivider extends StatefulWidget {
+  const PaneDivider({
+    super.key,
+    required this.onDrag,
+    required this.onReset,
+    required this.label,
+  });
+
+  final void Function(double delta) onDrag;
+  final VoidCallback onReset;
+  final String label;
+
+  static const double hitWidth = 12;
+
+  @override
+  State<PaneDivider> createState() => _PaneDividerState();
+}
+
+class _PaneDividerState extends State<PaneDivider> {
+  bool _active = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeColumn,
+      onEnter: (_) => setState(() => _active = true),
+      onExit: (_) => setState(() => _active = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragUpdate: (d) => widget.onDrag(d.delta.dx),
+        onHorizontalDragStart: (_) => setState(() => _active = true),
+        onHorizontalDragEnd: (_) => setState(() => _active = false),
+        onDoubleTap: widget.onReset,
+        child: Semantics(
+          label: widget.label,
+          child: SizedBox(
+            width: PaneDivider.hitWidth,
+            child: Center(
+              child: Container(
+                width: _active ? 3 : 1,
+                color: _active
+                    ? scheme.primary
+                    : scheme.outlineVariant.withValues(alpha: 0.5),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // -----------------------------------------------------------------------------
 
 class _TreePane extends StatelessWidget {
-  const _TreePane();
+  const _TreePane({required this.width});
+
+  final double width;
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: AppShell.treePaneWidth,
+      width: width,
       child: Material(
         color: Theme.of(context).colorScheme.surfaceContainerLow,
         child: const FolderTreePanel(),

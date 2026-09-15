@@ -20,7 +20,7 @@ void main() {
 
     expect(find.text('Search folders'), findsOneWidget, reason: 'tree pane');
     expect(find.text('Search mail'), findsOneWidget, reason: 'list pane');
-    expect(find.text('Select a message to read'), findsOneWidget,
+    expect(find.textContaining('Select a message'), findsOneWidget,
         reason: 'reading pane');
     expect(find.byTooltip('Open navigation menu'), findsNothing);
   });

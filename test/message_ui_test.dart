@@ -44,7 +44,7 @@ void main() {
     await tester.pumpWidget(_app());
     await tester.pumpAndSettle();
 
-    expect(find.text('Select a message to read'), findsOneWidget);
+    expect(find.textContaining('Select a message'), findsOneWidget);
 
     final first = find.byType(MessageTile).first;
     final subject = tester.widget<MessageTile>(first).message.subject;
@@ -69,7 +69,7 @@ void main() {
     await tester.tap(find.text('Travel'));
     await tester.pumpAndSettle();
     expect(find.byType(ReadingPane), findsNothing);
-    expect(find.text('Select a message to read'), findsOneWidget);
+    expect(find.textContaining('Select a message'), findsOneWidget);
   });
 
   testWidgets('unified inbox marks each message with its account colour',
@@ -92,7 +92,7 @@ void main() {
 
     expect(find.text('Search folders'), findsOneWidget);
     expect(find.byTooltip('Open navigation menu'), findsNothing);
-    expect(find.text('Select a message to read'), findsNothing,
+    expect(find.textContaining('Select a message'), findsNothing,
         reason: 'no reading pane at this width');
 
     await tester.tap(find.byType(MessageTile).first);
