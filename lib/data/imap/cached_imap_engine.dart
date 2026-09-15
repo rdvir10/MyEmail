@@ -55,6 +55,24 @@ class CachedImapEngine implements MailEngine {
         MailProvider.outlook => 'outlook.office365.com',
       };
 
+  /// An id no existing account holds.
+  ///
+  /// The clock alone is not enough. Two accounts added in the same
+  /// millisecond get the same id, and everything downstream is keyed on it:
+  /// the secret in the Keystore, the cached folders and messages, the
+  /// notification watermarks. Adding a second mailbox immediately after the
+  /// first would have silently shared all of it with the first.
+  static String _newAccountId(Set<String> taken) {
+    final stamp = DateTime.now().toUtc().millisecondsSinceEpoch.toRadixString(36);
+    var id = 'acct-$stamp';
+    var suffix = 1;
+    while (taken.contains(id)) {
+      id = 'acct-$stamp-$suffix';
+      suffix++;
+    }
+    return id;
+  }
+
   // --- accounts --------------------------------------------------------------
 
   @override
@@ -73,7 +91,7 @@ class CachedImapEngine implements MailEngine {
       throw AuthenticationFailed('$email is already set up.');
     }
     final account = Account(
-      id: 'acct-${DateTime.now().toUtc().millisecondsSinceEpoch.toRadixString(36)}',
+      id: _newAccountId(existing.map((a) => a.id).toSet()),
       displayName: displayName,
       emailAddress: email,
       provider: provider,

@@ -60,6 +60,23 @@ void main() {
       expect(calls.single, contains('me@example.com'));
     });
 
+    test('two accounts added in the same millisecond get different ids',
+        () async {
+      // The id was the clock alone, so a second mailbox added straight after
+      // the first shared its Keystore entry, its cache and its sync state.
+      seedGmail();
+      final first = await addAccount();
+      final second = await engine.addAccount(
+        displayName: 'Work',
+        emailAddress: 'work@example.com',
+        provider: MailProvider.gmail,
+        secret: 'wxyzwxyzwxyzwxyz',
+      );
+      expect(second.id, isNot(first.id));
+      expect(await secrets.readSecret(first.id), 'abcdabcdabcdabcd');
+      expect(await secrets.readSecret(second.id), 'wxyzwxyzwxyzwxyz');
+    });
+
     test('a refused login stores nothing', () async {
       server.offline = true;
       await expectLater(addAccount(), throwsA(isA<ConnectionFailed>()));
