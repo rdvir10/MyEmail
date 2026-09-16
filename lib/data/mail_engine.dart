@@ -93,6 +93,14 @@ abstract class MailEngine {
   /// Throws [SendFailed] when the server refuses, [AuthenticationFailed] when
   /// it refuses the login, and [ConnectionFailed] when it cannot be reached.
   Future<void> sendDraft(Draft draft);
+
+  /// Put [draft] in the Drafts folder, replacing the copy it was opened from.
+  ///
+  /// Server-side rather than local, so the half-written message is on the
+  /// phone, on the web and in every other client, which is the only version
+  /// of this feature worth having. Returns the new message id, or null where
+  /// the account has no Drafts folder to put it in.
+  Future<String?> saveDraft(Draft draft);
 }
 
 /// Where a search looks.

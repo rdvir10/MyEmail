@@ -12,6 +12,7 @@ import '../../state/quick_steps.dart';
 import '../../state/search_providers.dart';
 import '../quick_steps/quick_steps_screen.dart';
 import 'message_actions.dart';
+import '../compose/open_compose.dart';
 import 'conversation_tile.dart';
 import 'message_tile.dart';
 import 'search_bar.dart';
@@ -204,6 +205,13 @@ class MessageListPane extends ConsumerWidget {
                   density: density,
                   accountColor: isUnified ? accountColors[m.accountId] : null,
                   onTap: () {
+                    // A message in Drafts is something you were writing, so a
+                    // tap continues it rather than opening a reading pane on
+                    // your own words with a Reply button under them.
+                    if (isDraftsFolder(ref, m.folderId)) {
+                      openSavedDraft(context, ref, m);
+                      return;
+                    }
                     ref.read(selectedMessageIdProvider.notifier).select(m.id);
                     onOpen(m);
                   },

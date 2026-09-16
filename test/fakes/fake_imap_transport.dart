@@ -225,9 +225,10 @@ class FakeImapTransport implements ImapTransport {
     String path,
     String mimeText, {
     bool seen = true,
+    bool draft = false,
   }) async {
     _online();
-    calls.add('APPEND $path');
+    calls.add('APPEND $path${draft ? r' \Draft' : ''}');
     appended.add(mimeText);
     folder(path).deliver(subject: 'appended', isRead: seen);
   }

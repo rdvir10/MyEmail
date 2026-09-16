@@ -51,6 +51,8 @@ class Draft {
     this.inReplyTo,
     this.references = const [],
     this.originalMessageId,
+    this.savedAs,
+    this.lostAttachmentNames = const [],
   });
 
   final String accountId;
@@ -70,6 +72,39 @@ class Draft {
   /// Used to set \Answered once the reply is away.
   final String? originalMessageId;
 
+  /// Where this draft already sits in the Drafts folder, as
+  /// `<folderId>#<uid>`. Saving again replaces that copy rather than leaving
+  /// a trail of half-written versions behind.
+  final String? savedAs;
+
+  /// Attachments the saved copy had that could not be brought back into the
+  /// editor. Named rather than silently dropped: a draft that quietly loses
+  /// its attachment between one session and the next is worse than one that
+  /// says it did.
+  final List<String> lostAttachmentNames;
+
+  /// Whether there is anything worth keeping. An untouched compose window
+  /// backed out of should not leave a blank draft on the server.
+  bool get isWorthSaving =>
+      subject.trim().isNotEmpty ||
+      hasRecipients ||
+      attachments.isNotEmpty ||
+      htmlBodyHasText;
+
+  /// The editor always holds some markup, and on a reply it holds the whole
+  /// quoted original, so "is the body empty" cannot be a string test on the
+  /// HTML. Tags and whitespace do not count as having written anything.
+  bool get htmlBodyHasText {
+    final text = htmlBody
+        .replaceAll(RegExp(r'<blockquote[\s\S]*?</blockquote>',
+            caseSensitive: false), '')
+        .replaceAll(RegExp(r'<[^>]*>'), ' ')
+        .replaceAll('&nbsp;', ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    return text.isNotEmpty;
+  }
+
   bool get hasRecipients => to.isNotEmpty || cc.isNotEmpty || bcc.isNotEmpty;
 
   int get attachmentBytes =>
@@ -83,6 +118,7 @@ class Draft {
     String? htmlBody,
     List<DraftAttachment>? attachments,
     String? accountId,
+    String? savedAs,
   }) {
     return Draft(
       accountId: accountId ?? this.accountId,
@@ -96,6 +132,8 @@ class Draft {
       inReplyTo: inReplyTo,
       references: references,
       originalMessageId: originalMessageId,
+      savedAs: savedAs ?? this.savedAs,
+      lostAttachmentNames: lostAttachmentNames,
     );
   }
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/draft.dart';
+import '../../domain/folder_role.dart';
 import '../../domain/mail_message.dart';
 import '../../state/compose_providers.dart';
 import '../../state/folder_tree.dart';
@@ -47,6 +48,32 @@ Future<void> openCompose(
   await Navigator.of(context).push(
     MaterialPageRoute<bool>(builder: (_) => ComposeScreen(draft: draft)),
   );
+}
+
+/// Reopen a saved draft for editing.
+///
+/// This is what tapping a message in Drafts does instead of opening the
+/// reading pane. Reading a message you wrote yourself and cannot reply to is
+/// not a useful screen.
+Future<void> openSavedDraft(
+  BuildContext context,
+  WidgetRef ref,
+  MailMessage message,
+) async {
+  final draft = await _withSpinner(
+    context,
+    draftFromMessage(ref: ref, message: message),
+  );
+  if (draft == null || !context.mounted) return;
+  await Navigator.of(context).push(
+    MaterialPageRoute<bool>(builder: (_) => ComposeScreen(draft: draft)),
+  );
+}
+
+/// Whether [folderId] is a Drafts folder, so a tap opens the editor.
+bool isDraftsFolder(WidgetRef ref, String? folderId) {
+  if (folderId == null) return false;
+  return ref.read(folderIndexProvider)[folderId]?.role == FolderRole.drafts;
 }
 
 /// Which account the open folder belongs to. Null in the unified Inbox,

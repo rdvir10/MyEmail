@@ -87,7 +87,15 @@ abstract class ImapTransport {
   /// Put a sent message into the Sent folder. Gmail does this itself for
   /// mail sent through its SMTP, so the engine only calls this where the
   /// provider does not.
-  Future<void> appendMessage(String path, String mimeText, {bool seen = true});
+  /// Put a message into [path]. [draft] sets `\Draft`, which is what makes
+  /// other clients offer to keep editing it rather than treating it as
+  /// received mail.
+  Future<void> appendMessage(
+    String path,
+    String mimeText, {
+    bool seen = true,
+    bool draft = false,
+  });
 
   Future<void> expunge(String path);
 

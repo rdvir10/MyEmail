@@ -237,13 +237,17 @@ class EnoughMailTransport implements ImapTransport {
     String path,
     String mimeText, {
     bool seen = true,
+    bool draft = false,
   }) =>
       _run((c) async {
         final box = await _box(c, path);
         await c.appendMessageText(
           mimeText,
           targetMailbox: box,
-          flags: seen ? [em.MessageFlags.seen] : const [],
+          flags: [
+            if (seen) em.MessageFlags.seen,
+            if (draft) em.MessageFlags.draft,
+          ],
         );
       });
 

@@ -119,14 +119,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
       _error = null;
     });
     try {
-      final draft = widget.draft.copyWith(
-        to: to,
-        cc: cc,
-        subject: _subject.text,
-        htmlBody: await _editor.getHtml(),
-        attachments: _attachments,
-      );
-      await sendDraft(ref, draft);
+      await sendDraft(ref, await _currentDraft());
       if (!mounted) return;
       Navigator.of(context).pop(true);
       ScaffoldMessenger.of(context)
@@ -145,29 +138,81 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
     }
   }
 
-  Future<bool> _confirmDiscard() async {
-    final ok = await showDialog<bool>(
+  /// Backing out of a half-written message: keep writing, save it, or throw
+  /// it away. Saving is the default action and the one on the right, because
+  /// losing something you typed is the expensive mistake here.
+  ///
+  /// An untouched window skips the question entirely. Opening compose and
+  /// changing your mind should not produce a dialog, still less a blank draft
+  /// on the server.
+  Future<_LeaveChoice> _askOnLeave() async {
+    if (!await _currentDraft().then((d) => d.isWorthSaving)) {
+      return _LeaveChoice.discard;
+    }
+    if (!mounted) return _LeaveChoice.keepWriting;
+    final choice = await showDialog<_LeaveChoice>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Discard this message?'),
-        content: const Text('It has not been sent and will not be kept.'),
+        title: const Text('Keep this message?'),
+        content: Text(
+          widget.draft.savedAs == null
+              ? 'It has not been sent. Saving puts it in Drafts, where you '
+                  'can finish it here or anywhere else you read this mail.'
+              : 'It has not been sent. Saving updates the copy in Drafts.',
+        ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
+            onPressed: () =>
+                Navigator.of(context).pop(_LeaveChoice.keepWriting),
             child: const Text('Keep writing'),
           ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.error,
-              foregroundColor: Theme.of(context).colorScheme.onError,
+          TextButton(
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
             ),
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(context).pop(_LeaveChoice.discard),
             child: const Text('Discard'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(_LeaveChoice.save),
+            child: const Text('Save draft'),
           ),
         ],
       ),
     );
-    return ok ?? false;
+    return choice ?? _LeaveChoice.keepWriting;
+  }
+
+  /// What is on screen right now, as a draft.
+  Future<Draft> _currentDraft() async => widget.draft.copyWith(
+        to: parseAddresses(_to.text),
+        cc: parseAddresses(_cc.text),
+        subject: _subject.text,
+        htmlBody: await _editor.getHtml(),
+        attachments: _attachments,
+      );
+
+  Future<void> _saveAndLeave() async {
+    setState(() {
+      _sending = true;
+      _error = null;
+    });
+    try {
+      await saveDraft(ref, await _currentDraft());
+      if (!mounted) return;
+      Navigator.of(context).pop(false);
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(content: Text('Saved to Drafts')));
+    } catch (e) {
+      // Staying put is the right failure: popping now would lose the message
+      // that could not be saved, which is the thing being protected against.
+      if (mounted) {
+        setState(() => _error = 'Could not save it to Drafts: $e');
+      }
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
   }
 
   @override
@@ -181,9 +226,14 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
-        final discard = await _confirmDiscard();
-        if (!discard || !context.mounted) return;
-        Navigator.of(context).pop(false);
+        switch (await _askOnLeave()) {
+          case _LeaveChoice.keepWriting:
+            return;
+          case _LeaveChoice.save:
+            await _saveAndLeave();
+          case _LeaveChoice.discard:
+            if (context.mounted) Navigator.of(context).pop(false);
+        }
       },
       child: Scaffold(
         appBar: AppBar(
@@ -255,6 +305,13 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
                               [..._attachments]..remove(a),
                         ),
               ),
+            if (widget.draft.lostAttachmentNames.isNotEmpty &&
+                _attachments.isEmpty)
+              _Notice(
+                'This draft had an attachment. Attach it again before '
+                'sending; reopening a draft does not bring files back.',
+                theme: theme,
+              ),
             if (_error != null)
               Container(
                 width: double.infinity,
@@ -271,6 +328,41 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
             _Toolbar(controller: _editor, enabled: !_sending),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// What to do with a half-written message when the screen is backed out of.
+enum _LeaveChoice { keepWriting, save, discard }
+
+/// A quiet band of explanation, distinct from the error band above it.
+class _Notice extends StatelessWidget {
+  const _Notice(this.text, {required this.theme});
+
+  final String text;
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: theme.colorScheme.surfaceContainerHigh,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline,
+              size: 16, color: theme.colorScheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ),
+        ],
       ),
     );
   }

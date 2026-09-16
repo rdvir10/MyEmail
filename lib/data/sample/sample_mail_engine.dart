@@ -94,6 +94,10 @@ class SampleMailEngine implements MailEngine {
   /// (milestone 4) stick for the rest of the run.
   final Map<String, List<MailMessage>> _messages = {};
 
+  /// Bodies of messages this engine was given rather than generated, which
+  /// today means saved drafts. Reopening one must show what was written.
+  final Map<String, MailBody> _savedBodies = {};
+
   @override
   Future<List<MailMessage>> loadMessages(
     String folderId, {
@@ -118,7 +122,9 @@ class SampleMailEngine implements MailEngine {
       orElse: () => throw StateError('No such message: $messageId'),
     );
     if (message == null) throw StateError('No such message: $messageId');
-    return generateSampleBody(message);
+    // A saved draft has a real body. Everything else is generated, which is
+    // the whole point of the sample engine.
+    return _savedBodies[messageId] ?? generateSampleBody(message);
   }
 
   @override
@@ -261,6 +267,52 @@ class SampleMailEngine implements MailEngine {
   }
 
   @override
+  Future<String?> saveDraft(Draft draft) async {
+    await _latency();
+    final drafts = (_folders[draft.accountId] ?? const <MailFolder>[])
+        .where((f) => f.role == FolderRole.drafts)
+        .firstOrNull;
+    if (drafts == null) return null;
+
+    final list = _messages.putIfAbsent(drafts.id, () => []);
+    // Replace the copy this was opened from, rather than piling up a version
+    // per save, which is what the real engine does with \Deleted and EXPUNGE.
+    final previous = draft.savedAs;
+    if (previous != null) list.removeWhere((m) => m.id == previous);
+
+    final uid = list.isEmpty ? 1 : list.map((m) => m.uid).reduce(max) + 1;
+    final account = _accounts.firstWhere((a) => a.id == draft.accountId);
+    final id = MailMessage.idFor(drafts.id, uid);
+    list.insert(
+      0,
+      MailMessage(
+        id: id,
+        accountId: draft.accountId,
+        folderId: drafts.id,
+        uid: uid,
+        subject: draft.subject.trim().isEmpty
+            ? '(No subject)'
+            : draft.subject.trim(),
+        from: MailAddress(
+          email: account.emailAddress,
+          name: account.displayName,
+        ),
+        to: draft.to,
+        date: DateTime.now(),
+        preview: previewFromText(plainTextFromHtml(draft.htmlBody)),
+        isRead: true,
+        hasAttachments: draft.attachments.isNotEmpty,
+      ),
+    );
+    _savedBodies[id] = MailBody(
+      text: plainTextFromHtml(draft.htmlBody),
+      html: draft.htmlBody,
+    );
+    _replace(drafts.copyWith(totalCount: list.length));
+    return id;
+  }
+
+  @override
   Future<void> sendDraft(Draft draft) async {
     await _latency();
     if (!draft.hasRecipients) {
@@ -300,6 +352,14 @@ class SampleMailEngine implements MailEngine {
       ),
     );
     _replace(sent.copyWith(totalCount: sent.totalCount + 1));
+
+    // Away, so the copy in Drafts is now a duplicate of sent mail.
+    final previous = draft.savedAs;
+    if (previous != null) {
+      for (final folderMessages in _messages.values) {
+        folderMessages.removeWhere((m) => m.id == previous);
+      }
+    }
   }
 
   @override

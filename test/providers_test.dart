@@ -113,6 +113,9 @@ class _SingleAccountReversedEngine implements MailEngine {
 
   @override
   Future<void> sendDraft(Draft draft) => _inner.sendDraft(draft);
+
+  @override
+  Future<String?> saveDraft(Draft draft) => _inner.saveDraft(draft);
 }
 
 void main() {

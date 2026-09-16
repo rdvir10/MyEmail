@@ -27,7 +27,7 @@ class CachedImapEngine implements MailEngine {
     required this.cache,
     FolderListStore? folderLists,
     ImapTransport Function(Account account, String secret)? transportFactory,
-    this._senderFactory,
+    this.senderFactory,
   })  : folderLists = folderLists ?? MemoryFolderListStore(),
         _transportFactory = transportFactory ?? _defaultTransport;
 
@@ -36,7 +36,11 @@ class CachedImapEngine implements MailEngine {
   final CacheStore cache;
   final FolderListStore folderLists;
   final ImapTransport Function(Account account, String secret) _transportFactory;
-  final SmtpSender Function(Account account, String secret)? _senderFactory;
+  /// How to build the SMTP sender. Public and named, so a test can supply one
+  /// that sends nothing: it was private, which made the seam unreachable from
+  /// outside this library and left the send path opening a real socket in any
+  /// test that touched it.
+  final SmtpSender Function(Account account, String secret)? senderFactory;
 
   final Map<String, ImapTransport> _transports = {};
   final Map<String, FolderSync> _syncs = {};
@@ -545,6 +549,51 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
+  Future<String?> saveDraft(Draft draft) async {
+    final account = accountStore.read().firstWhere(
+          (a) => a.id == draft.accountId,
+          orElse: () => throw StateError('Unknown account ${draft.accountId}'),
+        );
+    final draftsPath = await _folderPathForRole(account.id, FolderRole.drafts);
+    if (draftsPath == null) return null;
+
+    final message = buildMimeMessage(draft: draft, account: account);
+    final t = await _transport(account.id);
+
+    // Append before deleting the old copy. The other order loses the draft
+    // outright if the append then fails, and a duplicate is a far better
+    // failure than a message that no longer exists anywhere.
+    await t.appendMessage(draftsPath, message.renderMessage(), draft: true);
+    await _dropPreviousDraft(draft.savedAs);
+
+    // Resync so the new copy is in the cache, then find it: APPEND does not
+    // reliably report the UID it landed on, and UIDPLUS is not universal.
+    await _sync(account.id, t).sync(draftsPath);
+    final newest = await cache.uidRange(account.id, draftsPath);
+    if (newest == null) return null;
+    return MailMessage.idFor(
+      MailFolder.idFor(account.id, draftsPath),
+      newest.max,
+    );
+  }
+
+  /// Remove the copy a draft was opened from, so saving twice does not leave
+  /// two. Best-effort: a draft that failed to delete is untidy, not broken.
+  Future<void> _dropPreviousDraft(String? savedAs) async {
+    if (savedAs == null) return;
+    try {
+      final (folderId, uid) = splitMessageId(savedAs);
+      final (accountId, path) = splitFolderId(folderId);
+      final t = await _transport(accountId);
+      await t.storeFlag(path, uids: [uid], flag: MessageFlag.deleted, set: true);
+      await t.expunge(path);
+      await cache.deleteUids(accountId, path, {uid});
+    } catch (_) {
+      // Already gone, or the server refused. Either way the new copy is safe.
+    }
+  }
+
+  @override
   Future<void> sendDraft(Draft draft) async {
     if (!draft.hasRecipients) {
       throw const SendFailed('Add at least one recipient.');
@@ -562,6 +611,9 @@ class CachedImapEngine implements MailEngine {
 
     final message = buildMimeMessage(draft: draft, account: account);
     await _senderFor(account, secret).send(message);
+
+    // It is away, so the copy in Drafts is now a duplicate of sent mail.
+    await _dropPreviousDraft(draft.savedAs);
 
     // Gmail files sent mail into Sent itself, so appending would leave two
     // copies. Other providers do not, hence the per-provider check.
@@ -607,7 +659,7 @@ class CachedImapEngine implements MailEngine {
   }
 
   SmtpSender _senderFor(Account account, String secret) =>
-      _senderFactory?.call(account, secret) ??
+      senderFactory?.call(account, secret) ??
       SmtpSender(
         host: SmtpSender.smtpHostFor(account.provider),
         user: account.emailAddress,
