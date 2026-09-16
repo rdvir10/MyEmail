@@ -130,6 +130,41 @@ class CachedImapEngine implements MailEngine {
     ]);
   }
 
+  /// Wait until any of [folderIds] has something new, or [timeout] passes.
+  ///
+  /// One IDLE per account, raced. The losers are left waiting rather than
+  /// cancelled: each is idling its own connection, and a connection already
+  /// held open costs nothing more to keep until its own timeout. Cancelling
+  /// them would mean a round trip per account for no gain.
+  ///
+  /// Returns true if a server spoke. False means the timeout was reached, or
+  /// no folder could be watched at all, and the caller should treat both the
+  /// same way: it is simply time to sync again.
+  Future<bool> awaitNewMail(
+    List<String> folderIds, {
+    required Duration timeout,
+  }) async {
+    if (folderIds.isEmpty) return false;
+    final waits = <Future<bool>>[];
+    for (final folderId in folderIds) {
+      final (accountId, path) = splitFolderId(folderId);
+      try {
+        final t = await _transport(accountId);
+        waits.add(t.awaitChanges(path, timeout: timeout));
+      } catch (_) {
+        // This account cannot be watched right now. The others still can, and
+        // the next ordinary pass will pick this one up.
+      }
+    }
+    if (waits.isEmpty) {
+      await Future<void>.delayed(timeout);
+      return false;
+    }
+    // Any of them waking is reason enough to sync every account: the pass is
+    // cheap against the cache and sorting out which one spoke is not.
+    return Future.any(waits).catchError((_) => false);
+  }
+
   /// Drop every open connection. Not part of [MailEngine]: the app holds one
   /// engine for its whole life and has nothing to close it for. The background
   /// pass does — it runs in an isolate Android tears down afterwards, and a

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:mailtree/data/imap/imap_transport.dart';
 import 'package:mailtree/data/mail_engine.dart';
 import 'package:mailtree/domain/folder_role.dart';
@@ -254,6 +256,36 @@ class FakeImapTransport implements ImapTransport {
   Future<void> deleteFolder(String path) async {
     calls.add('DELETE $path');
     folders.remove(path);
+  }
+
+  /// Completed by [deliverWhileIdle] to wake a waiter, as a real server would
+  /// when mail lands. Left alone, [awaitChanges] times out instead.
+  Completer<bool>? _idle;
+
+  /// Whether anything is currently waiting in IDLE.
+  bool get isIdling => _idle != null;
+
+  /// Deliver to [path] and wake whatever is in IDLE, the way a server does.
+  FakeMessage deliverWhileIdle(String path, {String? subject, DateTime? date}) {
+    final m = folder(path).deliver(subject: subject, date: date);
+    final waiter = _idle;
+    _idle = null;
+    if (waiter != null && !waiter.isCompleted) waiter.complete(true);
+    return m;
+  }
+
+  @override
+  Future<bool> awaitChanges(String path, {required Duration timeout}) async {
+    _online();
+    calls.add('IDLE $path');
+    final waiter = Completer<bool>();
+    _idle = waiter;
+    final woken = await waiter.future.timeout(
+      timeout,
+      onTimeout: () => false,
+    );
+    if (identical(_idle, waiter)) _idle = null;
+    return woken;
   }
 
   @override

@@ -164,11 +164,22 @@ void main() {
     });
 
     testWidgets('turning an account off mutes it', (tester) async {
+      // A tall viewport: the mode chooser pushed the account rows below the
+      // fold of the default 600, and a tap that misses reports as a silent
+      // no-op rather than a failure.
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
       await pump(tester);
       await tester.tap(find.byType(SwitchListTile).first);
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byType(SwitchListTile).at(1));
+      final account = find.byType(SwitchListTile).at(1);
+      await tester.ensureVisible(account);
+      await tester.pumpAndSettle();
+      await tester.tap(account);
       await tester.pumpAndSettle();
 
       expect((await state.readPrefs()).mutedAccountIds, isNotEmpty);

@@ -11,6 +11,13 @@
          without this the periodic pass silently stops until the app is
          opened again. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <!-- The five-minute and push sync modes. Android will not run work more
+         often than every 15 minutes, nor hold a connection open, outside a
+         foreground service, and a foreground service must show a permanent
+         notification. Both modes are opt-in and say so before they are
+         chosen; the periodic mode needs neither of these. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
 
     <application
         android:label="MailTree"

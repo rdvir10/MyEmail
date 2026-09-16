@@ -95,6 +95,18 @@ abstract class ImapTransport {
   Future<void> renameFolder(String oldPath, String newPath);
   Future<void> deleteFolder(String path);
 
+  /// Hold the connection open on [path] and return as soon as the server says
+  /// something changed there, or [timeout] passes with nothing.
+  ///
+  /// This is IMAP IDLE, and it is the only part of the transport that costs
+  /// anything while it is doing nothing: the socket stays open and the radio
+  /// stays warm. Returns true if the server reported a change, false on
+  /// timeout, so the caller can tell "nothing happened" from "time to sync".
+  ///
+  /// A server without IDLE returns false after [timeout] rather than
+  /// throwing, which degrades the caller to a slow poll instead of an error.
+  Future<bool> awaitChanges(String path, {required Duration timeout});
+
   Future<void> close();
 }
 

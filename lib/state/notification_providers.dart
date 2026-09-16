@@ -59,6 +59,11 @@ class NotificationSettings extends AsyncNotifier<NotificationPrefs> {
     return true;
   }
 
+  Future<void> setMode(SyncMode mode) async {
+    final current = state.value ?? const NotificationPrefs();
+    await _save(current.copyWith(mode: mode));
+  }
+
   Future<void> setInterval(int minutes) async {
     final current = state.value ?? const NotificationPrefs();
     await _save(current.copyWith(intervalMinutes: minutes));

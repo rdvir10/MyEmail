@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
+import '../../domain/folder_role.dart';
 import '../../domain/notification_prefs.dart';
 import '../account_store.dart';
 import '../cache/mail_database.dart';
@@ -12,6 +13,7 @@ import '../imap/cached_imap_engine.dart';
 import '../notifications/android_mail_notifier.dart';
 import '../secure_credential_store.dart';
 import 'background_sync.dart';
+import 'live_sync.dart';
 import 'sync_state_store.dart';
 
 /// Scheduling the periodic pass, and the entry point Android calls into.
@@ -27,6 +29,19 @@ import 'sync_state_store.dart';
 
 const _taskName = 'mailtree.new-mail';
 const _uniqueName = 'mailtree.new-mail.periodic';
+
+/// The foreground modes. A separate task and name from the periodic one so
+/// that switching modes cancels the old shape rather than leaving both
+/// running, which is the failure that shows up as double notifications.
+const _liveTaskName = 'mailtree.live';
+const _liveUniqueName = 'mailtree.live.foreground';
+
+/// The ongoing notification the foreground service is legally required to
+/// show. Its own channel, set to the lowest importance Android allows for a
+/// foreground service, so it sits silently at the bottom of the shade instead
+/// of announcing itself next to actual mail.
+const _serviceChannelId = 'mailtree.sync-service';
+const _serviceChannelName = 'Background sync';
 
 /// Keeping Android's schedule in step with the preferences.
 ///
@@ -61,10 +76,22 @@ class FakeBackgroundScheduler implements BackgroundScheduler {
 Future<void> applyBackgroundSchedule(NotificationPrefs prefs) async {
   if (!_supported) return;
   await Workmanager().initialize(backgroundCallbackDispatcher);
-  if (!prefs.enabled) {
+
+  // Always clear the shape we are not in. Leaving the other one enqueued is
+  // how a mode change turns into two things checking mail at once.
+  if (!prefs.enabled || prefs.mode.needsForegroundService) {
     await Workmanager().cancelByUniqueName(_uniqueName);
+  }
+  if (!prefs.enabled || !prefs.mode.needsForegroundService) {
+    await Workmanager().cancelByUniqueName(_liveUniqueName);
+  }
+  if (!prefs.enabled) return;
+
+  if (prefs.mode.needsForegroundService) {
+    await _startLiveWorker(prefs);
     return;
   }
+
   await Workmanager().registerPeriodicTask(
     _uniqueName,
     _taskName,
@@ -87,6 +114,39 @@ Future<void> applyBackgroundSchedule(NotificationPrefs prefs) async {
 Future<void> cancelBackgroundSchedule() async {
   if (!_supported) return;
   await Workmanager().cancelByUniqueName(_uniqueName);
+  await Workmanager().cancelByUniqueName(_liveUniqueName);
+}
+
+/// Start (or replace) the long-running foreground worker.
+///
+/// A one-off rather than a periodic task, because what is wanted is one
+/// process that stays alive and loops, not a job that runs and exits. It
+/// re-enqueues itself when its budget is spent; see [_runLive].
+Future<void> _startLiveWorker(NotificationPrefs prefs) async {
+  await Workmanager().registerOneOffTask(
+    _liveUniqueName,
+    _liveTaskName,
+    inputData: {'mode': prefs.mode.name},
+    // `replace`, so changing from five-minute to push does not leave the
+    // previous worker running alongside the new one.
+    existingWorkPolicy: ExistingWorkPolicy.replace,
+    constraints: Constraints(
+      networkType: NetworkType.connected,
+      requiresBatteryNotLow: true,
+    ),
+    backoffPolicy: BackoffPolicy.linear,
+    backoffPolicyDelay: const Duration(minutes: 1),
+    foregroundServiceConfig: ForegroundServiceConfig(
+      notificationTitle: 'MailTree',
+      notificationText: prefs.mode == SyncMode.realtime
+          ? 'Watching for new mail'
+          : 'Checking for mail every 5 minutes',
+      notificationChannelId: _serviceChannelId,
+      notificationChannelName: _serviceChannelName,
+      notificationId: 424242,
+      foregroundServiceType: ForegroundServiceType.dataSync,
+    ),
+  );
 }
 
 /// Android only. The browser preview has no WorkManager, and calling into it
@@ -97,9 +157,88 @@ bool get _supported =>
 @pragma('vm:entry-point')
 void backgroundCallbackDispatcher() {
   Workmanager().executeTask((task, inputData) async {
-    if (task != _taskName) return true;
-    return _runOnePass();
+    return switch (task) {
+      _taskName => _runOnePass(),
+      _liveTaskName => _runLive(inputData),
+      _ => Future.value(true),
+    };
   });
+}
+
+/// The foreground modes: one worker that stays alive and loops.
+///
+/// Returns true either way. A false here would make WorkManager retry with
+/// backoff, but this worker re-enqueues itself deliberately and immediately,
+/// and two competing restart mechanisms is how you end up with two services.
+Future<bool> _runLive(Map<String, dynamic>? inputData) async {
+  DartPluginRegistrant.ensureInitialized();
+
+  final mode = SyncMode.values.firstWhere(
+    (m) => m.name == inputData?['mode'],
+    orElse: () => SyncMode.frequent,
+  );
+
+  MailDatabase? database;
+  CachedImapEngine? engine;
+  try {
+    final prefs = await SharedPreferencesWithCache.create(
+      cacheOptions: const SharedPreferencesWithCacheOptions(),
+    );
+    database = MailDatabase.open();
+    final liveEngine = CachedImapEngine(
+      accountStore: PrefsAccountStore(prefs),
+      credentialStore: SecureCredentialStore(),
+      cache: DriftCacheStore(database),
+      folderLists: PrefsFolderListStore(prefs),
+    );
+    engine = liveEngine;
+
+    final state = PrefsSyncStateStore();
+    final sync = BackgroundSync(
+      engine: liveEngine,
+      notifier: AndroidMailNotifier(),
+      state: state,
+    );
+
+    final outcome = await LiveSyncLoop(
+      onePass: sync.run,
+      waitForNext: () => _waitForNext(mode, liveEngine),
+    ).run();
+    debugPrint('[mailtree] live worker finished: $outcome');
+
+    // Hand over to a fresh worker unless the settings changed underneath us,
+    // which is the one case where stopping is correct.
+    final current = await state.readPrefs();
+    if (current.enabled && current.mode.needsForegroundService) {
+      await _startLiveWorker(current);
+    }
+    return true;
+  } catch (e, stack) {
+    debugPrint('[mailtree] live worker threw: $e');
+    debugPrint('$stack');
+    return true;
+  } finally {
+    await engine?.close();
+    await database?.close();
+  }
+}
+
+/// What the loop waits on between passes, per mode.
+Future<void> _waitForNext(SyncMode mode, CachedImapEngine engine) async {
+  if (mode != SyncMode.realtime) {
+    await Future<void>.delayed(frequentSyncInterval);
+    return;
+  }
+  // Push: hold an IDLE on every watched inbox and return the moment one of
+  // them speaks. The renew interval caps it, because a server drops an IDLE
+  // that is never re-issued and silence would look identical to no mail.
+  final inboxes = <String>[];
+  for (final account in await engine.loadAccounts()) {
+    for (final folder in await engine.loadFolders(account.id)) {
+      if (folder.role == FolderRole.inbox) inboxes.add(folder.id);
+    }
+  }
+  await engine.awaitNewMail(inboxes, timeout: idleRenewInterval);
 }
 
 Future<bool> _runOnePass() async {

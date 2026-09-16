@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:enough_mail/enough_mail.dart' as em;
+import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../../domain/mail_message.dart';
 import '../mail_engine.dart';
@@ -272,6 +273,61 @@ class EnoughMailTransport implements ImapTransport {
         await c.deleteMailbox(box);
         _boxes = {};
         if (_selectedPath == path) _selectedPath = null;
+      });
+
+  /// IMAP IDLE: ask the server to speak up, and wait.
+  ///
+  /// Goes through the same serialising queue as everything else, which is the
+  /// point: while this is waiting, nothing else can use the connection. That
+  /// is correct — a client in IDLE may not send other commands — and it is
+  /// why the caller gives it a timeout rather than waiting forever.
+  ///
+  /// Only events that can mean new mail wake it. An expunge is somebody
+  /// deleting something, which the next ordinary sync will notice; waking the
+  /// whole pass for it would turn housekeeping elsewhere into battery here.
+  @override
+  Future<bool> awaitChanges(String path, {required Duration timeout}) =>
+      _run((c) async {
+        await _ensureSelected(c, path);
+        final woken = Completer<bool>();
+        void wake(em.ImapEvent _) {
+          if (!woken.isCompleted) woken.complete(true);
+        }
+
+        final subscriptions = [
+          c.eventBus.on<em.ImapMessagesExistEvent>().listen(wake),
+          c.eventBus.on<em.ImapMessagesRecentEvent>().listen(wake),
+          c.eventBus.on<em.ImapFetchEvent>().listen(wake),
+          // A dropped connection has to end the wait, or the loop sits on a
+          // dead socket until the timeout and reports silence that never was.
+          c.eventBus.on<em.ImapConnectionLostEvent>().listen(wake),
+        ];
+
+        try {
+          await c.idleStart();
+        } catch (e) {
+          // No IDLE on this server, or it refused. Degrade to a slow poll
+          // rather than failing: the caller's timeout becomes the interval.
+          for (final s in subscriptions) {
+            await s.cancel();
+          }
+          debugPrint('[mailtree] idle unavailable on $path: $e');
+          await Future<void>.delayed(timeout);
+          return false;
+        }
+
+        try {
+          return await woken.future.timeout(timeout, onTimeout: () => false);
+        } finally {
+          for (final s in subscriptions) {
+            await s.cancel();
+          }
+          try {
+            await c.idleDone();
+          } catch (_) {
+            // Connection already gone. The next command reconnects.
+          }
+        }
       });
 
   @override

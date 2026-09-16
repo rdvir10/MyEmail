@@ -44,12 +44,34 @@ class NotificationsScreen extends ConsumerWidget {
                   theme: theme,
                 ),
               const Divider(height: 1),
-              _IntervalTile(prefs: prefs),
-              const Divider(height: 1),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-                child: Text('Accounts', style: theme.textTheme.titleSmall),
+              _Heading('How often', theme: theme),
+              RadioGroup<SyncMode>(
+                groupValue: prefs.mode,
+                onChanged: (mode) => mode == null
+                    ? null
+                    : ref
+                        .read(notificationSettingsProvider.notifier)
+                        .setMode(mode),
+                child: Column(
+                  children: [
+                    for (final mode in SyncMode.values)
+                      RadioListTile<SyncMode>(
+                        value: mode,
+                        title: Text(mode.label),
+                        // The cost is on the row with the choice, not in a
+                        // footnote. Two of these three put a permanent
+                        // notification in the shade and cost real battery,
+                        // and finding that out afterwards feels like a trick.
+                        subtitle: Text(mode.cost),
+                        isThreeLine: true,
+                        enabled: prefs.enabled,
+                      ),
+                  ],
+                ),
               ),
+              if (prefs.mode == SyncMode.periodic) _IntervalTile(prefs: prefs),
+              const Divider(height: 1),
+              _Heading('Accounts', theme: theme),
               if (accounts.isEmpty)
                 const ListTile(
                   dense: true,
@@ -76,9 +98,13 @@ class NotificationsScreen extends ConsumerWidget {
                 child: Text(
                   'Only your Inbox is watched. Mail that a rule files into '
                   'another folder is synced quietly.\n\n'
-                  'Android decides when background checks actually run, so '
-                  'they can be later than the interval you pick, especially '
-                  'overnight.',
+                  '${prefs.showsOngoingNotification ? 'A permanent '
+                      '"MailTree" notification stays in the shade while this '
+                      'is on. Android requires it, and there is no way to '
+                      'hide it and keep checking this often.' : 'Android '
+                      'decides when these checks actually run, so they can be '
+                      'later than the interval you pick, especially '
+                      'overnight.'}',
                   style: theme.textTheme.bodySmall
                       ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                 ),
@@ -108,6 +134,23 @@ class NotificationsScreen extends ConsumerWidget {
         ),
       );
   }
+}
+
+class _Heading extends StatelessWidget {
+  const _Heading(this.text, {required this.theme});
+
+  final String text;
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+        child: Text(
+          text,
+          style: theme.textTheme.labelMedium
+              ?.copyWith(color: theme.colorScheme.primary),
+        ),
+      );
 }
 
 class _IntervalTile extends ConsumerWidget {
