@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
 import '../../domain/folder_role.dart';
-import '../../domain/notification_prefs.dart';
+import '../../domain/sync_prefs.dart';
 import '../account_store.dart';
 import '../cache/mail_database.dart';
 import '../folder_list_store.dart';
@@ -49,43 +49,43 @@ const _serviceChannelName = 'Background sync';
 /// change, and a settings change has to be testable without a phone. The real
 /// one talks to WorkManager; tests and the browser preview record instead.
 abstract class BackgroundScheduler {
-  Future<void> apply(NotificationPrefs prefs);
+  Future<void> apply(SyncPrefs prefs);
 }
 
 class WorkManagerScheduler implements BackgroundScheduler {
   const WorkManagerScheduler();
 
   @override
-  Future<void> apply(NotificationPrefs prefs) => applyBackgroundSchedule(prefs);
+  Future<void> apply(SyncPrefs prefs) => applyBackgroundSchedule(prefs);
 }
 
 /// Records what it was asked to do. The default outside Android.
 class FakeBackgroundScheduler implements BackgroundScheduler {
-  final List<NotificationPrefs> applied = [];
+  final List<SyncPrefs> applied = [];
 
   @override
-  Future<void> apply(NotificationPrefs prefs) async => applied.add(prefs);
+  Future<void> apply(SyncPrefs prefs) async => applied.add(prefs);
 
-  NotificationPrefs? get last => applied.isEmpty ? null : applied.last;
+  SyncPrefs? get last => applied.isEmpty ? null : applied.last;
 }
 
 /// Set up WorkManager and bring the schedule in line with [prefs].
 ///
 /// Called at startup and again whenever the settings change, so a schedule
 /// left over from a previous run is always either updated or cancelled.
-Future<void> applyBackgroundSchedule(NotificationPrefs prefs) async {
+Future<void> applyBackgroundSchedule(SyncPrefs prefs) async {
   if (!_supported) return;
   await Workmanager().initialize(backgroundCallbackDispatcher);
 
   // Always clear the shape we are not in. Leaving the other one enqueued is
   // how a mode change turns into two things checking mail at once.
-  if (!prefs.enabled || prefs.mode.needsForegroundService) {
+  if (!prefs.syncs || prefs.mode.needsForegroundService) {
     await Workmanager().cancelByUniqueName(_uniqueName);
   }
-  if (!prefs.enabled || !prefs.mode.needsForegroundService) {
+  if (!prefs.syncs || !prefs.mode.needsForegroundService) {
     await Workmanager().cancelByUniqueName(_liveUniqueName);
   }
-  if (!prefs.enabled) return;
+  if (!prefs.syncs) return;
 
   if (prefs.mode.needsForegroundService) {
     await _startLiveWorker(prefs);
@@ -122,7 +122,7 @@ Future<void> cancelBackgroundSchedule() async {
 /// A one-off rather than a periodic task, because what is wanted is one
 /// process that stays alive and loops, not a job that runs and exits. It
 /// re-enqueues itself when its budget is spent; see [_runLive].
-Future<void> _startLiveWorker(NotificationPrefs prefs) async {
+Future<void> _startLiveWorker(SyncPrefs prefs) async {
   await Workmanager().registerOneOffTask(
     _liveUniqueName,
     _liveTaskName,
@@ -209,7 +209,7 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
     // Hand over to a fresh worker unless the settings changed underneath us,
     // which is the one case where stopping is correct.
     final current = await state.readPrefs();
-    if (current.enabled && current.mode.needsForegroundService) {
+    if (current.mode.needsForegroundService) {
       await _startLiveWorker(current);
     }
     return true;

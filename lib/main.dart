@@ -16,7 +16,7 @@ import 'data/secure_credential_store.dart';
 import 'data/sync/background_worker.dart';
 import 'data/sync/sync_state_store.dart';
 import 'data/ui_state_store.dart';
-import 'state/notification_providers.dart';
+import 'state/sync_providers.dart';
 import 'state/providers.dart';
 import 'theme/app_theme.dart';
 import 'ui/shell/app_shell.dart';

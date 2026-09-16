@@ -48,7 +48,7 @@ class BackgroundSync {
   /// part-way through, leaving some accounts synced and others not.
   Future<BackgroundSyncReport> run() async {
     final prefs = await state.readPrefs();
-    if (!prefs.enabled) return const BackgroundSyncReport();
+    if (!prefs.syncs) return const BackgroundSyncReport();
 
     final List<Account> accounts;
     try {
@@ -62,9 +62,15 @@ class BackgroundSync {
     final failures = <String>[];
 
     for (final account in accounts) {
-      if (!prefs.notifiesFor(account.id)) continue;
       try {
-        final result = await _runAccount(account);
+        // Every account is synced. Only some are announced: an account that
+        // is muted, or notifications switched off entirely, still wants its
+        // mail on the device and ready when the app is opened. That is the
+        // whole reason these are two settings and not one.
+        final result = await _runAccount(
+          account,
+          announce: prefs.notifiesFor(account.id),
+        );
         posted += result.posted;
         scanned += result.scanned;
       } catch (e) {
@@ -81,7 +87,10 @@ class BackgroundSync {
     );
   }
 
-  Future<({int posted, int scanned})> _runAccount(Account account) async {
+  Future<({int posted, int scanned})> _runAccount(
+    Account account, {
+    required bool announce,
+  }) async {
     final folders = await engine.loadFolders(account.id);
     final inboxes = [
       for (final f in folders)
@@ -90,12 +99,16 @@ class BackgroundSync {
 
     var posted = 0;
     for (final folder in inboxes) {
-      posted += await _runFolder(account, folder);
+      posted += await _runFolder(account, folder, announce: announce);
     }
     return (posted: posted, scanned: inboxes.length);
   }
 
-  Future<int> _runFolder(Account account, MailFolder folder) async {
+  Future<int> _runFolder(
+    Account account,
+    MailFolder folder, {
+    required bool announce,
+  }) async {
     final messages = await engine.loadMessages(folder.id, limit: scanWindow);
     final watermark = await state.readWatermark(folder.id);
 
@@ -113,7 +126,10 @@ class BackgroundSync {
       await state.writeWatermark(folder.id, next);
     }
 
-    if (fresh.isEmpty) return 0;
+    // The mark moved either way, so turning notifications on later announces
+    // what arrives next rather than everything that arrived while they were
+    // off. A backlog of forty is not a welcome.
+    if (!announce || fresh.isEmpty) return 0;
 
     final batch = [
       for (final m in fresh.take(maxPerFolder)) MailNotification.forMessage(m),

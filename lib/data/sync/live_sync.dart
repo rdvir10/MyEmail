@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import '../../domain/notification_prefs.dart';
+import '../../domain/sync_prefs.dart';
 import 'background_sync.dart';
 
 /// The loop a foreground sync runs: check, wait, check, wait.

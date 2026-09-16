@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/imap/imap_mapping.dart';
 import '../../domain/mail_message.dart';
 import '../../state/message_providers.dart';
-import '../../state/notification_providers.dart';
+import '../../state/sync_providers.dart';
 import '../../domain/display_settings.dart';
 import '../../state/display_providers.dart';
 import '../../state/pane_widths.dart';

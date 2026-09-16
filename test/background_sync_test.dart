@@ -12,7 +12,7 @@ import 'package:mailtree/data/sync/sync_state_store.dart';
 import 'package:mailtree/domain/account.dart';
 import 'package:mailtree/domain/folder_role.dart';
 import 'package:mailtree/domain/mail_message.dart';
-import 'package:mailtree/domain/notification_prefs.dart';
+import 'package:mailtree/domain/sync_prefs.dart';
 
 import 'fakes/fake_imap_transport.dart';
 
@@ -147,7 +147,7 @@ void main() {
       server = FakeImapTransport();
       cache = MemoryCacheStore();
       state = MemorySyncStateStore(
-        prefs: const NotificationPrefs(enabled: true),
+        prefs: const SyncPrefs(mode: SyncMode.periodic),
       );
       notifier = FakeMailNotifier();
       engine = CachedImapEngine(
@@ -182,15 +182,54 @@ void main() {
           );
     }
 
-    test('does nothing at all while notifications are off', () async {
-      state = MemorySyncStateStore(); // disabled is the default
+    test('does nothing at all while sync is off', () async {
+      state = MemorySyncStateStore(); // off is the default
       await addAccount();
       deliver();
       final report = await sync().run();
       expect(report.posted, 0);
       expect(notifier.batches, isEmpty);
       expect(state.watermarks, isEmpty,
-          reason: 'a disabled pass must not touch the marks either');
+          reason: 'a pass that does not run must not touch the marks either');
+    });
+
+    test('with notifications off it still syncs, just quietly', () async {
+      // The whole reason these are two settings. Turning notifications off
+      // must not stop the app keeping itself current.
+      final account = await addAccount();
+      deliver(subject: 'Before');
+      await sync().run();
+      await state.writePrefs(
+        const SyncPrefs(mode: SyncMode.periodic, notify: false),
+      );
+
+      deliver(subject: 'Quietly');
+      final report = await sync().run();
+
+      expect(report.posted, 0);
+      expect(notifier.posted, isEmpty);
+      expect(report.foldersScanned, 1, reason: 'it still looked');
+      expect(await cache.countMessages(account.id, 'INBOX'), 2,
+          reason: 'and the new mail is on the device');
+    });
+
+    test('turning notifications on does not announce the backlog', () async {
+      // The watermark moves whether or not anything was announced, so what
+      // arrived during the quiet spell is accounted for, not queued up.
+      await addAccount();
+      await state.writePrefs(
+        const SyncPrefs(mode: SyncMode.periodic, notify: false),
+      );
+      await sync().run();
+      for (var i = 0; i < 5; i++) {
+        deliver(subject: 'While quiet $i');
+      }
+      await sync().run();
+
+      await state.writePrefs(const SyncPrefs(mode: SyncMode.periodic));
+      final report = await sync().run();
+
+      expect(report.posted, 0, reason: 'a backlog of five is not a welcome');
     });
 
     test('the first pass records where it got to and announces nothing',
@@ -249,7 +288,8 @@ void main() {
       final account = await addAccount();
       await sync().run();
       await state.writePrefs(
-        const NotificationPrefs(enabled: true).withAccountMuted(account.id, true),
+        const SyncPrefs(mode: SyncMode.periodic)
+            .withAccountMuted(account.id, true),
       );
 
       deliver(subject: 'Quiet please');
@@ -257,6 +297,8 @@ void main() {
 
       expect(report.posted, 0);
       expect(notifier.posted, isEmpty);
+      expect(report.foldersScanned, 1,
+          reason: 'muted means unannounced, not unsynced');
     });
 
     test('one folder posts a capped number of notifications', () async {
@@ -359,43 +401,64 @@ void main() {
     });
   });
 
-  group('NotificationPrefs', () {
+  group('SyncPrefs', () {
     test('round-trips through JSON', () {
-      const prefs = NotificationPrefs(
-        enabled: true,
+      const prefs = SyncPrefs(
+        mode: SyncMode.periodic,
         intervalMinutes: 60,
         mutedAccountIds: {'acct-1'},
       );
-      expect(NotificationPrefs.fromJson(prefs.toJson()), prefs);
+      expect(SyncPrefs.fromJson(prefs.toJson()), prefs);
     });
 
     test('a malformed record falls back to the default rather than throwing',
         () {
       // It is read in a background isolate, where a throw is a silent death.
       expect(
-        NotificationPrefs.fromJson({'enabled': 'yes please'}),
-        const NotificationPrefs(),
+        SyncPrefs.fromJson({'mode': 42, 'notify': 'yes please'}),
+        const SyncPrefs(),
       );
     });
 
     test('the interval never goes below what Android will schedule', () {
       expect(
-        const NotificationPrefs(intervalMinutes: 1).interval,
+        const SyncPrefs(intervalMinutes: 1).interval,
         const Duration(minutes: 15),
       );
     });
 
     test('muting and unmuting one account leaves the others alone', () {
-      const prefs = NotificationPrefs(mutedAccountIds: {'a', 'b'});
+      const prefs = SyncPrefs(mutedAccountIds: {'a', 'b'});
       expect(prefs.withAccountMuted('c', true).mutedAccountIds, {'a', 'b', 'c'});
       expect(prefs.withAccountMuted('a', false).mutedAccountIds, {'b'});
     });
 
     test('a muted account is not notified even while notifications are on', () {
-      const prefs = NotificationPrefs(enabled: true, mutedAccountIds: {'a'});
+      const prefs =
+          SyncPrefs(mode: SyncMode.periodic, mutedAccountIds: {'a'});
       expect(prefs.notifiesFor('a'), isFalse);
       expect(prefs.notifiesFor('b'), isTrue);
-      expect(const NotificationPrefs().notifiesFor('b'), isFalse);
+    });
+
+    test('nothing is notified while sync is off, whatever the switch says', () {
+      // There is no pass to find anything, so an on switch would be a lie.
+      const prefs = SyncPrefs(mode: SyncMode.off, notify: true);
+      expect(prefs.notifiesFor('b'), isFalse);
+      expect(prefs.notifyIsIdle, isTrue,
+          reason: 'and the screen has to say so');
+    });
+
+    test('the old one-switch shape upgrades to the two settings', () {
+      // Whoever had it on wanted both halves; whoever had it off wanted
+      // neither, and must not find a foreground service running.
+      final wasOn = SyncPrefs.fromJson(
+        {'enabled': true, 'mode': 'realtime', 'muted': <String>[]},
+      );
+      expect(wasOn.mode, SyncMode.realtime);
+      expect(wasOn.notify, isTrue);
+
+      final wasOff = SyncPrefs.fromJson({'enabled': false, 'mode': 'realtime'});
+      expect(wasOff.mode, SyncMode.off);
     });
   });
 }

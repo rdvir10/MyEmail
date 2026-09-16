@@ -327,7 +327,12 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.textContaining('Reading pane right'), findsOneWidget);
-      expect(find.text('Off'), findsOneWidget, reason: 'notifications are off');
+      // Sync and notifications are two rows now, and each says its own state.
+      expect(find.text('Sync'), findsOneWidget);
+      expect(find.text('Notifications'), findsOneWidget);
+      expect(find.text('Only when I open MailTree'), findsOneWidget);
+      expect(find.text('On, but nothing is syncing'), findsOneWidget,
+          reason: 'a notification setting that cannot fire says so here too');
     });
 
     testWidgets('View opens from the hub and changes take effect',

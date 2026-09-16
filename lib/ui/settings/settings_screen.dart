@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../state/notification_providers.dart';
+import '../../domain/sync_prefs.dart';
 import '../../state/providers.dart';
+import '../../state/sync_providers.dart';
 import '../quick_steps/quick_steps_screen.dart';
 import 'accounts_screen.dart';
 import 'notifications_screen.dart';
 import 'signatures_screen.dart';
+import 'sync_screen.dart';
 import 'view_settings_screen.dart';
 
 /// Everything that used to be loose entries at the bottom of the folder tree,
@@ -20,7 +22,7 @@ class SettingsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final accounts = ref.watch(accountsProvider).value ?? const [];
-    final notifications = ref.watch(notificationSettingsProvider).value;
+    final sync = ref.watch(syncSettingsProvider).value;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings'), centerTitle: false),
@@ -34,14 +36,26 @@ class SettingsScreen extends ConsumerWidget {
             onTap: () => _open(context, const ViewSettingsScreen()),
           ),
           _Row(
+            icon: Icons.sync,
+            title: 'Sync',
+            subtitle: switch (sync) {
+              null => 'Loading',
+              final s when s.mode == SyncMode.periodic =>
+                'About every ${_minutes(s.intervalMinutes)}',
+              final s => s.mode.label,
+            },
+            onTap: () => _open(context, const SyncScreen()),
+          ),
+          _Row(
             icon: Icons.notifications_none,
             title: 'Notifications',
-            subtitle: switch (notifications) {
+            subtitle: switch (sync) {
               null => 'Loading',
-              final n when !n.enabled => 'Off',
-              final n => 'On, about every ${_minutes(n.intervalMinutes)}'
-                  '${n.mutedAccountIds.isEmpty ? '' : ', '
-                      '${n.mutedAccountIds.length} muted'}',
+              final s when !s.notify => 'Off',
+              final s when !s.syncs => 'On, but nothing is syncing',
+              final s when s.mutedAccountIds.isNotEmpty =>
+                'On, ${s.mutedAccountIds.length} account muted',
+              _ => 'On',
             },
             onTap: () => _open(context, const NotificationsScreen()),
           ),

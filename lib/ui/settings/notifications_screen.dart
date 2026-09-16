@@ -1,24 +1,28 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../domain/notification_prefs.dart';
-import '../../state/notification_providers.dart';
 import '../../state/providers.dart';
+import '../../state/sync_providers.dart';
+import 'sync_screen.dart';
 
-/// Turn new-mail notifications on, choose how often to look, and silence
-/// individual accounts.
+/// Whether new mail interrupts you, and which accounts are allowed to.
 ///
-/// The screen is careful about one thing in particular: the switch here is the
-/// user's intent, and Android's own permission is whether that intent is
-/// allowed. When they disagree, the screen says so rather than showing an "on"
-/// switch above a phone that will never make a sound.
+/// Only that. How often MailTree looks is the Sync screen. The two were one
+/// switch and that was wrong: turning notifications off also stopped the app
+/// keeping itself current, which is not what anyone means by "be quiet".
+///
+/// Two things this screen is careful about. The switch here is the user's
+/// intent and Android's permission is whether that intent is allowed, so when
+/// they disagree it says so. And notifications cannot arrive without a
+/// background pass to find them, so if sync is off it says that too rather
+/// than showing a switch that is on above a phone that will stay silent.
 class NotificationsScreen extends ConsumerWidget {
   const NotificationsScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final settings = ref.watch(notificationSettingsProvider);
+    final settings = ref.watch(syncSettingsProvider);
     final permitted = ref.watch(notificationPermissionProvider).value;
     final accounts = ref.watch(accountsProvider).value ?? const [];
 
@@ -29,54 +33,39 @@ class NotificationsScreen extends ConsumerWidget {
         AsyncData(value: final prefs) => ListView(
             children: [
               SwitchListTile(
-                title: const Text('Notify me about new mail'),
+                title: const Text('Tell me when mail arrives'),
                 subtitle: const Text(
-                  'MailTree checks your inboxes in the background and tells '
-                  'you when something arrives.',
+                  'Off still syncs in the background, so the app is up to '
+                  'date when you open it. It just does it quietly.',
                 ),
-                value: prefs.enabled,
-                onChanged: (want) => _setEnabled(context, ref, want),
+                isThreeLine: true,
+                value: prefs.notify,
+                onChanged: (want) => _setNotify(context, ref, want),
               ),
-              if (prefs.enabled && permitted == false)
-                _Warning(
+              if (prefs.notifyIsIdle)
+                _Banner(
+                  icon: Icons.sync_disabled,
+                  text: 'Nothing is checking for mail in the background, so '
+                      'nothing can announce it.',
+                  action: 'Set up sync',
+                  onAction: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(builder: (_) => const SyncScreen()),
+                  ),
+                  theme: theme,
+                  isWarning: true,
+                ),
+              if (prefs.notify && prefs.syncs && permitted == false)
+                _Banner(
+                  icon: Icons.warning_amber_outlined,
                   text: 'Android is blocking notifications for MailTree. '
                       'Turn them on in Settings, Apps, MailTree.',
                   theme: theme,
+                  isWarning: true,
                 ),
-              const Divider(height: 1),
-              _Heading('How often', theme: theme),
-              RadioGroup<SyncMode>(
-                groupValue: prefs.mode,
-                onChanged: (mode) => mode == null
-                    ? null
-                    : ref
-                        .read(notificationSettingsProvider.notifier)
-                        .setMode(mode),
-                child: Column(
-                  children: [
-                    for (final mode in SyncMode.values)
-                      RadioListTile<SyncMode>(
-                        value: mode,
-                        title: Text(mode.label),
-                        // The cost is on the row with the choice, not in a
-                        // footnote. Two of these three put a permanent
-                        // notification in the shade and cost real battery,
-                        // and finding that out afterwards feels like a trick.
-                        subtitle: Text(mode.cost),
-                        isThreeLine: true,
-                        enabled: prefs.enabled,
-                      ),
-                  ],
-                ),
-              ),
-              if (prefs.mode == SyncMode.periodic) _IntervalTile(prefs: prefs),
               const Divider(height: 1),
               _Heading('Accounts', theme: theme),
               if (accounts.isEmpty)
-                const ListTile(
-                  dense: true,
-                  title: Text('No accounts yet.'),
-                )
+                const ListTile(dense: true, title: Text('No accounts yet.'))
               else
                 for (final account in accounts)
                   SwitchListTile(
@@ -87,24 +76,18 @@ class NotificationsScreen extends ConsumerWidget {
                       backgroundColor: Color(account.colorValue),
                     ),
                     value: !prefs.mutedAccountIds.contains(account.id),
-                    onChanged: prefs.enabled
+                    onChanged: prefs.notify
                         ? (on) => ref
-                            .read(notificationSettingsProvider.notifier)
+                            .read(syncSettingsProvider.notifier)
                             .setAccountMuted(account.id, !on)
                         : null,
                   ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 20, 16, 32),
                 child: Text(
-                  'Only your Inbox is watched. Mail that a rule files into '
-                  'another folder is synced quietly.\n\n'
-                  '${prefs.showsOngoingNotification ? 'A permanent '
-                      '"MailTree" notification stays in the shade while this '
-                      'is on. Android requires it, and there is no way to '
-                      'hide it and keep checking this often.' : 'Android '
-                      'decides when these checks actually run, so they can be '
-                      'later than the interval you pick, especially '
-                      'overnight.'}',
+                  'A muted account still syncs. Its mail is on the device and '
+                  'waiting when you open the app; it just does not interrupt '
+                  'you to say so.',
                   style: theme.textTheme.bodySmall
                       ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                 ),
@@ -116,13 +99,12 @@ class NotificationsScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _setEnabled(
+  Future<void> _setNotify(
     BuildContext context,
     WidgetRef ref,
     bool want,
   ) async {
-    final ok =
-        await ref.read(notificationSettingsProvider.notifier).setEnabled(want);
+    final ok = await ref.read(syncSettingsProvider.notifier).setNotify(want);
     if (ok || !want || !context.mounted) return;
     // Permission was refused, so the switch stayed off. Say why, or it looks
     // like the switch is broken.
@@ -153,68 +135,54 @@ class _Heading extends StatelessWidget {
       );
 }
 
-class _IntervalTile extends ConsumerWidget {
-  const _IntervalTile({required this.prefs});
+/// A band that explains a setting that will not do what it looks like it does,
+/// with a way out where there is one.
+class _Banner extends StatelessWidget {
+  const _Banner({
+    required this.icon,
+    required this.text,
+    required this.theme,
+    this.action,
+    this.onAction,
+    this.isWarning = false,
+  });
 
-  final NotificationPrefs prefs;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return ListTile(
-      enabled: prefs.enabled,
-      title: const Text('Check for mail'),
-      subtitle: Text('About every ${label(prefs.intervalMinutes)}'),
-      trailing: DropdownButton<int>(
-        value: prefs.intervalMinutes,
-        underline: const SizedBox.shrink(),
-        onChanged: prefs.enabled
-            ? (minutes) {
-                if (minutes == null) return;
-                ref
-                    .read(notificationSettingsProvider.notifier)
-                    .setInterval(minutes);
-              }
-            : null,
-        items: [
-          for (final minutes in NotificationPrefs.intervalChoices)
-            DropdownMenuItem(value: minutes, child: Text(label(minutes))),
-        ],
-      ),
-    );
-  }
-
-  static String label(int minutes) => switch (minutes) {
-        < 60 => '$minutes minutes',
-        60 => 'hour',
-        _ => '${minutes ~/ 60} hours',
-      };
-}
-
-class _Warning extends StatelessWidget {
-  const _Warning({required this.text, required this.theme});
-
+  final IconData icon;
   final String text;
   final ThemeData theme;
+  final String? action;
+  final VoidCallback? onAction;
+  final bool isWarning;
 
   @override
   Widget build(BuildContext context) {
+    final background = isWarning
+        ? theme.colorScheme.errorContainer
+        : theme.colorScheme.surfaceContainerHigh;
+    final foreground = isWarning
+        ? theme.colorScheme.onErrorContainer
+        : theme.colorScheme.onSurfaceVariant;
     return Container(
       width: double.infinity,
-      color: theme.colorScheme.errorContainer,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      color: background,
+      padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.warning_amber_outlined,
-              size: 18, color: theme.colorScheme.onErrorContainer),
+          Icon(icon, size: 18, color: foreground),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               text,
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: theme.colorScheme.onErrorContainer),
+              style: theme.textTheme.bodySmall?.copyWith(color: foreground),
             ),
           ),
+          if (action != null)
+            TextButton(
+              onPressed: onAction,
+              style: TextButton.styleFrom(foregroundColor: foreground),
+              child: Text(action!),
+            ),
         ],
       ),
     );

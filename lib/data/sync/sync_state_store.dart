@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../../domain/notification_prefs.dart';
+import '../../domain/sync_prefs.dart';
 
 /// The small amount of state that has to cross an isolate boundary.
 ///
@@ -18,8 +18,8 @@ import '../../domain/notification_prefs.dart';
 /// made by the background isolate, and vice versa. Every read here goes to the
 /// platform and therefore sees what the other isolate wrote.
 abstract class SyncStateStore {
-  Future<NotificationPrefs> readPrefs();
-  Future<void> writePrefs(NotificationPrefs prefs);
+  Future<SyncPrefs> readPrefs();
+  Future<void> writePrefs(SyncPrefs prefs);
 
   /// The highest UID this folder has already raised a notification for.
   ///
@@ -45,22 +45,22 @@ class PrefsSyncStateStore implements SyncStateStore {
   final SharedPreferencesAsync _prefs;
 
   @override
-  Future<NotificationPrefs> readPrefs() async {
+  Future<SyncPrefs> readPrefs() async {
     final raw = await _prefs.getString(SyncStateKeys.prefs);
-    if (raw == null || raw.isEmpty) return const NotificationPrefs();
+    if (raw == null || raw.isEmpty) return const SyncPrefs();
     try {
-      return NotificationPrefs.fromJson(
+      return SyncPrefs.fromJson(
         jsonDecode(raw) as Map<String, dynamic>,
       );
     } on FormatException {
-      return const NotificationPrefs();
+      return const SyncPrefs();
     } on TypeError {
-      return const NotificationPrefs();
+      return const SyncPrefs();
     }
   }
 
   @override
-  Future<void> writePrefs(NotificationPrefs prefs) =>
+  Future<void> writePrefs(SyncPrefs prefs) =>
       _prefs.setString(SyncStateKeys.prefs, jsonEncode(prefs.toJson()));
 
   @override
@@ -80,19 +80,19 @@ class PrefsSyncStateStore implements SyncStateStore {
 
 /// For tests and for the browser preview, which has no background work at all.
 class MemorySyncStateStore implements SyncStateStore {
-  MemorySyncStateStore({this.prefs = const NotificationPrefs()});
+  MemorySyncStateStore({this.prefs = const SyncPrefs()});
 
   /// Public so a test can set the starting point without a write.
-  NotificationPrefs prefs;
+  SyncPrefs prefs;
   final Map<String, int> _watermarks = {};
 
   Map<String, int> get watermarks => Map.unmodifiable(_watermarks);
 
   @override
-  Future<NotificationPrefs> readPrefs() async => prefs;
+  Future<SyncPrefs> readPrefs() async => prefs;
 
   @override
-  Future<void> writePrefs(NotificationPrefs next) async => prefs = next;
+  Future<void> writePrefs(SyncPrefs next) async => prefs = next;
 
   @override
   Future<int?> readWatermark(String folderId) async => _watermarks[folderId];

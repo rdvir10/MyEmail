@@ -9,7 +9,7 @@ import 'package:mailtree/data/sync/background_sync.dart';
 import 'package:mailtree/data/sync/live_sync.dart';
 import 'package:mailtree/domain/account.dart';
 import 'package:mailtree/domain/folder_role.dart';
-import 'package:mailtree/domain/notification_prefs.dart';
+import 'package:mailtree/domain/sync_prefs.dart';
 
 import 'fakes/fake_imap_transport.dart';
 
@@ -140,7 +140,8 @@ void main() {
   });
 
   group('SyncMode', () {
-    test('only the periodic mode avoids a foreground service', () {
+    test('only the cheap modes avoid a foreground service', () {
+      expect(SyncMode.off.needsForegroundService, isFalse);
       expect(SyncMode.periodic.needsForegroundService, isFalse);
       expect(SyncMode.frequent.needsForegroundService, isTrue);
       expect(SyncMode.realtime.needsForegroundService, isTrue);
@@ -150,7 +151,7 @@ void main() {
         'needs the service', () {
       expect(
         frequentSyncInterval.inMinutes,
-        lessThan(NotificationPrefs.minimumIntervalMinutes),
+        lessThan(SyncPrefs.minimumIntervalMinutes),
       );
     });
 
@@ -172,29 +173,29 @@ void main() {
 
     test('a permanent notification is predicted before the switch is flipped',
         () {
-      const off = NotificationPrefs(mode: SyncMode.realtime);
-      expect(off.showsOngoingNotification, isFalse, reason: 'not enabled yet');
       expect(
-        const NotificationPrefs(enabled: true, mode: SyncMode.realtime)
-            .showsOngoingNotification,
+        const SyncPrefs(mode: SyncMode.off).showsOngoingNotification,
+        isFalse,
+      );
+      expect(
+        const SyncPrefs(mode: SyncMode.realtime).showsOngoingNotification,
         isTrue,
       );
       expect(
-        const NotificationPrefs(enabled: true, mode: SyncMode.periodic)
-            .showsOngoingNotification,
+        const SyncPrefs(mode: SyncMode.periodic).showsOngoingNotification,
         isFalse,
       );
     });
 
     test('an unknown mode falls back down, never up', () {
       // Guessing upward would start a foreground service nobody asked for.
-      final prefs = NotificationPrefs.fromJson({'mode': 'telepathy'});
-      expect(prefs.mode, SyncMode.periodic);
+      final prefs = SyncPrefs.fromJson({'mode': 'telepathy'});
+      expect(prefs.mode, SyncMode.off);
     });
 
     test('the mode survives a round trip', () {
-      const prefs = NotificationPrefs(enabled: true, mode: SyncMode.realtime);
-      expect(NotificationPrefs.fromJson(prefs.toJson()), prefs);
+      const prefs = SyncPrefs(mode: SyncMode.realtime);
+      expect(SyncPrefs.fromJson(prefs.toJson()), prefs);
     });
   });
 
