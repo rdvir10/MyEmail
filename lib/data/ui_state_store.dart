@@ -32,6 +32,7 @@ abstract final class UiStateKeys {
   // Notification preferences are deliberately NOT here: they are read by the
   // background isolate, which cannot see this store's cache. See SyncStateKeys.
   static const paneWidths = 'panes.v1';
+  static const display = 'display.v1';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.

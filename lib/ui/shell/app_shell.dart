@@ -5,6 +5,8 @@ import '../../data/imap/imap_mapping.dart';
 import '../../domain/mail_message.dart';
 import '../../state/message_providers.dart';
 import '../../state/notification_providers.dart';
+import '../../domain/display_settings.dart';
+import '../../state/display_providers.dart';
 import '../../state/pane_widths.dart';
 import '../../state/providers.dart';
 import '../../domain/draft.dart';
@@ -78,10 +80,14 @@ class _AppShellState extends ConsumerState<AppShell> {
   /// On the phone and medium layouts a message is its own screen, so the
   /// selection alone is not enough: something has to push it. The wide layout
   /// needs none of this, because its reading pane follows the selection.
-  void _pushPendingIfResolved(double width) {
+  void _pushPendingIfResolved(double width, ReadingPanePosition position) {
     final pending = _pendingMessageId;
-    if (pending == null || width >= AppShell.wideBreakpoint) {
-      if (pending != null) _pendingMessageId = null;
+    if (pending == null) return;
+    // A layout that already has a reading pane will show the message as soon
+    // as the selection resolves, so pushing a screen on top of it would be a
+    // second copy of the same message.
+    if (_hasReadingPane(width, position)) {
+      _pendingMessageId = null;
       return;
     }
     final message = ref.watch(selectedMessageProvider);
@@ -91,6 +97,13 @@ class _AppShellState extends ConsumerState<AppShell> {
       if (mounted) _pushMessage(context, message);
     });
   }
+
+  static bool _hasReadingPane(double width, ReadingPanePosition position) =>
+      switch (position) {
+        ReadingPanePosition.off => false,
+        ReadingPanePosition.bottom => width >= AppShell.mediumBreakpoint,
+        ReadingPanePosition.right => width >= AppShell.wideBreakpoint,
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -102,11 +115,25 @@ class _AppShellState extends ConsumerState<AppShell> {
     }
 
     final width = MediaQuery.sizeOf(context).width;
-    _pushPendingIfResolved(width);
+    final position = ref.watch(displayProvider).readingPane;
+    _pushPendingIfResolved(width, position);
 
-    if (width >= AppShell.wideBreakpoint) return const _WideLayout();
-    if (width >= AppShell.mediumBreakpoint) return const _MediumLayout();
-    return const _NarrowLayout();
+    if (width < AppShell.mediumBreakpoint) return const _NarrowLayout();
+
+    // A reading pane needs room. Beside the list it needs a wide screen; under
+    // the list it only needs the two-pane width, which is why a tablet in
+    // portrait is the case Bottom exists for.
+    return switch (position) {
+      ReadingPanePosition.off => const _MediumLayout(),
+      ReadingPanePosition.bottom => const _MediumLayout(readingPaneBelow: true),
+      // No room beside the list. Deliberately falls back to no pane rather
+      // than stacking one: a phone held sideways is 600-ish wide and barely
+      // 400 tall, and splitting that horizontally leaves two halves too short
+      // to use. Bottom is there for anyone who wants the stack.
+      ReadingPanePosition.right => width >= AppShell.wideBreakpoint
+          ? const _WideLayout()
+          : const _MediumLayout(),
+    };
   }
 }
 
@@ -146,7 +173,11 @@ class _NarrowLayout extends ConsumerWidget {
 }
 
 class _MediumLayout extends ConsumerWidget {
-  const _MediumLayout();
+  const _MediumLayout({this.readingPaneBelow = false});
+
+  /// Split the right-hand side into the list above and the message below,
+  /// rather than opening a message as its own screen.
+  final bool readingPaneBelow;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -171,10 +202,18 @@ class _MediumLayout extends ConsumerWidget {
                     children: [
                       const _FolderTitleBar(),
                       Expanded(
-                        child: MessageListPane(
-                          onOpen: (m) => _pushMessage(context, m),
-                        ),
+                        child: readingPaneBelow
+                            // Opening a message only changes what the pane
+                            // below shows; there is nothing to push.
+                            ? const MessageListPane(onOpen: _noOpen)
+                            : MessageListPane(
+                                onOpen: (m) => _pushMessage(context, m),
+                              ),
                       ),
+                      if (readingPaneBelow) ...[
+                        const Divider(height: 1),
+                        const Expanded(flex: 2, child: _ReadingArea()),
+                      ],
                     ],
                   ),
                 ),
@@ -188,13 +227,28 @@ class _MediumLayout extends ConsumerWidget {
   }
 }
 
+/// Nothing to do: a layout with a reading pane shows the message by selecting
+/// it. Named rather than a closure so the widget above can stay const.
+void _noOpen(MailMessage message) {}
+
+/// The reading pane's contents, wherever it is placed.
+class _ReadingArea extends ConsumerWidget {
+  const _ReadingArea();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final open = ref.watch(selectedMessageProvider);
+    return open == null
+        ? const _NothingOpen()
+        : ReadingPane(key: ValueKey(open.id), message: open);
+  }
+}
+
 class _WideLayout extends ConsumerWidget {
   const _WideLayout();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final open = ref.watch(selectedMessageProvider);
-
     return Scaffold(
       body: SafeArea(
         child: LayoutBuilder(
@@ -218,7 +272,7 @@ class _WideLayout extends ConsumerWidget {
                       const _FolderTitleBar(),
                       // Opening a message on the wide layout only changes which
                       // one the reading pane shows; there is nothing to push.
-                      Expanded(child: MessageListPane(onOpen: (_) {})),
+                      const Expanded(child: MessageListPane(onOpen: _noOpen)),
                     ],
                   ),
                 ),
@@ -227,11 +281,7 @@ class _WideLayout extends ConsumerWidget {
                   onReset: notifier.reset,
                   label: 'Message list width',
                 ),
-                Expanded(
-                  child: open == null
-                      ? const _NothingOpen()
-                      : ReadingPane(key: ValueKey(open.id), message: open),
-                ),
+                const Expanded(child: _ReadingArea()),
               ],
             );
           },

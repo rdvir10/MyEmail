@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 
+import '../../domain/display_settings.dart';
 import '../../domain/mail_message.dart';
 import 'date_format.dart';
 
 /// One row of the message list: sender, subject, preview, date, and the
-/// unread / flagged / attachment marks. Compact, three lines, like Outlook
-/// mobile.
+/// unread / flagged / attachment marks. Compact, like Outlook mobile.
+///
+/// [density] decides how many lines the row gets. The marks always ride on
+/// the last visible line rather than living on the preview line, or setting
+/// the list to Compact would hide the fact that a message has an attachment.
 class MessageTile extends StatelessWidget {
   const MessageTile({
     super.key,
@@ -15,7 +19,10 @@ class MessageTile extends StatelessWidget {
     this.accountColor,
     this.onLongPress,
     this.folderLabel,
+    this.density = ListDensity.cozy,
   });
+
+  final ListDensity density;
 
   /// Shown as a chip in search results, where hits come from many folders.
   final String? folderLabel;
@@ -46,7 +53,12 @@ class MessageTile extends StatelessWidget {
           onTap: onTap,
           onLongPress: onLongPress,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(8, 10, 12, 10),
+            padding: EdgeInsets.fromLTRB(
+              8,
+              density.verticalPadding,
+              12,
+              density.verticalPadding,
+            ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -107,62 +119,60 @@ class MessageTile extends StatelessWidget {
                         ],
                       ),
                       const SizedBox(height: 2),
-                      Text(
-                        message.subject,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontWeight: weight,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
                       Row(
                         children: [
-                          if (folderLabel != null) ...[
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 6, vertical: 1),
-                              decoration: BoxDecoration(
-                                color: scheme.surfaceContainerHighest,
-                                borderRadius: BorderRadius.circular(4),
+                          Expanded(
+                            child: Text(
+                              message.subject,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                fontWeight: weight,
                               ),
+                            ),
+                          ),
+                          // With no preview line there is nowhere else for
+                          // these to go, and a hidden attachment mark is worse
+                          // than a slightly busier subject line.
+                          if (showsPreview == false) ..._marks(theme, scheme),
+                        ],
+                      ),
+                      if (showsPreview) ...[
+                        const SizedBox(height: 2),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (folderLabel != null) ...[
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: scheme.surfaceContainerHighest,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  folderLabel!,
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                            ],
+                            Expanded(
                               child: Text(
-                                folderLabel!,
-                                style: theme.textTheme.labelSmall?.copyWith(
+                                message.preview,
+                                maxLines: density.previewLines,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodySmall?.copyWith(
                                   color: scheme.onSurfaceVariant,
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 6),
+                            ..._marks(theme, scheme),
                           ],
-                          Expanded(
-                            child: Text(
-                              message.preview,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: scheme.onSurfaceVariant,
-                              ),
-                            ),
-                          ),
-                          if (message.hasAttachments) ...[
-                            const SizedBox(width: 6),
-                            Icon(
-                              Icons.attach_file,
-                              size: 14,
-                              color: scheme.onSurfaceVariant,
-                            ),
-                          ],
-                          if (message.isFlagged) ...[
-                            const SizedBox(width: 6),
-                            Icon(
-                              Icons.flag,
-                              size: 14,
-                              color: scheme.error,
-                            ),
-                          ],
-                        ],
-                      ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -173,4 +183,18 @@ class MessageTile extends StatelessWidget {
       ),
     );
   }
+
+  bool get showsPreview => density.previewLines > 0;
+
+  /// Attachment and flag, in that order, at the end of the last line.
+  List<Widget> _marks(ThemeData theme, ColorScheme scheme) => [
+        if (message.hasAttachments) ...[
+          const SizedBox(width: 6),
+          Icon(Icons.attach_file, size: 14, color: scheme.onSurfaceVariant),
+        ],
+        if (message.isFlagged) ...[
+          const SizedBox(width: 6),
+          Icon(Icons.flag, size: 14, color: scheme.error),
+        ],
+      ];
 }

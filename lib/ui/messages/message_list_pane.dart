@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/mail_message.dart';
 import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
+import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import '../../state/quick_steps.dart';
@@ -108,6 +109,7 @@ class MessageListPane extends ConsumerWidget {
                   key: ValueKey('search:${m.id}'),
                   message: m,
                   isSelected: m.id == selectedId,
+                  density: ref.watch(listDensityProvider),
                   accountColor: accountColors[m.accountId],
                   folderLabel: index[m.folderId]?.displayName,
                   onTap: () {
@@ -167,6 +169,7 @@ class MessageListPane extends ConsumerWidget {
                 final tile = MessageTile(
                   message: m,
                   isSelected: m.id == selectedId,
+                  density: ref.watch(listDensityProvider),
                   accountColor: isUnified ? accountColors[m.accountId] : null,
                   onTap: () {
                     ref.read(selectedMessageIdProvider.notifier).select(m.id);

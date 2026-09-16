@@ -4,10 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
 import '../../state/providers.dart';
-import '../accounts/add_account_screen.dart';
 import '../messages/message_actions.dart';
-import '../quick_steps/quick_steps_screen.dart';
-import '../settings/notifications_screen.dart';
+import '../settings/settings_screen.dart';
 import 'folder_actions.dart';
 import 'folder_tile.dart';
 
@@ -111,28 +109,14 @@ class FolderTreePanel extends ConsumerWidget {
           ),
         ),
         const Divider(height: 1),
+        // One entry, not four. Quick Steps, accounts and notifications all
+        // live behind it now; the tree is for folders.
         ListTile(
           dense: true,
-          leading: const Icon(Icons.bolt_outlined, size: 20),
-          title: const Text('Quick Steps'),
+          leading: const Icon(Icons.settings_outlined, size: 20),
+          title: const Text('Settings'),
           onTap: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(builder: (_) => const QuickStepsScreen()),
-          ),
-        ),
-        ListTile(
-          dense: true,
-          leading: const Icon(Icons.person_add_alt_1_outlined, size: 20),
-          title: const Text('Add account'),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(builder: (_) => const AddAccountScreen()),
-          ),
-        ),
-        ListTile(
-          dense: true,
-          leading: const Icon(Icons.notifications_none, size: 20),
-          title: const Text('Notifications'),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(builder: (_) => const NotificationsScreen()),
+            MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
           ),
         ),
       ],

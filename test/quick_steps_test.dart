@@ -187,6 +187,8 @@ void main() {
       await tester.pumpWidget(app());
       await tester.pumpAndSettle();
 
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Quick Steps'));
       await tester.pumpAndSettle();
       expect(find.textContaining('one tap'), findsOneWidget);

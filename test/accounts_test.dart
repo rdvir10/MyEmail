@@ -241,17 +241,21 @@ void main() {
       expect(find.text('Inbox'), findsWidgets);
     });
 
-    testWidgets('the tree footer opens the add-account screen', (tester) async {
+    testWidgets('Settings, Accounts, Add reaches the add-account screen',
+        (tester) async {
       await tester.pumpWidget(
         const ProviderScope(child: MaterialApp(home: AppShell())),
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Add account'));
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Accounts').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Add'));
       await tester.pumpAndSettle();
 
       expect(find.byType(AddAccountScreen), findsOneWidget);
-      expect(find.text('Add account'), findsWidgets);
     });
   });
 }
