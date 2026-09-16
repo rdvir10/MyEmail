@@ -163,6 +163,8 @@ class RemoteHeader {
     required this.isRead,
     required this.isFlagged,
     required this.hasAttachments,
+    this.messageId,
+    this.inReplyTo,
   });
 
   final int uid;
@@ -173,6 +175,15 @@ class RemoteHeader {
   final bool isRead;
   final bool isFlagged;
   final bool hasAttachments;
+
+  /// This message's own `Message-ID`, and the id of the message it answers.
+  ///
+  /// Both come out of the ENVELOPE the header fetch already asks for, so
+  /// threading costs nothing extra on the wire. Either can be null: plenty of
+  /// mail in the wild has no Message-ID at all, which is why grouping falls
+  /// back to the subject rather than relying on these.
+  final String? messageId;
+  final String? inReplyTo;
 }
 
 @immutable

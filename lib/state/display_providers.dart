@@ -43,3 +43,27 @@ final displayProvider =
 /// when some unrelated view setting does.
 final listDensityProvider =
     Provider<ListDensity>((ref) => ref.watch(displayProvider).density);
+
+/// Which conversations are open, by conversation id.
+///
+/// Deliberately not persisted, unlike the folder tree's expand state. A
+/// folder is still the same folder tomorrow; a conversation's identity is its
+/// oldest cached message, which moves as the window slides, so restoring
+/// yesterday's set would open arbitrary threads.
+class ExpandedConversations extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => const {};
+
+  void toggle(String id) => state = {
+        for (final existing in state)
+          if (existing != id) existing,
+        if (!state.contains(id)) id,
+      };
+
+  void collapseAll() => state = const {};
+}
+
+final expandedConversationsProvider =
+    NotifierProvider<ExpandedConversations, Set<String>>(
+  ExpandedConversations.new,
+);

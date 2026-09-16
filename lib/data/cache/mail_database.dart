@@ -42,6 +42,12 @@ class Messages extends Table {
   TextColumn get bodyText => text().nullable()();
   TextColumn get bodyHtml => text().nullable()();
 
+  /// Threading, added in schema 2. Nullable because plenty of real mail has
+  /// no `Message-ID`, and because every row cached before schema 2 has
+  /// neither until the folder is next synced.
+  TextColumn get messageId => text().nullable()();
+  TextColumn get inReplyTo => text().nullable()();
+
   @override
   Set<Column> get primaryKey => {accountId, path, uid};
 }
@@ -54,7 +60,25 @@ class MailDatabase extends _$MailDatabase {
   MailDatabase.open() : super(driftDatabase(name: 'mailtree'));
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  /// Adding a column must not cost the user their cache.
+  ///
+  /// Drift's default for a version bump with no strategy is to do nothing,
+  /// and the app then queries columns the table does not have. Adding them in
+  /// place keeps every cached message and body; the two new columns stay null
+  /// on old rows until that folder is next synced, which is exactly what the
+  /// nullable declaration above is for.
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+        onCreate: (m) => m.createAll(),
+        onUpgrade: (m, from, to) async {
+          if (from < 2) {
+            await m.addColumn(messages, messages.messageId);
+            await m.addColumn(messages, messages.inReplyTo);
+          }
+        },
+      );
 }
 
 /// [CacheStore] on SQLite via Drift. The real store on Android.
@@ -186,6 +210,8 @@ class DriftCacheStore implements CacheStore {
             preview: Value(m.preview),
             bodyText: Value(m.bodyText),
             bodyHtml: Value(m.bodyHtml),
+            messageId: Value(m.messageId),
+            inReplyTo: Value(m.inReplyTo),
           ),
           // A re-fetched header must not wipe a body we already have, so on
           // conflict only the header columns are rewritten.
@@ -196,6 +222,8 @@ class DriftCacheStore implements CacheStore {
               fromName: Value(m.from.name),
               recipientsJson: Value(_encodeAddresses(m.to)),
               date: Value(m.date),
+              messageId: Value(m.messageId),
+              inReplyTo: Value(m.inReplyTo),
               isRead: Value(m.isRead),
               isFlagged: Value(m.isFlagged),
               hasAttachments: Value(m.hasAttachments),
@@ -325,6 +353,8 @@ class DriftCacheStore implements CacheStore {
         preview: r.preview,
         bodyText: r.bodyText,
         bodyHtml: r.bodyHtml,
+        messageId: r.messageId,
+        inReplyTo: r.inReplyTo,
       );
 
   static String _encodeAddresses(List<MailAddress> list) => jsonEncode([

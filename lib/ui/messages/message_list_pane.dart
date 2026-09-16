@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/mail_message.dart';
 import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
+import '../../state/conversations.dart';
 import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
@@ -11,6 +12,7 @@ import '../../state/quick_steps.dart';
 import '../../state/search_providers.dart';
 import '../quick_steps/quick_steps_screen.dart';
 import 'message_actions.dart';
+import 'conversation_tile.dart';
 import 'message_tile.dart';
 import 'search_bar.dart';
 
@@ -161,15 +163,45 @@ class MessageListPane extends ConsumerWidget {
                 ),
               );
             }
+            final density = ref.watch(listDensityProvider);
+            final rows = ref.watch(displayProvider).conversations
+                ? _conversationRows(
+                    groupIntoConversations(messages),
+                    ref.watch(expandedConversationsProvider),
+                  )
+                : [for (final m in messages) _Row.message(m)];
+
             return ListView.separated(
-              itemCount: messages.length,
+              itemCount: rows.length,
               separatorBuilder: (_, _) => const Divider(height: 1, indent: 28),
               itemBuilder: (context, i) {
-                final m = messages[i];
+                final row = rows[i];
+                final conversation = row.conversation;
+                if (conversation != null) {
+                  return ConversationTile(
+                    key: ValueKey('thread:${conversation.id}'),
+                    conversation: conversation,
+                    density: density,
+                    isExpanded: row.isExpanded,
+                    accountColor:
+                        isUnified ? accountColors[conversation.newest.accountId] : null,
+                    onTap: () => ref
+                        .read(expandedConversationsProvider.notifier)
+                        .toggle(conversation.id),
+                    onLongPress: () => _showConversationMenu(
+                      context,
+                      ref,
+                      actions,
+                      conversation,
+                    ),
+                  );
+                }
+
+                final m = row.message!;
                 final tile = MessageTile(
                   message: m,
                   isSelected: m.id == selectedId,
-                  density: ref.watch(listDensityProvider),
+                  density: density,
                   accountColor: isUnified ? accountColors[m.accountId] : null,
                   onTap: () {
                     ref.read(selectedMessageIdProvider.notifier).select(m.id);
@@ -177,7 +209,7 @@ class MessageListPane extends ConsumerWidget {
                   },
                   onLongPress: () => _showMessageMenu(context, ref, actions, m),
                 );
-                return _SwipeableRow(
+                final swipeable = _SwipeableRow(
                   key: ValueKey(m.id),
                   message: m,
                   actions: actions,
@@ -189,10 +221,134 @@ class MessageListPane extends ConsumerWidget {
                     child: tile,
                   ),
                 );
+                // Inside an open thread, indented so the run of replies reads
+                // as belonging to the row above it.
+                return row.indented
+                    ? Padding(
+                        padding: const EdgeInsets.only(left: 20),
+                        child: swipeable,
+                      )
+                    : swipeable;
               },
             );
           },
         );
+  }
+
+  /// Conversations flattened into the rows a ListView draws.
+  ///
+  /// A conversation of one is a plain message row: a header with a "1" badge
+  /// next to every ordinary message is noise. An open thread shows its
+  /// messages newest first, matching the order of the list around it.
+  static List<_Row> _conversationRows(
+    List<Conversation> conversations,
+    Set<String> expandedIds,
+  ) {
+    final rows = <_Row>[];
+    for (final c in conversations) {
+      if (!c.isThread) {
+        rows.add(_Row.message(c.newest));
+        continue;
+      }
+      final isExpanded = expandedIds.contains(c.id);
+      rows.add(_Row.conversation(c, isExpanded: isExpanded));
+      if (isExpanded) {
+        for (final m in c.messages.reversed) {
+          rows.add(_Row.message(m, indented: true));
+        }
+      }
+    }
+    return rows;
+  }
+
+  /// The whole thread at once.
+  ///
+  /// Every entry says how many messages it is about. "Delete" on a row that
+  /// looks like one message but is nine is the kind of surprise that makes
+  /// people turn conversations off.
+  Future<void> _showConversationMenu(
+    BuildContext context,
+    WidgetRef ref,
+    MessageActions actions,
+    Conversation conversation,
+  ) async {
+    final count = conversation.length;
+    final unread = conversation.hasUnread;
+    final flagged = conversation.isFlagged;
+
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (_) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                dense: true,
+                title: Text(
+                  conversation.subject,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                subtitle: Text('$count messages'),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.drive_file_move_outline),
+                title: Text('Move all $count to…'),
+                onTap: () => Navigator.of(context).pop('move'),
+              ),
+              ListTile(
+                leading: Icon(
+                  unread
+                      ? Icons.mark_email_read_outlined
+                      : Icons.mark_email_unread_outlined,
+                ),
+                title: Text(unread
+                    ? 'Mark all $count as read'
+                    : 'Mark all $count as unread'),
+                onTap: () => Navigator.of(context).pop('read'),
+              ),
+              ListTile(
+                leading: Icon(flagged ? Icons.flag : Icons.flag_outlined),
+                title: Text(flagged ? 'Remove flags' : 'Flag all $count'),
+                onTap: () => Navigator.of(context).pop('flag'),
+              ),
+              ListTile(
+                leading: Icon(
+                  Icons.delete_outline,
+                  color: Theme.of(context).colorScheme.error,
+                ),
+                title: Text('Delete all $count'),
+                onTap: () => Navigator.of(context).pop('delete'),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (choice == null || !context.mounted) return;
+
+    final messages = conversation.messages;
+    final notifier = ref.read(messagesProvider(actions.listId).notifier);
+    switch (choice) {
+      case 'move':
+        await actions.moveWithPrompt(context, messages);
+      case 'delete':
+        await actions.delete(context, messages);
+      case 'read':
+        for (final m in messages) {
+          await notifier.setRead(m.id, unread);
+        }
+      case 'flag':
+        for (final m in messages) {
+          await notifier.setFlagged(m.id, !flagged);
+        }
+    }
   }
 
   Future<void> _showMessageMenu(
@@ -431,4 +587,22 @@ class _DragFeedback extends StatelessWidget {
       ),
     );
   }
+}
+
+/// One line in the list: either a collapsed conversation, or a message.
+class _Row {
+  const _Row._(this.message, this.conversation, this.isExpanded, this.indented);
+
+  factory _Row.message(MailMessage message, {bool indented = false}) =>
+      _Row._(message, null, false, indented);
+
+  factory _Row.conversation(Conversation c, {required bool isExpanded}) =>
+      _Row._(null, c, isExpanded, false);
+
+  final MailMessage? message;
+  final Conversation? conversation;
+  final bool isExpanded;
+
+  /// A message shown inside an open thread rather than at the top level.
+  final bool indented;
 }

@@ -44,6 +44,8 @@ class MailMessage {
     this.isRead = false,
     this.isFlagged = false,
     this.hasAttachments = false,
+    this.messageId,
+    this.inReplyTo,
   });
 
   static String idFor(String folderId, int uid) => '$folderId#$uid';
@@ -63,6 +65,13 @@ class MailMessage {
   final bool isFlagged;
   final bool hasAttachments;
 
+  /// This message's own `Message-ID`, and the id of the one it answers.
+  /// Both are what conversation grouping chains on. Either can be null: the
+  /// headers are optional in practice, and anything cached before threading
+  /// existed has neither, which is why grouping also falls back to subject.
+  final String? messageId;
+  final String? inReplyTo;
+
   MailMessage copyWith({bool? isRead, bool? isFlagged}) {
     return MailMessage(
       id: id,
@@ -77,6 +86,8 @@ class MailMessage {
       isRead: isRead ?? this.isRead,
       isFlagged: isFlagged ?? this.isFlagged,
       hasAttachments: hasAttachments,
+      messageId: messageId,
+      inReplyTo: inReplyTo,
     );
   }
 

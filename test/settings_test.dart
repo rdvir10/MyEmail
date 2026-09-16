@@ -7,6 +7,7 @@ import 'package:mailtree/domain/mail_message.dart';
 import 'package:mailtree/state/compose_providers.dart';
 import 'package:mailtree/state/display_providers.dart';
 import 'package:mailtree/state/providers.dart';
+import 'package:mailtree/ui/messages/conversation_tile.dart';
 import 'package:mailtree/ui/messages/message_tile.dart';
 import 'package:mailtree/ui/messages/reading_pane.dart';
 import 'package:mailtree/ui/settings/accounts_screen.dart';
@@ -218,6 +219,93 @@ void main() {
       await tester.tap(find.byType(MessageTile).first);
       await tester.pumpAndSettle();
       expect(find.byType(MessageScreen), findsOneWidget);
+    });
+  });
+
+  group('conversations in the list', () {
+    testWidgets('off by default, so every message has its own row',
+        (tester) async {
+      _useSize(tester, const Size(1400, 900));
+      await tester.pumpWidget(app(const AppShell()));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ConversationTile), findsNothing);
+      expect(find.byType(MessageTile), findsWidgets);
+    });
+
+    testWidgets('turning it on collapses replies onto one row', (tester) async {
+      _useSize(tester, const Size(1400, 1600));
+      final c = container();
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: const MaterialApp(home: AppShell()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final before = tester.widgetList(find.byType(MessageTile)).length;
+
+      c.read(displayProvider.notifier).setConversations(true);
+      await tester.pumpAndSettle();
+
+      final after = tester.widgetList(find.byType(MessageTile)).length;
+      expect(find.byType(ConversationTile), findsWidgets,
+          reason: 'the sample data has a thread in it');
+      expect(after, lessThan(before));
+    });
+
+    testWidgets('tapping a conversation opens it and tapping again closes it',
+        (tester) async {
+      _useSize(tester, const Size(1400, 1600));
+      final c = container();
+      c.read(displayProvider.notifier).setConversations(true);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: const MaterialApp(home: AppShell()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final collapsed = tester.widgetList(find.byType(MessageTile)).length;
+      await tester.tap(find.byType(ConversationTile).first);
+      await tester.pumpAndSettle();
+      expect(
+        tester.widgetList(find.byType(MessageTile)).length,
+        greaterThan(collapsed),
+      );
+
+      await tester.tap(find.byType(ConversationTile).first);
+      await tester.pumpAndSettle();
+      expect(tester.widgetList(find.byType(MessageTile)).length, collapsed);
+    });
+
+    testWidgets('the row says how many messages are inside', (tester) async {
+      _useSize(tester, const Size(1400, 1600));
+      final c = container();
+      c.read(displayProvider.notifier).setConversations(true);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: const MaterialApp(home: AppShell()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final tile = tester.widget<ConversationTile>(
+        find.byType(ConversationTile).first,
+      );
+      expect(tile.conversation.isThread, isTrue);
+      expect(find.text('${tile.conversation.length}'), findsWidgets);
+    });
+
+    testWidgets('the toggle is on the View screen and says what it does',
+        (tester) async {
+      _useSize(tester, const Size(900, 1600));
+      await tester.pumpWidget(app(const ViewSettingsScreen()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Group into conversations'), findsOneWidget);
     });
   });
 

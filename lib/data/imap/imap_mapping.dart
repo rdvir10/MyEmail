@@ -73,7 +73,29 @@ RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
     isRead: m.isSeen,
     isFlagged: m.isFlagged,
     hasAttachments: m.hasAttachments(),
+    messageId: normaliseMessageId(
+      m.envelope?.messageId ?? m.getHeaderValue('message-id'),
+    ),
+    inReplyTo: normaliseMessageId(
+      m.envelope?.inReplyTo ?? m.getHeaderValue('in-reply-to'),
+    ),
   );
+}
+
+/// A `Message-ID` reduced to the part that identifies it.
+///
+/// Servers are inconsistent about the angle brackets and the whitespace, and
+/// `In-Reply-To` sometimes carries several ids where the spec allows one. The
+/// two ends of a link have to match exactly or the thread breaks, so both go
+/// through here. The first id wins: that is the message actually answered.
+String? normaliseMessageId(String? raw) {
+  if (raw == null) return null;
+  // `*` rather than `+`: an empty `<>` is a real thing servers send, and it
+  // has to come back as null rather than as the literal brackets, which would
+  // then match every other empty one and thread them together.
+  final match = RegExp(r'<([^>]*)>').firstMatch(raw);
+  final value = (match?.group(1) ?? raw).trim();
+  return value.isEmpty ? null : value;
 }
 
 RemoteFolder remoteFolderFromMailbox(em.Mailbox box) => RemoteFolder(
@@ -211,6 +233,12 @@ MailMessage messageFromMime({
     isRead: m.isSeen,
     isFlagged: m.isFlagged,
     hasAttachments: m.hasAttachments(),
+    messageId: normaliseMessageId(
+      m.envelope?.messageId ?? m.getHeaderValue('message-id'),
+    ),
+    inReplyTo: normaliseMessageId(
+      m.envelope?.inReplyTo ?? m.getHeaderValue('in-reply-to'),
+    ),
   );
 }
 

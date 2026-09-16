@@ -49,6 +49,23 @@ class ViewSettingsScreen extends ConsumerWidget {
             theme: theme,
           ),
           const Divider(height: 1),
+          const _Heading('Conversations'),
+          SwitchListTile(
+            title: const Text('Group into conversations'),
+            subtitle: const Text(
+              'A reply and the message it answers share one row, which opens '
+              'to show the thread.',
+            ),
+            value: display.conversations,
+            onChanged: notifier.setConversations,
+          ),
+          _Note(
+            'Grouped by the threading headers where a message has them, and '
+            'by subject where it does not. Mail cached before this existed '
+            'has none until its folder next syncs.',
+            theme: theme,
+          ),
+          const Divider(height: 1),
           const _Heading('Message list'),
           RadioGroup<ListDensity>(
             groupValue: display.density,
