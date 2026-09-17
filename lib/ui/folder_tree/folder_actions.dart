@@ -19,7 +19,12 @@ Future<void> showFolderActionsSheet(
   MailFolder folder,
 ) async {
   final isFavorite = ref.read(favoriteFoldersProvider).contains(folder.id);
-  final actions = _availableActions(folder, isFavorite: isFavorite);
+  final isHidden = ref.read(hiddenFoldersProvider).contains(folder.id);
+  final actions = _availableActions(
+    folder,
+    isFavorite: isFavorite,
+    isHidden: isHidden,
+  );
   if (actions.isEmpty) return;
 
   // isScrollControlled lifts the default cap of 9/16 of the screen height,
@@ -33,6 +38,7 @@ Future<void> showFolderActionsSheet(
       folder: folder,
       actions: actions,
       isFavorite: isFavorite,
+      isHidden: isHidden,
     ),
   );
   if (chosen == null || !context.mounted) return;
@@ -41,6 +47,14 @@ Future<void> showFolderActionsSheet(
   switch (chosen) {
     case _FolderAction.favorite:
       ref.read(favoriteFoldersProvider.notifier).toggle(folder.id);
+    case _FolderAction.hide:
+      final hidden = ref.read(hiddenFoldersProvider.notifier);
+      if (isHidden) {
+        hidden.unhide(folder.id);
+      } else {
+        hidden.hide(folder.id);
+        if (context.mounted) _sayHidden(context, ref, folder);
+      }
     case _FolderAction.markAllRead:
       await _guarded(context, () => folders.markAllRead(folder.id));
     case _FolderAction.rename:
@@ -99,8 +113,27 @@ Future<void> showFolderActionsSheet(
   }
 }
 
+/// Hiding is quiet and easily done by accident on a long press, so it says
+/// what it did and offers the one-tap way back. Without this the folder simply
+/// vanishes, and the route to unhiding it is somewhere else entirely.
+void _sayHidden(BuildContext context, WidgetRef ref, MailFolder folder) {
+  ScaffoldMessenger.of(context)
+    ..hideCurrentSnackBar()
+    ..showSnackBar(
+      SnackBar(
+        content: Text('${folder.displayName} hidden'),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () =>
+              ref.read(hiddenFoldersProvider.notifier).unhide(folder.id),
+        ),
+      ),
+    );
+}
+
 enum _FolderAction {
   newSubfolder('New subfolder', Icons.create_new_folder_outlined),
+  hide('Hide', Icons.visibility_off_outlined),
   rename('Rename', Icons.drive_file_rename_outline),
   move('Move to…', Icons.drive_file_move_outline),
   favorite('Add to Favourites', Icons.star_outline),
@@ -117,6 +150,7 @@ enum _FolderAction {
 List<_FolderAction> _availableActions(
   MailFolder folder, {
   required bool isFavorite,
+  required bool isHidden,
 }) {
   final c = folder.capabilities;
   return [
@@ -124,6 +158,9 @@ List<_FolderAction> _availableActions(
     if (c.canRename) _FolderAction.rename,
     if (c.canMove) _FolderAction.move,
     if (c.canFavorite) _FolderAction.favorite,
+    // Not a server capability: hiding is entirely local, so the only thing
+    // that gates it is whether hiding this folder would make sense at all.
+    if (canHideFolder(folder)) _FolderAction.hide,
     if (c.canMarkAllRead && folder.unreadCount > 0) _FolderAction.markAllRead,
     if (c.canEmpty && folder.totalCount > 0) _FolderAction.empty,
     if (c.canDelete) _FolderAction.delete,
@@ -164,21 +201,27 @@ class _FolderActionsSheet extends StatelessWidget {
     required this.folder,
     required this.actions,
     required this.isFavorite,
+    required this.isHidden,
   });
 
   final MailFolder folder;
   final List<_FolderAction> actions;
   final bool isFavorite;
+  final bool isHidden;
 
-  String _labelFor(_FolderAction action) =>
-      action == _FolderAction.favorite && isFavorite
-          ? 'Remove from Favourites'
-          : action.label;
+  /// Each entry says what tapping it will do, not what the folder currently
+  /// is. A menu labelled with the present state reads as a status display.
+  String _labelFor(_FolderAction action) => switch (action) {
+        _FolderAction.favorite when isFavorite => 'Remove from Favourites',
+        _FolderAction.hide when isHidden => 'Unhide',
+        _ => action.label,
+      };
 
-  IconData _iconFor(_FolderAction action) =>
-      action == _FolderAction.favorite && isFavorite
-          ? Icons.star
-          : action.icon;
+  IconData _iconFor(_FolderAction action) => switch (action) {
+        _FolderAction.favorite when isFavorite => Icons.star,
+        _FolderAction.hide when isHidden => Icons.visibility_outlined,
+        _ => action.icon,
+      };
 
   @override
   Widget build(BuildContext context) {

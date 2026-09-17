@@ -100,6 +100,7 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     await ref.read(mailEngineProvider).deleteFolder(folderId);
     ref.read(expandedFoldersProvider.notifier).removeAll(doomed);
     ref.read(favoriteFoldersProvider.notifier).removeAll(doomed);
+    ref.read(hiddenFoldersProvider.notifier).removeAll(doomed);
     ref.read(folderOrderProvider.notifier).removeAll(doomed);
     ref.read(recentMoveTargetsProvider.notifier).removeAll(doomed);
     ref.read(quickStepsProvider.notifier).dropFoldersIn(doomed);
@@ -167,6 +168,9 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
   void _remapIds(FolderRename r) {
     ref.read(expandedFoldersProvider.notifier).remap(r);
     ref.read(favoriteFoldersProvider.notifier).remap(r);
+    // Without this a renamed folder quietly reappears: the set still holds the
+    // id it had before, and nothing matches the new one.
+    ref.read(hiddenFoldersProvider.notifier).remap(r);
     ref.read(folderOrderProvider.notifier).remap(r);
     ref.read(recentMoveTargetsProvider.notifier).remap(r);
     ref.read(quickStepsProvider.notifier).remapFolder(r);
@@ -225,6 +229,58 @@ abstract class FolderIdSet extends Notifier<Set<String>> {
 
 /// Which folders are expanded, remembered across restarts so the tree comes
 /// back the way it was left.
+/// Folders put out of the way. Persisted, unlike the reveal toggle: hiding is
+/// a decision about the tree, and it should still hold tomorrow.
+class HiddenFolders extends FolderIdSet {
+  @override
+  String get storageKey => UiStateKeys.hidden;
+
+  /// Hide it, and drop it from Favourites on the way.
+  ///
+  /// A favourite you cannot see is a contradiction: the Favourites section
+  /// would either show it, defeating the hiding, or silently skip it, leaving
+  /// a favourite that exists nowhere. Better to unfavourite it outright, which
+  /// is visible and undoable.
+  void hide(String folderId) {
+    ref.read(favoriteFoldersProvider.notifier).removeAll({folderId});
+    if (!state.contains(folderId)) state = {...state, folderId};
+  }
+
+  void unhide(String folderId) => state = {
+        for (final id in state)
+          if (id != folderId) id,
+      };
+}
+
+final hiddenFoldersProvider =
+    NotifierProvider<HiddenFolders, Set<String>>(HiddenFolders.new);
+
+/// Reveal hidden folders, dimmed, so there is a way back to them.
+///
+/// Not persisted, on purpose. This is a temporary look behind the curtain,
+/// not a second preference: coming back tomorrow to find everything you hid
+/// on screen again would make hiding pointless.
+class ShowHiddenFolders extends Notifier<bool> {
+  @override
+  bool build() => false;
+
+  void toggle() => state = !state;
+  void set(bool value) => state = value;
+}
+
+final showHiddenFoldersProvider =
+    NotifierProvider<ShowHiddenFolders, bool>(ShowHiddenFolders.new);
+
+/// How many folders the user has chosen to hide. Drives the row at the bottom
+/// of the tree, which is the only way back; it is not shown when zero,
+/// because a control for nothing is just noise.
+final hiddenFolderCountProvider = Provider<int>((ref) {
+  return countHiddenFolders(
+    ref.watch(foldersProvider).value ?? const {},
+    ref.watch(hiddenFoldersProvider),
+  );
+});
+
 class ExpandedFolders extends FolderIdSet {
   @override
   String get storageKey => UiStateKeys.expanded;
@@ -374,7 +430,17 @@ final defaultFolderIdProvider = Provider<String?>((ref) {
 /// the moment folders arrive, and a deleted selection falls back on its own.
 final effectiveSelectedFolderIdProvider = Provider<String?>((ref) {
   final chosen = ref.watch(selectedFolderIdProvider);
-  if (chosen != null && ref.watch(folderIndexProvider).containsKey(chosen)) {
+  final index = ref.watch(folderIndexProvider);
+  final folder = chosen == null ? null : index[chosen];
+  if (folder != null) {
+    // Hiding the folder you are reading must not leave you staring at a list
+    // whose folder is nowhere in the tree. Fall through to the default, unless
+    // hidden folders are being shown, in which case it is still on screen and
+    // keeping the selection is the less surprising thing.
+    final hidden = !ref.watch(showHiddenFoldersProvider) &&
+        isFolderHidden(folder, ref.watch(hiddenFoldersProvider), index);
+    if (!hidden) return chosen;
+  } else if (chosen != null && index.containsKey(chosen)) {
     return chosen;
   }
   return ref.watch(defaultFolderIdProvider);
@@ -391,6 +457,8 @@ final treeRowsProvider = Provider<List<TreeRow>>((ref) {
       foldersByAccount: folders,
       expandedIds: ref.watch(expandedFoldersProvider),
       favoriteIds: ref.watch(favoriteFoldersProvider),
+      hiddenIds: ref.watch(hiddenFoldersProvider),
+      showHidden: ref.watch(showHiddenFoldersProvider),
       orderOverrides: ref.watch(folderOrderProvider),
       searchQuery: ref.watch(folderSearchQueryProvider),
     ),

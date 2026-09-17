@@ -41,6 +41,7 @@ class FolderRow extends TreeRow {
     this.inFavorites = false,
     this.flat = false,
     this.subtitle,
+    this.isHidden = false,
   });
 
   final MailFolder folder;
@@ -56,6 +57,10 @@ class FolderRow extends TreeRow {
   /// state layer has no business knowing theme colours.
   final int? accentColor;
   final bool inFavorites;
+
+  /// A hidden folder, shown only because "show hidden" is on. The tree dims
+  /// it and marks it, so it is obvious which rows will disappear again.
+  final bool isHidden;
 
   /// True for rows shown out of their tree position (Favourites, search
   /// results). Reordering by dropping before or after such a row would be
@@ -80,6 +85,8 @@ class FolderTreeInput {
     required this.foldersByAccount,
     required this.expandedIds,
     required this.favoriteIds,
+    this.hiddenIds = const {},
+    this.showHidden = false,
     this.orderOverrides = const {},
     this.searchQuery = '',
     this.showUnifiedInbox = true,
@@ -90,6 +97,16 @@ class FolderTreeInput {
   final Set<String> expandedIds;
   final Set<String> favoriteIds;
 
+  /// Folders the user has put out of the way. Hiding one hides everything
+  /// under it too: leaving the children behind would float them up to a depth
+  /// they do not belong at, which reads as the tree being broken.
+  final Set<String> hiddenIds;
+
+  /// Reveal them anyway, dimmed. Deliberately not persisted: this is the way
+  /// back to something you hid, not a second preference to remember. Coming
+  /// back tomorrow to find everything you hid on screen would defeat it.
+  final bool showHidden;
+
   /// Local reordering of user folders, by id. IMAP has no folder order, so
   /// this never reaches the server; it overrides [MailFolder.sortIndex].
   final Map<String, int> orderOverrides;
@@ -98,6 +115,54 @@ class FolderTreeInput {
 }
 
 const kUnifiedInboxId = 'unified:inbox';
+
+/// Whether this folder may be put out of the way.
+///
+/// Everything except an Inbox. Hiding the thing the app opens on would leave
+/// someone staring at an empty tree with no obvious way back, and the point of
+/// hiding is to clear away the folders a provider invents, not the one you
+/// actually read. The unified Inbox is not a real folder and has nothing to
+/// hide.
+bool canHideFolder(MailFolder folder) =>
+    folder.role != FolderRole.inbox && folder.role != FolderRole.unifiedInbox;
+
+/// Whether [folder] is hidden, directly or because something above it is.
+///
+/// Walks up the parent chain, so hiding a folder takes its whole subtree with
+/// it. Leaving children behind would float them to a depth they do not belong
+/// at, which reads as the tree being broken rather than as a setting.
+bool isFolderHidden(
+  MailFolder folder,
+  Set<String> hiddenIds,
+  Map<String, MailFolder> byId,
+) {
+  if (hiddenIds.isEmpty) return false;
+  MailFolder? cursor = folder;
+  // Bounded by the depth of the tree, and defensive against a parent chain
+  // that somehow loops: a cycle here would hang the whole UI.
+  for (var depth = 0; cursor != null && depth < 64; depth++) {
+    if (hiddenIds.contains(cursor.id)) return true;
+    final parentId = cursor.parentId;
+    cursor = parentId == null ? null : byId[parentId];
+  }
+  return false;
+}
+
+/// How many folders are hidden right now, counting only the ones the user
+/// actually chose. A subtree of twenty under one hidden parent is one thing
+/// hidden, and saying "21 hidden" would be a lie about what unhiding undoes.
+int countHiddenFolders(
+  Map<String, List<MailFolder>> foldersByAccount,
+  Set<String> hiddenIds,
+) {
+  var n = 0;
+  for (final folders in foldersByAccount.values) {
+    for (final f in folders) {
+      if (hiddenIds.contains(f.id)) n++;
+    }
+  }
+  return n;
+}
 
 /// The synthetic unified Inbox, summing every account's Inbox.
 MailFolder buildUnifiedInbox(Map<String, List<MailFolder>> foldersByAccount) {
@@ -181,6 +246,8 @@ List<TreeRow> buildTreeRows(FolderTreeInput input) {
       depth: 0,
       expandedIds: input.expandedIds,
       accentColor: account.colorValue,
+      hiddenIds: input.hiddenIds,
+      showHidden: input.showHidden,
     );
   }
 
@@ -194,8 +261,16 @@ void _appendSubtree({
   required int depth,
   required Set<String> expandedIds,
   required int accentColor,
+  required Set<String> hiddenIds,
+  required bool showHidden,
+  bool underHidden = false,
 }) {
   for (final folder in childrenOf[parentId] ?? const <MailFolder>[]) {
+    // Inherited rather than looked up: the walk is already coming down the
+    // tree, so a parent's hidden-ness is known without climbing back up.
+    final hidden = underHidden || hiddenIds.contains(folder.id);
+    if (hidden && !showHidden) continue;
+
     final hasChildren = childrenOf.containsKey(folder.id);
     final isExpanded = expandedIds.contains(folder.id);
     rows.add(
@@ -205,6 +280,7 @@ void _appendSubtree({
         hasChildren: hasChildren,
         isExpanded: isExpanded,
         accentColor: accentColor,
+        isHidden: hidden,
       ),
     );
     if (hasChildren && isExpanded) {
@@ -215,6 +291,9 @@ void _appendSubtree({
         depth: depth + 1,
         expandedIds: expandedIds,
         accentColor: accentColor,
+        hiddenIds: hiddenIds,
+        showHidden: showHidden,
+        underHidden: hidden,
       );
     }
   }
@@ -231,12 +310,14 @@ void _appendSubtree({
 List<TreeRow> _buildSearchRows(FolderTreeInput input, String query) {
   final rows = <TreeRow>[];
   final compare = folderComparator(input.orderOverrides);
+  final byId = _indexById(input.foldersByAccount);
   for (final account in input.accounts) {
     final folders = input.foldersByAccount[account.id] ?? const <MailFolder>[];
     final matches = folders
         .where((f) =>
-            f.displayName.toLowerCase().contains(query) ||
-            f.name.toLowerCase().contains(query))
+            (f.displayName.toLowerCase().contains(query) ||
+                f.name.toLowerCase().contains(query)) &&
+            (input.showHidden || !isFolderHidden(f, input.hiddenIds, byId)))
         .toList()
       ..sort(compare);
     if (matches.isEmpty) continue;
@@ -270,11 +351,18 @@ List<TreeRow> _buildSearchRows(FolderTreeInput input, String query) {
 List<FolderRow> _favoriteRows(FolderTreeInput input) {
   final rows = <FolderRow>[];
   final compare = folderComparator(input.orderOverrides);
+  final byId = _indexById(input.foldersByAccount);
   for (final account in input.accounts) {
     final folders = input.foldersByAccount[account.id] ?? const <MailFolder>[];
-    final favorites =
-        folders.where((f) => input.favoriteIds.contains(f.id)).toList()
-          ..sort(compare);
+    final favorites = folders
+        .where((f) =>
+            input.favoriteIds.contains(f.id) &&
+            // Hidden means hidden, in Favourites too. One rule, wherever a
+            // folder could otherwise appear, is what makes it explainable.
+            (input.showHidden ||
+                !isFolderHidden(f, input.hiddenIds, byId)))
+        .toList()
+      ..sort(compare);
     for (final folder in favorites) {
       rows.add(
         FolderRow(
@@ -328,3 +416,13 @@ List<MailFolder> sortedChildren(
 /// implementation detail and is never shown.
 String displayPath(MailFolder folder) =>
     folder.path.replaceFirst('[Gmail]/', '').replaceAll('/', ' › ');
+
+/// Every folder across every account, by id. Needed to walk a parent chain,
+/// which the flat per-account lists cannot do on their own.
+Map<String, MailFolder> _indexById(
+  Map<String, List<MailFolder>> foldersByAccount,
+) =>
+    {
+      for (final folders in foldersByAccount.values)
+        for (final f in folders) f.id: f,
+    };

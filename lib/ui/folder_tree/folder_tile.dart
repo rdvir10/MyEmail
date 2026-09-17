@@ -216,9 +216,33 @@ class _FolderTileState extends State<FolderTile> {
       );
     }
 
+    // A revealed hidden folder is dimmed and marked, so it is obvious which
+    // rows go away again when the reveal is switched off. Wrapped last, so the
+    // drag and drop behaviour above is unaffected: a hidden folder is still a
+    // real folder you can drop mail onto.
+    if (row.isHidden) {
+      child = Opacity(
+        opacity: 0.5,
+        child: Row(
+          children: [
+            Expanded(child: child),
+            Padding(
+              padding: const EdgeInsets.only(right: 10),
+              child: Icon(
+                Icons.visibility_off_outlined,
+                size: 15,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Semantics(
       selected: widget.isSelected,
       expanded: row.hasChildren ? row.isExpanded : null,
+      label: row.isHidden ? '${row.folder.displayName}, hidden' : null,
       child: child,
     );
   }

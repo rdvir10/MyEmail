@@ -109,6 +109,10 @@ class FolderTreePanel extends ConsumerWidget {
           ),
         ),
         const Divider(height: 1),
+        // The only route back to something hidden, so it lives in the tree
+        // rather than behind Settings. Absent when nothing is hidden: a
+        // control for nothing is noise.
+        const _HiddenFoldersRow(),
         // One entry, not four. Quick Steps, accounts and notifications all
         // live behind it now; the tree is for folders.
         ListTile(
@@ -317,6 +321,47 @@ class _ErrorState extends StatelessWidget {
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ),
+    );
+  }
+}
+
+/// "3 hidden", and the switch that reveals them.
+///
+/// Reveal rather than a separate screen: the folders come back in place,
+/// dimmed, so it is obvious where each one sits and a long press unhides it
+/// exactly where it will reappear.
+class _HiddenFoldersRow extends ConsumerWidget {
+  const _HiddenFoldersRow();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final count = ref.watch(hiddenFolderCountProvider);
+    if (count == 0) return const SizedBox.shrink();
+
+    final theme = Theme.of(context);
+    final showing = ref.watch(showHiddenFoldersProvider);
+    return ListTile(
+      dense: true,
+      leading: Icon(
+        showing ? Icons.visibility : Icons.visibility_off_outlined,
+        size: 20,
+        color: showing ? theme.colorScheme.primary : null,
+      ),
+      title: Text(
+        count == 1 ? '1 hidden folder' : '$count hidden folders',
+        style: showing
+            ? theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.primary,
+              )
+            : null,
+      ),
+      trailing: Text(
+        showing ? 'Hide again' : 'Show',
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.primary,
+        ),
+      ),
+      onTap: () => ref.read(showHiddenFoldersProvider.notifier).toggle(),
     );
   }
 }
