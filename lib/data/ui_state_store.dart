@@ -33,6 +33,7 @@ abstract final class UiStateKeys {
   // Notification preferences are deliberately NOT here: they are read by the
   // background isolate, which cannot see this store's cache. See SyncStateKeys.
   static const paneWidths = 'panes.v1';
+  static const folderPane = 'panes.folder-visible';
   static const display = 'display.v1';
 }
 

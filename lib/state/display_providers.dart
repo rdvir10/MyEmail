@@ -44,6 +44,31 @@ final displayProvider =
 final listDensityProvider =
     Provider<ListDensity>((ref) => ref.watch(displayProvider).density);
 
+/// Whether the folder pane is on screen at all.
+///
+/// Outlook's collapse-the-folder-pane, and wanted for the same reason: once
+/// you know where your mail lives, the tree is 300 points of screen doing
+/// nothing, and a message reads better with them. Persisted, because it is a
+/// standing preference about the shape of the app rather than a peek.
+///
+/// Only the two-pane and three-pane layouts have a pane to hide. On a phone
+/// the tree is already a drawer, which is hidden by definition.
+class FolderPaneVisible extends Notifier<bool> {
+  @override
+  bool build() {
+    final store = ref.watch(uiStateStoreProvider);
+    listenSelf((_, next) =>
+        store.writeString(UiStateKeys.folderPane, next ? 'shown' : 'hidden'));
+    return store.readString(UiStateKeys.folderPane) != 'hidden';
+  }
+
+  void toggle() => state = !state;
+  void set(bool value) => state = value;
+}
+
+final folderPaneVisibleProvider =
+    NotifierProvider<FolderPaneVisible, bool>(FolderPaneVisible.new);
+
 /// Which conversations are open, by conversation id.
 ///
 /// Deliberately not persisted, unlike the folder tree's expand state. A

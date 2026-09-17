@@ -4,7 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/state/pane_widths.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/ui/folder_tree/folder_tree_panel.dart';
+import 'package:myemail/ui/messages/message_list_pane.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 
 Widget _app() => const ProviderScope(child: MaterialApp(home: AppShell()));
@@ -95,6 +97,110 @@ void main() {
       const panes = PaneLayout(tree: 460, list: 620);
       expect(panes.fitted(700, hasReadingPane: false).tree, 460,
           reason: 'the message list is the pane that expands here');
+    });
+  });
+
+  group('hiding the folder pane', () {
+    testWidgets('the toggle is in the bar above the list, not on the pane',
+        (tester) async {
+      // A button that lives on the pane disappears with it, and then there is
+      // no way back.
+      _useSize(tester, const Size(1400, 900));
+      await tester.pumpWidget(_app());
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Hide folders'), findsOneWidget);
+    });
+
+    testWidgets('hiding it takes the pane and its edge away', (tester) async {
+      _useSize(tester, const Size(1400, 900));
+      await tester.pumpWidget(_app());
+      await tester.pumpAndSettle();
+      expect(find.byType(FolderTreePanel), findsOneWidget);
+      expect(find.byType(PaneDivider), findsNWidgets(2));
+
+      await tester.tap(find.byTooltip('Hide folders'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(FolderTreePanel), findsNothing);
+      expect(find.byType(PaneDivider), findsOneWidget,
+          reason: 'the edge it was draggable by goes with it');
+    });
+
+    testWidgets('the button stays, and brings it back', (tester) async {
+      _useSize(tester, const Size(1400, 900));
+      await tester.pumpWidget(_app());
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Hide folders'));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Show folders'), findsOneWidget);
+      await tester.tap(find.byTooltip('Show folders'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(FolderTreePanel), findsOneWidget);
+    });
+
+    testWidgets('the message list takes the space', (tester) async {
+      _useSize(tester, const Size(1400, 900));
+      await tester.pumpWidget(_app());
+      await tester.pumpAndSettle();
+      final before = tester.getTopLeft(find.byType(MessageListPane)).dx;
+
+      await tester.tap(find.byTooltip('Hide folders'));
+      await tester.pumpAndSettle();
+
+      expect(tester.getTopLeft(find.byType(MessageListPane)).dx,
+          lessThan(before));
+    });
+
+    testWidgets('it works on the two-pane layout too', (tester) async {
+      _useSize(tester, const Size(900, 1400));
+      await tester.pumpWidget(_app());
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Hide folders'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(FolderTreePanel), findsNothing);
+      expect(find.byType(PaneDivider), findsNothing);
+    });
+
+    testWidgets('a phone is unaffected, since its tree is already a drawer',
+        (tester) async {
+      _useSize(tester, const Size(400, 900));
+      await tester.pumpWidget(_app());
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Hide folders'), findsNothing);
+      expect(find.byTooltip('Open navigation menu'), findsOneWidget);
+    });
+
+    testWidgets('the choice survives a restart', (tester) async {
+      _useSize(tester, const Size(1400, 900));
+      // Both halves share one store, which is what "restart" means here: a
+      // fresh container reading the same persisted state.
+      final store = MemoryUiStateStore();
+      final first = ProviderContainer(
+        overrides: [uiStateStoreProvider.overrideWithValue(store)],
+      );
+      addTearDown(first.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: first,
+          child: const MaterialApp(home: AppShell()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Hide folders'));
+      await tester.pumpAndSettle();
+
+      final second = ProviderContainer(
+        overrides: [uiStateStoreProvider.overrideWithValue(store)],
+      );
+      addTearDown(second.dispose);
+      // A standing preference about the shape of the app, not a peek.
+      expect(second.read(folderPaneVisibleProvider), isFalse);
     });
   });
 

@@ -190,14 +190,17 @@ class _MediumLayout extends ConsumerWidget {
                 .watch(paneWidthsProvider)
                 .fitted(constraints.maxWidth, hasReadingPane: false);
             final notifier = ref.read(paneWidthsProvider.notifier);
+            final showTree = ref.watch(folderPaneVisibleProvider);
             return Row(
               children: [
-                _TreePane(width: panes.tree),
-                PaneDivider(
-                  onDrag: notifier.dragTree,
-                  onReset: notifier.reset,
-                  label: 'Folder pane width',
-                ),
+                if (showTree) ...[
+                  _TreePane(width: panes.tree),
+                  PaneDivider(
+                    onDrag: notifier.dragTree,
+                    onReset: notifier.reset,
+                    label: 'Folder pane width',
+                  ),
+                ],
                 Expanded(
                   child: Column(
                     children: [
@@ -278,14 +281,17 @@ class _WidePanes extends ConsumerWidget {
                 .watch(paneWidthsProvider)
                 .fitted(constraints.maxWidth, hasReadingPane: true);
             final notifier = ref.read(paneWidthsProvider.notifier);
+            final showTree = ref.watch(folderPaneVisibleProvider);
             return Row(
               children: [
-                _TreePane(width: panes.tree),
-                PaneDivider(
-                  onDrag: notifier.dragTree,
-                  onReset: notifier.reset,
-                  label: 'Folder pane width',
-                ),
+                if (showTree) ...[
+                  _TreePane(width: panes.tree),
+                  PaneDivider(
+                    onDrag: notifier.dragTree,
+                    onReset: notifier.reset,
+                    label: 'Folder pane width',
+                  ),
+                ],
                 SizedBox(
                   width: panes.list,
                   child: Column(
@@ -434,12 +440,29 @@ class _FolderTitleBar extends ConsumerWidget {
     final selectedId = ref.watch(effectiveSelectedFolderIdProvider);
     final folder =
         selectedId == null ? null : ref.watch(folderIndexProvider)[selectedId];
+    final paneShown = ref.watch(folderPaneVisibleProvider);
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 14, 20, 10),
+          padding: const EdgeInsets.fromLTRB(8, 6, 20, 6),
           child: Row(
             children: [
+              // Deliberately here rather than in the folder pane itself: a
+              // button that lives on the pane disappears with it, and then
+              // there is no way back. This bar is on screen either way.
+              IconButton(
+                tooltip: paneShown ? 'Hide folders' : 'Show folders',
+                visualDensity: VisualDensity.compact,
+                icon: Icon(
+                  paneShown
+                      ? Icons.keyboard_double_arrow_left
+                      : Icons.keyboard_double_arrow_right,
+                  size: 20,
+                ),
+                onPressed: () =>
+                    ref.read(folderPaneVisibleProvider.notifier).toggle(),
+              ),
+              const SizedBox(width: 4),
               Expanded(
                 child: Text(
                   folder?.displayName ?? '',
