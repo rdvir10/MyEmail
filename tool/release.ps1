@@ -12,8 +12,15 @@
 #   5. Writes latest.json beside it with the real size of the file it just
 #      built, read from disk rather than guessed.
 #
-# The manifest is written last on purpose. A manifest announcing a build that
-# is not uploaded yet points every phone at a 404.
+#   6. Commits the bump, tags it, pushes, and publishes the GitHub release.
+#   7. Checks the published manifest is actually reachable before saying so.
+#
+# The manifest is uploaded after the APK on purpose. A manifest announcing a
+# build that is not there yet points every phone at a 404.
+#
+# Authentication reuses the GitHub credential git already has on this machine,
+# so there is no second login and no token stored anywhere new. It is read at
+# the moment it is needed and never written down.
 
 [CmdletBinding()]
 param(
@@ -32,7 +39,14 @@ param(
 
     # Where the phone downloads from. GitHub resolves this to the newest
     # published release, so it stays correct as versions come and go.
-    [string]$BaseUrl = 'https://github.com/rdvir10/MyEmail/releases/latest/download'
+    [string]$BaseUrl = 'https://github.com/rdvir10/MyEmail/releases/latest/download',
+
+    # owner/name of the repository the release is published to.
+    [string]$Repo = 'rdvir10/MyEmail',
+
+    # Build and stage everything, but stop short of publishing. For checking
+    # what a release would contain without putting it in front of a device.
+    [switch]$StageOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,13 +112,56 @@ if (-not $BaseUrl) {
     Write-Host ""
     Write-Host "latest.json has a placeholder URL. Pass -BaseUrl once the release host exists." -ForegroundColor Yellow
 }
-Write-Host ""
-Write-Host "Next, publish them as a GitHub release. The APK must be attached" -ForegroundColor Yellow
-Write-Host "before latest.json, or a phone that checks in between is pointed at a 404:" -ForegroundColor Yellow
-Write-Host ""
-Write-Host "  gh release create v$Version `"$apkPath`" `"$manifestPath`" --title `"$Version`" --notes `"$Notes`""
+if ($StageOnly) {
+    Write-Host ""
+    Write-Host "Staged only. Nothing committed, tagged or published." -ForegroundColor Yellow
+    return
+}
+
+# --- 6. commit, tag, push, publish ---------------------------------------
+& git commit -q -am "Release $Version (build $build)"
+if ($LASTEXITCODE -ne 0) { throw "Could not commit the version bump." }
+& git tag "v$Version"
+if ($LASTEXITCODE -ne 0) { throw "Could not tag v$Version. Does that tag already exist?" }
+& git push -q origin main --tags
+if ($LASTEXITCODE -ne 0) { throw "Could not push. Nothing was published, so nothing is half-done on GitHub." }
+
+# The credential git already holds, read at the moment it is needed. gh's own
+# login refuses this token for want of a scope it does not need here, so it is
+# handed over directly instead and never stored.
+$cred = "protocol=https`nhost=github.com`n`n" | & git credential fill
+$line = $cred | Select-String '^password='
+if (-not $line) {
+    throw "No stored GitHub credential. Run 'git push' once to create one, then rerun."
+}
+$token = $line.ToString() -replace '^password=', ''
+
+$gh = Join-Path $env:USERPROFILE 'tools\gh\bin\gh.exe'
+if (-not (Test-Path $gh)) { throw "The GitHub CLI is not at $gh." }
+
+$env:GH_TOKEN = $token
+try {
+    # The APK is listed first so it uploads first: a manifest naming a build
+    # that is not there yet points every phone at a 404.
+    & $gh release create "v$Version" $apkPath $manifestPath --repo $Repo --title $Version --notes $Notes
+    if ($LASTEXITCODE -ne 0) {
+        throw "The release was not published. The tag is already pushed, so rerun the gh command alone rather than the whole script."
+    }
+} finally {
+    $env:GH_TOKEN = $null
+}
+
+# --- 7. prove it is reachable --------------------------------------------
+# Not a formality. A release can exist while its assets are still processing,
+# and a phone checking in that window is told there is nothing new.
+$manifestUrl = "$($BaseUrl.TrimEnd('/'))/latest.json"
+$live = Invoke-RestMethod $manifestUrl
+if ($live.build -ne $build) {
+    throw "Published, but $manifestUrl still reports build $($live.build). Check the release assets."
+}
 
 Write-Host ""
-Write-Host "Then commit the pubspec bump and tag it:" -ForegroundColor Cyan
-Write-Host "  git commit -am `"Release $Version (build $build)`""
-Write-Host "  git tag v$Version"
+Write-Host "Published $Version (build $build), and verified live." -ForegroundColor Green
+Write-Host "  https://github.com/$Repo/releases/tag/v$Version"
+Write-Host ""
+Write-Host "Devices on an older build will see it at their next check." -ForegroundColor Cyan
