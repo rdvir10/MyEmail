@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:mailtree/data/mail_engine.dart';
-import 'package:mailtree/data/notifications/mail_notifier.dart';
-import 'package:mailtree/data/sample/sample_mail_engine.dart';
-import 'package:mailtree/data/sync/background_worker.dart';
-import 'package:mailtree/data/sync/sync_state_store.dart';
-import 'package:mailtree/domain/sync_prefs.dart';
-import 'package:mailtree/state/providers.dart';
-import 'package:mailtree/state/sync_providers.dart';
-import 'package:mailtree/ui/settings/notifications_screen.dart';
-import 'package:mailtree/ui/settings/sync_screen.dart';
+import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/data/notifications/mail_notifier.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/data/sync/background_worker.dart';
+import 'package:myemail/data/sync/sync_state_store.dart';
+import 'package:myemail/domain/sync_prefs.dart';
+import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/sync_providers.dart';
+import 'package:myemail/ui/settings/notifications_screen.dart';
+import 'package:myemail/ui/settings/sync_screen.dart';
 
 void _tall(WidgetTester tester) {
   tester.view.physicalSize = const Size(800, 1800);

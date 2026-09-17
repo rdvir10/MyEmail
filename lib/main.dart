@@ -24,9 +24,9 @@ import 'state/providers.dart';
 import 'theme/app_theme.dart';
 import 'ui/shell/app_shell.dart';
 
-/// `flutter run --dart-define=MAILTREE_SAMPLE=true` runs the sample engine on
+/// `flutter run --dart-define=MYEMAIL_SAMPLE=true` runs the sample engine on
 /// a device, for UI work without touching a real mailbox.
-const _forceSample = bool.fromEnvironment('MAILTREE_SAMPLE');
+const _forceSample = bool.fromEnvironment('MYEMAIL_SAMPLE');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -70,7 +70,7 @@ Future<void> main() async {
       await notifier.ensureReady();
       await applyBackgroundSchedule(await syncState.readPrefs());
     } catch (e, stack) {
-      debugPrint('[mailtree] notification setup failed at startup: $e');
+      debugPrint('[myemail] notification setup failed at startup: $e');
       debugPrint('$stack');
     }
   }
@@ -92,18 +92,18 @@ Future<void> main() async {
           apkInstallerProvider.overrideWithValue(AndroidApkInstaller()),
         ],
       ],
-      child: const MailTreeApp(),
+      child: const MyEmailApp(),
     ),
   );
 }
 
-class MailTreeApp extends StatelessWidget {
-  const MailTreeApp({super.key});
+class MyEmailApp extends StatelessWidget {
+  const MyEmailApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'MailTree',
+      title: 'MyEmail',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),

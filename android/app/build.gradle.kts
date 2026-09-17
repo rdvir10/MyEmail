@@ -35,6 +35,11 @@ android {
     }
 
     defaultConfig {
+        // Deliberately still says mailtree, after the app was renamed to
+        // MyEmail. Android identifies an app by this string: changing it makes
+        // a different app, which means an uninstall, the accounts lost again,
+        // and an in-app updater that cannot bridge the gap. It is never shown
+        // to anyone. The name people see is android:label in the manifest.
         applicationId = "com.rdvir.mailtree"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion

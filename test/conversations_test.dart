@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/data/imap/imap_mapping.dart';
-import 'package:mailtree/domain/mail_message.dart';
-import 'package:mailtree/state/conversations.dart';
+import 'package:myemail/data/imap/imap_mapping.dart';
+import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/conversations.dart';
 
 int _uid = 0;
 

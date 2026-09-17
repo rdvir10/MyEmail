@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/data/mail_engine.dart';
-import 'package:mailtree/data/sample/sample_mail_engine.dart';
-import 'package:mailtree/domain/account.dart';
-import 'package:mailtree/domain/draft.dart';
-import 'package:mailtree/domain/folder_role.dart';
-import 'package:mailtree/domain/mail_folder.dart';
-import 'package:mailtree/domain/mail_message.dart';
-import 'package:mailtree/state/providers.dart';
-import 'package:mailtree/ui/accounts/add_account_screen.dart';
-import 'package:mailtree/ui/shell/app_shell.dart';
+import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/draft.dart';
+import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_folder.dart';
+import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/providers.dart';
+import 'package:myemail/ui/accounts/add_account_screen.dart';
+import 'package:myemail/ui/shell/app_shell.dart';
 
 /// An engine that starts with no accounts, as on first run.
 class _EmptyEngine implements MailEngine {
@@ -203,7 +203,7 @@ void main() {
       await tester.pumpWidget(app(_EmptyEngine()));
       await tester.pumpAndSettle();
 
-      expect(find.text('Welcome to MailTree'), findsOneWidget);
+      expect(find.text('Welcome to MyEmail'), findsOneWidget);
       expect(find.text('Search folders'), findsNothing);
     });
 
@@ -235,7 +235,7 @@ void main() {
       await tester.tap(find.text('Sign in'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Welcome to MailTree'), findsNothing);
+      expect(find.text('Welcome to MyEmail'), findsNothing);
       expect(find.byType(AddAccountScreen), findsNothing);
 
       // 800dp: the tree is a pane, so no drawer to open.

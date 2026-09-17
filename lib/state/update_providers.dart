@@ -67,7 +67,7 @@ class UpdateReadyToInstall extends UpdateState {
 }
 
 /// The install could not even be offered, because Android has not been told
-/// MailTree may ask.
+/// MyEmail may ask.
 class UpdateNeedsPermission extends UpdateState {
   const UpdateNeedsPermission(this.release, this.path);
   final AppRelease release;

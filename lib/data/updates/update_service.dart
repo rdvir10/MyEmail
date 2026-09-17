@@ -11,10 +11,10 @@ import '../../domain/app_release.dart';
 /// Empty until the release host exists, and empty is a supported state: the
 /// About screen says updates are not set up rather than showing a Check button
 /// that can only fail. Set it with
-/// `--dart-define=MAILTREE_UPDATE_URL=https://...` or by editing the default
+/// `--dart-define=MYEMAIL_UPDATE_URL=https://...` or by editing the default
 /// below once the URL is settled.
 const updateManifestUrl = String.fromEnvironment(
-  'MAILTREE_UPDATE_URL',
+  'MYEMAIL_UPDATE_URL',
   defaultValue: '',
 );
 
@@ -115,7 +115,7 @@ class UpdateService {
     try {
       manifest = await feed.fetch();
     } catch (e) {
-      debugPrint('[mailtree] update check failed: $e');
+      debugPrint('[myemail] update check failed: $e');
       return UpdateCheckFailed(_readable(e), current);
     }
     if (manifest == null) return UpToDate(current);

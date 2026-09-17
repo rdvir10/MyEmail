@@ -1,12 +1,12 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/data/compose/quote_builder.dart';
-import 'package:mailtree/data/compose/smtp_sender.dart';
-import 'package:mailtree/domain/account.dart';
-import 'package:mailtree/domain/draft.dart';
-import 'package:mailtree/domain/mail_message.dart';
-import 'package:mailtree/state/compose_providers.dart';
+import 'package:myemail/data/compose/quote_builder.dart';
+import 'package:myemail/data/compose/smtp_sender.dart';
+import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/draft.dart';
+import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/compose_providers.dart';
 
 const _account = Account(
   id: 'a',

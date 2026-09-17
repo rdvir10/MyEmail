@@ -1,9 +1,9 @@
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/data/cache/cache_store.dart';
-import 'package:mailtree/data/cache/folder_sync.dart';
-import 'package:mailtree/data/cache/mail_database.dart';
-import 'package:mailtree/domain/mail_message.dart';
+import 'package:myemail/data/cache/cache_store.dart';
+import 'package:myemail/data/cache/folder_sync.dart';
+import 'package:myemail/data/cache/mail_database.dart';
+import 'package:myemail/domain/mail_message.dart';
 
 import 'fakes/fake_imap_transport.dart';
 import 'fakes/sqlite.dart';

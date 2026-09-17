@@ -7,7 +7,7 @@ import 'sync_screen.dart';
 
 /// Whether new mail interrupts you, and which accounts are allowed to.
 ///
-/// Only that. How often MailTree looks is the Sync screen. The two were one
+/// Only that. How often MyEmail looks is the Sync screen. The two were one
 /// switch and that was wrong: turning notifications off also stopped the app
 /// keeping itself current, which is not what anyone means by "be quiet".
 ///
@@ -57,8 +57,8 @@ class NotificationsScreen extends ConsumerWidget {
               if (prefs.notify && prefs.syncs && permitted == false)
                 _Banner(
                   icon: Icons.warning_amber_outlined,
-                  text: 'Android is blocking notifications for MailTree. '
-                      'Turn them on in Settings, Apps, MailTree.',
+                  text: 'Android is blocking notifications for MyEmail. '
+                      'Turn them on in Settings, Apps, MyEmail.',
                   theme: theme,
                   isWarning: true,
                 ),

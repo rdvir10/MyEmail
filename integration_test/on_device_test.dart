@@ -8,11 +8,11 @@
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-import 'package:mailtree/data/cache/cache_store.dart';
-import 'package:mailtree/data/cache/mail_database.dart';
-import 'package:mailtree/data/secure_credential_store.dart';
-import 'package:mailtree/data/ui_state_store.dart';
-import 'package:mailtree/domain/mail_message.dart';
+import 'package:myemail/data/cache/cache_store.dart';
+import 'package:myemail/data/cache/mail_database.dart';
+import 'package:myemail/data/secure_credential_store.dart';
+import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/mail_message.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();

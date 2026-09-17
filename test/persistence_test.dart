@@ -1,8 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/data/ui_state_store.dart';
-import 'package:mailtree/state/folder_tree.dart';
-import 'package:mailtree/state/providers.dart';
+import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/state/folder_tree.dart';
+import 'package:myemail/state/providers.dart';
 
 ProviderContainer _container(UiStateStore store) {
   final c = ProviderContainer(

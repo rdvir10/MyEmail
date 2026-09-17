@@ -81,7 +81,7 @@ class SmtpSender {
       };
 
   Future<void> send(em.MimeMessage message) async {
-    final client = em.SmtpClient('mailtree', isLogEnabled: isLogEnabled);
+    final client = em.SmtpClient('myemail', isLogEnabled: isLogEnabled);
     try {
       try {
         await client.connectToServer(host, port, isSecure: true);

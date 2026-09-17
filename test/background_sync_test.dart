@@ -1,18 +1,18 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/data/account_store.dart';
-import 'package:mailtree/data/cache/cache_store.dart';
-import 'package:mailtree/data/credential_store.dart';
-import 'package:mailtree/data/imap/cached_imap_engine.dart';
-import 'package:mailtree/data/imap/imap_transport.dart';
-import 'package:mailtree/data/mail_engine.dart';
-import 'package:mailtree/data/notifications/mail_notifier.dart';
-import 'package:mailtree/data/sync/background_sync.dart';
-import 'package:mailtree/data/sync/new_mail_scan.dart';
-import 'package:mailtree/data/sync/sync_state_store.dart';
-import 'package:mailtree/domain/account.dart';
-import 'package:mailtree/domain/folder_role.dart';
-import 'package:mailtree/domain/mail_message.dart';
-import 'package:mailtree/domain/sync_prefs.dart';
+import 'package:myemail/data/account_store.dart';
+import 'package:myemail/data/cache/cache_store.dart';
+import 'package:myemail/data/credential_store.dart';
+import 'package:myemail/data/imap/cached_imap_engine.dart';
+import 'package:myemail/data/imap/imap_transport.dart';
+import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/data/notifications/mail_notifier.dart';
+import 'package:myemail/data/sync/background_sync.dart';
+import 'package:myemail/data/sync/new_mail_scan.dart';
+import 'package:myemail/data/sync/sync_state_store.dart';
+import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/sync_prefs.dart';
 
 import 'fakes/fake_imap_transport.dart';
 

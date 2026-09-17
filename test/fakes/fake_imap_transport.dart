@@ -1,9 +1,9 @@
 import 'dart:async';
 
-import 'package:mailtree/data/imap/imap_transport.dart';
-import 'package:mailtree/data/mail_engine.dart';
-import 'package:mailtree/domain/folder_role.dart';
-import 'package:mailtree/domain/mail_message.dart';
+import 'package:myemail/data/imap/imap_transport.dart';
+import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_message.dart';
 
 /// An in-memory IMAP server the tests can mutate between calls: deliver mail,
 /// delete it, change flags, and rebuild a folder (new UIDVALIDITY) to prove

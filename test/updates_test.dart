@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:mailtree/data/updates/apk_installer.dart';
-import 'package:mailtree/data/updates/update_service.dart';
-import 'package:mailtree/domain/app_release.dart';
-import 'package:mailtree/state/update_providers.dart';
-import 'package:mailtree/ui/settings/about_screen.dart';
+import 'package:myemail/data/updates/apk_installer.dart';
+import 'package:myemail/data/updates/update_service.dart';
+import 'package:myemail/domain/app_release.dart';
+import 'package:myemail/state/update_providers.dart';
+import 'package:myemail/ui/settings/about_screen.dart';
 
 const _installed = InstalledVersion(version: '1.0.0', build: 4);
 

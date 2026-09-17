@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/sync_prefs.dart';
 import '../../state/sync_providers.dart';
 
-/// How often MailTree looks for new mail in the background.
+/// How often MyEmail looks for new mail in the background.
 ///
 /// Only that. Whether it then tells you is the Notifications screen, because
 /// the two are separate decisions: keeping the app current so it is ready
@@ -26,7 +26,7 @@ class SyncScreen extends ConsumerWidget {
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                 child: Text(
-                  'How often MailTree checks for new mail when it is closed.',
+                  'How often MyEmail checks for new mail when it is closed.',
                   style: theme.textTheme.bodyMedium,
                 ),
               ),
@@ -72,10 +72,10 @@ class SyncScreen extends ConsumerWidget {
   static String _footnote(SyncPrefs prefs) {
     if (!prefs.syncs) {
       return 'Nothing runs in the background. Mail arrives when you open '
-          'MailTree, and no notification can reach you before that.';
+          'MyEmail, and no notification can reach you before that.';
     }
     if (prefs.showsOngoingNotification) {
-      return 'A permanent "MailTree" notification stays in the shade while '
+      return 'A permanent "MyEmail" notification stays in the shade while '
           'this is on. Android requires it, and there is no way to hide it '
           'and keep checking this often.\n\n'
           'Only your Inbox is watched. Mail that a rule files into another '

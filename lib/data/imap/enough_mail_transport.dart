@@ -315,7 +315,7 @@ class EnoughMailTransport implements ImapTransport {
           for (final s in subscriptions) {
             await s.cancel();
           }
-          debugPrint('[mailtree] idle unavailable on $path: $e');
+          debugPrint('[myemail] idle unavailable on $path: $e');
           await Future<void>.delayed(timeout);
           return false;
         }

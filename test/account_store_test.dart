@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/data/account_store.dart';
-import 'package:mailtree/data/credential_store.dart';
-import 'package:mailtree/domain/account.dart';
+import 'package:myemail/data/account_store.dart';
+import 'package:myemail/data/credential_store.dart';
+import 'package:myemail/domain/account.dart';
 
 const _acct = Account(
   id: 'acct-1',

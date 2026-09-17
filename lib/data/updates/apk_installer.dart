@@ -31,7 +31,7 @@ abstract class ApkInstaller {
   Future<void> install(String path);
 
   /// Whether Android will let this app ask to install one. False until the
-  /// user grants "Install unknown apps" for MailTree.
+  /// user grants "Install unknown apps" for MyEmail.
   Future<bool> canInstall();
 
   /// Open the system screen where that permission is granted.
@@ -100,7 +100,7 @@ class AndroidApkInstaller implements ApkInstaller {
     try {
       return await _channel.invokeMethod<bool>('canInstall') ?? false;
     } on PlatformException catch (e) {
-      debugPrint('[mailtree] canInstall failed: $e');
+      debugPrint('[myemail] canInstall failed: $e');
       return false;
     }
   }

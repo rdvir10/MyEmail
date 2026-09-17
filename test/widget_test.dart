@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/ui/folder_tree/folder_tree_panel.dart';
-import 'package:mailtree/ui/shell/app_shell.dart';
+import 'package:myemail/ui/folder_tree/folder_tree_panel.dart';
+import 'package:myemail/ui/shell/app_shell.dart';
 
 Widget _panelHarness() {
   return const ProviderScope(

@@ -10,6 +10,11 @@ import '../imap/imap_mapping.dart';
 /// original has to be sanitised here: it is about to live in an editable
 /// document with JavaScript available to the bridge.
 
+/// The `mailtree-` class prefix below stays after the rename to MyEmail.
+/// These class names are written into messages that have already been sent and
+/// drafts that are already saved on the server; renaming them would leave a
+/// reopened draft's quote unstyled for no visible gain.
+
 /// Where the caret should start, marked so the editor can find it.
 const caretMarker = '<span id="mailtree-caret"></span>';
 

@@ -25,7 +25,7 @@ class AboutScreen extends ConsumerWidget {
         children: [
           ListTile(
             leading: const Icon(Icons.account_tree_outlined),
-            title: const Text('MailTree'),
+            title: const Text('MyEmail'),
             subtitle: Text(
               installed == null
                   ? 'Reading version'
@@ -188,7 +188,7 @@ class _NeedsPermission extends ConsumerWidget {
       children: [
         _Note(
           'Version ${release.version} is downloaded, but Android has not been '
-          'told that MailTree may install apps. Allow it once, then come back '
+          'told that MyEmail may install apps. Allow it once, then come back '
           'and tap Install. The download is kept, so nothing is downloaded '
           'twice.',
           theme: theme,

@@ -27,6 +27,9 @@ class AndroidMailNotifier implements MailNotifier {
   /// One channel, so the user gets one row in Android's notification settings
   /// rather than one per account. Muting a single account is done in the app,
   /// where it can be explained.
+  // Still 'mailtree' after the rename: a channel id is how Android remembers
+  // the per-channel settings someone has chosen, and a new id silently
+  // discards them. The channel's NAME is what the user reads.
   static const channelId = 'mailtree.new-mail';
   static const channelName = 'New mail';
 

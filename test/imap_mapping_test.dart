@@ -1,8 +1,8 @@
 import 'package:enough_mail/enough_mail.dart' as em;
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/data/imap/imap_mapping.dart';
-import 'package:mailtree/domain/account.dart';
-import 'package:mailtree/domain/folder_role.dart';
+import 'package:myemail/data/imap/imap_mapping.dart';
+import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/folder_role.dart';
 
 em.Mailbox _box(
   String path, {

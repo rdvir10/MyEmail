@@ -18,14 +18,14 @@
          chosen; the periodic mode needs neither of these. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
-    <!-- The in-app updater. Lets MailTree hand a downloaded APK to Android's
+    <!-- The in-app updater. Lets MyEmail hand a downloaded APK to Android's
          package installer; Android still shows its own confirmation, and the
-         user has to allow "Install unknown apps" for MailTree once before it
+         user has to allow "Install unknown apps" for MyEmail once before it
          will even offer. Nothing is ever installed silently. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
 
     <application
-        android:label="MailTree"
+        android:label="MyEmail"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

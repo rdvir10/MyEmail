@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/ui/messages/html_body_view.dart';
+import 'package:myemail/ui/messages/html_body_view.dart';
 
 void main() {
   group('htmlHasRemoteContent', () {

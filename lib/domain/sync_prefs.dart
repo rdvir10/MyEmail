@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 
-/// How often MailTree looks for new mail in the background.
+/// How often MyEmail looks for new mail in the background.
 ///
 /// The four differ in what Android will let them do, not just in speed.
 enum SyncMode {
@@ -31,7 +31,7 @@ enum SyncMode {
   bool get isOn => this != SyncMode.off;
 
   String get label => switch (this) {
-        SyncMode.off => 'Only when I open MailTree',
+        SyncMode.off => 'Only when I open MyEmail',
         SyncMode.periodic => 'Occasionally',
         SyncMode.frequent => 'Every 5 minutes',
         SyncMode.realtime => 'Push, as it arrives',
@@ -45,10 +45,10 @@ enum SyncMode {
           'Easiest on the battery. Android decides when, and overnight that '
               'can be much later than you asked for.',
         SyncMode.frequent =>
-          'MailTree shows a permanent notification and uses noticeably more '
+          'MyEmail shows a permanent notification and uses noticeably more '
               'battery.',
         SyncMode.realtime =>
-          'Mail arrives in seconds. MailTree shows a permanent notification '
+          'Mail arrives in seconds. MyEmail shows a permanent notification '
               'and holds a connection open, which costs the most battery.',
       };
 }
@@ -72,7 +72,7 @@ const idleRenewInterval = Duration(minutes: 24);
 
 /// Background sync and notifications, which are two separate decisions.
 ///
-/// They were one switch, and that was wrong. Whether MailTree keeps itself
+/// They were one switch, and that was wrong. Whether MyEmail keeps itself
 /// current in the background is about battery and about the app being ready
 /// when you open it. Whether it interrupts you is about whether you want to
 /// be interrupted. Wanting one without the other is ordinary: checking every

@@ -1,11 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/data/mail_engine.dart';
-import 'package:mailtree/data/sample/sample_mail_engine.dart';
-import 'package:mailtree/domain/account.dart';
-import 'package:mailtree/domain/folder_capabilities.dart';
-import 'package:mailtree/domain/folder_role.dart';
-import 'package:mailtree/domain/mail_folder.dart';
-import 'package:mailtree/state/folder_tree.dart';
+import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/folder_capabilities.dart';
+import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_folder.dart';
+import 'package:myemail/state/folder_tree.dart';
 
 Future<FolderTreeInput> _input({
   Set<String> expanded = const {},

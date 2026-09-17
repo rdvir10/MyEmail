@@ -42,7 +42,7 @@ class _HtmlEditorState extends State<HtmlEditor> {
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(Colors.white)
       ..addJavaScriptChannel(
-        'MailTree',
+        'MyEmail',
         onMessageReceived: (message) {
           widget.controller._onBridgeMessage(message.message);
         },
@@ -236,7 +236,7 @@ String _editorDocument(String bodyHtml, {required bool dark}) {
 <script>
 (function () {
   function post(payload) {
-    if (window.MailTree) window.MailTree.postMessage(JSON.stringify(payload));
+    if (window.MyEmail) window.MyEmail.postMessage(JSON.stringify(payload));
   }
 
   window.mailtreeGetHtml = function () { return document.body.innerHTML; };

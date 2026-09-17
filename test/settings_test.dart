@@ -1,21 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:mailtree/data/ui_state_store.dart';
-import 'package:mailtree/domain/display_settings.dart';
-import 'package:mailtree/domain/mail_message.dart';
-import 'package:mailtree/state/compose_providers.dart';
-import 'package:mailtree/state/display_providers.dart';
-import 'package:mailtree/state/providers.dart';
-import 'package:mailtree/ui/folder_tree/folder_tree_panel.dart';
-import 'package:mailtree/ui/messages/conversation_tile.dart';
-import 'package:mailtree/ui/messages/message_tile.dart';
-import 'package:mailtree/ui/messages/reading_pane.dart';
-import 'package:mailtree/ui/settings/accounts_screen.dart';
-import 'package:mailtree/ui/settings/settings_screen.dart';
-import 'package:mailtree/ui/settings/signatures_screen.dart';
-import 'package:mailtree/ui/settings/view_settings_screen.dart';
-import 'package:mailtree/ui/shell/app_shell.dart';
+import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/display_settings.dart';
+import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/compose_providers.dart';
+import 'package:myemail/state/display_providers.dart';
+import 'package:myemail/state/providers.dart';
+import 'package:myemail/ui/folder_tree/folder_tree_panel.dart';
+import 'package:myemail/ui/messages/conversation_tile.dart';
+import 'package:myemail/ui/messages/message_tile.dart';
+import 'package:myemail/ui/messages/reading_pane.dart';
+import 'package:myemail/ui/settings/accounts_screen.dart';
+import 'package:myemail/ui/settings/settings_screen.dart';
+import 'package:myemail/ui/settings/signatures_screen.dart';
+import 'package:myemail/ui/settings/view_settings_screen.dart';
+import 'package:myemail/ui/shell/app_shell.dart';
 
 void _useSize(WidgetTester tester, Size size) {
   tester.view.physicalSize = size;
@@ -337,7 +337,7 @@ void main() {
       // Sync and notifications are two rows now, and each says its own state.
       expect(find.text('Sync'), findsOneWidget);
       expect(find.text('Notifications'), findsOneWidget);
-      expect(find.text('Only when I open MailTree'), findsOneWidget);
+      expect(find.text('Only when I open MyEmail'), findsOneWidget);
       expect(find.text('On, but nothing is syncing'), findsOneWidget,
           reason: 'a notification setting that cannot fire says so here too');
     });

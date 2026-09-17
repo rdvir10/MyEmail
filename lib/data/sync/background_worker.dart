@@ -27,6 +27,10 @@ import 'sync_state_store.dart';
 /// constructed from scratch below rather than passed in, and why the state
 /// store reads through to shared preferences rather than caching.
 
+// These keep the old name after the rename to MyEmail on purpose. A unique
+// name is how WorkManager recognises work it already has; changing one leaves
+// the old job enqueued alongside the new, which is two things checking mail
+// and every message arriving twice.
 const _taskName = 'mailtree.new-mail';
 const _uniqueName = 'mailtree.new-mail.periodic';
 
@@ -137,7 +141,7 @@ Future<void> _startLiveWorker(SyncPrefs prefs) async {
     backoffPolicy: BackoffPolicy.linear,
     backoffPolicyDelay: const Duration(minutes: 1),
     foregroundServiceConfig: ForegroundServiceConfig(
-      notificationTitle: 'MailTree',
+      notificationTitle: 'MyEmail',
       notificationText: prefs.mode == SyncMode.realtime
           ? 'Watching for new mail'
           : 'Checking for mail every 5 minutes',
@@ -204,7 +208,7 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
       onePass: sync.run,
       waitForNext: () => _waitForNext(mode, liveEngine),
     ).run();
-    debugPrint('[mailtree] live worker finished: $outcome');
+    debugPrint('[myemail] live worker finished: $outcome');
 
     // Hand over to a fresh worker unless the settings changed underneath us,
     // which is the one case where stopping is correct.
@@ -214,7 +218,7 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
     }
     return true;
   } catch (e, stack) {
-    debugPrint('[mailtree] live worker threw: $e');
+    debugPrint('[myemail] live worker threw: $e');
     debugPrint('$stack');
     return true;
   } finally {
@@ -266,16 +270,16 @@ Future<bool> _runOnePass() async {
       state: PrefsSyncStateStore(),
     ).run();
 
-    debugPrint('[mailtree] background pass: $report');
+    debugPrint('[myemail] background pass: $report');
     for (final failure in report.failures) {
-      debugPrint('[mailtree] background pass failure: $failure');
+      debugPrint('[myemail] background pass failure: $failure');
     }
 
     // Returning false asks WorkManager to retry with backoff. Worth it for a
     // mailbox that could not be reached; not worth it when the pass ran fine.
     return report.ok;
   } catch (e, stack) {
-    debugPrint('[mailtree] background pass threw: $e\n$stack');
+    debugPrint('[myemail] background pass threw: $e\n$stack');
     return false;
   } finally {
     // The isolate is about to be torn down either way, but an IMAP socket and

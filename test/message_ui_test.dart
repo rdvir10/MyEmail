@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/ui/messages/message_tile.dart';
-import 'package:mailtree/ui/messages/reading_pane.dart';
-import 'package:mailtree/ui/shell/app_shell.dart';
+import 'package:myemail/ui/messages/message_tile.dart';
+import 'package:myemail/ui/messages/reading_pane.dart';
+import 'package:myemail/ui/shell/app_shell.dart';
 
 Widget _app() => const ProviderScope(child: MaterialApp(home: AppShell()));
 

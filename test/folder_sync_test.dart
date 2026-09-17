@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/data/cache/cache_store.dart';
-import 'package:mailtree/data/cache/folder_sync.dart';
-import 'package:mailtree/data/imap/imap_transport.dart';
-import 'package:mailtree/domain/folder_role.dart';
+import 'package:myemail/data/cache/cache_store.dart';
+import 'package:myemail/data/cache/folder_sync.dart';
+import 'package:myemail/data/imap/imap_transport.dart';
+import 'package:myemail/domain/folder_role.dart';
 
 import 'fakes/fake_imap_transport.dart';
 

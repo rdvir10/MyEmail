@@ -151,7 +151,7 @@ class _NarrowLayout extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(folder?.displayName ?? 'MailTree'),
+        title: Text(folder?.displayName ?? 'MyEmail'),
         centerTitle: false,
       ),
       drawer: Drawer(

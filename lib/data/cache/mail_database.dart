@@ -57,6 +57,9 @@ class MailDatabase extends _$MailDatabase {
   MailDatabase(super.executor);
 
   /// The on-device database, in the app's documents directory.
+  /// Still 'mailtree' after the rename to MyEmail: this is the filename on
+  /// disk, and changing it orphans every cached message and body for a
+  /// resync nobody asked for. Invisible either way.
   MailDatabase.open() : super(driftDatabase(name: 'mailtree'));
 
   @override

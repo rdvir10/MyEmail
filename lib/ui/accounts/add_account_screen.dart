@@ -72,7 +72,7 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.isFirstAccount ? 'Welcome to MailTree' : 'Add account'),
+        title: Text(widget.isFirstAccount ? 'Welcome to MyEmail' : 'Add account'),
         centerTitle: false,
       ),
       body: Center(

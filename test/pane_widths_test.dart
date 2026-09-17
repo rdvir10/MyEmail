@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:mailtree/data/ui_state_store.dart';
-import 'package:mailtree/state/pane_widths.dart';
-import 'package:mailtree/state/providers.dart';
-import 'package:mailtree/ui/folder_tree/folder_tree_panel.dart';
-import 'package:mailtree/ui/shell/app_shell.dart';
+import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/state/pane_widths.dart';
+import 'package:myemail/state/providers.dart';
+import 'package:myemail/ui/folder_tree/folder_tree_panel.dart';
+import 'package:myemail/ui/shell/app_shell.dart';
 
 Widget _app() => const ProviderScope(child: MaterialApp(home: AppShell()));
 

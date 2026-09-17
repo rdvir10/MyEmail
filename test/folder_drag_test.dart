@@ -2,11 +2,11 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mailtree/data/sample/sample_mail_engine.dart';
-import 'package:mailtree/domain/folder_role.dart';
-import 'package:mailtree/domain/mail_folder.dart';
-import 'package:mailtree/state/folder_drag.dart';
-import 'package:mailtree/ui/folder_tree/folder_tree_panel.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_folder.dart';
+import 'package:myemail/state/folder_drag.dart';
+import 'package:myemail/ui/folder_tree/folder_tree_panel.dart';
 
 // ---------------------------------------------------------------------------
 // Drop rules, without widgets.

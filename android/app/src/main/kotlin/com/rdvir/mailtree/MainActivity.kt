@@ -57,7 +57,7 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
-     * Whether the user has allowed MailTree to ask. Android 8 made this a
+     * Whether the user has allowed MyEmail to ask. Android 8 made this a
      * per-app setting; before that the manifest permission was enough.
      */
     private fun canRequestInstalls(): Boolean =

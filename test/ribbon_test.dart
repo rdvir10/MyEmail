@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:mailtree/data/ui_state_store.dart';
-import 'package:mailtree/domain/quick_step.dart';
-import 'package:mailtree/state/message_providers.dart';
-import 'package:mailtree/state/providers.dart';
-import 'package:mailtree/state/quick_steps.dart';
-import 'package:mailtree/ui/messages/message_tile.dart';
-import 'package:mailtree/ui/shell/app_shell.dart';
-import 'package:mailtree/ui/shell/ribbon.dart';
+import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/quick_step.dart';
+import 'package:myemail/state/message_providers.dart';
+import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/quick_steps.dart';
+import 'package:myemail/ui/messages/message_tile.dart';
+import 'package:myemail/ui/shell/app_shell.dart';
+import 'package:myemail/ui/shell/ribbon.dart';
 
 import 'fakes/fake_webview.dart';
 
