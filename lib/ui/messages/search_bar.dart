@@ -15,15 +15,21 @@ class MessageSearchBar extends ConsumerStatefulWidget {
 
 class _MessageSearchBarState extends ConsumerState<MessageSearchBar> {
   final _controller = TextEditingController();
+  final _focus = FocusNode();
 
   @override
   void dispose() {
     _controller.dispose();
+    _focus.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    // The ribbon's Search button has no field of its own; it asks this one to
+    // take focus. Listened to in build rather than initState because the
+    // request can arrive at any time the pane is on screen.
+    ref.listen(searchFocusRequestsProvider, (_, _) => _focus.requestFocus());
     final query = ref.watch(searchQueryProvider);
     final folderId = ref.watch(effectiveSelectedFolderIdProvider);
     final folder =
@@ -37,6 +43,7 @@ class _MessageSearchBarState extends ConsumerState<MessageSearchBar> {
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
           child: TextField(
             controller: _controller,
+            focusNode: _focus,
             textInputAction: TextInputAction.search,
             decoration: InputDecoration(
               hintText: canScopeToFolder

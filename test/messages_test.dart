@@ -4,6 +4,7 @@ import 'package:mailtree/data/sample/sample_mail_engine.dart';
 import 'package:mailtree/data/sample/sample_messages.dart';
 import 'package:mailtree/domain/folder_role.dart';
 import 'package:mailtree/domain/mail_folder.dart';
+import 'package:mailtree/domain/mail_message.dart';
 import 'package:mailtree/state/folder_tree.dart';
 import 'package:mailtree/state/message_providers.dart';
 import 'package:mailtree/state/providers.dart';
@@ -16,7 +17,41 @@ Future<MailFolder> _folder(String path, {String account = 'acct-personal'}) asyn
   return list.firstWhere((f) => f.path == path);
 }
 
+final _fixedDate = DateTime(2026, 9, 16, 9);
+
 void main() {
+  group('MailMessage equality', () {
+    // Riverpod skips notifying when a provider's new value equals the old.
+    // With id-only equality a flag change was invisible to anything watching
+    // a provider that hands out a message, so the reading pane and the ribbon
+    // kept offering "mark as read" for a message that had just been read.
+    final base = MailMessage(
+      id: 'a:INBOX#1',
+      accountId: 'a',
+      folderId: 'a:INBOX',
+      uid: 1,
+      subject: 'Subject',
+      from: MailAddress(email: 'dana@example.com'),
+      to: [],
+      date: _fixedDate,
+      preview: '',
+    );
+
+    test('the same message in a different state is not equal', () {
+      expect(base.copyWith(isRead: true), isNot(base));
+      expect(base.copyWith(isFlagged: true), isNot(base));
+      expect(
+        base.copyWith(isRead: true).hashCode,
+        isNot(base.hashCode),
+      );
+    });
+
+    test('the same message in the same state is equal', () {
+      expect(base.copyWith(isRead: false), base);
+      expect(base.copyWith(isRead: false).hashCode, base.hashCode);
+    });
+  });
+
   group('sample messages', () {
     test('are deterministic for a folder', () async {
       final folder = await _folder('INBOX');

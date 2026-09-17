@@ -287,9 +287,15 @@ void main() {
       await tester.longPress(find.byType(MessageTile).first);
       await tester.pumpAndSettle();
 
-      expect(find.text('Move to…'), findsOneWidget);
-      expect(find.text('Delete'), findsOneWidget);
-      expect(find.textContaining('Mark as'), findsOneWidget);
+      // Scoped to the sheet: the ribbon above the panes carries its own
+      // Delete and Move, so a bare find.text would match either.
+      final sheet = find.byType(BottomSheet);
+      expect(find.descendant(of: sheet, matching: find.text('Move to…')),
+          findsOneWidget);
+      expect(find.descendant(of: sheet, matching: find.text('Delete')),
+          findsOneWidget);
+      expect(find.descendant(of: sheet, matching: find.textContaining('Mark as')),
+          findsOneWidget);
     });
   });
 }

@@ -17,6 +17,21 @@ class SearchQuery extends Notifier<String> {
   void clear() => state = '';
 }
 
+/// Bumped when something elsewhere wants the search box focused.
+///
+/// A counter rather than a flag: the ribbon's Search button has to work the
+/// second time it is pressed, and a flag that is already true reports no
+/// change. The search bar watches this and takes focus when it moves.
+class SearchFocusRequests extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  void request() => state = state + 1;
+}
+
+final searchFocusRequestsProvider =
+    NotifierProvider<SearchFocusRequests, int>(SearchFocusRequests.new);
+
 final searchQueryProvider =
     NotifierProvider<SearchQuery, String>(SearchQuery.new);
 

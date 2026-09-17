@@ -15,6 +15,7 @@ import '../compose/open_compose.dart';
 import '../folder_tree/folder_tree_panel.dart';
 import '../messages/message_list_pane.dart';
 import '../messages/reading_pane.dart';
+import 'ribbon.dart';
 
 /// Three shapes, chosen on width alone so rotating a tablet moves between
 /// them without any state being rebuilt:
@@ -251,7 +252,27 @@ class _WideLayout extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
       body: SafeArea(
-        child: LayoutBuilder(
+        child: Column(
+          children: [
+            // Only this layout gets the ribbon. On a phone these actions live
+            // where the thumb is; a tablet in landscape has a wide empty strip
+            // at the top and a hand nowhere near the bottom of the screen.
+            const Ribbon(),
+            Expanded(child: _WidePanes()),
+          ],
+        ),
+      ),
+      floatingActionButton: const _ComposeButton(),
+    );
+  }
+}
+
+class _WidePanes extends ConsumerWidget {
+  const _WidePanes();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return LayoutBuilder(
           builder: (context, constraints) {
             final panes = ref
                 .watch(paneWidthsProvider)
@@ -285,10 +306,7 @@ class _WideLayout extends ConsumerWidget {
               ],
             );
           },
-        ),
-      ),
-      floatingActionButton: const _ComposeButton(),
-    );
+        );
   }
 }
 

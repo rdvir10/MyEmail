@@ -7,6 +7,7 @@ import 'package:mailtree/domain/mail_message.dart';
 import 'package:mailtree/state/compose_providers.dart';
 import 'package:mailtree/state/display_providers.dart';
 import 'package:mailtree/state/providers.dart';
+import 'package:mailtree/ui/folder_tree/folder_tree_panel.dart';
 import 'package:mailtree/ui/messages/conversation_tile.dart';
 import 'package:mailtree/ui/messages/message_tile.dart';
 import 'package:mailtree/ui/messages/reading_pane.dart';
@@ -316,9 +317,15 @@ void main() {
       await tester.pumpWidget(app(const AppShell()));
       await tester.pumpAndSettle();
 
-      expect(find.text('Settings'), findsOneWidget);
-      expect(find.text('Quick Steps'), findsNothing);
-      expect(find.text('Add account'), findsNothing);
+      // Scoped to the tree: the ribbon has its own Quick Steps button, and
+      // this test is about what the tree's footer offers.
+      final tree = find.byType(FolderTreePanel);
+      expect(find.descendant(of: tree, matching: find.text('Settings')),
+          findsOneWidget);
+      expect(find.descendant(of: tree, matching: find.text('Quick Steps')),
+          findsNothing);
+      expect(find.descendant(of: tree, matching: find.text('Add account')),
+          findsNothing);
     });
 
     testWidgets('each row says what is currently set', (tester) async {

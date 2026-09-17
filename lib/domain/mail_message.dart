@@ -91,11 +91,25 @@ class MailMessage {
     );
   }
 
+  /// Equal when it is the same message in the same state.
+  ///
+  /// The id alone is not enough, however natural that looks. Riverpod skips
+  /// notifying listeners when a provider's new value equals the old one, so a
+  /// provider that hands out a message would go silent the moment the only
+  /// thing that changed was a flag: the reading pane and the ribbon would
+  /// keep showing "mark as read" for a message that had just been read.
+  ///
+  /// Only the fields that can change for a given id are compared. Everything
+  /// else about a message is fixed once the server has assigned it a UID.
   @override
-  bool operator ==(Object other) => other is MailMessage && other.id == id;
+  bool operator ==(Object other) =>
+      other is MailMessage &&
+      other.id == id &&
+      other.isRead == isRead &&
+      other.isFlagged == isFlagged;
 
   @override
-  int get hashCode => id.hashCode;
+  int get hashCode => Object.hash(id, isRead, isFlagged);
 
   @override
   String toString() => 'MailMessage($id, "$subject")';
