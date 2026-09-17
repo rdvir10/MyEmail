@@ -271,13 +271,43 @@ void main() {
       expect(find.text('Version 1.0.0, build 4'), findsOneWidget);
     });
 
-    testWidgets('says plainly when updates are not set up', (tester) async {
-      // This build has no manifest URL compiled in, which is the state until
-      // the release host exists.
+    testWidgets('offers a check, because this build has an update URL',
+        (tester) async {
       await pump(tester);
+      expect(find.text('Check for updates'), findsOneWidget);
+    });
+
+    testWidgets('says plainly when updates are not set up', (tester) async {
+      // A build made without an update URL. The screen must say so rather
+      // than show a button that can only fail.
+      tester.view.physicalSize = const Size(800, 1400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c = ProviderContainer(
+        overrides: [
+          installedVersionProvider
+              .overrideWithValue(FakeInstalledVersion(_installed)),
+          updateServiceProvider.overrideWithValue(
+            UpdateService(
+              feed: FakeReleaseFeed(),
+              installed: FakeInstalledVersion(_installed),
+              manifestUrl: '',
+            ),
+          ),
+        ],
+      );
+      addTearDown(c.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: const MaterialApp(home: AboutScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
       expect(find.textContaining('not set up'), findsOneWidget);
-      expect(find.text('Check for updates'), findsNothing,
-          reason: 'a button that can only fail is worse than none');
+      expect(find.text('Check for updates'), findsNothing);
     });
   });
 }

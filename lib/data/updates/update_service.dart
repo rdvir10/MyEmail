@@ -8,14 +8,22 @@ import '../../domain/app_release.dart';
 
 /// Where the update manifest lives.
 ///
-/// Empty until the release host exists, and empty is a supported state: the
-/// About screen says updates are not set up rather than showing a Check button
-/// that can only fail. Set it with
-/// `--dart-define=MYEMAIL_UPDATE_URL=https://...` or by editing the default
-/// below once the URL is settled.
+/// GitHub's `releases/latest/download/<asset>` path always resolves to the
+/// newest published release, so this URL never changes as versions come and
+/// go. That is the whole reason for using Releases rather than files in the
+/// repository: a 22 MB APK committed per version would live in the git
+/// history forever, and every clone would pay for it.
+///
+/// It 404s until the first release is published, which the About screen
+/// reports as "could not check" rather than pretending to be up to date.
+///
+/// Overridable for testing against somewhere else with
+/// `--dart-define=MYEMAIL_UPDATE_URL=https://...`. Empty is still supported
+/// and means the About screen says updates are not set up.
 const updateManifestUrl = String.fromEnvironment(
   'MYEMAIL_UPDATE_URL',
-  defaultValue: '',
+  defaultValue:
+      'https://github.com/rdvir10/MyEmail/releases/latest/download/latest.json',
 );
 
 /// Fetching the manifest, behind an interface so the whole update flow can be
@@ -102,12 +110,22 @@ class FakeInstalledVersion implements InstalledVersionReader {
 /// person can read, rather than as an exception. A check that throws on a
 /// settings screen is a red error box where a line of text belongs.
 class UpdateService {
-  const UpdateService({required this.feed, required this.installed});
+  const UpdateService({
+    required this.feed,
+    required this.installed,
+    this.manifestUrl = updateManifestUrl,
+  });
 
   final ReleaseFeed feed;
   final InstalledVersionReader installed;
 
-  bool get isConfigured => updateManifestUrl.isNotEmpty;
+  /// Injected rather than read straight from the constant, so a test can
+  /// exercise the unconfigured screen. The constant is compile-time, so
+  /// without this the "updates are not set up" path could only be checked by
+  /// building the app a second way.
+  final String manifestUrl;
+
+  bool get isConfigured => manifestUrl.isNotEmpty;
 
   Future<UpdateStatus> check() async {
     final current = await installed.read();

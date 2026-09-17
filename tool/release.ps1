@@ -30,8 +30,9 @@ param(
     # Where the APK and latest.json are staged before being published.
     [string]$OutDir = "$env:USERPROFILE\OneDrive\AI Projects\Email client\builds\release",
 
-    # The public base URL the phone will fetch from. The APK name is appended.
-    [string]$BaseUrl = ''
+    # Where the phone downloads from. GitHub resolves this to the newest
+    # published release, so it stays correct as versions come and go.
+    [string]$BaseUrl = 'https://github.com/rdvir10/MyEmail/releases/latest/download'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,7 +69,8 @@ if (-not (Test-Path $built)) { throw "The build reported success but produced no
 
 # --- 4. publish under a fixed name ---------------------------------------
 New-Item -ItemType Directory -Force $OutDir | Out-Null
-$apkName = 'mailtree-arm64.apk'
+# Fixed, because the manifest URL above is built from it and must not move.
+$apkName = 'myemail-arm64.apk'
 $apkPath = Join-Path $OutDir $apkName
 Copy-Item $built $apkPath -Force
 
@@ -97,8 +99,11 @@ if (-not $BaseUrl) {
     Write-Host "latest.json has a placeholder URL. Pass -BaseUrl once the release host exists." -ForegroundColor Yellow
 }
 Write-Host ""
-Write-Host "Next: upload BOTH files, the APK first. A manifest that names a build" -ForegroundColor Yellow
-Write-Host "nobody can download points every phone at a 404." -ForegroundColor Yellow
+Write-Host "Next, publish them as a GitHub release. The APK must be attached" -ForegroundColor Yellow
+Write-Host "before latest.json, or a phone that checks in between is pointed at a 404:" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "  gh release create v$Version `"$apkPath`" `"$manifestPath`" --title `"$Version`" --notes `"$Notes`""
+
 Write-Host ""
 Write-Host "Then commit the pubspec bump and tag it:" -ForegroundColor Cyan
 Write-Host "  git commit -am `"Release $Version (build $build)`""
