@@ -5,6 +5,8 @@ import '../../domain/sync_prefs.dart';
 import '../../state/providers.dart';
 import '../../state/sync_providers.dart';
 import '../quick_steps/quick_steps_screen.dart';
+import '../../state/update_providers.dart';
+import 'about_screen.dart';
 import 'accounts_screen.dart';
 import 'notifications_screen.dart';
 import 'signatures_screen.dart';
@@ -82,6 +84,17 @@ class SettingsScreen extends ConsumerWidget {
             title: 'Signatures',
             subtitle: 'What is added to the end of a message',
             onTap: () => _open(context, const SignaturesScreen()),
+          ),
+          const Divider(height: 1),
+          const _SectionHeading('This app'),
+          _Row(
+            icon: Icons.info_outline,
+            title: 'About',
+            subtitle: switch (ref.watch(installedVersionValueProvider).value) {
+              null => 'Version and updates',
+              final v => 'Version ${v.version}, build ${v.build}',
+            },
+            onTap: () => _open(context, const AboutScreen()),
           ),
         ],
       ),

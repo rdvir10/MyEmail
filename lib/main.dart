@@ -15,8 +15,11 @@ import 'data/notifications/mail_notifier.dart';
 import 'data/secure_credential_store.dart';
 import 'data/sync/background_worker.dart';
 import 'data/sync/sync_state_store.dart';
+import 'data/updates/apk_installer.dart';
+import 'data/updates/update_service.dart';
 import 'data/ui_state_store.dart';
 import 'state/sync_providers.dart';
+import 'state/update_providers.dart';
 import 'state/providers.dart';
 import 'theme/app_theme.dart';
 import 'ui/shell/app_shell.dart';
@@ -82,6 +85,12 @@ Future<void> main() async {
         if (onAndroid)
           backgroundSchedulerProvider
               .overrideWithValue(const WorkManagerScheduler()),
+        installedVersionProvider
+            .overrideWithValue(const PackageInstalledVersion()),
+        if (onAndroid) ...[
+          releaseFeedProvider.overrideWithValue(HttpReleaseFeed()),
+          apkInstallerProvider.overrideWithValue(AndroidApkInstaller()),
+        ],
       ],
       child: const MailTreeApp(),
     ),

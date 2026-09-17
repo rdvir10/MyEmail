@@ -18,6 +18,11 @@
          chosen; the periodic mode needs neither of these. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <!-- The in-app updater. Lets MailTree hand a downloaded APK to Android's
+         package installer; Android still shows its own confirmation, and the
+         user has to allow "Install unknown apps" for MailTree once before it
+         will even offer. Nothing is ever installed silently. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
 
     <application
         android:label="MailTree"
@@ -45,6 +50,21 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Hands the downloaded APK to the installer as a content:// URI.
+             A bare file:// URI to this app's private storage is unreadable by
+             the installer and throws FileUriExposedException on anything
+             modern. The authority must match the one MainActivity passes to
+             FileProvider.getUriForFile. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_paths" />
+        </provider>
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
