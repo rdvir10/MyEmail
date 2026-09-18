@@ -4,23 +4,37 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import 'pkce.dart';
 import 'oauth_token.dart';
 
-/// Sign-in to a personal Microsoft account, by the device authorization grant
-/// (RFC 8628).
+/// Signing in to a Microsoft account, personal or work.
 ///
-/// Why this flow and not the usual authorization code with PKCE: that one
-/// needs a redirect URI, a custom URL scheme, an intent filter, and a package
-/// to drive the browser and catch the callback. The device flow needs none of
-/// it. The app shows a short code, the person types it into
-/// microsoft.com/devicelogin in any browser on any device, and the app polls
-/// an ordinary HTTPS endpoint until a token falls out. It costs one extra
-/// step for the person and removes a dependency and a platform integration
-/// from us, which on this project has been the better trade every time.
+/// Two flows live here, and which one is used is not a matter of taste.
+///
+/// [authorizationUrl] and [exchangeCode] are the authorization code flow with
+/// PKCE, and they are the path the app takes. The person signs in on a real
+/// Microsoft page shown inside the app, and the redirect carries a code that
+/// is redeemed with a verifier that never went near the browser.
+///
+/// [requestDeviceCode] and [awaitToken] are the device authorization grant
+/// (RFC 8628), kept as a fallback for the case where the embedded browser
+/// cannot be used at all.
+///
+/// The device flow was the original choice, because it needs no redirect URI
+/// and no browser integration. That was defensible for a personal mailbox and
+/// wrong for anything else: Microsoft's security defaults block the device
+/// code flow outright, and from 1 July 2026 every new tenant has them on. A
+/// work account meets
+///
+///   AADSTS530035: Access has been blocked by security defaults
+///
+/// which says nothing about which flow is at fault. PKCE is not blocked, so it
+/// leads; the device flow stays because the two fail in different
+/// circumstances and having the second costs little.
 ///
 /// Microsoft requires "Allow public client flows" = Yes on the registration
-/// for this flow. Without it the sign-in fails with AADSTS7000218, which
-/// reads as a missing client secret; [_readableAadError] translates it.
+/// for either. Without it the sign-in fails with AADSTS7000218, which reads as
+/// a missing client secret; [_readableAadError] translates it.
 class MicrosoftOAuth {
   MicrosoftOAuth({
     required this.clientId,
@@ -73,8 +87,107 @@ class MicrosoftOAuth {
 
   static Future<void> _realSleep(Duration d) => Future<void>.delayed(d);
 
+  /// Where the redirect lands after a successful sign-in.
+  ///
+  /// Microsoft's documented redirect for a native app using an embedded
+  /// browser. It is an ordinary https URL that never actually loads: the app
+  /// watches for the browser trying to navigate here and takes the code out of
+  /// the query string instead. A custom scheme would work too, but an unknown
+  /// scheme makes some embedded browsers raise an error before the app is
+  /// asked about it.
+  ///
+  /// It must be listed on the app registration, under Mobile and desktop
+  /// applications.
+  static const redirectUri =
+      'https://login.microsoftonline.com/common/oauth2/nativeclient';
+
   Uri get _deviceCodeUri => Uri.parse('$authority/devicecode');
   Uri get _tokenUri => Uri.parse('$authority/token');
+  Uri get _authorizeUri => Uri.parse('$authority/authorize');
+
+  /// Where to send the browser to start a sign-in.
+  ///
+  /// [loginHint] pre-fills the address box with what the person already typed,
+  /// so they are not asked for it twice.
+  Uri authorizationUrl({
+    required PkcePair pkce,
+    required String state,
+    String? loginHint,
+  }) =>
+      _authorizeUri.replace(queryParameters: {
+        'client_id': clientId,
+        'response_type': 'code',
+        'redirect_uri': redirectUri,
+        'response_mode': 'query',
+        'scope': scopes.join(' '),
+        'state': state,
+        'code_challenge': pkce.challenge,
+        'code_challenge_method': PkcePair.method,
+        // Always ask which account. Without it a second mailbox silently
+        // reuses whichever session the browser already has, and the person
+        // ends up adding the same account twice without being told.
+        'prompt': 'select_account',
+        if (loginHint != null && loginHint.isNotEmpty) 'login_hint': loginHint,
+      });
+
+  /// Redeem the code the redirect carried.
+  Future<OAuthToken> exchangeCode({
+    required String code,
+    required PkcePair pkce,
+  }) async {
+    final Map<String, Object?> json;
+    try {
+      json = await _post(_tokenUri, {
+        'grant_type': 'authorization_code',
+        'client_id': clientId,
+        'code': code,
+        'redirect_uri': redirectUri,
+        'code_verifier': pkce.verifier,
+      });
+    } on _OAuthErrorResponse catch (e) {
+      throw SignInFailed(_readableAadError(e));
+    }
+    return OAuthToken.fromResponseJson(json, now: _clock());
+  }
+
+  /// Pull the result out of a redirect the browser tried to follow.
+  ///
+  /// Returns null for any URL that is not the redirect, which is every other
+  /// navigation during a sign-in. Throws when the redirect is ours but carries
+  /// a refusal, or a state that does not match the request this app made.
+  String? codeFromRedirect(Uri uri, {required String expectedState}) {
+    if (!_isRedirect(uri)) return null;
+
+    final error = uri.queryParameters['error'];
+    if (error != null) {
+      final description = uri.queryParameters['error_description'] ?? '';
+      if (error == 'access_denied') throw const SignInDeclined();
+      throw SignInFailed(_readableAadError(
+        _OAuthErrorResponse(error: error, description: description),
+      ));
+    }
+
+    // A redirect that did not come from this request. Nothing good follows
+    // from redeeming a code that arrived out of nowhere.
+    if (uri.queryParameters['state'] != expectedState) {
+      throw const SignInFailed(
+        'The sign-in response did not match the request. Start again.',
+      );
+    }
+
+    final code = uri.queryParameters['code'];
+    if (code == null || code.isEmpty) {
+      throw const SignInFailed('Microsoft sent no sign-in code back.');
+    }
+    return code;
+  }
+
+  static bool _isRedirect(Uri uri) {
+    final target = Uri.parse(redirectUri);
+    return uri.scheme == target.scheme &&
+        uri.host == target.host &&
+        uri.path == target.path;
+  }
 
   /// Step one: ask Microsoft for a code to show the user.
   ///

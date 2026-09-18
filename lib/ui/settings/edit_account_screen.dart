@@ -5,7 +5,7 @@ import '../../data/auth/oauth_token.dart';
 import '../../data/mail_engine.dart';
 import '../../domain/account.dart';
 import '../../state/providers.dart';
-import '../accounts/microsoft_sign_in_sheet.dart';
+import '../accounts/microsoft_sign_in_screen.dart';
 
 /// Rename an account, recolour it, or sign it in again.
 ///
@@ -89,7 +89,10 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
   }
 
   Future<void> _signInWithMicrosoft() async {
-    final token = await MicrosoftSignInSheet.show(context);
+    final token = await MicrosoftSignInScreen.show(
+      context,
+      loginHint: widget.account.emailAddress,
+    );
     if (token == null || !mounted) return;
     await _signInAgain(token: token);
   }

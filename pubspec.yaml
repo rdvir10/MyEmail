@@ -65,6 +65,7 @@ dev_dependencies:
   integration_test:
     sdk: flutter
   webview_flutter_platform_interface: ^2.15.1
+  crypto: ^3.0.7
 flutter:
 
   # The following line ensures that the Material Icons font is

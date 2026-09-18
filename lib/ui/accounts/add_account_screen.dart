@@ -5,7 +5,7 @@ import '../../data/mail_engine.dart';
 import '../../domain/account.dart';
 import '../../state/providers.dart';
 import '../settings/backup_screen.dart';
-import 'microsoft_sign_in_sheet.dart';
+import 'microsoft_sign_in_screen.dart';
 
 /// Add a mailbox: Gmail with an app password, or a Microsoft one with
 /// Microsoft sign-in.
@@ -81,7 +81,7 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
     // and "nothing" covers both cancelling and failing — the sheet has
     // already shown the reason in the failing case, so there is nothing to
     // report here.
-    final token = await MicrosoftSignInSheet.show(context);
+    final token = await MicrosoftSignInScreen.show(context, loginHint: _emailText);
     if (token == null || !mounted) return;
 
     await _run(() => ref.read(accountsProvider.notifier).addOAuth(
