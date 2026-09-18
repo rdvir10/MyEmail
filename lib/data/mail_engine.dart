@@ -1,4 +1,5 @@
 import '../domain/account.dart';
+import '../domain/error_report.dart';
 import 'auth/oauth_token.dart';
 import '../domain/draft.dart';
 import '../domain/mail_folder.dart';
@@ -220,8 +221,14 @@ class FolderOperationNotSupported implements Exception {
 }
 
 /// The server refused the credentials. Shown to the user as-is.
-class AuthenticationFailed implements Exception {
+class AuthenticationFailed implements Exception, NeedsSignIn {
   const AuthenticationFailed(this.message);
+
+  /// Always false: a refused password or token is something the person can
+  /// replace themselves. The one case that needs an administrator comes from
+  /// Microsoft's consent rules and has its own type.
+  @override
+  bool get needsAdministrator => false;
 
   final String message;
 
@@ -230,7 +237,7 @@ class AuthenticationFailed implements Exception {
 }
 
 /// The server could not be reached at all: no network, wrong host, TLS.
-class ConnectionFailed implements Exception {
+class ConnectionFailed implements Exception, Retryable {
   const ConnectionFailed(this.message);
 
   final String message;

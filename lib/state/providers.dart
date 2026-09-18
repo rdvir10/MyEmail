@@ -1,4 +1,5 @@
 import 'package:collection/collection.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/account_store.dart';
@@ -10,6 +11,7 @@ import '../data/mail_engine.dart';
 import '../data/sample/sample_mail_engine.dart';
 import '../data/ui_state_store.dart';
 import '../domain/account.dart';
+import '../domain/error_report.dart';
 import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
 import 'folder_tree.dart';
@@ -180,13 +182,13 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     // the entire folder tree: every other account's folders vanished and the
     // pane showed that one account's error, which reads as the app being
     // broken for mailboxes that are working perfectly.
-    final errors = <String, String>{};
+    final errors = <String, AccountProblem>{};
     final lists = await Future.wait(
       accounts.map((a) async {
         try {
           return await engine.loadFolders(a.id);
         } catch (e) {
-          errors[a.id] = folderLoadErrorText(e);
+          errors[a.id] = AccountProblem(account: a, error: e);
           return const <MailFolder>[];
         }
       }),
@@ -309,33 +311,56 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
 final foldersProvider =
     AsyncNotifierProvider<Folders, Map<String, List<MailFolder>>>(Folders.new);
 
+/// One account's failure, kept whole.
+///
+/// The error object and not just its sentence, because what the app can offer
+/// to do about it is decided by the type. Matching on message text instead
+/// would mean a remedy silently stops being offered the day someone rewords a
+/// sentence.
+@immutable
+class AccountProblem {
+  const AccountProblem({required this.account, required this.error});
+
+  final Account account;
+  final Object error;
+
+  /// The engine's own failures carry a sentence written for a person already.
+  /// Anything else is a bug rather than a condition, and shows as itself.
+  String get message => switch (error) {
+        AuthenticationFailed(:final message) => message,
+        ConnectionFailed(:final message) => message,
+        _ => '$error',
+      };
+
+  ErrorRemedy get remedy => remedyFor(error);
+
+  String report({String? appVersion, int? build}) => buildErrorReport(
+        doing: 'Loading the folders for ${account.displayName}',
+        error: error,
+        account: account,
+        appVersion: appVersion,
+        build: build,
+      );
+}
+
 /// What went wrong for an account, by account id, or empty if nothing did.
 ///
 /// Kept apart from [foldersProvider]'s own error state on purpose: an
 /// AsyncValue has room for one error, and putting an account's failure there
 /// would mean the whole tree is an error whenever any single account is. The
 /// tree has to keep working for the accounts that are fine.
-class FolderLoadErrors extends Notifier<Map<String, String>> {
+class FolderLoadErrors extends Notifier<Map<String, AccountProblem>> {
   @override
-  Map<String, String> build() => const {};
+  Map<String, AccountProblem> build() => const {};
 
-  void replace(Map<String, String> errors) => state = Map.unmodifiable(errors);
+  void replace(Map<String, AccountProblem> errors) =>
+      state = Map.unmodifiable(errors);
 }
 
 final folderLoadErrorsProvider =
-    NotifierProvider<FolderLoadErrors, Map<String, String>>(
+    NotifierProvider<FolderLoadErrors, Map<String, AccountProblem>>(
   FolderLoadErrors.new,
 );
-
-/// The readable half of whatever an account's folder load threw.
-///
-/// The engine's own failures already carry a sentence written for a person.
-/// Anything else is a bug rather than a condition, and shows as itself.
-String folderLoadErrorText(Object e) => switch (e) {
-      AuthenticationFailed(:final message) => message,
-      ConnectionFailed(:final message) => message,
-      _ => '$e',
-    };
 
 /// Every folder by id, including the synthetic unified Inbox when it applies.
 /// One map built per change beats a linear scan on every lookup.
@@ -629,7 +654,10 @@ final treeRowsProvider = Provider<List<TreeRow>>((ref) {
       expandedIds: ref.watch(expandedFoldersProvider),
       favoriteIds: ref.watch(favoriteFoldersProvider),
       collapsedAccountIds: ref.watch(collapsedAccountsProvider),
-      accountErrors: ref.watch(folderLoadErrorsProvider),
+      accountErrors: {
+        for (final e in ref.watch(folderLoadErrorsProvider).entries)
+          e.key: e.value.message,
+      },
       hiddenIds: ref.watch(hiddenFoldersProvider),
       showHidden: ref.watch(showHiddenFoldersProvider),
       orderOverrides: ref.watch(folderOrderProvider),

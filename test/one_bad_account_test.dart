@@ -7,6 +7,7 @@ import 'package:myemail/data/imap/cached_imap_engine.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/error_report.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/state/folder_tree.dart';
 import 'package:myemail/state/providers.dart';
@@ -90,8 +91,12 @@ void main() {
 
     await c.read(foldersProvider.future);
 
-    expect(c.read(folderLoadErrorsProvider)['acct-outlook'],
-        'Sign in again, please.');
+    final problem = c.read(folderLoadErrorsProvider)['acct-outlook'];
+    expect(problem!.message, 'Sign in again, please.');
+    expect(problem.account.id, 'acct-outlook');
+    // The whole error is kept, not just its sentence, so the app can work out
+    // what to offer without matching on wording.
+    expect(problem.remedy, ErrorRemedy.signInAgain);
     expect(c.read(folderLoadErrorsProvider).containsKey('acct-gmail'), isFalse);
   });
 

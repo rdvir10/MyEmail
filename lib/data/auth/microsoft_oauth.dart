@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import '../../domain/error_report.dart';
 import 'pkce.dart';
 import 'oauth_token.dart';
 
@@ -323,7 +324,12 @@ class MicrosoftOAuth {
           description.contains('AADSTS70000') ||
           e.error == 'consent_required' ||
           e.error == 'interaction_required') {
-        throw SignInNeedsConsent(_readableAadError(e));
+        throw SignInNeedsConsent(
+          _readableAadError(e),
+          // 65001 in a tenant that has locked consent down is the one case
+          // nobody signing in can clear.
+          needsAdministrator: description.contains('AADSTS65001'),
+        );
       }
       // invalid_grant is the refresh token being revoked, expired, or
       // invalidated by a password change. Nothing to do but sign in again.
@@ -527,9 +533,16 @@ class SignInCancelled implements Exception {
 /// that stops its users consenting to outside apps, only an administrator
 /// can.
 @immutable
-class SignInNeedsConsent implements Exception {
-  const SignInNeedsConsent(this.message);
+class SignInNeedsConsent implements Exception, NeedsSignIn {
+  const SignInNeedsConsent(this.message, {this.needsAdministrator = false});
   final String message;
+
+  /// True when the tenant does not let its users consent at all. Signing in
+  /// again then loops without ever succeeding, so the app offers no button
+  /// and the message names the administrator instead.
+  @override
+  final bool needsAdministrator;
+
   @override
   String toString() => message;
 }
@@ -537,9 +550,13 @@ class SignInNeedsConsent implements Exception {
 /// The stored refresh token is no longer good. Unlike [SignInFailed] this
 /// does not come back on its own; the account must sign in again.
 @immutable
-class SignInExpired implements Exception {
+class SignInExpired implements Exception, NeedsSignIn {
   const SignInExpired(this.message);
   final String message;
+
+  @override
+  bool get needsAdministrator => false;
+
   @override
   String toString() => message;
 }

@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
+import '../../domain/error_report.dart';
 import '../../state/providers.dart';
+import '../../state/update_providers.dart';
+import '../settings/edit_account_screen.dart';
 import '../messages/message_actions.dart';
 import '../settings/settings_screen.dart';
 import 'folder_actions.dart';
@@ -49,6 +53,10 @@ class FolderTreePanel extends ConsumerWidget {
                       return switch (row) {
                         SectionHeaderRow() => _SectionHeader(
                             row: row,
+                            problem: row.accountId == null
+                                ? null
+                                : ref.watch(folderLoadErrorsProvider)[
+                                    row.accountId!],
                             onToggleCollapsed: row.accountId == null
                                 ? null
                                 : () => ref
@@ -221,12 +229,18 @@ class _FolderSearchFieldState extends ConsumerState<_FolderSearchField> {
 class _SectionHeader extends StatelessWidget {
   const _SectionHeader({
     required this.row,
+    this.problem,
     this.canAcceptRoot,
     this.onDropToRoot,
     this.onToggleCollapsed,
   });
 
   final SectionHeaderRow row;
+
+  /// The whole failure, when this account has one. The row's [row.error]
+  /// carries the sentence; this carries what can be done about it.
+  final AccountProblem? problem;
+
   final bool Function(DraggedFolder dragged)? canAcceptRoot;
   final void Function(DraggedFolder dragged)? onDropToRoot;
 
@@ -317,10 +331,16 @@ class _SectionHeader extends StatelessWidget {
                     size: 14, color: theme.colorScheme.error),
                 const SizedBox(width: 6),
                 Expanded(
-                  child: Text(
-                    error,
-                    style: theme.textTheme.labelSmall
-                        ?.copyWith(color: theme.colorScheme.error),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        error,
+                        style: theme.textTheme.labelSmall
+                            ?.copyWith(color: theme.colorScheme.error),
+                      ),
+                      if (problem != null) _ProblemActions(problem: problem!),
+                    ],
                   ),
                 ),
               ],
@@ -355,6 +375,84 @@ class _SectionHeader extends StatelessWidget {
               color: theme.colorScheme.primaryContainer.withValues(alpha: 0.6),
               child: header,
             ),
+    );
+  }
+}
+
+/// What the app offers to do about an account's failure.
+///
+/// A remedy only where one is genuinely one tap and genuinely likely to work.
+/// An offer that fails leaves someone worse off than no offer: they have tried
+/// the fix, it did not work, and now they have nothing else to try.
+///
+/// Copy is always offered. It puts the build number, the account and the real
+/// error on the clipboard, which is one paste instead of a screenshot and a
+/// conversation — and it works when the mail itself does not, which is exactly
+/// when it is needed.
+class _ProblemActions extends ConsumerWidget {
+  const _ProblemActions({required this.problem});
+
+  final AccountProblem problem;
+
+  Future<void> _copy(BuildContext context, WidgetRef ref) async {
+    final version = ref.read(installedVersionValueProvider).value;
+    await Clipboard.setData(ClipboardData(
+      text: problem.report(
+        appVersion: version?.version,
+        build: version?.build,
+      ),
+    ));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(
+        content: Text('Problem details copied. Paste them anywhere.'),
+      ));
+  }
+
+  Future<void> _act(BuildContext context, WidgetRef ref) async {
+    switch (problem.remedy) {
+      case ErrorRemedy.retry:
+        ref.invalidate(foldersProvider);
+      case ErrorRemedy.signInAgain:
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => EditAccountScreen(account: problem.account),
+          ),
+        );
+        // Whatever happened in there, the folders are worth another try: the
+        // whole reason to go was that they could not be loaded.
+        ref.invalidate(foldersProvider);
+      case ErrorRemedy.none:
+        break;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Wrap(
+      spacing: 4,
+      children: [
+        if (problem.remedy.isOffered)
+          TextButton(
+            onPressed: () => _act(context, ref),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: Text(problem.remedy.label),
+          ),
+        TextButton(
+          onPressed: () => _copy(context, ref),
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            minimumSize: const Size(0, 32),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          child: const Text('Copy details'),
+        ),
+      ],
     );
   }
 }
