@@ -308,6 +308,41 @@ void main() {
       expect(calls, 1);
     });
 
+    test('a scope never consented to says to sign in again, in words',
+        () async {
+      // What an account added before the app asked for mailbox reading meets.
+      // Microsoft reports it as a paragraph with two trace IDs in it; showing
+      // that to someone tells them nothing they can act on, and the remedy is
+      // not the remove-and-re-add that a dead sign-in would need.
+      await storeToken();
+      final repository = repositoryWith(
+        (_) async => http.Response(
+          jsonEncode({
+            'error': 'invalid_grant',
+            'error_description':
+                'AADSTS70000: The request was denied because one or more '
+                    'scopes requested are unauthorized or expired. Trace ID: '
+                    'abc63852-5724-4fe4-b9d3-e772f6310200',
+          }),
+          400,
+          headers: const {'content-type': 'application/json'},
+        ),
+      );
+
+      await expectLater(
+        repository.accessToken('acct-1', scopes: MicrosoftOAuth.graphScopes),
+        throwsA(isA<SignInNeedsConsent>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('Sign in again'),
+            isNot(contains('Trace ID')),
+            isNot(contains('AADSTS')),
+          ),
+        )),
+      );
+    });
+
     test('missing consent is not reported as a dead sign-in', () async {
       // Different remedy: the account is fine and needs permission granted
       // once, which in a locked-down tenant only an administrator can do.

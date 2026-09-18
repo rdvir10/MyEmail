@@ -332,6 +332,7 @@ class MicrosoftOAuth {
       // than to sign in again.
       final description = e.description ?? '';
       if (description.contains('AADSTS65001') ||
+          description.contains('AADSTS70000') ||
           e.error == 'consent_required' ||
           e.error == 'interaction_required') {
         throw SignInNeedsConsent(_readableAadError(e));
@@ -411,10 +412,25 @@ class MicrosoftOAuth {
       return 'Microsoft does not recognise this app registration. Check the '
           'client ID the build was made with.';
     }
+    // AADSTS70000 is what an account signed in before the app asked for a
+    // scope meets: the refresh token is real and the sign-in is live, but the
+    // consent behind it does not cover what is now being asked for. Microsoft
+    // reports it as a paragraph with two trace IDs in it, which tells the
+    // person nothing they can act on, and the remedy is not the "remove and
+    // add it again" that a dead sign-in would need — signing in again keeps
+    // every cached message.
+    if (description.contains('AADSTS70000')) {
+      return 'This account needs signing in again. It was set up before the '
+          'app asked permission for this, so the permission it has is no '
+          'longer enough. Open Settings, then Accounts, tap the account and '
+          'use "Sign in again" — nothing cached is lost.';
+    }
     if (description.contains('AADSTS65001')) {
-      return 'This account has not agreed to let the app do that yet. If it '
-          'is a work or school account, an administrator may have to approve '
-          'the app for your organisation.';
+      // The same shortfall, but nobody here can fix it by signing in: this is
+      // the tenant refusing to let its users consent at all.
+      return 'This account has not been allowed to do that. If it is a work '
+          'or school account, an administrator has to approve the app for '
+          'your organisation before anyone there can use it.';
     }
     if (description.contains('AADSTS530035')) {
       return 'Your organisation blocks this way of signing in. Sign in again '
