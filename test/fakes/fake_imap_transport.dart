@@ -22,7 +22,14 @@ class FakeImapTransport implements ImapTransport {
   /// the cache is what gets served.
   bool offline = false;
 
+  /// Thrown by every call, for testing what a broken account does to the rest
+  /// of the app. Distinct from [offline], which is specifically a connection
+  /// failure; this one can be an authentication failure or anything else.
+  Object? failWith;
+
   void _online() {
+    final failure = failWith;
+    if (failure != null) throw failure;
     if (offline) throw const ConnectionFailed('fake server is offline');
   }
 

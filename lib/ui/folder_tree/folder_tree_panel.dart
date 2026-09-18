@@ -302,6 +302,34 @@ class _SectionHeader extends StatelessWidget {
       ),
     );
 
+    final error = row.error;
+    if (error != null) {
+      header = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          header,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 12, 10),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.error_outline,
+                    size: 14, color: theme.colorScheme.error),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    error,
+                    style: theme.textTheme.labelSmall
+                        ?.copyWith(color: theme.colorScheme.error),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+
     if (collapsible) {
       header = Semantics(
         button: true,

@@ -21,6 +21,7 @@ class SectionHeaderRow extends TreeRow {
     this.accentColor,
     this.isCollapsed,
     this.folderCount = 0,
+    this.error,
   });
 
   final String title;
@@ -41,6 +42,13 @@ class SectionHeaderRow extends TreeRow {
   /// a collapsed account looks like an account with no folders, which is what
   /// a broken sync looks like too.
   final int folderCount;
+
+  /// Why this account has no folders, when that is the reason.
+  ///
+  /// Shown under the heading rather than in place of the tree. An account with
+  /// a stale sign-in used to replace the whole pane with its own error,
+  /// taking every other account's folders off screen with it.
+  final String? error;
 
   bool get canCollapse => isCollapsed != null;
 
@@ -104,6 +112,7 @@ class FolderTreeInput {
     required this.expandedIds,
     required this.favoriteIds,
     this.collapsedAccountIds = const {},
+    this.accountErrors = const {},
     this.hiddenIds = const {},
     this.showHidden = false,
     this.orderOverrides = const {},
@@ -115,6 +124,9 @@ class FolderTreeInput {
   final Map<String, List<MailFolder>> foldersByAccount;
   final Set<String> expandedIds;
   final Set<String> favoriteIds;
+
+  /// Why an account's folders are missing, by account id.
+  final Map<String, String> accountErrors;
 
   /// Accounts folded down to just their heading.
   ///
@@ -247,7 +259,12 @@ List<TreeRow> buildTreeRows(FolderTreeInput input) {
   final compare = folderComparator(input.orderOverrides);
   for (final account in input.accounts) {
     final folders = input.foldersByAccount[account.id] ?? const <MailFolder>[];
-    if (folders.isEmpty) continue;
+    final error = input.accountErrors[account.id];
+    // An account with no folders and nothing wrong is still loading, and a
+    // heading over nothing would flicker on every start. One that failed gets
+    // its heading and the reason, so there is somewhere to read what happened
+    // and something to tap.
+    if (folders.isEmpty && error == null) continue;
     final isCollapsed = input.collapsedAccountIds.contains(account.id);
     rows.add(
       SectionHeaderRow(
@@ -257,6 +274,7 @@ List<TreeRow> buildTreeRows(FolderTreeInput input) {
         accentColor: account.colorValue,
         isCollapsed: isCollapsed,
         folderCount: folders.length,
+        error: error,
       ),
     );
     // The heading stays, the folders go. Dropping the heading as well would

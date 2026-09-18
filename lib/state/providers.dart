@@ -172,11 +172,27 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
   Future<Map<String, List<MailFolder>>> build() async {
     final engine = ref.watch(mailEngineProvider);
     final accounts = await ref.watch(accountsProvider.future);
-    // Accounts load in parallel: against a real server each one is a network
-    // round trip, and there is no reason to wait on them one at a time.
+
+    // In parallel, and each account's failure stays its own.
+    //
+    // This was a plain Future.wait over the lot, which rejects the moment any
+    // one of them does. One account with a stale sign-in therefore blanked
+    // the entire folder tree: every other account's folders vanished and the
+    // pane showed that one account's error, which reads as the app being
+    // broken for mailboxes that are working perfectly.
+    final errors = <String, String>{};
     final lists = await Future.wait(
-      accounts.map((a) => engine.loadFolders(a.id)),
+      accounts.map((a) async {
+        try {
+          return await engine.loadFolders(a.id);
+        } catch (e) {
+          errors[a.id] = folderLoadErrorText(e);
+          return const <MailFolder>[];
+        }
+      }),
     );
+
+    ref.read(folderLoadErrorsProvider.notifier).replace(errors);
     return {
       for (final (i, account) in accounts.indexed) account.id: lists[i],
     };
@@ -292,6 +308,34 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
 
 final foldersProvider =
     AsyncNotifierProvider<Folders, Map<String, List<MailFolder>>>(Folders.new);
+
+/// What went wrong for an account, by account id, or empty if nothing did.
+///
+/// Kept apart from [foldersProvider]'s own error state on purpose: an
+/// AsyncValue has room for one error, and putting an account's failure there
+/// would mean the whole tree is an error whenever any single account is. The
+/// tree has to keep working for the accounts that are fine.
+class FolderLoadErrors extends Notifier<Map<String, String>> {
+  @override
+  Map<String, String> build() => const {};
+
+  void replace(Map<String, String> errors) => state = Map.unmodifiable(errors);
+}
+
+final folderLoadErrorsProvider =
+    NotifierProvider<FolderLoadErrors, Map<String, String>>(
+  FolderLoadErrors.new,
+);
+
+/// The readable half of whatever an account's folder load threw.
+///
+/// The engine's own failures already carry a sentence written for a person.
+/// Anything else is a bug rather than a condition, and shows as itself.
+String folderLoadErrorText(Object e) => switch (e) {
+      AuthenticationFailed(:final message) => message,
+      ConnectionFailed(:final message) => message,
+      _ => '$e',
+    };
 
 /// Every folder by id, including the synthetic unified Inbox when it applies.
 /// One map built per change beats a linear scan on every lookup.
@@ -585,6 +629,7 @@ final treeRowsProvider = Provider<List<TreeRow>>((ref) {
       expandedIds: ref.watch(expandedFoldersProvider),
       favoriteIds: ref.watch(favoriteFoldersProvider),
       collapsedAccountIds: ref.watch(collapsedAccountsProvider),
+      accountErrors: ref.watch(folderLoadErrorsProvider),
       hiddenIds: ref.watch(hiddenFoldersProvider),
       showHidden: ref.watch(showHiddenFoldersProvider),
       orderOverrides: ref.watch(folderOrderProvider),
