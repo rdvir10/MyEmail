@@ -24,6 +24,30 @@ class GraphMailApi {
 
   static const base = 'https://graph.microsoft.com/v1.0';
 
+  /// Every property of a mail folder that v1.0 actually has.
+  ///
+  /// Deliberately not `wellKnownName`, which exists only in the beta API.
+  /// Asking for it here made Graph refuse the whole request with a bare
+  /// BadRequest, so every folder listing failed and nothing loaded at all.
+  /// See [wellKnownFolderIds] for how the special folders are found instead.
+  static const folderFields =
+      'id,displayName,parentFolderId,childFolderCount,totalItemCount,'
+      'unreadItemCount';
+
+  /// The folders Outlook makes for everyone, by the names Graph answers to.
+  ///
+  /// These are addressable in place of an id — `/me/mailFolders/inbox` works
+  /// whatever the mailbox language — which is what makes it possible to learn
+  /// which folder is which without the beta-only property.
+  static const wellKnownNames = [
+    'inbox',
+    'drafts',
+    'sentitems',
+    'deleteditems',
+    'junkemail',
+    'archive',
+  ];
+
   /// What a message list needs. Asking for everything would pull each body
   /// down with its list row, which is the difference between a folder opening
   /// at once and it opening after a megabyte.
@@ -48,9 +72,7 @@ class GraphMailApi {
           : '/me/mailFolders/${_id(parentId)}/childFolders';
       var next = Uri.parse('$base$path').replace(queryParameters: {
         '\$top': '100',
-        '\$select':
-            'id,displayName,parentFolderId,childFolderCount,totalItemCount,'
-                'unreadItemCount,wellKnownName',
+        '\$select': folderFields,
       });
 
       while (true) {
@@ -81,11 +103,7 @@ class GraphMailApi {
   Future<GraphFolder> folder(String folderId) async {
     final json = await _get(
       Uri.parse('$base/me/mailFolders/${_id(folderId)}').replace(
-        queryParameters: {
-          '\$select':
-              'id,displayName,parentFolderId,childFolderCount,totalItemCount,'
-                  'unreadItemCount,wellKnownName',
-        },
+        queryParameters: {r'$select': folderFields},
       ),
     );
     final folder = GraphFolder.fromJson(json);
@@ -93,6 +111,34 @@ class GraphMailApi {
       throw const ConnectionFailed('Microsoft sent back an unreadable folder.');
     }
     return folder;
+  }
+
+  /// Which folder id is the Inbox, the Sent folder, and so on.
+  ///
+  /// One request per name, run together. That is a handful of extra round
+  /// trips per folder listing, and it is the supported way: v1.0 has no
+  /// property saying what a folder is for, but it will resolve these names to
+  /// the right folder in any mailbox, in any language.
+  ///
+  /// A name the mailbox does not have simply does not appear. Archive is the
+  /// common case — plenty of mailboxes have never had one.
+  Future<Map<String, String>> wellKnownFolderIds() async {
+    final found = <String, String>{};
+    await Future.wait(
+      wellKnownNames.map((name) async {
+        try {
+          final json = await _get(
+            Uri.parse('$base/me/mailFolders/$name')
+                .replace(queryParameters: {r'$select': 'id'}),
+          );
+          final id = json['id'];
+          if (id is String && id.isNotEmpty) found[name] = id;
+        } on GraphNotFound {
+          // No such folder in this mailbox. Not an error.
+        }
+      }),
+    );
+    return found;
   }
 
   Future<GraphFolder> createFolder({
@@ -326,8 +372,12 @@ class GraphMailApi {
 
   static Exception _failureFor(int status, Map<String, Object?> json) {
     String? code;
+    String? detail;
     final error = json['error'];
-    if (error is Map) code = error['code'] as String?;
+    if (error is Map) {
+      code = error['code'] as String?;
+      detail = error['message'] as String?;
+    }
 
     if (status == 401 || code == 'InvalidAuthenticationToken') {
       return const AuthenticationFailed(
@@ -351,8 +401,13 @@ class GraphMailApi {
             : 'Microsoft is having trouble (HTTP $status). Try again shortly.',
       );
     }
+    // Graph's own sentence, kept. Without it a refusal reads as
+    // "Microsoft refused the request (BadRequest)", which says only that
+    // something was wrong with a request the person never made, and leaves
+    // whoever has to fix it nothing to go on.
     return ConnectionFailed(
-      'Microsoft refused the request (${code ?? 'HTTP $status'}).',
+      'Microsoft refused the request (${code ?? 'HTTP $status'})'
+      '${detail == null || detail.isEmpty ? '' : ': $detail'}',
     );
   }
 }
@@ -372,7 +427,6 @@ class GraphFolder {
     required this.childFolderCount,
     required this.total,
     required this.unread,
-    this.wellKnownName,
   });
 
   final String id;
@@ -381,10 +435,6 @@ class GraphFolder {
   final int childFolderCount;
   final int total;
   final int unread;
-
-  /// `inbox`, `sentitems`, `drafts`, `deleteditems`, `junkemail`, `archive`
-  /// and so on. Absent for a folder the person made.
-  final String? wellKnownName;
 
   static GraphFolder? fromJson(Map<String, Object?> json) {
     final id = json['id'];
@@ -399,9 +449,6 @@ class GraphFolder {
       childFolderCount: _int(json['childFolderCount']),
       total: _int(json['totalItemCount']),
       unread: _int(json['unreadItemCount']),
-      wellKnownName: json['wellKnownName'] is String
-          ? (json['wellKnownName'] as String).toLowerCase()
-          : null,
     );
   }
 }

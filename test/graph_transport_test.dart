@@ -7,6 +7,7 @@ import 'package:myemail/data/graph/graph_id_map.dart';
 import 'package:myemail/data/graph/graph_mail_api.dart';
 import 'package:myemail/data/graph/graph_transport.dart';
 import 'package:myemail/data/imap/imap_transport.dart';
+import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/domain/folder_role.dart';
 
 /// The mail transport over Microsoft Graph.
@@ -99,6 +100,75 @@ void main() {
       final after = await transport.selectFolder('Work');
 
       expect(after.uidValidity, isNot(before.uidValidity));
+    });
+  });
+
+  group('what Graph is asked for', () {
+    test('every folder field exists in v1.0', () {
+      // wellKnownName was in this list and exists only in the beta API.
+      // Graph refuses a $select naming a property it does not have, with a
+      // bare BadRequest for the whole request — so every folder listing
+      // failed and nothing in the app loaded at all.
+      const v1Properties = {
+        'id',
+        'displayName',
+        'parentFolderId',
+        'childFolderCount',
+        'totalItemCount',
+        'unreadItemCount',
+        'isHidden',
+      };
+
+      for (final field in GraphMailApi.folderFields.split(',')) {
+        expect(v1Properties, contains(field));
+      }
+    });
+
+    test('the special folders are found by name instead', () async {
+      // The supported way to learn which folder is the Inbox without the
+      // beta property: Graph resolves these names in any mailbox, in any
+      // language.
+      server
+        ..folder(id: 'f-inbox', name: 'Posteingang', wellKnown: 'inbox')
+        ..folder(id: 'f-other', name: 'Inbox', wellKnown: null);
+
+      final folders = await transport.listFolders();
+
+      expect(
+        folders.firstWhere((f) => f.path == 'Posteingang').role,
+        FolderRole.inbox,
+        reason: 'the name in the mailbox language must not decide the role',
+      );
+      expect(
+        folders.firstWhere((f) => f.path == 'Inbox').role,
+        FolderRole.user,
+      );
+    });
+
+    test('a mailbox with no Archive is not an error', () async {
+      // Plenty of mailboxes have never had one, and the lookup 404s.
+      server.folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox');
+
+      final folders = await transport.listFolders();
+
+      expect(folders, hasLength(1));
+    });
+
+    test('a refusal repeats what Graph said about it', () async {
+      // "Microsoft refused the request (BadRequest)" says only that something
+      // was wrong with a request the person never made. Graph's own sentence
+      // names the property, which is the whole diagnosis.
+      server.folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox');
+      server.rejectFolderSelect = true;
+
+      await expectLater(
+        transport.listFolders(),
+        throwsA(isA<ConnectionFailed>().having(
+          (e) => e.message,
+          'message',
+          contains('Could not find a property named'),
+        )),
+      );
     });
   });
 
@@ -352,9 +422,38 @@ class _FakeGraph {
   final Map<String, (String, String)> bodies = {};
   final List<String> patched = [];
 
+  /// Refuse any folder $select, to exercise the error path.
+  bool rejectFolderSelect = false;
+
+  /// Which folder id answers to which well-known name, as Graph's
+  /// /me/mailFolders/inbox shortcut does.
+  final Map<String, String> wellKnown = {};
+
+  static const knownNames = [
+    'inbox',
+    'drafts',
+    'sentitems',
+    'deleteditems',
+    'junkemail',
+    'archive',
+  ];
+
+  /// Exactly the v1.0 mailFolder properties. Anything else is a 400, as Graph
+  /// itself does.
+  static const _folderProperties = {
+    'id',
+    'displayName',
+    'parentFolderId',
+    'childFolderCount',
+    'totalItemCount',
+    'unreadItemCount',
+    'isHidden',
+  };
+
   void reset() {
     folders.clear();
     messages.clear();
+    wellKnown.clear();
   }
 
   void folder({
@@ -373,8 +472,8 @@ class _FakeGraph {
       'childFolderCount': children,
       'totalItemCount': total,
       'unreadItemCount': unread,
-      'wellKnownName': ?wellKnown,
     };
+    if (wellKnown != null) this.wellKnown[wellKnown] = id;
   }
 
   void message(
@@ -434,6 +533,36 @@ class _FakeGraph {
           200,
           headers: const {'content-type': 'application/json'},
         );
+
+    // A property v1.0 does not have. Graph answers a bad $select with a bare
+    // BadRequest and nothing loads at all, which is exactly what happened
+    // with wellKnownName: it exists only in the beta API.
+    final select = query[r'$select'] ?? '';
+    if (path.contains('/mailFolders') && !path.endsWith('/messages')) {
+      for (final asked in select.split(',')) {
+        if (asked.isEmpty) continue;
+        if (_folderProperties.contains(asked) && !rejectFolderSelect) continue;
+        return http.Response(
+          jsonEncode({
+            'error': {
+              'code': 'BadRequest',
+              'message': "Could not find a property named '$asked' on type "
+                  "'microsoft.graph.mailFolder'.",
+            },
+          }),
+          400,
+          headers: const {'content-type': 'application/json'},
+        );
+      }
+    }
+
+    // Addressing a folder by its well-known name rather than its id, which is
+    // how the special folders are identified without the beta property.
+    if (request.method == 'GET' && path.contains('/me/mailFolders/')) {
+      final name = path.split('/me/mailFolders/').last;
+      if (wellKnown.containsKey(name)) return json({'id': wellKnown[name]});
+      if (knownNames.contains(name)) return http.Response('{}', 404);
+    }
 
     // Folder listings, top level and children.
     if (request.method == 'GET' && path.endsWith('/me/mailFolders')) {

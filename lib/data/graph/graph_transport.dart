@@ -62,7 +62,24 @@ class GraphTransport implements ImapTransport {
 
   @override
   Future<List<RemoteFolder>> listFolders() async {
-    final folders = await api.listFolders();
+    // Both at once: the listing, and the answer to which of them is the Inbox.
+    //
+    // Started together but awaited one at a time, rather than with the record
+    // form of wait. That wraps any failure in a ParallelWaitError, which would
+    // replace the message this app wrote for the person — "sign in again", or
+    // whatever Graph actually said — with wrapper text naming neither.
+    final foldersRequest = api.listFolders();
+    final wellKnownRequest = api.wellKnownFolderIds();
+    // Registers a handler, so if the listing throws first and this one is
+    // never awaited, its failure is not an unhandled asynchronous error.
+    // Awaiting it below still surfaces the original.
+    unawaited(wellKnownRequest.catchError((_) => <String, String>{}));
+
+    final folders = await foldersRequest;
+    final wellKnown = await wellKnownRequest;
+    final roles = {
+      for (final entry in wellKnown.entries) entry.value: entry.key,
+    };
 
     // Build the display path of each folder by walking up its parents. Graph
     // gives a parent id and a name; the app wants "Work/Invoices".
@@ -91,7 +108,7 @@ class GraphTransport implements ImapTransport {
       ids[path] = folder.id;
       result.add(RemoteFolder(
         path: path,
-        role: _roleFor(folder),
+        role: _roleFor(roles[folder.id]),
         unread: folder.unread,
         total: folder.total,
       ));
@@ -100,7 +117,7 @@ class GraphTransport implements ImapTransport {
     return result;
   }
 
-  static FolderRole _roleFor(GraphFolder folder) => switch (folder.wellKnownName) {
+  static FolderRole _roleFor(String? wellKnownName) => switch (wellKnownName) {
         'inbox' => FolderRole.inbox,
         'drafts' => FolderRole.drafts,
         'sentitems' => FolderRole.sent,
