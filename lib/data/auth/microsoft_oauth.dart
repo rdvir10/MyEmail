@@ -480,8 +480,9 @@ class _OAuthErrorResponse implements Exception {
 
 /// Sign-in did not work, and it is worth trying again.
 @immutable
-class SignInFailed implements Exception {
+class SignInFailed implements Exception, ReadableError {
   const SignInFailed(this.message);
+  @override
   final String message;
   @override
   String toString() => message;
@@ -496,8 +497,9 @@ class SignInFailed implements Exception {
 /// indistinguishable from here, so the message names both rather than
 /// blaming the person for a decision their employer made.
 @immutable
-class SignInDeclined implements Exception {
+class SignInDeclined implements Exception, ReadableError {
   const SignInDeclined();
+  @override
   String get message =>
       'Microsoft did not grant access. If this is a work or school account, '
       'your organisation may require an administrator to approve the app '
@@ -508,8 +510,9 @@ class SignInDeclined implements Exception {
 
 /// Nobody finished signing in before the code expired.
 @immutable
-class SignInTimedOut implements Exception {
+class SignInTimedOut implements Exception, ReadableError {
   const SignInTimedOut();
+  @override
   String get message =>
       'The sign-in code expired. Start again to get a new one.';
   @override
@@ -518,8 +521,9 @@ class SignInTimedOut implements Exception {
 
 /// The app stopped waiting, because the person left the screen.
 @immutable
-class SignInCancelled implements Exception {
+class SignInCancelled implements Exception, ReadableError {
   const SignInCancelled();
+  @override
   String get message => 'Sign-in was cancelled.';
   @override
   String toString() => message;
@@ -533,8 +537,9 @@ class SignInCancelled implements Exception {
 /// that stops its users consenting to outside apps, only an administrator
 /// can.
 @immutable
-class SignInNeedsConsent implements Exception, NeedsSignIn {
+class SignInNeedsConsent implements Exception, NeedsSignIn, ReadableError {
   const SignInNeedsConsent(this.message, {this.needsAdministrator = false});
+  @override
   final String message;
 
   /// True when the tenant does not let its users consent at all. Signing in
@@ -550,8 +555,9 @@ class SignInNeedsConsent implements Exception, NeedsSignIn {
 /// The stored refresh token is no longer good. Unlike [SignInFailed] this
 /// does not come back on its own; the account must sign in again.
 @immutable
-class SignInExpired implements Exception, NeedsSignIn {
+class SignInExpired implements Exception, NeedsSignIn, ReadableError {
   const SignInExpired(this.message);
+  @override
   final String message;
 
   @override

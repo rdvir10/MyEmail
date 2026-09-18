@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../domain/error_report.dart';
+import '../common/problem_view.dart';
 
 import '../../data/auth/oauth_token.dart';
-import '../../data/mail_engine.dart';
 import '../../domain/account.dart';
 import '../../state/providers.dart';
 import '../accounts/microsoft_sign_in_screen.dart';
@@ -34,7 +35,7 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
   late int _color = widget.account.colorValue;
   bool _busy = false;
   bool _showPassword = false;
-  String? _error;
+  ProblemReport? _problem;
   String? _signInResult;
 
   /// The same four the app assigns to new accounts, plus enough more to tell
@@ -65,7 +66,7 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
   Future<void> _signInAgain({String? appPassword, OAuthToken? token}) async {
     setState(() {
       _busy = true;
-      _error = null;
+      _problem = null;
       _signInResult = null;
     });
     try {
@@ -77,12 +78,12 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
       if (!mounted) return;
       _password.clear();
       setState(() => _signInResult = 'Signed in. Nothing cached was lost.');
-    } on AuthenticationFailed catch (e) {
-      setState(() => _error = e.message);
-    } on ConnectionFailed catch (e) {
-      setState(() => _error = e.message);
     } catch (e) {
-      setState(() => _error = 'Could not sign in: $e');
+      setState(() => _problem = ProblemReport(
+            doing: 'Signing in again to ${widget.account.emailAddress}',
+            error: e,
+            account: widget.account,
+          ));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -104,7 +105,7 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
   Future<void> _save() async {
     setState(() {
       _busy = true;
-      _error = null;
+      _problem = null;
     });
     try {
       await ref.read(accountsProvider.notifier).edit(
@@ -114,7 +115,11 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
           );
       if (mounted) Navigator.of(context).maybePop();
     } catch (e) {
-      setState(() => _error = 'Could not save: $e');
+      setState(() => _problem = ProblemReport(
+            doing: 'Saving changes to ${widget.account.emailAddress}',
+            error: e,
+            account: widget.account,
+          ));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -185,13 +190,9 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
             style: theme.textTheme.bodySmall
                 ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
           ),
-          if (_error != null) ...[
+          if (_problem != null) ...[
             const SizedBox(height: 16),
-            Text(
-              _error!,
-              style: theme.textTheme.bodyMedium
-                  ?.copyWith(color: theme.colorScheme.error),
-            ),
+            ProblemView(problem: _problem!),
           ],
           const SizedBox(height: 28),
           const Divider(height: 1),

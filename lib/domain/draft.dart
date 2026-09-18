@@ -1,3 +1,4 @@
+import 'error_report.dart';
 import 'package:flutter/foundation.dart';
 
 import 'mail_message.dart';
@@ -139,9 +140,10 @@ class Draft {
 }
 
 /// Why a send was refused, so the UI can say something specific.
-class SendFailed implements Exception {
+class SendFailed implements Exception, ReadableError {
   const SendFailed(this.message);
 
+  @override
   final String message;
 
   @override

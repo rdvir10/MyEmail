@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../domain/error_report.dart';
+import '../common/problem_view.dart';
 
-import '../../data/mail_engine.dart';
 import '../../domain/account.dart';
 import '../../state/providers.dart';
 import '../settings/backup_screen.dart';
@@ -43,7 +44,7 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
   MailProvider _provider = MailProvider.gmail;
   bool _busy = false;
   bool _showPassword = false;
-  String? _error;
+  ProblemReport? _problem;
 
   @override
   void dispose() {
@@ -96,17 +97,16 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
   Future<void> _run(Future<Account> Function() add) async {
     setState(() {
       _busy = true;
-      _error = null;
+      _problem = null;
     });
     try {
       await add();
       if (mounted) Navigator.of(context).maybePop();
-    } on AuthenticationFailed catch (e) {
-      setState(() => _error = _signInHint(e.message));
-    } on ConnectionFailed catch (e) {
-      setState(() => _error = e.message);
     } catch (e) {
-      setState(() => _error = 'Could not add the account: $e');
+      setState(() => _problem = ProblemReport(
+            doing: 'Adding $_emailText',
+            error: e,
+          ));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -119,11 +119,9 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
   /// refusal that reads like a bad password, because the XOAUTH2 handshake
   /// sends the typed address next to the token and the server rejects the
   /// pair. Nothing about the message says which half was wrong.
-  String _signInHint(String message) {
-    if (_provider != MailProvider.outlook) return message;
-    return '$message\n\nIf you signed in successfully, check that the address '
-        'above is the same mailbox you signed in as.';
-  }
+  static const _signInHint =
+      'If you signed in successfully, check that the address above is the '
+      'same mailbox you signed in as.';
 
   @override
   Widget build(BuildContext context) {
@@ -182,7 +180,7 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
                         enabled: !_busy,
                         onChanged: (p) => setState(() {
                           _provider = p;
-                          _error = null;
+                          _problem = null;
                         }),
                       ),
                       const SizedBox(height: 20),
@@ -253,13 +251,16 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
                         const SizedBox(height: 16),
                         const _NotConfiguredNotice(),
                       ],
-                      if (_error != null) ...[
+                      if (_problem != null) ...[
                         const SizedBox(height: 16),
-                        Text(
-                          _error!,
-                          style: theme.textTheme.bodyMedium
-                              ?.copyWith(color: theme.colorScheme.error),
-                        ),
+                        ProblemView(problem: _problem!),
+                        if (_provider == MailProvider.outlook)
+                          Text(
+                            _signInHint,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
                       ],
                       const SizedBox(height: 24),
                       FilledButton(

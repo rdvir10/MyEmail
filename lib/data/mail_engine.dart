@@ -221,7 +221,7 @@ class FolderOperationNotSupported implements Exception {
 }
 
 /// The server refused the credentials. Shown to the user as-is.
-class AuthenticationFailed implements Exception, NeedsSignIn {
+class AuthenticationFailed implements Exception, NeedsSignIn, ReadableError {
   const AuthenticationFailed(this.message);
 
   /// Always false: a refused password or token is something the person can
@@ -230,6 +230,7 @@ class AuthenticationFailed implements Exception, NeedsSignIn {
   @override
   bool get needsAdministrator => false;
 
+  @override
   final String message;
 
   @override
@@ -237,9 +238,10 @@ class AuthenticationFailed implements Exception, NeedsSignIn {
 }
 
 /// The server could not be reached at all: no network, wrong host, TLS.
-class ConnectionFailed implements Exception, Retryable {
+class ConnectionFailed implements Exception, Retryable, ReadableError {
   const ConnectionFailed(this.message);
 
+  @override
   final String message;
 
   @override

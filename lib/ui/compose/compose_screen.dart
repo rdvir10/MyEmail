@@ -1,8 +1,10 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../domain/account.dart';
+import '../../domain/error_report.dart';
+import '../common/problem_view.dart';
 
-import '../../data/mail_engine.dart';
 import '../../domain/draft.dart';
 import '../../state/compose_providers.dart';
 import '../../state/providers.dart';
@@ -36,7 +38,12 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
   late List<DraftAttachment> _attachments = List.of(widget.draft.attachments);
   bool _showCc = false;
   bool _sending = false;
-  String? _error;
+  /// Something the person can correct by typing — a missing recipient, an
+  /// address with a typo. Not a failure, and nothing to report.
+  String? _invalid;
+
+  /// Something that went wrong out of their hands. Worth reporting.
+  ProblemReport? _problem;
 
   @override
   void initState() {
@@ -102,21 +109,30 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
         _ => 'application/octet-stream',
       };
 
+  /// The account this message is written from, for a report. Null while the
+  /// accounts are still loading, which a report survives.
+  Account? _accountOrNull() => ref
+      .read(accountsProvider)
+      .value
+      ?.where((a) => a.id == widget.draft.accountId)
+      .firstOrNull;
+
   Future<void> _send() async {
     final to = parseAddresses(_to.text);
     final cc = parseAddresses(_cc.text);
     if (to.isEmpty && cc.isEmpty) {
-      setState(() => _error = 'Add at least one recipient.');
+      setState(() => _invalid = 'Add at least one recipient.');
       return;
     }
     if (!addressesLookValid([...to, ...cc])) {
-      setState(() => _error = 'One of the addresses does not look right.');
+      setState(() => _invalid = 'One of the addresses does not look right.');
       return;
     }
 
     setState(() {
       _sending = true;
-      _error = null;
+      _invalid = null;
+      _problem = null;
     });
     try {
       await sendDraft(ref, await _currentDraft());
@@ -125,14 +141,15 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(const SnackBar(content: Text('Message sent')));
-    } on SendFailed catch (e) {
-      setState(() => _error = e.message);
-    } on AuthenticationFailed catch (e) {
-      setState(() => _error = e.message);
-    } on ConnectionFailed catch (e) {
-      setState(() => _error = e.message);
     } catch (e) {
-      setState(() => _error = 'Could not send: $e');
+      // One catch rather than four. Every failure the send path throws on
+      // purpose already carries a sentence written for a person, and what the
+      // screen needs from the rest is the error itself, so it can be reported.
+      setState(() => _problem = ProblemReport(
+            doing: 'Sending a message',
+            error: e,
+            account: _accountOrNull(),
+          ));
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -195,7 +212,8 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
   Future<void> _saveAndLeave() async {
     setState(() {
       _sending = true;
-      _error = null;
+      _invalid = null;
+      _problem = null;
     });
     try {
       await saveDraft(ref, await _currentDraft());
@@ -208,7 +226,11 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
       // Staying put is the right failure: popping now would lose the message
       // that could not be saved, which is the thing being protected against.
       if (mounted) {
-        setState(() => _error = 'Could not save it to Drafts: $e');
+        setState(() => _problem = ProblemReport(
+              doing: 'Saving a draft',
+              error: e,
+              account: _accountOrNull(),
+            ));
       }
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -312,16 +334,22 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
                 'sending; reopening a draft does not bring files back.',
                 theme: theme,
               ),
-            if (_error != null)
+            if (_invalid != null)
               Container(
                 width: double.infinity,
                 color: theme.colorScheme.errorContainer,
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 child: Text(
-                  _error!,
+                  _invalid!,
                   style: theme.textTheme.bodySmall
                       ?.copyWith(color: theme.colorScheme.onErrorContainer),
                 ),
+              ),
+            if (_problem != null)
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                child: ProblemView(problem: _problem!),
               ),
             const Divider(height: 1),
             Expanded(child: HtmlEditor(controller: _editor)),

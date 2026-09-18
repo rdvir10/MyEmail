@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import 'account.dart';
 
 /// What the app can offer to do about an error, beyond describing it.
@@ -49,6 +51,55 @@ abstract interface class NeedsSignIn {
 
 /// Implemented by failures worth simply trying again.
 abstract interface class Retryable {}
+
+/// Implemented by failures that already carry a sentence written for a person.
+///
+/// Everything the app throws on purpose does. What does not is a bug rather
+/// than a condition, and shows as itself — which is the right outcome: a
+/// StateError deserves to look like one rather than being dressed up as
+/// something the person did wrong.
+abstract interface class ReadableError {
+  String get message;
+}
+
+/// One failure, with enough around it to describe, act on and report.
+///
+/// Every screen that can fail holds one of these rather than a bare string.
+/// The string was all that was needed to show a sentence; the error itself is
+/// what decides which remedy to offer and what a report should say.
+@immutable
+class ProblemReport {
+  const ProblemReport({
+    required this.doing,
+    required this.error,
+    this.account,
+  });
+
+  /// What the app was attempting, as a sentence. Usually the part that
+  /// identifies a problem: the same failure reads very differently coming
+  /// from a send than from a folder load.
+  final String doing;
+
+  final Object error;
+  final Account? account;
+
+  String get message =>
+      error is ReadableError ? (error as ReadableError).message : '$error';
+
+  ErrorRemedy get remedy => remedyFor(error);
+
+  String text({String? appVersion, int? build, bool redactAddress = false}) =>
+      buildErrorReport(
+        doing: doing,
+        error: error,
+        account: account,
+        appVersion: appVersion,
+        build: build,
+        redactAddress: redactAddress,
+      );
+
+  String get issueTitle => IssueTracker.titleFor(doing: doing, error: error);
+}
 
 /// Everything worth knowing about a failure, as text to paste somewhere.
 ///

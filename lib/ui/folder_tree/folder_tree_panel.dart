@@ -1,13 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
 import '../../domain/error_report.dart';
 import '../../state/providers.dart';
-import '../../state/update_providers.dart';
+import '../common/problem_view.dart';
 import '../settings/edit_account_screen.dart';
 import '../messages/message_actions.dart';
 import '../settings/settings_screen.dart';
@@ -227,7 +225,7 @@ class _FolderSearchFieldState extends ConsumerState<_FolderSearchField> {
 
 /// A section heading. Account headers double as a drop target meaning "move
 /// this folder to the top level of the account".
-class _SectionHeader extends StatelessWidget {
+class _SectionHeader extends ConsumerWidget {
   const _SectionHeader({
     required this.row,
     this.problem,
@@ -249,8 +247,26 @@ class _SectionHeader extends StatelessWidget {
   /// that does not belong to an account.
   final VoidCallback? onToggleCollapsed;
 
+  /// Reload, or open the account so its sign-in can be replaced.
+  Future<void> _remedy(
+    BuildContext context,
+    WidgetRef ref,
+    AccountProblem problem,
+  ) async {
+    if (problem.remedy == ErrorRemedy.signInAgain) {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => EditAccountScreen(account: problem.account),
+        ),
+      );
+    }
+    // Either way the folders are worth another try: not being able to load
+    // them is the whole reason there is a message here.
+    ref.invalidate(foldersProvider);
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final collapsible = row.canCollapse && onToggleCollapsed != null;
     final isCollapsed = row.isCollapsed ?? false;
@@ -340,7 +356,14 @@ class _SectionHeader extends StatelessWidget {
                         style: theme.textTheme.labelSmall
                             ?.copyWith(color: theme.colorScheme.error),
                       ),
-                      if (problem != null) _ProblemActions(problem: problem!),
+                      if (problem != null)
+                        ProblemView(
+                          problem: problem!.asReport,
+                          // The tree is the one place with somewhere to go:
+                          // it can reload itself, or open the account that
+                          // needs attention.
+                          onRemedy: () => _remedy(context, ref, problem!),
+                        ),
                     ],
                   ),
                 ),
@@ -376,148 +399,6 @@ class _SectionHeader extends StatelessWidget {
               color: theme.colorScheme.primaryContainer.withValues(alpha: 0.6),
               child: header,
             ),
-    );
-  }
-}
-
-/// What the app offers to do about an account's failure.
-///
-/// A remedy only where one is genuinely one tap and genuinely likely to work.
-/// An offer that fails leaves someone worse off than no offer: they have tried
-/// the fix, it did not work, and now they have nothing else to try.
-///
-/// Copy is always offered. It puts the build number, the account and the real
-/// error on the clipboard, which is one paste instead of a screenshot and a
-/// conversation — and it works when the mail itself does not, which is exactly
-/// when it is needed.
-class _ProblemActions extends ConsumerWidget {
-  const _ProblemActions({required this.problem});
-
-  final AccountProblem problem;
-
-  Future<void> _copy(BuildContext context, WidgetRef ref) async {
-    final version = ref.read(installedVersionValueProvider).value;
-    await Clipboard.setData(ClipboardData(
-      text: problem.report(
-        appVersion: version?.version,
-        build: version?.build,
-      ),
-    ));
-    if (!context.mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(
-        content: Text('Problem details copied. Paste them anywhere.'),
-      ));
-  }
-
-  /// File it on GitHub, where it stays and can be answered.
-  ///
-  /// The repository is public, so the address is masked on this path. The
-  /// clipboard keeps the whole thing: that goes wherever the person puts it,
-  /// which is their decision to make. This one is published the moment they
-  /// press the button on the page, so the app makes it for them.
-  Future<void> _report(BuildContext context, WidgetRef ref) async {
-    final agreed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Report this on GitHub?'),
-        content: const Text(
-          'This opens a new issue with the details filled in. You can read it '
-          'over and change anything before submitting.\n\n'
-          'The repository is public, so your email address is shortened to '
-          'its first letter and domain. Nothing else about your mail is '
-          'included — no message, no subject, no password.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Open GitHub'),
-          ),
-        ],
-      ),
-    );
-    if (agreed != true || !context.mounted) return;
-
-    final version = ref.read(installedVersionValueProvider).value;
-    final url = IssueTracker.newIssueUrl(
-      title: IssueTracker.titleFor(
-        doing: problem.doing,
-        error: problem.error,
-      ),
-      report: problem.report(
-        appVersion: version?.version,
-        build: version?.build,
-        redactAddress: true,
-      ),
-    );
-
-    final opened = await launchUrl(url, mode: LaunchMode.externalApplication);
-    if (!opened && context.mounted) {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(
-          content: Text('Could not open a browser. Use Copy details instead.'),
-        ));
-    }
-  }
-
-  Future<void> _act(BuildContext context, WidgetRef ref) async {
-    switch (problem.remedy) {
-      case ErrorRemedy.retry:
-        ref.invalidate(foldersProvider);
-      case ErrorRemedy.signInAgain:
-        await Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => EditAccountScreen(account: problem.account),
-          ),
-        );
-        // Whatever happened in there, the folders are worth another try: the
-        // whole reason to go was that they could not be loaded.
-        ref.invalidate(foldersProvider);
-      case ErrorRemedy.none:
-        break;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return Wrap(
-      spacing: 4,
-      children: [
-        if (problem.remedy.isOffered)
-          TextButton(
-            onPressed: () => _act(context, ref),
-            style: TextButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              minimumSize: const Size(0, 32),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-            child: Text(problem.remedy.label),
-          ),
-        TextButton(
-          onPressed: () => _copy(context, ref),
-          style: TextButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            minimumSize: const Size(0, 32),
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-          child: const Text('Copy details'),
-        ),
-        TextButton(
-          onPressed: () => _report(context, ref),
-          style: TextButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            minimumSize: const Size(0, 32),
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-          child: const Text('Report'),
-        ),
-      ],
     );
   }
 }

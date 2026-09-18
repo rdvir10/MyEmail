@@ -334,6 +334,10 @@ class AccountProblem {
 
   ErrorRemedy get remedy => remedyFor(error);
 
+  /// The same failure in the shape every screen shows.
+  ProblemReport get asReport =>
+      ProblemReport(doing: doing, error: error, account: account);
+
   /// What the app was doing. Used as the report's first line and as an
   /// issue title, so it reads as a sentence either way.
   String get doing => 'Loading the folders for ${account.displayName}';
