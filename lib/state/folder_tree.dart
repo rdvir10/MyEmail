@@ -19,12 +19,30 @@ class SectionHeaderRow extends TreeRow {
     required this.subtitle,
     this.accountId,
     this.accentColor,
+    this.isCollapsed,
+    this.folderCount = 0,
   });
 
   final String title;
   final String? subtitle;
   final String? accountId;
   final int? accentColor;
+
+  /// Whether this account's folders are folded away, or null for a heading
+  /// that cannot be folded at all.
+  ///
+  /// Favourites is the null case. Its rows are copies of folders that also
+  /// appear under their own account, so folding it away hides nothing — the
+  /// originals are still there — and the chevron would promise something it
+  /// does not do.
+  final bool? isCollapsed;
+
+  /// How many folders are folded away, shown only while collapsed. Without it
+  /// a collapsed account looks like an account with no folders, which is what
+  /// a broken sync looks like too.
+  final int folderCount;
+
+  bool get canCollapse => isCollapsed != null;
 
   @override
   String get key => 'header:${accountId ?? title}';
@@ -85,6 +103,7 @@ class FolderTreeInput {
     required this.foldersByAccount,
     required this.expandedIds,
     required this.favoriteIds,
+    this.collapsedAccountIds = const {},
     this.hiddenIds = const {},
     this.showHidden = false,
     this.orderOverrides = const {},
@@ -96,6 +115,14 @@ class FolderTreeInput {
   final Map<String, List<MailFolder>> foldersByAccount;
   final Set<String> expandedIds;
   final Set<String> favoriteIds;
+
+  /// Accounts folded down to just their heading.
+  ///
+  /// Distinct from [hiddenIds] on purpose. Hiding is a decision about a folder
+  /// you do not want to see again; collapsing is about how much room a mailbox
+  /// takes up right now, and the heading stays put so it is obvious the
+  /// mailbox is still there and one tap brings it back.
+  final Set<String> collapsedAccountIds;
 
   /// Folders the user has put out of the way. Hiding one hides everything
   /// under it too: leaving the children behind would float them up to a depth
@@ -221,14 +248,20 @@ List<TreeRow> buildTreeRows(FolderTreeInput input) {
   for (final account in input.accounts) {
     final folders = input.foldersByAccount[account.id] ?? const <MailFolder>[];
     if (folders.isEmpty) continue;
+    final isCollapsed = input.collapsedAccountIds.contains(account.id);
     rows.add(
       SectionHeaderRow(
         title: account.displayName,
         subtitle: account.emailAddress,
         accountId: account.id,
         accentColor: account.colorValue,
+        isCollapsed: isCollapsed,
+        folderCount: folders.length,
       ),
     );
+    // The heading stays, the folders go. Dropping the heading as well would
+    // leave no way to bring the mailbox back short of Settings.
+    if (isCollapsed) continue;
     // Group once per account so the walk below is linear in the number of
     // folders. Scanning the whole list at every node is quadratic, and this
     // runs on every keystroke and every expand toggle.

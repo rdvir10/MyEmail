@@ -54,6 +54,18 @@ class _RefusingEngine implements MailEngine {
           provider: provider,
           token: token);
   @override
+  Future<Account> updateAccount({
+    required String accountId,
+    String? displayName,
+    int? colorValue,
+  }) =>
+      _inner.updateAccount(
+        accountId: accountId,
+        displayName: displayName,
+        colorValue: colorValue,
+      );
+
+  @override
   Future<void> removeAccount(String accountId) => _inner.removeAccount(accountId);
   @override
   Future<List<MailFolder>> loadFolders(String accountId) =>

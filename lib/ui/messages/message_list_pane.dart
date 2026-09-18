@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/display_settings.dart';
+import '../../domain/folder_role.dart';
 import '../../domain/mail_message.dart';
 import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
@@ -463,11 +465,12 @@ class MessageListPane extends ConsumerWidget {
   }
 }
 
-/// Swipe right to move, swipe left to delete.
+/// A row that does whatever Settings says a swipe should do.
 ///
-/// The move swipe opens the Move-to sheet and only removes the row once a
-/// destination is chosen, so a dismissed sheet leaves the list as it was.
-class _SwipeableRow extends StatelessWidget {
+/// Both directions are configurable, and either may be [SwipeAction.none], in
+/// which case that direction does not drag at all — an inert drag that springs
+/// back reads as the app having missed the gesture.
+class _SwipeableRow extends ConsumerWidget {
   const _SwipeableRow({
     super.key,
     required this.message,
@@ -480,30 +483,32 @@ class _SwipeableRow extends StatelessWidget {
   final Widget child;
 
   @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final settings = ref.watch(displayProvider);
+    final right = settings.swipeRight;
+    final left = settings.swipeLeft;
+
+    final direction = switch ((right == SwipeAction.none,
+        left == SwipeAction.none)) {
+      (true, true) => DismissDirection.none,
+      (true, false) => DismissDirection.endToStart,
+      (false, true) => DismissDirection.startToEnd,
+      (false, false) => DismissDirection.horizontal,
+    };
+    if (direction == DismissDirection.none) return child;
+
     return Dismissible(
       key: ValueKey('swipe:${message.id}'),
-      background: _SwipeBackground(
-        alignment: Alignment.centerLeft,
-        color: scheme.primaryContainer,
-        foreground: scheme.onPrimaryContainer,
-        icon: Icons.drive_file_move_outline,
-        label: 'Move',
-      ),
-      secondaryBackground: _SwipeBackground(
-        alignment: Alignment.centerRight,
-        color: scheme.errorContainer,
-        foreground: scheme.onErrorContainer,
-        icon: Icons.delete_outline,
-        label: 'Delete',
-      ),
-      confirmDismiss: (direction) async {
-        if (direction == DismissDirection.endToStart) {
-          await actions.delete(context, [message]);
-        } else {
-          await actions.moveWithPrompt(context, [message]);
-        }
+      direction: direction,
+      background: _backgroundFor(context, right, Alignment.centerLeft),
+      secondaryBackground:
+          _backgroundFor(context, left, Alignment.centerRight),
+      confirmDismiss: (dismissed) async {
+        await _run(
+          context,
+          ref,
+          dismissed == DismissDirection.endToStart ? left : right,
+        );
         // The list state removes the row itself, so the widget never
         // dismisses; that keeps one source of truth for what is in the list.
         return false;
@@ -511,7 +516,100 @@ class _SwipeableRow extends StatelessWidget {
       child: child,
     );
   }
+
+  Future<void> _run(
+    BuildContext context,
+    WidgetRef ref,
+    SwipeAction action,
+  ) async {
+    final notifier = ref.read(messagesProvider(actions.listId).notifier);
+    switch (action) {
+      case SwipeAction.none:
+        return;
+      case SwipeAction.delete:
+        await actions.delete(context, [message]);
+      case SwipeAction.move:
+        await actions.moveWithPrompt(context, [message]);
+      case SwipeAction.toggleRead:
+        await notifier.setRead(message.id, !message.isRead);
+      case SwipeAction.toggleFlag:
+        await notifier.setFlagged(message.id, !message.isFlagged);
+      case SwipeAction.archive:
+        final target = archiveFolderIdFor(ref, message.accountId);
+        if (target == null) {
+          // Gmail has no folder to move into, and an account may simply not
+          // have one. Saying so beats a swipe that appears to do nothing.
+          if (context.mounted) {
+            ScaffoldMessenger.of(context)
+              ..hideCurrentSnackBar()
+              ..showSnackBar(const SnackBar(
+                content: Text('This account has no Archive folder.'),
+              ));
+          }
+          return;
+        }
+        await actions.moveTo(context, [message], target);
+    }
+  }
+
+  Widget _backgroundFor(
+    BuildContext context,
+    SwipeAction action,
+    Alignment alignment,
+  ) {
+    final scheme = Theme.of(context).colorScheme;
+    // Destructive actions get the error colour and everything else the
+    // primary one, so the half-completed swipe tells you which way you are
+    // going before you let go.
+    final destructive = action == SwipeAction.delete;
+    return _SwipeBackground(
+      alignment: alignment,
+      color: destructive ? scheme.errorContainer : scheme.primaryContainer,
+      foreground:
+          destructive ? scheme.onErrorContainer : scheme.onPrimaryContainer,
+      icon: swipeActionIcon(action),
+      label: swipeActionShortLabel(action, message),
+    );
+  }
 }
+
+/// The Archive folder for an account, or null when it has none.
+String? archiveFolderIdFor(WidgetRef ref, String accountId) {
+  final folders = ref.read(foldersProvider).value?[accountId];
+  if (folders == null) return null;
+  for (final f in folders) {
+    // canAcceptMessages is what separates a real Archive folder from Gmail's
+    // All Mail, which is a view of everything and cannot be moved into.
+    if (f.role == FolderRole.archive && f.capabilities.canAcceptMessages) {
+      return f.id;
+    }
+  }
+  return null;
+}
+
+IconData swipeActionIcon(SwipeAction action) => switch (action) {
+      SwipeAction.none => Icons.block,
+      SwipeAction.delete => Icons.delete_outline,
+      SwipeAction.move => Icons.drive_file_move_outline,
+      SwipeAction.toggleRead => Icons.mark_email_unread_outlined,
+      SwipeAction.toggleFlag => Icons.flag_outlined,
+      SwipeAction.archive => Icons.archive_outlined,
+    };
+
+/// The label on the swipe background, which says what will happen to *this*
+/// message rather than naming the setting.
+///
+/// A toggle that says "Read / unread" while you are dragging is no help; what
+/// you want to know is which of the two you are about to get.
+String swipeActionShortLabel(SwipeAction action, MailMessage message) =>
+    switch (action) {
+      SwipeAction.none => '',
+      SwipeAction.delete => 'Delete',
+      SwipeAction.move => 'Move',
+      SwipeAction.toggleRead => message.isRead ? 'Unread' : 'Read',
+      SwipeAction.toggleFlag => message.isFlagged ? 'Unflag' : 'Flag',
+      SwipeAction.archive => 'Archive',
+    };
 
 class _SwipeBackground extends StatelessWidget {
   const _SwipeBackground({

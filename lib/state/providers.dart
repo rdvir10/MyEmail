@@ -82,6 +82,28 @@ class Accounts extends AsyncNotifier<List<Account>> {
     return account;
   }
 
+  /// Rename or recolour an account.
+  ///
+  /// Named `edit` rather than `update`: AsyncNotifier already has an `update`
+  /// with a different meaning, and overriding it with this signature is a
+  /// compile error rather than something to discover at runtime.
+  Future<Account> edit({
+    required String accountId,
+    String? displayName,
+    int? colorValue,
+  }) async {
+    final updated = await ref.read(mailEngineProvider).updateAccount(
+          accountId: accountId,
+          displayName: displayName,
+          colorValue: colorValue,
+        );
+    state = AsyncData([
+      for (final a in state.value ?? const <Account>[])
+        if (a.id == accountId) updated else a,
+    ]);
+    return updated;
+  }
+
   Future<void> remove(String accountId) async {
     await ref.read(mailEngineProvider).removeAccount(accountId);
     state = AsyncData([
@@ -333,6 +355,18 @@ class ExpandedFolders extends FolderIdSet {
 final expandedFoldersProvider =
     NotifierProvider<ExpandedFolders, Set<String>>(ExpandedFolders.new);
 
+/// Accounts whose folders are folded away in the tree.
+///
+/// Holds account ids rather than folder ids, so it deliberately does not take
+/// part in the folder-rename remapping the other sets do.
+class CollapsedAccounts extends FolderIdSet {
+  @override
+  String get storageKey => UiStateKeys.collapsedAccounts;
+}
+
+final collapsedAccountsProvider =
+    NotifierProvider<CollapsedAccounts, Set<String>>(CollapsedAccounts.new);
+
 class FavoriteFolders extends FolderIdSet {
   @override
   String get storageKey => UiStateKeys.favorites;
@@ -507,6 +541,7 @@ final treeRowsProvider = Provider<List<TreeRow>>((ref) {
       foldersByAccount: folders,
       expandedIds: ref.watch(expandedFoldersProvider),
       favoriteIds: ref.watch(favoriteFoldersProvider),
+      collapsedAccountIds: ref.watch(collapsedAccountsProvider),
       hiddenIds: ref.watch(hiddenFoldersProvider),
       showHidden: ref.watch(showHiddenFoldersProvider),
       orderOverrides: ref.watch(folderOrderProvider),

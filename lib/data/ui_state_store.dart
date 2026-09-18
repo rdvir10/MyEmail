@@ -25,6 +25,7 @@ abstract final class UiStateKeys {
   static const expanded = 'tree.expanded';
   static const favorites = 'tree.favorites';
   static const hidden = 'tree.hidden';
+  static const collapsedAccounts = 'tree.collapsed-accounts';
   static const order = 'tree.order';
   static const selected = 'tree.selected';
   static const recentMoves = 'move.recents';

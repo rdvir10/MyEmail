@@ -43,6 +43,16 @@ abstract class MailEngine {
     required OAuthToken token,
   });
 
+  /// Change the name and colour an account is shown under.
+  ///
+  /// Local only: neither is anything the mail server knows about, so this
+  /// never opens a connection and works offline.
+  Future<Account> updateAccount({
+    required String accountId,
+    String? displayName,
+    int? colorValue,
+  });
+
   /// Forget the account and its secret. Local caches for it go too.
   Future<void> removeAccount(String accountId);
 

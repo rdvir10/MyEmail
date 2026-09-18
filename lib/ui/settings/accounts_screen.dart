@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/account.dart';
 import '../../state/providers.dart';
+import 'edit_account_screen.dart';
 import '../accounts/add_account_screen.dart';
 
 /// The accounts that are set up, and the only way to remove one.
@@ -47,10 +48,32 @@ class AccountsScreen extends ConsumerWidget {
                   ),
                   title: Text(account.displayName),
                   subtitle: Text(account.emailAddress),
-                  trailing: IconButton(
-                    tooltip: 'Remove',
-                    icon: const Icon(Icons.delete_outline),
-                    onPressed: () => _remove(context, ref, account),
+                  // The row itself opens the editor, and Remove stays an
+                  // explicit button: a list where tapping a row might delete
+                  // the account is one nobody taps with confidence.
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => EditAccountScreen(account: account),
+                    ),
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: 'Edit',
+                        icon: const Icon(Icons.edit_outlined),
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => EditAccountScreen(account: account),
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Remove',
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: () => _remove(context, ref, account),
+                      ),
+                    ],
                   ),
                 ),
               const SizedBox(height: 88),

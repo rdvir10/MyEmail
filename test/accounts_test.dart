@@ -56,6 +56,18 @@ class _EmptyEngine implements MailEngine {
   }
 
   @override
+  Future<Account> updateAccount({
+    required String accountId,
+    String? displayName,
+    int? colorValue,
+  }) =>
+      _inner.updateAccount(
+        accountId: accountId,
+        displayName: displayName,
+        colorValue: colorValue,
+      );
+
+  @override
   Future<void> removeAccount(String accountId) async {
     _accounts.removeWhere((a) => a.id == accountId);
     await _inner.removeAccount(accountId);

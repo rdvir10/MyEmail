@@ -65,6 +65,35 @@ enum ListDensity {
       };
 }
 
+/// What a swipe across a message row does.
+///
+/// Deliberately a small set. A swipe is one gesture with no confirmation step
+/// and no way to see what it is going to do before it happens, so everything
+/// here is either reversible in one tap ([toggleRead], [toggleFlag]), asks
+/// before it commits ([move]), or lands somewhere it can be retrieved from
+/// ([delete] goes to the Deleted folder, [archive] to Archive). Nothing here
+/// destroys mail outright.
+enum SwipeAction {
+  none('Nothing', 'Swiping does nothing'),
+  delete('Delete', 'Move to the Deleted folder'),
+  move('Move to...', 'Ask which folder, then move'),
+  toggleRead('Read / unread', 'Flip whether it has been read'),
+  toggleFlag('Flag', 'Flag it, or take the flag off'),
+  archive('Archive', 'Move to the Archive folder');
+
+  const SwipeAction(this.label, this.description);
+
+  final String label;
+  final String description;
+
+  /// Whether this needs an Archive folder to exist on the account.
+  ///
+  /// Gmail's "All Mail" is not one of these: archiving there means removing
+  /// the Inbox label rather than moving, so the row is left alone and the
+  /// swipe says so rather than appearing to work.
+  bool get needsArchiveFolder => this == SwipeAction.archive;
+}
+
 /// Everything under Settings, View.
 @immutable
 class DisplaySettings {
@@ -72,10 +101,19 @@ class DisplaySettings {
     this.readingPane = ReadingPanePosition.right,
     this.density = ListDensity.cozy,
     this.conversations = false,
+    this.swipeRight = SwipeAction.move,
+    this.swipeLeft = SwipeAction.delete,
   });
 
   final ReadingPanePosition readingPane;
   final ListDensity density;
+
+  /// Dragging a row to the right, and to the left.
+  ///
+  /// The defaults are what the list did before these were settings, so an
+  /// existing install behaves the same until someone changes it.
+  final SwipeAction swipeRight;
+  final SwipeAction swipeLeft;
 
   /// Group a list by conversation rather than showing every message.
   ///
@@ -87,11 +125,15 @@ class DisplaySettings {
     ReadingPanePosition? readingPane,
     ListDensity? density,
     bool? conversations,
+    SwipeAction? swipeRight,
+    SwipeAction? swipeLeft,
   }) {
     return DisplaySettings(
       readingPane: readingPane ?? this.readingPane,
       density: density ?? this.density,
       conversations: conversations ?? this.conversations,
+      swipeRight: swipeRight ?? this.swipeRight,
+      swipeLeft: swipeLeft ?? this.swipeLeft,
     );
   }
 
@@ -99,6 +141,8 @@ class DisplaySettings {
         'readingPane': readingPane.name,
         'density': density.name,
         'conversations': conversations,
+        'swipeRight': swipeRight.name,
+        'swipeLeft': swipeLeft.name,
       };
 
   /// Tolerant of anything: a value written by a newer build, or a corrupted
@@ -115,6 +159,18 @@ class DisplaySettings {
       conversations: json['conversations'] is bool
           ? json['conversations'] as bool
           : false,
+      // An install from before swipes were configurable has neither key, and
+      // falls back to exactly what it was already doing.
+      swipeRight: _byName(
+        SwipeAction.values,
+        json['swipeRight'],
+        SwipeAction.move,
+      ),
+      swipeLeft: _byName(
+        SwipeAction.values,
+        json['swipeLeft'],
+        SwipeAction.delete,
+      ),
     );
   }
 
@@ -130,12 +186,16 @@ class DisplaySettings {
       other is DisplaySettings &&
       other.readingPane == readingPane &&
       other.density == density &&
-      other.conversations == conversations;
+      other.conversations == conversations &&
+      other.swipeRight == swipeRight &&
+      other.swipeLeft == swipeLeft;
 
   @override
-  int get hashCode => Object.hash(readingPane, density, conversations);
+  int get hashCode =>
+      Object.hash(readingPane, density, conversations, swipeRight, swipeLeft);
 
   @override
   String toString() => 'DisplaySettings(${readingPane.name}, ${density.name}, '
-      'conversations: $conversations)';
+      'conversations: $conversations, '
+      'swipe: ${swipeRight.name}/${swipeLeft.name})';
 }

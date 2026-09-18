@@ -244,7 +244,11 @@ class _ReadingArea extends ConsumerWidget {
     final open = ref.watch(selectedMessageProvider);
     return open == null
         ? const _NothingOpen()
-        : ReadingPane(key: ValueKey(open.id), message: open);
+        : ReadingPane(
+            key: ValueKey(open.id),
+            message: open,
+            onPopOut: () => _pushMessage(context, open),
+          );
   }
 }
 

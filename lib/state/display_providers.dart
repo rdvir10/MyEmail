@@ -34,6 +34,12 @@ class Display extends Notifier<DisplaySettings> {
       state = state.copyWith(density: density);
 
   void setConversations(bool on) => state = state.copyWith(conversations: on);
+
+  void setSwipeRight(SwipeAction action) =>
+      state = state.copyWith(swipeRight: action);
+
+  void setSwipeLeft(SwipeAction action) =>
+      state = state.copyWith(swipeLeft: action);
 }
 
 final displayProvider =

@@ -70,6 +70,24 @@ class SampleMailEngine implements MailEngine {
     );
   }
 
+  @override
+  Future<Account> updateAccount({
+    required String accountId,
+    String? displayName,
+    int? colorValue,
+  }) async {
+    await _latency();
+    final i = _accounts.indexWhere((a) => a.id == accountId);
+    if (i < 0) throw StateError('Unknown account $accountId');
+    final trimmed = displayName?.trim();
+    final updated = _accounts[i].copyWith(
+      displayName: (trimmed == null || trimmed.isEmpty) ? null : trimmed,
+      colorValue: colorValue,
+    );
+    _accounts[i] = updated;
+    return updated;
+  }
+
   Future<Account> _remember({
     required String displayName,
     required String emailAddress,

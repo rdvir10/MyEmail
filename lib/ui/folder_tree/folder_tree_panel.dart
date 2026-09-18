@@ -49,6 +49,11 @@ class FolderTreePanel extends ConsumerWidget {
                       return switch (row) {
                         SectionHeaderRow() => _SectionHeader(
                             row: row,
+                            onToggleCollapsed: row.accountId == null
+                                ? null
+                                : () => ref
+                                    .read(collapsedAccountsProvider.notifier)
+                                    .toggle(row.accountId!),
                             canAcceptRoot: row.accountId == null
                                 ? null
                                 : (d) => canDropOnRoot(d.folder, row.accountId!),
@@ -218,19 +223,36 @@ class _SectionHeader extends StatelessWidget {
     required this.row,
     this.canAcceptRoot,
     this.onDropToRoot,
+    this.onToggleCollapsed,
   });
 
   final SectionHeaderRow row;
   final bool Function(DraggedFolder dragged)? canAcceptRoot;
   final void Function(DraggedFolder dragged)? onDropToRoot;
 
+  /// Fold this account's folders away, or bring them back. Null for a heading
+  /// that does not belong to an account.
+  final VoidCallback? onToggleCollapsed;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final header = Padding(
-      padding: const EdgeInsets.fromLTRB(12, 16, 12, 6),
+    final collapsible = row.canCollapse && onToggleCollapsed != null;
+    final isCollapsed = row.isCollapsed ?? false;
+
+    Widget header = Padding(
+      padding: EdgeInsets.fromLTRB(collapsible ? 4 : 12, 16, 12, 6),
       child: Row(
         children: [
+          if (collapsible) ...[
+            // Pointing down when open and right when shut, the same way the
+            // folder rows do it, so one gesture reads the same at both levels.
+            Icon(
+              isCollapsed ? Icons.chevron_right : Icons.expand_more,
+              size: 18,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ],
           if (row.accentColor != null) ...[
             Container(
               width: 8,
@@ -267,9 +289,32 @@ class _SectionHeader extends StatelessWidget {
               ],
             ),
           ),
+          // A collapsed mailbox with nothing after its name is hard to tell
+          // from one whose folders failed to load.
+          if (isCollapsed && row.folderCount > 0)
+            Text(
+              '${row.folderCount}',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
         ],
       ),
     );
+
+    if (collapsible) {
+      header = Semantics(
+        button: true,
+        expanded: !isCollapsed,
+        label: isCollapsed
+            ? 'Show the folders in ${row.title}'
+            : 'Hide the folders in ${row.title}',
+        child: InkWell(
+          onTap: onToggleCollapsed,
+          child: header,
+        ),
+      );
+    }
 
     if (canAcceptRoot == null || onDropToRoot == null) return header;
 

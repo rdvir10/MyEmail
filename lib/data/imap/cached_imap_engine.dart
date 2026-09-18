@@ -199,6 +199,30 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
+  Future<Account> updateAccount({
+    required String accountId,
+    String? displayName,
+    int? colorValue,
+  }) async {
+    final accounts = accountStore.read();
+    final existing = accounts.where((a) => a.id == accountId).firstOrNull;
+    if (existing == null) throw StateError('Unknown account $accountId');
+
+    final trimmed = displayName?.trim();
+    final updated = existing.copyWith(
+      // An empty name would leave a blank heading in the tree with no way to
+      // tell which mailbox it is, so it falls back rather than being stored.
+      displayName: (trimmed == null || trimmed.isEmpty) ? null : trimmed,
+      colorValue: colorValue,
+    );
+    await accountStore.write([
+      for (final a in accounts) a.id == accountId ? updated : a,
+    ]);
+    // No transport is rebuilt: nothing here changes how the account connects.
+    return updated;
+  }
+
+  @override
   Future<void> removeAccount(String accountId) async {
     await _transports.remove(accountId)?.close();
     _syncs.remove(accountId);

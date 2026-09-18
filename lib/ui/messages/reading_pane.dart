@@ -20,7 +20,14 @@ import 'html_body_view.dart';
 /// HTML bodies go into the sandboxed [HtmlBodyView] on a device; plain-text
 /// bodies, and every body in the browser preview, render as selectable text.
 class ReadingPane extends ConsumerStatefulWidget {
-  const ReadingPane({super.key, required this.message});
+  const ReadingPane({super.key, required this.message, this.onPopOut});
+
+  /// Open this message on a screen of its own. Null when it already is one,
+  /// which is what keeps a pop-out button off the popped-out copy.
+  ///
+  /// A callback rather than a push from in here: the full-screen route lives
+  /// in the shell, and the shell already imports this file.
+  final VoidCallback? onPopOut;
 
   final MailMessage message;
 
@@ -87,6 +94,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
           padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
           child: _Header(
             message: message,
+            onPopOut: widget.onPopOut,
             onToggleFlag: () =>
                 _act((n) => n.setFlagged(message.id, !message.isFlagged)),
             onToggleRead: () =>
@@ -146,12 +154,14 @@ class _Header extends StatelessWidget {
     required this.onToggleFlag,
     required this.onToggleRead,
     required this.onCompose,
+    this.onPopOut,
   });
 
   final MailMessage message;
   final VoidCallback onToggleFlag;
   final VoidCallback onToggleRead;
   final void Function(ComposeKind kind) onCompose;
+  final VoidCallback? onPopOut;
 
   @override
   Widget build(BuildContext context) {
@@ -170,6 +180,15 @@ class _Header extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
+            // First, not last. It is the one button here that changes
+            // where you are rather than what the message is, and grouping it
+            // with the three compose actions would invite mis-taps.
+            if (onPopOut != null)
+              IconButton(
+                tooltip: 'Open full screen',
+                icon: const Icon(Icons.open_in_full),
+                onPressed: onPopOut,
+              ),
             IconButton(
               tooltip: 'Reply',
               icon: const Icon(Icons.reply),

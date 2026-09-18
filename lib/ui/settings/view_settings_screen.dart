@@ -85,11 +85,70 @@ class ViewSettingsScreen extends ConsumerWidget {
               ],
             ),
           ),
+          const Divider(height: 1),
+          const _Heading('Swipe actions'),
+          _SwipeChoice(
+            title: 'Swipe right',
+            hint: 'Dragging a row from left to right',
+            value: display.swipeRight,
+            onChanged: notifier.setSwipeRight,
+          ),
+          _SwipeChoice(
+            title: 'Swipe left',
+            hint: 'Dragging a row from right to left',
+            value: display.swipeLeft,
+            onChanged: notifier.setSwipeLeft,
+          ),
+          _Note(
+            'Set a direction to Nothing and rows stop dragging that way, '
+            'rather than sliding and springing back as though the swipe had '
+            'been missed. Archive needs an Archive folder on the account; '
+            'Gmail has none, because archiving there removes a label instead '
+            'of moving the message.',
+            theme: theme,
+          ),
           const SizedBox(height: 24),
         ],
       ),
     );
   }
+}
+
+/// One direction's action, as a dropdown rather than another radio list.
+///
+/// Two directions times six actions would be twelve radio rows for a setting
+/// almost nobody changes twice, and it would bury the density options above
+/// it under a wall of choices.
+class _SwipeChoice extends StatelessWidget {
+  const _SwipeChoice({
+    required this.title,
+    required this.hint,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String title;
+  final String hint;
+  final SwipeAction value;
+  final ValueChanged<SwipeAction> onChanged;
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+        title: Text(title),
+        subtitle: Text(hint),
+        trailing: DropdownButton<SwipeAction>(
+          value: value,
+          underline: const SizedBox.shrink(),
+          onChanged: (v) => v == null ? null : onChanged(v),
+          items: [
+            for (final action in SwipeAction.values)
+              DropdownMenuItem(
+                value: action,
+                child: Text(action.label),
+              ),
+          ],
+        ),
+      );
 }
 
 /// The one-line summary the Settings list shows under "View".
@@ -99,7 +158,9 @@ class ViewSummary {
   String text(WidgetRef ref) {
     final d = ref.watch(displayProvider);
     return 'Reading pane ${d.readingPane.label.toLowerCase()}, '
-        '${d.density.label.toLowerCase()} list';
+        '${d.density.label.toLowerCase()} list, '
+        'swipe ${d.swipeRight.label.toLowerCase()} / '
+        '${d.swipeLeft.label.toLowerCase()}';
   }
 }
 
