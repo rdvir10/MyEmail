@@ -8,6 +8,7 @@ import '../../domain/folder_role.dart';
 import '../../domain/sync_prefs.dart';
 import '../account_store.dart';
 import '../cache/mail_database.dart';
+import '../graph/graph_id_map.dart';
 import '../folder_list_store.dart';
 import '../imap/cached_imap_engine.dart';
 import '../notifications/android_mail_notifier.dart';
@@ -194,6 +195,7 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
       credentialStore: SecureCredentialStore(),
       cache: DriftCacheStore(database),
       folderLists: PrefsFolderListStore(prefs),
+      graphIdMap: DriftGraphIdMap(database),
     );
     engine = liveEngine;
 
@@ -262,6 +264,7 @@ Future<bool> _runOnePass() async {
       credentialStore: SecureCredentialStore(),
       cache: DriftCacheStore(database),
       folderLists: PrefsFolderListStore(prefs),
+      graphIdMap: DriftGraphIdMap(database),
     );
 
     final report = await BackgroundSync(

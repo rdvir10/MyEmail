@@ -52,7 +52,32 @@ class Messages extends Table {
   Set<Column> get primaryKey => {accountId, path, uid};
 }
 
-@DriftDatabase(tables: [FolderStates, Messages])
+/// What a Graph message id is called locally.
+///
+/// Graph has no equivalent of an IMAP UID: its message ids are long opaque
+/// strings, and everything above the transport — the cache, the sync, the
+/// notification watermarks — is keyed on an integer that only ever goes up.
+/// Rather than reshape all of that, each Graph message is given a number the
+/// first time it is seen, and this table remembers which is which.
+///
+/// The numbers are handed out in the order messages are seen, which is the
+/// same rule IMAP uses for UIDs, so "a higher number is a message that
+/// arrived later" holds and the sync's arithmetic keeps working unchanged.
+///
+/// Rows are per folder, because a message moved between folders is a new
+/// message to Graph and gets a new id.
+@DataClassName('GraphIdRow')
+class GraphIds extends Table {
+  TextColumn get accountId => text()();
+  TextColumn get path => text()();
+  IntColumn get uid => integer()();
+  TextColumn get remoteId => text()();
+
+  @override
+  Set<Column> get primaryKey => {accountId, path, uid};
+}
+
+@DriftDatabase(tables: [FolderStates, Messages, GraphIds])
 class MailDatabase extends _$MailDatabase {
   MailDatabase(super.executor);
 
@@ -62,8 +87,17 @@ class MailDatabase extends _$MailDatabase {
   /// resync nobody asked for. Invisible either way.
   MailDatabase.open() : super(driftDatabase(name: 'mailtree'));
 
+  /// The lookup the transport does most: a Graph id in hand, wanting the
+  /// number it was given. Without this it is a table scan per message, on
+  /// every page of every folder.
+  Index get graphIdByRemote => Index(
+        'graph_ids_by_remote',
+        'CREATE INDEX IF NOT EXISTS graph_ids_by_remote ON graph_ids '
+            '(account_id, path, remote_id)',
+      );
+
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -79,6 +113,13 @@ class MailDatabase extends _$MailDatabase {
           if (from < 2) {
             await m.addColumn(messages, messages.messageId);
             await m.addColumn(messages, messages.inReplyTo);
+          }
+          if (from < 3) {
+            // New in schema 3, for Microsoft accounts. Creating it empty
+            // costs nothing: a Gmail account never writes to it, and a
+            // Microsoft one fills it as it syncs.
+            await m.createTable(graphIds);
+            await m.createIndex(graphIdByRemote);
           }
         },
       );

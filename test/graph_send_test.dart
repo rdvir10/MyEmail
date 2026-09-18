@@ -246,6 +246,7 @@ void main() {
       expect(token, 'graph-access');
       expect(
         Uri.splitQueryString(body)['scope'],
+        'https://graph.microsoft.com/Mail.ReadWrite '
         'https://graph.microsoft.com/Mail.Send offline_access',
       );
     });

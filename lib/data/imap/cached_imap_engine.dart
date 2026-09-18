@@ -18,6 +18,9 @@ import '../compose/graph_sender.dart';
 import '../compose/smtp_sender.dart';
 import '../credential_store.dart';
 import '../folder_list_store.dart';
+import '../graph/graph_id_map.dart';
+import '../graph/graph_mail_api.dart';
+import '../graph/graph_transport.dart';
 import '../mail_engine.dart';
 import 'enough_mail_transport.dart';
 import 'imap_mapping.dart';
@@ -36,20 +39,30 @@ class CachedImapEngine implements MailEngine {
     required this.cache,
     FolderListStore? folderLists,
     OAuthTokenRepository? oauthTokens,
+    this.graphIdMap,
     ImapTransport Function(Account account, MailCredentials credentials)?
         transportFactory,
     this.senderFactory,
     this.graphSenderFactory,
   })  : folderLists = folderLists ?? MemoryFolderListStore(),
         _injectedOAuthTokens = oauthTokens,
-        _transportFactory = transportFactory ?? _defaultTransport;
+        _injectedTransportFactory = transportFactory;
 
   final AccountStore accountStore;
   final CredentialStore credentialStore;
   final CacheStore cache;
   final FolderListStore folderLists;
-  final ImapTransport Function(Account account, MailCredentials credentials)
-      _transportFactory;
+  /// Supplied by tests, which hand back an in-memory server. Null in the app,
+  /// where [_buildTransport] chooses by provider.
+  final ImapTransport Function(Account account, MailCredentials credentials)?
+      _injectedTransportFactory;
+
+  ImapTransport _transportFactory(
+    Account account,
+    MailCredentials credentials,
+  ) =>
+      _injectedTransportFactory?.call(account, credentials) ??
+      _buildTransport(account, credentials);
 
   /// How to build the SMTP sender. Public and named, so a test can supply one
   /// that sends nothing: it was private, which made the seam unreachable from
@@ -65,6 +78,12 @@ class CachedImapEngine implements MailEngine {
 
   final OAuthTokenRepository? _injectedOAuthTokens;
 
+  /// Where Graph message numbering is remembered. Null on a build with no
+  /// database behind it — the browser preview, and the tests that do not
+  /// exercise a Microsoft account — in which case an in-memory one is used
+  /// and the numbering lasts as long as the process.
+  final GraphIdMap? graphIdMap;
+
   /// Late so the default can see [credentialStore], which an initializer list
   /// cannot.
   late final OAuthTokenRepository oauthTokens = _injectedOAuthTokens ??
@@ -78,15 +97,40 @@ class CachedImapEngine implements MailEngine {
 
   static const _palette = [0xFF0F6CBD, 0xFF107C41, 0xFFB4009E, 0xFFCA5010];
 
-  static ImapTransport _defaultTransport(
-    Account account,
-    MailCredentials credentials,
-  ) =>
-      EnoughMailTransport(
-        host: imapHostFor(account.provider),
-        user: account.emailAddress,
-        credentials: credentials,
+  late final GraphIdMap _graphIds = graphIdMap ?? MemoryGraphIdMap();
+
+  /// Which wire to use for an account.
+  ///
+  /// Microsoft accounts go over Graph. IMAP would be the smaller change, and
+  /// it is not an option: Microsoft counts IMAP as legacy authentication,
+  /// switches it off by default on new tenants, and blocks it outright
+  /// wherever security defaults are on — which is every new tenant. A work
+  /// mailbox often cannot be reached over IMAP at all, and no amount of
+  /// client-side care changes that.
+  ///
+  /// Gmail stays on IMAP, where an app password works and IDLE gives real
+  /// push that Graph has no equivalent of on a device with no public address.
+  ImapTransport _buildTransport(Account account, MailCredentials credentials) {
+    if (account.provider == MailProvider.outlook &&
+        credentials is OAuthCredentials) {
+      return GraphTransport(
+        accountId: account.id,
+        idMap: _graphIds,
+        api: GraphMailApi(
+          accessToken: ({bool force = false}) => oauthTokens.accessToken(
+            account.id,
+            force: force,
+            scopes: MicrosoftOAuth.graphScopes,
+          ),
+        ),
       );
+    }
+    return EnoughMailTransport(
+      host: imapHostFor(account.provider),
+      user: account.emailAddress,
+      credentials: credentials,
+    );
+  }
 
   static String imapHostFor(MailProvider provider) => switch (provider) {
         MailProvider.gmail => 'imap.gmail.com',
@@ -291,6 +335,9 @@ class CachedImapEngine implements MailEngine {
     _syncs.remove(accountId);
     await credentialStore.deleteSecret(accountId);
     await cache.deleteAccount(accountId);
+    // The numbering goes with the cache it keyed. Leaving it would hand the
+    // same numbers to a different mailbox if this address were added again.
+    await _graphIds.forgetAccount(accountId);
     await folderLists.delete(accountId);
     await accountStore.write([
       for (final a in accountStore.read())

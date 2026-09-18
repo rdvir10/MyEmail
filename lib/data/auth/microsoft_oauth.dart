@@ -99,6 +99,7 @@ class MicrosoftOAuth {
   /// tenant level whatever the per-mailbox setting says. Graph is not subject
   /// to any of that.
   static const graphScopes = [
+    'https://graph.microsoft.com/Mail.ReadWrite',
     'https://graph.microsoft.com/Mail.Send',
     'offline_access',
   ];

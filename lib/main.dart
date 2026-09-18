@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'data/account_store.dart';
 import 'data/cache/mail_database.dart';
+import 'data/graph/graph_id_map.dart';
 import 'data/folder_list_store.dart';
 import 'data/imap/cached_imap_engine.dart';
 import 'data/mail_engine.dart';
@@ -41,6 +42,7 @@ Future<void> main() async {
   // One instance, shared: the engine writes accounts through it and backup
   // reads them through the provider below. Two stores over the same
   // preferences would each hold their own idea of the list.
+  final database = MailDatabase.open();
   final accountStore = PrefsAccountStore(prefs);
   final credentialStore = SecureCredentialStore();
 
@@ -49,7 +51,11 @@ Future<void> main() async {
       : CachedImapEngine(
           accountStore: accountStore,
           credentialStore: credentialStore,
-          cache: DriftCacheStore(MailDatabase.open()),
+          cache: DriftCacheStore(database),
+          // The same database: Graph message numbering lives beside the
+          // cache it exists to key, and two connections to one file would be
+          // two views of the same rows.
+          graphIdMap: DriftGraphIdMap(database),
           folderLists: PrefsFolderListStore(prefs),
         );
 
