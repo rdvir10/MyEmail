@@ -1,4 +1,5 @@
 import 'package:collection/collection.dart';
+import 'package:enough_mail/enough_mail.dart' as em;
 
 import '../../domain/account.dart';
 import '../../domain/folder_role.dart';
@@ -13,6 +14,7 @@ import '../auth/oauth_token.dart';
 import '../auth/oauth_token_repository.dart';
 import '../cache/cache_store.dart';
 import '../cache/folder_sync.dart';
+import '../compose/graph_sender.dart';
 import '../compose/smtp_sender.dart';
 import '../credential_store.dart';
 import '../folder_list_store.dart';
@@ -37,6 +39,7 @@ class CachedImapEngine implements MailEngine {
     ImapTransport Function(Account account, MailCredentials credentials)?
         transportFactory,
     this.senderFactory,
+    this.graphSenderFactory,
   })  : folderLists = folderLists ?? MemoryFolderListStore(),
         _injectedOAuthTokens = oauthTokens,
         _transportFactory = transportFactory ?? _defaultTransport;
@@ -54,6 +57,11 @@ class CachedImapEngine implements MailEngine {
   /// test that touched it.
   final SmtpSender Function(Account account, MailCredentials credentials)?
       senderFactory;
+
+  /// The same seam for the Graph route, so a test can prove a Microsoft
+  /// account sends that way without a network.
+  final GraphSender Function(Account account, MailCredentials credentials)?
+      graphSenderFactory;
 
   final OAuthTokenRepository? _injectedOAuthTokens;
 
@@ -762,7 +770,7 @@ class CachedImapEngine implements MailEngine {
     final credentials = await _credentialsFor(account);
 
     final message = buildMimeMessage(draft: draft, account: account);
-    await _senderFor(account, credentials).send(message);
+    await _send(account, credentials, message);
 
     // It is away, so the copy in Drafts is now a duplicate of sent mail.
     await _dropPreviousDraft(draft.savedAs);
@@ -822,13 +830,46 @@ class CachedImapEngine implements MailEngine {
     return null;
   }
 
-  SmtpSender _senderFor(Account account, MailCredentials credentials) =>
-      senderFactory?.call(account, credentials) ??
-      SmtpSender.forProvider(
-        provider: account.provider,
-        user: account.emailAddress,
-        credentials: credentials,
-      );
+  /// Put the message on the wire by whichever route the provider actually
+  /// supports.
+  ///
+  /// Microsoft goes through Graph. SMTP submission is off by default for every
+  /// tenant, Microsoft recommends against turning it on, and a tenant with
+  /// security defaults enabled blocks it outright — so an app that only speaks
+  /// SMTP cannot send from a work mailbox at all, and often not from a
+  /// personal one either.
+  ///
+  /// Gmail stays on SMTP, where an app password works and there is nothing to
+  /// gain from changing it.
+  Future<void> _send(
+    Account account,
+    MailCredentials credentials,
+    em.MimeMessage message,
+  ) async {
+    final injected = senderFactory?.call(account, credentials);
+    if (injected != null) return injected.send(message);
+
+    if (account.provider == MailProvider.outlook &&
+        credentials is OAuthCredentials) {
+      final sender = graphSenderFactory?.call(account, credentials) ??
+          GraphSender(
+            // The Graph resource specifically. A token issued for IMAP is
+            // refused here, and the refusal reads as a broken sign-in.
+            accessToken: ({bool force = false}) => oauthTokens.accessToken(
+              account.id,
+              force: force,
+              scopes: MicrosoftOAuth.graphScopes,
+            ),
+          );
+      return sender.send(message);
+    }
+
+    return SmtpSender.forProvider(
+      provider: account.provider,
+      user: account.emailAddress,
+      credentials: credentials,
+    ).send(message);
+  }
 
   // --- plumbing --------------------------------------------------------------
 

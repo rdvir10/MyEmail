@@ -85,6 +85,24 @@ class MicrosoftOAuth {
     'offline_access',
   ];
 
+  /// Graph, which is how the app sends.
+  ///
+  /// A second set rather than more entries in [scopes], because an access
+  /// token is issued for one resource and Microsoft refuses a request that
+  /// mixes `outlook.office.com` with `graph.microsoft.com`. Consent, though,
+  /// accumulates against the app: once both sets have been agreed to, one
+  /// refresh token can be exchanged for either resource's access token.
+  ///
+  /// Sending goes through Graph because SMTP cannot be relied on. Microsoft
+  /// disables SMTP submission for every tenant by default and recommends
+  /// Graph instead, and a tenant with security defaults on blocks SMTP at the
+  /// tenant level whatever the per-mailbox setting says. Graph is not subject
+  /// to any of that.
+  static const graphScopes = [
+    'https://graph.microsoft.com/Mail.Send',
+    'offline_access',
+  ];
+
   static Future<void> _realSleep(Duration d) => Future<void>.delayed(d);
 
   /// Where the redirect lands after a successful sign-in.
@@ -113,13 +131,14 @@ class MicrosoftOAuth {
     required PkcePair pkce,
     required String state,
     String? loginHint,
+    List<String>? scopes,
   }) =>
       _authorizeUri.replace(queryParameters: {
         'client_id': clientId,
         'response_type': 'code',
         'redirect_uri': redirectUri,
         'response_mode': 'query',
-        'scope': scopes.join(' '),
+        'scope': (scopes ?? MicrosoftOAuth.scopes).join(' '),
         'state': state,
         'code_challenge': pkce.challenge,
         'code_challenge_method': PkcePair.method,
@@ -135,6 +154,8 @@ class MicrosoftOAuth {
     required String code,
     required PkcePair pkce,
   }) async {
+    // No scope parameter: the code was issued against whatever was asked for
+    // at the authorize step, and naming a different resource here is refused.
     final Map<String, Object?> json;
     try {
       json = await _post(_tokenUri, {
@@ -288,16 +309,32 @@ class MicrosoftOAuth {
   /// has to sign in again. Everything else — no network, a 5xx — comes back
   /// as [SignInFailed] so the caller retries rather than signing the account
   /// out over a flaky connection.
-  Future<OAuthToken> refresh(OAuthToken token) async {
+  /// [scopes] names which resource the access token is for. Defaults to the
+  /// IMAP and SMTP set; pass [graphScopes] for a Graph token. Either works
+  /// from the same refresh token once both have been consented to.
+  Future<OAuthToken> refresh(
+    OAuthToken token, {
+    List<String>? scopes,
+  }) async {
     final Map<String, Object?> json;
     try {
       json = await _post(_tokenUri, {
         'grant_type': 'refresh_token',
         'client_id': clientId,
-        'scope': scopes.join(' '),
+        'scope': (scopes ?? MicrosoftOAuth.scopes).join(' '),
         'refresh_token': token.refreshToken,
       });
     } on _OAuthErrorResponse catch (e) {
+      // Consent for this resource was never given, or was withdrawn. Distinct
+      // from a dead refresh token: the sign-in is fine, the app simply has not
+      // been allowed this particular thing, and the way out is to ask rather
+      // than to sign in again.
+      final description = e.description ?? '';
+      if (description.contains('AADSTS65001') ||
+          e.error == 'consent_required' ||
+          e.error == 'interaction_required') {
+        throw SignInNeedsConsent(_readableAadError(e));
+      }
       // invalid_grant is the refresh token being revoked, expired, or
       // invalidated by a password change. Nothing to do but sign in again.
       if (e.error == 'invalid_grant') {
@@ -372,6 +409,15 @@ class MicrosoftOAuth {
         description.contains('AADSTS900023')) {
       return 'Microsoft does not recognise this app registration. Check the '
           'client ID the build was made with.';
+    }
+    if (description.contains('AADSTS65001')) {
+      return 'This account has not agreed to let the app do that yet. If it '
+          'is a work or school account, an administrator may have to approve '
+          'the app for your organisation.';
+    }
+    if (description.contains('AADSTS530035')) {
+      return 'Your organisation blocks this way of signing in. Sign in again '
+          'and use the ordinary sign-in page rather than a code.';
     }
     if (description.contains('AADSTS7000218')) {
       return 'The app registration does not allow this kind of sign-in. In '
@@ -464,6 +510,21 @@ class SignInTimedOut implements Exception {
 class SignInCancelled implements Exception {
   const SignInCancelled();
   String get message => 'Sign-in was cancelled.';
+  @override
+  String toString() => message;
+}
+
+/// The app has not been allowed to do this particular thing yet.
+///
+/// Separate from [SignInExpired] because the account is fine and signing in
+/// again is not the remedy: what is missing is consent for one set of scopes,
+/// which either the person or their administrator grants once. In a tenant
+/// that stops its users consenting to outside apps, only an administrator
+/// can.
+@immutable
+class SignInNeedsConsent implements Exception {
+  const SignInNeedsConsent(this.message);
+  final String message;
   @override
   String toString() => message;
 }

@@ -39,13 +39,30 @@ class OAuthTokenRepository {
 
   final Map<String, Future<OAuthToken>> _inFlight = {};
 
+  /// Access tokens for resources other than the default one, held in memory
+  /// only.
+  ///
+  /// The Keystore record has room for one access token, and it holds the one
+  /// for IMAP. A Graph token lives about an hour and is cheap to fetch again
+  /// from the refresh token, so keeping it here costs nothing on a restart
+  /// and keeps the stored format unchanged — and keeps a second long-lived
+  /// credential out of storage, which is worth something on its own.
+  final Map<String, OAuthToken> _byResource = {};
+
+  static String _key(String accountId, List<String> scopes) =>
+      '$accountId|${scopes.join(' ')}';
+
   /// A token good for at least [OAuthToken.refreshMargin] more.
   ///
   /// [force] refreshes even when the stored token still looks fresh, for the
   /// one case where "looks fresh" was wrong: the server rejected it anyway,
   /// which happens when the device clock is off or the token was revoked
   /// mid-life.
-  Future<String> accessToken(String accountId, {bool force = false}) async {
+  Future<String> accessToken(
+    String accountId, {
+    bool force = false,
+    List<String>? scopes,
+  }) async {
     final stored = OAuthToken.fromStoredJson(
       await credentialStore.readSecret(accountId),
     );
@@ -54,10 +71,22 @@ class OAuthTokenRepository {
         'This account is not signed in. Remove it and add it again.',
       );
     }
+
+    // A resource other than the default one. Its access token never goes to
+    // storage, so the freshness check reads the in-memory copy instead.
+    if (scopes != null) {
+      final cached = _byResource[_key(accountId, scopes)];
+      if (!force && cached != null && cached.isUsableAt(_clock())) {
+        return cached.accessToken;
+      }
+      final refreshed = await _refreshOnce(accountId, stored, scopes);
+      return refreshed.accessToken;
+    }
+
     if (!force && stored.isUsableAt(_clock())) return stored.accessToken;
 
     try {
-      return (await _refreshOnce(accountId, stored)).accessToken;
+      return (await _refreshOnce(accountId, stored, null)).accessToken;
     } on SignInExpired {
       // The in-flight map only covers this isolate, and there are two. The
       // background worker runs in its own, with its own repository, reading
@@ -90,22 +119,45 @@ class OAuthTokenRepository {
       OAuthToken.fromStoredJson(await credentialStore.readSecret(accountId)) !=
       null;
 
-  Future<OAuthToken> _refreshOnce(String accountId, OAuthToken stored) {
-    final existing = _inFlight[accountId];
+  Future<OAuthToken> _refreshOnce(
+    String accountId,
+    OAuthToken stored,
+    List<String>? scopes,
+  ) {
+    // Keyed by resource as well as account. Two resources are two different
+    // exchanges and must not share one in-flight slot, or a caller waiting
+    // for a Graph token would be handed an IMAP one.
+    final key = scopes == null ? accountId : _key(accountId, scopes);
+    final existing = _inFlight[key];
     if (existing != null) return existing;
 
-    final pending = _refresh(accountId, stored);
-    _inFlight[accountId] = pending;
+    final pending = _refresh(accountId, stored, scopes);
+    _inFlight[key] = pending;
     // whenComplete rather than then: the slot must clear on failure too, or
     // one network blip would wedge the account until the app restarts.
-    return pending.whenComplete(() => _inFlight.remove(accountId));
+    return pending.whenComplete(() => _inFlight.remove(key));
   }
 
-  Future<OAuthToken> _refresh(String accountId, OAuthToken stored) async {
+  Future<OAuthToken> _refresh(
+    String accountId,
+    OAuthToken stored,
+    List<String>? scopes,
+  ) async {
     final client = oauthClient();
     try {
-      final refreshed = await client.refresh(stored);
-      await store(accountId, refreshed);
+      final refreshed = await client.refresh(stored, scopes: scopes);
+
+      if (scopes == null) {
+        await store(accountId, refreshed);
+      } else {
+        _byResource[_key(accountId, scopes)] = refreshed;
+        // The access token belongs to another resource, but the refresh token
+        // does not: Microsoft rotates it on every exchange and retires the one
+        // just spent. Keeping the old one in storage would sign the account
+        // out at its next ordinary refresh, with nothing to connect that
+        // failure to a send that happened an hour earlier.
+        await store(accountId, stored.withRefreshToken(refreshed.refreshToken));
+      }
       return refreshed;
     } finally {
       client.close();

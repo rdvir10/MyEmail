@@ -117,6 +117,19 @@ class OAuthToken {
         expiresAt: expiresAt ?? this.expiresAt,
       );
 
+  /// Keep everything but take the newer refresh token.
+  ///
+  /// For a refresh made for some other resource: Microsoft rotates the refresh
+  /// token on every exchange, whatever was asked for, so the one that comes
+  /// back has to replace the stored one even though its access token is for
+  /// something else. Dropping it would leave the stored refresh token retired,
+  /// and the account would sign itself out at its next ordinary refresh.
+  OAuthToken withRefreshToken(String refreshToken) => OAuthToken(
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        expiresAt: expiresAt,
+      );
+
   /// Deliberately no token values. This ends up in logs.
   @override
   String toString() => 'OAuthToken(expiresAt: $expiresAt)';
