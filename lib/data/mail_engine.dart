@@ -1,4 +1,5 @@
 import '../domain/account.dart';
+import 'auth/oauth_token.dart';
 import '../domain/draft.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
@@ -26,6 +27,20 @@ abstract class MailEngine {
     required String emailAddress,
     required MailProvider provider,
     required String secret,
+  });
+
+  /// Same, for a provider that signs in with OAuth rather than a password.
+  ///
+  /// Separate from [addAccount] because the two take genuinely different
+  /// things: a password is a value that works forever, a token is a pair with
+  /// an expiry that has to be refreshed. Folding them into one call would
+  /// mean a parameter that is a password sometimes and a serialised token
+  /// other times, which is exactly the sort of thing that goes wrong quietly.
+  Future<Account> addOAuthAccount({
+    required String displayName,
+    required String emailAddress,
+    required MailProvider provider,
+    required OAuthToken token,
   });
 
   /// Forget the account and its secret. Local caches for it go too.

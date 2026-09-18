@@ -1,6 +1,9 @@
 import 'package:collection/collection.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/auth/microsoft_oauth.dart';
+import '../data/auth/oauth_config.dart';
+import '../data/auth/oauth_token.dart';
 import '../data/mail_engine.dart';
 import '../data/sample/sample_mail_engine.dart';
 import '../data/ui_state_store.dart';
@@ -13,6 +16,25 @@ import 'quick_steps.dart';
 /// Swapped for the real IMAP engine in milestone 3. Everything above this line
 /// stays unchanged when that happens, which is the point of the seam.
 final mailEngineProvider = Provider<MailEngine>((ref) => SampleMailEngine());
+
+/// Which Microsoft app registration this build signs in against.
+///
+/// Comes from [microsoftClientId], which is baked in at build time. It is a
+/// provider anyway so that a widget test can supply one and exercise the
+/// screens as a configured build sees them — otherwise every test would meet
+/// the "not configured yet" branch and the real path would go uncovered.
+final microsoftClientIdProvider = Provider<String>((ref) => microsoftClientId);
+
+/// How the app signs in to Microsoft.
+///
+/// A provider rather than a constructor call so a widget test can drive the
+/// sign-in screen without a network, and so a build can be pointed at a
+/// different app registration.
+final microsoftOAuthProvider = Provider<MicrosoftOAuth>((ref) {
+  final oauth = MicrosoftOAuth(clientId: ref.watch(microsoftClientIdProvider));
+  ref.onDispose(oauth.close);
+  return oauth;
+});
 
 /// Where expand state, favourites, ordering and the last folder are kept.
 /// main() overrides this with the shared_preferences store; tests and the
@@ -37,6 +59,24 @@ class Accounts extends AsyncNotifier<List<Account>> {
           emailAddress: emailAddress,
           provider: provider,
           secret: secret,
+        );
+    state = AsyncData([...state.value ?? const [], account]);
+    return account;
+  }
+
+  /// Finish a Microsoft sign-in. The token has already been obtained; this
+  /// is what proves it against the server and stores the account.
+  Future<Account> addOAuth({
+    required String displayName,
+    required String emailAddress,
+    required MailProvider provider,
+    required OAuthToken token,
+  }) async {
+    final account = await ref.read(mailEngineProvider).addOAuthAccount(
+          displayName: displayName,
+          emailAddress: emailAddress,
+          provider: provider,
+          token: token,
         );
     state = AsyncData([...state.value ?? const [], account]);
     return account;
@@ -343,13 +383,23 @@ final folderOrderProvider =
 class RecentMoveTargets extends Notifier<List<String>> {
   static const maxEntries = 10;
 
+  /// What separates folder ids in the single string this list is stored as.
+  ///
+  /// NUL, because a folder id can contain very nearly anything a mail server
+  /// allows in a path, and this is the one byte it cannot. Written as an
+  /// escape on purpose: this was a literal NUL character in the source, which
+  /// worked but made the file read as binary to grep and to editors, and left
+  /// two invisible bytes that any tool touching the file could have quietly
+  /// dropped, changing the separator and scrambling the stored list.
+  static const recentMoveSeparator = '\u0000';
+
   @override
   List<String> build() {
     final store = ref.watch(uiStateStoreProvider);
     listenSelf((_, next) =>
-        store.writeString(UiStateKeys.recentMoves, next.join(' ')));
+        store.writeString(UiStateKeys.recentMoves, next.join(recentMoveSeparator)));
     final raw = store.readString(UiStateKeys.recentMoves) ?? '';
-    return raw.isEmpty ? const [] : raw.split(' ');
+    return raw.isEmpty ? const [] : raw.split(recentMoveSeparator);
   }
 
   void record(String folderId) {

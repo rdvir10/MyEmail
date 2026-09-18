@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/account.dart';
@@ -32,6 +33,23 @@ class _EmptyEngine implements MailEngine {
       emailAddress: emailAddress,
       provider: provider,
       secret: secret,
+    );
+    _accounts.add(a);
+    return a;
+  }
+
+  @override
+  Future<Account> addOAuthAccount({
+    required String displayName,
+    required String emailAddress,
+    required MailProvider provider,
+    required OAuthToken token,
+  }) async {
+    final a = await _inner.addOAuthAccount(
+      displayName: displayName,
+      emailAddress: emailAddress,
+      provider: provider,
+      token: token,
     );
     _accounts.add(a);
     return a;

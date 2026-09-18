@@ -8,6 +8,7 @@ import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
 import '../compose/quote_builder.dart';
 import '../imap/imap_mapping.dart';
+import '../auth/oauth_token.dart';
 import '../mail_engine.dart';
 import 'sample_messages.dart';
 
@@ -45,6 +46,36 @@ class SampleMailEngine implements MailEngine {
     if (secret.trim().isEmpty) {
       throw const AuthenticationFailed('The server refused the password.');
     }
+    return _remember(
+      displayName: displayName,
+      emailAddress: emailAddress,
+      provider: provider,
+      authMethod: AuthMethod.appPassword,
+    );
+  }
+
+  @override
+  Future<Account> addOAuthAccount({
+    required String displayName,
+    required String emailAddress,
+    required MailProvider provider,
+    required OAuthToken token,
+  }) async {
+    await _latency();
+    return _remember(
+      displayName: displayName,
+      emailAddress: emailAddress,
+      provider: provider,
+      authMethod: AuthMethod.oauth,
+    );
+  }
+
+  Future<Account> _remember({
+    required String displayName,
+    required String emailAddress,
+    required MailProvider provider,
+    required AuthMethod authMethod,
+  }) async {
     if (_accounts.any((a) => a.emailAddress == emailAddress)) {
       throw AuthenticationFailed('$emailAddress is already set up.');
     }
@@ -53,7 +84,7 @@ class SampleMailEngine implements MailEngine {
       displayName: displayName,
       emailAddress: emailAddress,
       provider: provider,
-      authMethod: AuthMethod.appPassword,
+      authMethod: authMethod,
       colorValue: _palette[_accounts.length % _palette.length],
     );
     _accounts.add(account);

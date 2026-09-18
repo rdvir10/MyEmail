@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/account.dart';
@@ -40,6 +41,20 @@ class _SingleAccountReversedEngine implements MailEngine {
         emailAddress: emailAddress,
         provider: provider,
         secret: secret,
+      );
+
+  @override
+  Future<Account> addOAuthAccount({
+    required String displayName,
+    required String emailAddress,
+    required MailProvider provider,
+    required OAuthToken token,
+  }) =>
+      _inner.addOAuthAccount(
+        displayName: displayName,
+        emailAddress: emailAddress,
+        provider: provider,
+        token: token,
       );
 
   @override

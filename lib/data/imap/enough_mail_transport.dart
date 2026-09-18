@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:enough_mail/enough_mail.dart' as em;
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../../domain/mail_credentials.dart';
 import '../../domain/mail_message.dart';
 import '../mail_engine.dart';
 import 'imap_mapping.dart';
@@ -19,14 +20,17 @@ class EnoughMailTransport implements ImapTransport {
   EnoughMailTransport({
     required this.host,
     required this.user,
-    required this.secret,
+    required this.credentials,
     this.port = 993,
     this.isLogEnabled = false,
   });
 
   final String host;
   final String user;
-  final String secret;
+
+  /// An app password, or the means of getting a current OAuth access token.
+  /// See [MailCredentials] for why these cannot be the same type.
+  final MailCredentials credentials;
   final int port;
 
   /// enough_mail's protocol log. It scrambles passwords itself.
@@ -373,6 +377,22 @@ class EnoughMailTransport implements ImapTransport {
       return existing;
     }
     await close();
+    try {
+      return _client = await _connect(forceTokenRefresh: false);
+    } on AuthenticationFailed {
+      // One retry, and only for OAuth. isUsableAt decides a token is still
+      // good by reading the device clock, so a tablet whose clock has drifted
+      // will hand over a token the server has already retired and see a
+      // refusal that looks exactly like a wrong password. Asking for a
+      // definitely-new token costs one round trip on a path that has already
+      // failed. A wrong app password, by contrast, is still wrong the second
+      // time.
+      if (credentials is! OAuthCredentials) rethrow;
+      return _client = await _connect(forceTokenRefresh: true);
+    }
+  }
+
+  Future<em.ImapClient> _connect({required bool forceTokenRefresh}) async {
     final client = em.ImapClient(isLogEnabled: isLogEnabled);
     try {
       await client.connectToServer(host, port, isSecure: true);
@@ -380,14 +400,29 @@ class EnoughMailTransport implements ImapTransport {
       throw ConnectionFailed('Could not reach $host. Check the connection. ($e)');
     }
     try {
-      await client.login(user, secret);
+      switch (credentials) {
+        case PasswordCredentials(:final password):
+          await client.login(user, password);
+        case OAuthCredentials(:final accessToken):
+          await client.authenticateWithOAuth2(
+            user,
+            await accessToken(force: forceTokenRefresh),
+          );
+      }
     } on em.ImapException catch (e) {
       try {
         await client.disconnect();
       } catch (_) {}
       throw AuthenticationFailed(loginFailureMessage(e.message));
+    } catch (_) {
+      // A token refresh can fail for its own reasons (no network, a revoked
+      // sign-in). Those exceptions are already the right shape for the UI, so
+      // they travel up as they are; the socket still has to be let go.
+      try {
+        await client.disconnect();
+      } catch (_) {}
+      rethrow;
     }
-    _client = client;
     _selectedPath = null;
     return client;
   }
@@ -397,8 +432,9 @@ class EnoughMailTransport implements ImapTransport {
     final text = raw ?? '';
     if (text.contains('AUTHENTICATIONFAILED') ||
         text.toLowerCase().contains('invalid credentials')) {
-      return 'Google refused the sign-in. Check the address, and use an app '
-          'password rather than the normal account password.';
+      return 'The mail server refused the sign-in. For Gmail, check the '
+          'address and use an app password rather than the normal account '
+          'password. For Outlook.com, sign in to the account again.';
     }
     return 'Sign-in failed: ${text.isEmpty ? 'the server gave no reason' : text}';
   }

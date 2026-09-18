@@ -27,8 +27,9 @@ void main() {
       accountStore: accounts,
       credentialStore: secrets,
       cache: cache,
-      transportFactory: (account, secret) {
-        calls.add('transport for ${account.emailAddress} with ${secret.length} chars');
+      transportFactory: (account, credentials) {
+        calls.add('transport for ${account.emailAddress} '
+            'with ${credentials.runtimeType}');
         return server;
       },
     );

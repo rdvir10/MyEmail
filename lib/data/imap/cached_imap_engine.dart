@@ -1,9 +1,16 @@
+import 'package:collection/collection.dart';
+
 import '../../domain/account.dart';
 import '../../domain/folder_role.dart';
+import '../../domain/mail_credentials.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/draft.dart';
 import '../account_store.dart';
+import '../auth/microsoft_oauth.dart';
+import '../auth/oauth_config.dart';
+import '../auth/oauth_token.dart';
+import '../auth/oauth_token_repository.dart';
 import '../cache/cache_store.dart';
 import '../cache/folder_sync.dart';
 import '../compose/smtp_sender.dart';
@@ -26,32 +33,51 @@ class CachedImapEngine implements MailEngine {
     required this.credentialStore,
     required this.cache,
     FolderListStore? folderLists,
-    ImapTransport Function(Account account, String secret)? transportFactory,
+    OAuthTokenRepository? oauthTokens,
+    ImapTransport Function(Account account, MailCredentials credentials)?
+        transportFactory,
     this.senderFactory,
   })  : folderLists = folderLists ?? MemoryFolderListStore(),
+        _injectedOAuthTokens = oauthTokens,
         _transportFactory = transportFactory ?? _defaultTransport;
 
   final AccountStore accountStore;
   final CredentialStore credentialStore;
   final CacheStore cache;
   final FolderListStore folderLists;
-  final ImapTransport Function(Account account, String secret) _transportFactory;
+  final ImapTransport Function(Account account, MailCredentials credentials)
+      _transportFactory;
+
   /// How to build the SMTP sender. Public and named, so a test can supply one
   /// that sends nothing: it was private, which made the seam unreachable from
   /// outside this library and left the send path opening a real socket in any
   /// test that touched it.
-  final SmtpSender Function(Account account, String secret)? senderFactory;
+  final SmtpSender Function(Account account, MailCredentials credentials)?
+      senderFactory;
+
+  final OAuthTokenRepository? _injectedOAuthTokens;
+
+  /// Late so the default can see [credentialStore], which an initializer list
+  /// cannot.
+  late final OAuthTokenRepository oauthTokens = _injectedOAuthTokens ??
+      OAuthTokenRepository(
+        credentialStore: credentialStore,
+        oauthClient: () => MicrosoftOAuth(clientId: microsoftClientId),
+      );
 
   final Map<String, ImapTransport> _transports = {};
   final Map<String, FolderSync> _syncs = {};
 
   static const _palette = [0xFF0F6CBD, 0xFF107C41, 0xFFB4009E, 0xFFCA5010];
 
-  static ImapTransport _defaultTransport(Account account, String secret) =>
+  static ImapTransport _defaultTransport(
+    Account account,
+    MailCredentials credentials,
+  ) =>
       EnoughMailTransport(
         host: imapHostFor(account.provider),
         user: account.emailAddress,
-        secret: secret,
+        credentials: credentials,
       );
 
   static String imapHostFor(MailProvider provider) => switch (provider) {
@@ -88,6 +114,50 @@ class CachedImapEngine implements MailEngine {
     required String emailAddress,
     required MailProvider provider,
     required String secret,
+  }) =>
+      _add(
+        displayName: displayName,
+        emailAddress: emailAddress,
+        provider: provider,
+        authMethod: AuthMethod.appPassword,
+        credentials: PasswordCredentials(secret),
+        storedSecret: secret,
+      );
+
+  @override
+  /// Finish an OAuth sign-in by turning its token into an account.
+  ///
+  /// [emailAddress] is what the person typed, and the probe below is what
+  /// checks it: the XOAUTH2 handshake sends the address alongside the token,
+  /// and the server refuses the pair if they belong to different mailboxes.
+  /// Signing in as one account while typing another's address therefore fails
+  /// here rather than becoming an account that can never connect.
+  Future<Account> addOAuthAccount({
+    required String displayName,
+    required String emailAddress,
+    required MailProvider provider,
+    required OAuthToken token,
+  }) =>
+      _add(
+        displayName: displayName,
+        emailAddress: emailAddress,
+        provider: provider,
+        authMethod: AuthMethod.oauth,
+        // The probe runs before anything is stored, so the token cannot come
+        // from the repository yet; it is handed over directly and only
+        // written once the server has accepted it.
+        credentials:
+            OAuthCredentials(({bool force = false}) async => token.accessToken),
+        storedSecret: token.toStoredJson(),
+      );
+
+  Future<Account> _add({
+    required String displayName,
+    required String emailAddress,
+    required MailProvider provider,
+    required AuthMethod authMethod,
+    required MailCredentials credentials,
+    required String storedSecret,
   }) async {
     final email = emailAddress.trim();
     final existing = accountStore.read();
@@ -99,12 +169,12 @@ class CachedImapEngine implements MailEngine {
       displayName: displayName,
       emailAddress: email,
       provider: provider,
-      authMethod: AuthMethod.appPassword,
+      authMethod: authMethod,
       colorValue: _palette[existing.length % _palette.length],
     );
     // Prove the credentials before storing anything: LIST is the cheapest
     // command that needs a successful login.
-    final transport = _transportFactory(account, secret);
+    final transport = _transportFactory(account, credentials);
     final List<RemoteFolder> folders;
     try {
       folders = await transport.listFolders();
@@ -115,9 +185,16 @@ class CachedImapEngine implements MailEngine {
     // Keep what the probe already fetched: the tree can then render, and a
     // search can pick its targets, without a second round trip.
     await folderLists.write(account.id, folders);
-    _transports[account.id] = transport;
-    await credentialStore.writeSecret(account.id, secret);
+    await credentialStore.writeSecret(account.id, storedSecret);
     await accountStore.write([...existing, account]);
+    // Only now, with the secret stored, is the cached transport safe to keep:
+    // the OAuth one built above closes over a token that will expire, whereas
+    // one built from _credentialsFor can refresh itself.
+    if (authMethod == AuthMethod.oauth) {
+      await transport.close();
+    } else {
+      _transports[account.id] = transport;
+    }
     return account;
   }
 
@@ -205,6 +282,7 @@ class CachedImapEngine implements MailEngine {
       for (final (i, r) in remote.indexed)
         folderFromRemote(
           accountId: accountId,
+          provider: _providerFor(accountId),
           remote: r,
           allPaths: paths,
           sortIndex: i,
@@ -602,15 +680,10 @@ class CachedImapEngine implements MailEngine {
           (a) => a.id == draft.accountId,
           orElse: () => throw StateError('Unknown account ${draft.accountId}'),
         );
-    final secret = await credentialStore.readSecret(account.id);
-    if (secret == null) {
-      throw AuthenticationFailed(
-        'No password is stored for ${account.emailAddress}.',
-      );
-    }
+    final credentials = await _credentialsFor(account);
 
     final message = buildMimeMessage(draft: draft, account: account);
-    await _senderFor(account, secret).send(message);
+    await _senderFor(account, credentials).send(message);
 
     // It is away, so the copy in Drafts is now a duplicate of sent mail.
     await _dropPreviousDraft(draft.savedAs);
@@ -646,8 +719,20 @@ class CachedImapEngine implements MailEngine {
     }
   }
 
-  static bool _needsSentCopy(MailProvider provider) =>
-      provider != MailProvider.gmail;
+  /// Whether the app must file its own copy of a sent message.
+  ///
+  /// Both providers we support file it themselves, so appending would leave
+  /// two copies of everything in Sent. Gmail has always done this. Microsoft
+  /// does it for mail submitted over SMTP AUTH, which is the path this app
+  /// uses.
+  ///
+  /// If a sent message ever fails to appear in Sent for some provider, this
+  /// is the switch: return true for it and the engine appends the copy
+  /// itself.
+  static bool _needsSentCopy(MailProvider provider) => switch (provider) {
+        MailProvider.gmail => false,
+        MailProvider.outlook => false,
+      };
 
   Future<String?> _folderPathForRole(String accountId, FolderRole role) async {
     final remote = folderLists.read(accountId);
@@ -658,12 +743,12 @@ class CachedImapEngine implements MailEngine {
     return null;
   }
 
-  SmtpSender _senderFor(Account account, String secret) =>
-      senderFactory?.call(account, secret) ??
-      SmtpSender(
-        host: SmtpSender.smtpHostFor(account.provider),
+  SmtpSender _senderFor(Account account, MailCredentials credentials) =>
+      senderFactory?.call(account, credentials) ??
+      SmtpSender.forProvider(
+        provider: account.provider,
         user: account.emailAddress,
-        secret: secret,
+        credentials: credentials,
       );
 
   // --- plumbing --------------------------------------------------------------
@@ -675,14 +760,47 @@ class CachedImapEngine implements MailEngine {
           (a) => a.id == accountId,
           orElse: () => throw StateError('Unknown account $accountId'),
         );
-    final secret = await credentialStore.readSecret(accountId);
-    if (secret == null) {
-      throw AuthenticationFailed(
-        'No password is stored for ${account.emailAddress}. '
-        'Remove the account and add it again.',
-      );
+    return _transports[accountId] =
+        _transportFactory(account, await _credentialsFor(account));
+  }
+
+  /// Which service an account talks to, for the folder mapping.
+  ///
+  /// Gmail if the account has gone missing, which cannot normally happen:
+  /// this is only reached for an account whose folders are being listed. The
+  /// fallback keeps a folder list rendering rather than throwing from a
+  /// mapping function.
+  MailProvider _providerFor(String accountId) =>
+      accountStore
+          .read()
+          .where((a) => a.id == accountId)
+          .firstOrNull
+          ?.provider ??
+      MailProvider.gmail;
+
+  /// How this account signs in, ready to be used when a connection opens.
+  ///
+  /// The OAuth branch reads nothing now on purpose. A token fetched here
+  /// would be stale by the time a long-lived transport reconnected hours
+  /// later, so what the transport gets is the means of asking, and the
+  /// asking happens per connection.
+  Future<MailCredentials> _credentialsFor(Account account) async {
+    switch (account.authMethod) {
+      case AuthMethod.oauth:
+        return OAuthCredentials(
+          ({bool force = false}) =>
+              oauthTokens.accessToken(account.id, force: force),
+        );
+      case AuthMethod.appPassword:
+        final secret = await credentialStore.readSecret(account.id);
+        if (secret == null) {
+          throw AuthenticationFailed(
+            'No password is stored for ${account.emailAddress}. '
+            'Remove the account and add it again.',
+          );
+        }
+        return PasswordCredentials(secret);
     }
-    return _transports[accountId] = _transportFactory(account, secret);
   }
 
   FolderSync _sync(String accountId, ImapTransport transport) =>

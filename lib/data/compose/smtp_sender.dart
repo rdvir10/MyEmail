@@ -2,6 +2,7 @@ import 'package:enough_mail/enough_mail.dart' as em;
 
 import '../../domain/account.dart';
 import '../../domain/draft.dart';
+import '../../domain/mail_credentials.dart';
 import '../../domain/mail_message.dart' as domain;
 import '../mail_engine.dart';
 import 'quote_builder.dart';
@@ -61,18 +62,36 @@ class SmtpSender {
   const SmtpSender({
     required this.host,
     required this.user,
-    required this.secret,
+    required this.credentials,
     this.port = 465,
+    this.useStartTls = false,
     this.isLogEnabled = false,
   });
 
+  /// Everything one provider needs to submit mail.
+  SmtpSender.forProvider({
+    required MailProvider provider,
+    required this.user,
+    required this.credentials,
+    this.isLogEnabled = false,
+  })  : host = smtpHostFor(provider),
+        port = portFor(provider),
+        useStartTls = usesStartTlsFor(provider);
+
   final String host;
   final String user;
-  final String secret;
-
-  /// 465 is implicit TLS, which is what Gmail wants and what avoids the
-  /// STARTTLS upgrade dance.
+  final MailCredentials credentials;
   final int port;
+
+  /// Whether the connection starts in the clear and is upgraded, rather than
+  /// being encrypted from the first byte.
+  ///
+  /// The two providers disagree, and getting it wrong does not degrade
+  /// gracefully — it hangs or is refused outright. Gmail takes implicit TLS
+  /// on 465. Microsoft does not listen on 465 at all: SMTP AUTH submission is
+  /// port 587, in the clear, upgraded with STARTTLS before anything secret is
+  /// sent.
+  final bool useStartTls;
   final bool isLogEnabled;
 
   static String smtpHostFor(MailProvider provider) => switch (provider) {
@@ -80,28 +99,61 @@ class SmtpSender {
         MailProvider.outlook => 'smtp.office365.com',
       };
 
+  static int portFor(MailProvider provider) => switch (provider) {
+        MailProvider.gmail => 465,
+        MailProvider.outlook => 587,
+      };
+
+  static bool usesStartTlsFor(MailProvider provider) => switch (provider) {
+        MailProvider.gmail => false,
+        MailProvider.outlook => true,
+      };
+
   Future<void> send(em.MimeMessage message) async {
     final client = em.SmtpClient('myemail', isLogEnabled: isLogEnabled);
     try {
       try {
-        await client.connectToServer(host, port, isSecure: true);
+        await client.connectToServer(host, port, isSecure: !useStartTls);
         await client.ehlo();
+        if (useStartTls) {
+          final upgraded = await client.startTls();
+          if (!upgraded.isOkStatus) {
+            // Stop here rather than carrying on. Authenticating now would put
+            // the app password, or the OAuth token, onto the wire as plain
+            // text on a connection that never became private.
+            throw const ConnectionFailed(
+              'The mail server would not start an encrypted connection, so '
+              'nothing was sent.',
+            );
+          }
+        }
+      } on ConnectionFailed {
+        rethrow;
       } on Exception catch (e) {
         throw ConnectionFailed('Could not reach $host. ($e)');
       }
 
       try {
-        // PLAIN is what Gmail accepts with an app password; LOGIN is the
-        // fallback for servers that do not advertise PLAIN.
-        final mechanism = client.serverInfo.supportsAuth(em.AuthMechanism.plain)
-            ? em.AuthMechanism.plain
-            : em.AuthMechanism.login;
-        await client.authenticate(user, secret, mechanism);
+        switch (credentials) {
+          case PasswordCredentials(:final password):
+            // PLAIN is what Gmail accepts with an app password; LOGIN is the
+            // fallback for servers that do not advertise PLAIN.
+            final mechanism =
+                client.serverInfo.supportsAuth(em.AuthMechanism.plain)
+                    ? em.AuthMechanism.plain
+                    : em.AuthMechanism.login;
+            await client.authenticate(user, password, mechanism);
+          case OAuthCredentials(:final accessToken):
+            // enough_mail builds the SASL XOAUTH2 string itself, so this
+            // wants the bare access token and not a base64 anything.
+            await client.authenticate(
+              user,
+              await accessToken(),
+              em.AuthMechanism.xoauth2,
+            );
+        }
       } on em.SmtpException catch (e) {
-        throw AuthenticationFailed(
-          'The mail server refused the sign-in for sending. '
-          'Check the app password. (${e.message ?? 'no reason given'})',
-        );
+        throw AuthenticationFailed(sendSignInFailureMessage(e.message));
       }
 
       final response = await client.sendMessage(message);
@@ -121,5 +173,38 @@ class SmtpSender {
         // changes nothing.
       }
     }
+  }
+
+  /// Turn the server's refusal to let us send into something actionable.
+  ///
+  /// The Microsoft case is the one worth naming. Some mailboxes answer a
+  /// perfectly valid OAuth token with
+  ///
+  ///   535 5.7.139 SmtpClientAuthentication is disabled for the Mailbox
+  ///
+  /// which is SMTP submission being switched off for that mailbox rather than
+  /// anything wrong with the sign-in. Who can switch it back on depends
+  /// entirely on whose mailbox it is, and the two answers are far apart: on a
+  /// work or school account an administrator runs one command, while on a
+  /// personal Outlook.com account there is no such switch and no documented
+  /// way round it. Reading keeps working either way, so the message has to
+  /// say that this is sending only, and has to name the administrator,
+  /// because telling someone with an IT department that nothing can be done
+  /// would be wrong.
+  static String sendSignInFailureMessage(String? raw) {
+    final text = raw ?? '';
+    if (text.contains('5.7.139') ||
+        text.contains('SmtpClientAuthentication is disabled')) {
+      return 'Microsoft has sending over SMTP switched off for this mailbox, '
+          'so this account can receive mail here but not send it. That is a '
+          'restriction on the mailbox rather than a problem with the sign-in. '
+          'On a work or school account an administrator can switch it back '
+          'on. On a personal Outlook.com account there is no such setting.';
+    }
+    if (text.isEmpty) {
+      return 'The mail server refused the sign-in for sending, without saying '
+          'why.';
+    }
+    return 'The mail server refused the sign-in for sending. ($text)';
   }
 }

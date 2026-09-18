@@ -28,13 +28,14 @@ import 'imap_transport.dart';
 /// have already left enough_mail types behind.
 MailFolder folderFromRemote({
   required String accountId,
+  required MailProvider provider,
   required RemoteFolder remote,
   required Set<String> allPaths,
   int sortIndex = 0,
 }) {
   final capabilities = remote.isServerManaged
       ? const FolderCapabilities.systemFolder(canAcceptMessages: true)
-      : FolderCapabilities.forGmail(remote.role);
+      : FolderCapabilities.forProvider(provider, remote.role);
   String? parentId;
   if (remote.role == FolderRole.user) {
     final cut = remote.path.lastIndexOf('/');
@@ -160,7 +161,7 @@ MailFolder? folderFromMailbox({
 
   final capabilities = isServerManagedLabel(box)
       ? const FolderCapabilities.systemFolder(canAcceptMessages: true)
-      : FolderCapabilities.forGmail(role);
+      : FolderCapabilities.forProvider(provider, role);
 
   String? parentId;
   if (role == FolderRole.user) {

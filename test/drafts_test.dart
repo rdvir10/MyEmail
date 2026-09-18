@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:myemail/domain/mail_credentials.dart';
 import 'package:myemail/data/account_store.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:enough_mail/enough_mail.dart' as em;
@@ -115,7 +116,11 @@ void main() {
         // Without this the send path opens a real socket to smtp.gmail.com
         // with a made-up password. A unit test must not touch the network.
         senderFactory: (_, _) =>
-            const _SilentSender(host: 'smtp.example', user: '', secret: ''),
+            const _SilentSender(
+              host: 'smtp.example',
+              user: '',
+              credentials: PasswordCredentials(''),
+            ),
       );
     });
 
@@ -305,7 +310,7 @@ class _SilentSender extends SmtpSender {
   const _SilentSender({
     required super.host,
     required super.user,
-    required super.secret,
+    required super.credentials,
   });
 
   @override

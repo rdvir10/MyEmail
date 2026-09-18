@@ -1,3 +1,4 @@
+import 'account.dart';
 import 'folder_role.dart';
 
 /// What a given folder actually permits, which varies by provider.
@@ -81,8 +82,50 @@ class FolderCapabilities {
   bool get hasAnyStructuralAction =>
       canRename || canMove || canDelete || canCreateChild || canEmpty;
 
-  /// Defaults for Gmail, which is the only provider in round one and also the
-  /// most restrictive one we expect to meet.
+  /// What this provider allows for a folder in this role.
+  factory FolderCapabilities.forProvider(
+    MailProvider provider,
+    FolderRole role,
+  ) =>
+      switch (provider) {
+        MailProvider.gmail => FolderCapabilities.forGmail(role),
+        MailProvider.outlook => FolderCapabilities.forOutlook(role),
+      };
+
+  /// Outlook.com, where the special folders are ordinary folders wearing
+  /// special-use flags.
+  ///
+  /// The difference that matters is Archive. On Gmail, "All Mail" is every
+  /// message the account holds and archiving is the act of removing the Inbox
+  /// label, so dropping a message on it does nothing. On Outlook, Archive is
+  /// a folder you move mail into, and it is one of the most-used targets
+  /// there. Sharing Gmail's mapping would have quietly refused the drop.
+  ///
+  /// Drafts and Sent likewise accept messages here: Outlook has no objection
+  /// to an APPEND, which is how a draft written on this device shows up on
+  /// the web.
+  ///
+  /// Structural edits stay closed. The special folders can technically be
+  /// renamed on Exchange, but doing so from here would move them out from
+  /// under their special-use flag and leave the account with a Sent folder
+  /// the app no longer recognises.
+  factory FolderCapabilities.forOutlook(FolderRole role) => switch (role) {
+        FolderRole.unifiedInbox => const FolderCapabilities.synthetic(),
+        FolderRole.user => const FolderCapabilities.userFolder(),
+        FolderRole.deleted =>
+          const FolderCapabilities.systemFolder(canEmpty: true),
+        FolderRole.junk =>
+          const FolderCapabilities.systemFolder(canEmpty: true),
+        FolderRole.archive => const FolderCapabilities.systemFolder(),
+        FolderRole.drafts => const FolderCapabilities.systemFolder(),
+        FolderRole.sent => const FolderCapabilities.systemFolder(),
+        FolderRole.inbox => const FolderCapabilities.systemFolder(),
+        // Nothing on the server backs an Outbox; it is the app's own queue.
+        FolderRole.outbox =>
+          const FolderCapabilities.systemFolder(canAcceptMessages: false),
+      };
+
+  /// Gmail, which is the more restrictive of the two.
   factory FolderCapabilities.forGmail(FolderRole role) => switch (role) {
         FolderRole.unifiedInbox => const FolderCapabilities.synthetic(),
         FolderRole.user => const FolderCapabilities.userFolder(),
