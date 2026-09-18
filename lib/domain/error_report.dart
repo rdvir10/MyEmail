@@ -68,6 +68,7 @@ String buildErrorReport({
   String? appVersion,
   int? build,
   DateTime? at,
+  bool redactAddress = false,
 }) {
   final when = (at ?? DateTime.now()).toUtc();
   final lines = <String>[
@@ -77,7 +78,8 @@ String buildErrorReport({
       'Version: $appVersion${build == null ? '' : ' (build $build)'}',
     'Doing: $doing',
     if (account != null) ...[
-      'Account: ${account.emailAddress}',
+      'Account: ${account.displayName}',
+      'Address: ${redactAddress ? maskAddress(account.emailAddress) : account.emailAddress}',
       'Provider: ${account.provider.label}',
       'Signs in with: ${switch (account.authMethod) {
         AuthMethod.appPassword => 'an app password',
@@ -91,4 +93,44 @@ String buildErrorReport({
     '$error',
   ];
   return lines.join('\n');
+}
+
+/// An address with its local part hidden, for a report going somewhere public.
+///
+/// The first character and the domain stay, which is enough to tell one of
+/// your own accounts from another without publishing an address for anyone to
+/// collect. The full address still goes on the clipboard, because that goes
+/// wherever you put it.
+String maskAddress(String address) {
+  final at = address.indexOf('@');
+  if (at <= 0) return '***';
+  return '${address[0]}***${address.substring(at)}';
+}
+
+/// Where a problem report can be filed.
+abstract final class IssueTracker {
+  /// The repository the app is released from.
+  static const repository = 'rdvir10/MyEmail';
+
+  /// A prefilled "new issue" page, ready to look over and submit.
+  ///
+  /// A URL and not an API call, deliberately: posting through the API would
+  /// need a GitHub token living inside the app, and a token shipped in an APK
+  /// is a token anyone who has the APK can use. This way the app opens a page,
+  /// GitHub authenticates the person as it normally does, and nothing secret
+  /// has to exist. It also means the report is read and submitted on purpose
+  /// rather than sent the instant something goes wrong.
+  static Uri newIssueUrl({required String title, required String report}) {
+    return Uri.https('github.com', '/$repository/issues/new', {
+      'title': title,
+      // Fenced, so a stack trace or a Microsoft error paragraph keeps its
+      // shape instead of being reflowed into one line by Markdown.
+      'body': 'What happened:\n\n```\n$report\n```\n',
+      'labels': 'from the app',
+    });
+  }
+
+  /// A one-line title: what failed, and what it was.
+  static String titleFor({required String doing, required Object error}) =>
+      '$doing — ${error.runtimeType}';
 }

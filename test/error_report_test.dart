@@ -69,6 +69,84 @@ void main() {
     });
   });
 
+  group('filing it on GitHub', () {
+    test('the address is masked, because the repository is public', () {
+      // The clipboard keeps the whole address: that goes wherever the person
+      // puts it. This one is published the moment they press submit.
+      final url = IssueTracker.newIssueUrl(
+        title: 'Loading folders — AuthenticationFailed',
+        report: buildErrorReport(
+          doing: 'Loading the folders for Work',
+          error: const AuthenticationFailed('Refused.'),
+          account: account,
+          redactAddress: true,
+        ),
+      );
+
+      expect(url.toString(), isNot(contains('me@work.example')));
+      expect(Uri.decodeFull(url.toString()), contains('m***@work.example'));
+    });
+
+    test('masking keeps enough to tell two accounts apart', () {
+      expect(maskAddress('ron.dvir@outlook.com'), 'r***@outlook.com');
+      expect(maskAddress('ron@myhomestudio.club'), 'r***@myhomestudio.club');
+    });
+
+    test('something that is not an address masks to nothing', () {
+      expect(maskAddress('not-an-address'), '***');
+      expect(maskAddress('@only-a-domain'), '***');
+    });
+
+    test('it points at the repository the app is released from', () {
+      final url = IssueTracker.newIssueUrl(title: 't', report: 'r');
+
+      expect(url.host, 'github.com');
+      expect(url.path, '/rdvir10/MyEmail/issues/new');
+    });
+
+    test('the report is fenced, so its shape survives Markdown', () {
+      // A Microsoft error is a paragraph with trace IDs on their own lines.
+      // Unfenced, Markdown reflows it into one run-on line.
+      final url = IssueTracker.newIssueUrl(
+        title: 't',
+        report: 'line one\nline two',
+      );
+
+      expect(url.queryParameters['body'], contains('```'));
+      expect(
+        url.queryParameters['body'],
+        contains('line one\nline two'),
+      );
+    });
+
+    test('nothing secret can reach it, because the report holds none', () {
+      final url = IssueTracker.newIssueUrl(
+        title: 'x',
+        report: buildErrorReport(
+          doing: 'Loading the folders for Work',
+          error: const AuthenticationFailed('Refused.'),
+          account: account,
+          redactAddress: true,
+        ),
+      );
+      final text = Uri.decodeFull(url.toString()).toLowerCase();
+
+      for (final forbidden in ['bearer ', 'refresh_token', 'access_token']) {
+        expect(text, isNot(contains(forbidden)), reason: forbidden);
+      }
+    });
+
+    test('the title says what failed and what it was', () {
+      expect(
+        IssueTracker.titleFor(
+          doing: 'Loading the folders for Work',
+          error: const AuthenticationFailed('Refused.'),
+        ),
+        'Loading the folders for Work — AuthenticationFailed',
+      );
+    });
+  });
+
   group('the report', () {
     String report({Object? error}) => buildErrorReport(
           doing: 'Loading the folders for Work',

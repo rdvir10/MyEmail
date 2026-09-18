@@ -334,12 +334,22 @@ class AccountProblem {
 
   ErrorRemedy get remedy => remedyFor(error);
 
-  String report({String? appVersion, int? build}) => buildErrorReport(
-        doing: 'Loading the folders for ${account.displayName}',
+  /// What the app was doing. Used as the report's first line and as an
+  /// issue title, so it reads as a sentence either way.
+  String get doing => 'Loading the folders for ${account.displayName}';
+
+  String report({
+    String? appVersion,
+    int? build,
+    bool redactAddress = false,
+  }) =>
+      buildErrorReport(
+        doing: doing,
         error: error,
         account: account,
         appVersion: appVersion,
         build: build,
+        redactAddress: redactAddress,
       );
 }
 

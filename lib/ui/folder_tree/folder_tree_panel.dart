@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state/folder_drag.dart';
@@ -410,6 +411,61 @@ class _ProblemActions extends ConsumerWidget {
       ));
   }
 
+  /// File it on GitHub, where it stays and can be answered.
+  ///
+  /// The repository is public, so the address is masked on this path. The
+  /// clipboard keeps the whole thing: that goes wherever the person puts it,
+  /// which is their decision to make. This one is published the moment they
+  /// press the button on the page, so the app makes it for them.
+  Future<void> _report(BuildContext context, WidgetRef ref) async {
+    final agreed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Report this on GitHub?'),
+        content: const Text(
+          'This opens a new issue with the details filled in. You can read it '
+          'over and change anything before submitting.\n\n'
+          'The repository is public, so your email address is shortened to '
+          'its first letter and domain. Nothing else about your mail is '
+          'included — no message, no subject, no password.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Open GitHub'),
+          ),
+        ],
+      ),
+    );
+    if (agreed != true || !context.mounted) return;
+
+    final version = ref.read(installedVersionValueProvider).value;
+    final url = IssueTracker.newIssueUrl(
+      title: IssueTracker.titleFor(
+        doing: problem.doing,
+        error: problem.error,
+      ),
+      report: problem.report(
+        appVersion: version?.version,
+        build: version?.build,
+        redactAddress: true,
+      ),
+    );
+
+    final opened = await launchUrl(url, mode: LaunchMode.externalApplication);
+    if (!opened && context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(
+          content: Text('Could not open a browser. Use Copy details instead.'),
+        ));
+    }
+  }
+
   Future<void> _act(BuildContext context, WidgetRef ref) async {
     switch (problem.remedy) {
       case ErrorRemedy.retry:
@@ -451,6 +507,15 @@ class _ProblemActions extends ConsumerWidget {
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
           child: const Text('Copy details'),
+        ),
+        TextButton(
+          onPressed: () => _report(context, ref),
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            minimumSize: const Size(0, 32),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          child: const Text('Report'),
         ),
       ],
     );
