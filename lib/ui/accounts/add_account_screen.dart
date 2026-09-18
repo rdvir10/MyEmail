@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/mail_engine.dart';
 import '../../domain/account.dart';
 import '../../state/providers.dart';
+import '../settings/backup_screen.dart';
 import 'microsoft_sign_in_sheet.dart';
 
 /// Add a mailbox: Gmail with an app password, or a Microsoft one with
@@ -154,6 +155,25 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
                         Text(
                           'Add an account to get started.',
                           style: theme.textTheme.bodyLarge,
+                        ),
+                        const SizedBox(height: 12),
+                        // Offered here because there is nowhere else it could
+                        // be. A new device has no accounts, so the shell shows
+                        // this screen instead of the app, and Settings cannot
+                        // be reached at all until one exists — leaving someone
+                        // holding a backup with no way to use it.
+                        OutlinedButton.icon(
+                          onPressed: _busy
+                              ? null
+                              : () => Navigator.of(context).push(
+                                    MaterialPageRoute<void>(
+                                      builder: (_) => const BackupScreen(
+                                        isFirstRun: true,
+                                      ),
+                                    ),
+                                  ),
+                          icon: const Icon(Icons.restore),
+                          label: const Text('Restore from a backup'),
                         ),
                         const SizedBox(height: 20),
                       ],

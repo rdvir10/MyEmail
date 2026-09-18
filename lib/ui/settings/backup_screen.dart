@@ -6,8 +6,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/backup/backup_service.dart';
+import '../../data/backup/secret_vault.dart';
 import '../../domain/settings_backup.dart';
 import '../../state/backup_providers.dart';
+import 'backup_dialogs.dart';
 
 /// Settings, Backup: write everything to a file, or read a file back.
 ///
@@ -17,7 +19,16 @@ import '../../state/backup_providers.dart';
 /// before the export, and again after the import, is the difference between a
 /// deliberate trade and an apparent bug.
 class BackupScreen extends ConsumerStatefulWidget {
-  const BackupScreen({super.key});
+  const BackupScreen({super.key, this.isFirstRun = false});
+
+  /// Reached from the welcome screen rather than from Settings.
+  ///
+  /// A new device has no accounts, so Settings is unreachable — the shell
+  /// shows the add-account screen instead — and restoring is precisely what
+  /// someone with a backup wants to do first. On that path the screen leads
+  /// with Restore, drops Save (there is nothing yet to save), and closes
+  /// itself once accounts exist, which drops the person into their mail.
+  final bool isFirstRun;
 
   @override
   ConsumerState<BackupScreen> createState() => _BackupScreenState();
@@ -29,21 +40,28 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
   String? _done;
 
   Future<void> _export() async {
+    final choice = await askExportChoice(context);
+    if (choice == null || !mounted) return;
+
     setState(() {
       _busy = true;
       _error = null;
       _done = null;
     });
     try {
-      final backup = ref.read(backupServiceProvider).export();
+      final backup = await ref
+          .read(backupServiceProvider)
+          .export(passphrase: choice.passphrase);
       final saved = await ref.read(backupFilesProvider).save(
             fileName: _suggestedName(backup),
             contents: backup.toJsonString(),
           );
       if (!mounted) return;
       setState(() => _done = saved
-          ? 'Saved ${backup.summary}. Sign-in details are not in the file.'
+          ? 'Saved ${backup.summary}.${choice.includesSignIns ? ' Keep the passphrase safe: without it the sign-in details cannot be recovered.' : ' Sign-in details are not in the file.'}'
           : null);
+    } on VaultPassphraseTooShort catch (e) {
+      if (mounted) setState(() => _error = e.message);
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not save the file: $e');
     } finally {
@@ -105,12 +123,50 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
         ),
       );
       if (confirmed != true || !mounted) return;
+
+      // Ask for the passphrase only once the restore is actually going ahead,
+      // and keep asking on a wrong answer rather than making the person start
+      // from the file picker again.
+      String? passphrase;
+      if (backup.hasSecrets) {
+        var failed = false;
+        while (true) {
+          if (!mounted) return;
+          passphrase = await askRestorePassphrase(
+            context,
+            attemptFailed: failed,
+          );
+          if (passphrase == null || !mounted) return;
+          try {
+            await ref
+                .read(backupServiceProvider)
+                .vault
+                .open(sealed: backup.sealedSecrets!, passphrase: passphrase);
+            break;
+          } on VaultWrongPassphrase {
+            failed = true;
+          }
+        }
+      }
+      if (!mounted) return;
       setState(() => _busy = true);
 
-      final report = await ref.read(backupServiceProvider).import(backup);
+      final report = await ref
+          .read(backupServiceProvider)
+          .import(backup, passphrase: passphrase);
       ref.invalidate(accountsProviderForRefresh);
       if (!mounted) return;
       setState(() => _done = _reportText(report));
+
+      // On the welcome path there is now something behind this screen worth
+      // seeing, so get out of the way rather than leaving the person on a
+      // success message with no obvious next step.
+      if (widget.isFirstRun && report.accountsAdded.isNotEmpty) {
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+        if (mounted) Navigator.of(context).maybePop();
+      }
+    } on VaultUnreadable catch (e) {
+      if (mounted) setState(() => _error = e.message);
     } on BackupFormatException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } catch (e) {
@@ -132,10 +188,13 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
     if (report.accountsAlreadyHere.isNotEmpty) {
       parts.add('${report.accountsAlreadyHere.length} already here');
     }
+    if (report.accountsSignedIn > 0) {
+      parts.add('${report.accountsSignedIn} signed in');
+    }
     final summary = '${parts.join(', ')}.';
     if (!report.needsSignIn) return summary;
-    return '$summary Open Settings, Accounts to sign the new '
-        '${report.accountsAdded.length == 1 ? 'one' : 'ones'} in.';
+    return '$summary Open Settings, Accounts to sign the remaining '
+        '${report.awaitingSignIn == 1 ? 'one' : 'ones'} in.';
   }
 
   @override
@@ -143,13 +202,20 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Backup'), centerTitle: false),
+      appBar: AppBar(
+        title: Text(widget.isFirstRun ? 'Restore' : 'Backup'),
+        centerTitle: false,
+      ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
           Text(
-            'Saves your accounts and every setting to one file: the folder '
-            'tree, Quick Steps, signatures, swipe actions and the rest.',
+            widget.isFirstRun
+                ? 'If you saved a backup from another device, this brings back '
+                    'your accounts and every setting.'
+                : 'Saves your accounts and every setting to one file: the '
+                    'folder tree, Quick Steps, signatures, swipe actions and '
+                    'the rest.',
             style: theme.textTheme.bodyMedium,
           ),
           const SizedBox(height: 20),
@@ -167,12 +233,11 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'App passwords and Microsoft sign-ins are never written to '
-                    'the file. Either one would open your whole mailbox to '
-                    'anyone who found it, and a settings file tends to end up '
-                    'in a cloud folder or a downloads directory. Restoring '
-                    'brings the accounts back; each needs signing in once, '
-                    'which is one field or one button.',
+                    'Sign-in details are only in the file if you asked for '
+                    'them, and then they are encrypted with a passphrase you '
+                    'choose. With them, a restore needs nothing else. Without '
+                    'them, the file is safe to keep anywhere and each account '
+                    'is signed in once afterwards.',
                     style: theme.textTheme.bodySmall,
                   ),
                 ),
@@ -180,17 +245,25 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
             ),
           ),
           const SizedBox(height: 28),
-          FilledButton.icon(
-            onPressed: _busy ? null : _export,
-            icon: const Icon(Icons.save_alt),
-            label: const Text('Save to a file'),
-          ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: _busy ? null : _import,
-            icon: const Icon(Icons.restore),
-            label: const Text('Restore from a file'),
-          ),
+          if (widget.isFirstRun) ...[
+            FilledButton.icon(
+              onPressed: _busy ? null : _import,
+              icon: const Icon(Icons.restore),
+              label: const Text('Choose a backup file'),
+            ),
+          ] else ...[
+            FilledButton.icon(
+              onPressed: _busy ? null : _export,
+              icon: const Icon(Icons.save_alt),
+              label: const Text('Save to a file'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _import,
+              icon: const Icon(Icons.restore),
+              label: const Text('Restore from a file'),
+            ),
+          ],
           if (_busy) ...[
             const SizedBox(height: 20),
             const Center(

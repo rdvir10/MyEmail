@@ -42,12 +42,13 @@ Future<void> main() async {
   // reads them through the provider below. Two stores over the same
   // preferences would each hold their own idea of the list.
   final accountStore = PrefsAccountStore(prefs);
+  final credentialStore = SecureCredentialStore();
 
   final MailEngine engine = (kIsWeb || _forceSample)
       ? SampleMailEngine()
       : CachedImapEngine(
           accountStore: accountStore,
-          credentialStore: SecureCredentialStore(),
+          credentialStore: credentialStore,
           cache: DriftCacheStore(MailDatabase.open()),
           folderLists: PrefsFolderListStore(prefs),
         );
@@ -85,6 +86,7 @@ Future<void> main() async {
       overrides: [
         uiStateStoreProvider.overrideWithValue(PrefsUiStateStore(prefs)),
         accountStoreProvider.overrideWithValue(accountStore),
+        credentialStoreProvider.overrideWithValue(credentialStore),
         mailEngineProvider.overrideWithValue(engine),
         mailNotifierProvider.overrideWithValue(notifier),
         syncStateStoreProvider.overrideWithValue(syncState),

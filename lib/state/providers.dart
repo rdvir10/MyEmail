@@ -2,6 +2,7 @@ import 'package:collection/collection.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/account_store.dart';
+import '../data/credential_store.dart';
 import '../data/auth/microsoft_oauth.dart';
 import '../data/auth/oauth_config.dart';
 import '../data/auth/oauth_token.dart';
@@ -36,6 +37,14 @@ final microsoftOAuthProvider = Provider<MicrosoftOAuth>((ref) {
   ref.onDispose(oauth.close);
   return oauth;
 });
+
+/// Where account secrets live.
+///
+/// The engine has always had one; backup needs the same instance, because an
+/// encrypted export reads the secrets straight out of it. main() overrides
+/// this with the Keystore-backed store.
+final credentialStoreProvider =
+    Provider<CredentialStore>((ref) => MemoryCredentialStore());
 
 /// The account records, as stored.
 ///

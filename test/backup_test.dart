@@ -5,11 +5,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/account_store.dart';
 import 'package:myemail/data/backup/backup_service.dart';
+import 'package:myemail/data/backup/secret_vault.dart';
+import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/settings_backup.dart';
 import 'package:myemail/state/backup_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/ui/accounts/add_account_screen.dart';
 import 'package:myemail/ui/settings/backup_screen.dart';
 
 /// Taking the app's setup to another device.
@@ -58,7 +61,7 @@ void main() {
     test('accounts and settings survive a round trip', () async {
       await seedSettings();
 
-      final restored = SettingsBackup.parse(service.export().toJsonString());
+      final restored = SettingsBackup.parse((await service.export()).toJsonString());
 
       expect(restored.accounts.map((a) => a.emailAddress),
           ['me@example.com', 'me@work.example']);
@@ -75,7 +78,7 @@ void main() {
       // the restore still looked like it had worked.
       await seedSettings();
 
-      final restored = SettingsBackup.parse(service.export().toJsonString());
+      final restored = SettingsBackup.parse((await service.export()).toJsonString());
 
       expect(restored.accounts.first.id, 'acct-aaa');
       final favourite =
@@ -99,7 +102,7 @@ void main() {
         'access-token-value',
       ];
 
-      final json = service.export().toJsonString();
+      final json = (await service.export()).toJsonString();
 
       for (final secret in secrets) {
         expect(json, isNot(contains(secret)), reason: secret);
@@ -112,8 +115,10 @@ void main() {
       }
     });
 
-    test('the auth method is kept, so the restore knows how to sign in', () {
-      final restored = SettingsBackup.parse(service.export().toJsonString());
+    test('the auth method is kept, so the restore knows how to sign in',
+        () async {
+      final restored =
+          SettingsBackup.parse((await service.export()).toJsonString());
 
       expect(restored.accounts[1].authMethod, AuthMethod.oauth);
       expect(restored.accounts[1].provider, MailProvider.outlook);
@@ -127,21 +132,21 @@ void main() {
       await uiState.writeIds(UiStateKeys.selected, {'acct-aaa:INBOX'});
       await uiState.writeString(UiStateKeys.recentMoves, 'acct-aaa:Work');
 
-      final entries = service.export().entries;
+      final entries = (await service.export()).entries;
 
       expect(entries.containsKey(UiStateKeys.selected), isFalse);
       expect(entries.containsKey(UiStateKeys.recentMoves), isFalse);
     });
 
-    test('empty settings are omitted rather than written as blanks', () {
-      expect(service.export().entries, isEmpty);
+    test('empty settings are omitted rather than written as blanks', () async {
+      expect((await service.export()).entries, isEmpty);
     });
   });
 
   group('reading a file back', () {
     test('restores settings onto a bare device', () async {
       await seedSettings();
-      final file = service.export().toJsonString();
+      final file = (await service.export()).toJsonString();
 
       final fresh = MemoryUiStateStore();
       final freshAccounts = MemoryAccountStore();
@@ -158,7 +163,7 @@ void main() {
     });
 
     test('says the restored accounts still need signing in', () async {
-      final file = service.export().toJsonString();
+      final file = (await service.export()).toJsonString();
 
       final report = await BackupService(
         accountStore: MemoryAccountStore(),
@@ -172,7 +177,7 @@ void main() {
         () async {
       // The copy here has a secret behind it and the copy in the file does
       // not, so preferring the file would sign a working account out.
-      final file = service.export().toJsonString();
+      final file = (await service.export()).toJsonString();
 
       final report = await service.import(SettingsBackup.parse(file));
 
@@ -185,7 +190,7 @@ void main() {
         () async {
       // Different ids, same address. Matching on id alone would add it twice
       // and leave two entries for one mailbox.
-      final file = service.export().toJsonString();
+      final file = (await service.export()).toJsonString();
       final other = MemoryAccountStore([
         const Account(
           id: 'acct-different',
@@ -291,8 +296,7 @@ void main() {
   });
 
   group('the Backup screen', () {
-    testWidgets('says plainly that sign-ins are not in the file',
-        (tester) async {
+    testWidgets('says what happens to sign-in details', (tester) async {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
@@ -304,7 +308,7 @@ void main() {
       );
 
       expect(
-        find.textContaining('never written to the file'),
+        find.textContaining('only in the file if you asked for them'),
         findsOneWidget,
       );
     });
@@ -324,6 +328,13 @@ void main() {
       );
 
       await tester.tap(find.text('Save to a file'));
+      await tester.pumpAndSettle();
+
+      // The dialog asks whether sign-ins travel. Turning that off is the
+      // path that needs no passphrase.
+      await tester.tap(find.text('Include sign-in details'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
       await tester.pumpAndSettle();
 
       expect(files.saved, isNotNull);
@@ -347,6 +358,10 @@ void main() {
 
       await tester.tap(find.text('Save to a file'));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Include sign-in details'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
 
       expect(find.textContaining('Saved'), findsNothing);
     });
@@ -354,7 +369,7 @@ void main() {
     testWidgets('restoring asks before it overwrites anything',
         (tester) async {
       final files = _FakeBackupFiles()
-        ..toPick = service.export().toJsonString();
+        ..toPick = (await service.export()).toJsonString();
       final target = MemoryUiStateStore();
       await tester.pumpWidget(
         ProviderScope(
@@ -399,9 +414,227 @@ void main() {
       expect(find.textContaining('not a MyEmail settings file'), findsOneWidget);
     });
   });
+
+  group('one-click restore', () {
+    const passphrase = 'correct horse battery staple';
+
+    /// Both services share a vault with a cheap iteration count: the real
+    /// 120,000 is there to slow an attacker down and would only slow the
+    /// suite down here.
+    BackupService serviceWith({
+      required MemoryAccountStore store,
+      required MemoryCredentialStore creds,
+      required MemoryUiStateStore ui,
+    }) =>
+        BackupService(
+          accountStore: store,
+          uiState: ui,
+          credentialStore: creds,
+          vault: const SecretVault(iterations: 1000),
+        );
+
+    test('secrets travel and the accounts arrive signed in', () async {
+      final creds = MemoryCredentialStore();
+      await creds.writeSecret('acct-aaa', 'abcdabcdabcdabcd');
+      await creds.writeSecret('acct-bbb', '{"refresh_token":"r-1"}');
+      final from = serviceWith(
+        store: accounts,
+        creds: creds,
+        ui: uiState,
+      );
+
+      final file = (await from.export(passphrase: passphrase)).toJsonString();
+
+      final toCreds = MemoryCredentialStore();
+      final toAccounts = MemoryAccountStore();
+      final report = await serviceWith(
+        store: toAccounts,
+        creds: toCreds,
+        ui: MemoryUiStateStore(),
+      ).import(SettingsBackup.parse(file), passphrase: passphrase);
+
+      expect(report.accountsSignedIn, 2);
+      expect(report.needsSignIn, isFalse,
+          reason: 'this is the whole point of a one-click restore');
+      expect(await toCreds.readSecret('acct-aaa'), 'abcdabcdabcdabcd');
+      expect(await toCreds.readSecret('acct-bbb'), '{"refresh_token":"r-1"}');
+    });
+
+    test('a file saved without a passphrase carries no secrets', () async {
+      final creds = MemoryCredentialStore();
+      await creds.writeSecret('acct-aaa', 'abcdabcdabcdabcd');
+
+      final backup = await serviceWith(
+        store: accounts,
+        creds: creds,
+        ui: uiState,
+      ).export();
+
+      expect(backup.hasSecrets, isFalse);
+      expect(backup.toJsonString(), isNot(contains('abcdabcdabcdabcd')));
+    });
+
+    test('the wrong passphrase writes nothing at all', () async {
+      // Half a restore — accounts present, no sign-ins, settings replaced —
+      // would be worse than none, because there is no obvious way back.
+      final creds = MemoryCredentialStore();
+      await creds.writeSecret('acct-aaa', 'abcdabcdabcdabcd');
+      await seedSettings();
+      final file = (await serviceWith(
+        store: accounts,
+        creds: creds,
+        ui: uiState,
+      ).export(passphrase: passphrase))
+          .toJsonString();
+
+      final toAccounts = MemoryAccountStore();
+      final toUi = MemoryUiStateStore();
+
+      await expectLater(
+        serviceWith(
+          store: toAccounts,
+          creds: MemoryCredentialStore(),
+          ui: toUi,
+        ).import(SettingsBackup.parse(file), passphrase: 'wrong passphrase'),
+        throwsA(isA<VaultWrongPassphrase>()),
+      );
+
+      expect(toAccounts.read(), isEmpty);
+      expect(toUi.readIds(UiStateKeys.favorites), isEmpty);
+    });
+
+    test('an account already here keeps its own secret', () async {
+      // The file's copy may be older than the device's, and a rotated OAuth
+      // refresh token in it would be dead — writing it would sign a working
+      // account out.
+      final creds = MemoryCredentialStore();
+      await creds.writeSecret('acct-aaa', 'from-the-file');
+      final file = (await serviceWith(
+        store: accounts,
+        creds: creds,
+        ui: uiState,
+      ).export(passphrase: passphrase))
+          .toJsonString();
+
+      final liveCreds = MemoryCredentialStore();
+      await liveCreds.writeSecret('acct-aaa', 'the-working-one');
+      await serviceWith(
+        store: accounts,
+        creds: liveCreds,
+        ui: uiState,
+      ).import(SettingsBackup.parse(file), passphrase: passphrase);
+
+      expect(await liveCreds.readSecret('acct-aaa'), 'the-working-one');
+    });
+
+    test('an account that was signed out does not restore an empty secret',
+        () async {
+      // Writing a blank would produce an account that looks signed in and
+      // fails on first connect.
+      final file = (await serviceWith(
+        store: accounts,
+        creds: MemoryCredentialStore(),
+        ui: uiState,
+      ).export(passphrase: passphrase))
+          .toJsonString();
+
+      final toCreds = MemoryCredentialStore();
+      final report = await serviceWith(
+        store: MemoryAccountStore(),
+        creds: toCreds,
+        ui: MemoryUiStateStore(),
+      ).import(SettingsBackup.parse(file), passphrase: passphrase);
+
+      expect(report.accountsSignedIn, 0);
+      expect(report.needsSignIn, isTrue);
+      expect(await toCreds.readSecret('acct-aaa'), isNull);
+    });
+
+    test('an older build reads a file with secrets, minus the secrets', () {
+      // The secrets block is an extra key, not a new format version, so a
+      // build that predates it restores everything else rather than refusing
+      // the file outright.
+      final withSecrets = jsonEncode({
+        'format': 'myemail.settings',
+        'formatVersion': 1,
+        'accounts': [
+          {'id': 'acct-aaa', 'emailAddress': 'me@example.com'},
+        ],
+        'settings': {UiStateKeys.favorites: ['acct-aaa:INBOX']},
+        'secrets': {'cipher': 'aes-gcm-256'},
+      });
+
+      final parsed = SettingsBackup.parse(withSecrets);
+
+      expect(parsed.accounts, hasLength(1));
+      expect(parsed.hasSecrets, isTrue);
+      expect(parsed.summary, contains('sign-in details'));
+    });
+  });
+
+  group('the welcome screen', () {
+    testWidgets('offers a restore, because Settings cannot be reached yet',
+        (tester) async {
+      // A new device has no accounts, so the shell shows the add-account
+      // screen instead of the app and there is no route to Settings. Without
+      // this button someone holding a backup has no way to use it.
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            accountStoreProvider.overrideWithValue(MemoryAccountStore()),
+            uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+          ],
+          child: const MaterialApp(
+            home: AddAccountScreen(isFirstAccount: true),
+          ),
+        ),
+      );
+
+      expect(find.text('Restore from a backup'), findsOneWidget);
+    });
+
+    testWidgets('the ordinary add-account screen does not offer it',
+        (tester) async {
+      // Reached from Settings, where Backup is already a row of its own.
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            accountStoreProvider.overrideWithValue(accounts),
+            uiStateStoreProvider.overrideWithValue(uiState),
+          ],
+          child: const MaterialApp(home: AddAccountScreen()),
+        ),
+      );
+
+      expect(find.text('Restore from a backup'), findsNothing);
+    });
+
+    testWidgets('it opens a restore-only screen', (tester) async {
+      // Nothing on the device to save yet, so offering Save would be an
+      // empty promise.
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            accountStoreProvider.overrideWithValue(MemoryAccountStore()),
+            uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+          ],
+          child: const MaterialApp(
+            home: AddAccountScreen(isFirstAccount: true),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Restore from a backup'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Choose a backup file'), findsOneWidget);
+      expect(find.text('Save to a file'), findsNothing);
+    });
+  });
 }
 
 /// Stands in for the document picker, which a widget test cannot answer.
+
 class _FakeBackupFiles implements BackupFiles {
   _FakeBackupFiles({this.accept = true});
 

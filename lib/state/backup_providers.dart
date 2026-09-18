@@ -9,6 +9,7 @@ final backupServiceProvider = Provider<BackupService>((ref) {
   return BackupService(
     accountStore: ref.watch(accountStoreProvider),
     uiState: ref.watch(uiStateStoreProvider),
+    credentialStore: ref.watch(credentialStoreProvider),
   );
 });
 

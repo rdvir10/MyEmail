@@ -6,21 +6,26 @@ import 'account.dart';
 
 /// Everything about how this app is set up, in one file.
 ///
-/// What is deliberately **not** in here: app passwords and OAuth tokens.
+/// Sign-in details are the sensitive part, and the file handles them in one of
+/// two ways depending on what the person chose.
 ///
-/// That is the whole security design of this feature and it is worth being
-/// explicit about. A Gmail app password reads a mailbox until it is revoked;
-/// a Microsoft refresh token does the same and renews itself indefinitely.
-/// Either one, written into a file that then lives in a cloud folder, an email
-/// attachment or a downloads directory, is a durable key to the entire
-/// mailbox sitting somewhere nobody is guarding. Encrypting it would move the
-/// problem to a passphrase people reuse, and a backup that cannot be restored
-/// because the passphrase is gone is its own failure.
-///
-/// So the accounts come back with their addresses, names, colours and every
-/// preference attached to them, and each one needs signing in again. That is
-/// one field, or one button for a Microsoft account, against a file that
+/// Without a passphrase, [sealedSecrets] is null and no secret is in the file
+/// at all. The accounts come back with their addresses, names, colours and
+/// every preference attached to them, and each needs signing in once. The file
 /// cannot hurt anyone if it leaks.
+///
+/// With a passphrase, the secrets travel in [sealedSecrets], encrypted with
+/// AES-256-GCM under a key derived from that passphrase. A restore is then one
+/// step and the accounts work immediately. What that costs is real and the
+/// screen says so: a Gmail app password reads a mailbox until it is revoked
+/// and a Microsoft refresh token renews itself indefinitely, so the file
+/// becomes worth exactly as much as the passphrase protecting it, and a
+/// forgotten passphrase means the secrets in it are gone for good.
+///
+/// Both files are otherwise identical, and an [sealedSecrets] block is
+/// optional in the format rather than a new version of it — a build that
+/// predates encryption reads such a file, restores the settings and the
+/// accounts, and ignores a key it does not recognise.
 ///
 /// Account ids are preserved on purpose. Folder ids are `<accountId>:<path>`,
 /// and those ids are the keys for favourites, hidden folders, expanded state,
@@ -33,6 +38,7 @@ class SettingsBackup {
   const SettingsBackup({
     required this.accounts,
     required this.entries,
+    this.sealedSecrets,
     this.exportedAt,
     this.appVersion,
   });
@@ -43,6 +49,15 @@ class SettingsBackup {
   /// The preference records, by storage key. Values are whatever that key
   /// holds: a list of ids, a map of orders, or an encoded string.
   final Map<String, Object?> entries;
+
+  /// The encrypted secrets, or null when the file carries none.
+  ///
+  /// Opaque here on purpose: this class knows the file format and nothing
+  /// about cryptography, which lives in SecretVault.
+  final Map<String, Object?>? sealedSecrets;
+
+  /// Whether a restore from this file would need a passphrase.
+  bool get hasSecrets => sealedSecrets != null;
 
   final DateTime? exportedAt;
   final String? appVersion;
@@ -61,6 +76,7 @@ class SettingsBackup {
         if (appVersion != null) 'appVersion': appVersion,
         'accounts': [for (final a in accounts) accountToBackupJson(a)],
         'settings': entries,
+        if (sealedSecrets != null) 'secrets': sealedSecrets,
       });
 
   /// Parse a file someone chose from disk.
@@ -105,11 +121,14 @@ class SettingsBackup {
     }
 
     final settings = decoded['settings'];
+    final secrets = decoded['secrets'];
     return SettingsBackup(
       accounts: accounts,
       entries: settings is Map
           ? settings.cast<String, Object?>()
           : const <String, Object?>{},
+      sealedSecrets:
+          secrets is Map ? secrets.cast<String, Object?>() : null,
       exportedAt: DateTime.tryParse('${decoded['exportedAt']}'),
       appVersion:
           decoded['appVersion'] is String ? decoded['appVersion'] as String : null,
@@ -121,6 +140,7 @@ class SettingsBackup {
     final parts = <String>[
       '${accounts.length} ${accounts.length == 1 ? 'account' : 'accounts'}',
       '${entries.length} ${entries.length == 1 ? 'setting' : 'settings'}',
+      if (hasSecrets) 'sign-in details',
     ];
     return parts.join(', ');
   }

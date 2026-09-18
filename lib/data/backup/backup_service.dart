@@ -1,7 +1,9 @@
 import '../../domain/account.dart';
 import '../../domain/settings_backup.dart';
 import '../account_store.dart';
+import '../credential_store.dart';
 import '../ui_state_store.dart';
+import 'secret_vault.dart';
 
 /// Reads the app's settings into a [SettingsBackup], and puts one back.
 ///
@@ -11,12 +13,21 @@ class BackupService {
   const BackupService({
     required this.accountStore,
     required this.uiState,
+    this.credentialStore,
+    this.vault = const SecretVault(),
     this.appVersion,
     this.now,
   });
 
   final AccountStore accountStore;
   final UiStateStore uiState;
+
+  /// Only ever touched when a passphrase is given. Without one, the export
+  /// path never reads a secret, so a plain backup cannot leak one even by
+  /// mistake.
+  final CredentialStore? credentialStore;
+
+  final SecretVault vault;
   final String? appVersion;
   final DateTime Function()? now;
 
@@ -45,7 +56,12 @@ class BackupService {
     // to find waiting on a new device.
   };
 
-  SettingsBackup export() {
+  /// Read everything into a backup.
+  ///
+  /// With [passphrase], the accounts' stored secrets are encrypted into the
+  /// file so a restore needs no sign-in. Without one, no secret is read at
+  /// all.
+  Future<SettingsBackup> export({String? passphrase}) async {
     final entries = <String, Object?>{};
     for (final MapEntry(key: key, value: shape) in exported.entries) {
       switch (shape) {
@@ -61,9 +77,29 @@ class BackupService {
       }
     }
 
+    final accounts = accountStore.read();
+
+    Map<String, Object?>? sealed;
+    if (passphrase != null) {
+      final store = credentialStore;
+      if (store == null) {
+        throw StateError('No credential store to read secrets from');
+      }
+      final secrets = <String, String>{};
+      for (final account in accounts) {
+        final secret = await store.readSecret(account.id);
+        // An account with nothing stored is one that was never signed in, or
+        // was signed out. Writing an empty value would restore a broken
+        // sign-in that looks like a working one.
+        if (secret != null && secret.isNotEmpty) secrets[account.id] = secret;
+      }
+      sealed = await vault.seal(secrets: secrets, passphrase: passphrase);
+    }
+
     return SettingsBackup(
-      accounts: accountStore.read(),
+      accounts: accounts,
       entries: entries,
+      sealedSecrets: sealed,
       exportedAt: (now ?? DateTime.now)(),
       appVersion: appVersion,
     );
@@ -76,7 +112,20 @@ class BackupService {
   /// the one in the file does not, so preferring the file would sign a working
   /// account out. Matching is by address rather than by id, because the same
   /// mailbox added separately on two devices has two different ids.
-  Future<RestoreReport> import(SettingsBackup backup) async {
+  /// [passphrase] is required when the file carries secrets, and ignored
+  /// when it does not.
+  Future<RestoreReport> import(
+    SettingsBackup backup, {
+    String? passphrase,
+  }) async {
+    // Decrypt before writing anything. A wrong passphrase must leave the
+    // device untouched rather than half-restored with no sign-ins.
+    Map<String, String> secrets = const {};
+    final sealed = backup.sealedSecrets;
+    if (sealed != null && passphrase != null) {
+      secrets = await vault.open(sealed: sealed, passphrase: passphrase);
+    }
+
     final existing = accountStore.read();
     final knownAddresses = {
       for (final a in existing) a.emailAddress.toLowerCase(),
@@ -96,6 +145,22 @@ class BackupService {
 
     if (added.isNotEmpty) {
       await accountStore.write([...existing, ...added]);
+    }
+
+    // Secrets only for accounts this restore actually added. An account
+    // already here has a secret that works, and the file's copy may be older
+    // than the one on the device — a rotated OAuth refresh token in
+    // particular would be dead, so writing it would sign a working account
+    // out.
+    var signedIn = 0;
+    final store = credentialStore;
+    if (store != null) {
+      for (final account in added) {
+        final secret = secrets[account.id];
+        if (secret == null || secret.isEmpty) continue;
+        await store.writeSecret(account.id, secret);
+        signedIn++;
+      }
     }
 
     var restored = 0;
@@ -129,6 +194,7 @@ class BackupService {
       accountsAdded: added,
       accountsAlreadyHere: skipped,
       settingsRestored: restored,
+      accountsSignedIn: signedIn,
     );
   }
 }
@@ -142,15 +208,22 @@ class RestoreReport {
     required this.accountsAdded,
     required this.accountsAlreadyHere,
     required this.settingsRestored,
+    this.accountsSignedIn = 0,
   });
 
-  /// Added, and each needing to be signed in: the file carried no secrets.
+  /// Added by this restore.
   final List<Account> accountsAdded;
+
+  /// How many of those came with a working sign-in out of the file.
+  final int accountsSignedIn;
 
   /// Already on this device, left with their working sign-in.
   final List<Account> accountsAlreadyHere;
 
   final int settingsRestored;
 
-  bool get needsSignIn => accountsAdded.isNotEmpty;
+  /// Accounts that are here but cannot connect until someone signs them in.
+  int get awaitingSignIn => accountsAdded.length - accountsSignedIn;
+
+  bool get needsSignIn => awaitingSignIn > 0;
 }
