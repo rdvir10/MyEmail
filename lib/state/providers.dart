@@ -104,6 +104,30 @@ class Accounts extends AsyncNotifier<List<Account>> {
     return updated;
   }
 
+  /// Sign an account in again without losing anything cached under it.
+  ///
+  /// Invalidates the folder list afterwards so the tree reloads on a
+  /// connection that now works, rather than sitting on whatever the last
+  /// failed sync left behind.
+  Future<void> signInAgain({
+    required String accountId,
+    String? appPassword,
+    OAuthToken? token,
+  }) async {
+    final engine = ref.read(mailEngineProvider);
+    if (token != null) {
+      await engine.updateOAuthToken(accountId: accountId, token: token);
+    } else if (appPassword != null) {
+      await engine.updateAppPassword(
+        accountId: accountId,
+        secret: appPassword,
+      );
+    } else {
+      throw ArgumentError('signInAgain needs either a password or a token');
+    }
+    ref.invalidate(foldersProvider);
+  }
+
   Future<void> remove(String accountId) async {
     await ref.read(mailEngineProvider).removeAccount(accountId);
     state = AsyncData([

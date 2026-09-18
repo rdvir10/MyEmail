@@ -1,17 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/auth/oauth_token.dart';
+import '../../data/mail_engine.dart';
 import '../../domain/account.dart';
 import '../../state/providers.dart';
+import '../accounts/microsoft_sign_in_sheet.dart';
 
-/// Rename an account and pick the colour it wears in the folder tree.
+/// Rename an account, recolour it, or sign it in again.
 ///
-/// Only those two. The address, the provider and the sign-in are what the
-/// stored secret was proved against and what every cached folder and message
-/// is filed under, so changing one of them is adding a different account
-/// rather than editing this one; the screen shows them, greyed, and says so,
-/// which is more use than leaving someone hunting for a field that was never
-/// going to be there.
+/// The address stays fixed, and is shown greyed with the reason: it is what
+/// every cached folder and message is filed under, so a different address is
+/// a different account rather than an edit to this one.
+///
+/// Signing in again is not that. It is the same mailbox with a credential
+/// that works, and it exists because the alternative — remove the account,
+/// add it back — throws away every cached message to fix a revoked app
+/// password. Proved against the server before it replaces anything, so a
+/// wrong password leaves the account exactly as it was.
 class EditAccountScreen extends ConsumerStatefulWidget {
   const EditAccountScreen({super.key, required this.account});
 
@@ -24,9 +30,12 @@ class EditAccountScreen extends ConsumerStatefulWidget {
 class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
   late final TextEditingController _name =
       TextEditingController(text: widget.account.displayName);
+  final TextEditingController _password = TextEditingController();
   late int _color = widget.account.colorValue;
   bool _busy = false;
+  bool _showPassword = false;
   String? _error;
+  String? _signInResult;
 
   /// The same four the app assigns to new accounts, plus enough more to tell
   /// several mailboxes apart at a glance.
@@ -44,7 +53,45 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
   @override
   void dispose() {
     _name.dispose();
+    _password.dispose();
     super.dispose();
+  }
+
+  /// Prove a new credential and put it in place of the old one.
+  ///
+  /// Kept apart from [_save] on purpose. Saving a name is instant and local;
+  /// this one goes to the server and can fail, and rolling the two into one
+  /// button would mean a rename that could be refused by a mail server.
+  Future<void> _signInAgain({String? appPassword, OAuthToken? token}) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+      _signInResult = null;
+    });
+    try {
+      await ref.read(accountsProvider.notifier).signInAgain(
+            accountId: widget.account.id,
+            appPassword: appPassword,
+            token: token,
+          );
+      if (!mounted) return;
+      _password.clear();
+      setState(() => _signInResult = 'Signed in. Nothing cached was lost.');
+    } on AuthenticationFailed catch (e) {
+      setState(() => _error = e.message);
+    } on ConnectionFailed catch (e) {
+      setState(() => _error = e.message);
+    } catch (e) {
+      setState(() => _error = 'Could not sign in: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _signInWithMicrosoft() async {
+    final token = await MicrosoftSignInSheet.show(context);
+    if (token == null || !mounted) return;
+    await _signInAgain(token: token);
   }
 
   bool get _changed =>
@@ -128,9 +175,10 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            'The address and the sign-in cannot be changed here. Every cached '
-            'folder and message is filed under this account, so a different '
-            'address means a different account: add it, then remove this one.',
+            'The address cannot be changed. Every cached folder and message is '
+            'filed under this account, so a different address means a '
+            'different account: add it, then remove this one. Signing in again '
+            'with the same address is below.',
             style: theme.textTheme.bodySmall
                 ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
           ),
@@ -140,6 +188,82 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
               _error!,
               style: theme.textTheme.bodyMedium
                   ?.copyWith(color: theme.colorScheme.error),
+            ),
+          ],
+          const SizedBox(height: 28),
+          const Divider(height: 1),
+          const SizedBox(height: 16),
+          Text('Sign in again', style: theme.textTheme.labelLarge),
+          const SizedBox(height: 4),
+          Text(
+            switch (widget.account.authMethod) {
+              AuthMethod.appPassword =>
+                'If the app password stopped working — revoked, or replaced — '
+                    'put the new one here. The account keeps its cached mail, '
+                    'which removing and adding it again would not.',
+              AuthMethod.oauth =>
+                'If this account has been signed out, sign in again here. It '
+                    'keeps its cached mail, which removing and adding it again '
+                    'would not.',
+            },
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 12),
+          if (widget.account.authMethod == AuthMethod.appPassword) ...[
+            TextField(
+              controller: _password,
+              enabled: !_busy,
+              obscureText: !_showPassword,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: InputDecoration(
+                labelText: 'New app password',
+                suffixIcon: IconButton(
+                  tooltip: _showPassword ? 'Hide' : 'Show',
+                  icon: Icon(
+                    _showPassword
+                        ? Icons.visibility_off_outlined
+                        : Icons.visibility_outlined,
+                  ),
+                  onPressed: () =>
+                      setState(() => _showPassword = !_showPassword),
+                ),
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton(
+              onPressed: (_busy || _password.text.trim().isEmpty)
+                  ? null
+                  // Google shows app passwords with spaces; they are not part
+                  // of it.
+                  : () => _signInAgain(
+                        appPassword: _password.text.replaceAll(' ', ''),
+                      ),
+              child: const Text('Check and save'),
+            ),
+          ] else
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _signInWithMicrosoft,
+              icon: const Icon(Icons.login),
+              label: const Text('Sign in with Microsoft'),
+            ),
+          if (_signInResult != null) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Icon(Icons.check_circle_outline,
+                    size: 18, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _signInResult!,
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.primary),
+                  ),
+                ),
+              ],
             ),
           ],
           const SizedBox(height: 28),

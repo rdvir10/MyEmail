@@ -223,6 +223,61 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
+  Future<void> updateAppPassword({
+    required String accountId,
+    required String secret,
+  }) =>
+      _replaceSecret(
+        accountId: accountId,
+        credentials: PasswordCredentials(secret),
+        storedSecret: secret,
+      );
+
+  @override
+  Future<void> updateOAuthToken({
+    required String accountId,
+    required OAuthToken token,
+  }) =>
+      _replaceSecret(
+        accountId: accountId,
+        // As in addOAuthAccount: the probe runs before anything is stored, so
+        // the token cannot come from the repository yet.
+        credentials:
+            OAuthCredentials(({bool force = false}) async => token.accessToken),
+        storedSecret: token.toStoredJson(),
+      );
+
+  Future<void> _replaceSecret({
+    required String accountId,
+    required MailCredentials credentials,
+    required String storedSecret,
+  }) async {
+    final account = accountStore
+        .read()
+        .where((a) => a.id == accountId)
+        .firstOrNull;
+    if (account == null) throw StateError('Unknown account $accountId');
+
+    // Prove it on a connection of its own, so a failure leaves the account
+    // exactly as it was rather than half-changed.
+    final probe = _transportFactory(account, credentials);
+    try {
+      await probe.listFolders();
+    } finally {
+      await probe.close();
+    }
+
+    await credentialStore.writeSecret(accountId, storedSecret);
+
+    // Drop the cached transport and the sync built on it. A password
+    // transport closes over the secret it was built with, so keeping it would
+    // mean the account carried on failing with the old password until the app
+    // was restarted, which looks exactly like the fix not having worked.
+    await _transports.remove(accountId)?.close();
+    _syncs.remove(accountId);
+  }
+
+  @override
   Future<void> removeAccount(String accountId) async {
     await _transports.remove(accountId)?.close();
     _syncs.remove(accountId);

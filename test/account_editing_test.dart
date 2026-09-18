@@ -127,6 +127,27 @@ void main() {
           child: MaterialApp(home: EditAccountScreen(account: account)),
         );
 
+    /// The name box specifically. There are two text fields on this screen
+    /// now — the other is the new app password — so an unscoped
+    /// find.byType(TextField) is ambiguous.
+    Finder nameField() => find.ancestor(
+          of: find.text('Name in the folder list'),
+          matching: find.byType(TextField),
+        );
+
+    /// A window tall enough for the whole screen at once.
+    ///
+    /// Otherwise Save and the sign-in section sit below the fold, where a
+    /// lazily built ListView has not created them, and scrollUntilVisible
+    /// cannot help: the text fields bring scrollables of their own, so it
+    /// cannot tell which one to drive.
+    void useTallView(WidgetTester tester) {
+      tester.view.physicalSize = const Size(900, 2600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+    }
+
     testWidgets('starts from the current name', (tester) async {
       await tester.pumpWidget(app());
 
@@ -135,6 +156,7 @@ void main() {
 
     testWidgets('Save is dead until something actually changes',
         (tester) async {
+      useTallView(tester);
       await tester.pumpWidget(app());
 
       final button = tester.widget<FilledButton>(
@@ -146,7 +168,8 @@ void main() {
     testWidgets('typing a new name wakes Save up', (tester) async {
       await tester.pumpWidget(app());
 
-      await tester.enterText(find.byType(TextField), 'Home');
+      useTallView(tester);
+      await tester.enterText(nameField(), 'Home');
       await tester.pump();
 
       final button = tester.widget<FilledButton>(
@@ -165,9 +188,69 @@ void main() {
       expect(find.text('me@example.com'), findsOneWidget);
       expect(find.widgetWithText(TextField, 'me@example.com'), findsNothing);
       expect(
-        find.textContaining('cannot be changed here'),
+        find.textContaining('The address cannot be changed'),
         findsOneWidget,
       );
+    });
+
+    testWidgets('offers a new app password for a password account',
+        (tester) async {
+      useTallView(tester);
+      await tester.pumpWidget(app());
+
+      expect(find.text('New app password'), findsOneWidget);
+      expect(find.text('Sign in with Microsoft'), findsNothing);
+    });
+
+    testWidgets('offers Microsoft sign-in for an OAuth account',
+        (tester) async {
+      // No password field at all: there is nothing a person could type that
+      // would work, so showing one would only invite them to try.
+      useTallView(tester);
+      await tester.pumpWidget(
+        const ProviderScope(
+          child: MaterialApp(
+            home: EditAccountScreen(
+              account: Account(
+                id: 'acct-2',
+                displayName: 'Work',
+                emailAddress: 'me@outlook.example',
+                provider: MailProvider.outlook,
+                authMethod: AuthMethod.oauth,
+                colorValue: 0xFF107C41,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Sign in with Microsoft'), findsOneWidget);
+      expect(find.text('New app password'), findsNothing);
+    });
+
+    testWidgets('the check button waits for a password to be typed',
+        (tester) async {
+      useTallView(tester);
+      await tester.pumpWidget(app());
+
+      var button = tester.widget<OutlinedButton>(
+        find.widgetWithText(OutlinedButton, 'Check and save'),
+      );
+      expect(button.onPressed, isNull);
+
+      await tester.enterText(
+        find.ancestor(
+          of: find.text('New app password'),
+          matching: find.byType(TextField),
+        ),
+        'newnewnewnewnew1',
+      );
+      await tester.pump();
+
+      button = tester.widget<OutlinedButton>(
+        find.widgetWithText(OutlinedButton, 'Check and save'),
+      );
+      expect(button.onPressed, isNotNull);
     });
   });
 

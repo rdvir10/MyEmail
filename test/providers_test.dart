@@ -70,6 +70,20 @@ class _SingleAccountReversedEngine implements MailEngine {
       );
 
   @override
+  Future<void> updateAppPassword({
+    required String accountId,
+    required String secret,
+  }) =>
+      _inner.updateAppPassword(accountId: accountId, secret: secret);
+
+  @override
+  Future<void> updateOAuthToken({
+    required String accountId,
+    required OAuthToken token,
+  }) =>
+      _inner.updateOAuthToken(accountId: accountId, token: token);
+
+  @override
   Future<void> removeAccount(String accountId) =>
       _inner.removeAccount(accountId);
 

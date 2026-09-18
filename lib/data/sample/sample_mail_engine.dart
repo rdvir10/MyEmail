@@ -88,6 +88,35 @@ class SampleMailEngine implements MailEngine {
     return updated;
   }
 
+  @override
+  Future<void> updateAppPassword({
+    required String accountId,
+    required String secret,
+  }) async {
+    await _latency();
+    // The sample engine cannot check a password, but it can behave like a
+    // server that refuses an empty one, so the screen's error path is real.
+    if (secret.trim().isEmpty) {
+      throw const AuthenticationFailed('The server refused the password.');
+    }
+    _requireAccount(accountId);
+  }
+
+  @override
+  Future<void> updateOAuthToken({
+    required String accountId,
+    required OAuthToken token,
+  }) async {
+    await _latency();
+    _requireAccount(accountId);
+  }
+
+  void _requireAccount(String accountId) {
+    if (!_accounts.any((a) => a.id == accountId)) {
+      throw StateError('Unknown account $accountId');
+    }
+  }
+
   Future<Account> _remember({
     required String displayName,
     required String emailAddress,

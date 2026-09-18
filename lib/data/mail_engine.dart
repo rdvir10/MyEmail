@@ -53,6 +53,26 @@ abstract class MailEngine {
     int? colorValue,
   });
 
+  /// Replace the app password an account signs in with, keeping the account.
+  ///
+  /// The point of this over removing and re-adding: the account id stays the
+  /// same, so every cached folder, message and body stays where it is. An app
+  /// password that has been revoked is otherwise only fixable by throwing the
+  /// mailbox's whole local copy away and downloading it again.
+  ///
+  /// Proved against the server first. Storing a secret that does not work
+  /// would replace a broken sign-in with a differently broken one.
+  Future<void> updateAppPassword({
+    required String accountId,
+    required String secret,
+  });
+
+  /// The same, for an account that signs in with OAuth.
+  Future<void> updateOAuthToken({
+    required String accountId,
+    required OAuthToken token,
+  });
+
   /// Forget the account and its secret. Local caches for it go too.
   Future<void> removeAccount(String accountId);
 
