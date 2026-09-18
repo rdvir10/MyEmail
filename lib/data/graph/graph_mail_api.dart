@@ -17,10 +17,27 @@ class GraphMailApi {
   const GraphMailApi({
     required this.accessToken,
     http.Client? httpClient,
+    this.sleep,
   }) : _http = httpClient;
 
   final Future<String> Function({bool force}) accessToken;
   final http.Client? _http;
+  /// Overridden by tests, which must not really wait out a throttle.
+  final Future<void> Function(Duration)? sleep;
+
+  /// How many times a throttled request is tried again before giving up.
+  ///
+  /// Graph throttles per app and per mailbox, and it throttles bursts hardest
+  /// — which is exactly what adding an account is. It says how long to wait in
+  /// a Retry-After header, so the right thing is to wait and try again rather
+  /// than hand somebody a message about rate limiting that they can do nothing
+  /// with except tap the button again themselves.
+  static const maxThrottleRetries = 3;
+
+  /// Longer than this and waiting is worse than reporting. Graph occasionally
+  /// asks for minutes, and an app that appears frozen for three of them is
+  /// not obviously better than one that says what happened.
+  static const maxThrottleWait = Duration(seconds: 30);
 
   static const base = 'https://graph.microsoft.com/v1.0';
 
@@ -123,21 +140,35 @@ class GraphMailApi {
   /// A name the mailbox does not have simply does not appear. Archive is the
   /// common case — plenty of mailboxes have never had one.
   Future<Map<String, String>> wellKnownFolderIds() async {
+    // One request, not one per name. Six at once was a burst, and a burst is
+    // what Graph throttles hardest — adding an account could fail outright
+    // with a 429 before anything had loaded.
+    final json = await _post(Uri.parse('$base/\$batch'), {
+      'requests': [
+        for (final name in wellKnownNames)
+          {
+            'id': name,
+            'method': 'GET',
+            'url': '/me/mailFolders/$name?\$select=id',
+          },
+      ],
+    });
+
     final found = <String, String>{};
-    await Future.wait(
-      wellKnownNames.map((name) async {
-        try {
-          final json = await _get(
-            Uri.parse('$base/me/mailFolders/$name')
-                .replace(queryParameters: {r'$select': 'id'}),
-          );
-          final id = json['id'];
-          if (id is String && id.isNotEmpty) found[name] = id;
-        } on GraphNotFound {
-          // No such folder in this mailbox. Not an error.
-        }
-      }),
-    );
+    final responses = json['responses'];
+    if (responses is! List) return found;
+    for (final entry in responses) {
+      if (entry is! Map) continue;
+      // A batch answers 200 even when the requests inside it did not, so each
+      // one carries its own status. A 404 here is a mailbox with no Archive,
+      // which is ordinary.
+      if (entry['status'] != 200) continue;
+      final name = entry['id'];
+      final body = entry['body'];
+      if (name is! String || body is! Map) continue;
+      final id = body['id'];
+      if (id is String && id.isNotEmpty) found[name] = id;
+    }
     return found;
   }
 
@@ -332,7 +363,10 @@ class GraphMailApi {
   Future<Map<String, Object?>> _delete(Uri uri) =>
       _send(http.Request('DELETE', uri));
 
-  Future<Map<String, Object?>> _send(http.Request request) async {
+  Future<Map<String, Object?>> _send(
+    http.Request request, {
+    int attempt = 0,
+  }) async {
     final client = _http ?? http.Client();
     try {
       request.headers['Authorization'] = 'Bearer ${await accessToken()}';
@@ -342,6 +376,18 @@ class GraphMailApi {
         response = await http.Response.fromStream(await client.send(request));
       } on Exception catch (e) {
         throw ConnectionFailed('Could not reach Microsoft. ($e)');
+      }
+
+      // Throttled, and Graph has said how long to wait. Waiting it out is the
+      // whole remedy, and doing it here means nothing above this ever has to
+      // know it happened.
+      final wait = _retryAfter(response);
+      if (wait != null && attempt < maxThrottleRetries) {
+        await (sleep ?? _realSleep)(wait);
+        // Awaited inside the try on purpose: returning the future would let
+        // the finally below close the client out from under the retry.
+        // A fresh request object too — an http.Request cannot be sent twice.
+        return await _send(_copyOf(request), attempt: attempt + 1);
       }
 
       if (response.statusCode == 404) throw const GraphNotFound();
@@ -368,6 +414,32 @@ class GraphMailApi {
     } finally {
       if (_http == null) client.close();
     }
+  }
+
+  static Future<void> _realSleep(Duration d) => Future<void>.delayed(d);
+
+  /// How long to wait before trying again, or null if trying again is not the
+  /// answer.
+  ///
+  /// Graph sends Retry-After in seconds on a 429 and often on a 503. Without
+  /// the header a short pause is still better than failing, because both of
+  /// those are conditions that pass.
+  static Duration? _retryAfter(http.Response response) {
+    if (response.statusCode != 429 && response.statusCode != 503) return null;
+    final header = response.headers['retry-after'];
+    final seconds = header == null ? null : int.tryParse(header.trim());
+    final wait = Duration(seconds: seconds ?? 2);
+    // Graph occasionally asks for minutes. Sitting there is worse than saying
+    // what happened, so past the cap it is reported instead.
+    return wait > maxThrottleWait ? null : wait;
+  }
+
+  /// An http.Request cannot be sent twice, so a retry needs its own.
+  static http.Request _copyOf(http.Request original) {
+    final copy = http.Request(original.method, original.url)
+      ..bodyBytes = original.bodyBytes;
+    copy.headers.addAll(original.headers);
+    return copy;
   }
 
   static Exception _failureFor(int status, Map<String, Object?> json) {

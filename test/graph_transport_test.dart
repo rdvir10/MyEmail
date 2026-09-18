@@ -21,9 +21,22 @@ void main() {
   late MemoryGraphIdMap ids;
   late GraphTransport transport;
 
+  /// The same transport with the waiting taken out, so a throttling test does
+  /// not really sit there for seconds.
+  late GraphTransport patientTransport;
+
   setUp(() {
     server = _FakeGraph();
     ids = MemoryGraphIdMap();
+    patientTransport = GraphTransport(
+      accountId: 'acct-1',
+      idMap: ids,
+      api: GraphMailApi(
+        accessToken: ({bool force = false}) async => 'token',
+        httpClient: http_testing.MockClient(server.handle),
+        sleep: (_) async {},
+      ),
+    );
     transport = GraphTransport(
       accountId: 'acct-1',
       idMap: ids,
@@ -152,6 +165,44 @@ void main() {
       final folders = await transport.listFolders();
 
       expect(folders, hasLength(1));
+    });
+
+    test('the well-known names are resolved in one request, not six',
+        () async {
+      // Six at once is a burst, and a burst is what Graph throttles hardest.
+      // Adding an account failed outright with a 429 before anything loaded.
+      server.folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox');
+
+      await transport.listFolders();
+
+      expect(server.batches, 1);
+    });
+
+    test('being throttled is waited out rather than handed over', () async {
+      // Graph says how long to wait in a Retry-After header. Reporting "rate
+      // limited" instead leaves someone with nothing to do but tap the same
+      // button again themselves.
+      server
+        ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+        ..throttle = 2;
+
+      final folders = await patientTransport.listFolders();
+
+      expect(folders, hasLength(1));
+      expect(server.throttle, 0, reason: 'both refusals were retried');
+    });
+
+    test('a throttle that never lets up is eventually reported', () async {
+      // Retrying forever would be an app that appears frozen. Past a few
+      // attempts it says what happened.
+      server
+        ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+        ..throttle = 99;
+
+      await expectLater(
+        patientTransport.listFolders(),
+        throwsA(isA<ConnectionFailed>()),
+      );
     });
 
     test('a refusal repeats what Graph said about it', () async {
@@ -425,6 +476,13 @@ class _FakeGraph {
   /// Refuse any folder $select, to exercise the error path.
   bool rejectFolderSelect = false;
 
+  /// How many batch requests were made. One per folder listing, not one per
+  /// well-known name, is the whole point of batching them.
+  int batches = 0;
+
+  /// Answer the next [throttle] requests with a 429 and a Retry-After.
+  int throttle = 0;
+
   /// Which folder id answers to which well-known name, as Graph's
   /// /me/mailFolders/inbox shortcut does.
   final Map<String, String> wellKnown = {};
@@ -525,6 +583,20 @@ class _FakeGraph {
   }
 
   Future<http.Response> handle(http.Request request) async {
+    if (throttle > 0) {
+      throttle--;
+      return http.Response(
+        jsonEncode({
+          'error': {'code': 'TooManyRequests', 'message': 'Slow down.'},
+        }),
+        429,
+        headers: const {
+          'content-type': 'application/json',
+          'retry-after': '1',
+        },
+      );
+    }
+
     final path = Uri.decodeComponent(request.url.path);
     final query = request.url.queryParameters;
 
@@ -554,6 +626,26 @@ class _FakeGraph {
           headers: const {'content-type': 'application/json'},
         );
       }
+    }
+
+    // The batch that resolves every well-known name in one request.
+    if (request.method == 'POST' && path.endsWith(r'/$batch')) {
+      batches++;
+      final body = jsonDecode(request.body) as Map<String, Object?>;
+      final requests = body['requests'] as List;
+      return json({
+        'responses': [
+          for (final r in requests)
+            if (wellKnown.containsKey((r as Map)['id']))
+              {
+                'id': r['id'],
+                'status': 200,
+                'body': {'id': wellKnown[r['id']]},
+              }
+            else
+              {'id': (r)['id'], 'status': 404, 'body': {}},
+        ],
+      });
     }
 
     // Addressing a folder by its well-known name rather than its id, which is
