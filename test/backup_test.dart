@@ -1,0 +1,426 @@
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/account_store.dart';
+import 'package:myemail/data/backup/backup_service.dart';
+import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/settings_backup.dart';
+import 'package:myemail/state/backup_providers.dart';
+import 'package:myemail/state/providers.dart';
+import 'package:myemail/ui/settings/backup_screen.dart';
+
+/// Taking the app's setup to another device.
+void main() {
+  late MemoryAccountStore accounts;
+  late MemoryUiStateStore uiState;
+  late BackupService service;
+
+  const personal = Account(
+    id: 'acct-aaa',
+    displayName: 'Personal',
+    emailAddress: 'me@example.com',
+    provider: MailProvider.gmail,
+    authMethod: AuthMethod.appPassword,
+    colorValue: 0xFF0F6CBD,
+  );
+  const work = Account(
+    id: 'acct-bbb',
+    displayName: 'Work',
+    emailAddress: 'me@work.example',
+    provider: MailProvider.outlook,
+    authMethod: AuthMethod.oauth,
+    colorValue: 0xFF107C41,
+  );
+
+  setUp(() {
+    accounts = MemoryAccountStore([personal, work]);
+    uiState = MemoryUiStateStore();
+    service = BackupService(
+      accountStore: accounts,
+      uiState: uiState,
+      appVersion: '1.6.0+10',
+      now: () => DateTime.utc(2026, 9, 18, 10),
+    );
+  });
+
+  Future<void> seedSettings() async {
+    await uiState.writeIds(UiStateKeys.favorites, {'acct-aaa:INBOX'});
+    await uiState.writeIds(UiStateKeys.hidden, {'acct-aaa:Spam'});
+    await uiState.writeIds(UiStateKeys.collapsedAccounts, {'acct-bbb'});
+    await uiState.writeOrder(UiStateKeys.order, {'acct-aaa:Work': 2});
+    await uiState.writeString(UiStateKeys.display, '{"density":"compact"}');
+  }
+
+  group('what goes in the file', () {
+    test('accounts and settings survive a round trip', () async {
+      await seedSettings();
+
+      final restored = SettingsBackup.parse(service.export().toJsonString());
+
+      expect(restored.accounts.map((a) => a.emailAddress),
+          ['me@example.com', 'me@work.example']);
+      expect(restored.entries[UiStateKeys.favorites], ['acct-aaa:INBOX']);
+      expect(restored.entries[UiStateKeys.order], {'acct-aaa:Work': 2});
+      expect(restored.entries[UiStateKeys.display], '{"density":"compact"}');
+    });
+
+    test('account ids are preserved, because the settings point at them',
+        () async {
+      // Folder ids are "<accountId>:<path>", and those ids are the keys for
+      // favourites, hidden folders, Quick Steps and signatures. Reissuing ids
+      // on restore would leave every one of those pointing at nothing while
+      // the restore still looked like it had worked.
+      await seedSettings();
+
+      final restored = SettingsBackup.parse(service.export().toJsonString());
+
+      expect(restored.accounts.first.id, 'acct-aaa');
+      final favourite =
+          (restored.entries[UiStateKeys.favorites] as List).single as String;
+      expect(favourite, startsWith('${restored.accounts.first.id}:'));
+    });
+
+    test('no secret of any kind is in the file', () async {
+      // The security case for the whole feature. A file carrying an app
+      // password or a refresh token opens the mailbox to whoever finds it,
+      // and a settings file ends up in a cloud folder by design.
+      //
+      // Planted secrets rather than a keyword sweep: "appPassword" is the
+      // name of an auth method and belongs in the file, so searching for the
+      // word "password" only catches that. What must never appear is a
+      // value.
+      await seedSettings();
+      const secrets = [
+        'abcdabcdabcdabcd',
+        'refresh-token-value',
+        'access-token-value',
+      ];
+
+      final json = service.export().toJsonString();
+
+      for (final secret in secrets) {
+        expect(json, isNot(contains(secret)), reason: secret);
+      }
+      // Nor any field that looks like a place to put one later. The service
+      // is never handed a credential store, so it cannot leak a secret even
+      // by accident; this guards the format against someone adding a field.
+      for (final key in ['"password"', '"secret"', '"token"', '"refreshToken"']) {
+        expect(json, isNot(contains(key)), reason: key);
+      }
+    });
+
+    test('the auth method is kept, so the restore knows how to sign in', () {
+      final restored = SettingsBackup.parse(service.export().toJsonString());
+
+      expect(restored.accounts[1].authMethod, AuthMethod.oauth);
+      expect(restored.accounts[1].provider, MailProvider.outlook);
+    });
+
+    test('per-device bookkeeping is left out', () async {
+      // The selected folder is where you happened to be standing, and recent
+      // moves are a history rather than a setting. Notification watermarks
+      // are worse: restored onto another device they claim mail it has never
+      // seen was already announced, so its first sync goes silent.
+      await uiState.writeIds(UiStateKeys.selected, {'acct-aaa:INBOX'});
+      await uiState.writeString(UiStateKeys.recentMoves, 'acct-aaa:Work');
+
+      final entries = service.export().entries;
+
+      expect(entries.containsKey(UiStateKeys.selected), isFalse);
+      expect(entries.containsKey(UiStateKeys.recentMoves), isFalse);
+    });
+
+    test('empty settings are omitted rather than written as blanks', () {
+      expect(service.export().entries, isEmpty);
+    });
+  });
+
+  group('reading a file back', () {
+    test('restores settings onto a bare device', () async {
+      await seedSettings();
+      final file = service.export().toJsonString();
+
+      final fresh = MemoryUiStateStore();
+      final freshAccounts = MemoryAccountStore();
+      final report = await BackupService(
+        accountStore: freshAccounts,
+        uiState: fresh,
+      ).import(SettingsBackup.parse(file));
+
+      expect(report.settingsRestored, 5);
+      expect(report.accountsAdded, hasLength(2));
+      expect(fresh.readIds(UiStateKeys.favorites), {'acct-aaa:INBOX'});
+      expect(fresh.readOrder(UiStateKeys.order), {'acct-aaa:Work': 2});
+      expect(freshAccounts.read().first.id, 'acct-aaa');
+    });
+
+    test('says the restored accounts still need signing in', () async {
+      final file = service.export().toJsonString();
+
+      final report = await BackupService(
+        accountStore: MemoryAccountStore(),
+        uiState: MemoryUiStateStore(),
+      ).import(SettingsBackup.parse(file));
+
+      expect(report.needsSignIn, isTrue);
+    });
+
+    test('an account already on this device keeps its working sign-in',
+        () async {
+      // The copy here has a secret behind it and the copy in the file does
+      // not, so preferring the file would sign a working account out.
+      final file = service.export().toJsonString();
+
+      final report = await service.import(SettingsBackup.parse(file));
+
+      expect(report.accountsAdded, isEmpty);
+      expect(report.accountsAlreadyHere, hasLength(2));
+      expect(accounts.read(), hasLength(2), reason: 'no duplicates');
+    });
+
+    test('the same mailbox added separately on two devices is not duplicated',
+        () async {
+      // Different ids, same address. Matching on id alone would add it twice
+      // and leave two entries for one mailbox.
+      final file = service.export().toJsonString();
+      final other = MemoryAccountStore([
+        const Account(
+          id: 'acct-different',
+          displayName: 'Personal',
+          emailAddress: 'ME@example.com',
+          provider: MailProvider.gmail,
+          authMethod: AuthMethod.appPassword,
+          colorValue: 0xFF0F6CBD,
+        ),
+      ]);
+
+      final report = await BackupService(
+        accountStore: other,
+        uiState: MemoryUiStateStore(),
+      ).import(SettingsBackup.parse(file));
+
+      expect(report.accountsAdded.map((a) => a.emailAddress),
+          ['me@work.example']);
+      expect(other.read(), hasLength(2));
+    });
+
+    test('a key this build does not know is skipped, not written blind',
+        () async {
+      // A file from a newer version. Writing an unknown key could put a value
+      // of the wrong shape where a notifier expects to read one.
+      final backup = SettingsBackup(
+        accounts: const [],
+        entries: const {'something.new.v9': 42},
+      );
+
+      final report = await service.import(backup);
+
+      expect(report.settingsRestored, 0);
+    });
+
+    test('a value of the wrong shape is skipped rather than crashing',
+        () async {
+      final backup = SettingsBackup(
+        accounts: const [],
+        entries: const {UiStateKeys.favorites: 'not a list'},
+      );
+
+      final report = await service.import(backup);
+
+      expect(report.settingsRestored, 0);
+      expect(uiState.readIds(UiStateKeys.favorites), isEmpty);
+    });
+  });
+
+  group('a file that is not one of ours', () {
+    test('random JSON is refused in words a person can act on', () {
+      expect(
+        () => SettingsBackup.parse('{"hello":"world"}'),
+        throwsA(isA<BackupFormatException>().having(
+          (e) => e.message,
+          'message',
+          contains('not a MyEmail settings file'),
+        )),
+      );
+    });
+
+    test('something that is not JSON at all is refused the same way', () {
+      expect(
+        () => SettingsBackup.parse('not json'),
+        throwsA(isA<BackupFormatException>()),
+      );
+    });
+
+    test('a newer format says to update rather than half-restoring', () {
+      final future = jsonEncode({
+        'format': 'myemail.settings',
+        'formatVersion': SettingsBackup.formatVersion + 1,
+        'accounts': const [],
+        'settings': const {},
+      });
+
+      expect(
+        () => SettingsBackup.parse(future),
+        throwsA(isA<BackupFormatException>().having(
+          (e) => e.message,
+          'message',
+          contains('newer version'),
+        )),
+      );
+    });
+
+    test('one unreadable account does not cost the rest of the file', () {
+      final partial = jsonEncode({
+        'format': 'myemail.settings',
+        'formatVersion': 1,
+        'accounts': [
+          {'id': 'acct-aaa', 'emailAddress': 'me@example.com'},
+          {'displayName': 'no id or address'},
+        ],
+        'settings': {UiStateKeys.favorites: ['acct-aaa:INBOX']},
+      });
+
+      final backup = SettingsBackup.parse(partial);
+
+      expect(backup.accounts, hasLength(1));
+      expect(backup.entries, isNotEmpty);
+    });
+  });
+
+  group('the Backup screen', () {
+    testWidgets('says plainly that sign-ins are not in the file',
+        (tester) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            accountStoreProvider.overrideWithValue(accounts),
+            uiStateStoreProvider.overrideWithValue(uiState),
+          ],
+          child: const MaterialApp(home: BackupScreen()),
+        ),
+      );
+
+      expect(
+        find.textContaining('never written to the file'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('exporting writes a file and reports what went in it',
+        (tester) async {
+      final files = _FakeBackupFiles();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            accountStoreProvider.overrideWithValue(accounts),
+            uiStateStoreProvider.overrideWithValue(uiState),
+            backupFilesProvider.overrideWithValue(files),
+          ],
+          child: const MaterialApp(home: BackupScreen()),
+        ),
+      );
+
+      await tester.tap(find.text('Save to a file'));
+      await tester.pumpAndSettle();
+
+      expect(files.saved, isNotNull);
+      expect(files.savedName, endsWith('.json'));
+      expect(find.textContaining('2 accounts'), findsOneWidget);
+    });
+
+    testWidgets('backing out of the save dialog reports nothing',
+        (tester) async {
+      final files = _FakeBackupFiles(accept: false);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            accountStoreProvider.overrideWithValue(accounts),
+            uiStateStoreProvider.overrideWithValue(uiState),
+            backupFilesProvider.overrideWithValue(files),
+          ],
+          child: const MaterialApp(home: BackupScreen()),
+        ),
+      );
+
+      await tester.tap(find.text('Save to a file'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Saved'), findsNothing);
+    });
+
+    testWidgets('restoring asks before it overwrites anything',
+        (tester) async {
+      final files = _FakeBackupFiles()
+        ..toPick = service.export().toJsonString();
+      final target = MemoryUiStateStore();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            accountStoreProvider.overrideWithValue(MemoryAccountStore()),
+            uiStateStoreProvider.overrideWithValue(target),
+            backupFilesProvider.overrideWithValue(files),
+          ],
+          child: const MaterialApp(home: BackupScreen()),
+        ),
+      );
+
+      await tester.tap(find.text('Restore from a file'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Restore these settings?'), findsOneWidget);
+
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(target.readIds(UiStateKeys.favorites), isEmpty,
+          reason: 'cancelling must write nothing at all');
+    });
+
+    testWidgets('a file that is not ours is reported, not swallowed',
+        (tester) async {
+      final files = _FakeBackupFiles()..toPick = '{"hello":"world"}';
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            accountStoreProvider.overrideWithValue(accounts),
+            uiStateStoreProvider.overrideWithValue(uiState),
+            backupFilesProvider.overrideWithValue(files),
+          ],
+          child: const MaterialApp(home: BackupScreen()),
+        ),
+      );
+
+      await tester.tap(find.text('Restore from a file'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('not a MyEmail settings file'), findsOneWidget);
+    });
+  });
+}
+
+/// Stands in for the document picker, which a widget test cannot answer.
+class _FakeBackupFiles implements BackupFiles {
+  _FakeBackupFiles({this.accept = true});
+
+  final bool accept;
+  String? saved;
+  String? savedName;
+  String? toPick;
+
+  @override
+  Future<bool> save({
+    required String fileName,
+    required String contents,
+  }) async {
+    if (!accept) return false;
+    saved = contents;
+    savedName = fileName;
+    return true;
+  }
+
+  @override
+  Future<String?> pick() async => toPick;
+}

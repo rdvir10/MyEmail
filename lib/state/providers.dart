@@ -1,6 +1,7 @@
 import 'package:collection/collection.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/account_store.dart';
 import '../data/auth/microsoft_oauth.dart';
 import '../data/auth/oauth_config.dart';
 import '../data/auth/oauth_token.dart';
@@ -35,6 +36,15 @@ final microsoftOAuthProvider = Provider<MicrosoftOAuth>((ref) {
   ref.onDispose(oauth.close);
   return oauth;
 });
+
+/// The account records, as stored.
+///
+/// The engine has held this all along; it needed a provider of its own once
+/// backup arrived, which reads and writes the account list without going
+/// through the engine. main() overrides it with the shared_preferences store,
+/// the same instance the engine was handed.
+final accountStoreProvider =
+    Provider<AccountStore>((ref) => MemoryAccountStore());
 
 /// Where expand state, favourites, ordering and the last folder are kept.
 /// main() overrides this with the shared_preferences store; tests and the

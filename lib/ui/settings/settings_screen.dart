@@ -8,6 +8,7 @@ import '../quick_steps/quick_steps_screen.dart';
 import '../../state/update_providers.dart';
 import 'about_screen.dart';
 import 'accounts_screen.dart';
+import 'backup_screen.dart';
 import 'notifications_screen.dart';
 import 'signatures_screen.dart';
 import 'sync_screen.dart';
@@ -87,6 +88,12 @@ class SettingsScreen extends ConsumerWidget {
           ),
           const Divider(height: 1),
           const _SectionHeading('This app'),
+          _Row(
+            icon: Icons.save_alt,
+            title: 'Backup',
+            subtitle: 'Save your settings to a file, or restore them',
+            onTap: () => _open(context, const BackupScreen()),
+          ),
           _Row(
             icon: Icons.info_outline,
             title: 'About',

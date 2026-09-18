@@ -38,10 +38,15 @@ Future<void> main() async {
 
   // The browser preview has no Keystore, no raw sockets and no SQLite, so it
   // always runs on sample data; Android talks to Gmail through the cache.
+  // One instance, shared: the engine writes accounts through it and backup
+  // reads them through the provider below. Two stores over the same
+  // preferences would each hold their own idea of the list.
+  final accountStore = PrefsAccountStore(prefs);
+
   final MailEngine engine = (kIsWeb || _forceSample)
       ? SampleMailEngine()
       : CachedImapEngine(
-          accountStore: PrefsAccountStore(prefs),
+          accountStore: accountStore,
           credentialStore: SecureCredentialStore(),
           cache: DriftCacheStore(MailDatabase.open()),
           folderLists: PrefsFolderListStore(prefs),
@@ -79,6 +84,7 @@ Future<void> main() async {
     ProviderScope(
       overrides: [
         uiStateStoreProvider.overrideWithValue(PrefsUiStateStore(prefs)),
+        accountStoreProvider.overrideWithValue(accountStore),
         mailEngineProvider.overrideWithValue(engine),
         mailNotifierProvider.overrideWithValue(notifier),
         syncStateStoreProvider.overrideWithValue(syncState),
