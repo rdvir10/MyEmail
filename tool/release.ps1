@@ -50,11 +50,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repo = Split-Path -Parent $PSScriptRoot
-Set-Location $repo
+# repoRoot, not repo. PowerShell variable names are case-insensitive, so a
+# local $repo silently IS the $Repo parameter, and gh then gets handed a
+# filesystem path where it wants owner/name.
+$repoRoot = Split-Path -Parent $PSScriptRoot
+Set-Location $repoRoot
 
 # --- 1. refuse to build something unreproducible --------------------------
-if (-not (Test-Path "$repo\android\key.properties")) {
+if (-not (Test-Path "$repoRoot\android\key.properties")) {
     throw "android/key.properties is missing, so this would be signed with the debug key. Nothing built."
 }
 $dirty = & git status --porcelain
@@ -63,7 +66,7 @@ if ($dirty) {
 }
 
 # --- 2. stamp the version -------------------------------------------------
-$pubspec = "$repo\pubspec.yaml"
+$pubspec = "$repoRoot\pubspec.yaml"
 $content = Get-Content $pubspec -Raw
 if ($content -notmatch '(?m)^version:\s*([0-9.]+)\+(\d+)\s*$') {
     throw "Could not find a 'version: x.y.z+n' line in pubspec.yaml."
@@ -78,7 +81,7 @@ $env:PATH = "$env:USERPROFILE\tools\flutter\bin;$env:PATH"
 & flutter build apk --release --target-platform android-arm64
 if ($LASTEXITCODE -ne 0) { throw "The build failed. pubspec.yaml has been bumped; revert it or fix and rerun." }
 
-$built = "$repo\build\app\outputs\flutter-apk\app-release.apk"
+$built = "$repoRoot\build\app\outputs\flutter-apk\app-release.apk"
 if (-not (Test-Path $built)) { throw "The build reported success but produced no APK." }
 
 # --- 4. publish under a fixed name ---------------------------------------
