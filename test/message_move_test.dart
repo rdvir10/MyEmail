@@ -15,7 +15,13 @@ import 'package:myemail/ui/shell/app_shell.dart';
 
 import 'fakes/fake_imap_transport.dart';
 
+import 'fakes/fake_webview.dart';
+
 void main() {
+  // The list lands on a message now, so a wide layout renders the reading
+  // pane — and with it a WebView, which needs a platform in a unit test.
+  setUpAll(FakeWebViewPlatform.install);
+
   group('sample engine move and delete', () {
     late SampleMailEngine engine;
 

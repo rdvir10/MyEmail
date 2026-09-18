@@ -11,6 +11,7 @@ import 'package:myemail/ui/shell/app_shell.dart';
 import 'package:myemail/ui/shell/ribbon.dart';
 
 import 'fakes/fake_webview.dart';
+import 'helpers/landing.dart';
 
 const _landscapeTablet = Size(1400, 900);
 const _portraitTablet = Size(800, 1280);
@@ -109,7 +110,11 @@ void main() {
 
     testWidgets('the message commands are disabled until one is selected',
         (tester) async {
-      await pump(tester, _landscapeTablet);
+      final c = await pump(tester, _landscapeTablet);
+
+      // Opening a folder lands on a message, so the state this is about —
+      // nothing selected — is what a folder with no mail in it leaves behind.
+      await goToEmptyFolder(tester, c);
 
       // Greyed rather than hidden: a bar whose buttons come and go as you
       // click around the list is harder to aim at.

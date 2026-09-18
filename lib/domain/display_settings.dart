@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 
 /// Where the message being read appears.
 ///
@@ -27,6 +27,28 @@ enum ReadingPanePosition {
         ReadingPanePosition.right => 'Beside the message list',
         ReadingPanePosition.bottom => 'Below the message list',
         ReadingPanePosition.off => 'Messages open on their own screen',
+      };
+
+  /// The next one round, for the ribbon button that cycles them.
+  ///
+  /// Right, bottom, off, and back. Off sits last on purpose: it is the one
+  /// most likely to be passed through rather than wanted, and putting it at
+  /// the end means the two useful positions are one tap apart.
+  ReadingPanePosition get next => switch (this) {
+        ReadingPanePosition.right => ReadingPanePosition.bottom,
+        ReadingPanePosition.bottom => ReadingPanePosition.off,
+        ReadingPanePosition.off => ReadingPanePosition.right,
+      };
+
+  /// What this position looks like as a button.
+  ///
+  /// The icon shows where the pane is now, not where it is going. A ribbon
+  /// button that previews its own next state reads as a status light that
+  /// lies.
+  IconData get icon => switch (this) {
+        ReadingPanePosition.right => Icons.vertical_split_outlined,
+        ReadingPanePosition.bottom => Icons.horizontal_split_outlined,
+        ReadingPanePosition.off => Icons.crop_square_outlined,
       };
 }
 

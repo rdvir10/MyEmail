@@ -168,7 +168,9 @@ void main() {
     testWidgets('Right gives three panes on a wide screen', (tester) async {
       await pumpShell(tester, const Size(1400, 900), ReadingPanePosition.right);
       expect(find.byType(PaneDivider), findsNWidgets(2));
-      expect(find.textContaining('Select a message'), findsOneWidget);
+      // The pane holds the message the list landed on, rather than the
+      // "Select a message" placeholder it used to open with.
+      expect(find.byType(ReadingPane), findsOneWidget);
     });
 
     testWidgets('Off leaves the list full height and opens a screen instead',

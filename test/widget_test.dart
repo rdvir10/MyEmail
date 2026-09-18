@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/ui/folder_tree/folder_tree_panel.dart';
+import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
+
+import 'fakes/fake_webview.dart';
 
 Widget _panelHarness() {
   return const ProviderScope(
@@ -24,6 +27,10 @@ void _useWideScreen(WidgetTester tester) {
 }
 
 void main() {
+  // A folder lands on a message, so the reading pane — and the web view it
+  // renders the body in — is built by every layout test here.
+  setUpAll(FakeWebViewPlatform.install);
+
   // The panel has a footer now (Quick Steps, Add account), so the default
   // 800x600 surface pushes tree rows out of the build window.
   setUp(() {
@@ -167,8 +174,9 @@ void main() {
           reason: 'tree is a permanent pane');
       expect(find.byTooltip('Open navigation menu'), findsNothing,
           reason: 'no drawer button on a wide screen');
-      expect(find.textContaining('Select a message'), findsOneWidget,
-          reason: 'reading pane is present but empty');
+      expect(find.byType(ReadingPane), findsOneWidget,
+          reason: 'the reading pane is present, holding the message the '
+              'list landed on');
 
       await tester.tap(find.text('Newsletters'));
       await tester.pumpAndSettle();

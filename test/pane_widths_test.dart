@@ -9,7 +9,14 @@ import 'package:myemail/ui/folder_tree/folder_tree_panel.dart';
 import 'package:myemail/ui/messages/message_list_pane.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 
-Widget _app() => const ProviderScope(child: MaterialApp(home: AppShell()));
+import 'helpers/landing.dart';
+
+Widget _app({ProviderContainer? container}) => container == null
+    ? const ProviderScope(child: MaterialApp(home: AppShell()))
+    : UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(home: AppShell()),
+      );
 
 void _useSize(WidgetTester tester, Size size) {
   tester.view.physicalSize = size;
@@ -224,9 +231,14 @@ void main() {
 
     testWidgets('the empty reading pane names the folder in view',
         (tester) async {
+      // A folder with mail in it lands on a message, so the placeholder is
+      // what is left when there is nothing to land on.
       _useSize(tester, const Size(1400, 900));
-      await tester.pumpWidget(_app());
+      final container = _container();
+      await tester.pumpWidget(_app(container: container));
       await tester.pumpAndSettle();
+
+      await goToEmptyFolder(tester, container);
 
       expect(find.textContaining('Select a message in'), findsOneWidget);
     });

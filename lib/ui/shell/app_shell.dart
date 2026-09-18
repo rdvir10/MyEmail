@@ -34,6 +34,20 @@ import 'ribbon.dart';
 /// is derived in [effectiveSelectedFolderIdProvider], so nothing has to be
 /// listening at the right moment for the default to take.
 class AppShell extends ConsumerStatefulWidget {
+  /// Whether a message opens beside or under the list rather than on its own
+  /// screen.
+  ///
+  /// On the shell rather than inside it, because the message list asks the
+  /// same question: landing on a message makes sense where there is a pane to
+  /// show it in, and means walking into a folder and finding a message open
+  /// on top of it where there is not.
+  static bool hasReadingPane(double width, ReadingPanePosition position) =>
+      switch (position) {
+        ReadingPanePosition.off => false,
+        ReadingPanePosition.bottom => width >= AppShell.mediumBreakpoint,
+        ReadingPanePosition.right => width >= AppShell.wideBreakpoint,
+      };
+
   const AppShell({super.key});
 
   static const double mediumBreakpoint = 600;
@@ -62,8 +76,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   /// A tap on a new-mail notification launched the app. Select that message's
   /// folder and remember which message to open once the list arrives.
   Future<void> _openLaunchMessage() async {
-    final payload =
-        await ref.read(mailNotifierProvider).takeLaunchPayload();
+    final payload = await ref.read(mailNotifierProvider).takeLaunchPayload();
     if (payload == null || !mounted) return;
     final String folderId;
     try {
@@ -87,7 +100,7 @@ class _AppShellState extends ConsumerState<AppShell> {
     // A layout that already has a reading pane will show the message as soon
     // as the selection resolves, so pushing a screen on top of it would be a
     // second copy of the same message.
-    if (_hasReadingPane(width, position)) {
+    if (AppShell.hasReadingPane(width, position)) {
       _pendingMessageId = null;
       return;
     }
@@ -98,13 +111,6 @@ class _AppShellState extends ConsumerState<AppShell> {
       if (mounted) _pushMessage(context, message);
     });
   }
-
-  static bool _hasReadingPane(double width, ReadingPanePosition position) =>
-      switch (position) {
-        ReadingPanePosition.off => false,
-        ReadingPanePosition.bottom => width >= AppShell.mediumBreakpoint,
-        ReadingPanePosition.right => width >= AppShell.wideBreakpoint,
-      };
 
   @override
   Widget build(BuildContext context) {
@@ -124,16 +130,25 @@ class _AppShellState extends ConsumerState<AppShell> {
     // A reading pane needs room. Beside the list it needs a wide screen; under
     // the list it only needs the two-pane width, which is why a tablet in
     // portrait is the case Bottom exists for.
+    // The ribbon goes with the screen, not with the pane. It is where the
+    // button that moves the pane lives, so tying it to one position would let
+    // a single press take the pane away and the way back with it.
+    final ribbon = width >= AppShell.wideBreakpoint;
+
     return switch (position) {
-      ReadingPanePosition.off => const _MediumLayout(),
-      ReadingPanePosition.bottom => const _MediumLayout(readingPaneBelow: true),
+      ReadingPanePosition.off => _MediumLayout(withRibbon: ribbon),
+      ReadingPanePosition.bottom => _MediumLayout(
+        readingPaneBelow: true,
+        withRibbon: ribbon,
+      ),
       // No room beside the list. Deliberately falls back to no pane rather
       // than stacking one: a phone held sideways is 600-ish wide and barely
       // 400 tall, and splitting that horizontally leaves two halves too short
       // to use. Bottom is there for anyone who wants the stack.
-      ReadingPanePosition.right => width >= AppShell.wideBreakpoint
-          ? const _WideLayout()
-          : const _MediumLayout(),
+      ReadingPanePosition.right =>
+        width >= AppShell.wideBreakpoint
+            ? const _WideLayout()
+            : const _MediumLayout(),
     };
   }
 }
@@ -146,8 +161,9 @@ class _NarrowLayout extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final selectedId = ref.watch(effectiveSelectedFolderIdProvider);
-    final folder =
-        selectedId == null ? null : ref.watch(folderIndexProvider)[selectedId];
+    final folder = selectedId == null
+        ? null
+        : ref.watch(folderIndexProvider)[selectedId];
 
     return Scaffold(
       appBar: AppBar(
@@ -161,8 +177,7 @@ class _NarrowLayout extends ConsumerWidget {
           // whatever happens to be on the navigator.
           child: Builder(
             builder: (drawerContext) => FolderTreePanel(
-              onFolderSelected: (_) =>
-                  Scaffold.of(drawerContext).closeDrawer(),
+              onFolderSelected: (_) => Scaffold.of(drawerContext).closeDrawer(),
             ),
           ),
         ),
@@ -174,59 +189,79 @@ class _NarrowLayout extends ConsumerWidget {
 }
 
 class _MediumLayout extends ConsumerWidget {
-  const _MediumLayout({this.readingPaneBelow = false});
+  const _MediumLayout({this.readingPaneBelow = false, this.withRibbon = false});
 
   /// Split the right-hand side into the list above and the message below,
   /// rather than opening a message as its own screen.
   final bool readingPaneBelow;
 
+  /// A wide screen reaches this layout whenever the pane is below the list or
+  /// switched off, and it keeps the command bar it would have had.
+  final bool withRibbon;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
       body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final panes = ref
-                .watch(paneWidthsProvider)
-                .fitted(constraints.maxWidth, hasReadingPane: false);
-            final notifier = ref.read(paneWidthsProvider.notifier);
-            final showTree = ref.watch(folderPaneVisibleProvider);
-            return Row(
-              children: [
-                if (showTree) ...[
-                  _TreePane(width: panes.tree),
-                  PaneDivider(
-                    onDrag: notifier.dragTree,
-                    onReset: notifier.reset,
-                    label: 'Folder pane width',
-                  ),
-                ],
-                Expanded(
-                  child: Column(
-                    children: [
-                      const _FolderTitleBar(),
-                      Expanded(
-                        child: readingPaneBelow
-                            // Opening a message only changes what the pane
-                            // below shows; there is nothing to push.
-                            ? const MessageListPane(onOpen: _noOpen)
-                            : MessageListPane(
-                                onOpen: (m) => _pushMessage(context, m),
-                              ),
-                      ),
-                      if (readingPaneBelow) ...[
-                        const Divider(height: 1),
-                        const Expanded(flex: 2, child: _ReadingArea()),
-                      ],
-                    ],
-                  ),
-                ),
-              ],
-            );
-          },
+        child: Column(
+          children: [
+            if (withRibbon) const Ribbon(),
+            Expanded(child: _MediumPanes(readingPaneBelow: readingPaneBelow)),
+          ],
         ),
       ),
       floatingActionButton: const _ComposeButton(),
+    );
+  }
+}
+
+class _MediumPanes extends ConsumerWidget {
+  const _MediumPanes({required this.readingPaneBelow});
+
+  final bool readingPaneBelow;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final panes = ref
+            .watch(paneWidthsProvider)
+            .fitted(constraints.maxWidth, hasReadingPane: false);
+        final notifier = ref.read(paneWidthsProvider.notifier);
+        final showTree = ref.watch(folderPaneVisibleProvider);
+        return Row(
+          children: [
+            if (showTree) ...[
+              _TreePane(width: panes.tree),
+              PaneDivider(
+                onDrag: notifier.dragTree,
+                onReset: notifier.reset,
+                label: 'Folder pane width',
+              ),
+            ],
+            Expanded(
+              child: Column(
+                children: [
+                  const _FolderTitleBar(),
+                  Expanded(
+                    child: readingPaneBelow
+                        // Opening a message only changes what the pane
+                        // below shows; there is nothing to push.
+                        ? const MessageListPane(onOpen: _noOpen)
+                        : MessageListPane(
+                            onOpen: (m) => _pushMessage(context, m),
+                          ),
+                  ),
+                  if (readingPaneBelow) ...[
+                    const Divider(height: 1),
+                    const Expanded(flex: 2, child: _ReadingArea()),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -280,43 +315,43 @@ class _WidePanes extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return LayoutBuilder(
-          builder: (context, constraints) {
-            final panes = ref
-                .watch(paneWidthsProvider)
-                .fitted(constraints.maxWidth, hasReadingPane: true);
-            final notifier = ref.read(paneWidthsProvider.notifier);
-            final showTree = ref.watch(folderPaneVisibleProvider);
-            return Row(
-              children: [
-                if (showTree) ...[
-                  _TreePane(width: panes.tree),
-                  PaneDivider(
-                    onDrag: notifier.dragTree,
-                    onReset: notifier.reset,
-                    label: 'Folder pane width',
-                  ),
+      builder: (context, constraints) {
+        final panes = ref
+            .watch(paneWidthsProvider)
+            .fitted(constraints.maxWidth, hasReadingPane: true);
+        final notifier = ref.read(paneWidthsProvider.notifier);
+        final showTree = ref.watch(folderPaneVisibleProvider);
+        return Row(
+          children: [
+            if (showTree) ...[
+              _TreePane(width: panes.tree),
+              PaneDivider(
+                onDrag: notifier.dragTree,
+                onReset: notifier.reset,
+                label: 'Folder pane width',
+              ),
+            ],
+            SizedBox(
+              width: panes.list,
+              child: Column(
+                children: [
+                  const _FolderTitleBar(),
+                  // Opening a message on the wide layout only changes which
+                  // one the reading pane shows; there is nothing to push.
+                  const Expanded(child: MessageListPane(onOpen: _noOpen)),
                 ],
-                SizedBox(
-                  width: panes.list,
-                  child: Column(
-                    children: [
-                      const _FolderTitleBar(),
-                      // Opening a message on the wide layout only changes which
-                      // one the reading pane shows; there is nothing to push.
-                      const Expanded(child: MessageListPane(onOpen: _noOpen)),
-                    ],
-                  ),
-                ),
-                PaneDivider(
-                  onDrag: notifier.dragList,
-                  onReset: notifier.reset,
-                  label: 'Message list width',
-                ),
-                const Expanded(child: _ReadingArea()),
-              ],
-            );
-          },
+              ),
+            ),
+            PaneDivider(
+              onDrag: notifier.dragList,
+              onReset: notifier.reset,
+              label: 'Message list width',
+            ),
+            const Expanded(child: _ReadingArea()),
+          ],
         );
+      },
+    );
   }
 }
 
@@ -330,8 +365,9 @@ class _NothingOpen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final selectedId = ref.watch(effectiveSelectedFolderIdProvider);
-    final folder =
-        selectedId == null ? null : ref.watch(folderIndexProvider)[selectedId];
+    final folder = selectedId == null
+        ? null
+        : ref.watch(folderIndexProvider)[selectedId];
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -346,8 +382,9 @@ class _NothingOpen extends ConsumerWidget {
             folder == null
                 ? 'Select a message to read'
                 : 'Select a message in ${folder.displayName}',
-            style: theme.textTheme.bodyMedium
-                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
         ],
       ),
@@ -442,8 +479,9 @@ class _FolderTitleBar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final selectedId = ref.watch(effectiveSelectedFolderIdProvider);
-    final folder =
-        selectedId == null ? null : ref.watch(folderIndexProvider)[selectedId];
+    final folder = selectedId == null
+        ? null
+        : ref.watch(folderIndexProvider)[selectedId];
     final paneShown = ref.watch(folderPaneVisibleProvider);
     return Column(
       children: [
@@ -478,8 +516,9 @@ class _FolderTitleBar extends ConsumerWidget {
               if (folder != null && folder.unreadCount > 0)
                 Text(
                   '${folder.unreadCount} unread',
-                  style: theme.textTheme.labelSmall
-                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
             ],
           ),
@@ -500,7 +539,11 @@ class MessageScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(message.subject, maxLines: 1, overflow: TextOverflow.ellipsis),
+        title: Text(
+          message.subject,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
         centerTitle: false,
       ),
       body: ReadingPane(message: message),
@@ -523,8 +566,7 @@ class _ComposeButton extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return FloatingActionButton(
       tooltip: 'New message',
-      onPressed: () =>
-          openCompose(context, ref, kind: ComposeKind.newMessage),
+      onPressed: () => openCompose(context, ref, kind: ComposeKind.newMessage),
       child: const Icon(Icons.edit_outlined),
     );
   }

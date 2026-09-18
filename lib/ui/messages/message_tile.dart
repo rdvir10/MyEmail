@@ -20,9 +20,21 @@ class MessageTile extends StatelessWidget {
     this.onLongPress,
     this.folderLabel,
     this.density = ListDensity.cozy,
+    this.isTicked,
+    this.onTicked,
   });
 
+  /// Whether this row is ticked, or null when the list is not selecting.
+  ///
+  /// Null rather than a separate flag: the checkbox and the mode are the same
+  /// fact, and two fields for one fact drift apart.
+  final bool? isTicked;
+
+  final ValueChanged<bool>? onTicked;
+
   final ListDensity density;
+
+  bool get isSelecting => isTicked != null;
 
   /// Shown as a chip in search results, where hits come from many folders.
   final String? folderLabel;
@@ -44,13 +56,16 @@ class MessageTile extends StatelessWidget {
     final weight = unread ? FontWeight.w700 : FontWeight.w400;
 
     return Semantics(
-      selected: isSelected,
+      selected: isSelecting ? isTicked : isSelected,
       child: Material(
         color: isSelected
             ? scheme.secondaryContainer.withValues(alpha: 0.7)
             : Colors.transparent,
         child: InkWell(
-          onTap: onTap,
+          // While selecting, a tap ticks rather than opens. Opening a message
+          // mid-selection would take the list off screen and lose the ticks
+          // with it, which is not what a tap means once checkboxes are up.
+          onTap: isSelecting ? () => onTicked?.call(!isTicked!) : onTap,
           onLongPress: onLongPress,
           child: Padding(
             padding: EdgeInsets.fromLTRB(
@@ -62,6 +77,15 @@ class MessageTile extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (isSelecting)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: Checkbox(
+                      value: isTicked,
+                      onChanged: (v) => onTicked?.call(v ?? false),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
                 SizedBox(
                   width: 14,
                   child: Column(

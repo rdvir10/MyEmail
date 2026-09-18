@@ -39,7 +39,13 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
   @override
   void initState() {
     super.initState();
-    if (!widget.message.isRead) {
+    // Only when the person picked this message. A folder that opens with its
+    // newest message already selected would otherwise mark that message read
+    // every time someone walked past the Inbox, which is a good way to lose
+    // mail you meant to come back to. Acting on it — a key, a tap — claims the
+    // selection, and it reads as opened from then on.
+    if (!widget.message.isRead &&
+        ref.read(selectedMessageIdProvider.notifier).chosenByPerson) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _markRead());
     }
   }

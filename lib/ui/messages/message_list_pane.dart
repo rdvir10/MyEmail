@@ -16,7 +16,10 @@ import '../quick_steps/quick_steps_screen.dart';
 import 'message_actions.dart';
 import '../compose/open_compose.dart';
 import 'conversation_tile.dart';
+import '../shell/app_shell.dart';
+import 'list_keyboard.dart';
 import 'message_tile.dart';
+import 'selection_bar.dart';
 import 'search_bar.dart';
 
 /// The list of messages in the selected folder.
@@ -61,9 +64,32 @@ class MessageListPane extends ConsumerWidget {
 
     return Column(
       children: [
-        const MessageSearchBar(),
+        // The selection bar takes the search bar's place while messages are
+        // ticked. Both at once would be two rows of controls above a list
+        // that has shrunk to make room for them, and searching is not what
+        // anyone is doing mid-selection.
+        if (ref.watch(isSelectingProvider))
+          SelectionBar(listId: folderId)
+        else
+          const MessageSearchBar(),
         const Divider(height: 1),
-        Expanded(child: body),
+        Expanded(
+          child: MessageListKeyboard(
+            listId: folderId,
+            // Where there is no reading pane a message opens as its own
+            // screen, so landing on one would mean walking into a folder and
+            // finding a message already open on top of it.
+            // Not while searching: the results are not this folder's list,
+            // so landing would pick a message that is not on screen.
+            landOnOpen: !searching &&
+                AppShell.hasReadingPane(
+                  MediaQuery.sizeOf(context).width,
+                  ref.watch(displayProvider).readingPane,
+                ),
+            onOpen: onOpen,
+            child: body,
+          ),
+        ),
       ],
     );
   }
@@ -167,6 +193,8 @@ class MessageListPane extends ConsumerWidget {
               );
             }
             final density = ref.watch(listDensityProvider);
+            final ticked = ref.watch(selectedMessageIdsProvider);
+            final selecting = ticked.isNotEmpty;
             final rows = ref.watch(displayProvider).conversations
                 ? _conversationRows(
                     groupIntoConversations(messages),
@@ -204,6 +232,9 @@ class MessageListPane extends ConsumerWidget {
                 final tile = MessageTile(
                   message: m,
                   isSelected: m.id == selectedId,
+                  isTicked: selecting ? ticked.contains(m.id) : null,
+                  onTicked: (_) =>
+                      ref.read(selectedMessageIdsProvider.notifier).toggle(m.id),
                   density: density,
                   accountColor: isUnified ? accountColors[m.accountId] : null,
                   onTap: () {
@@ -215,9 +246,23 @@ class MessageListPane extends ConsumerWidget {
                       return;
                     }
                     ref.read(selectedMessageIdProvider.notifier).select(m.id);
+                    ref
+                        .read(lastOpenedInFolderProvider.notifier)
+                        .remember(folderId, m.id);
+                    // Marked read here rather than left to the reading pane.
+                    // The pane marks read as it opens, and it does not open
+                    // again for a message the app had already landed on — so
+                    // tapping the message the folder opened at would leave it
+                    // unread, which is the one case this has to get right.
+                    if (!m.isRead) {
+                      ref
+                          .read(messagesProvider(folderId).notifier)
+                          .setRead(m.id, true);
+                    }
                     onOpen(m);
                   },
                   onLongPress: () => _showMessageMenu(context, ref, actions, m),
+                  key: ValueKey('tile:${m.id}'),
                 );
                 final swipeable = _SwipeableRow(
                   key: ValueKey(m.id),
@@ -386,6 +431,16 @@ class MessageListPane extends ConsumerWidget {
                 onTap: () => Navigator.of(context).pop('qs:${step.id}'),
               ),
             if (steps.isNotEmpty) const Divider(height: 1),
+            // First, because it is the only entry here that acts on more than
+            // this one message, and burying it under the single-message
+            // actions makes it read as one of them.
+            ListTile(
+              leading: const Icon(Icons.checklist),
+              title: const Text('Select'),
+              subtitle: const Text('Tick messages to act on several at once'),
+              onTap: () => Navigator.of(context).pop('select'),
+            ),
+            const Divider(height: 1),
             ListTile(
               leading: const Icon(Icons.drive_file_move_outline),
               title: const Text('Move to…'),
@@ -453,6 +508,8 @@ class MessageListPane extends ConsumerWidget {
     }
 
     switch (choice) {
+      case 'select':
+        ref.read(selectedMessageIdsProvider.notifier).start(message.id);
       case 'move':
         await actions.moveWithPrompt(context, [message]);
       case 'read':

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/draft.dart';
 import '../../domain/mail_message.dart';
+import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import '../../state/quick_steps.dart';
@@ -37,6 +38,7 @@ class _RibbonState extends ConsumerState<Ribbon> {
     final message = ref.watch(selectedMessageProvider);
     final listId = ref.watch(effectiveSelectedFolderIdProvider);
     final has = message != null && listId != null;
+    final pane = ref.watch(displayProvider).readingPane;
 
     return Material(
       color: theme.colorScheme.surfaceContainerLow,
@@ -111,6 +113,17 @@ class _RibbonState extends ConsumerState<Ribbon> {
                       : null,
                 ),
                 const Spacer(),
+                const _Separator(),
+                _Button(
+                  // Cycles right, bottom, off. The label names where the pane
+                  // is now, so the button is readable at a glance as well as
+                  // usable without looking.
+                  icon: pane.icon,
+                  label: 'Pane ${pane.label.toLowerCase()}',
+                  onPressed: () => ref
+                      .read(displayProvider.notifier)
+                      .setReadingPane(pane.next),
+                ),
                 const _Separator(),
                 _Button(
                   icon: Icons.search,

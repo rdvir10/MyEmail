@@ -20,8 +20,9 @@ void main() {
 
     expect(find.text('Search folders'), findsOneWidget, reason: 'tree pane');
     expect(find.text('Search mail'), findsOneWidget, reason: 'list pane');
-    expect(find.textContaining('Select a message'), findsOneWidget,
-        reason: 'reading pane');
+    // A message, not the "Select a message" placeholder: opening a folder
+    // lands on one so the keyboard has somewhere to start.
+    expect(find.byType(ReadingPane), findsOneWidget, reason: 'reading pane');
     expect(find.byTooltip('Open navigation menu'), findsNothing);
   });
 
