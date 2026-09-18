@@ -24,6 +24,11 @@ import 'microsoft_sign_in_sheet.dart';
 /// flow is still reachable from here, because the two fail under different
 /// conditions: this one needs the embedded browser to work, and a tenant that
 /// insists on a managed browser can refuse it.
+///
+/// One consent screen, not two. There were briefly two, because reading went
+/// over IMAP and sending over Graph, and an access token is issued for one
+/// resource at a time. Everything is Graph now, so there is one resource and
+/// one screen.
 class MicrosoftSignInScreen extends ConsumerStatefulWidget {
   const MicrosoftSignInScreen({super.key, this.loginHint});
 
@@ -50,19 +55,6 @@ class _MicrosoftSignInScreenState extends ConsumerState<MicrosoftSignInScreen> {
   String? _error;
   bool _loading = true;
 
-  /// Sign-in happens twice, and this says which round is on screen.
-  ///
-  /// An access token is issued for one resource, and Microsoft refuses a
-  /// request that mixes `outlook.office.com` with `graph.microsoft.com`.
-  /// Reading needs the first and sending needs the second, so consent has to
-  /// be collected for both. The second round is usually a single tap — the
-  /// browser is already signed in — and after it, one refresh token can be
-  /// exchanged for either resource.
-  _Round _round = _Round.mailbox;
-
-  /// What the first round produced, held while the second runs.
-  OAuthToken? _mailboxToken;
-
   /// Guards against the redirect being handled twice. The browser can fire a
   /// navigation request more than once for the same URL, and redeeming an
   /// authorization code twice fails the second time — which would replace a
@@ -75,17 +67,6 @@ class _MicrosoftSignInScreenState extends ConsumerState<MicrosoftSignInScreen> {
     unawaited(_start());
   }
 
-  /// Finish, keeping the right half of each round.
-  ///
-  /// The access token comes from the first round, because that is the one the
-  /// mailbox is read with. The refresh token comes from the second, because
-  /// Microsoft rotates it on every exchange and the older one is retired.
-  void _finish() {
-    final token = _mailboxToken;
-    if (token == null || !mounted) return;
-    Navigator.of(context).pop(token);
-  }
-
   Future<void> _start() async {
     setState(() {
       _error = null;
@@ -96,10 +77,6 @@ class _MicrosoftSignInScreenState extends ConsumerState<MicrosoftSignInScreen> {
     final pkce = await PkcePair.generate();
     final state = newOAuthState();
     if (!mounted) return;
-
-    final scopes = _round == _Round.mailbox
-        ? MicrosoftOAuth.scopes
-        : MicrosoftOAuth.graphScopes;
 
     final controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
@@ -141,21 +118,16 @@ class _MicrosoftSignInScreenState extends ConsumerState<MicrosoftSignInScreen> {
         ),
       );
 
-    // Start from a clean session for the first round only. Otherwise adding a
-    // second mailbox silently reuses the first one's cookies and signs in the
-    // wrong account, with nothing on screen to say so. Clearing between the
-    // two rounds would undo that round's sign-in and ask for the password
-    // again, for the same account, seconds apart.
-    if (_round == _Round.mailbox) {
-      await WebViewCookieManager().clearCookies();
-      await controller.clearCache();
-    }
+    // Start from a clean session. Otherwise adding a second mailbox silently
+    // reuses the first one's cookies and signs in the wrong account, with
+    // nothing on screen to say so.
+    await WebViewCookieManager().clearCookies();
+    await controller.clearCache();
     await controller.loadRequest(
       oauth.authorizationUrl(
         pkce: pkce,
         state: state,
         loginHint: widget.loginHint,
-        scopes: scopes,
       ),
     );
     if (!mounted) return;
@@ -168,43 +140,17 @@ class _MicrosoftSignInScreenState extends ConsumerState<MicrosoftSignInScreen> {
     PkcePair pkce,
   ) async {
     if (mounted) setState(() => _loading = true);
-    final OAuthToken token;
     try {
-      token = await oauth.exchangeCode(code: code, pkce: pkce);
+      final token = await oauth.exchangeCode(code: code, pkce: pkce);
+      if (!mounted) return;
+      Navigator.of(context).pop(token);
     } catch (e) {
       _finishWithError(e);
-      return;
-    }
-    if (!mounted) return;
-
-    switch (_round) {
-      case _Round.mailbox:
-        _mailboxToken = token;
-        setState(() {
-          _round = _Round.sending;
-          _handled = false;
-        });
-        await _start();
-      case _Round.sending:
-        // Keep the newer refresh token; the access token stays the mailbox
-        // one, because that is what the IMAP connection is opened with.
-        _mailboxToken = _mailboxToken?.withRefreshToken(token.refreshToken);
-        _finish();
     }
   }
 
   void _finishWithError(Object e) {
     if (!mounted) return;
-
-    // Permission to send refused, with the mailbox already granted. Better to
-    // finish with an account that can read than to throw the sign-in away:
-    // the send path says what is missing if and when a message is actually
-    // sent, and Settings can ask for it again.
-    if (_round == _Round.sending && _mailboxToken != null) {
-      _finish();
-      return;
-    }
-
     setState(() {
       _loading = false;
       _error = switch (e) {
@@ -231,12 +177,7 @@ class _MicrosoftSignInScreenState extends ConsumerState<MicrosoftSignInScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(switch (_round) {
-          _Round.mailbox => 'Sign in to Microsoft',
-          // Named, because a second consent screen moments after the first
-          // looks like the first one having failed.
-          _Round.sending => 'One more: permission to send',
-        }),
+        title: const Text('Sign in to Microsoft'),
         centerTitle: false,
         bottom: _loading
             ? const PreferredSize(
@@ -288,10 +229,6 @@ class _MicrosoftSignInScreenState extends ConsumerState<MicrosoftSignInScreen> {
     );
   }
 }
-
-/// The two consent rounds a Microsoft sign-in needs. See [_Round] usage in
-/// the state class for why there are two.
-enum _Round { mailbox, sending }
 
 class _Failure extends StatelessWidget {
   const _Failure({

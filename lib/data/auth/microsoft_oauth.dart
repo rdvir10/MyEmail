@@ -74,31 +74,19 @@ class MicrosoftOAuth {
   static const commonAuthority =
       'https://login.microsoftonline.com/common/oauth2/v2.0';
 
-  /// Exactly what Microsoft documents for IMAP and SMTP access. These strings
-  /// are load-bearing and case-sensitive; the shorter Graph-style names
-  /// (`IMAP.AccessAsUser.All` alone) are a different API and are refused.
+  /// Everything a Microsoft account needs, and nothing else.
+  ///
+  /// One resource, so one token and one consent. That is only true because
+  /// the app stopped using IMAP and SMTP for these accounts: an access token
+  /// is issued per resource and Microsoft refuses a request that mixes
+  /// `outlook.office.com` with `graph.microsoft.com`, so while reading went
+  /// over IMAP and sending over Graph, signing in meant collecting consent
+  /// twice and asking the person to approve two screens in a row.
+  ///
+  /// `Mail.ReadWrite` covers reading, flags, moves and folders; `Mail.Send`
+  /// covers sending. Without `offline_access` there is no refresh token and
+  /// the account would have to sign in again every hour.
   static const scopes = [
-    'https://outlook.office.com/IMAP.AccessAsUser.All',
-    'https://outlook.office.com/SMTP.Send',
-    // Without this there is no refresh token, and the account would have to
-    // sign in again every hour.
-    'offline_access',
-  ];
-
-  /// Graph, which is how the app sends.
-  ///
-  /// A second set rather than more entries in [scopes], because an access
-  /// token is issued for one resource and Microsoft refuses a request that
-  /// mixes `outlook.office.com` with `graph.microsoft.com`. Consent, though,
-  /// accumulates against the app: once both sets have been agreed to, one
-  /// refresh token can be exchanged for either resource's access token.
-  ///
-  /// Sending goes through Graph because SMTP cannot be relied on. Microsoft
-  /// disables SMTP submission for every tenant by default and recommends
-  /// Graph instead, and a tenant with security defaults on blocks SMTP at the
-  /// tenant level whatever the per-mailbox setting says. Graph is not subject
-  /// to any of that.
-  static const graphScopes = [
     'https://graph.microsoft.com/Mail.ReadWrite',
     'https://graph.microsoft.com/Mail.Send',
     'offline_access',

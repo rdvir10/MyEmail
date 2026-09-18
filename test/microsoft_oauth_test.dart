@@ -60,7 +60,7 @@ void main() {
       });
 
   group('requesting a code to show the user', () {
-    test('asks for the IMAP, SMTP and offline scopes', () async {
+    test('asks for the mailbox, send and offline scopes', () async {
       late String body;
       final oauth = oauthWith((request) async {
         body = request.body;
@@ -78,10 +78,10 @@ void main() {
       final scope = Uri.splitQueryString(body)['scope'];
       expect(
         scope,
-        'https://outlook.office.com/IMAP.AccessAsUser.All '
-        'https://outlook.office.com/SMTP.Send offline_access',
-        reason: 'These strings are what Microsoft documents for IMAP and SMTP '
-            'access. Shortening them silently drops mailbox access.',
+        'https://graph.microsoft.com/Mail.ReadWrite '
+        'https://graph.microsoft.com/Mail.Send offline_access',
+        reason: 'One resource, so one token and one consent. Mixing a Graph '
+            'scope with an outlook.office.com one is refused outright.',
       );
       expect(Uri.splitQueryString(body)['client_id'], 'test-client-id');
       expect(prompt.userCode, 'ABCD-EFGH');

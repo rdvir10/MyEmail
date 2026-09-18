@@ -117,11 +117,8 @@ class CachedImapEngine implements MailEngine {
         accountId: account.id,
         idMap: _graphIds,
         api: GraphMailApi(
-          accessToken: ({bool force = false}) => oauthTokens.accessToken(
-            account.id,
-            force: force,
-            scopes: MicrosoftOAuth.graphScopes,
-          ),
+          accessToken: ({bool force = false}) =>
+              oauthTokens.accessToken(account.id, force: force),
         ),
       );
     }
@@ -224,20 +221,30 @@ class CachedImapEngine implements MailEngine {
       authMethod: authMethod,
       colorValue: _palette[existing.length % _palette.length],
     );
-    // Prove the credentials before storing anything: LIST is the cheapest
-    // command that needs a successful login.
+    // The secret goes in before the probe, not after.
+    //
+    // A Microsoft account's transport does not take its token as a parameter:
+    // it reads the stored one, because the token it needs is fetched per
+    // request and refreshed as it goes. Probing before the write therefore
+    // found nothing and reported a sign-in that had just succeeded as "this
+    // account is not signed in" — the check failing, not the sign-in.
+    //
+    // Anything written here is removed again if the probe fails, so a refused
+    // credential leaves nothing behind.
+    await credentialStore.writeSecret(account.id, storedSecret);
+
     final transport = _transportFactory(account, credentials);
     final List<RemoteFolder> folders;
     try {
       folders = await transport.listFolders();
     } catch (_) {
+      await credentialStore.deleteSecret(account.id);
       await transport.close();
       rethrow;
     }
     // Keep what the probe already fetched: the tree can then render, and a
     // search can pick its targets, without a second round trip.
     await folderLists.write(account.id, folders);
-    await credentialStore.writeSecret(account.id, storedSecret);
     await accountStore.write([...existing, account]);
     // Only now, with the secret stored, is the cached transport safe to keep:
     // the OAuth one built above closes over a token that will expire, whereas
@@ -310,16 +317,29 @@ class CachedImapEngine implements MailEngine {
         .firstOrNull;
     if (account == null) throw StateError('Unknown account $accountId');
 
-    // Prove it on a connection of its own, so a failure leaves the account
-    // exactly as it was rather than half-changed.
+    // In place first, then proved. A Microsoft account's transport reads the
+    // stored secret rather than taking one, so probing before the write would
+    // test the credential being replaced instead of the new one — and report
+    // the new sign-in as stale, which is exactly what it was meant to fix.
+    final previous = await credentialStore.readSecret(accountId);
+    await credentialStore.writeSecret(accountId, storedSecret);
+
     final probe = _transportFactory(account, credentials);
     try {
       await probe.listFolders();
+    } catch (_) {
+      // Put back what worked, or at least what was there. Replacing a
+      // credential the server refused would swap one broken sign-in for
+      // another and lose the last known-good one on the way.
+      if (previous == null) {
+        await credentialStore.deleteSecret(accountId);
+      } else {
+        await credentialStore.writeSecret(accountId, previous);
+      }
+      rethrow;
     } finally {
       await probe.close();
     }
-
-    await credentialStore.writeSecret(accountId, storedSecret);
 
     // Drop the cached transport and the sync built on it. A password
     // transport closes over the secret it was built with, so keeping it would
@@ -900,13 +920,8 @@ class CachedImapEngine implements MailEngine {
         credentials is OAuthCredentials) {
       final sender = graphSenderFactory?.call(account, credentials) ??
           GraphSender(
-            // The Graph resource specifically. A token issued for IMAP is
-            // refused here, and the refusal reads as a broken sign-in.
-            accessToken: ({bool force = false}) => oauthTokens.accessToken(
-              account.id,
-              force: force,
-              scopes: MicrosoftOAuth.graphScopes,
-            ),
+            accessToken: ({bool force = false}) =>
+                oauthTokens.accessToken(account.id, force: force),
           );
       return sender.send(message);
     }

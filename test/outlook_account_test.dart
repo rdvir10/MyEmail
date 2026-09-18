@@ -4,6 +4,8 @@ import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/compose/smtp_sender.dart';
 import 'package:myemail/data/credential_store.dart';
+import 'package:myemail/data/imap/imap_transport.dart';
+import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/imap/cached_imap_engine.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/folder_capabilities.dart';
@@ -110,6 +112,86 @@ void main() {
     });
   });
 
+  group('the probe that checks a new sign-in', () {
+    /// Stands in for the Graph transport, which does not take its token as a
+    /// parameter: it reads the stored secret, because the token it uses is
+    /// fetched per request and refreshed as it goes.
+    ///
+    /// That is the difference this group exists for. The probe used to run
+    /// before the secret was written, so a transport of this shape found
+    /// nothing and reported a sign-in that had just succeeded as "this
+    /// account is not signed in".
+    CachedImapEngine engineReadingStoredSecret({Object? failure}) =>
+        CachedImapEngine(
+          accountStore: accounts,
+          credentialStore: secrets,
+          cache: MemoryCacheStore(),
+          transportFactory: (account, _) => _StoreReadingTransport(
+            read: () => secrets.readSecret(account.id),
+          )
+            ..folder('INBOX', role: FolderRole.inbox)
+            ..failWith = failure,
+        );
+
+    test('the secret is in place before the probe runs', () async {
+      final engine = engineReadingStoredSecret();
+
+      final account = await engine.addOAuthAccount(
+        displayName: 'Personal',
+        emailAddress: 'someone@example.com',
+        provider: MailProvider.outlook,
+        token: token(),
+      );
+
+      expect(accounts.read().single.id, account.id);
+    });
+
+    test('a refused credential leaves no secret behind', () async {
+      // The write now happens first, so a failed probe has to undo it.
+      // Otherwise a rejected sign-in leaves a secret under an account id that
+      // was never created.
+      final engine = engineReadingStoredSecret(
+        failure: const ConnectionFailed('the server said no'),
+      );
+
+      await expectLater(
+        engine.addOAuthAccount(
+          displayName: 'Personal',
+          emailAddress: 'someone@example.com',
+          provider: MailProvider.outlook,
+          token: token(),
+        ),
+        throwsA(isA<Object>()),
+      );
+
+      expect(accounts.read(), isEmpty);
+      expect(await secrets.readSecret('acct-1'), isNull);
+    });
+
+    test('signing in again is proved against the new secret', () async {
+      // Not the one being replaced. Probing before the write tested the old
+      // credential and reported the fresh sign-in as stale — exactly the
+      // thing it was meant to repair.
+      final engine = engineReadingStoredSecret();
+      final account = await engine.addOAuthAccount(
+        displayName: 'Personal',
+        emailAddress: 'someone@example.com',
+        provider: MailProvider.outlook,
+        token: token(),
+      );
+
+      await engine.updateOAuthToken(
+        accountId: account.id,
+        token: token(access: 'access-2'),
+      );
+
+      final stored = OAuthToken.fromStoredJson(
+        await secrets.readSecret(account.id),
+      );
+      expect(stored!.accessToken, 'access-2');
+    });
+  });
+
   group('folders', () {
     test('Archive accepts messages on Outlook but not on Gmail', () async {
       // The difference is not cosmetic. On Gmail, "All Mail" is every message
@@ -202,4 +284,23 @@ void main() {
       expect(CachedImapEngine.imapHostFor(MailProvider.gmail), 'imap.gmail.com');
     });
   });
+}
+
+/// A transport that refuses to work unless the account's secret is already in
+/// the credential store, which is how the Graph one effectively behaves: it
+/// does not take a token, it reads the stored one.
+class _StoreReadingTransport extends FakeImapTransport {
+  _StoreReadingTransport({required this.read});
+
+  final Future<String?> Function() read;
+
+  @override
+  Future<List<RemoteFolder>> listFolders() async {
+    if (await read() == null) {
+      throw const AuthenticationFailed(
+        'This account is not signed in. Remove it and add it again.',
+      );
+    }
+    return super.listFolders();
+  }
 }

@@ -240,7 +240,7 @@ void main() {
 
       final token = await repository.accessToken(
         'acct-1',
-        scopes: MicrosoftOAuth.graphScopes,
+        scopes: MicrosoftOAuth.scopes,
       );
 
       expect(token, 'graph-access');
@@ -272,7 +272,7 @@ void main() {
 
       await repository.accessToken(
         'acct-1',
-        scopes: MicrosoftOAuth.graphScopes,
+        scopes: MicrosoftOAuth.scopes,
       );
 
       final stored = OAuthToken.fromStoredJson(
@@ -301,9 +301,9 @@ void main() {
       });
 
       await repository.accessToken('acct-1',
-          scopes: MicrosoftOAuth.graphScopes);
+          scopes: MicrosoftOAuth.scopes);
       await repository.accessToken('acct-1',
-          scopes: MicrosoftOAuth.graphScopes);
+          scopes: MicrosoftOAuth.scopes);
 
       expect(calls, 1);
     });
@@ -330,7 +330,7 @@ void main() {
       );
 
       await expectLater(
-        repository.accessToken('acct-1', scopes: MicrosoftOAuth.graphScopes),
+        repository.accessToken('acct-1', scopes: MicrosoftOAuth.scopes),
         throwsA(isA<SignInNeedsConsent>().having(
           (e) => e.message,
           'message',
@@ -362,7 +362,7 @@ void main() {
       );
 
       await expectLater(
-        repository.accessToken('acct-1', scopes: MicrosoftOAuth.graphScopes),
+        repository.accessToken('acct-1', scopes: MicrosoftOAuth.scopes),
         throwsA(isA<SignInNeedsConsent>()),
       );
     });

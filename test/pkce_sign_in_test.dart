@@ -97,8 +97,8 @@ void main() {
       );
       expect(
         url.queryParameters['scope'],
-        'https://outlook.office.com/IMAP.AccessAsUser.All '
-        'https://outlook.office.com/SMTP.Send offline_access',
+        'https://graph.microsoft.com/Mail.ReadWrite '
+        'https://graph.microsoft.com/Mail.Send offline_access',
       );
     });
 
