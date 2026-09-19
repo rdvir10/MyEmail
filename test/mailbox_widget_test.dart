@@ -3,6 +3,7 @@ import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/widget/home_screen_surface.dart';
 import 'package:myemail/data/widget/mailbox_widgets.dart';
 import 'package:myemail/data/widget/widget_state_store.dart';
+import 'package:myemail/data/widget/widget_taps.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/mailbox_counts.dart';
@@ -322,6 +323,29 @@ void main() {
       await widgets.refresh(engine);
 
       expect(store.mailboxes.keys, ['1']);
+    });
+  });
+
+  group('tapping a widget', () {
+    test('opens the folder it was counting', () {
+      expect(
+        folderFromWidgetLink(
+          Uri.parse('myemail://folder?id=acct-personal%3AFinance%2FReceipts'),
+        ),
+        'acct-personal:Finance/Receipts',
+      );
+    });
+
+    test('a link with no folder in it opens nothing in particular', () {
+      expect(folderFromWidgetLink(Uri.parse('myemail://folder')), isNull);
+      expect(folderFromWidgetLink(Uri.parse('myemail://folder?id=')), isNull);
+    });
+
+    test("someone else's link is not ours to follow", () {
+      // The app is opened by more than this: an update, a share, a mailto.
+      expect(folderFromWidgetLink(Uri.parse('https://example.com')), isNull);
+      expect(folderFromWidgetLink(Uri.parse('myemail://compose')), isNull);
+      expect(folderFromWidgetLink(null), isNull);
     });
   });
 }

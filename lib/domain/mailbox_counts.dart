@@ -20,6 +20,37 @@ enum WidgetCount {
       };
 }
 
+/// What colour a widget's tile is.
+///
+/// A short list rather than a colour wheel. The point is telling two widgets
+/// apart at a glance on a busy home screen, which half a dozen clearly
+/// different colours does as well as sixteen million, and every one of these
+/// is dark enough for white numbers to read on.
+enum WidgetColour {
+  orange('Orange', 0xFFFF7A18, 0xFFC1420A),
+  blue('Blue', 0xFF1D74D0, 0xFF0A3F7A),
+  teal('Teal', 0xFF00897B, 0xFF00463D),
+  purple('Purple', 0xFF7048C8, 0xFF3B1E78),
+  green('Green', 0xFF3F9142, 0xFF1F5221),
+  red('Red', 0xFFD93B3B, 0xFF8C1C1C),
+  graphite('Graphite', 0xFF4A4F57, 0xFF23262B);
+
+  const WidgetColour(this.label, this.value, this.deep);
+
+  final String label;
+
+  /// The tile colour itself.
+  final int value;
+
+  /// The darker end, for where a gradient is drawn rather than a flat fill.
+  final int deep;
+
+  static WidgetColour byName(String? name) => WidgetColour.values.firstWhere(
+        (c) => c.name == name,
+        orElse: () => WidgetColour.orange,
+      );
+}
+
 /// The numbers a home-screen widget shows for one mailbox.
 class MailboxCounts {
   const MailboxCounts({

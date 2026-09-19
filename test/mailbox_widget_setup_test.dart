@@ -194,6 +194,31 @@ void main() {
       expect(surface.values['widget.42.label'], isNull);
     });
 
+
+    testWidgets('a colour can be chosen, and orange is where it starts',
+        (tester) async {
+      await pumpSetup(tester);
+      await reachTheLastStep(tester);
+
+      await tester.tap(find.byTooltip('Teal'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+
+      expect(store.mailboxes['42']?.colour, WidgetColour.teal);
+      expect(surface.values['widget.42.colour'], WidgetColour.teal.value);
+    });
+
+    testWidgets('left alone, it stays the colour of the app', (tester) async {
+      await pumpSetup(tester);
+      await reachTheLastStep(tester);
+
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+
+      expect(store.mailboxes['42']?.colour, WidgetColour.orange);
+    });
+
     testWidgets('nothing is remembered until the last step', (tester) async {
       // Backing out has to leave no half-configured widget behind, which is
       // also what Android does with the placement itself.

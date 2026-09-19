@@ -76,18 +76,20 @@ void main() {
     }
   });
 
-  test('the widget draws a bitmap, not the adaptive icon', () {
-    // A widget is inflated by the launcher out of a RemoteViews, where a
-    // plain bitmap is the one thing every launcher can certainly draw.
+  test('the widget icon is a tintable tile and a glyph, not one bitmap', () {
+    // The tile is coloured per widget, so it cannot be a picture with one
+    // colour baked into it. It is a white shape the widget tints, with the
+    // dart drawn over the top.
     final layout = read('$res/layout/mailbox_count_widget.xml');
 
-    expect(layout, contains('@drawable/widget_app_icon'));
-    for (final density in ['hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi']) {
-      expect(
-        File('$res/drawable-$density/widget_app_icon.png').existsSync(),
-        isTrue,
-        reason: 'widget icon missing at $density',
-      );
-    }
+    expect(layout, contains('@drawable/mailbox_widget_tile'));
+    expect(layout, contains('@drawable/ic_launcher_foreground'));
+    expect(
+      File('$res/drawable/mailbox_widget_tile.xml').existsSync(),
+      isTrue,
+    );
+    // White, or a colour filter over it comes out muddied by whatever was
+    // underneath.
+    expect(read('$res/drawable/mailbox_widget_tile.xml'), contains('#FFFFFFFF'));
   });
 }

@@ -10,6 +10,7 @@ class WidgetMailbox {
     required this.folderId,
     this.counts = WidgetCount.all,
     this.label,
+    this.colour = WidgetColour.orange,
   });
 
   final String folderId;
@@ -24,6 +25,10 @@ class WidgetMailbox {
   /// Sent folder shows the lot.
   final WidgetCount counts;
 
+  /// The tile colour, so two widgets side by side are told apart before
+  /// either of them is read.
+  final WidgetColour colour;
+
   /// [clearLabel] because passing null to [label] cannot mean "back to the
   /// default name" and "leave it alone" at the same time.
   WidgetMailbox copyWith({
@@ -31,17 +36,20 @@ class WidgetMailbox {
     WidgetCount? counts,
     String? label,
     bool clearLabel = false,
+    WidgetColour? colour,
   }) =>
       WidgetMailbox(
         folderId: folderId ?? this.folderId,
         counts: counts ?? this.counts,
         label: clearLabel ? null : (label ?? this.label),
+        colour: colour ?? this.colour,
       );
 
   Map<String, Object?> toJson() => {
         'folder': folderId,
         'counts': counts.name,
         if (label != null) 'label': label,
+        'colour': colour.name,
       };
 
   /// Tolerant of the older shape, where the value was the folder id on its
@@ -60,6 +68,7 @@ class WidgetMailbox {
         orElse: () => WidgetCount.all,
       ),
       label: label is String && label.trim().isNotEmpty ? label : null,
+      colour: WidgetColour.byName(value['colour'] as String?),
     );
   }
 
@@ -68,10 +77,11 @@ class WidgetMailbox {
       other is WidgetMailbox &&
       other.folderId == folderId &&
       other.counts == counts &&
-      other.label == label;
+      other.label == label &&
+      other.colour == colour;
 
   @override
-  int get hashCode => Object.hash(folderId, counts, label);
+  int get hashCode => Object.hash(folderId, counts, label, colour);
 
   @override
   String toString() =>

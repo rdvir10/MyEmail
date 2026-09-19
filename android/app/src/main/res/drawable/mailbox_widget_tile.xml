@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The rounded square the icon sits on, drawn white so the widget can tint
+     it to whatever colour was chosen. A colour filter over white leaves the
+     colour exactly as asked for; over anything else it would be muddied by
+     what is underneath. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FFFFFFFF" />
+    <corners android:radius="11dp" />
+</shape>

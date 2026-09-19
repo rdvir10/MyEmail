@@ -17,13 +17,24 @@
         android:layout_width="52dp"
         android:layout_height="52dp">
 
+        <!-- Two layers rather than the app icon itself: the tile is tinted
+             to the colour this widget was given, and the dart is drawn over
+             it. A single bitmap would have one colour baked in. -->
         <ImageView
-            android:id="@+id/mailbox_widget_icon"
+            android:id="@+id/mailbox_widget_tile"
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:layout_gravity="center"
-            android:src="@drawable/widget_app_icon"
+            android:src="@drawable/mailbox_widget_tile"
             android:contentDescription="@string/mailbox_widget_label" />
+
+        <ImageView
+            android:id="@+id/mailbox_widget_glyph"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="center"
+            android:src="@drawable/ic_launcher_foreground"
+            android:contentDescription="@null" />
 
         <!-- What arrived since you last looked. Hidden at zero, the way a
              notification badge is: a nought in a red circle reads as an

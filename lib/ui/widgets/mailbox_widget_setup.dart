@@ -238,6 +238,7 @@ class _AppearanceStep extends ConsumerStatefulWidget {
 
 class _AppearanceStepState extends ConsumerState<_AppearanceStep> {
   late WidgetCount _counts = widget.mailbox.counts;
+  late WidgetColour _colour = widget.mailbox.colour;
   late final _name = TextEditingController(text: widget.mailbox.label ?? '');
   bool _saving = false;
 
@@ -256,6 +257,7 @@ class _AppearanceStepState extends ConsumerState<_AppearanceStep> {
             counts: _counts,
             label: typed.isEmpty ? null : typed,
             clearLabel: typed.isEmpty,
+            colour: _colour,
           ),
           engine: ref.read(mailEngineProvider),
         );
@@ -297,6 +299,31 @@ class _AppearanceStepState extends ConsumerState<_AppearanceStep> {
             ),
           ),
           const Divider(height: 1),
+          const _Heading('Colour'),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                for (final colour in WidgetColour.values)
+                  _Swatch(
+                    colour: colour,
+                    chosen: colour == _colour,
+                    onTap: () => setState(() => _colour = colour),
+                  ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Text(
+              'Two widgets side by side are told apart by their colour long '
+              'before anyone reads the name under them.',
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
+          const Divider(height: 1),
           const _Heading('What to call it'),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -328,6 +355,54 @@ class _AppearanceStepState extends ConsumerState<_AppearanceStep> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// One colour to choose, drawn as the tile it will become.
+class _Swatch extends StatelessWidget {
+  const _Swatch({
+    required this.colour,
+    required this.chosen,
+    required this.onTap,
+  });
+
+  final WidgetColour colour;
+  final bool chosen;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      button: true,
+      selected: chosen,
+      label: colour.label,
+      child: Tooltip(
+        message: colour.label,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(14),
+          child: Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              color: Color(colour.value),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                // The chosen one is ringed rather than ticked in a corner:
+                // a tick in white is invisible on the pale colours and a
+                // tick in black is invisible on the dark ones.
+                color: chosen ? scheme.onSurface : Colors.transparent,
+                width: 3,
+              ),
+            ),
+            child: chosen
+                ? const Icon(Icons.check, color: Colors.white, size: 22)
+                : null,
+          ),
+        ),
       ),
     );
   }

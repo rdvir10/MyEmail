@@ -3,6 +3,7 @@ package com.rdvir.mailtree
 import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
 import android.view.View
 import android.widget.RemoteViews
 import es.antonborri.home_widget.HomeWidgetLaunchIntent
@@ -31,9 +32,28 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
         appWidgetIds.forEach { widgetId ->
             val folderId = widgetData.getString("widget.$widgetId.folder", null)
             val views = RemoteViews(context.packageName, R.layout.mailbox_count_widget).apply {
+                // Tapping opens the folder this widget is counting, not just
+                // the app. Two widgets on two folders get two intents: the
+                // data differs, which is what makes them tell apart.
                 setOnClickPendingIntent(
                     R.id.mailbox_widget_root,
-                    HomeWidgetLaunchIntent.getActivity(context, MainActivity::class.java),
+                    HomeWidgetLaunchIntent.getActivity(
+                        context,
+                        MainActivity::class.java,
+                        folderId?.let {
+                            Uri.Builder()
+                                .scheme("myemail")
+                                .authority("folder")
+                                .appendQueryParameter("id", it)
+                                .build()
+                        },
+                    ),
+                )
+
+                setInt(
+                    R.id.mailbox_widget_tile,
+                    "setColorFilter",
+                    widgetData.getInt("widget.$widgetId.colour", DEFAULT_COLOUR),
                 )
 
                 if (folderId == null) {
@@ -83,6 +103,12 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
      * 31,402 messages in it is telling you "a great many" whatever the
      * digits say, and four characters is all there is room for.
      */
+    private companion object {
+        /// The app's own orange, for a widget placed before there was a
+        /// choice of colour.
+        const val DEFAULT_COLOUR = 0xFFFF7A18.toInt()
+    }
+
     private fun badge(count: Int, plain: Int): String = when {
         count <= plain -> count.toString()
         // A badge that caps, the way every notification badge does, rather
