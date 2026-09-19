@@ -1,5 +1,7 @@
 package com.rdvir.mailtree
 
+import android.app.Activity
+import android.appwidget.AppWidgetManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -26,9 +28,14 @@ import java.io.File
 class MainActivity : FlutterActivity() {
 
     private val channelName = "mailtree/installer"
+    private val widgetChannelName = "mailtree/widget"
+
+    private var widgetChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        widgetChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, widgetChannelName)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
@@ -54,6 +61,36 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    /**
+     * Placing a home-screen widget while the app is already running.
+     *
+     * Android sends the configure intent to the activity that is already
+     * there rather than starting a new one, so Dart's main() does not run
+     * again and nothing would ask which mailbox the widget should show. The
+     * placement would then be cancelled and the widget would vanish, which
+     * looks exactly like a bug.
+     *
+     * setIntent matters as much as the message: the plugin reads the
+     * activity's current intent when the choice is made, and without this it
+     * would still be looking at the one that launched the app.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.action != AppWidgetManager.ACTION_APPWIDGET_CONFIGURE) return
+
+        val id = intent.getIntExtra(
+            AppWidgetManager.EXTRA_APPWIDGET_ID,
+            AppWidgetManager.INVALID_APPWIDGET_ID,
+        )
+        if (id == AppWidgetManager.INVALID_APPWIDGET_ID) return
+        // Cancelled until the choice is made, so backing out leaves no
+        // half-configured widget behind. The same default the plugin sets on
+        // a cold start.
+        setResult(Activity.RESULT_CANCELED)
+        widgetChannel?.invokeMethod("configure", id.toString())
     }
 
     /**

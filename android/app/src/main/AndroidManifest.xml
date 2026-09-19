@@ -49,7 +49,32 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Dropping the home-screen widget opens the app to ask which
+                 mailbox it should count. The picker is written in Flutter
+                 rather than as a second native screen, so it can show the
+                 real folder tree with the accounts it belongs to. -->
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE"/>
+            </intent-filter>
+            <!-- Tapping the widget opens the app. -->
+            <intent-filter>
+                <action android:name="es.antonborri.home_widget.action.LAUNCH"/>
+            </intent-filter>
         </activity>
+
+        <!-- The home-screen widget. It reads what the app and the background
+             sync pass wrote; it never talks to a mail server itself. -->
+        <receiver
+            android:name=".MailboxCountWidgetProvider"
+            android:label="@string/mailbox_widget_label"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/mailbox_count_widget_info"/>
+        </receiver>
         <!-- Hands the downloaded APK to the installer as a content:// URI.
              A bare file:// URI to this app's private storage is unreadable by
              the installer and throws FileUriExposedException on anything

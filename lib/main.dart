@@ -19,11 +19,17 @@ import 'data/sync/sync_state_store.dart';
 import 'data/updates/apk_installer.dart';
 import 'data/updates/update_service.dart';
 import 'data/ui_state_store.dart';
+import 'data/widget/home_screen_surface.dart';
+import 'data/widget/widget_setup_channel.dart';
+import 'data/widget/widget_state_store.dart';
 import 'state/sync_providers.dart';
 import 'state/update_providers.dart';
 import 'state/providers.dart';
+import 'state/widget_providers.dart';
 import 'theme/app_theme.dart';
 import 'ui/shell/app_shell.dart';
+import 'ui/shell/mailbox_widget_keeper.dart';
+import 'ui/widgets/mailbox_widget_setup.dart';
 
 /// `flutter run --dart-define=MYEMAIL_SAMPLE=true` runs the sample engine on
 /// a device, for UI work without touching a real mailbox.
@@ -87,6 +93,11 @@ Future<void> main() async {
     }
   }
 
+  // Android opens the app with a configure intent when a home-screen widget
+  // is dropped, and expects to be told which mailbox it ended up showing.
+  // Read before runApp because it decides what the first screen is.
+  final widgetToSetUp = await widgetAwaitingSetup();
+
   runApp(
     ProviderScope(
       overrides: [
@@ -104,26 +115,59 @@ Future<void> main() async {
         if (onAndroid) ...[
           releaseFeedProvider.overrideWithValue(HttpReleaseFeed()),
           apkInstallerProvider.overrideWithValue(AndroidApkInstaller()),
+          homeScreenSurfaceProvider
+              .overrideWithValue(const AndroidHomeScreenSurface()),
+          widgetStateStoreProvider
+              .overrideWithValue(PrefsWidgetStateStore()),
         ],
       ],
-      child: const MyEmailApp(),
+      child: MyEmailApp(widgetToSetUp: widgetToSetUp),
     ),
   );
 }
 
-class MyEmailApp extends StatelessWidget {
-  const MyEmailApp({super.key});
+class MyEmailApp extends StatefulWidget {
+  const MyEmailApp({super.key, this.widgetToSetUp});
+
+  /// The home-screen widget Android is waiting to hear about, if the app was
+  /// opened by placing one.
+  final String? widgetToSetUp;
+
+  @override
+  State<MyEmailApp> createState() => _MyEmailAppState();
+}
+
+class _MyEmailAppState extends State<MyEmailApp> {
+  /// So a widget placed while the app was already running can be set up
+  /// without main() running again. See listenForWidgetSetup.
+  final _navigator = GlobalKey<NavigatorState>();
+
+  @override
+  void initState() {
+    super.initState();
+    listenForWidgetSetup((appWidgetId) {
+      _navigator.currentState?.push(
+        MaterialPageRoute<void>(
+          builder: (_) => MailboxWidgetSetup(appWidgetId: appWidgetId),
+        ),
+      );
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
+    final widgetToSetUp = widget.widgetToSetUp;
     return MaterialApp(
+      navigatorKey: _navigator,
       title: 'MyEmail',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),
       // Light and dark follow the system, as planned.
       themeMode: ThemeMode.system,
-      home: const AppShell(),
+      home: widgetToSetUp == null
+          ? const MailboxWidgetKeeper(child: AppShell())
+          : MailboxWidgetSetup(appWidgetId: widgetToSetUp),
     );
   }
 }

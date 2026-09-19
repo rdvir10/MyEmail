@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- android:configure points at MainActivity: the folder picker is written in
+     Flutter, so the app itself opens to ask which mailbox this widget should
+     count, and tells Android the placement is done when it has an answer. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="110dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="2"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/mailbox_count_widget"
+    android:configure="com.rdvir.mailtree.MainActivity"
+    android:description="@string/mailbox_widget_description"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen" />

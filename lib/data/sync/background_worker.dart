@@ -13,6 +13,9 @@ import '../folder_list_store.dart';
 import '../imap/cached_imap_engine.dart';
 import '../notifications/android_mail_notifier.dart';
 import '../secure_credential_store.dart';
+import '../widget/home_screen_surface.dart';
+import '../widget/mailbox_widgets.dart';
+import '../widget/widget_state_store.dart';
 import 'background_sync.dart';
 import 'live_sync.dart';
 import 'sync_state_store.dart';
@@ -206,8 +209,19 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
       state: state,
     );
 
+    final widgets = MailboxWidgets(
+      surface: homeScreenSurface(),
+      store: PrefsWidgetStateStore(),
+    );
+
     final outcome = await LiveSyncLoop(
-      onePass: sync.run,
+      // The widgets are brought up to date after every pass rather than when
+      // the worker finishes, because this worker runs for hours.
+      onePass: () async {
+        final report = await sync.run();
+        await widgets.refresh(liveEngine);
+        return report;
+      },
       waitForNext: () => _waitForNext(mode, liveEngine),
     ).run();
     debugPrint('[myemail] live worker finished: $outcome');
@@ -272,6 +286,13 @@ Future<bool> _runOnePass() async {
       notifier: AndroidMailNotifier(),
       state: PrefsSyncStateStore(),
     ).run();
+
+    // After the sync, so the numbers it writes are the ones just fetched.
+    // It never throws; see MailboxWidgets.refresh.
+    await MailboxWidgets(
+      surface: homeScreenSurface(),
+      store: PrefsWidgetStateStore(),
+    ).refresh(engine);
 
     debugPrint('[myemail] background pass: $report');
     for (final failure in report.failures) {

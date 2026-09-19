@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Two numbers and whose mailbox they are. Nothing else on purpose: this
+     sits on a home screen in front of whoever is looking at the phone, so no
+     subjects and no senders. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/mailbox_widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center_vertical"
+    android:background="@drawable/mailbox_widget_background"
+    android:padding="12dp">
+
+    <TextView
+        android:id="@+id/mailbox_widget_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textColor="#CCFFFFFF"
+        android:textSize="12sp"
+        android:text="@string/mailbox_widget_unset" />
+
+    <TextView
+        android:id="@+id/mailbox_widget_new"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxLines="1"
+        android:textColor="#FFFFFFFF"
+        android:textSize="34sp"
+        android:textStyle="bold"
+        android:text="0" />
+
+    <TextView
+        android:id="@+id/mailbox_widget_since"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textColor="#CCFFFFFF"
+        android:textSize="11sp"
+        android:text="@string/mailbox_widget_since" />
+
+    <TextView
+        android:id="@+id/mailbox_widget_total"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textColor="#CCFFFFFF"
+        android:textSize="11sp"
+        android:text="" />
+</LinearLayout>

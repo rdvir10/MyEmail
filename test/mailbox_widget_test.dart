@@ -1,0 +1,191 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/data/widget/home_screen_surface.dart';
+import 'package:myemail/data/widget/mailbox_widgets.dart';
+import 'package:myemail/data/widget/widget_state_store.dart';
+import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/mailbox_counts.dart';
+import 'package:myemail/state/folder_tree.dart' show kUnifiedInboxId;
+
+/// The two numbers on the home screen, and where they come from.
+void main() {
+  MailMessage at(DateTime date) => MailMessage(
+        id: 'm${date.microsecondsSinceEpoch}',
+        accountId: 'a',
+        folderId: 'a:INBOX',
+        uid: date.microsecondsSinceEpoch,
+        subject: 'Subject',
+        preview: 'Preview',
+        from: const MailAddress(email: 'someone@example.com'),
+        to: const [MailAddress(email: 'me@example.com')],
+        date: date,
+      );
+
+  group('counting what is new', () {
+    final mark = DateTime.utc(2026, 9, 18, 12);
+
+    test('counts what arrived after the mark', () {
+      final messages = [
+        at(mark.add(const Duration(minutes: 5))),
+        at(mark.add(const Duration(minutes: 1))),
+        at(mark.subtract(const Duration(minutes: 1))),
+      ];
+
+      expect(arrivedSince(messages, mark), 2);
+    });
+
+    test('a message at the mark is not after it', () {
+      expect(arrivedSince([at(mark)], mark), 0);
+    });
+
+    test('nothing is new until the app has been opened once', () {
+      // Otherwise a fresh install announces four thousand new messages, which
+      // is true in a useless way.
+      expect(arrivedSince([at(mark), at(mark)], null), 0);
+    });
+
+    test('an empty mailbox is zero, not nothing', () {
+      expect(arrivedSince(const [], mark), 0);
+    });
+  });
+
+  group('what the widget is told', () {
+    late SampleMailEngine engine;
+    late FakeHomeScreenSurface surface;
+    late MemoryWidgetStateStore store;
+    late MailboxWidgets widgets;
+
+    setUp(() {
+      engine = SampleMailEngine();
+      surface = FakeHomeScreenSurface();
+      store = MemoryWidgetStateStore();
+      widgets = MailboxWidgets(surface: surface, store: store);
+    });
+
+    Future<String> anInbox() async {
+      final account = (await engine.loadAccounts()).first;
+      final folders = await engine.loadFolders(account.id);
+      return folders.firstWhere((f) => f.role == FolderRole.inbox).id;
+    }
+
+    test('nothing is written until a widget has been placed', () async {
+      await widgets.refresh(engine);
+
+      expect(surface.values, isEmpty);
+      expect(surface.redraws, 0, reason: 'nothing to redraw');
+    });
+
+    test('setting one up writes its mailbox, both numbers and a name',
+        () async {
+      final inbox = await anInbox();
+
+      await widgets.setUp(appWidgetId: '7', folderId: inbox, engine: engine);
+
+      expect(surface.values['widget.7.folder'], inbox);
+      expect(surface.values['count.$inbox.total'], isA<int>());
+      expect(surface.values['count.$inbox.total'], greaterThan(0));
+      expect(surface.values['count.$inbox.new'], 0,
+          reason: 'never opened, so nothing counts as new yet');
+      expect(surface.values['count.$inbox.label'], contains('Inbox'));
+      expect(surface.redraws, 1);
+    });
+
+    test('the name says whose mailbox it is', () async {
+      // Two accounts both have an Inbox, and a widget with no name on it is a
+      // number without a subject.
+      final account = (await engine.loadAccounts()).first;
+      final inbox = await anInbox();
+
+      await widgets.setUp(appWidgetId: '7', folderId: inbox, engine: engine);
+
+      expect(
+          surface.values['count.$inbox.label'], contains(account.displayName));
+    });
+
+    test('opening the app moves the mark and takes the count back to zero',
+        () async {
+      final inbox = await anInbox();
+      await widgets.setUp(appWidgetId: '7', folderId: inbox, engine: engine);
+      // A mark from long ago: everything in the window arrived after it.
+      store.openedAt = DateTime.utc(2000);
+      await widgets.refresh(engine);
+      expect(surface.values['count.$inbox.new'], greaterThan(0));
+
+      await widgets.markCaughtUp(DateTime.now().toUtc(), engine);
+
+      expect(surface.values['count.$inbox.new'], 0);
+      expect(store.openedAt!.isAfter(DateTime.utc(2001)), isTrue);
+    });
+
+    test('the unified inbox adds the accounts up', () async {
+      final accounts = await engine.loadAccounts();
+      var total = 0;
+      for (final a in accounts) {
+        for (final f in await engine.loadFolders(a.id)) {
+          if (f.role == FolderRole.inbox) total += f.totalCount;
+        }
+      }
+
+      await widgets.setUp(
+          appWidgetId: '7', folderId: kUnifiedInboxId, engine: engine);
+
+      expect(surface.values['count.$kUnifiedInboxId.total'], total);
+      expect(surface.values['count.$kUnifiedInboxId.label'], 'All inboxes');
+    });
+
+    test('a mailbox that has gone leaves the widget unassigned', () async {
+      // Deleted, renamed, or its account removed. Writing zeroes would read
+      // as an empty mailbox rather than a missing one.
+      await widgets.setUp(
+          appWidgetId: '7', folderId: 'acct-gone:INBOX', engine: engine);
+
+      expect(surface.values.containsKey('widget.7.folder'), isFalse);
+      expect(surface.values.keys.where((k) => k.startsWith('count.')), isEmpty);
+    });
+
+    test('two widgets on two mailboxes are counted separately', () async {
+      final accounts = await engine.loadAccounts();
+      final first = (await engine.loadFolders(accounts[0].id))
+          .firstWhere((f) => f.role == FolderRole.inbox);
+      final second = (await engine.loadFolders(accounts[1].id))
+          .firstWhere((f) => f.role == FolderRole.inbox);
+
+      await widgets.setUp(appWidgetId: '1', folderId: first.id, engine: engine);
+      await widgets.setUp(
+          appWidgetId: '2', folderId: second.id, engine: engine);
+
+      expect(surface.values['widget.1.folder'], first.id);
+      expect(surface.values['widget.2.folder'], second.id);
+      expect(surface.values['count.${first.id}.total'], first.totalCount);
+      expect(surface.values['count.${second.id}.total'], second.totalCount);
+    });
+
+    test('a failure in here never escapes', () async {
+      // This runs at the end of every sync pass. A widget that is briefly out
+      // of date must not be able to fail the pass, or the startup of the app.
+      final inbox = await anInbox();
+      store.mailboxes['7'] = inbox;
+
+      await expectLater(
+        MailboxWidgets(surface: _BrokenSurface(), store: store).refresh(engine),
+        completes,
+      );
+    });
+  });
+}
+
+class _BrokenSurface implements HomeScreenSurface {
+  @override
+  Future<String?> getString(String key) async => throw StateError('no');
+
+  @override
+  Future<void> putInt(String key, int value) async => throw StateError('no');
+
+  @override
+  Future<void> putString(String key, String? value) async =>
+      throw StateError('no');
+
+  @override
+  Future<void> redraw() async => throw StateError('no');
+}

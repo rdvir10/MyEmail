@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The card the widget sits on. Rounded to match everything else Android
+     puts on a home screen, and filled with the app's own blue so it is
+     recognisable as MyEmail at a glance without an icon taking up room. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#0F6CBD" />
+    <corners android:radius="20dp" />
+</shape>
