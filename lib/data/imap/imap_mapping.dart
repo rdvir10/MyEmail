@@ -6,6 +6,7 @@ import '../../domain/account.dart';
 import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
+import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import 'imap_transport.dart';
 
@@ -257,6 +258,51 @@ MailBody bodyFromMime(em.MimeMessage m) {
             : '',
     html: html,
   );
+}
+
+/// What a message has attached, read from its structure alone.
+///
+/// Inline parts are kept but marked: a logo in a signature is not something
+/// anyone attached on purpose, but a photo sent inline is still a photo, and
+/// deciding which is which by guessing at the name is worse than showing
+/// both and saying which is which.
+///
+/// Parts with no file name get one made from their type, because "open the
+/// attachment" needs something to call it and "" is not something.
+List<MailAttachment> attachmentsOf(em.MimeMessage message) {
+  final found = <MailAttachment>[];
+  for (final disposition in [
+    em.ContentDisposition.attachment,
+    em.ContentDisposition.inline,
+  ]) {
+    for (final info in message.findContentInfo(disposition: disposition)) {
+      final mime = info.contentType?.mediaType.toString() ??
+          'application/octet-stream';
+      // The text of the message itself is a part like any other. It is the
+      // body, not an attachment, and listing it as one is how "1 attachment"
+      // appears on a plain note.
+      if (disposition == em.ContentDisposition.inline &&
+          mime.startsWith('text/')) {
+        continue;
+      }
+      found.add(
+        MailAttachment(
+          id: info.fetchId,
+          name: safeFileName(info.fileName ?? _nameFromType(mime, info.fetchId)),
+          mimeType: mime,
+          sizeBytes: info.size ?? 0,
+          isInline: disposition == em.ContentDisposition.inline,
+        ),
+      );
+    }
+  }
+  return found;
+}
+
+String _nameFromType(String mime, String fetchId) {
+  final slash = mime.indexOf('/');
+  final extension = slash < 0 ? 'bin' : mime.substring(slash + 1);
+  return 'part-$fetchId.$extension';
 }
 
 /// A rough text rendering of HTML for previews and fallbacks: block tags

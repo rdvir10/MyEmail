@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -268,6 +269,46 @@ class GraphMailApi {
     }
   }
 
+  /// What is attached to a message, without the bytes.
+  ///
+  /// `$select` matters here: without it Graph returns `contentBytes` for
+  /// every attachment, so listing what is on a message downloads all of it.
+  Future<List<GraphAttachment>> attachments(String messageId) async {
+    final json = await _get(
+      Uri.parse('$base/me/messages/${_id(messageId)}/attachments').replace(
+        queryParameters: {
+          '\$select': 'id,name,contentType,size,isInline',
+        },
+      ),
+    );
+    final value = json['value'];
+    if (value is! List) return const [];
+    return [
+      for (final item in value)
+        if (item is Map<String, Object?>)
+          GraphAttachment(
+            id: '${item['id']}',
+            name: '${item['name'] ?? ''}',
+            mimeType: '${item['contentType'] ?? 'application/octet-stream'}',
+            sizeBytes: item['size'] is int ? item['size'] as int : 0,
+            isInline: item['isInline'] == true,
+          ),
+    ];
+  }
+
+  /// The bytes of one attachment.
+  ///
+  /// `/$value` rather than the JSON with contentBytes in it: the same data
+  /// without a base64 round trip through a string, which for a 20MB file is
+  /// the difference between a download and an out-of-memory.
+  Future<Uint8List> attachmentBytes(String messageId, String attachmentId) =>
+      _bytes(
+        Uri.parse(
+          '$base/me/messages/${_id(messageId)}'
+          '/attachments/${Uri.encodeComponent(attachmentId)}/\$value',
+        ),
+      );
+
   /// Full text search across the mailbox, scoped to one folder.
   Future<List<GraphMessage>> search(
     String folderId,
@@ -349,6 +390,29 @@ class GraphMailApi {
 
   Future<Map<String, Object?>> _get(Uri uri) =>
       _send(http.Request('GET', uri));
+
+  /// A response that is a file rather than JSON.
+  ///
+  /// Its own path because [_send] decodes what comes back, and an attachment
+  /// is bytes: decoding a PDF as UTF-8 and re-encoding it produces something
+  /// that is the right length and opens in nothing.
+  Future<Uint8List> _bytes(Uri uri) async {
+    final client = _http ?? http.Client();
+    try {
+      final request = http.Request('GET', uri)
+        ..headers['Authorization'] = 'Bearer ${await accessToken()}'
+        ..followRedirects = true;
+      final response =
+          await http.Response.fromStream(await client.send(request));
+      if (response.statusCode == 404) throw const GraphNotFound();
+      if (response.statusCode >= 400) {
+        throw _failureFor(response.statusCode, const {});
+      }
+      return response.bodyBytes;
+    } finally {
+      if (_http == null) client.close();
+    }
+  }
 
   Future<Map<String, Object?>> _post(Uri uri, Map<String, Object?> body) =>
       _send(http.Request('POST', uri)
@@ -482,6 +546,23 @@ class GraphMailApi {
       '${detail == null || detail.isEmpty ? '' : ': $detail'}',
     );
   }
+}
+
+/// One file on a message, as Graph describes it.
+class GraphAttachment {
+  const GraphAttachment({
+    required this.id,
+    required this.name,
+    required this.mimeType,
+    required this.sizeBytes,
+    required this.isInline,
+  });
+
+  final String id;
+  final String name;
+  final String mimeType;
+  final int sizeBytes;
+  final bool isInline;
 }
 
 /// The message or folder is not there. Usually means deleted elsewhere.

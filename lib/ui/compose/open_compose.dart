@@ -20,6 +20,7 @@ Future<void> openCompose(
   required ComposeKind kind,
   MailMessage? original,
   String? accountId,
+  List<DraftAttachment> attachments = const [],
 }) async {
   final resolvedAccount = accountId ??
       original?.accountId ??
@@ -42,8 +43,11 @@ Future<void> openCompose(
 
   // Only show the spinner if the build is actually slow; a cached body makes
   // it instant and a flashed dialog looks like a glitch.
-  final draft = await _withSpinner(context, draftFuture);
-  if (draft == null || !context.mounted) return;
+  final built = await _withSpinner(context, draftFuture);
+  if (built == null || !context.mounted) return;
+  final draft = attachments.isEmpty
+      ? built
+      : built.copyWith(attachments: [...built.attachments, ...attachments]);
 
   await Navigator.of(context).push(
     MaterialPageRoute<bool>(builder: (_) => ComposeScreen(draft: draft)),

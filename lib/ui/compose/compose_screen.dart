@@ -5,8 +5,11 @@ import '../../domain/account.dart';
 import '../../domain/error_report.dart';
 import '../common/problem_view.dart';
 
+import '../../data/files/file_bridge.dart';
 import '../../domain/draft.dart';
+import '../../state/attachment_providers.dart';
 import '../../state/compose_providers.dart';
+import '../../state/drop_providers.dart';
 import '../../state/providers.dart';
 import 'html_editor.dart';
 
@@ -45,15 +48,26 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
   /// Something that went wrong out of their hands. Worth reporting.
   ProblemReport? _problem;
 
+  /// Where a dropped file goes while this screen is open.
+  DropTargets? _drops;
+
   @override
   void initState() {
     super.initState();
     _showCc = widget.draft.cc.isNotEmpty;
     _editor.addListener(_onEditorState);
+    // While this screen is open, a file dropped anywhere on the app is an
+    // attachment for this message rather than the start of a new one. Held
+    // in a field because dispose cannot reach through ref: by then the
+    // element is on its way out.
+    final drops = ref.read(dropTargetProvider);
+    _drops = drops;
+    drops.claim(_takeIncoming);
   }
 
   @override
   void dispose() {
+    _drops?.release(_takeIncoming);
     _editor
       ..removeListener(_onEditorState)
       ..dispose();
@@ -64,6 +78,33 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
   }
 
   void _onEditorState() => setState(() {});
+
+  /// Files dropped on the app or pasted from the clipboard.
+  Future<void> _takeIncoming(List<IncomingFile> files) async {
+    final added = await readIncoming(files);
+    if (!mounted) return;
+    if (added.isEmpty) {
+      _say('Nothing there could be read as a file.');
+      return;
+    }
+    setState(() => _attachments = [..._attachments, ...added]);
+  }
+
+  Future<void> _pasteAttachment() async {
+    final files = await ref.read(fileBridgeProvider).pasteFiles();
+    if (!mounted) return;
+    if (files.isEmpty) {
+      // Text on the clipboard belongs in the body, and the editor already
+      // pastes that; saying so beats a button that silently does nothing.
+      _say('No file on the clipboard.');
+      return;
+    }
+    await _takeIncoming(files);
+  }
+
+  void _say(String message) => ScaffoldMessenger.of(context)
+    ..hideCurrentSnackBar()
+    ..showSnackBar(SnackBar(content: Text(message)));
 
   Future<void> _addAttachment() async {
     // file_picker 13: pickFiles is static, returns the files directly, and
@@ -270,6 +311,11 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
               tooltip: 'Attach',
               icon: const Icon(Icons.attach_file),
               onPressed: _sending ? null : _addAttachment,
+            ),
+            IconButton(
+              tooltip: 'Paste file',
+              icon: const Icon(Icons.content_paste_outlined),
+              onPressed: _sending ? null : _pasteAttachment,
             ),
             IconButton(
               tooltip: 'Send',

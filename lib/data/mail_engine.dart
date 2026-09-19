@@ -1,7 +1,10 @@
+import 'dart:typed_data';
+
 import '../domain/account.dart';
 import '../domain/error_report.dart';
 import 'auth/oauth_token.dart';
 import '../domain/draft.dart';
+import '../domain/mail_attachment.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
 
@@ -111,6 +114,12 @@ abstract class MailEngine {
 
   /// The body of one message, fetched when it is opened.
   Future<MailBody> loadMessageBody(String messageId);
+
+  /// What is attached to a message. Cheap: no file is downloaded.
+  Future<List<MailAttachment>> listAttachments(String messageId);
+
+  /// The bytes of one attachment, by the id [listAttachments] gave it.
+  Future<Uint8List> fetchAttachment(String messageId, String attachmentId);
 
   /// Set or clear \Seen. The folder's unread count follows on next load.
   Future<void> setRead(String messageId, bool isRead);

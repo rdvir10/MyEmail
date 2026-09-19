@@ -1,8 +1,10 @@
+import 'dart:typed_data';
 import 'dart:async';
 
 import 'package:myemail/data/imap/imap_transport.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/domain/mail_message.dart';
 
 /// An in-memory IMAP server the tests can mutate between calls: deliver mail,
@@ -164,6 +166,33 @@ class FakeImapTransport implements ImapTransport {
     final m = _require(path).messages[uid];
     if (m == null) throw StateError('No message $uid in $path');
     return MailBody(text: m.body, html: m.html);
+  }
+
+  /// Files on a message, keyed by uid. Empty unless a test puts some there.
+  final Map<int, List<MailAttachment>> attachments = {};
+
+  @override
+  Future<List<MailAttachment>> listAttachments(String path, int uid) async {
+    _online();
+    calls.add('UID FETCH $path $uid BODYSTRUCTURE');
+    return attachments[uid] ?? const [];
+  }
+
+  @override
+  Future<Uint8List> fetchAttachment(
+    String path,
+    int uid,
+    String attachmentId,
+  ) async {
+    _online();
+    calls.add('UID FETCH $path $uid BODY[$attachmentId]');
+    final found = (attachments[uid] ?? const <MailAttachment>[])
+        .where((a) => a.id == attachmentId)
+        .firstOrNull;
+    if (found == null) throw StateError('No attachment $attachmentId');
+    return Uint8List.fromList(
+      List<int>.generate(found.sizeBytes.clamp(1, 64), (i) => i % 256),
+    );
   }
 
   @override

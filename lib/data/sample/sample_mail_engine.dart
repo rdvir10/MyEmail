@@ -1,9 +1,12 @@
+import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import '../../domain/account.dart';
 import '../../domain/draft.dart';
 import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
+import '../../domain/mail_attachment.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
 import '../compose/quote_builder.dart';
@@ -438,6 +441,49 @@ class SampleMailEngine implements MailEngine {
         folderMessages.removeWhere((m) => m.id == previous);
       }
     }
+  }
+
+  @override
+  Future<List<MailAttachment>> listAttachments(String messageId) async {
+    await _latency();
+    final folderId = messageId.substring(0, messageId.lastIndexOf('#'));
+    final message = _messages[folderId]
+        ?.where((m) => m.id == messageId)
+        .firstOrNull;
+    if (message == null || !message.hasAttachments) return const [];
+    // Made up from the message id, so the same message always has the same
+    // files and a widget test can count on them.
+    return [
+      MailAttachment(
+        id: '2',
+        name: 'Quote ${message.uid}.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 184320,
+      ),
+      MailAttachment(
+        id: '3',
+        name: 'Photo ${message.uid}.jpg',
+        mimeType: 'image/jpeg',
+        sizeBytes: 1048576,
+      ),
+    ];
+  }
+
+  @override
+  Future<Uint8List> fetchAttachment(
+    String messageId,
+    String attachmentId,
+  ) async {
+    await _latency();
+    final known = await listAttachments(messageId);
+    if (!known.any((a) => a.id == attachmentId)) {
+      throw StateError('No attachment $attachmentId on $messageId');
+    }
+    // Enough bytes to write a file and open it with something; not a real
+    // PDF, because the sample engine has never pretended to be a server.
+    return Uint8List.fromList(
+      utf8.encode('MyEmail sample attachment $messageId/$attachmentId'),
+    );
   }
 
   @override

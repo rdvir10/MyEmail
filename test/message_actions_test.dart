@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -8,6 +9,7 @@ import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_folder.dart';
+import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/folder_tree.dart';
 import 'package:myemail/state/message_providers.dart';
@@ -110,6 +112,14 @@ class _RefusingEngine implements MailEngine {
   @override
   Future<MailBody> loadMessageBody(String messageId) =>
       _inner.loadMessageBody(messageId);
+
+  @override
+  Future<List<MailAttachment>> listAttachments(String messageId) =>
+      _inner.listAttachments(messageId);
+
+  @override
+  Future<Uint8List> fetchAttachment(String messageId, String attachmentId) =>
+      _inner.fetchAttachment(messageId, attachmentId);
   @override
   Future<void> moveMessages(List<String> messageIds, String toFolderId) =>
       _inner.moveMessages(messageIds, toFolderId);

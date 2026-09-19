@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:enough_mail/enough_mail.dart' as em;
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../../domain/mail_attachment.dart';
 import '../../domain/mail_credentials.dart';
 import '../../domain/mail_message.dart';
 import '../mail_engine.dart';
@@ -159,6 +161,37 @@ class EnoughMailTransport implements ImapTransport {
           throw StateError('Message $uid in $path no longer exists');
         }
         return bodyFromMime(result.messages.first);
+      });
+
+  @override
+  Future<List<MailAttachment>> listAttachments(String path, int uid) =>
+      _run((c) async {
+        await _ensureSelected(c, path);
+        // BODYSTRUCTURE, not the message: the server describes the parts and
+        // sends none of them, which is the whole point of listing separately
+        // from fetching.
+        final result = await c.uidFetchMessage(uid, 'BODYSTRUCTURE');
+        if (result.messages.isEmpty) return const [];
+        return attachmentsOf(result.messages.first);
+      });
+
+  @override
+  Future<Uint8List> fetchAttachment(String path, int uid, String attachmentId) =>
+      _run((c) async {
+        await _ensureSelected(c, path);
+        // PEEK, so downloading a file does not mark the message read.
+        final result =
+            await c.uidFetchMessage(uid, 'BODY.PEEK[$attachmentId]');
+        if (result.messages.isEmpty) {
+          throw StateError('Attachment $attachmentId is no longer there');
+        }
+        final part = result.messages.first.getPart(attachmentId) ??
+            result.messages.first;
+        final bytes = part.decodeContentBinary();
+        if (bytes == null) {
+          throw StateError('Attachment $attachmentId could not be decoded');
+        }
+        return bytes;
       });
 
   @override

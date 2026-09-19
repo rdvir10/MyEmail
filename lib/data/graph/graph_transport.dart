@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import '../../domain/folder_role.dart';
+import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import '../imap/imap_transport.dart';
 import '../mail_engine.dart';
@@ -277,6 +279,29 @@ class GraphTransport implements ImapTransport {
     }
     return MailBody(text: body.text ?? '', html: body.html);
   }
+
+  @override
+  Future<List<MailAttachment>> listAttachments(String path, int uid) async {
+    final remoteId = await _remoteId(path, uid);
+    return [
+      for (final a in await api.attachments(remoteId))
+        MailAttachment(
+          id: a.id,
+          name: safeFileName(a.name),
+          mimeType: a.mimeType,
+          sizeBytes: a.sizeBytes,
+          isInline: a.isInline,
+        ),
+    ];
+  }
+
+  @override
+  Future<Uint8List> fetchAttachment(
+    String path,
+    int uid,
+    String attachmentId,
+  ) async =>
+      api.attachmentBytes(await _remoteId(path, uid), attachmentId);
 
   @override
   Future<List<int>> searchUids(

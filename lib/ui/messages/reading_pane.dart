@@ -8,6 +8,7 @@ import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import '../compose/open_compose.dart';
+import 'attachment_bar.dart';
 import 'date_format.dart';
 import 'html_body_view.dart';
 import 'message_source.dart';
@@ -324,20 +325,10 @@ class _Header extends StatelessWidget {
             ),
           ],
         ),
-        if (message.hasAttachments) ...[
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Icon(Icons.attach_file, size: 16, color: scheme.onSurfaceVariant),
-              const SizedBox(width: 4),
-              Text(
-                'Attachments arrive in milestone 5',
-                style: theme.textTheme.labelSmall
-                    ?.copyWith(color: scheme.onSurfaceVariant),
-              ),
-            ],
-          ),
-        ],
+        // Asked for whenever the message says it has something attached.
+        // The list is small and separate from the body, so it arrives while
+        // the body is still coming and costs nothing when there is nothing.
+        if (message.hasAttachments) AttachmentBar(messageId: message.id),
       ],
     );
   }

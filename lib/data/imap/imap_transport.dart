@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../domain/folder_role.dart';
+import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 
 /// The wire-level operations the cache needs from a mail server, for one
@@ -48,6 +49,16 @@ abstract class ImapTransport {
   Future<Set<int>> existingUids(String path, int fromUid, int toUid);
 
   Future<MailBody> fetchBody(String path, int uid);
+
+  /// What is attached to a message, without downloading any of it.
+  ///
+  /// One cheap request on both transports — a BODYSTRUCTURE over IMAP, a
+  /// metadata list over Graph — so opening a message with a slide deck on it
+  /// costs no more than opening any other.
+  Future<List<MailAttachment>> listAttachments(String path, int uid);
+
+  /// The bytes of one attachment, by the id [listAttachments] gave it.
+  Future<Uint8List> fetchAttachment(String path, int uid, String attachmentId);
 
   /// UIDs in the folder whose subject, sender or body contain [query].
   ///

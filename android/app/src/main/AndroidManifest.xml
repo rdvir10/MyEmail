@@ -81,6 +81,19 @@
              the installer and throws FileUriExposedException on anything
              modern. The authority must match the one MainActivity passes to
              FileProvider.getUriForFile. -->
+        <!-- Attachments handed to other apps: opened, shared, dragged out or
+             copied to the clipboard. Its own authority rather than the
+             updater's, so each says what it is for and neither can widen
+             the other by accident. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/attachment_paths" />
+        </provider>
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.updates"

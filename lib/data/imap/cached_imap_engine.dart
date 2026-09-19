@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:collection/collection.dart';
 import 'package:enough_mail/enough_mail.dart' as em;
 
@@ -5,6 +7,7 @@ import '../../domain/account.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_credentials.dart';
 import '../../domain/mail_folder.dart';
+import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/draft.dart';
 import '../account_store.dart';
@@ -574,6 +577,25 @@ class CachedImapEngine implements MailEngine {
     }
     final t = await _transport(accountId);
     return _sync(accountId, t).body(path, uid);
+  }
+
+  @override
+  Future<List<MailAttachment>> listAttachments(String messageId) async {
+    final (folderId, uid) = splitMessageId(messageId);
+    final (accountId, path) = splitFolderId(folderId);
+    final t = await _transport(accountId);
+    return t.listAttachments(path, uid);
+  }
+
+  @override
+  Future<Uint8List> fetchAttachment(
+    String messageId,
+    String attachmentId,
+  ) async {
+    final (folderId, uid) = splitMessageId(messageId);
+    final (accountId, path) = splitFolderId(folderId);
+    final t = await _transport(accountId);
+    return t.fetchAttachment(path, uid, attachmentId);
   }
 
   @override

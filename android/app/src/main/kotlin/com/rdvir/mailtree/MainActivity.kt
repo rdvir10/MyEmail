@@ -33,8 +33,15 @@ class MainActivity : FlutterActivity() {
 
     private var widgetChannel: MethodChannel? = null
 
+    private var files: FilesBridge? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // Attachments in and out: opening, sharing, the clipboard and drag
+        // and drop, all of which are content URIs underneath.
+        files = FilesBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+            .also { it.listenForDrops() }
 
         widgetChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,

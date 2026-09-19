@@ -20,14 +20,18 @@ import 'data/updates/apk_installer.dart';
 import 'data/updates/update_service.dart';
 import 'data/ui_state_store.dart';
 import 'data/widget/home_screen_surface.dart';
+import 'data/files/attachment_files.dart';
+import 'data/files/file_bridge.dart';
 import 'data/widget/widget_setup_channel.dart';
 import 'data/widget/widget_state_store.dart';
 import 'state/sync_providers.dart';
 import 'state/update_providers.dart';
 import 'state/providers.dart';
+import 'state/attachment_providers.dart';
 import 'state/widget_providers.dart';
 import 'theme/app_theme.dart';
 import 'ui/shell/app_shell.dart';
+import 'ui/shell/file_drop_host.dart';
 import 'ui/shell/mailbox_widget_keeper.dart';
 import 'ui/widgets/mailbox_widget_setup.dart';
 
@@ -113,6 +117,9 @@ Future<void> main() async {
         installedVersionProvider
             .overrideWithValue(const PackageInstalledVersion()),
         if (onAndroid) ...[
+          fileBridgeProvider.overrideWithValue(platformFileBridge()),
+          attachmentFilesProvider
+              .overrideWithValue(const DiskAttachmentFiles()),
           releaseFeedProvider.overrideWithValue(HttpReleaseFeed()),
           apkInstallerProvider.overrideWithValue(AndroidApkInstaller()),
           homeScreenSurfaceProvider
@@ -166,7 +173,7 @@ class _MyEmailAppState extends State<MyEmailApp> {
       // Light and dark follow the system, as planned.
       themeMode: ThemeMode.system,
       home: widgetToSetUp == null
-          ? const MailboxWidgetKeeper(child: AppShell())
+          ? const FileDropHost(child: MailboxWidgetKeeper(child: AppShell()))
           : MailboxWidgetSetup(appWidgetId: widgetToSetUp),
     );
   }
