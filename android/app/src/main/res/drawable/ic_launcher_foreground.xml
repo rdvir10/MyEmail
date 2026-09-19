@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The dart, kept inside a circle of radius 36 around the middle of the
+     108dp canvas. That is the most any launcher mask can crop to, so a
+     round icon, a squircle and a squashed teardrop all show the whole
+     thing. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M27.1,52.9 L80.9,30.1 L60.0,80.9 L52.1,62.2 Z" />
+    <!-- The underside of the fold, which is what stops the dart reading as
+         a flat arrowhead. -->
+    <path
+        android:fillColor="#FFF0D6C2"
+        android:pathData="M52.1,62.2 L80.9,30.1 L60.0,80.9 Z" />
+</vector>

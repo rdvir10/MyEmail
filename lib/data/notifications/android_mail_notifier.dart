@@ -48,7 +48,7 @@ class AndroidMailNotifier implements MailNotifier {
         // The launcher icon rather than a dedicated silhouette. Android tints
         // and masks it, so a proper monochrome notification icon is a milestone
         // 8 job alongside the rest of the icon work.
-        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+        android: AndroidInitializationSettings('@drawable/ic_stat_mail'),
       ),
       onDidReceiveNotificationResponse: (response) =>
           _launchPayload = response.payload,

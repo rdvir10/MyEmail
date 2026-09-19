@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 13's themed icons: one flat shape the system recolours to match
+     the wallpaper. No fold, because a tinted icon has only one colour and a
+     second path would be invisible against the first. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M27.1,52.9 L80.9,30.1 L60.0,80.9 L52.1,62.2 Z" />
+</vector>

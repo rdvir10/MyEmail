@@ -22,7 +22,7 @@
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:layout_gravity="center"
-            android:src="@mipmap/ic_launcher"
+            android:src="@drawable/widget_app_icon"
             android:contentDescription="@string/mailbox_widget_label" />
 
         <!-- What arrived since you last looked. Hidden at zero, the way a

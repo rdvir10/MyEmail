@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The notification icon, kept.
+
+     A release build strips resources nothing in the Android half refers to,
+     and this one is named only from Dart, as the string
+     '@drawable/ic_stat_mail' handed to flutter_local_notifications. The
+     shrinker cannot see that, so without this line the icon is dropped from
+     the APK and every notification arrives with a blank square where it
+     should be — on a release build only, which is the worst way to find out.
+-->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/ic_stat_mail" />
