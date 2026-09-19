@@ -206,7 +206,8 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(store.mailboxes['42']?.colour, WidgetColour.teal);
-      expect(surface.values['widget.42.colour'], WidgetColour.teal.value);
+      // argb, not value: what Android is sent has to fit in a Java int.
+      expect(surface.values['widget.42.colour'], WidgetColour.teal.argb);
     });
 
     testWidgets('left alone, it stays the colour of the app', (tester) async {

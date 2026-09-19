@@ -93,7 +93,7 @@ class MailboxWidgets {
         );
         await surface.putString('widget.${entry.key}.mode', mailbox.counts.name);
         await surface.putString('widget.${entry.key}.label', mailbox.label);
-        await surface.putInt('widget.${entry.key}.colour', mailbox.colour.value);
+        await surface.putInt('widget.${entry.key}.colour', mailbox.colour.argb);
       }
       for (final c in counts.values) {
         await surface.putString('count.${c.folderId}.label', c.label);

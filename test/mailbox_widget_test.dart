@@ -348,6 +348,61 @@ void main() {
       expect(folderFromWidgetLink(null), isNull);
     });
   });
+
+  group('values that cross to Android', () {
+    // The crash this group exists for: an opaque colour is 0xFF……, which as
+    // a Dart integer is bigger than a Java int. It crossed as a Long, was
+    // stored with putLong, and the widget provider read it with getInt and
+    // threw. The provider is a receiver in the app's own process, so that
+    // was not a widget failing to draw — it was MyEmail crashing every time
+    // the launcher asked for a redraw.
+    test('every colour fits in a signed 32-bit int', () {
+      for (final colour in WidgetColour.values) {
+        expect(colour.argb, lessThanOrEqualTo(2147483647), reason: colour.name);
+        expect(colour.argb, greaterThanOrEqualTo(-2147483648),
+            reason: colour.name);
+      }
+    });
+
+    test('and the widget is sent that, not the Dart number', () async {
+      final engine = SampleMailEngine();
+      final surface = FakeHomeScreenSurface();
+      final store = MemoryWidgetStateStore();
+
+      await MailboxWidgets(surface: surface, store: store).setUp(
+        appWidgetId: '7',
+        mailbox: const WidgetMailbox(
+          folderId: kUnifiedInboxId,
+          colour: WidgetColour.orange,
+        ),
+        engine: engine,
+      );
+
+      expect(surface.values['widget.7.colour'], WidgetColour.orange.argb);
+      expect(surface.values['widget.7.colour'], isNegative,
+          reason: 'an opaque colour is negative once it fits in 32 bits');
+    });
+
+    test('every number written is one Android can store as an int', () async {
+      // Not just the colour: anything over two billion has the same problem,
+      // and a mailbox count is written the same way.
+      final engine = SampleMailEngine();
+      final surface = FakeHomeScreenSurface();
+      final store = MemoryWidgetStateStore();
+      await MailboxWidgets(surface: surface, store: store).setUp(
+        appWidgetId: '7',
+        mailbox: const WidgetMailbox(folderId: kUnifiedInboxId),
+        engine: engine,
+      );
+
+      for (final entry in surface.values.entries) {
+        final value = entry.value;
+        if (value is! int) continue;
+        expect(value, lessThanOrEqualTo(2147483647), reason: entry.key);
+        expect(value, greaterThanOrEqualTo(-2147483648), reason: entry.key);
+      }
+    });
+  });
 }
 
 class _BrokenSurface implements HomeScreenSurface {

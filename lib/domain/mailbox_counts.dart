@@ -45,6 +45,16 @@ enum WidgetColour {
   /// The darker end, for where a gradient is drawn rather than a flat fill.
   final int deep;
 
+  /// The same colour as Android stores it: signed, and inside 32 bits.
+  ///
+  /// This is not a detail. An opaque colour is 0xFF……, which as a Dart
+  /// integer is larger than a Java int, so it crosses to the platform as a
+  /// Long and is written to preferences with putLong. Anything reading it
+  /// back with getInt then throws — and the code reading it is the widget
+  /// provider, which runs in this app's own process, so the throw takes the
+  /// whole app down every time the launcher asks the widget to redraw.
+  int get argb => value.toSigned(32);
+
   static WidgetColour byName(String? name) => WidgetColour.values.firstWhere(
         (c) => c.name == name,
         orElse: () => WidgetColour.orange,
