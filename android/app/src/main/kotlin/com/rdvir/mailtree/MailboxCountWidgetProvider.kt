@@ -4,6 +4,9 @@ import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.util.TypedValue
 import android.view.View
 import android.widget.RemoteViews
 import es.antonborri.home_widget.HomeWidgetLaunchIntent
@@ -54,6 +57,8 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
     ) {
         val folderId = widgetData.getString("widget.$widgetId.folder", null)
         val views = RemoteViews(context.packageName, R.layout.mailbox_count_widget).apply {
+            sizeToCell(appWidgetManager.getAppWidgetOptions(widgetId))
+
             // Tapping opens the folder this widget is counting, not just
             // the app. Two widgets on two folders get two intents: the
             // data differs, which is what makes them tell apart.
@@ -116,6 +121,57 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
             }
         }
         appWidgetManager.updateAppWidget(widgetId, views)
+    }
+
+    /**
+     * Grow the icon to the cell the launcher gave us.
+     *
+     * A fixed size is right on exactly one device. A launcher draws its own
+     * icons larger on a tablet than on a phone, so a widget pinned at 48dp
+     * sits in a row of app icons looking like a smaller, shyer one — which
+     * is precisely what it is meant not to look like.
+     *
+     * The cell size arrives in dp. The icon takes a square out of it, less
+     * the strip along the bottom where the name goes, and the badges and the
+     * name follow it up or down so the whole thing keeps its proportions
+     * rather than growing a big icon with tiny numbers stuck to it.
+     *
+     * API 31 and up. Below that the sizes in the layout stand, which is the
+     * behaviour every device had until now.
+     */
+    private fun RemoteViews.sizeToCell(options: Bundle) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val width = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0)
+        val height = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0)
+        if (width <= 0 || height <= 0) return
+
+        val icon = minOf(width.toFloat(), height * 0.72f).coerceIn(44f, 104f)
+        for (id in intArrayOf(R.id.mailbox_widget_tile, R.id.mailbox_widget_glyph)) {
+            setViewLayoutWidth(id, icon, TypedValue.COMPLEX_UNIT_DIP)
+            setViewLayoutHeight(id, icon, TypedValue.COMPLEX_UNIT_DIP)
+        }
+
+        // Height only. The width stays as it was, because a badge has to be
+        // able to stretch for "99+" and a square one would cut it off.
+        val badge = (icon * 0.30f).coerceIn(20f, 30f)
+        setViewLayoutHeight(R.id.mailbox_widget_new, badge, TypedValue.COMPLEX_UNIT_DIP)
+        setTextViewTextSize(
+            R.id.mailbox_widget_new,
+            TypedValue.COMPLEX_UNIT_SP,
+            badge * 0.55f,
+        )
+        val total = (icon * 0.26f).coerceIn(17f, 26f)
+        setViewLayoutHeight(R.id.mailbox_widget_total, total, TypedValue.COMPLEX_UNIT_DIP)
+        setTextViewTextSize(
+            R.id.mailbox_widget_total,
+            TypedValue.COMPLEX_UNIT_SP,
+            total * 0.58f,
+        )
+        setTextViewTextSize(
+            R.id.mailbox_widget_name,
+            TypedValue.COMPLEX_UNIT_SP,
+            (icon * 0.23f).coerceIn(11f, 15f),
+        )
     }
 
     /**
