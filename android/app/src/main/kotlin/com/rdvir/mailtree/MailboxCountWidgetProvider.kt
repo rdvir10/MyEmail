@@ -45,11 +45,20 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
                     setViewVisibility(R.id.mailbox_widget_total, View.GONE)
                 } else {
                     val fresh = widgetData.getInt("count.$folderId.new", 0)
-                    val total = widgetData.getInt("count.$folderId.total", 0)
+                    // Everything in the folder, or only what is unread:
+                    // chosen per widget when it was placed.
+                    val unread = widgetData.getString("widget.$widgetId.mode", null) == "unread"
+                    val total = widgetData.getInt(
+                        if (unread) "count.$folderId.unread" else "count.$folderId.total",
+                        0,
+                    )
 
                     setTextViewText(
                         R.id.mailbox_widget_name,
-                        widgetData.getString("count.$folderId.label", null)
+                        // A name of its own beats the folder's, which is how
+                        // two widgets on the same mailbox are told apart.
+                        widgetData.getString("widget.$widgetId.label", null)
+                            ?: widgetData.getString("count.$folderId.label", null)
                             ?: context.getString(R.string.mailbox_widget_unset),
                     )
                     // Nothing new is no badge at all. A nought in a red

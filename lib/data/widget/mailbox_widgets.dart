@@ -33,13 +33,16 @@ class MailboxWidgets {
   /// the app is well served by being told "200".
   static const window = 200;
 
-  /// Remember which mailbox a newly placed widget shows, and fill it in.
+  /// Remember what a widget shows, and fill it in.
+  ///
+  /// Used both for a newly placed widget and for one being changed from the
+  /// settings screen: they are the same operation.
   Future<void> setUp({
     required String appWidgetId,
-    required String folderId,
+    required WidgetMailbox mailbox,
     required MailEngine engine,
   }) async {
-    await store.writeMailbox(appWidgetId, folderId);
+    await store.writeMailbox(appWidgetId, mailbox);
     await refresh(engine);
   }
 
@@ -60,27 +63,41 @@ class MailboxWidgets {
   ///
   /// Does nothing at all when no widget has been placed, which is the common
   /// case and worth keeping cheap: this runs at the end of every sync pass.
-  Future<void> refresh(MailEngine engine) async {
+  ///
+  /// [placed] is the widgets Android says are on the home screen. Where it is
+  /// known, anything else is forgotten — a widget dragged to the bin leaves
+  /// its mailbox behind otherwise, and every sync goes on counting a folder
+  /// nothing is showing. Null means "not known here", which is the case in
+  /// the background isolate, and nothing is forgotten.
+  Future<void> refresh(MailEngine engine, {List<String>? placed}) async {
     try {
+      if (placed != null) await store.keepOnly(placed);
       final mailboxes = await store.readMailboxes();
       if (mailboxes.isEmpty) return;
 
       final mark = await store.readOpenedAt();
       final counts = <String, MailboxCounts>{};
-      for (final folderId in mailboxes.values.toSet()) {
+      for (final folderId in mailboxes.values.map((m) => m.folderId).toSet()) {
         final count = await _count(engine, folderId, mark);
         if (count != null) counts[folderId] = count;
       }
 
       for (final entry in mailboxes.entries) {
+        final mailbox = entry.value;
+        final found = counts[mailbox.folderId];
+        // A folder that has gone leaves the widget unassigned rather than
+        // showing zeroes, which would read as an empty mailbox.
         await surface.putString(
           'widget.${entry.key}.folder',
-          counts.containsKey(entry.value) ? entry.value : null,
+          found == null ? null : mailbox.folderId,
         );
+        await surface.putString('widget.${entry.key}.mode', mailbox.counts.name);
+        await surface.putString('widget.${entry.key}.label', mailbox.label);
       }
       for (final c in counts.values) {
         await surface.putString('count.${c.folderId}.label', c.label);
         await surface.putInt('count.${c.folderId}.total', c.total);
+        await surface.putInt('count.${c.folderId}.unread', c.unread);
         await surface.putInt('count.${c.folderId}.new', c.fresh);
       }
       await surface.redraw();
@@ -101,11 +118,13 @@ class MailboxWidgets {
     final accounts = await engine.loadAccounts();
     if (folderId == kUnifiedInboxId) {
       var total = 0;
+      var unread = 0;
       var fresh = 0;
       for (final account in accounts) {
         for (final folder in await engine.loadFolders(account.id)) {
           if (folder.role != FolderRole.inbox) continue;
           total += folder.totalCount;
+          unread += folder.unreadCount;
           fresh += arrivedSince(
             await engine.loadMessages(folder.id, limit: window),
             mark,
@@ -116,6 +135,7 @@ class MailboxWidgets {
         folderId: folderId,
         label: 'All inboxes',
         total: total,
+        unread: unread,
         fresh: fresh,
       );
     }
@@ -123,21 +143,19 @@ class MailboxWidgets {
     // A folder id is `<accountId>:<path>`, and a path may hold colons of its
     // own, so the first one is the split.
     final accountId = folderId.split(':').first;
-    final account =
-        accounts.where((a) => a.id == accountId).firstOrNull;
+    final account = accounts.where((a) => a.id == accountId).firstOrNull;
     if (account == null) return null;
     final folder = (await engine.loadFolders(accountId))
         .where((f) => f.id == folderId)
         .firstOrNull;
-    // Deleted, renamed, or the account removed. The widget is left saying
-    // what it last said rather than showing zeroes, which would read as an
-    // empty mailbox rather than a missing one.
+    // Deleted, renamed, or the account removed.
     if (folder == null) return null;
 
     return MailboxCounts(
       folderId: folderId,
       label: '${folder.displayName} · ${account.displayName}',
       total: folder.totalCount,
+      unread: folder.unreadCount,
       fresh: arrivedSince(
         await engine.loadMessages(folderId, limit: window),
         mark,

@@ -2,6 +2,7 @@ package com.rdvir.mailtree
 
 import android.app.Activity
 import android.appwidget.AppWidgetManager
+import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -35,7 +36,21 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        widgetChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, widgetChannelName)
+        widgetChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            widgetChannelName,
+        ).apply {
+            setMethodCallHandler { call, result ->
+                when (call.method) {
+                    // Which widgets are actually on the home screen. Android
+                    // never tells the app when one is dragged to the bin, so
+                    // without asking, a widget's mailbox is remembered and
+                    // recounted forever after it is gone.
+                    "placedWidgets" -> result.success(placedWidgetIds())
+                    else -> result.notImplemented()
+                }
+            }
+        }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
@@ -62,6 +77,11 @@ class MainActivity : FlutterActivity() {
                 }
             }
     }
+
+    private fun placedWidgetIds(): List<String> =
+        AppWidgetManager.getInstance(this)
+            .getAppWidgetIds(ComponentName(this, MailboxCountWidgetProvider::class.java))
+            .map { it.toString() }
 
     /**
      * Placing a home-screen widget while the app is already running.

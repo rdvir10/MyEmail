@@ -13,6 +13,7 @@ import 'notifications_screen.dart';
 import 'signatures_screen.dart';
 import 'sync_screen.dart';
 import 'view_settings_screen.dart';
+import 'home_widgets_screen.dart';
 
 /// Everything that used to be loose entries at the bottom of the folder tree,
 /// in one place with a subtitle each saying what is currently set.
@@ -61,6 +62,12 @@ class SettingsScreen extends ConsumerWidget {
               _ => 'On',
             },
             onTap: () => _open(context, const NotificationsScreen()),
+          ),
+          _Row(
+            icon: Icons.widgets_outlined,
+            title: 'Home screen widgets',
+            subtitle: 'What each one counts, and what it is called',
+            onTap: () => _open(context, const HomeWidgetsScreen()),
           ),
           _Row(
             icon: Icons.bolt_outlined,

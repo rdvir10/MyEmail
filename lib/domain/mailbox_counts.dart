@@ -1,11 +1,32 @@
 import 'mail_message.dart';
 
-/// The two numbers a home-screen widget shows for one mailbox.
+/// What the lower number on a widget counts.
+enum WidgetCount {
+  /// Everything in the folder. What a Sent or Archive folder wants, where
+  /// "unread" is a number that never changes.
+  all('Everything in the folder'),
+
+  /// Only what has not been read. What an Inbox usually wants: the number
+  /// that goes down as you deal with things.
+  unread('Only what is unread');
+
+  const WidgetCount(this.description);
+
+  final String description;
+
+  String get label => switch (this) {
+        WidgetCount.all => 'All messages',
+        WidgetCount.unread => 'Unread only',
+      };
+}
+
+/// The numbers a home-screen widget shows for one mailbox.
 class MailboxCounts {
   const MailboxCounts({
     required this.folderId,
     required this.label,
     required this.total,
+    required this.unread,
     required this.fresh,
   });
 
@@ -19,11 +40,19 @@ class MailboxCounts {
   /// Everything in the folder, as the server counts it.
   final int total;
 
+  /// How much of it has not been read.
+  final int unread;
+
   /// How many arrived since the app was last opened.
   final int fresh;
 
+  /// The number this widget is set to show.
+  int countFor(WidgetCount which) =>
+      which == WidgetCount.unread ? unread : total;
+
   @override
-  String toString() => 'MailboxCounts($label, total $total, new $fresh)';
+  String toString() =>
+      'MailboxCounts($label, total $total, unread $unread, new $fresh)';
 }
 
 /// How many of [messages] arrived after [mark].

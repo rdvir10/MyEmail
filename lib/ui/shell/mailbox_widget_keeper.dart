@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/widget/widget_setup_channel.dart';
 import '../../state/providers.dart';
 import '../../state/widget_providers.dart';
 
@@ -48,14 +49,17 @@ class _MailboxWidgetKeeperState extends ConsumerState<MailboxWidgetKeeper>
     }
   }
 
-  void _caughtUp() {
-    // Not awaited: nothing on screen is waiting for it, and a widget that
-    // updates a moment after the app opens is no worse than one that holds
-    // the first frame back.
-    ref.read(mailboxWidgetsProvider).markCaughtUp(
-          DateTime.now().toUtc(),
-          ref.read(mailEngineProvider),
-        );
+  Future<void> _caughtUp() async {
+    // Not awaited by the caller: nothing on screen is waiting for it, and a
+    // widget that updates a moment after the app opens is no worse than one
+    // that holds the first frame back.
+    final widgets = ref.read(mailboxWidgetsProvider);
+    final engine = ref.read(mailEngineProvider);
+    await widgets.markCaughtUp(DateTime.now().toUtc(), engine);
+    // Only the app can ask Android what is still on the home screen, so this
+    // is where a widget that was dragged to the bin stops being counted.
+    final placed = await placedWidgetIds();
+    if (placed.isNotEmpty) await widgets.refresh(engine, placed: placed);
   }
 
   @override
