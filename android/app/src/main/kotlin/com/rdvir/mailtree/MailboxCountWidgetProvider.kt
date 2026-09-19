@@ -3,6 +3,7 @@ package com.rdvir.mailtree
 import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.SharedPreferences
+import android.view.View
 import android.widget.RemoteViews
 import es.antonborri.home_widget.HomeWidgetLaunchIntent
 import es.antonborri.home_widget.HomeWidgetProvider
@@ -36,28 +37,49 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
                 )
 
                 if (folderId == null) {
-                    // Placed but never set up, or the mailbox it was set up
-                    // with has gone. Either way the honest thing is to say so
+                    // Placed but never set up, or the mailbox it was showing
+                    // has gone. Either way the honest thing is to say so
                     // rather than show a confident zero.
                     setTextViewText(R.id.mailbox_widget_name, context.getString(R.string.mailbox_widget_unset))
-                    setTextViewText(R.id.mailbox_widget_new, "—")
-                    setTextViewText(R.id.mailbox_widget_total, context.getString(R.string.mailbox_widget_open_app))
+                    setViewVisibility(R.id.mailbox_widget_new, View.GONE)
+                    setViewVisibility(R.id.mailbox_widget_total, View.GONE)
                 } else {
                     val fresh = widgetData.getInt("count.$folderId.new", 0)
                     val total = widgetData.getInt("count.$folderId.total", 0)
+
                     setTextViewText(
                         R.id.mailbox_widget_name,
                         widgetData.getString("count.$folderId.label", null)
                             ?: context.getString(R.string.mailbox_widget_unset),
                     )
-                    setTextViewText(R.id.mailbox_widget_new, fresh.toString())
-                    setTextViewText(
-                        R.id.mailbox_widget_total,
-                        context.getString(R.string.mailbox_widget_total, total),
+                    // Nothing new is no badge at all. A nought in a red
+                    // circle reads as an alert about nothing.
+                    setViewVisibility(
+                        R.id.mailbox_widget_new,
+                        if (fresh > 0) View.VISIBLE else View.GONE,
                     )
+                    setTextViewText(R.id.mailbox_widget_new, badge(fresh, 99))
+                    setViewVisibility(R.id.mailbox_widget_total, View.VISIBLE)
+                    setTextViewText(R.id.mailbox_widget_total, badge(total, 9999))
                 }
             }
             appWidgetManager.updateAppWidget(widgetId, views)
         }
+    }
+
+    /**
+     * A count that has to fit in a badge the size of a fingernail.
+     *
+     * Exact up to [plain], then thousands, then a bare cap. A mailbox with
+     * 31,402 messages in it is telling you "a great many" whatever the
+     * digits say, and four characters is all there is room for.
+     */
+    private fun badge(count: Int, plain: Int): String = when {
+        count <= plain -> count.toString()
+        // A badge that caps, the way every notification badge does, rather
+        // than rounding: "99+" says more than "2k" about what is unread.
+        plain < 1000 -> "$plain+"
+        count < 100_000 -> "${count / 1000}k"
+        else -> "99k+"
     }
 }

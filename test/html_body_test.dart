@@ -74,6 +74,85 @@ void main() {
     });
   });
 
+  group('mail built to a fixed width', () {
+    // Marketing mail — the Kohl's and Targets of the world — is tables of a
+    // fixed pixel width with fixed columns inside them. Squeezed into a
+    // phone the columns collapse into each other and it arrives looking
+    // broken, so it is laid out at its own width and scaled to fit instead.
+    const kohlsLike = '<table width="640" cellpadding="0"><tr>'
+        '<td width="320"><img src="https://x/left.png" width="320"></td>'
+        '<td width="320"><img src="https://x/right.png" width="320"></td>'
+        '</tr></table>';
+
+    test('the declared width is found', () {
+      expect(declaredLayoutWidth(kohlsLike), 640);
+    });
+
+    test('a style in pixels counts too', () {
+      expect(
+        declaredLayoutWidth('<div style="width:600px">Hello</div>'),
+        600,
+      );
+    });
+
+    test('percentages are not a fixed width', () {
+      // A table at 100% is already asking to fit.
+      expect(declaredLayoutWidth('<table width="100%"><tr></tr></table>'),
+          isNull);
+    });
+
+    test('ordinary mail states no width at all', () {
+      expect(declaredLayoutWidth('<p>Can you send the invoice?</p>'), isNull);
+    });
+
+    test('a narrow width is left to the screen', () {
+      // Forcing a viewport this narrow would blow the message up to fill the
+      // phone, which is worse than the wrapping it was trying to avoid.
+      expect(declaredLayoutWidth('<table width="320"></table>'), isNull);
+    });
+
+    test('a silly width is a stray number, not a layout', () {
+      expect(declaredLayoutWidth('<img width="9000" src="x">'), isNull);
+    });
+
+    test('the viewport follows the message', () {
+      final out = wrapHtmlForDisplay(kohlsLike);
+
+      expect(out, contains('content="width=640"'));
+      expect(out, isNot(contains('width=device-width')));
+    });
+
+    test('and the tables are not capped underneath it', () {
+      // max-width on the tables is what collapses a fixed layout.
+      expect(wrapHtmlForDisplay(kohlsLike), isNot(contains('table{max-width')));
+      expect(
+        wrapHtmlForDisplay('<p>Ordinary</p>'),
+        contains('table{max-width:100%}'),
+      );
+    });
+
+    test('a message in a full document is measured by its body', () {
+      // Not by a stylesheet in the head written for a desktop browser.
+      final out = wrapHtmlForDisplay(
+        '<html><head><style>.wide{width:1200px}</style></head>'
+        '<body><table width="600"></table></body></html>',
+      );
+
+      expect(out, contains('content="width=600"'));
+    });
+  });
+
+  group('blocked images', () {
+    test('keep a box so the layout stays standing', () {
+      // An <img> with nothing to load collapses to nothing, and a message
+      // built out of images turns into a heap of links.
+      expect(
+        wrapHtmlForDisplay('<p>Hi</p>'),
+        contains('img[data-blocked-src]'),
+      );
+    });
+  });
+
   group('wrapHtmlForDisplay', () {
     test('wraps a fragment in a document with viewport and defaults', () {
       final out = wrapHtmlForDisplay('<p>Hi</p>');

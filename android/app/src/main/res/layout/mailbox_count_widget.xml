@@ -1,53 +1,83 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Two numbers and whose mailbox they are. Nothing else on purpose: this
-     sits on a home screen in front of whoever is looking at the phone, so no
-     subjects and no senders. -->
+<!-- Shaped like an app icon, because that is what it sits next to: the icon,
+     a badge in the top corner for what is new, a badge in the bottom corner
+     for what the mailbox holds, and the name underneath.
+
+     Numbers only. This is a home screen, in front of whoever is holding the
+     tablet, so no senders and no subjects. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/mailbox_widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:gravity="center_vertical"
-    android:background="@drawable/mailbox_widget_background"
-    android:padding="12dp">
+    android:gravity="center"
+    android:padding="2dp">
 
+    <FrameLayout
+        android:layout_width="52dp"
+        android:layout_height="52dp">
+
+        <ImageView
+            android:id="@+id/mailbox_widget_icon"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="center"
+            android:src="@mipmap/ic_launcher"
+            android:contentDescription="@string/mailbox_widget_label" />
+
+        <!-- What arrived since you last looked. Hidden at zero, the way a
+             notification badge is: a nought in a red circle reads as an
+             alert about nothing. -->
+        <TextView
+            android:id="@+id/mailbox_widget_new"
+            android:layout_width="wrap_content"
+            android:layout_height="20dp"
+            android:minWidth="20dp"
+            android:layout_gravity="top|end"
+            android:gravity="center"
+            android:paddingStart="5dp"
+            android:paddingEnd="5dp"
+            android:background="@drawable/mailbox_widget_new_badge"
+            android:textColor="#FFFFFFFF"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:maxLines="1"
+            android:text="" />
+
+        <!-- Everything in the mailbox. Always shown, nought included: an
+             empty folder is worth knowing, and this badge is a count rather
+             than an alert. -->
+        <TextView
+            android:id="@+id/mailbox_widget_total"
+            android:layout_width="wrap_content"
+            android:layout_height="17dp"
+            android:minWidth="17dp"
+            android:layout_gravity="bottom|start"
+            android:gravity="center"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:background="@drawable/mailbox_widget_total_badge"
+            android:textColor="#FFFFFFFF"
+            android:textSize="10sp"
+            android:maxLines="1"
+            android:text="" />
+    </FrameLayout>
+
+    <!-- White with a shadow, which is what a launcher draws its own labels
+         with and the only thing that stays readable over any wallpaper. -->
     <TextView
         android:id="@+id/mailbox_widget_name"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:gravity="center"
         android:maxLines="1"
         android:ellipsize="end"
-        android:textColor="#CCFFFFFF"
-        android:textSize="12sp"
-        android:text="@string/mailbox_widget_unset" />
-
-    <TextView
-        android:id="@+id/mailbox_widget_new"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:maxLines="1"
         android:textColor="#FFFFFFFF"
-        android:textSize="34sp"
-        android:textStyle="bold"
-        android:text="0" />
-
-    <TextView
-        android:id="@+id/mailbox_widget_since"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:maxLines="1"
-        android:ellipsize="end"
-        android:textColor="#CCFFFFFF"
         android:textSize="11sp"
-        android:text="@string/mailbox_widget_since" />
-
-    <TextView
-        android:id="@+id/mailbox_widget_total"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:maxLines="1"
-        android:ellipsize="end"
-        android:textColor="#CCFFFFFF"
-        android:textSize="11sp"
-        android:text="" />
+        android:shadowColor="#99000000"
+        android:shadowDx="0"
+        android:shadowDy="1"
+        android:shadowRadius="3"
+        android:text="@string/mailbox_widget_unset" />
 </LinearLayout>

@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="mailbox_widget_label">Mailbox counts</string>
-    <string name="mailbox_widget_description">How many messages a mailbox holds, and how many arrived since you last had MyEmail open.</string>
-    <string name="mailbox_widget_since">new since you last looked</string>
-    <string name="mailbox_widget_unset">MyEmail</string>
-    <string name="mailbox_widget_open_app">Open MyEmail to set this up</string>
-    <string name="mailbox_widget_total">%1$d in the mailbox</string>
+    <string name="mailbox_widget_description">An icon for one mailbox, badged with how many messages arrived since you last looked and how many it holds.</string>
+    <!-- Shown under the icon before a mailbox has been chosen, and if the one
+         it was showing has since gone. -->
+    <string name="mailbox_widget_unset">Tap to set up</string>
 </resources>

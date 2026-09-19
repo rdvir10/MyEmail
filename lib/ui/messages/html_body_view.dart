@@ -216,9 +216,52 @@ bool messageBringsItsOwnColours(String html) => RegExp(
       caseSensitive: false,
     ).hasMatch(html);
 
-/// The message HTML inside a minimal document: a viewport for phone widths,
-/// a readable default font, and images that never overflow. Anything the
-/// message brings of its own still applies, since this only sets defaults.
+/// The width a message was laid out for, if it says so.
+///
+/// Marketing mail is built on tables of a fixed pixel width — 600 and 640 are
+/// almost a standard — with the columns inside them fixed too. Told to fit a
+/// phone, the browser cannot honour those widths and cannot ignore them
+/// either, so the columns collapse into each other and the message arrives
+/// looking broken.
+///
+/// The answer every mail client reaches for is the same: lay the message out
+/// at the width it was written for and scale the whole thing down to fit,
+/// which is what a viewport of that width asks the browser to do. It stays
+/// readable, and a pinch zooms in.
+///
+/// Returns null for a message that never states a width, which is most
+/// ordinary mail, and those go on being laid out to the screen. Percentages
+/// are ignored: a table at 100% is already asking to fit.
+int? declaredLayoutWidth(String html) {
+  var widest = 0;
+  final matches = [
+    // width="600" on a table or cell.
+    ...RegExp(r'''\bwidth\s*=\s*["']?(\d{2,4})(?![%\d])''', caseSensitive: false)
+        .allMatches(html),
+    // width:600px in a style attribute or a stylesheet.
+    ...RegExp(r'''\bwidth\s*:\s*(\d{2,4})\s*px''', caseSensitive: false)
+        .allMatches(html),
+  ];
+  for (final m in matches) {
+    final value = int.tryParse(m.group(1)!) ?? 0;
+    // Above the cap is a stray number rather than a layout: a tracking pixel
+    // declaring a silly width, or a stylesheet rule for a desktop browser.
+    if (value > widest && value <= maxLayoutWidth) widest = value;
+  }
+  return widest >= minLayoutWidth ? widest : null;
+}
+
+/// Below this a message fits a phone anyway, and forcing a viewport would
+/// blow a narrow message up to fill the screen.
+const minLayoutWidth = 480;
+
+/// Above this it is not a layout anyone intended to be read on a phone.
+const maxLayoutWidth = 1400;
+
+/// The message HTML inside a minimal document: a viewport that suits the way
+/// the message was built, a readable default font, and images that never
+/// overflow. Anything the message brings of its own still applies, since this
+/// only sets defaults.
 String wrapHtmlForDisplay(
   String html, {
   Brightness brightness = Brightness.light,
@@ -226,13 +269,16 @@ String wrapHtmlForDisplay(
   final hasHtmlTag = RegExp(r'<html[\s>]', caseSensitive: false).hasMatch(html);
   final body = hasHtmlTag ? _extractBody(html) : html;
   final dark = readsAsDark(html, brightness);
+  final laidOutFor = declaredLayoutWidth(body);
   final fg = dark ? '#e6e1e5' : '#1c1b1f';
   final bg = dark ? '#1c1b1f' : '#fff';
   final rule = dark ? '#5a585c' : '#ccc';
   final quoted = dark ? '#b6b0b6' : '#444';
   return '<!doctype html><html><head>'
       '<meta charset="utf-8">'
-      '<meta name="viewport" content="width=device-width, initial-scale=1">'
+      // A message built to a fixed width is laid out at that width and
+      // scaled to fit; everything else is laid out to the screen.
+      '<meta name="viewport" content="${laidOutFor == null ? 'width=device-width, initial-scale=1' : 'width=$laidOutFor'}">'
       '<style>'
       // Tells the WebView which form controls and scrollbars to draw, so a
       // dark message does not get a light scrollbar down the side of it.
@@ -241,7 +287,17 @@ String wrapHtmlForDisplay(
       'color:$fg;background:$bg;word-wrap:break-word;overflow-wrap:anywhere}'
       'a{color:${dark ? '#a8c8ff' : '#0f6cbd'}}'
       'img{max-width:100%;height:auto}'
-      'table{max-width:100%}'
+      // A blocked image leaves a tag with nothing in it, which collapses and
+      // takes the shape of the message with it. A box the size the sender
+      // asked for keeps the layout standing and says plainly that something
+      // is not being shown.
+      'img[data-blocked-src],img[data-blocked-srcset],'
+      'img[data-blocked-background]{min-width:16px;min-height:16px;'
+      'background:${dark ? '#2b2930' : '#f1f1f4'};'
+      'border:1px dashed $rule;border-radius:4px;box-sizing:border-box}'
+      // Only where the message has not asked for a width of its own. Capping
+      // the tables of a 600-wide layout to the screen is what breaks it.
+      '${laidOutFor == null ? 'table{max-width:100%}' : ''}'
       'pre{white-space:pre-wrap}'
       'blockquote{margin:8px 0;padding-left:12px;'
       'border-left:3px solid $rule;color:$quoted}'
