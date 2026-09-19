@@ -1,6 +1,9 @@
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 /// An HTML mail body in a WebView that is locked down as far as it goes:
 ///
@@ -20,9 +23,18 @@ import 'package:webview_flutter/webview_flutter.dart';
 /// WebView to its content is not possible, and enabling JavaScript just to
 /// measure it would undo the first point.
 class HtmlBodyView extends StatefulWidget {
-  const HtmlBodyView({super.key, required this.html});
+  const HtmlBodyView({
+    super.key,
+    required this.html,
+    this.showImages = false,
+  });
 
   final String html;
+
+  /// Start with the pictures already loaded, from the setting of the same
+  /// name. The bar offering to load them is then never shown, because there
+  /// is nothing left to offer.
+  final bool showImages;
 
   @override
   State<HtmlBodyView> createState() => _HtmlBodyViewState();
@@ -30,7 +42,7 @@ class HtmlBodyView extends StatefulWidget {
 
 class _HtmlBodyViewState extends State<HtmlBodyView> {
   late final WebViewController _controller;
-  bool _showRemote = false;
+  late bool _showRemote = widget.showImages;
   Brightness _brightness = Brightness.light;
 
   @override
@@ -52,6 +64,24 @@ class _HtmlBodyViewState extends State<HtmlBodyView> {
           },
         ),
       );
+
+    // Without this the WebView lays every message out at the width of the
+    // view and ignores the viewport the message is wrapped in, so mail built
+    // to a fixed 600 or 640 pixels — which is nearly all marketing mail —
+    // runs off the right-hand edge with no way to see the rest of it. On it,
+    // the page is laid out at the width it asks for and scaled to fit, which
+    // is what every other mail client shows you.
+    final platform = _controller.platform;
+    if (!kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.android &&
+        platform is AndroidWebViewController) {
+      try {
+        platform.setUseWideViewPort(true);
+      } catch (e) {
+        debugPrint('[myemail] could not widen the web view: $e');
+      }
+    }
+
     _load();
   }
 
@@ -68,7 +98,11 @@ class _HtmlBodyViewState extends State<HtmlBodyView> {
   void didUpdateWidget(HtmlBodyView old) {
     super.didUpdateWidget(old);
     if (old.html != widget.html) {
-      _showRemote = false;
+      _showRemote = widget.showImages;
+      _load();
+    } else if (old.showImages != widget.showImages && widget.showImages) {
+      // The setting was turned on while a message was open.
+      _showRemote = true;
       _load();
     }
   }

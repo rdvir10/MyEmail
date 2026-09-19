@@ -49,6 +49,24 @@ class ViewSettingsScreen extends ConsumerWidget {
             theme: theme,
           ),
           const Divider(height: 1),
+          const _Heading('Pictures in messages'),
+          SwitchListTile(
+            title: const Text('Load pictures automatically'),
+            subtitle: const Text(
+              'Shows a message as its sender built it, without tapping '
+              'Show images each time.',
+            ),
+            value: display.alwaysShowImages,
+            onChanged: notifier.setAlwaysShowImages,
+          ),
+          _Note(
+            'What you give up: a picture is fetched from the sender as the '
+            'message opens, so they learn when you read it, on what, and '
+            'roughly from where. Worth it for mail from shops, where the '
+            'pictures are the message; less so for mail you did not ask for.',
+            theme: theme,
+          ),
+          const Divider(height: 1),
           const _Heading('Conversations'),
           SwitchListTile(
             title: const Text('Group into conversations'),

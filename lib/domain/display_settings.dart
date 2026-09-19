@@ -125,6 +125,7 @@ class DisplaySettings {
     this.conversations = false,
     this.swipeRight = SwipeAction.move,
     this.swipeLeft = SwipeAction.delete,
+    this.alwaysShowImages = false,
   });
 
   final ReadingPanePosition readingPane;
@@ -136,6 +137,14 @@ class DisplaySettings {
   /// existing install behaves the same until someone changes it.
   final SwipeAction swipeRight;
   final SwipeAction swipeLeft;
+
+  /// Load the pictures in a message without being asked each time.
+  ///
+  /// Off by default, and it stays a choice rather than a default because of
+  /// what a remote image is: the sender learns the moment a message is
+  /// opened, on what, and roughly from where. Worth turning on for someone
+  /// who reads a lot of mail from shops, where the pictures are the message.
+  final bool alwaysShowImages;
 
   /// Group a list by conversation rather than showing every message.
   ///
@@ -149,6 +158,7 @@ class DisplaySettings {
     bool? conversations,
     SwipeAction? swipeRight,
     SwipeAction? swipeLeft,
+    bool? alwaysShowImages,
   }) {
     return DisplaySettings(
       readingPane: readingPane ?? this.readingPane,
@@ -156,6 +166,7 @@ class DisplaySettings {
       conversations: conversations ?? this.conversations,
       swipeRight: swipeRight ?? this.swipeRight,
       swipeLeft: swipeLeft ?? this.swipeLeft,
+      alwaysShowImages: alwaysShowImages ?? this.alwaysShowImages,
     );
   }
 
@@ -165,6 +176,7 @@ class DisplaySettings {
         'conversations': conversations,
         'swipeRight': swipeRight.name,
         'swipeLeft': swipeLeft.name,
+        'alwaysShowImages': alwaysShowImages,
       };
 
   /// Tolerant of anything: a value written by a newer build, or a corrupted
@@ -180,6 +192,9 @@ class DisplaySettings {
       density: _byName(ListDensity.values, json['density'], ListDensity.cozy),
       conversations: json['conversations'] is bool
           ? json['conversations'] as bool
+          : false,
+      alwaysShowImages: json['alwaysShowImages'] is bool
+          ? json['alwaysShowImages'] as bool
           : false,
       // An install from before swipes were configurable has neither key, and
       // falls back to exactly what it was already doing.

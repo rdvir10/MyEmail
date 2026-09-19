@@ -4,11 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/draft.dart';
 import '../../domain/mail_message.dart';
+import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import '../compose/open_compose.dart';
 import 'date_format.dart';
 import 'html_body_view.dart';
+import 'message_source.dart';
 
 /// One open message: a fixed header with actions, then the body.
 ///
@@ -111,6 +113,11 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
               kind: kind,
               original: message,
             ),
+            // Only once the body is here: there is nothing to save until it
+            // has loaded, and a menu item that does nothing is worse than
+            // one that is not there yet.
+            onSaveSource:
+                body.value == null ? null : () => _saveSource(body.value!),
           ),
         ),
         const Divider(height: 1),
@@ -137,12 +144,30 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     );
   }
 
+  Future<void> _saveSource(MailBody body) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      final saved = await saveMessageSource(widget.message, body);
+      if (!saved) return; // They changed their mind in the file picker.
+      messenger?.showSnackBar(
+        const SnackBar(content: Text('Message source saved')),
+      );
+    } catch (e) {
+      messenger?.showSnackBar(
+        SnackBar(content: Text('Could not save the source. $e')),
+      );
+    }
+  }
+
   Widget _bodyView(ThemeData theme, MailBody b) {
     final html = b.html;
     // The WebView is a platform view: Android has it, the browser preview
     // does not. Text is the universal fallback.
     if (html != null && html.trim().isNotEmpty && !kIsWeb) {
-      return HtmlBodyView(html: html);
+      return HtmlBodyView(
+        html: html,
+        showImages: ref.watch(displayProvider).alwaysShowImages,
+      );
     }
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
@@ -157,6 +182,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
 class _Header extends StatelessWidget {
   const _Header({
     required this.message,
+    this.onSaveSource,
     required this.onToggleFlag,
     required this.onToggleRead,
     required this.onCompose,
@@ -168,6 +194,9 @@ class _Header extends StatelessWidget {
   final VoidCallback onToggleRead;
   final void Function(ComposeKind kind) onCompose;
   final VoidCallback? onPopOut;
+
+  /// Write the message out as it arrived. Null until the body has loaded.
+  final VoidCallback? onSaveSource;
 
   @override
   Widget build(BuildContext context) {
@@ -226,6 +255,21 @@ class _Header extends StatelessWidget {
                     : Icons.mark_email_read_outlined,
               ),
               onPressed: onToggleRead,
+            ),
+            // The things that are neither reading nor replying live behind
+            // one button, rather than adding a seventh icon to a row that is
+            // already the width of the pane.
+            PopupMenuButton<String>(
+              tooltip: 'More',
+              icon: const Icon(Icons.more_vert),
+              onSelected: (_) => onSaveSource?.call(),
+              itemBuilder: (context) => [
+                PopupMenuItem(
+                  value: 'source',
+                  enabled: onSaveSource != null,
+                  child: const Text('Save source…'),
+                ),
+              ],
             ),
           ],
         ),

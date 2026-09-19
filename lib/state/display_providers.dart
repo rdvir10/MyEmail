@@ -35,6 +35,9 @@ class Display extends Notifier<DisplaySettings> {
 
   void setConversations(bool on) => state = state.copyWith(conversations: on);
 
+  void setAlwaysShowImages(bool on) =>
+      state = state.copyWith(alwaysShowImages: on);
+
   void setSwipeRight(SwipeAction action) =>
       state = state.copyWith(swipeRight: action);
 
