@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -77,7 +79,7 @@ void main() {
       final tiles = tester.widgetList<MessageTile>(find.byType(MessageTile));
       final ids = tiles.take(3).map((t) => t.message.id).toList();
 
-      c.read(selectedMessageIdsProvider.notifier).selectAll(ids);
+      c.read(selectedMessageIdsProvider.notifier).addAll(ids);
       await tester.pumpAndSettle();
 
       expect(
@@ -122,6 +124,91 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Search mail'), findsNothing);
+    });
+  });
+
+  group('selecting what is on screen', () {
+    /// The rows drawn inside the list's own box, which is what the button is
+    /// meant to take.
+    /// The message list, not the folder tree, which is a ListView too.
+    Finder messageList() => find.ancestor(
+          of: find.byType(MessageTile).first,
+          matching: find.byType(ListView),
+        );
+
+    Set<String> onScreen(WidgetTester tester) {
+      final list = tester.renderObject<RenderBox>(messageList());
+      final shown = <String>{};
+      for (final tile in find.byType(MessageTile).evaluate()) {
+        final box = tile.renderObject! as RenderBox;
+        final top = box.localToGlobal(Offset.zero, ancestor: list).dy;
+        final height = box.size.height;
+        final visible =
+            math.min(top + height, list.size.height) - math.max(top, 0.0);
+        if (visible > height / 2) {
+          shown.add((tile.widget as MessageTile).message.id);
+        }
+      }
+      return shown;
+    }
+
+    testWidgets('takes the screenful rather than the whole folder',
+        (tester) async {
+      // A folder holds thousands. A button that ticked all of them would put
+      // a delete one press away from a mistake nobody can see the size of.
+      final c = await pump(tester);
+      final folderId = c.read(effectiveSelectedFolderIdProvider)!;
+      final all = c.read(messagesProvider(folderId)).value!;
+      final first = tester.widget<MessageTile>(find.byType(MessageTile).first);
+
+      c.read(selectedMessageIdsProvider.notifier).start(first.message.id);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Select what is on screen'));
+      await tester.pumpAndSettle();
+
+      final ticked = c.read(selectedMessageIdsProvider);
+      expect(ticked, onScreen(tester));
+      expect(ticked.length, lessThan(all.length),
+          reason: 'the folder is longer than the screen');
+    });
+
+    testWidgets('leaves out the rows scrolled past', (tester) async {
+      final c = await pump(tester);
+      final first = tester.widget<MessageTile>(find.byType(MessageTile).first);
+
+      c.read(selectedMessageIdsProvider.notifier).start(first.message.id);
+      await tester.pumpAndSettle();
+      await tester.drag(messageList(), const Offset(0, -600));
+      await tester.pumpAndSettle();
+      final showing = onScreen(tester);
+      await tester.tap(find.byTooltip('Select what is on screen'));
+      await tester.pumpAndSettle();
+
+      // The one ticked to start with is above the fold now, and stays ticked:
+      // the button adds to the selection rather than replacing it.
+      expect(c.read(selectedMessageIdsProvider),
+          {first.message.id, ...showing});
+      expect(showing, isNot(contains(first.message.id)));
+    });
+
+    testWidgets('pressing it again after scrolling takes in the next lot',
+        (tester) async {
+      final c = await pump(tester);
+      final first = tester.widget<MessageTile>(find.byType(MessageTile).first);
+
+      c.read(selectedMessageIdsProvider.notifier).start(first.message.id);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Select what is on screen'));
+      await tester.pumpAndSettle();
+      final firstScreenful = c.read(selectedMessageIdsProvider).length;
+
+      await tester.drag(messageList(), const Offset(0, -600));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Select what is on screen'));
+      await tester.pumpAndSettle();
+
+      expect(c.read(selectedMessageIdsProvider).length,
+          greaterThan(firstScreenful));
     });
   });
 

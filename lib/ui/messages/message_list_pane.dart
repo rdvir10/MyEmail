@@ -19,6 +19,7 @@ import 'conversation_tile.dart';
 import '../shell/app_shell.dart';
 import 'list_keyboard.dart';
 import 'message_tile.dart';
+import 'rows_on_screen.dart';
 import 'selection_bar.dart';
 import 'search_bar.dart';
 
@@ -32,13 +33,22 @@ import 'search_bar.dart';
 /// the Move-to sheet), long-press lifts the message so it can be dropped on
 /// a folder in the tree, and a long-press menu is offered where there is no
 /// tree to drop onto.
-class MessageListPane extends ConsumerWidget {
+class MessageListPane extends ConsumerStatefulWidget {
   const MessageListPane({super.key, required this.onOpen});
 
   final void Function(MailMessage message) onOpen;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<MessageListPane> createState() => _MessageListPaneState();
+}
+
+class _MessageListPaneState extends ConsumerState<MessageListPane> {
+  /// The list's own box. Selecting what is on screen means measuring rows
+  /// against something, and this is the something.
+  final _listKey = GlobalKey();
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final folderId = ref.watch(effectiveSelectedFolderIdProvider);
     if (folderId == null) {
@@ -69,7 +79,10 @@ class MessageListPane extends ConsumerWidget {
         // that has shrunk to make room for them, and searching is not what
         // anyone is doing mid-selection.
         if (ref.watch(isSelectingProvider))
-          SelectionBar(listId: folderId)
+          SelectionBar(
+            listId: folderId,
+            onScreen: () => messagesOnScreen(_listKey),
+          )
         else
           const MessageSearchBar(),
         const Divider(height: 1),
@@ -86,7 +99,7 @@ class MessageListPane extends ConsumerWidget {
                   MediaQuery.sizeOf(context).width,
                   ref.watch(displayProvider).readingPane,
                 ),
-            onOpen: onOpen,
+            onOpen: widget.onOpen,
             child: body,
           ),
         ),
@@ -132,6 +145,7 @@ class MessageListPane extends ConsumerWidget {
               );
             }
             return ListView.separated(
+              key: _listKey,
               itemCount: results.length,
               separatorBuilder: (_, _) => const Divider(height: 1, indent: 28),
               itemBuilder: (context, i) {
@@ -145,7 +159,7 @@ class MessageListPane extends ConsumerWidget {
                   folderLabel: index[m.folderId]?.displayName,
                   onTap: () {
                     ref.read(selectedMessageIdProvider.notifier).select(m.id);
-                    onOpen(m);
+                    widget.onOpen(m);
                   },
                 );
               },
@@ -203,6 +217,7 @@ class MessageListPane extends ConsumerWidget {
                 : [for (final m in messages) _Row.message(m)];
 
             return ListView.separated(
+              key: _listKey,
               itemCount: rows.length,
               separatorBuilder: (_, _) => const Divider(height: 1, indent: 28),
               itemBuilder: (context, i) {
@@ -259,7 +274,7 @@ class MessageListPane extends ConsumerWidget {
                           .read(messagesProvider(folderId).notifier)
                           .setRead(m.id, true);
                     }
-                    onOpen(m);
+                    widget.onOpen(m);
                   },
                   onLongPress: () => _showMessageMenu(context, ref, actions, m),
                   key: ValueKey('tile:${m.id}'),

@@ -17,9 +17,20 @@ import 'message_actions.dart';
 /// message independently would leave the selection in a mixed state that
 /// nobody asked for and cannot be undone in one press.
 class SelectionBar extends ConsumerWidget {
-  const SelectionBar({super.key, required this.listId});
+  const SelectionBar({
+    super.key,
+    required this.listId,
+    required this.onScreen,
+  });
 
   final String listId;
+
+  /// The messages the list is showing at this moment.
+  ///
+  /// Asked for when the button is pressed rather than watched, because it
+  /// changes with every pixel of scrolling and nothing here needs to redraw
+  /// while it does.
+  final List<String> Function() onScreen;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -67,11 +78,16 @@ class SelectionBar extends ConsumerWidget {
             ),
             const Spacer(),
             IconButton(
-              tooltip: 'Select all',
+              // What is on screen, not the whole folder. An Inbox holds
+              // thousands, and a button that ticks all of them puts a delete
+              // one press away from a mistake nobody can see the size of.
+              // It adds to the selection, so scrolling and pressing again
+              // takes in the next screenful.
+              tooltip: 'Select what is on screen',
               icon: const Icon(Icons.select_all),
               onPressed: () => ref
                   .read(selectedMessageIdsProvider.notifier)
-                  .selectAll([for (final m in all) m.id]),
+                  .addAll(onScreen()),
             ),
             IconButton(
               tooltip: mostlyUnread ? 'Mark read' : 'Mark unread',

@@ -224,7 +224,10 @@ class SelectedMessageIds extends Notifier<Set<String>> {
 
   void start(String id) => state = {id};
 
-  void selectAll(Iterable<String> ids) => state = ids.toSet();
+  /// Adds to what is ticked rather than replacing it, so taking one
+  /// screenful and then another leaves both ticked, and nothing anyone
+  /// ticked by hand quietly disappears.
+  void addAll(Iterable<String> ids) => state = {...state, ...ids};
 
   void clear() => state = const {};
 
