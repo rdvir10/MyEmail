@@ -22,6 +22,8 @@ class ConversationTile extends StatelessWidget {
     this.onLongPress,
     this.density = ListDensity.cozy,
     this.accountColor,
+    this.tickedCount,
+    this.onTicked,
   });
 
   final Conversation conversation;
@@ -30,6 +32,21 @@ class ConversationTile extends StatelessWidget {
   final VoidCallback? onLongPress;
   final ListDensity density;
   final Color? accountColor;
+
+  /// How many of the thread's messages are ticked, or null when the list
+  /// is not selecting. The checkbox shows all, none, or a dash for some.
+  ///
+  /// The checkbox is the only thing that ticks here: a tap on the row
+  /// still opens and closes the thread, so one message inside it can be
+  /// picked out on its own. A row that both opened and ticked would do
+  /// whichever the person did not mean.
+  final int? tickedCount;
+
+  /// Called with true to tick every message in the thread, false to untick
+  /// them all.
+  final ValueChanged<bool>? onTicked;
+
+  bool get isSelecting => tickedCount != null;
 
   @override
   Widget build(BuildContext context) {
@@ -56,6 +73,24 @@ class ConversationTile extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (isSelecting)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: Checkbox(
+                      tristate: true,
+                      value: tickedCount == conversation.length
+                          ? true
+                          : tickedCount == 0
+                              ? false
+                              : null,
+                      // Some ticked reads as "not all": the next press
+                      // takes the rest, the one after that lets go.
+                      onChanged: (_) => onTicked?.call(
+                        tickedCount != conversation.length,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
                 SizedBox(
                   width: 14,
                   child: Column(

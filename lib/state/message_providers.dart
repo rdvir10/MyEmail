@@ -1,7 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../domain/folder_role.dart';
-import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
 import 'folder_tree.dart';
 import 'providers.dart';
@@ -22,21 +21,81 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
 
   final String folderId;
 
+  /// How many messages one page of the list is. A folder loads this many
+  /// to start with and [loadMore] adds this many at a time.
+  static const pageSize = 50;
+
   @override
   Future<List<MailMessage>> build() async {
     final engine = ref.watch(mailEngineProvider);
-    if (folderId != kUnifiedInboxId) return engine.loadMessages(folderId);
-
-    final folders = await ref.watch(foldersProvider.future);
-    final inboxes = <MailFolder>[
-      for (final list in folders.values)
-        for (final f in list)
-          if (f.role == FolderRole.inbox) f,
-    ];
-    final lists =
-        await Future.wait(inboxes.map((f) => engine.loadMessages(f.id)));
+    // Read, not watched: paging appends in place, and the depth is only
+    // here so a refresh comes back as deep as the list had been scrolled
+    // rather than snapping back to the first page.
+    final limit = pageSize * ref.read(listDepthProvider(folderId)).pages;
+    final lists = await Future.wait([
+      for (final id in await _folderIds()) engine.loadMessages(id, limit: limit),
+    ]);
+    if (lists.length == 1) return lists.single;
     return [for (final l in lists) ...l]
       ..sort((a, b) => b.date.compareTo(a.date));
+  }
+
+  /// The server folders behind this list: one, or every Inbox for the
+  /// unified one.
+  Future<List<String>> _folderIds() async {
+    if (folderId != kUnifiedInboxId) return [folderId];
+    final folders = await ref.watch(foldersProvider.future);
+    return [
+      for (final list in folders.values)
+        for (final f in list)
+          if (f.role == FolderRole.inbox) f.id,
+    ];
+  }
+
+  /// The next page of older messages, added under the ones shown.
+  ///
+  /// Each folder behind the list is asked for what follows the messages
+  /// of its own already here, so a unified Inbox pages every account at
+  /// once. Anything already shown is skipped: a sync between two pages can
+  /// push new mail in at the top and shift what an offset means. A page
+  /// with nothing new in it marks the list exhausted, which is how a stale
+  /// folder total stops the list asking for ever.
+  Future<void> loadMore() async {
+    final depth = ref.read(listDepthProvider(folderId).notifier);
+    if (state.value == null || !depth.begin()) return;
+    try {
+      final engine = ref.read(mailEngineProvider);
+      final shown = state.value!;
+      final pages = await Future.wait([
+        for (final id in await _folderIds())
+          engine.loadMessages(
+            id,
+            offset: shown.where((m) => m.folderId == id).length,
+            limit: pageSize,
+          ),
+      ]);
+      // The list may have been refreshed while the page was on its way.
+      final current = state.value ?? shown;
+      final have = {for (final m in current) m.id};
+      final fresh = [
+        for (final page in pages)
+          for (final m in page)
+            if (have.add(m.id)) m,
+      ];
+      if (fresh.isEmpty) {
+        depth.end(exhausted: true);
+        return;
+      }
+      final merged = [...current, ...fresh];
+      if (folderId == kUnifiedInboxId) {
+        merged.sort((a, b) => b.date.compareTo(a.date));
+      }
+      state = AsyncData(merged);
+      depth.end(grew: true);
+    } catch (_) {
+      depth.end();
+      rethrow;
+    }
   }
 
   Future<void> setRead(String messageId, bool isRead) =>
@@ -140,6 +199,79 @@ final messagesProvider =
   Messages.new,
 );
 
+/// How far down a folder's list has been paged.
+///
+/// Kept apart from the list because the list is rebuilt on every refresh:
+/// after a sync or a return to the app it re-reads the folder, and a depth
+/// held inside it would be lost, snapping a list scrolled to page six back
+/// to page one.
+class ListDepthState {
+  const ListDepthState({
+    this.pages = 1,
+    this.exhausted = false,
+    this.loading = false,
+  });
+
+  /// How many pages of [Messages.pageSize] the list holds.
+  final int pages;
+
+  /// A page came back with nothing new: there is no older mail to fetch,
+  /// whatever the folder's total says.
+  final bool exhausted;
+
+  /// A page is on its way. One at a time, or the same rows come twice.
+  final bool loading;
+
+  ListDepthState copyWith({int? pages, bool? exhausted, bool? loading}) =>
+      ListDepthState(
+        pages: pages ?? this.pages,
+        exhausted: exhausted ?? this.exhausted,
+        loading: loading ?? this.loading,
+      );
+}
+
+class ListDepth extends Notifier<ListDepthState> {
+  ListDepth(this.folderId);
+
+  final String folderId;
+
+  @override
+  ListDepthState build() => const ListDepthState();
+
+  /// Claims the next page. False if one is already loading or there is
+  /// nothing more to load.
+  bool begin() {
+    if (state.loading || state.exhausted) return false;
+    state = state.copyWith(loading: true);
+    return true;
+  }
+
+  void end({bool grew = false, bool exhausted = false}) {
+    state = state.copyWith(
+      loading: false,
+      pages: grew ? state.pages + 1 : null,
+      exhausted: exhausted ? true : null,
+    );
+  }
+}
+
+final listDepthProvider =
+    NotifierProvider.family<ListDepth, ListDepthState, String>(ListDepth.new);
+
+/// Whether a folder's list has older messages left to fetch.
+///
+/// The folder's own total says so, until a page comes back empty. The
+/// total is what the tree shows next to the folder, so the list and the
+/// tree agree about whether there is more.
+final listHasMoreProvider = Provider.family<bool, String>((ref, folderId) {
+  final depth = ref.watch(listDepthProvider(folderId));
+  if (depth.exhausted) return false;
+  final shown = ref.watch(messagesProvider(folderId)).value;
+  if (shown == null) return false;
+  final total = ref.watch(folderIndexProvider)[folderId]?.totalCount ?? 0;
+  return shown.length < total;
+});
+
 /// The message the user opened, if any.
 /// Which message is open, and whether the person chose it.
 ///
@@ -228,6 +360,13 @@ class SelectedMessageIds extends Notifier<Set<String>> {
   /// screenful and then another leaves both ticked, and nothing anyone
   /// ticked by hand quietly disappears.
   void addAll(Iterable<String> ids) => state = {...state, ...ids};
+
+  /// Unticks these and leaves the rest; unticking a whole thread must not
+  /// clear a message ticked elsewhere.
+  void removeAll(Iterable<String> ids) {
+    final gone = ids.toSet();
+    state = {for (final id in state) if (!gone.contains(id)) id};
+  }
 
   void clear() => state = const {};
 

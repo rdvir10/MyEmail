@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/ui/messages/conversation_tile.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/selection_bar.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
@@ -234,5 +236,89 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(c.read(selectedMessageIdsProvider), isEmpty);
+  });
+
+  group('a conversation row', () {
+    /// The first closed thread on screen, with conversations turned on and
+    /// selection started from an ordinary message.
+    Future<(ProviderContainer, ConversationTile)> selecting(
+      WidgetTester tester,
+    ) async {
+      final c = await pump(tester);
+      c.read(displayProvider.notifier).setConversations(true);
+      await tester.pumpAndSettle();
+      final loose = tester.widget<MessageTile>(find.byType(MessageTile).first);
+      c.read(selectedMessageIdsProvider.notifier).start(loose.message.id);
+      await tester.pumpAndSettle();
+      final thread = tester.widget<ConversationTile>(
+        find.byType(ConversationTile).first,
+      );
+      return (c, thread);
+    }
+
+    Finder box(ConversationTile thread) => find.descendant(
+          of: find.byKey(ValueKey('thread:${thread.conversation.id}')),
+          matching: find.byType(Checkbox),
+        );
+
+    testWidgets('gets a checkbox too, and it ticks the whole thread',
+        (tester) async {
+      final (c, thread) = await selecting(tester);
+      final ids = thread.conversation.messages.map((m) => m.id).toSet();
+      expect(ids.length, greaterThan(1));
+
+      await tester.tap(box(thread));
+      await tester.pumpAndSettle();
+
+      expect(c.read(selectedMessageIdsProvider), containsAll(ids));
+      expect(tester.widget<Checkbox>(box(thread)).value, isTrue);
+    });
+
+    testWidgets('unticks all of them again, and only them', (tester) async {
+      final (c, thread) = await selecting(tester);
+      final before = c.read(selectedMessageIdsProvider);
+      await tester.tap(box(thread));
+      await tester.pumpAndSettle();
+
+      await tester.tap(box(thread));
+      await tester.pumpAndSettle();
+
+      expect(c.read(selectedMessageIdsProvider), before,
+          reason: 'the message ticked by hand is still ticked');
+    });
+
+    testWidgets('shows a dash when only some of the thread is ticked',
+        (tester) async {
+      // Open the thread, tick one message inside it, close it.
+      final (c, thread) = await selecting(tester);
+      final one = thread.conversation.messages.first.id;
+
+      c.read(selectedMessageIdsProvider.notifier).toggle(one);
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<Checkbox>(box(thread)).value, isNull,
+          reason: 'tristate: neither all nor none');
+      await tester.tap(box(thread));
+      await tester.pumpAndSettle();
+      expect(
+        c.read(selectedMessageIdsProvider),
+        containsAll(thread.conversation.messages.map((m) => m.id)),
+        reason: 'from some, the next press takes the rest',
+      );
+    });
+
+    testWidgets('a tap on the row still opens it', (tester) async {
+      // Unlike a message row, which ticks on tap while selecting: a thread
+      // has to open so one message inside it can be picked out.
+      final (c, thread) = await selecting(tester);
+
+      await tester.tap(find.byKey(ValueKey('thread:${thread.conversation.id}')));
+      await tester.pumpAndSettle();
+
+      expect(
+        c.read(expandedConversationsProvider),
+        contains(thread.conversation.id),
+      );
+    });
   });
 }

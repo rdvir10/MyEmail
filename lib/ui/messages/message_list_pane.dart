@@ -220,21 +220,39 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             // Pulling down is the gesture every mail app answers with a
             // check, so this one does too. The same check as the ribbon's
             // Sync button, which on a phone is not there to press.
+            // One more row than there are messages while the folder has
+            // older mail: reaching it fetches the next page.
+            final hasMore = ref.watch(listHasMoreProvider(folderId));
             return RefreshIndicator(
               onRefresh: () => _pullToSync(context, folderId),
               child: ListView.separated(
               key: _listKey,
-              itemCount: rows.length,
+              itemCount: rows.length + (hasMore ? 1 : 0),
               separatorBuilder: (_, _) => const Divider(height: 1, indent: 28),
               itemBuilder: (context, i) {
+                if (i == rows.length) {
+                  return _LoadMoreRow(
+                    key: ValueKey('more:$folderId'),
+                    folderId: folderId,
+                  );
+                }
                 final row = rows[i];
                 final conversation = row.conversation;
                 if (conversation != null) {
+                  final ids = [for (final m in conversation.messages) m.id];
                   return ConversationTile(
                     key: ValueKey('thread:${conversation.id}'),
                     conversation: conversation,
                     density: density,
                     isExpanded: row.isExpanded,
+                    tickedCount: selecting
+                        ? ids.where(ticked.contains).length
+                        : null,
+                    onTicked: (all) {
+                      final notifier =
+                          ref.read(selectedMessageIdsProvider.notifier);
+                      all ? notifier.addAll(ids) : notifier.removeAll(ids);
+                    },
                     accountColor:
                         isUnified ? accountColors[conversation.newest.accountId] : null,
                     onTap: () => ref
@@ -802,4 +820,71 @@ class _Row {
 
   /// A message shown inside an open thread rather than at the top level.
   final bool indented;
+}
+
+/// The last row of a list that has older mail: being built is the signal
+/// to fetch the next page, so scrolling to the bottom is all it takes, and
+/// a folder shorter than the screen fills itself without a scroll at all.
+///
+/// A failed fetch stays on screen as something to tap. Retrying on its own
+/// while the network is down would spin for ever under the list.
+class _LoadMoreRow extends ConsumerStatefulWidget {
+  const _LoadMoreRow({super.key, required this.folderId});
+
+  final String folderId;
+
+  @override
+  ConsumerState<_LoadMoreRow> createState() => _LoadMoreRowState();
+}
+
+class _LoadMoreRowState extends ConsumerState<_LoadMoreRow> {
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+  }
+
+  void _fetch() {
+    // After the frame: a provider must not change while the list that
+    // watches it is being built.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      setState(() => _error = null);
+      try {
+        await ref.read(messagesProvider(widget.folderId).notifier).loadMore();
+      } catch (e) {
+        if (mounted) setState(() => _error = e);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    if (_error != null) {
+      return InkWell(
+        onTap: _fetch,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            'Could not load older messages. Tap to try again.',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodySmall,
+          ),
+        ),
+      );
+    }
+    return const Padding(
+      padding: EdgeInsets.all(16),
+      child: Center(
+        child: SizedBox(
+          width: 18,
+          height: 18,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+    );
+  }
 }
