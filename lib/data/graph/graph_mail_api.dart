@@ -1,4 +1,6 @@
 import 'dart:convert';
+
+import '../../domain/calendar_invite.dart';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
@@ -263,6 +265,7 @@ class GraphMailApi {
         html: contentType == 'html' ? content : null,
         text: contentType == 'html' ? null : content,
         hasAttachments: json['hasAttachments'] == true,
+        isEventMessage: '${json['@odata.type']}'.endsWith('.eventMessage'),
       );
     } on GraphNotFound {
       return null;
@@ -301,6 +304,47 @@ class GraphMailApi {
   /// `/$value` rather than the JSON with contentBytes in it: the same data
   /// without a base64 round trip through a string, which for a 20MB file is
   /// the difference between a download and an out-of-memory.
+  /// Answer the invitation an event message carries: accept, tentatively
+  /// accept or decline the event on the calendar, telling the organiser.
+  /// Two calls, because the message knows its event and the event takes
+  /// the answer.
+  Future<void> respondToInvite(String messageId, InviteResponse response) async {
+    final event = await _get(
+      Uri.parse('$base/me/messages/${_id(messageId)}/event')
+          .replace(queryParameters: {'\$select': 'id'}),
+    );
+    final eventId = event['id'];
+    if (eventId is! String || eventId.isEmpty) throw const GraphNotFound();
+    final action = switch (response) {
+      InviteResponse.accepted => 'accept',
+      InviteResponse.tentative => 'tentativelyAccept',
+      InviteResponse.declined => 'decline',
+    };
+    await _postNoContent(
+      Uri.parse('$base/me/events/${_id(eventId)}/$action'),
+      {'sendResponse': true},
+    );
+  }
+
+  /// A POST whose success is a 202 with nothing in it.
+  Future<void> _postNoContent(Uri uri, Map<String, Object?> body) async {
+    final client = _http ?? http.Client();
+    try {
+      final request = http.Request('POST', uri)
+        ..headers['Authorization'] = 'Bearer ${await accessToken()}'
+        ..headers['Content-Type'] = 'application/json'
+        ..body = jsonEncode(body);
+      final response =
+          await http.Response.fromStream(await client.send(request));
+      if (response.statusCode == 404) throw const GraphNotFound();
+      if (response.statusCode >= 400) {
+        throw _failureFor(response.statusCode, const {});
+      }
+    } finally {
+      if (_http == null) client.close();
+    }
+  }
+
   /// The message as MIME text, which is what Graph's `$value` on a
   /// message is: the RFC 822 form, for an `.eml`.
   Future<String> mime(String messageId) async => utf8.decode(
@@ -684,11 +728,20 @@ class GraphMessage {
 }
 
 class GraphBody {
-  const GraphBody({this.html, this.text, this.hasAttachments = false});
+  const GraphBody({
+    this.html,
+    this.text,
+    this.hasAttachments = false,
+    this.isEventMessage = false,
+  });
 
   final String? html;
   final String? text;
   final bool hasAttachments;
+
+  /// A meeting request, cancellation or reply: Graph types it so, and its
+  /// invitation is in its MIME rather than its body.
+  final bool isEventMessage;
 }
 
 int _int(Object? value) => value is int ? value : 0;

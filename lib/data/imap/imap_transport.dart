@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/calendar_invite.dart';
 
 /// The wire-level operations the cache needs from a mail server, for one
 /// account, with no enough_mail types in sight.
@@ -52,6 +53,12 @@ abstract class ImapTransport {
 
   /// The whole message as the server holds it, RFC 822 text.
   Future<String> fetchRaw(String path, int uid);
+
+  /// Answer an invitation the way this server prefers, if it has a way:
+  /// Graph can accept on the calendar itself and tell the organiser in
+  /// one call. True if it did. False means "send the reply as mail",
+  /// which every calendar server also reads.
+  Future<bool> respondToInvite(String path, int uid, InviteResponse response);
 
   /// What is attached to a message, without downloading any of it.
   ///

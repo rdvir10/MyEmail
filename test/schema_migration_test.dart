@@ -47,9 +47,36 @@ void main() {
     await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
     // Roll it back to what a device on the previous release actually has.
     await db.customStatement('DROP TABLE IF EXISTS graph_ids');
+    await db.customStatement('ALTER TABLE messages DROP COLUMN calendar');
     await db.customStatement('PRAGMA user_version = 2');
     await db.close();
   }
+
+  /// A database as it stood at schema 3: Graph numbering, no invitations.
+  Future<void> buildVersion3() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await db.customStatement('ALTER TABLE messages DROP COLUMN calendar');
+    await db.customStatement('PRAGMA user_version = 3');
+    await db.close();
+  }
+
+  test('a version 3 database gains the calendar column and keeps its rows',
+      () async {
+    await buildVersion3();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    final cached = await store.readMessages('acct-1', 'INBOX');
+    expect(cached.single.bodyHtml, '<p>A body worth keeping</p>');
+    expect(cached.single.calendar, isNull, reason: 'cached before invitations');
+
+    await store.writeBody('acct-1', 'INBOX', 11,
+        text: 'x', calendar: 'BEGIN:VCALENDAR', preview: 'x');
+    final again = await store.readMessage('acct-1', 'INBOX', 11);
+    expect(again!.calendar, 'BEGIN:VCALENDAR');
+  });
 
   test('a version 2 database upgrades without losing anything', () async {
     await buildVersion2();

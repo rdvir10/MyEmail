@@ -122,8 +122,12 @@ class MailMessage {
 /// supplied none, and is what the browser preview shows.
 @immutable
 class MailBody {
-  const MailBody({required this.text, this.html});
+  const MailBody({required this.text, this.html, this.calendar});
 
   final String text;
   final String? html;
+
+  /// The `text/calendar` part, when the message carries an invitation:
+  /// iCalendar text, parsed by `CalendarInvite.parse` where it is shown.
+  final String? calendar;
 }

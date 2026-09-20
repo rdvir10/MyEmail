@@ -138,7 +138,11 @@ class FolderSync {
   Future<MailBody> body(String path, int uid) async {
     final cached = await store.readMessage(accountId, path, uid);
     if (cached != null && cached.bodyText != null) {
-      return MailBody(text: cached.bodyText!, html: cached.bodyHtml);
+      return MailBody(
+        text: cached.bodyText!,
+        html: cached.bodyHtml,
+        calendar: cached.calendar,
+      );
     }
     final fetched = await transport.fetchBody(path, uid);
     await store.writeBody(
@@ -147,6 +151,7 @@ class FolderSync {
       uid,
       text: fetched.text,
       html: fetched.html,
+      calendar: fetched.calendar,
       preview: previewFromText(fetched.text),
     );
     return fetched;

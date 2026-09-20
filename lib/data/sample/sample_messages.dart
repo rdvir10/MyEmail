@@ -68,6 +68,7 @@ List<MailMessage> generateSampleMessages(
 /// "Images are blocked" path shows up.
 MailBody generateSampleBody(MailMessage message) {
   final rng = Random(message.id.hashCode);
+  if (message.subject.startsWith('Invitation:')) return _sampleInvite(message);
   final paragraphs = [
     for (var i = 0; i < 1 + rng.nextInt(3); i++)
       _paragraphs[rng.nextInt(_paragraphs.length)],
@@ -107,6 +108,39 @@ MailBody generateSampleBody(MailMessage message) {
   return MailBody(text: text.toString(), html: html.toString());
 }
 
+/// A meeting request, the way Outlook sends one: a line of text and the
+/// invitation beside it. Tomorrow at ten, for an hour, in Room 4.
+MailBody _sampleInvite(MailMessage message) {
+  final day = message.date.add(const Duration(days: 1));
+  String two(int n) => n.toString().padLeft(2, '0');
+  final d = '${day.year}${two(day.month)}${two(day.day)}';
+  final title = message.subject.substring('Invitation:'.length).trim();
+  final ics = [
+    'BEGIN:VCALENDAR',
+    'METHOD:REQUEST',
+    'PRODID:-//Sample//EN',
+    'VERSION:2.0',
+    'BEGIN:VEVENT',
+    'UID:sample-${message.uid}@example.com',
+    'DTSTAMP:${d}T090000Z',
+    'DTSTART:${d}T100000',
+    'DTEND:${d}T110000',
+    'SUMMARY:$title',
+    'LOCATION:Room 4',
+    'DESCRIPTION:Numbers first, then what to do about them.',
+    'ORGANIZER;CN=${message.from.display}:mailto:${message.from.email}',
+    'ATTENDEE;CN=Me;RSVP=TRUE:mailto:me@example.com',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+  return MailBody(
+    text: 'You are invited to $title, tomorrow at 10:00 in Room 4.',
+    html: '<p>You are invited to <b>${_escape(title)}</b>, tomorrow at '
+        '10:00 in Room 4.</p>',
+    calendar: ics,
+  );
+}
+
 String _escape(String s) => s
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
@@ -141,6 +175,7 @@ const _subjects = <String>[
   'School trip permission form',
   'Fwd: Flight confirmation {n}',
   'Password changed successfully',
+  'Invitation: Q3 review',
 ];
 
 const _previews = <String>[

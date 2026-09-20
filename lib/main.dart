@@ -38,6 +38,10 @@ import 'domain/window_handoff.dart';
 import 'state/window_providers.dart';
 import 'state/message_transfer.dart';
 import 'data/files/message_files.dart';
+import 'data/print/message_printer.dart';
+import 'state/print_providers.dart';
+import 'state/calendar_providers.dart';
+import 'data/calendar/device_calendar.dart';
 import 'ui/shell/window_host.dart';
 import 'ui/shell/file_drop_host.dart';
 import 'ui/shell/mailbox_widget_keeper.dart';
@@ -135,6 +139,8 @@ Future<void> main() async {
         if (onAndroid) ...[
           windowOpenerProvider.overrideWithValue(const AndroidWindowOpener()),
           messageFilesProvider.overrideWithValue(const DiskMessageFiles()),
+          messagePrinterProvider.overrideWithValue(const AndroidMessagePrinter()),
+          deviceCalendarProvider.overrideWithValue(const AndroidDeviceCalendar()),
           fileBridgeProvider.overrideWithValue(platformFileBridge()),
           deviceContactsProvider.overrideWithValue(platformDeviceContacts()),
           attachmentFilesProvider

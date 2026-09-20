@@ -9,7 +9,11 @@ import '../../state/providers.dart';
 import '../../state/search_providers.dart';
 import '../../state/sync_now.dart';
 import '../compose/open_compose.dart';
+import '../../data/print/message_printer.dart';
+import '../../state/display_providers.dart';
+import '../../state/print_providers.dart';
 import '../messages/forward_as_attachment.dart';
+import '../messages/html_body_view.dart';
 import '../messages/message_actions.dart';
 import 'pane_focus.dart';
 
@@ -77,6 +81,21 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
         }
       case AppCommand.forwardAsAttachment:
         if (message != null) await forwardAsAttachment(context, ref, [message]);
+      case AppCommand.print:
+        if (message == null) return;
+        final body = ref.read(messageBodyProvider(message.id)).value;
+        if (body == null) return;
+        final html = body.html ?? '';
+        await ref.read(messagePrinterProvider).print(
+              title: message.subject.trim().isEmpty ? 'Message' : message.subject,
+              html: printableMessage(
+                message,
+                body,
+                bodyHtml: ref.read(displayProvider).alwaysShowImages
+                    ? html
+                    : stripRemoteContent(html),
+              ),
+            );
       case AppCommand.delete:
         if (message != null && listId != null) {
           await MessageActions(ref, listId).delete(context, [message]);
@@ -159,6 +178,7 @@ enum AppCommand {
   replyAll,
   forward,
   forwardAsAttachment,
+  print,
   delete,
   markRead,
   markUnread,
@@ -189,6 +209,7 @@ AppCommand? commandFor(
       LogicalKeyboardKey.keyF =>
         alt ? AppCommand.forwardAsAttachment : AppCommand.forward,
       LogicalKeyboardKey.keyD => AppCommand.delete,
+      LogicalKeyboardKey.keyP => AppCommand.print,
       LogicalKeyboardKey.keyQ => AppCommand.markRead,
       LogicalKeyboardKey.keyU => AppCommand.markUnread,
       LogicalKeyboardKey.keyG when shift => AppCommand.flag,
@@ -246,6 +267,7 @@ const shortcutHelp = <String, List<ShortcutHelp>>{
     ShortcutHelp('Ctrl+Shift+R', 'Reply all'),
     ShortcutHelp('Ctrl+F', 'Forward'),
     ShortcutHelp('Ctrl+Alt+F', 'Forward as attachment'),
+    ShortcutHelp('Ctrl+P', 'Print or save as PDF'),
     ShortcutHelp('Ctrl+D', 'Delete'),
     ShortcutHelp('Ctrl+Q', 'Mark as read'),
     ShortcutHelp('Ctrl+U', 'Mark as unread'),

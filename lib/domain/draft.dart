@@ -54,7 +54,13 @@ class Draft {
     this.originalMessageId,
     this.savedAs,
     this.lostAttachmentNames = const [],
+    this.calendarReply,
   });
+
+  /// An iCalendar REPLY to go beside the body as a `text/calendar` part
+  /// with `method=REPLY`, which is what makes a calendar server treat the
+  /// message as an answer to its invitation rather than as mail.
+  final String? calendarReply;
 
   final String accountId;
   final ComposeKind kind;
@@ -120,6 +126,7 @@ class Draft {
     List<DraftAttachment>? attachments,
     String? accountId,
     String? savedAs,
+    String? calendarReply,
   }) {
     return Draft(
       accountId: accountId ?? this.accountId,
@@ -134,6 +141,7 @@ class Draft {
       references: references,
       originalMessageId: originalMessageId,
       savedAs: savedAs ?? this.savedAs,
+      calendarReply: calendarReply ?? this.calendarReply,
       lostAttachmentNames: lostAttachmentNames,
     );
   }

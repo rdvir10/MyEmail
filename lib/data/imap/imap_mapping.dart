@@ -257,7 +257,17 @@ MailBody bodyFromMime(em.MimeMessage m) {
             ? htmlToText(html)
             : '',
     html: html,
+    calendar: calendarPartOf(m),
   );
+}
+
+/// The invitation inside a message, if it carries one: the first
+/// `text/calendar` part, decoded. Outlook and Google both send meeting
+/// requests this way, beside the readable body.
+String? calendarPartOf(em.MimeMessage m) {
+  final part = m.getPartWithMediaSubtype(em.MediaSubtype.textCalendar);
+  final text = part?.decodeContentText();
+  return text == null || text.trim().isEmpty ? null : text;
 }
 
 /// What a message has attached, read from its structure alone.

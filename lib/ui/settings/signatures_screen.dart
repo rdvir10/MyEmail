@@ -3,22 +3,23 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/account.dart';
 import '../../domain/signature.dart';
+import 'signature_editor_screen.dart';
 import '../../state/compose_providers.dart';
 import '../../state/providers.dart';
 
 /// A signature per account, because the whole point of several accounts is
 /// that they are not the same person writing.
 ///
-/// Plain text, not the rich editor. A signature is a few lines of contact
-/// details; giving it the full WebView editor would be a second editor to
-/// maintain for a worse result. Line breaks become `<br>` on the way in, and
-/// back again on the way out, so what is typed is what is sent.
+/// Each account shows what it has, as words, with an Edit that opens the
+/// message editor on it: a signature is pasted more often than typed, and
+/// a plain box threw away everything a pasted one carried.
 class SignaturesScreen extends ConsumerWidget {
   const SignaturesScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final accounts = ref.watch(accountsProvider).value ?? const [];
+    final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Signatures'), centerTitle: false),
@@ -28,56 +29,34 @@ class SignaturesScreen extends ConsumerWidget {
               children: [
                 for (final account in accounts)
                   _AccountSignature(key: ValueKey(account.id), account: account),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                  child: Text(
+                    'A signature your organisation adds on its mail server '
+                    '(CodeTwo, Exchange rules) goes on after sending and '
+                    'does not show here. Add one here only if the server '
+                    'does not.',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  ),
+                ),
               ],
             ),
     );
   }
 }
 
-class _AccountSignature extends ConsumerStatefulWidget {
+class _AccountSignature extends ConsumerWidget {
   const _AccountSignature({super.key, required this.account});
 
   final Account account;
 
   @override
-  ConsumerState<_AccountSignature> createState() => _AccountSignatureState();
-}
-
-class _AccountSignatureState extends ConsumerState<_AccountSignature> {
-  late final TextEditingController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    final existing =
-        ref.read(signaturesProvider.notifier).forAccount(widget.account.id);
-    _controller = TextEditingController(text: htmlToSignatureText(existing.html));
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _save({String? text, bool? onReply}) {
-    final current =
-        ref.read(signaturesProvider.notifier).forAccount(widget.account.id);
-    ref.read(signaturesProvider.notifier).set(
-          Signature(
-            accountId: widget.account.id,
-            html: text == null ? current.html : signatureTextToHtml(text),
-            onReply: onReply ?? current.onReply,
-          ),
-        );
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final signature =
-        ref.watch(signaturesProvider)[widget.account.id] ??
-            Signature(accountId: widget.account.id, html: '');
+    final signature = ref.watch(signaturesProvider)[account.id] ??
+        Signature(accountId: account.id, html: '');
+    final words = htmlToSignatureText(signature.html);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -88,28 +67,45 @@ class _AccountSignatureState extends ConsumerState<_AccountSignature> {
             children: [
               CircleAvatar(
                 radius: 8,
-                backgroundColor: Color(widget.account.colorValue),
+                backgroundColor: Color(account.colorValue),
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  widget.account.emailAddress,
+                  account.emailAddress,
                   style: theme.textTheme.titleSmall,
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              IconButton(
+                tooltip: 'Edit',
+                icon: const Icon(Icons.edit_outlined),
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<bool>(
+                    builder: (_) => SignatureEditorScreen(account: account),
+                  ),
+                ),
+              ),
             ],
           ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _controller,
-            maxLines: 5,
-            minLines: 3,
-            // Saved as you type. A Save button on a settings screen is one
-            // more thing to forget, and there is nothing here worth confirming.
-            onChanged: (text) => _save(text: text),
-            decoration: const InputDecoration(
-              hintText: 'Ron Dvir\nrdvir@example.com',
+          const SizedBox(height: 4),
+          // Words, not the HTML: what it says is what matters here, and how
+          // it looks is what the editor is for.
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              words.isEmpty ? 'Nothing yet' : words,
+              maxLines: 6,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: words.isEmpty ? theme.colorScheme.onSurfaceVariant : null,
+                fontStyle: words.isEmpty ? FontStyle.italic : null,
+              ),
             ),
           ),
           SwitchListTile(
@@ -120,7 +116,9 @@ class _AccountSignatureState extends ConsumerState<_AccountSignature> {
               'long thread.',
             ),
             value: signature.onReply,
-            onChanged: (v) => _save(onReply: v),
+            onChanged: (v) => ref
+                .read(signaturesProvider.notifier)
+                .set(signature.copyWith(onReply: v)),
           ),
           const Divider(),
         ],
@@ -148,9 +146,14 @@ String htmlToSignatureText(String html) {
   if (html.trim().isEmpty) return '';
   return html
       .replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n')
-      .replaceAll(RegExp(r'</?p[^>]*>', caseSensitive: false), '')
+      .replaceAll(RegExp(r'</(p|div|tr|li)>', caseSensitive: false), '\n')
+      .replaceAll(RegExp(r'<img\b[^>]*>', caseSensitive: false), '[picture]')
+      .replaceAll(RegExp(r'<[^>]+>'), '')
+      .replaceAll('&nbsp;', ' ')
       .replaceAll('&lt;', '<')
       .replaceAll('&gt;', '>')
       .replaceAll('&amp;', '&')
+      .replaceAll(RegExp(r'[ \t]+\n'), '\n')
+      .replaceAll(RegExp(r'\n{3,}'), '\n\n')
       .trim();
 }

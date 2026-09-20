@@ -4,6 +4,9 @@ import 'dart:typed_data';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
+import '../imap/imap_mapping.dart';
+import '../../domain/calendar_invite.dart';
+import 'package:enough_mail/enough_mail.dart' as em;
 import '../imap/imap_transport.dart';
 import '../mail_engine.dart';
 import 'graph_id_map.dart';
@@ -277,7 +280,23 @@ class GraphTransport implements ImapTransport {
     if (body == null) {
       throw const ConnectionFailed('That message is no longer on the server.');
     }
-    return MailBody(text: body.text ?? '', html: body.html);
+    // The invitation is not in the body Graph hands over; it is in the
+    // message's MIME, the way it was sent. Only fetched for event messages.
+    String? calendar;
+    if (body.isEventMessage) {
+      try {
+        calendar = calendarPartOf(em.MimeMessage.parseFromText(await api.mime(remoteId)));
+      } catch (_) {
+        calendar = null;
+      }
+    }
+    return MailBody(text: body.text ?? '', html: body.html, calendar: calendar);
+  }
+
+  @override
+  Future<bool> respondToInvite(String path, int uid, InviteResponse response) async {
+    await api.respondToInvite(await _remoteId(path, uid), response);
+    return true;
   }
 
   @override

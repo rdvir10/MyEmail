@@ -7,6 +7,7 @@ import '../../domain/draft.dart';
 import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/address_suggestions.dart';
+import '../../domain/calendar_invite.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
@@ -480,6 +481,19 @@ class SampleMailEngine implements MailEngine {
         sizeBytes: 1048576,
       ),
     ];
+  }
+
+  /// Every answer given, for tests to look at.
+  final List<({String messageId, InviteResponse response})> inviteResponses = [];
+
+  @override
+  Future<void> respondToInvite(
+    String messageId,
+    CalendarInvite invite,
+    InviteResponse response,
+  ) async {
+    await _latency();
+    inviteResponses.add((messageId: messageId, response: response));
   }
 
   @override

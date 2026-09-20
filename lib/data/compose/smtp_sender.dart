@@ -43,6 +43,17 @@ em.MimeMessage buildMimeMessage({
     htmlText: draft.htmlBody,
   );
 
+  // An answer to an invitation: the calendar part goes beside the text,
+  // typed so a calendar server knows it for a reply.
+  final reply = draft.calendarReply;
+  if (reply != null) {
+    final part = builder.addText(
+      reply,
+      mediaType: em.MediaType.fromText('text/calendar'),
+    );
+    part.contentType?.setParameter('method', 'REPLY');
+  }
+
   for (final attachment in draft.attachments) {
     builder.addBinary(
       attachment.bytes,

@@ -46,6 +46,10 @@ open class MainActivity : FlutterActivity() {
         contacts = ContactsBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         // A second window: another copy of this activity, in its own task.
         WindowsBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        // Print, and save as PDF, through the system's print sheet.
+        PrintBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        // Events handed to the calendar app's own new-event screen.
+        CalendarBridge(this, flutterEngine.dartExecutor.binaryMessenger)
 
         files = FilesBridge(this, flutterEngine.dartExecutor.binaryMessenger)
             .also {

@@ -42,6 +42,10 @@ class Messages extends Table {
   TextColumn get bodyText => text().nullable()();
   TextColumn get bodyHtml => text().nullable()();
 
+  /// The invitation inside the message (iCalendar text), added in schema
+  /// 4. Null on rows cached before, and on every message with none.
+  TextColumn get calendar => text().nullable()();
+
   /// Threading, added in schema 2. Nullable because plenty of real mail has
   /// no `Message-ID`, and because every row cached before schema 2 has
   /// neither until the folder is next synced.
@@ -97,7 +101,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -120,6 +124,19 @@ class MailDatabase extends _$MailDatabase {
             // Microsoft one fills it as it syncs.
             await m.createTable(graphIds);
             await m.createIndex(graphIdByRemote);
+          }
+          if (from < 4) {
+            // Invitations. A body cached before this has no calendar
+            // column; opening such a message shows it without the card
+            // until the body is fetched again. Checked first: a database
+            // that already has the column (an upgrade that was cut short
+            // after this step, a test rolling the version back) must not
+            // fail on it and take the whole cache down with it.
+            final columns = await customSelect(
+              'PRAGMA table_info(messages)',
+            ).get();
+            final has = columns.any((c) => c.read<String>('name') == 'calendar');
+            if (!has) await m.addColumn(messages, messages.calendar);
           }
         },
       );
@@ -271,6 +288,7 @@ class DriftCacheStore implements CacheStore {
             preview: Value(m.preview),
             bodyText: Value(m.bodyText),
             bodyHtml: Value(m.bodyHtml),
+            calendar: Value(m.calendar),
             messageId: Value(m.messageId),
             inReplyTo: Value(m.inReplyTo),
           ),
@@ -331,6 +349,7 @@ class DriftCacheStore implements CacheStore {
     int uid, {
     required String text,
     String? html,
+    String? calendar,
     required String preview,
   }) async {
     await (db.update(db.messages)
@@ -339,6 +358,7 @@ class DriftCacheStore implements CacheStore {
       MessagesCompanion(
         bodyText: Value(text),
         bodyHtml: Value(html),
+        calendar: Value(calendar),
         preview: Value(preview),
       ),
     );
@@ -414,6 +434,7 @@ class DriftCacheStore implements CacheStore {
         preview: r.preview,
         bodyText: r.bodyText,
         bodyHtml: r.bodyHtml,
+        calendar: r.calendar,
         messageId: r.messageId,
         inReplyTo: r.inReplyTo,
       );

@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_credentials.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/calendar_invite.dart';
 import '../mail_engine.dart';
 import 'imap_mapping.dart';
 import 'imap_transport.dart';
@@ -162,6 +163,10 @@ class EnoughMailTransport implements ImapTransport {
         }
         return bodyFromMime(result.messages.first);
       });
+
+  @override
+  Future<bool> respondToInvite(String path, int uid, InviteResponse response) async =>
+      false; // IMAP has no calendar; the reply goes as mail.
 
   @override
   Future<String> fetchRaw(String path, int uid) => _run((c) async {

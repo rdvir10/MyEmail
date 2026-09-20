@@ -538,7 +538,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
               ),
             const Divider(height: 1),
             Expanded(child: HtmlEditor(controller: _editor)),
-            _Toolbar(controller: _editor, enabled: !_sending),
+            EditorToolbar(controller: _editor, enabled: !_sending),
           ],
         ),
         ),
@@ -828,49 +828,3 @@ class _AttachmentStrip extends StatelessWidget {
 }
 
 /// Bold, italic, underline and lists, sitting above the keyboard.
-class _Toolbar extends StatelessWidget {
-  const _Toolbar({required this.controller, required this.enabled});
-
-  final HtmlEditorController controller;
-  final bool enabled;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final active = controller.activeFormats;
-
-    Widget button(String command, IconData icon, String tooltip) {
-      final isActive = active.contains(command);
-      return IconButton(
-        tooltip: tooltip,
-        isSelected: isActive,
-        icon: Icon(icon),
-        color: isActive ? theme.colorScheme.primary : null,
-        onPressed: enabled ? () => controller.format(command) : null,
-      );
-    }
-
-    return SafeArea(
-      top: false,
-      child: Material(
-        color: theme.colorScheme.surfaceContainerLow,
-        child: Row(
-          children: [
-            button('bold', Icons.format_bold, 'Bold'),
-            button('italic', Icons.format_italic, 'Italic'),
-            button('underline', Icons.format_underlined, 'Underline'),
-            const VerticalDivider(width: 8, indent: 10, endIndent: 10),
-            button('insertUnorderedList', Icons.format_list_bulleted, 'Bullets'),
-            button('insertOrderedList', Icons.format_list_numbered, 'Numbers'),
-            const Spacer(),
-            IconButton(
-              tooltip: 'Remove formatting',
-              icon: const Icon(Icons.format_clear),
-              onPressed: enabled ? () => controller.format('removeFormat') : null,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}

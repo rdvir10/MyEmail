@@ -9,6 +9,7 @@ import '../../domain/folder_role.dart';
 import '../../domain/mail_credentials.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/address_suggestions.dart';
+import '../../domain/calendar_invite.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/draft.dart';
@@ -581,7 +582,11 @@ class CachedImapEngine implements MailEngine {
     final (accountId, path) = splitFolderId(folderId);
     final cached = await cache.readMessage(accountId, path, uid);
     if (cached != null && cached.bodyText != null) {
-      return MailBody(text: cached.bodyText!, html: cached.bodyHtml);
+      return MailBody(
+        text: cached.bodyText!,
+        html: cached.bodyHtml,
+        calendar: cached.calendar,
+      );
     }
     final t = await _transport(accountId);
     return _sync(accountId, t).body(path, uid);
@@ -590,6 +595,38 @@ class CachedImapEngine implements MailEngine {
   @override
   Future<List<AddressSuggestion>> recentAddresses() async =>
       historyFrom(await cache.recentAddresses());
+
+  @override
+  Future<void> respondToInvite(
+    String messageId,
+    CalendarInvite invite,
+    InviteResponse response,
+  ) async {
+    final (folderId, uid) = splitMessageId(messageId);
+    final (accountId, path) = splitFolderId(folderId);
+    final t = await _transport(accountId);
+    if (await t.respondToInvite(path, uid, response)) return;
+
+    // The server has no calendar of its own to answer on: the reply goes
+    // as mail to the organiser, an iCalendar REPLY part beside a line of
+    // text, which is how every calendar reads an answer from outside.
+    final organizer = invite.organizer;
+    if (organizer == null) {
+      throw const SendFailed('The invitation names no organiser to reply to.');
+    }
+    final account = accountStore.read().firstWhere((a) => a.id == accountId);
+    final me = MailAddress(email: account.emailAddress, name: account.displayName);
+    await sendDraft(Draft(
+      accountId: accountId,
+      kind: ComposeKind.reply,
+      to: [organizer],
+      subject: inviteReplySubject(invite, response),
+      htmlBody: '<p>${account.displayName} has ${response.word.toLowerCase()} '
+          'this invitation.</p>',
+      calendarReply: iMipReply(invite, attendee: me, response: response),
+      originalMessageId: messageId,
+    ));
+  }
 
   @override
   Future<String> rawMessage(String messageId) async {

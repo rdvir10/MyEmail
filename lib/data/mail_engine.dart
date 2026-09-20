@@ -5,6 +5,7 @@ import '../domain/error_report.dart';
 import 'auth/oauth_token.dart';
 import '../domain/draft.dart';
 import '../domain/address_suggestions.dart';
+import '../domain/calendar_invite.dart';
 import '../domain/mail_attachment.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
@@ -129,6 +130,15 @@ abstract class MailEngine {
   /// The message as it arrived: RFC 822 text, headers and all. For saving
   /// as an `.eml`, or attaching one message to another.
   Future<String> rawMessage(String messageId);
+
+  /// Answer the invitation in a message: on the calendar where the server
+  /// has one (Microsoft), and as the mail reply every calendar server
+  /// reads otherwise, sent from the account the invitation came to.
+  Future<void> respondToInvite(
+    String messageId,
+    CalendarInvite invite,
+    InviteResponse response,
+  );
 
   /// Set or clear \Seen. The folder's unread count follows on next load.
   Future<void> setRead(String messageId, bool isRead);

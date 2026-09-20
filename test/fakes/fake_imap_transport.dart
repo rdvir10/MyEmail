@@ -5,6 +5,7 @@ import 'package:myemail/data/imap/imap_transport.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_attachment.dart';
+import 'package:myemail/domain/calendar_invite.dart';
 import 'package:myemail/domain/mail_message.dart';
 
 /// An in-memory IMAP server the tests can mutate between calls: deliver mail,
@@ -166,6 +167,12 @@ class FakeImapTransport implements ImapTransport {
     final m = _require(path).messages[uid];
     if (m == null) throw StateError('No message $uid in $path');
     return MailBody(text: m.body, html: m.html);
+  }
+
+  @override
+  Future<bool> respondToInvite(String path, int uid, InviteResponse response) async {
+    calls.add('RESPOND $path $uid ${response.partStat}');
+    return false;
   }
 
   @override

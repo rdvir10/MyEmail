@@ -4,6 +4,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/draft.dart';
+import '../../domain/calendar_invite.dart';
+import '../../state/calendar_providers.dart';
+import 'invite_card.dart';
 import '../../domain/mail_message.dart';
 import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
@@ -14,6 +17,8 @@ import '../compose/open_compose.dart';
 import 'attachment_bar.dart';
 import 'date_format.dart';
 import '../shell/pane_focus.dart';
+import '../../data/print/message_printer.dart';
+import '../../state/print_providers.dart';
 import 'html_body_view.dart';
 import 'message_actions.dart';
 import 'message_source.dart';
@@ -242,8 +247,21 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
             // one that is not there yet.
             onSaveSource:
                 body.value == null ? null : () => _saveSource(body.value!),
+            onPrint: body.value == null ||
+                    !(ref.watch(printingAvailableProvider).value ?? false)
+                ? null
+                : () => _print(message, body.value!),
+            onCreateEvent: body.value == null ||
+                    !(ref.watch(calendarAvailableProvider).value ?? false)
+                ? null
+                : () => _createEvent(message, body.value!),
           ),
         ),
+        // The invitation, when the message carries one, before the body:
+        // the answer is the point of the message.
+        if (body.value?.calendar case final ics?)
+          if (CalendarInvite.parse(ics) case final invite?)
+            InviteCard(message: message, invite: invite),
         const Divider(height: 1),
         Expanded(
           child: body.when(
@@ -268,6 +286,51 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
         ),
       ),
     );
+  }
+
+  /// An event from the message: its subject as the title, its text as
+  /// the notes, in the calendar app's own new-event screen where the
+  /// time is picked. For the mail that says "let's meet Thursday" without
+  /// sending an invitation.
+  Future<void> _createEvent(MailMessage message, MailBody body) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final notes = body.text.trim();
+    final ok = await ref.read(deviceCalendarProvider).insertEvent(
+          title: message.subject,
+          description:
+              '${notes.length > 2000 ? '${notes.substring(0, 2000)}…' : notes}'
+              '\n\nFrom: ${message.from.display}',
+        );
+    if (!ok) {
+      messenger?.showSnackBar(
+        const SnackBar(content: Text('No calendar app to add it to.')),
+      );
+    }
+  }
+
+  /// The system's print sheet, which is also where "Save as PDF" lives.
+  /// Pictures from the web are left out unless the setting shows them,
+  /// the same rule the pane itself follows: printing a message must not
+  /// tell its sender it was read.
+  Future<void> _print(MailMessage message, MailBody body) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final html = body.html ?? '';
+    final shown = ref.read(displayProvider).alwaysShowImages
+        ? html
+        : stripRemoteContent(html);
+    try {
+      final ok = await ref.read(messagePrinterProvider).print(
+            title: message.subject.trim().isEmpty ? 'Message' : message.subject,
+            html: printableMessage(message, body, bodyHtml: shown),
+          );
+      if (!ok) {
+        messenger?.showSnackBar(
+          const SnackBar(content: Text('Printing is not available here.')),
+        );
+      }
+    } catch (e) {
+      messenger?.showSnackBar(SnackBar(content: Text('Could not print. $e')));
+    }
   }
 
   Future<void> _saveSource(MailBody body) async {
@@ -317,8 +380,18 @@ class _Header extends StatelessWidget {
     required this.onDelete,
     this.onPopOut,
     this.onOpenWindow,
+    this.onPrint,
+    this.onCreateEvent,
     this.compact = false,
   });
+
+  /// Make a calendar event out of this message. Null until the body is
+  /// here, and where there is no calendar app.
+  final VoidCallback? onCreateEvent;
+
+  /// Print, or save as a PDF. Null until the body is here, and where there
+  /// is no print sheet.
+  final VoidCallback? onPrint;
 
   /// Open this message in a window of its own. Null where there are no
   /// windows, or where this already is one.
@@ -411,6 +484,8 @@ class _Header extends StatelessWidget {
               onSelected: (value) => switch (value) {
                 'flag' => onToggleFlag(),
                 'window' => onOpenWindow?.call(),
+                'print' => onPrint?.call(),
+                'event' => onCreateEvent?.call(),
                 _ => onSaveSource?.call(),
               },
               itemBuilder: (context) => [
@@ -419,6 +494,16 @@ class _Header extends StatelessWidget {
                     value: 'window',
                     child: Text('Open in new window'),
                   ),
+                PopupMenuItem(
+                  value: 'print',
+                  enabled: onPrint != null,
+                  child: const Text('Print or save as PDF…'),
+                ),
+                PopupMenuItem(
+                  value: 'event',
+                  enabled: onCreateEvent != null,
+                  child: const Text('Create calendar event…'),
+                ),
                 if (compact)
                   PopupMenuItem(
                     value: 'flag',

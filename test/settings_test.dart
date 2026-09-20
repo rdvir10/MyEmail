@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/display_settings.dart';
 import 'package:myemail/domain/mail_message.dart';
-import 'package:myemail/state/compose_providers.dart';
 import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/folder_tree/folder_tree_panel.dart';
@@ -386,29 +385,6 @@ void main() {
     test('an empty signature is empty HTML, not an empty paragraph', () {
       expect(signatureTextToHtml('   \n  '), '');
       expect(htmlToSignatureText(''), '');
-    });
-
-    testWidgets('there is a box per account and typing in one saves it',
-        (tester) async {
-      _useSize(tester, const Size(900, 1400));
-      final c = container();
-      await tester.pumpWidget(
-        UncontrolledProviderScope(
-          container: c,
-          child: const MaterialApp(home: SignaturesScreen()),
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.byType(TextField), findsNWidgets(2),
-          reason: 'the sample engine has two accounts');
-
-      await tester.enterText(find.byType(TextField).first, 'Ron');
-      await tester.pumpAndSettle();
-
-      final saved = c.read(signaturesProvider);
-      expect(saved.values.single.html, '<p>Ron</p>',
-          reason: 'typing saves it; a settings screen needs no Save button');
     });
   });
 

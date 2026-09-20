@@ -42,6 +42,7 @@ class CachedMessage {
     this.preview = '',
     this.bodyText,
     this.bodyHtml,
+    this.calendar,
     this.messageId,
     this.inReplyTo,
   });
@@ -58,6 +59,9 @@ class CachedMessage {
   final String? bodyText;
   final String? bodyHtml;
 
+  /// The invitation inside the message, cached with the body.
+  final String? calendar;
+
   /// See [MailMessage.messageId]. Null for anything cached before threading
   /// existed, which is why grouping never assumes they are there.
   final String? messageId;
@@ -71,6 +75,7 @@ class CachedMessage {
     String? preview,
     String? bodyText,
     String? bodyHtml,
+    String? calendar,
   }) {
     return CachedMessage(
       uid: uid,
@@ -84,6 +89,7 @@ class CachedMessage {
       preview: preview ?? this.preview,
       bodyText: bodyText ?? this.bodyText,
       bodyHtml: bodyHtml ?? this.bodyHtml,
+      calendar: calendar ?? this.calendar,
       messageId: messageId,
       inReplyTo: inReplyTo,
     );
@@ -161,6 +167,7 @@ abstract class CacheStore {
     int uid, {
     required String text,
     String? html,
+    String? calendar,
     required String preview,
   });
 
@@ -307,12 +314,18 @@ class MemoryCacheStore implements CacheStore {
     int uid, {
     required String text,
     String? html,
+    String? calendar,
     required String preview,
   }) async {
     final folder = _folder(accountId, path);
     final m = folder[uid];
     if (m != null) {
-      folder[uid] = m.copyWith(bodyText: text, bodyHtml: html, preview: preview);
+      folder[uid] = m.copyWith(
+        bodyText: text,
+        bodyHtml: html,
+        calendar: calendar,
+        preview: preview,
+      );
     }
   }
 
