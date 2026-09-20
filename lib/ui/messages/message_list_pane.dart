@@ -97,8 +97,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       if (at < 0 || rows.length < 2) return;
       final position = _scroll.position;
       position.jumpTo(
-        (position.maxScrollExtent * at / (rows.length - 1))
-            .clamp(position.minScrollExtent, position.maxScrollExtent),
+        (position.maxScrollExtent * at / (rows.length - 1)).clamp(
+          position.minScrollExtent,
+          position.maxScrollExtent,
+        ),
       );
       _reveal(id, secondLook: true);
     });
@@ -147,8 +149,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     // A page arriving under the list can push the selected row about: the
     // unified Inbox merges the new page by date, and rows from the other
     // account land above it. Keep it on screen through that.
-    ref.listen<AsyncValue<List<MailMessage>>>(messagesProvider(folderId),
-        (prev, next) {
+    ref.listen<AsyncValue<List<MailMessage>>>(messagesProvider(folderId), (
+      prev,
+      next,
+    ) {
       final id = ref.read(selectedMessageIdProvider);
       if (id == null || !next.hasValue) return;
       if (prev?.value?.length != next.value?.length) _reveal(id);
@@ -157,59 +161,66 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     final folder = ref.watch(folderIndexProvider)[folderId];
     final isUnified = folderId == kUnifiedInboxId;
     final accounts = ref.watch(accountsProvider).value ?? const [];
-    final accountColors = {
-      for (final a in accounts) a.id: Color(a.colorValue),
-    };
+    final accountColors = {for (final a in accounts) a.id: Color(a.colorValue)};
     final selectedId = ref.watch(selectedMessageIdProvider);
     final actions = MessageActions(ref, folderId);
     final searching = ref.watch(searchQueryProvider).trim().isNotEmpty;
 
     final body = searching
         ? _searchResults(context, ref, actions, accountColors, selectedId)
-        : _folderList(context, ref, folderId, folder, isUnified,
-            accountColors, selectedId, actions);
+        : _folderList(
+            context,
+            ref,
+            folderId,
+            folder,
+            isUnified,
+            accountColors,
+            selectedId,
+            actions,
+          );
 
     return PaneFocusFrame(
       node: ref.watch(paneFocusProvider).list,
       child: Column(
-      children: [
-        // The selection bar takes the search bar's place while messages are
-        // ticked. Both at once would be two rows of controls above a list
-        // that has shrunk to make room for them, and searching is not what
-        // anyone is doing mid-selection.
-        if (ref.watch(isSelectingProvider))
-          SelectionBar(
-            listId: folderId,
-            onScreen: () => messagesOnScreen(_listKey),
-            // The rows on offer are the hits while searching, and hits can
-            // live in any folder.
-            messages: searching
-                ? ref.watch(searchResultsProvider).value ?? const []
-                : ref.watch(messagesProvider(folderId)).value ?? const [],
-            selectAllIsEverything: searching,
-          )
-        else
-          const MessageSearchBar(),
-        const Divider(height: 1),
-        Expanded(
-          child: MessageListKeyboard(
-            listId: folderId,
-            onScreen: () => messagesOnScreen(_listKey),
-            // Where there is no reading pane a message opens as its own
-            // screen, so landing on one would mean walking into a folder and
-            // finding a message already open on top of it.
-            // Not while searching: the results are not this folder's list,
-            // so landing would pick a message that is not on screen.
-            landOnOpen: !searching &&
-                AppShell.hasReadingPane(
-                  MediaQuery.sizeOf(context).width,
-                  ref.watch(displayProvider).readingPane,
-                ),
-            onOpen: widget.onOpen,
-            child: body,
+        children: [
+          // The selection bar takes the search bar's place while messages are
+          // ticked. Both at once would be two rows of controls above a list
+          // that has shrunk to make room for them, and searching is not what
+          // anyone is doing mid-selection.
+          if (ref.watch(isSelectingProvider))
+            SelectionBar(
+              listId: folderId,
+              onScreen: () => messagesOnScreen(_listKey),
+              // The rows on offer are the hits while searching, and hits can
+              // live in any folder.
+              messages: searching
+                  ? ref.watch(searchResultsProvider).value ?? const []
+                  : ref.watch(messagesProvider(folderId)).value ?? const [],
+              selectAllIsEverything: searching,
+            )
+          else
+            const MessageSearchBar(),
+          const Divider(height: 1),
+          Expanded(
+            child: MessageListKeyboard(
+              listId: folderId,
+              onScreen: () => messagesOnScreen(_listKey),
+              // Where there is no reading pane a message opens as its own
+              // screen, so landing on one would mean walking into a folder and
+              // finding a message already open on top of it.
+              // Not while searching: the results are not this folder's list,
+              // so landing would pick a message that is not on screen.
+              landOnOpen:
+                  !searching &&
+                  AppShell.hasReadingPane(
+                    MediaQuery.sizeOf(context).width,
+                    ref.watch(displayProvider).readingPane,
+                  ),
+              onOpen: widget.onOpen,
+              child: body,
+            ),
           ),
-        ),
-      ],
+        ],
       ),
     );
   }
@@ -227,7 +238,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
   ) {
     final theme = Theme.of(context);
     final index = ref.watch(folderIndexProvider);
-    return ref.watch(searchResultsProvider).when(
+    return ref
+        .watch(searchResultsProvider)
+        .when(
           loading: () => const Center(
             child: SizedBox(
               width: 22,
@@ -238,17 +251,21 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           error: (e, _) => Center(
             child: Padding(
               padding: const EdgeInsets.all(24),
-              child: Text('Search failed.\n$e',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodySmall),
+              child: Text(
+                'Search failed.\n$e',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall,
+              ),
             ),
           ),
           data: (results) {
             if (results == null) return const SizedBox.shrink();
             if (results.isEmpty) {
               return Center(
-                child: Text('No messages found',
-                    style: theme.textTheme.bodySmall),
+                child: Text(
+                  'No messages found',
+                  style: theme.textTheme.bodySmall,
+                ),
               );
             }
             final ticked = ref.watch(selectedMessageIdsProvider);
@@ -264,8 +281,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                   message: m,
                   isSelected: m.id == selectedId,
                   isTicked: selecting ? ticked.contains(m.id) : null,
-                  onTicked: (_) =>
-                      ref.read(selectedMessageIdsProvider.notifier).toggle(m.id),
+                  onTicked: (_) => ref
+                      .read(selectedMessageIdsProvider.notifier)
+                      .toggle(m.id),
                   density: ref.watch(listDensityProvider),
                   accountColor: accountColors[m.accountId],
                   folderLabel: index[m.folderId]?.displayName,
@@ -298,7 +316,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     MessageActions actions,
   ) {
     final theme = Theme.of(context);
-    return ref.watch(messagesProvider(folderId)).when(
+    return ref
+        .watch(messagesProvider(folderId))
+        .when(
           loading: () => const Center(
             child: SizedBox(
               width: 22,
@@ -344,140 +364,155 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             return RefreshIndicator(
               onRefresh: () => _pullToSync(context, folderId),
               child: ListView.separated(
-              key: _listKey,
-              controller: _scroll,
-              itemCount: rows.length + (hasMore ? 1 : 0),
-              separatorBuilder: (_, _) => const Divider(height: 1, indent: 28),
-              itemBuilder: (context, i) {
-                if (i == rows.length) {
-                  return _LoadMoreRow(
-                    key: ValueKey('more:$folderId'),
-                    folderId: folderId,
-                  );
-                }
-                final row = rows[i];
-                final conversation = row.conversation;
-                if (conversation != null) {
-                  final ids = [for (final m in conversation.messages) m.id];
-                  return ConversationTile(
-                    key: ValueKey('thread:${conversation.id}'),
-                    conversation: conversation,
-                    density: density,
-                    isExpanded: row.isExpanded,
-                    // Closed, the row stands for every message in it; if
-                    // the open one is among them this is where it is.
-                    isSelected: !row.isExpanded &&
-                        conversation.messages.any((m) => m.id == selectedId),
-                    tickedCount: selecting
-                        ? ids.where(ticked.contains).length
-                        : null,
-                    onTicked: (all) {
-                      final notifier =
-                          ref.read(selectedMessageIdsProvider.notifier);
-                      all ? notifier.addAll(ids) : notifier.removeAll(ids);
-                    },
-                    accountColor:
-                        isUnified ? accountColors[conversation.newest.accountId] : null,
-                    onTap: () => ref
-                        .read(expandedConversationsProvider.notifier)
-                        .toggle(conversation.id),
-                    // A long press ticks the thread, the way it ticks a
-                    // message. The menu is on the right button.
-                    onLongPress: () => ref
+                key: _listKey,
+                controller: _scroll,
+                itemCount: rows.length + (hasMore ? 1 : 0),
+                separatorBuilder: (_, _) =>
+                    const Divider(height: 1, indent: 28),
+                itemBuilder: (context, i) {
+                  if (i == rows.length) {
+                    return _LoadMoreRow(
+                      key: ValueKey('more:$folderId'),
+                      folderId: folderId,
+                    );
+                  }
+                  final row = rows[i];
+                  final conversation = row.conversation;
+                  if (conversation != null) {
+                    final ids = [for (final m in conversation.messages) m.id];
+                    return _SwipeableRow(
+                      key: ValueKey('thread:${conversation.id}'),
+                      messages: conversation.messages,
+                      actions: actions,
+                      child: ConversationTile(
+                        key: ValueKey('tile-thread:${conversation.id}'),
+                        conversation: conversation,
+                        density: density,
+                        isExpanded: row.isExpanded,
+                        // Closed, the row stands for every message in it; if
+                        // the open one is among them this is where it is.
+                        isSelected:
+                            !row.isExpanded &&
+                            conversation.messages.any(
+                              (m) => m.id == selectedId,
+                            ),
+                        tickedCount: selecting
+                            ? ids.where(ticked.contains).length
+                            : null,
+                        onTicked: (all) {
+                          final notifier = ref.read(
+                            selectedMessageIdsProvider.notifier,
+                          );
+                          all ? notifier.addAll(ids) : notifier.removeAll(ids);
+                        },
+                        accountColor: isUnified
+                            ? accountColors[conversation.newest.accountId]
+                            : null,
+                        onTap: () => ref
+                            .read(expandedConversationsProvider.notifier)
+                            .toggle(conversation.id),
+                        // A long press ticks the thread, the way it ticks a
+                        // message. The menu is on the right button.
+                        onLongPress: () => ref
+                            .read(selectedMessageIdsProvider.notifier)
+                            .addAll(ids),
+                        onContextMenu: (at) => _showConversationMenu(
+                          context,
+                          ref,
+                          actions,
+                          conversation,
+                          at,
+                        ),
+                      ),
+                    );
+                  }
+
+                  final m = row.message!;
+                  final tile = MessageTile(
+                    message: m,
+                    isSelected: m.id == selectedId,
+                    isTicked: selecting ? ticked.contains(m.id) : null,
+                    onTicked: (_) => ref
                         .read(selectedMessageIdsProvider.notifier)
-                        .addAll(ids),
-                    onContextMenu: (at) => _showConversationMenu(
-                      context,
-                      ref,
-                      actions,
-                      conversation,
-                      at,
+                        .toggle(m.id),
+                    density: density,
+                    accountColor: isUnified ? accountColors[m.accountId] : null,
+                    onTap: () {
+                      // A message in Drafts is something you were writing, so a
+                      // tap continues it rather than opening a reading pane on
+                      // your own words with a Reply button under them.
+                      if (isDraftsFolder(ref, m.folderId)) {
+                        openSavedDraft(context, ref, m);
+                        return;
+                      }
+                      ref.read(selectedMessageIdProvider.notifier).select(m.id);
+                      ref
+                          .read(lastOpenedInFolderProvider.notifier)
+                          .remember(folderId, m.id);
+                      // Marked read here rather than left to the reading pane.
+                      // The pane marks read as it opens, and it does not open
+                      // again for a message the app had already landed on — so
+                      // tapping the message the folder opened at would leave it
+                      // unread, which is the one case this has to get right.
+                      if (!m.isRead) {
+                        ref
+                            .read(messagesProvider(folderId).notifier)
+                            .setRead(m.id, true);
+                      }
+                      widget.onOpen(m);
+                    },
+                    // No long press of its own: the draggable around this
+                    // row owns the long press, and ticks on its behalf. Two
+                    // long-press recognisers on one row and the inner one
+                    // wins the gesture, which is a drag that never starts.
+                    onContextMenu: (at) =>
+                        _showMessageMenu(context, ref, actions, m, at),
+                    key: ValueKey('tile:${m.id}'),
+                  );
+                  final swipeable = _SwipeableRow(
+                    key: ValueKey(m.id),
+                    messages: [m],
+                    actions: actions,
+                    child: LongPressDraggable<DraggedMessages>(
+                      data: DraggedMessages([m]),
+                      dragAnchorStrategy: pointerDragAnchorStrategy,
+                      feedback: _DragFeedback(message: m),
+                      childWhenDragging: Opacity(opacity: 0.35, child: tile),
+                      // Sharing the screen, the pull becomes a drag out of the
+                      // app — as .eml files the other window can take — and
+                      // Android takes the finger, which ends this one. Every
+                      // ticked message comes along if this row is one of them.
+                      // A long press ticks: it is how selecting starts on a
+                      // screen with no right button. Adds rather than starts,
+                      // so a long press mid-selection takes one more. Held
+                      // on and pulled, the row is being dragged, within the
+                      // app or — sharing the screen — out of it.
+                      onDragStarted: () {
+                        final wasTicked = ticked.contains(m.id);
+                        ref.read(selectedMessageIdsProvider.notifier).addAll([
+                          m.id,
+                        ]);
+                        if (!ref.read(multiWindowModeProvider)) return;
+                        final all = wasTicked
+                            ? [
+                                for (final x in messages)
+                                  if (ticked.contains(x.id)) x,
+                              ]
+                            : [m];
+                        dragMessages(ref, all);
+                      },
+                      child: tile,
                     ),
                   );
-                }
-
-                final m = row.message!;
-                final tile = MessageTile(
-                  message: m,
-                  isSelected: m.id == selectedId,
-                  isTicked: selecting ? ticked.contains(m.id) : null,
-                  onTicked: (_) =>
-                      ref.read(selectedMessageIdsProvider.notifier).toggle(m.id),
-                  density: density,
-                  accountColor: isUnified ? accountColors[m.accountId] : null,
-                  onTap: () {
-                    // A message in Drafts is something you were writing, so a
-                    // tap continues it rather than opening a reading pane on
-                    // your own words with a Reply button under them.
-                    if (isDraftsFolder(ref, m.folderId)) {
-                      openSavedDraft(context, ref, m);
-                      return;
-                    }
-                    ref.read(selectedMessageIdProvider.notifier).select(m.id);
-                    ref
-                        .read(lastOpenedInFolderProvider.notifier)
-                        .remember(folderId, m.id);
-                    // Marked read here rather than left to the reading pane.
-                    // The pane marks read as it opens, and it does not open
-                    // again for a message the app had already landed on — so
-                    // tapping the message the folder opened at would leave it
-                    // unread, which is the one case this has to get right.
-                    if (!m.isRead) {
-                      ref
-                          .read(messagesProvider(folderId).notifier)
-                          .setRead(m.id, true);
-                    }
-                    widget.onOpen(m);
-                  },
-                  // No long press of its own: the draggable around this
-                  // row owns the long press, and ticks on its behalf. Two
-                  // long-press recognisers on one row and the inner one
-                  // wins the gesture, which is a drag that never starts.
-                  onContextMenu: (at) =>
-                      _showMessageMenu(context, ref, actions, m, at),
-                  key: ValueKey('tile:${m.id}'),
-                );
-                final swipeable = _SwipeableRow(
-                  key: ValueKey(m.id),
-                  message: m,
-                  actions: actions,
-                  child: LongPressDraggable<DraggedMessages>(
-                    data: DraggedMessages([m]),
-                    dragAnchorStrategy: pointerDragAnchorStrategy,
-                    feedback: _DragFeedback(message: m),
-                    childWhenDragging: Opacity(opacity: 0.35, child: tile),
-                    // Sharing the screen, the pull becomes a drag out of the
-                    // app — as .eml files the other window can take — and
-                    // Android takes the finger, which ends this one. Every
-                    // ticked message comes along if this row is one of them.
-                    // A long press ticks: it is how selecting starts on a
-                    // screen with no right button. Adds rather than starts,
-                    // so a long press mid-selection takes one more. Held
-                    // on and pulled, the row is being dragged, within the
-                    // app or — sharing the screen — out of it.
-                    onDragStarted: () {
-                      final wasTicked = ticked.contains(m.id);
-                      ref
-                          .read(selectedMessageIdsProvider.notifier)
-                          .addAll([m.id]);
-                      if (!ref.read(multiWindowModeProvider)) return;
-                      final all = wasTicked
-                          ? [for (final x in messages) if (ticked.contains(x.id)) x]
-                          : [m];
-                      dragMessages(ref, all);
-                    },
-                    child: tile,
-                  ),
-                );
-                // Inside an open thread, indented so the run of replies reads
-                // as belonging to the row above it.
-                return row.indented
-                    ? Padding(
-                        padding: const EdgeInsets.only(left: 20),
-                        child: swipeable,
-                      )
-                    : swipeable;
-              },
+                  // Inside an open thread, indented so the run of replies reads
+                  // as belonging to the row above it.
+                  return row.indented
+                      ? Padding(
+                          padding: const EdgeInsets.only(left: 20),
+                          child: swipeable,
+                        )
+                      : swipeable;
+                },
               ),
             );
           },
@@ -585,7 +620,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       _item('move', Icons.drive_file_move_outline, 'Move all $count to…'),
       _item(
         'read',
-        unread ? Icons.mark_email_read_outlined : Icons.mark_email_unread_outlined,
+        unread
+            ? Icons.mark_email_read_outlined
+            : Icons.mark_email_unread_outlined,
         unread ? 'Mark all $count as read' : 'Mark all $count as unread',
       ),
       _item(
@@ -602,9 +639,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     final notifier = ref.read(messagesProvider(actions.listId).notifier);
     switch (choice) {
       case 'select':
-        ref
-            .read(selectedMessageIdsProvider.notifier)
-            .addAll([for (final m in messages) m.id]);
+        ref.read(selectedMessageIdsProvider.notifier).addAll([
+          for (final m in messages) m.id,
+        ]);
       case 'move':
         await actions.moveWithPrompt(context, messages);
       case 'delete':
@@ -640,7 +677,11 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       _item('reply', Icons.reply, 'Reply'),
       _item('replyAll', Icons.reply_all, 'Reply all'),
       _item('forward', Icons.forward, 'Forward'),
-      _item('forwardAttach', Icons.attach_email_outlined, 'Forward as attachment'),
+      _item(
+        'forwardAttach',
+        Icons.attach_email_outlined,
+        'Forward as attachment',
+      ),
       const PopupMenuDivider(),
       for (final step in steps)
         PopupMenuItem<String>(
@@ -708,8 +749,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         if (context.mounted) {
           ScaffoldMessenger.of(context)
             ..hideCurrentSnackBar()
-            ..showSnackBar(
-                SnackBar(content: Text('${step.name} failed: $e')));
+            ..showSnackBar(SnackBar(content: Text('${step.name} failed: $e')));
         }
       }
       return;
@@ -717,31 +757,49 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
 
     switch (choice) {
       case 'window':
-        final opened =
-            await ref.read(windowOpenerProvider).open(MessageWindow(message));
+        final opened = await ref
+            .read(windowOpenerProvider)
+            .open(MessageWindow(message));
         if (!opened && context.mounted) {
           ScaffoldMessenger.of(context)
             ..hideCurrentSnackBar()
             ..showSnackBar(
-                const SnackBar(content: Text('Could not open a window.')));
+              const SnackBar(content: Text('Could not open a window.')),
+            );
         }
       case 'reply':
-        await openCompose(context, ref,
-            kind: ComposeKind.reply, original: message);
+        await openCompose(
+          context,
+          ref,
+          kind: ComposeKind.reply,
+          original: message,
+        );
       case 'replyAll':
-        await openCompose(context, ref,
-            kind: ComposeKind.replyAll, original: message);
+        await openCompose(
+          context,
+          ref,
+          kind: ComposeKind.replyAll,
+          original: message,
+        );
       case 'forward':
-        await openCompose(context, ref,
-            kind: ComposeKind.forward, original: message);
+        await openCompose(
+          context,
+          ref,
+          kind: ComposeKind.forward,
+          original: message,
+        );
       case 'forwardAttach':
         await forwardAsAttachment(context, ref, [message]);
       case 'copy':
         await copyMessage(ref, context, message);
       case 'event':
-        final body = await ref.read(mailEngineProvider).loadMessageBody(message.id);
+        final body = await ref
+            .read(mailEngineProvider)
+            .loadMessageBody(message.id);
         final notes = body.text.trim();
-        await ref.read(deviceCalendarProvider).insertEvent(
+        await ref
+            .read(deviceCalendarProvider)
+            .insertEvent(
               title: message.subject,
               description:
                   '${notes.length > 2000 ? '${notes.substring(0, 2000)}…' : notes}'
@@ -769,12 +827,15 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
 class _SwipeableRow extends ConsumerWidget {
   const _SwipeableRow({
     super.key,
-    required this.message,
+    required this.messages,
     required this.actions,
     required this.child,
   });
 
-  final MailMessage message;
+  /// What the row stands for: one message, or every message in a
+  /// conversation. A thread's row means the thread — its menu already
+  /// says "Delete all 5" — so a swipe on it means the thread too.
+  final List<MailMessage> messages;
   final MessageActions actions;
   final Widget child;
 
@@ -784,8 +845,10 @@ class _SwipeableRow extends ConsumerWidget {
     final right = settings.swipeRight;
     final left = settings.swipeLeft;
 
-    final direction = switch ((right == SwipeAction.none,
-        left == SwipeAction.none)) {
+    final direction = switch ((
+      right == SwipeAction.none,
+      left == SwipeAction.none,
+    )) {
       (true, true) => DismissDirection.none,
       (true, false) => DismissDirection.endToStart,
       (false, true) => DismissDirection.startToEnd,
@@ -794,11 +857,10 @@ class _SwipeableRow extends ConsumerWidget {
     if (direction == DismissDirection.none) return child;
 
     return Dismissible(
-      key: ValueKey('swipe:${message.id}'),
+      key: ValueKey('swipe:${messages.first.id}'),
       direction: direction,
       background: _backgroundFor(context, right, Alignment.centerLeft),
-      secondaryBackground:
-          _backgroundFor(context, left, Alignment.centerRight),
+      secondaryBackground: _backgroundFor(context, left, Alignment.centerRight),
       confirmDismiss: (dismissed) async {
         await _run(
           context,
@@ -818,33 +880,38 @@ class _SwipeableRow extends ConsumerWidget {
     WidgetRef ref,
     SwipeAction action,
   ) async {
-    final notifier = ref.read(messagesProvider(actions.listId).notifier);
     switch (action) {
       case SwipeAction.none:
         return;
       case SwipeAction.delete:
-        await actions.delete(context, [message]);
+        await actions.delete(context, messages);
       case SwipeAction.move:
-        await actions.moveWithPrompt(context, [message]);
+        await actions.moveWithPrompt(context, messages);
+      // A thread is rarely all one thing: the swipe does what the label
+      // said it would — read if anything is unread, unflag if anything is
+      // flagged — to every message, rather than flipping each on its own
+      // and leaving the row in a state nobody asked for.
       case SwipeAction.toggleRead:
-        await notifier.setRead(message.id, !message.isRead);
+        await actions.setRead(messages, anyUnread(messages));
       case SwipeAction.toggleFlag:
-        await notifier.setFlagged(message.id, !message.isFlagged);
+        await actions.setFlagged(messages, !anyFlagged(messages));
       case SwipeAction.archive:
-        final target = archiveFolderIdFor(ref, message.accountId);
+        final target = archiveFolderIdFor(ref, messages.first.accountId);
         if (target == null) {
           // Gmail has no folder to move into, and an account may simply not
           // have one. Saying so beats a swipe that appears to do nothing.
           if (context.mounted) {
             ScaffoldMessenger.of(context)
               ..hideCurrentSnackBar()
-              ..showSnackBar(const SnackBar(
-                content: Text('This account has no Archive folder.'),
-              ));
+              ..showSnackBar(
+                const SnackBar(
+                  content: Text('This account has no Archive folder.'),
+                ),
+              );
           }
           return;
         }
-        await actions.moveTo(context, [message], target);
+        await actions.moveTo(context, messages, target);
     }
   }
 
@@ -861,10 +928,11 @@ class _SwipeableRow extends ConsumerWidget {
     return _SwipeBackground(
       alignment: alignment,
       color: destructive ? scheme.errorContainer : scheme.primaryContainer,
-      foreground:
-          destructive ? scheme.onErrorContainer : scheme.onPrimaryContainer,
+      foreground: destructive
+          ? scheme.onErrorContainer
+          : scheme.onPrimaryContainer,
       icon: swipeActionIcon(action),
-      label: swipeActionShortLabel(action, message),
+      label: swipeActionShortLabel(action, messages),
     );
   }
 }
@@ -884,28 +952,38 @@ String? archiveFolderIdFor(WidgetRef ref, String accountId) {
 }
 
 IconData swipeActionIcon(SwipeAction action) => switch (action) {
-      SwipeAction.none => Icons.block,
-      SwipeAction.delete => Icons.delete_outline,
-      SwipeAction.move => Icons.drive_file_move_outline,
-      SwipeAction.toggleRead => Icons.mark_email_unread_outlined,
-      SwipeAction.toggleFlag => Icons.flag_outlined,
-      SwipeAction.archive => Icons.archive_outlined,
-    };
+  SwipeAction.none => Icons.block,
+  SwipeAction.delete => Icons.delete_outline,
+  SwipeAction.move => Icons.drive_file_move_outline,
+  SwipeAction.toggleRead => Icons.mark_email_unread_outlined,
+  SwipeAction.toggleFlag => Icons.flag_outlined,
+  SwipeAction.archive => Icons.archive_outlined,
+};
 
 /// The label on the swipe background, which says what will happen to *this*
 /// message rather than naming the setting.
 ///
 /// A toggle that says "Read / unread" while you are dragging is no help; what
 /// you want to know is which of the two you are about to get.
-String swipeActionShortLabel(SwipeAction action, MailMessage message) =>
-    switch (action) {
-      SwipeAction.none => '',
-      SwipeAction.delete => 'Delete',
-      SwipeAction.move => 'Move',
-      SwipeAction.toggleRead => message.isRead ? 'Unread' : 'Read',
-      SwipeAction.toggleFlag => message.isFlagged ? 'Unflag' : 'Flag',
-      SwipeAction.archive => 'Archive',
-    };
+String swipeActionShortLabel(SwipeAction action, List<MailMessage> messages) {
+  final word = switch (action) {
+    SwipeAction.none => '',
+    SwipeAction.delete => 'Delete',
+    SwipeAction.move => 'Move',
+    SwipeAction.toggleRead => anyUnread(messages) ? 'Read' : 'Unread',
+    SwipeAction.toggleFlag => anyFlagged(messages) ? 'Unflag' : 'Flag',
+    SwipeAction.archive => 'Archive',
+  };
+  // "Delete 5" on a thread: what is about to go is not one message, and
+  // the half-finished swipe is the last moment to notice.
+  return messages.length > 1 && word.isNotEmpty
+      ? '$word ${messages.length}'
+      : word;
+}
+
+bool anyUnread(List<MailMessage> messages) => messages.any((m) => !m.isRead);
+
+bool anyFlagged(List<MailMessage> messages) => messages.any((m) => m.isFlagged);
 
 class _SwipeBackground extends StatelessWidget {
   const _SwipeBackground({
@@ -937,9 +1015,7 @@ class _SwipeBackground extends StatelessWidget {
               const SizedBox(width: 8),
               Text(
                 label,
-                style: Theme.of(context)
-                    .textTheme
-                    .labelLarge
+                style: Theme.of(context).textTheme.labelLarge
                     ?.copyWith(color: foreground),
               ),
             ],
@@ -971,8 +1047,11 @@ class _DragFeedback extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.mail_outline, size: 18,
-                    color: scheme.onSurfaceVariant),
+                Icon(
+                  Icons.mail_outline,
+                  size: 18,
+                  color: scheme.onSurfaceVariant,
+                ),
                 const SizedBox(width: 8),
                 Flexible(
                   child: Text(
