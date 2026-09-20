@@ -55,6 +55,7 @@ void main() {
     await uiState.writeIds(UiStateKeys.collapsedAccounts, {'acct-bbb'});
     await uiState.writeOrder(UiStateKeys.order, {'acct-aaa:Work': 2});
     await uiState.writeString(UiStateKeys.display, '{"density":"compact"}');
+    await uiState.writeIds(UiStateKeys.trustedSenders, {'@shop.example'});
   }
 
   group('what goes in the file', () {
@@ -68,6 +69,8 @@ void main() {
       expect(restored.entries[UiStateKeys.favorites], ['acct-aaa:INBOX']);
       expect(restored.entries[UiStateKeys.order], {'acct-aaa:Work': 2});
       expect(restored.entries[UiStateKeys.display], '{"density":"compact"}');
+      expect(restored.entries[UiStateKeys.trustedSenders], ['@shop.example'],
+          reason: 'who may load pictures is a decision worth carrying over');
     });
 
     test('account ids are preserved, because the settings point at them',
@@ -155,9 +158,10 @@ void main() {
         uiState: fresh,
       ).import(SettingsBackup.parse(file));
 
-      expect(report.settingsRestored, 5);
+      expect(report.settingsRestored, 6);
       expect(report.accountsAdded, hasLength(2));
       expect(fresh.readIds(UiStateKeys.favorites), {'acct-aaa:INBOX'});
+      expect(fresh.readIds(UiStateKeys.trustedSenders), {'@shop.example'});
       expect(fresh.readOrder(UiStateKeys.order), {'acct-aaa:Work': 2});
       expect(freshAccounts.read().first.id, 'acct-aaa');
     });

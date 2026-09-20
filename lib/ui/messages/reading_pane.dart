@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/draft.dart';
 import '../../domain/calendar_invite.dart';
+import '../../state/trusted_senders.dart';
+import '../../domain/trusted_senders.dart';
 import '../../state/calendar_providers.dart';
 import 'invite_card.dart';
 import '../../domain/mail_message.dart';
@@ -315,9 +317,9 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
   Future<void> _print(MailMessage message, MailBody body) async {
     final messenger = ScaffoldMessenger.maybeOf(context);
     final html = body.html ?? '';
-    final shown = ref.read(displayProvider).alwaysShowImages
-        ? html
-        : stripRemoteContent(html);
+    // What is on screen is what prints: a trusted sender's pictures are
+    // already loaded, and the rest stay out of the paper too.
+    final shown = _showsImages ? html : stripRemoteContent(html);
     try {
       final ok = await ref.read(messagePrinterProvider).print(
             title: message.subject.trim().isEmpty ? 'Message' : message.subject,
@@ -348,6 +350,15 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     }
   }
 
+  /// Whether this message's pictures load without being asked about: the
+  /// setting for every message, or this sender being trusted.
+  bool get _showsImages =>
+      ref.watch(displayProvider).alwaysShowImages ||
+      isSenderTrusted(
+        ref.watch(trustedSendersProvider),
+        widget.message.from.email,
+      );
+
   Widget _bodyView(ThemeData theme, MailBody b) {
     final html = b.html;
     // The WebView is a platform view: Android has it, the browser preview
@@ -356,7 +367,21 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
       return HtmlBodyView(
         key: _html,
         html: html,
-        showImages: ref.watch(displayProvider).alwaysShowImages,
+        showImages: _showsImages,
+        senderEmail: widget.message.from.email,
+        onTrust: (entry) {
+          ref.read(trustedSendersProvider.notifier).trust(entry);
+          ScaffoldMessenger.maybeOf(context)
+            ?..hideCurrentSnackBar()
+            ..showSnackBar(SnackBar(
+              content: Text('Pictures will load from ${describeTrustEntry(entry).toLowerCase()}'),
+              action: SnackBarAction(
+                label: 'Undo',
+                onPressed: () =>
+                    ref.read(trustedSendersProvider.notifier).forget(entry),
+              ),
+            ));
+        },
       );
     }
     return SingleChildScrollView(

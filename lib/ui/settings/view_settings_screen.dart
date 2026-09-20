@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/display_settings.dart';
 import '../../state/contact_providers.dart';
 import '../../state/display_providers.dart';
+import 'trusted_senders_screen.dart';
+import '../../state/trusted_senders.dart';
 import '../../state/window_providers.dart';
 
 /// Settings, View: where the message being read goes, and how much room each
@@ -129,6 +131,27 @@ class ViewSettingsScreen extends ConsumerWidget {
             'roughly from where. Worth it for mail from shops, where the '
             'pictures are the message; less so for mail you did not ask for.',
             theme: theme,
+          ),
+          Consumer(
+            builder: (context, ref, _) {
+              final trusted = ref.watch(trustedSendersProvider);
+              return ListTile(
+                leading: const Icon(Icons.verified_user_outlined),
+                title: const Text('Senders you trust'),
+                subtitle: Text(
+                  trusted.isEmpty
+                      ? 'Pictures load without asking for nobody yet'
+                      : '${trusted.length} ${trusted.length == 1 ? 'sender loads' : 'senders load'} '
+                          'pictures without asking',
+                ),
+                trailing: const Icon(Icons.chevron_right, size: 20),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const TrustedSendersScreen(),
+                  ),
+                ),
+              );
+            },
           ),
           const Divider(height: 1),
           const _Heading('Conversations'),

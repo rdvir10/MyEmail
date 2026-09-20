@@ -3,6 +3,8 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+
+import '../../domain/trusted_senders.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 /// An HTML mail body in a WebView that is locked down as far as it goes:
@@ -27,14 +29,25 @@ class HtmlBodyView extends StatefulWidget {
     super.key,
     required this.html,
     this.showImages = false,
+    this.senderEmail,
+    this.onTrust,
   });
 
   final String html;
 
   /// Start with the pictures already loaded, from the setting of the same
-  /// name. The bar offering to load them is then never shown, because there
-  /// is nothing left to offer.
+  /// name, or because this sender is trusted. The bar offering to load them
+  /// is then never shown, because there is nothing left to offer.
   final bool showImages;
+
+  /// Who sent it, so the bar can offer to trust them. Null where that is
+  /// not on offer.
+  final String? senderEmail;
+
+  /// Trust this entry from now on: an address, or a domain with a leading
+  /// `@`. The screen above decides what trusting means and where it is
+  /// kept; this only asks.
+  final void Function(String entry)? onTrust;
 
   @override
   State<HtmlBodyView> createState() => HtmlBodyViewState();
@@ -115,6 +128,11 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
     }
   }
 
+  void _show() {
+    setState(() => _showRemote = true);
+    _load();
+  }
+
   void _load() {
     final source =
         _showRemote ? widget.html : stripRemoteContent(widget.html);
@@ -150,12 +168,17 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
                     ),
                   ),
                   TextButton(
-                    onPressed: () {
-                      setState(() => _showRemote = true);
-                      _load();
-                    },
+                    onPressed: _show,
                     child: const Text('Show images'),
                   ),
+                  if (widget.onTrust != null && widget.senderEmail != null)
+                    _TrustButton(
+                      email: widget.senderEmail!,
+                      onTrust: (entry) {
+                        widget.onTrust!(entry);
+                        _show();
+                      },
+                    ),
                 ],
               ),
             ),
@@ -358,3 +381,33 @@ String _extractBody(String html) {
 
 // Kept for callers that only need the detector's pattern.
 bool isRemoteReference(String value) => _remoteRef.hasMatch(value.trim());
+
+/// The menu beside "Show images": trust this sender, or everyone at their
+/// domain, and load the pictures now as proof it took.
+class _TrustButton extends StatelessWidget {
+  const _TrustButton({required this.email, required this.onTrust});
+
+  final String email;
+  final void Function(String entry) onTrust;
+
+  @override
+  Widget build(BuildContext context) {
+    final domain = trustDomain(email);
+    return PopupMenuButton<String>(
+      tooltip: 'Always show pictures from…',
+      icon: const Icon(Icons.more_vert, size: 20),
+      onSelected: onTrust,
+      itemBuilder: (context) => [
+        PopupMenuItem(
+          value: trustAddress(email),
+          child: Text('Always show from $email'),
+        ),
+        if (domain != null)
+          PopupMenuItem(
+            value: domain,
+            child: Text('Always show from everyone at ${domain.substring(1)}'),
+          ),
+      ],
+    );
+  }
+}
