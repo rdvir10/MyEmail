@@ -13,9 +13,11 @@
     android:gravity="center"
     android:padding="2dp">
 
+    <!-- Wraps the icon, whatever size it is drawn at, so the badges sit on
+         its corners rather than on a box of their own. -->
     <FrameLayout
-        android:layout_width="52dp"
-        android:layout_height="52dp">
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content">
 
         <!-- Two layers rather than the app icon itself: the tile is tinted
              to the colour this widget was given, and the dart is drawn over

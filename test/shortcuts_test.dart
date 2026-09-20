@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/conversations.dart';
 import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/state/folder_tree.dart';
 import 'package:myemail/state/message_providers.dart';
@@ -11,6 +12,7 @@ import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/html_body_view.dart';
+import 'package:myemail/ui/messages/message_list_pane.dart';
 import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 import 'package:myemail/ui/shell/app_shortcuts.dart';
@@ -216,6 +218,77 @@ void main() {
       expect(selected(c), ids[10]);
       await press(tester, LogicalKeyboardKey.pageUp);
       expect(selected(c), ids[0]);
+    });
+
+    testWidgets('the selected row stays on screen as the keys move it',
+        (tester) async {
+      // Twenty rows down is past the bottom of a 900 px screen. A selection
+      // that walks off the screen looks like the keys have stopped working.
+      final c = await pump(tester);
+      final ids = listIds(c);
+      final list = tester.getRect(find.byType(MessageListPane));
+
+      for (var i = 0; i < 20; i++) {
+        await press(tester, LogicalKeyboardKey.arrowDown);
+      }
+      expect(selected(c), ids[20]);
+      final row = tester.getRect(find.byKey(ValueKey('tile:${ids[20]}')));
+      expect(row.bottom, lessThanOrEqualTo(list.bottom + 1));
+      expect(row.top, greaterThanOrEqualTo(list.top));
+
+      await press(tester, LogicalKeyboardKey.end);
+      final last = tester.getRect(find.byKey(ValueKey('tile:${ids.last}')));
+      expect(last.bottom, lessThanOrEqualTo(list.bottom + 1),
+          reason: 'a row the list had not built yet is jumped to');
+
+      await press(tester, LogicalKeyboardKey.home);
+      final first = tester.getRect(find.byKey(ValueKey('tile:${ids.first}')));
+      expect(first.top, greaterThanOrEqualTo(list.top));
+    });
+
+    testWidgets('the arrows walk the rows, not the messages folded away',
+        (tester) async {
+      final c = await pump(tester);
+      c.read(displayProvider.notifier).setConversations(true);
+      await tester.pumpAndSettle();
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+      List<String> rows() => visibleMessages(
+            c.read(messagesProvider(folder)).value!,
+            conversations: true,
+            expandedIds: c.read(expandedConversationsProvider),
+          ).map((m) => m.id).toList();
+
+      await press(tester, LogicalKeyboardKey.home);
+      for (var i = 1; i < 15; i++) {
+        await press(tester, LogicalKeyboardKey.arrowDown);
+        expect(selected(c), rows()[i], reason: 'row $i');
+      }
+    });
+
+    testWidgets('closing a thread from inside it, Down moves on from it',
+        (tester) async {
+      final c = await pump(tester);
+      c.read(displayProvider.notifier).setConversations(true);
+      await tester.pumpAndSettle();
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+      final all = c.read(messagesProvider(folder)).value!;
+      final thread = groupIntoConversations(all).firstWhere((t) => t.isThread);
+      // Land on the thread's row, open it, step onto its second message.
+      c.read(selectedMessageIdProvider.notifier).select(thread.newest.id);
+      await tester.pumpAndSettle();
+      await press(tester, LogicalKeyboardKey.arrowRight);
+      await press(tester, LogicalKeyboardKey.arrowDown);
+      expect(selected(c), thread.messages.reversed.elementAt(1).id);
+
+      await press(tester, LogicalKeyboardKey.arrowLeft);
+      await press(tester, LogicalKeyboardKey.arrowDown);
+
+      final rows = visibleMessages(all,
+              conversations: true, expandedIds: const {})
+          .map((m) => m.id)
+          .toList();
+      expect(selected(c), rows[rows.indexOf(thread.newest.id) + 1],
+          reason: 'the row after the thread, not the top of the list');
     });
 
     testWidgets('Shift+Down ticks a run', (tester) async {

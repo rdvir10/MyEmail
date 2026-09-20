@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -231,7 +232,8 @@ void main() {
 
       final tile =
           tester.widget<MessageTile>(find.byType(MessageTile).first);
-      await tester.longPress(find.byType(MessageTile).first);
+      // The menu is on the right button; a long press ticks instead.
+      await tester.tap(find.byType(MessageTile).first, buttons: kSecondaryButton);
       await tester.pumpAndSettle();
       expect(find.text('Flag it'), findsOneWidget);
 

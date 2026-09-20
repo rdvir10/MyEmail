@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/display_settings.dart';
+import '../../domain/draft.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_message.dart';
 import '../../state/folder_drag.dart';
@@ -48,6 +49,77 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
   /// The list's own box. Selecting what is on screen means measuring rows
   /// against something, and this is the something.
   final _listKey = GlobalKey();
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// Bring the selected row on screen.
+  ///
+  /// The arrow keys and Ctrl+. move the selection without touching the
+  /// list, and a selection that has walked off the bottom looks like the
+  /// keys have stopped working. A row the list has built is scrolled just
+  /// far enough to show it; one it has not (End, Page Down: too far from
+  /// what is on screen) gets a jump to about where it is, then a second
+  /// look once the list has built that far.
+  void _reveal(String id, {bool secondLook = false}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      final row = _rowFor(id);
+      if (row != null) {
+        Scrollable.ensureVisible(
+          row,
+          alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+        );
+        Scrollable.ensureVisible(
+          row,
+          alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtStart,
+        );
+        return;
+      }
+      if (secondLook) return;
+      final folderId = ref.read(effectiveSelectedFolderIdProvider);
+      if (folderId == null) return;
+      final rows = visibleMessages(
+        ref.read(messagesProvider(folderId)).value ?? const [],
+        conversations: ref.read(displayProvider).conversations,
+        expandedIds: ref.read(expandedConversationsProvider),
+      );
+      final at = rows.indexWhere((m) => m.id == id);
+      if (at < 0 || rows.length < 2) return;
+      final position = _scroll.position;
+      position.jumpTo(
+        (position.maxScrollExtent * at / (rows.length - 1))
+            .clamp(position.minScrollExtent, position.maxScrollExtent),
+      );
+      _reveal(id, secondLook: true);
+    });
+  }
+
+  /// The built row showing [id]: its own tile, or the closed thread it is
+  /// folded into.
+  BuildContext? _rowFor(String id) {
+    BuildContext? found;
+    void visit(Element e) {
+      if (found != null) return;
+      final w = e.widget;
+      if (w is MessageTile && w.message.id == id) {
+        found = e;
+      } else if (w is ConversationTile &&
+          !w.isExpanded &&
+          w.conversation.messages.any((m) => m.id == id)) {
+        found = e;
+      } else {
+        e.visitChildren(visit);
+      }
+    }
+
+    _listKey.currentContext?.visitChildElements(visit);
+    return found;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -58,6 +130,18 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         child: Text('Select a folder', style: theme.textTheme.bodySmall),
       );
     }
+    ref.listen<String?>(selectedMessageIdProvider, (_, id) {
+      if (id != null) _reveal(id);
+    });
+    // A page arriving under the list can push the selected row about: the
+    // unified Inbox merges the new page by date, and rows from the other
+    // account land above it. Keep it on screen through that.
+    ref.listen<AsyncValue<List<MailMessage>>>(messagesProvider(folderId),
+        (prev, next) {
+      final id = ref.read(selectedMessageIdProvider);
+      if (id == null || !next.hasValue) return;
+      if (prev?.value?.length != next.value?.length) _reveal(id);
+    });
 
     final folder = ref.watch(folderIndexProvider)[folderId];
     final isUnified = folderId == kUnifiedInboxId;
@@ -232,6 +316,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
               onRefresh: () => _pullToSync(context, folderId),
               child: ListView.separated(
               key: _listKey,
+              controller: _scroll,
               itemCount: rows.length + (hasMore ? 1 : 0),
               separatorBuilder: (_, _) => const Divider(height: 1, indent: 28),
               itemBuilder: (context, i) {
@@ -263,11 +348,17 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     onTap: () => ref
                         .read(expandedConversationsProvider.notifier)
                         .toggle(conversation.id),
-                    onLongPress: () => _showConversationMenu(
+                    // A long press ticks the thread, the way it ticks a
+                    // message. The menu is on the right button.
+                    onLongPress: () => ref
+                        .read(selectedMessageIdsProvider.notifier)
+                        .addAll(ids),
+                    onContextMenu: (at) => _showConversationMenu(
                       context,
                       ref,
                       actions,
                       conversation,
+                      at,
                     ),
                   );
                 }
@@ -305,7 +396,14 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     }
                     widget.onOpen(m);
                   },
-                  onLongPress: () => _showMessageMenu(context, ref, actions, m),
+                  // A long press ticks: it is how selecting starts on a
+                  // screen with no right button. Adds rather than starts,
+                  // so a long press mid-selection takes one more.
+                  onLongPress: () => ref
+                      .read(selectedMessageIdsProvider.notifier)
+                      .addAll([m.id]),
+                  onContextMenu: (at) =>
+                      _showMessageMenu(context, ref, actions, m, at),
                   key: ValueKey('tile:${m.id}'),
                 );
                 final swipeable = _SwipeableRow(
@@ -373,6 +471,46 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     return rows;
   }
 
+  /// A menu at the pointer, which is where a right click puts one.
+  Future<String?> _menuAt(
+    BuildContext context,
+    Offset at,
+    List<PopupMenuEntry<String>> items,
+  ) {
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    return showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        at & const Size(1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: items,
+    );
+  }
+
+  static PopupMenuItem<String> _item(
+    String value,
+    IconData icon,
+    String text, {
+    Color? color,
+  }) {
+    return PopupMenuItem<String>(
+      value: value,
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: color),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              text,
+              style: color == null ? null : TextStyle(color: color),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// The whole thread at once.
   ///
   /// Every entry says how many messages it is about. "Delete" on a row that
@@ -383,75 +521,30 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     WidgetRef ref,
     MessageActions actions,
     Conversation conversation,
+    Offset at,
   ) async {
     final count = conversation.length;
     final unread = conversation.hasUnread;
     final flagged = conversation.isFlagged;
+    final error = Theme.of(context).colorScheme.error;
 
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (_) => SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                dense: true,
-                title: Text(
-                  conversation.subject,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                subtitle: Text('$count messages'),
-              ),
-              const Divider(height: 1),
-              // First, as on a message: the way into ticking several, and
-              // a thread is several already.
-              ListTile(
-                leading: const Icon(Icons.checklist),
-                title: const Text('Select'),
-                subtitle: Text('Tick all $count, then add more'),
-                onTap: () => Navigator.of(context).pop('select'),
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.drive_file_move_outline),
-                title: Text('Move all $count to…'),
-                onTap: () => Navigator.of(context).pop('move'),
-              ),
-              ListTile(
-                leading: Icon(
-                  unread
-                      ? Icons.mark_email_read_outlined
-                      : Icons.mark_email_unread_outlined,
-                ),
-                title: Text(unread
-                    ? 'Mark all $count as read'
-                    : 'Mark all $count as unread'),
-                onTap: () => Navigator.of(context).pop('read'),
-              ),
-              ListTile(
-                leading: Icon(flagged ? Icons.flag : Icons.flag_outlined),
-                title: Text(flagged ? 'Remove flags' : 'Flag all $count'),
-                onTap: () => Navigator.of(context).pop('flag'),
-              ),
-              ListTile(
-                leading: Icon(
-                  Icons.delete_outline,
-                  color: Theme.of(context).colorScheme.error,
-                ),
-                title: Text('Delete all $count'),
-                onTap: () => Navigator.of(context).pop('delete'),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        ),
+    final choice = await _menuAt(context, at, [
+      _item('select', Icons.checklist, 'Select all $count'),
+      const PopupMenuDivider(),
+      _item('move', Icons.drive_file_move_outline, 'Move all $count to…'),
+      _item(
+        'read',
+        unread ? Icons.mark_email_read_outlined : Icons.mark_email_unread_outlined,
+        unread ? 'Mark all $count as read' : 'Mark all $count as unread',
       ),
-    );
+      _item(
+        'flag',
+        flagged ? Icons.flag : Icons.flag_outlined,
+        flagged ? 'Remove flags' : 'Flag all $count',
+      ),
+      const PopupMenuDivider(),
+      _item('delete', Icons.delete_outline, 'Delete all $count', color: error),
+    ]);
     if (choice == null || !context.mounted) return;
 
     final messages = conversation.messages;
@@ -476,78 +569,63 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     }
   }
 
+  /// Everything that can be done to one message, from a right click.
   Future<void> _showMessageMenu(
     BuildContext context,
     WidgetRef ref,
     MessageActions actions,
     MailMessage message,
+    Offset at,
   ) async {
     final steps = ref.read(quickStepsProvider);
     final folderIndex = ref.read(folderIndexProvider);
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (_) => SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+    final error = Theme.of(context).colorScheme.error;
+    final choice = await _menuAt(context, at, [
+      _item('reply', Icons.reply, 'Reply'),
+      _item('replyAll', Icons.reply_all, 'Reply all'),
+      _item('forward', Icons.forward, 'Forward'),
+      const PopupMenuDivider(),
+      for (final step in steps)
+        PopupMenuItem<String>(
+          value: 'qs:${step.id}',
+          child: Row(
             children: [
-            for (final step in steps)
-              ListTile(
-                leading: Icon(iconForQuickStep(step)),
-                title: Text(step.name),
-                subtitle: Text(describeQuickStep(step, folderIndex)),
-                onTap: () => Navigator.of(context).pop('qs:${step.id}'),
+              Icon(iconForQuickStep(step), size: 20),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(step.name),
+                    Text(
+                      describeQuickStep(step, folderIndex),
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
               ),
-            if (steps.isNotEmpty) const Divider(height: 1),
-            // First, because it is the only entry here that acts on more than
-            // this one message, and burying it under the single-message
-            // actions makes it read as one of them.
-            ListTile(
-              leading: const Icon(Icons.checklist),
-              title: const Text('Select'),
-              subtitle: const Text('Tick messages to act on several at once'),
-              onTap: () => Navigator.of(context).pop('select'),
-            ),
-            const Divider(height: 1),
-            ListTile(
-              leading: const Icon(Icons.drive_file_move_outline),
-              title: const Text('Move to…'),
-              onTap: () => Navigator.of(context).pop('move'),
-            ),
-            ListTile(
-              leading: Icon(
-                message.isRead
-                    ? Icons.mark_email_unread_outlined
-                    : Icons.mark_email_read_outlined,
-              ),
-              title: Text(
-                message.isRead ? 'Mark as unread' : 'Mark as read',
-              ),
-              onTap: () => Navigator.of(context).pop('read'),
-            ),
-            ListTile(
-              leading: Icon(
-                message.isFlagged ? Icons.flag : Icons.flag_outlined,
-              ),
-              title: Text(message.isFlagged ? 'Remove flag' : 'Flag'),
-              onTap: () => Navigator.of(context).pop('flag'),
-            ),
-            ListTile(
-              leading: Icon(
-                Icons.delete_outline,
-                color: Theme.of(context).colorScheme.error,
-              ),
-              title: const Text('Delete'),
-              onTap: () => Navigator.of(context).pop('delete'),
-            ),
-            const SizedBox(height: 8),
             ],
           ),
         ),
+      if (steps.isNotEmpty) const PopupMenuDivider(),
+      _item('select', Icons.checklist, 'Select'),
+      _item('move', Icons.drive_file_move_outline, 'Move to…'),
+      _item(
+        'read',
+        message.isRead
+            ? Icons.mark_email_unread_outlined
+            : Icons.mark_email_read_outlined,
+        message.isRead ? 'Mark as unread' : 'Mark as read',
       ),
-    );
+      _item(
+        'flag',
+        message.isFlagged ? Icons.flag : Icons.flag_outlined,
+        message.isFlagged ? 'Remove flag' : 'Flag',
+      ),
+      const PopupMenuDivider(),
+      _item('delete', Icons.delete_outline, 'Delete', color: error),
+    ]);
     if (choice == null || !context.mounted) return;
     final notifier = ref.read(messagesProvider(actions.listId).notifier);
 
@@ -578,8 +656,17 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     }
 
     switch (choice) {
+      case 'reply':
+        await openCompose(context, ref,
+            kind: ComposeKind.reply, original: message);
+      case 'replyAll':
+        await openCompose(context, ref,
+            kind: ComposeKind.replyAll, original: message);
+      case 'forward':
+        await openCompose(context, ref,
+            kind: ComposeKind.forward, original: message);
       case 'select':
-        ref.read(selectedMessageIdsProvider.notifier).start(message.id);
+        ref.read(selectedMessageIdsProvider.notifier).addAll([message.id]);
       case 'move':
         await actions.moveWithPrompt(context, [message]);
       case 'read':

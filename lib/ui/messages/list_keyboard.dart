@@ -54,8 +54,30 @@ class MessageListKeyboard extends ConsumerStatefulWidget {
 }
 
 class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
-  List<MailMessage> get _messages =>
+  List<MailMessage> get _all =>
       ref.read(messagesProvider(widget.listId)).value ?? const [];
+
+  /// The rows on screen, in order: what the arrows move through. A message
+  /// folded into a closed thread is not one of them.
+  List<MailMessage> get _messages => visibleMessages(
+        _all,
+        conversations: ref.read(displayProvider).conversations,
+        expandedIds: ref.read(expandedConversationsProvider),
+      );
+
+  /// Where the selection is, as a row: itself, or the row of the thread
+  /// it is folded into, so closing a thread and pressing Down moves on
+  /// from the thread rather than from the top of the list.
+  String? get _selectedRow {
+    final id = _selected;
+    if (id == null) return null;
+    final rows = _messages;
+    if (rows.any((m) => m.id == id)) return id;
+    for (final c in groupIntoConversations(_all)) {
+      if (c.messages.any((m) => m.id == id)) return c.newest.id;
+    }
+    return id;
+  }
 
   String? get _selected => ref.read(selectedMessageIdProvider);
 
@@ -76,7 +98,7 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
   }
 
   void _move(int delta) {
-    final next = neighbourOf(_messages, _selected, delta);
+    final next = neighbourOf(_messages, _selectedRow, delta);
     if (next == null) return;
     _goTo(next);
   }
@@ -103,7 +125,7 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
   void _setThreadOpen(bool open) {
     final id = _selected;
     if (id == null || !ref.read(displayProvider).conversations) return;
-    for (final c in groupIntoConversations(_messages)) {
+    for (final c in groupIntoConversations(_all)) {
       if (!c.isThread || !c.messages.any((m) => m.id == id)) continue;
       final expanded = ref.read(expandedConversationsProvider);
       if (expanded.contains(c.id) != open) {

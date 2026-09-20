@@ -65,6 +65,26 @@ class Conversation {
 /// back oldest first; the conversations themselves are ordered by their newest
 /// message, so a thread that someone has just replied to rises to the top the
 /// way it does in every mail client.
+/// The messages the list shows as rows, top to bottom, which is the order
+/// the arrow keys walk. With conversations off it is the list itself. On, a
+/// closed thread is one row, stood for by its newest message, and an open
+/// one is its messages newest first. The messages folded into a closed
+/// thread are not there: landing on one would select a row nobody can see.
+List<MailMessage> visibleMessages(
+  List<MailMessage> messages, {
+  required bool conversations,
+  required Set<String> expandedIds,
+}) {
+  if (!conversations) return messages;
+  return [
+    for (final c in groupIntoConversations(messages))
+      if (!c.isThread || !expandedIds.contains(c.id))
+        c.newest
+      else
+        ...c.messages.reversed,
+  ];
+}
+
 List<Conversation> groupIntoConversations(List<MailMessage> messages) {
   if (messages.isEmpty) return const [];
 

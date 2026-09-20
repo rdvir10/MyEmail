@@ -1,7 +1,12 @@
 package com.rdvir.mailtree
 
+import android.app.ActivityManager
 import android.appwidget.AppWidgetManager
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.AdaptiveIconDrawable
+import android.graphics.drawable.ColorDrawable
 import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Build
@@ -56,8 +61,19 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
         widgetData: SharedPreferences,
     ) {
         val folderId = widgetData.getString("widget.$widgetId.folder", null)
+        val colour = number(widgetData, "widget.$widgetId.colour", DEFAULT_COLOUR)
         val views = RemoteViews(context.packageName, R.layout.mailbox_count_widget).apply {
-            sizeToCell(appWidgetManager.getAppWidgetOptions(widgetId))
+            val options = appWidgetManager.getAppWidgetOptions(widgetId)
+            // Drawn the way the launcher draws the app's own icon, at the
+            // size it draws it, so the widget sits in a row of icons as
+            // one of them. Older systems get the tinted tile instead.
+            val iconDp = paintAsAppIcon(context, options, colour)
+            if (iconDp != null) {
+                sizeTo(context, iconDp)
+            } else {
+                setInt(R.id.mailbox_widget_tile, "setColorFilter", colour)
+                sizeToCell(options)
+            }
 
             // Tapping opens the folder this widget is counting, not just
             // the app. Two widgets on two folders get two intents: the
@@ -75,12 +91,6 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
                             .build()
                     },
                 ),
-            )
-
-            setInt(
-                R.id.mailbox_widget_tile,
-                "setColorFilter",
-                number(widgetData, "widget.$widgetId.colour", DEFAULT_COLOUR),
             )
 
             if (folderId == null) {
@@ -150,7 +160,57 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
             setViewLayoutWidth(id, icon, TypedValue.COMPLEX_UNIT_DIP)
             setViewLayoutHeight(id, icon, TypedValue.COMPLEX_UNIT_DIP)
         }
+        sizeBadges(icon)
+    }
 
+    /**
+     * The icon as the launcher would draw the app's own: the app's
+     * foreground over a plain background of the chosen colour, cut to the
+     * system's icon shape by AdaptiveIconDrawable, at the size the
+     * launcher uses for icons. Returns that size in dp, or null where
+     * adaptive icons do not exist (before Android 8), in which case the
+     * caller falls back to the tinted tile.
+     *
+     * A bitmap rather than the drawable itself because RemoteViews can
+     * carry a bitmap and cannot carry a drawable built at run time; and
+     * the colour is chosen per widget, so the app's real icon (one colour
+     * baked in) is no use.
+     */
+    private fun RemoteViews.paintAsAppIcon(context: Context, options: Bundle, colour: Int): Float? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
+        val foreground = context.getDrawable(R.drawable.ic_launcher_foreground) ?: return null
+        val density = context.resources.displayMetrics.density
+        val launcher = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        var px = launcher?.launcherLargeIconSize ?: (56 * density).toInt()
+        // Never wider than the cell the launcher gave, less room for the
+        // name under it.
+        val width = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0)
+        val height = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0)
+        if (width > 0 && height > 0) {
+            px = minOf(px, (minOf(width.toFloat(), height * 0.72f) * density).toInt())
+        }
+        px = px.coerceAtLeast((40 * density).toInt())
+
+        val bitmap = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
+        AdaptiveIconDrawable(ColorDrawable(colour), foreground).apply {
+            setBounds(0, 0, px, px)
+            draw(Canvas(bitmap))
+        }
+        setImageViewBitmap(R.id.mailbox_widget_tile, bitmap)
+        setViewVisibility(R.id.mailbox_widget_glyph, View.GONE)
+        return px / density
+    }
+
+    /** The icon view at [icon] dp, and the badges and name to match. */
+    private fun RemoteViews.sizeTo(context: Context, icon: Float) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        setViewLayoutWidth(R.id.mailbox_widget_tile, icon, TypedValue.COMPLEX_UNIT_DIP)
+        setViewLayoutHeight(R.id.mailbox_widget_tile, icon, TypedValue.COMPLEX_UNIT_DIP)
+        sizeBadges(icon)
+    }
+
+    private fun RemoteViews.sizeBadges(icon: Float) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
         // Height only. The width stays as it was, because a badge has to be
         // able to stretch for "99+" and a square one would cut it off.
         val badge = (icon * 0.30f).coerceIn(20f, 30f)

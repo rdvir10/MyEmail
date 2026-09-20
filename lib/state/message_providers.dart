@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../domain/folder_role.dart';
+import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
 import 'folder_tree.dart';
 import 'providers.dart';
@@ -36,20 +37,22 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       for (final id in await _folderIds()) engine.loadMessages(id, limit: limit),
     ]);
     if (lists.length == 1) return lists.single;
-    return [for (final l in lists) ...l]
-      ..sort((a, b) => b.date.compareTo(a.date));
+    return [for (final l in lists) ...l]..sort(newestFirst);
   }
 
   /// The server folders behind this list: one, or every Inbox for the
   /// unified one.
+  ///
+  /// Watched for the set of Inboxes only. The folders provider changes
+  /// every time an unread count does — marking one message read refreshes
+  /// it — and a list that rebuilt on that would resync every account and
+  /// redraw itself on each arrow key press, which is what it used to do.
   Future<List<String>> _folderIds() async {
     if (folderId != kUnifiedInboxId) return [folderId];
-    final folders = await ref.watch(foldersProvider.future);
-    return [
-      for (final list in folders.values)
-        for (final f in list)
-          if (f.role == FolderRole.inbox) f.id,
-    ];
+    final joined = await ref.watch(
+      foldersProvider.selectAsync((folders) => inboxIdsOf(folders).join('\n')),
+    );
+    return joined.isEmpty ? const [] : joined.split('\n');
   }
 
   /// The next page of older messages, added under the ones shown.
@@ -87,9 +90,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
         return;
       }
       final merged = [...current, ...fresh];
-      if (folderId == kUnifiedInboxId) {
-        merged.sort((a, b) => b.date.compareTo(a.date));
-      }
+      if (folderId == kUnifiedInboxId) merged.sort(newestFirst);
       state = AsyncData(merged);
       depth.end(grew: true);
     } catch (_) {
@@ -198,6 +199,25 @@ final messagesProvider =
     AsyncNotifierProvider.family<Messages, List<MailMessage>, String>(
   Messages.new,
 );
+
+/// Every account's Inbox, in account order.
+List<String> inboxIdsOf(Map<String, List<MailFolder>> folders) => [
+      for (final list in folders.values)
+        for (final f in list)
+          if (f.role == FolderRole.inbox) f.id,
+    ];
+
+/// Newest first, and a fixed order among messages with the same date, so
+/// two lists built from the same messages come out the same. Dart's sort
+/// is not stable, and two accounts' sample mail shares timestamps: sorted
+/// on date alone, rows swapped places on every rebuild.
+int newestFirst(MailMessage a, MailMessage b) {
+  final byDate = b.date.compareTo(a.date);
+  if (byDate != 0) return byDate;
+  final byAccount = a.accountId.compareTo(b.accountId);
+  if (byAccount != 0) return byAccount;
+  return b.uid.compareTo(a.uid);
+}
 
 /// How far down a folder's list has been paged.
 ///

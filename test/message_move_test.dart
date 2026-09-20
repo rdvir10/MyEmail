@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -284,24 +285,28 @@ void main() {
       expect(find.text('RECENT'), findsOneWidget);
     });
 
-    testWidgets('the long-press menu offers move, flag, read and delete',
+    testWidgets('the right-click menu offers reply, move, flag, read and delete',
         (tester) async {
       wide(tester);
       await tester.pumpWidget(app());
       await tester.pumpAndSettle();
 
-      await tester.longPress(find.byType(MessageTile).first);
+      await tester.tap(find.byType(MessageTile).first, buttons: kSecondaryButton);
       await tester.pumpAndSettle();
 
-      // Scoped to the sheet: the ribbon above the panes carries its own
-      // Delete and Move, so a bare find.text would match either.
-      final sheet = find.byType(BottomSheet);
-      expect(find.descendant(of: sheet, matching: find.text('Move to…')),
-          findsOneWidget);
-      expect(find.descendant(of: sheet, matching: find.text('Delete')),
-          findsOneWidget);
-      expect(find.descendant(of: sheet, matching: find.textContaining('Mark as')),
-          findsOneWidget);
+      // Scoped to the menu's entries: the ribbon above the panes carries
+      // its own Delete and Move, so a bare find.text would match either.
+      Finder entry(String text) => find.widgetWithText(PopupMenuItem<String>, text);
+      for (final text in ['Reply', 'Reply all', 'Forward', 'Move to…', 'Delete']) {
+        expect(entry(text), findsOneWidget, reason: text);
+      }
+      expect(
+        find.descendant(
+          of: find.byType(PopupMenuItem<String>),
+          matching: find.textContaining('Mark as'),
+        ),
+        findsOneWidget,
+      );
     });
   });
 }

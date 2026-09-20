@@ -22,7 +22,11 @@ class MessageTile extends StatelessWidget {
     this.density = ListDensity.cozy,
     this.isTicked,
     this.onTicked,
+    this.onContextMenu,
   });
+
+  /// A right click, with where it landed, so a menu can open there.
+  final void Function(Offset at)? onContextMenu;
 
   /// Whether this row is ticked, or null when the list is not selecting.
   ///
@@ -67,6 +71,9 @@ class MessageTile extends StatelessWidget {
           // with it, which is not what a tap means once checkboxes are up.
           onTap: isSelecting ? () => onTicked?.call(!isTicked!) : onTap,
           onLongPress: onLongPress,
+          onSecondaryTapUp: onContextMenu == null
+              ? null
+              : (d) => onContextMenu!(d.globalPosition),
           child: Padding(
             padding: EdgeInsets.fromLTRB(
               8,

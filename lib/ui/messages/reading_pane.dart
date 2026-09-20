@@ -13,6 +13,7 @@ import 'attachment_bar.dart';
 import 'date_format.dart';
 import '../shell/pane_focus.dart';
 import 'html_body_view.dart';
+import 'message_actions.dart';
 import 'message_source.dart';
 
 /// One open message: a fixed header with actions, then the body.
@@ -155,6 +156,17 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     }
   }
 
+  /// Delete, from the header. On a screen of its own the screen goes too:
+  /// a page showing a message that is no longer anywhere is a lie.
+  Future<void> _delete() async {
+    final listId = _listId;
+    if (listId == null) return;
+    final ownScreen = widget.onPopOut == null;
+    final navigator = Navigator.of(context);
+    await MessageActions(ref, listId).delete(context, [widget.message]);
+    if (ownScreen) navigator.maybePop();
+  }
+
   Future<void> _act(Future<void> Function(Messages notifier) op) async {
     final listId = _listId;
     if (listId == null) return;
@@ -195,6 +207,11 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
           child: _Header(
             message: message,
             onPopOut: widget.onPopOut,
+            onDelete: _delete,
+            // A phone's width, the shell's medium breakpoint: the header
+            // has room for one of Flag and Delete, and Delete is the one
+            // reached for more.
+            compact: MediaQuery.sizeOf(context).width < 600,
             onToggleFlag: () =>
                 _act((n) => n.setFlagged(message.id, !message.isFlagged)),
             onToggleRead: () =>
@@ -282,12 +299,19 @@ class _Header extends StatelessWidget {
     required this.onToggleFlag,
     required this.onToggleRead,
     required this.onCompose,
+    required this.onDelete,
     this.onPopOut,
+    this.compact = false,
   });
 
   final MailMessage message;
   final VoidCallback onToggleFlag;
   final VoidCallback onToggleRead;
+  final VoidCallback onDelete;
+
+  /// Narrow: Delete takes the flag's place in the row and the flag moves
+  /// into the menu.
+  final bool compact;
   final void Function(ComposeKind kind) onCompose;
   final VoidCallback? onPopOut;
 
@@ -335,14 +359,15 @@ class _Header extends StatelessWidget {
               icon: const Icon(Icons.forward),
               onPressed: () => onCompose(ComposeKind.forward),
             ),
-            IconButton(
-              tooltip: message.isFlagged ? 'Remove flag' : 'Flag',
-              icon: Icon(
-                message.isFlagged ? Icons.flag : Icons.flag_outlined,
-                color: message.isFlagged ? scheme.error : null,
+            if (!compact)
+              IconButton(
+                tooltip: message.isFlagged ? 'Remove flag' : 'Flag',
+                icon: Icon(
+                  message.isFlagged ? Icons.flag : Icons.flag_outlined,
+                  color: message.isFlagged ? scheme.error : null,
+                ),
+                onPressed: onToggleFlag,
               ),
-              onPressed: onToggleFlag,
-            ),
             IconButton(
               tooltip: message.isRead ? 'Mark as unread' : 'Mark as read',
               icon: Icon(
@@ -352,14 +377,27 @@ class _Header extends StatelessWidget {
               ),
               onPressed: onToggleRead,
             ),
+            IconButton(
+              tooltip: 'Delete',
+              icon: const Icon(Icons.delete_outline),
+              onPressed: onDelete,
+            ),
             // The things that are neither reading nor replying live behind
-            // one button, rather than adding a seventh icon to a row that is
+            // one button, rather than adding another icon to a row that is
             // already the width of the pane.
             PopupMenuButton<String>(
               tooltip: 'More',
               icon: const Icon(Icons.more_vert),
-              onSelected: (_) => onSaveSource?.call(),
+              onSelected: (value) => switch (value) {
+                'flag' => onToggleFlag(),
+                _ => onSaveSource?.call(),
+              },
               itemBuilder: (context) => [
+                if (compact)
+                  PopupMenuItem(
+                    value: 'flag',
+                    child: Text(message.isFlagged ? 'Remove flag' : 'Flag'),
+                  ),
                 PopupMenuItem(
                   value: 'source',
                   enabled: onSaveSource != null,

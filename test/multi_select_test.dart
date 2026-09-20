@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -214,13 +215,33 @@ void main() {
     });
   });
 
-  testWidgets('the long-press menu offers to start selecting', (tester) async {
-    await pump(tester);
+  testWidgets('a long press ticks the message, and one more', (tester) async {
+    // The way selecting starts on a screen with no right button.
+    final c = await pump(tester);
+    final tiles = tester.widgetList<MessageTile>(find.byType(MessageTile));
+    final first = tiles.first.message.id;
+    final second = tiles.elementAt(1).message.id;
 
     await tester.longPress(find.byType(MessageTile).first);
     await tester.pumpAndSettle();
+    expect(c.read(selectedMessageIdsProvider), {first});
+    expect(find.byType(Checkbox), findsWidgets);
 
-    expect(find.text('Select'), findsOneWidget);
+    await tester.longPress(find.byKey(ValueKey('tile:$second')));
+    await tester.pumpAndSettle();
+    expect(c.read(selectedMessageIdsProvider), {first, second});
+  });
+
+  testWidgets('the right-click menu offers Select too', (tester) async {
+    final c = await pump(tester);
+    final first = tester.widget<MessageTile>(find.byType(MessageTile).first);
+
+    await tester.tap(find.byType(MessageTile).first, buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Select'));
+    await tester.pumpAndSettle();
+
+    expect(c.read(selectedMessageIdsProvider), {first.message.id});
   });
 
   testWidgets('acting on the selection clears it', (tester) async {
@@ -307,8 +328,7 @@ void main() {
       );
     });
 
-    testWidgets('its long-press menu offers Select, which ticks the thread',
-        (tester) async {
+    testWidgets('a long press ticks the whole thread', (tester) async {
       final c = await pump(tester);
       c.read(displayProvider.notifier).setConversations(true);
       await tester.pumpAndSettle();
@@ -320,15 +340,37 @@ void main() {
         find.byKey(ValueKey('thread:${thread.conversation.id}')),
       );
       await tester.pumpAndSettle();
-      expect(find.text('Select'), findsOneWidget);
-      await tester.tap(find.text('Select'));
-      await tester.pumpAndSettle();
 
       expect(
         c.read(selectedMessageIdsProvider),
         thread.conversation.messages.map((m) => m.id).toSet(),
       );
       expect(find.byType(Checkbox), findsWidgets);
+    });
+
+    testWidgets('its right-click menu offers Select all', (tester) async {
+      final c = await pump(tester);
+      c.read(displayProvider.notifier).setConversations(true);
+      await tester.pumpAndSettle();
+      final thread = tester.widget<ConversationTile>(
+        find.byType(ConversationTile).first,
+      );
+
+      await tester.tap(
+        find.byKey(ValueKey('thread:${thread.conversation.id}')),
+        buttons: kSecondaryButton,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(
+        PopupMenuItem<String>,
+        'Select all ${thread.conversation.length}',
+      ));
+      await tester.pumpAndSettle();
+
+      expect(
+        c.read(selectedMessageIdsProvider),
+        thread.conversation.messages.map((m) => m.id).toSet(),
+      );
     });
 
     testWidgets('a tap on the row still opens it', (tester) async {

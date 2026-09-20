@@ -24,7 +24,11 @@ class ConversationTile extends StatelessWidget {
     this.accountColor,
     this.tickedCount,
     this.onTicked,
+    this.onContextMenu,
   });
+
+  /// A right click, with where it landed, so a menu can open there.
+  final void Function(Offset at)? onContextMenu;
 
   final Conversation conversation;
   final bool isExpanded;
@@ -63,6 +67,9 @@ class ConversationTile extends StatelessWidget {
         child: InkWell(
           onTap: onTap,
           onLongPress: onLongPress,
+          onSecondaryTapUp: onContextMenu == null
+              ? null
+              : (d) => onContextMenu!(d.globalPosition),
           child: Padding(
             padding: EdgeInsets.fromLTRB(
               8,
