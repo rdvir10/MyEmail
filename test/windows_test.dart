@@ -119,6 +119,34 @@ void main() {
     });
   });
 
+  group('when the system swallows the launch', () {
+    setUp(() => windows = FakeWindowOpener(opens: false));
+
+    testWidgets('what was being written stays put', (tester) async {
+      await pump(tester);
+      await ctrlN(tester);
+      await tester.enterText(find.byType(TextField).last, 'Not lost');
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Open in new window'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ComposeScreen), findsOneWidget);
+      expect(find.text('Could not open a window. Still here.'), findsOneWidget);
+    });
+
+    testWidgets('the setting falls back to writing here', (tester) async {
+      final c = await pump(tester);
+      c.read(composeInWindowProvider.notifier).set(true);
+      await tester.pumpAndSettle();
+
+      await ctrlN(tester);
+
+      expect(windows.opened, hasLength(1), reason: 'it was tried');
+      expect(find.byType(ComposeScreen), findsOneWidget);
+    });
+  });
+
   group('where there are none', () {
     setUp(() => windows = FakeWindowOpener(supported: false));
 

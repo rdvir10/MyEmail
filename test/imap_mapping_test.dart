@@ -230,6 +230,18 @@ void main() {
 
     test('preview flattens whitespace and truncates with an ellipsis', () {
       expect(previewFromText('  a\n\n b   c '), 'a b c');
+    });
+
+    test('entities are decoded and invisible spacers dropped', () {
+      // A marketing mail's text part: its HTML with the tags pulled out.
+      expect(
+        previewFromText(
+          '96 MyDisney &zwnj; &zwnj; &zwnj; Email&nbsp;code &amp; more &#8217;s',
+        ),
+        '96 MyDisney Email code & more ’s',
+      );
+      expect(previewFromText('a &unknown; b'), 'a &unknown; b',
+          reason: 'what is not an entity is left alone');
       final long = List.filled(50, 'word').join(' ');
       final p = previewFromText(long, maxLength: 20);
       expect(p.length, lessThanOrEqualTo(21));

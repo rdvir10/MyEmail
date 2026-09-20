@@ -668,7 +668,14 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
 
     switch (choice) {
       case 'window':
-        await ref.read(windowOpenerProvider).open(MessageWindow(message));
+        final opened =
+            await ref.read(windowOpenerProvider).open(MessageWindow(message));
+        if (!opened && context.mounted) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+                const SnackBar(content: Text('Could not open a window.')));
+        }
       case 'reply':
         await openCompose(context, ref,
             kind: ComposeKind.reply, original: message);

@@ -356,9 +356,54 @@ String _quote(String value) =>
     '"${value.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}"';
 
 /// The first line or so of a body, for the message list.
+///
+/// Marketing mail's text part is often its HTML with the tags pulled out,
+/// entities and all: a row of "&zwnj;" spacers, "&nbsp;" between words.
+/// Those are decoded, and the characters that are there to be invisible
+/// (zero-width joiners and spaces, byte-order marks) are dropped, so what
+/// is left is what a person would call the first line.
 String previewFromText(String text, {int maxLength = 140}) {
-  final flat = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+  final flat = _decodeEntities(text)
+      .replaceAll(RegExp('[​-‍⁠﻿]'), '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
   return flat.length <= maxLength
       ? flat
       : '${flat.substring(0, maxLength).trimRight()}…';
 }
+
+const _namedEntities = {
+  'amp': '&',
+  'lt': '<',
+  'gt': '>',
+  'quot': '"',
+  'apos': "'",
+  'nbsp': ' ',
+  'zwnj': '‌',
+  'zwj': '‍',
+  'ndash': '–',
+  'mdash': '—',
+  'hellip': '…',
+  'copy': '©',
+  'reg': '®',
+  'trade': '™',
+  'lsquo': '‘',
+  'rsquo': '’',
+  'ldquo': '“',
+  'rdquo': '”',
+};
+
+String _decodeEntities(String text) {
+  if (!text.contains('&')) return text;
+  return text.replaceAllMapped(
+    RegExp(r'&(#x([0-9a-fA-F]{1,6})|#([0-9]{1,7})|([a-zA-Z]{2,8}));'),
+    (m) {
+      if (m[2] != null) return _char(int.parse(m[2]!, radix: 16));
+      if (m[3] != null) return _char(int.parse(m[3]!));
+      return _namedEntities[m[4]!.toLowerCase()] ?? m[0]!;
+    },
+  );
+}
+
+String _char(int code) =>
+    code > 0 && code <= 0x10FFFF ? String.fromCharCode(code) : '';

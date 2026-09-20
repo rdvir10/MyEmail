@@ -307,8 +307,17 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
     final draft = await _currentDraft();
     if (!mounted) return;
     final navigator = Navigator.of(context);
-    await ref.read(windowOpenerProvider).open(ComposeWindow(draft));
-    navigator.pop(false);
+    final messenger = ScaffoldMessenger.of(context);
+    final opened = await ref.read(windowOpenerProvider).open(ComposeWindow(draft));
+    if (opened) {
+      navigator.pop(false);
+    } else {
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(
+          content: Text('Could not open a window. Still here.'),
+        ));
+    }
   }
 
   Future<void> _saveAndLeave() async {

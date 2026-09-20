@@ -66,8 +66,11 @@ Future<void> openCompose(
   // window opens with the quoted message already in it.
   if (ref.read(composeInWindowProvider) &&
       (ref.read(windowsAvailableProvider).value ?? false)) {
-    await ref.read(windowOpenerProvider).open(ComposeWindow(draft));
-    return;
+    // A window the system did not open falls through to here.
+    if (await ref.read(windowOpenerProvider).open(ComposeWindow(draft))) {
+      return;
+    }
+    if (!context.mounted) return;
   }
 
   await Navigator.of(context).push(

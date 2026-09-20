@@ -169,6 +169,15 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     if (ownScreen) navigator.maybePop();
   }
 
+  Future<void> _openWindow(MailMessage message) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (!await ref.read(windowOpenerProvider).open(MessageWindow(message))) {
+      messenger?.showSnackBar(
+        const SnackBar(content: Text('Could not open a window.')),
+      );
+    }
+  }
+
   Future<void> _act(Future<void> Function(Messages notifier) op) async {
     final listId = _listId;
     if (listId == null) return;
@@ -212,9 +221,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
             onDelete: _delete,
             onOpenWindow: (ref.watch(windowsAvailableProvider).value ?? false) &&
                     widget.onPopOut != null
-                ? () => ref
-                    .read(windowOpenerProvider)
-                    .open(MessageWindow(message))
+                ? () => _openWindow(message)
                 : null,
             // A phone's width, the shell's medium breakpoint: the header
             // has room for one of Flag and Delete, and Delete is the one

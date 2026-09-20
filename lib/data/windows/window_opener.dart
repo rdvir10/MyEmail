@@ -18,7 +18,11 @@ abstract class WindowOpener {
   /// Whether this platform can have two windows at all.
   Future<bool> available();
 
-  Future<void> open(WindowRequest request);
+  /// True once the window exists. False when the system did not open
+  /// one — One UI, asked from a full-screen app, has been seen to answer
+  /// with its Recents picker instead — so the caller keeps what it was
+  /// about to hand over.
+  Future<bool> open(WindowRequest request);
 }
 
 /// The route a second window starts on: `/window?file=<path>`.
@@ -54,7 +58,7 @@ class AndroidWindowOpener implements WindowOpener {
       await _channel.invokeMethod<bool>('available') ?? false;
 
   @override
-  Future<void> open(WindowRequest request) async {
+  Future<bool> open(WindowRequest request) async {
     final dir = Directory(
       '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}windows',
     );
@@ -68,20 +72,34 @@ class AndroidWindowOpener implements WindowOpener {
       path: windowRoutePrefix,
       queryParameters: {'file': file.path},
     ).toString();
-    await _channel.invokeMethod<void>('open', {'route': route});
+    final opened =
+        await _channel.invokeMethod<bool>('open', {'route': route}) ?? false;
+    if (!opened) {
+      // Nothing will read it.
+      try {
+        await file.delete();
+      } catch (_) {}
+    }
+    return opened;
   }
 }
 
 /// Records what would have been opened. Tests, and the browser preview.
 class FakeWindowOpener implements WindowOpener {
-  FakeWindowOpener({this.supported = true});
+  FakeWindowOpener({this.supported = true, this.opens = true});
 
   final bool supported;
+
+  /// What the system answers: false stands for a launch it swallowed.
+  final bool opens;
   final List<WindowRequest> opened = [];
 
   @override
   Future<bool> available() async => supported;
 
   @override
-  Future<void> open(WindowRequest request) async => opened.add(request);
+  Future<bool> open(WindowRequest request) async {
+    opened.add(request);
+    return opens;
+  }
 }

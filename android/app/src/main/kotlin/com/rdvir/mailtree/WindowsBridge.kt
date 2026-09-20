@@ -1,6 +1,8 @@
 package com.rdvir.mailtree
 
 import android.app.Activity
+import android.app.ActivityManager
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import io.flutter.plugin.common.BinaryMessenger
@@ -41,17 +43,38 @@ class WindowsBridge(
                         result.error("no-route", "Nothing to open the window on.", null)
                         return
                     }
-                    val intent = Intent(activity, MainActivity::class.java).apply {
+                    val intent = Intent(activity, WindowActivity::class.java).apply {
                         putExtra("route", route)
                         addFlags(
                             Intent.FLAG_ACTIVITY_NEW_TASK or
                                 Intent.FLAG_ACTIVITY_NEW_DOCUMENT or
-                                Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
-                                Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT,
+                                Intent.FLAG_ACTIVITY_MULTIPLE_TASK,
                         )
+                        // Beside this one only when there already is a
+                        // "beside": in split screen. Asked for from a
+                        // full-screen app, One UI answers with the Recents
+                        // picker and hands the intent to the activity that
+                        // is already running, and no window opens at all.
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
+                            activity.isInMultiWindowMode
+                        ) {
+                            addFlags(Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT)
+                        }
                     }
+                    val before = taskCount()
                     activity.startActivity(intent)
-                    result.success(true)
+                    // Say so only once the window exists. The caller closes
+                    // its own copy of what it handed over, and must not do
+                    // that on the strength of an intent the system swallowed.
+                    var opened = false
+                    for (attempt in 0 until 10) {
+                        if (taskCount() > before) {
+                            opened = true
+                            break
+                        }
+                        Thread.sleep(50)
+                    }
+                    result.success(opened)
                 }
                 else -> result.notImplemented()
             }
@@ -59,6 +82,11 @@ class WindowsBridge(
             result.error("windows", e.message, null)
         }
     }
+
+    /** How many tasks this app has: one per window. */
+    private fun taskCount(): Int =
+        (activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)
+            ?.appTasks?.size ?: 0
 
     companion object {
         const val CHANNEL = "mailtree/windows"

@@ -81,6 +81,27 @@
             </intent-filter>
         </activity>
 
+        <!-- A second window: the same app under another name, launched as
+             a document with its own task affinity, so every start is a new
+             task rather than a return to the one that is running. See
+             WindowActivity.kt. Not exported: only the app opens these. -->
+        <activity
+            android:name=".WindowActivity"
+            android:exported="false"
+            android:launchMode="standard"
+            android:documentLaunchMode="always"
+            android:resizeableActivity="true"
+            android:taskAffinity="com.rdvir.mailtree.window"
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+        </activity>
+
         <!-- The home-screen widget. It reads what the app and the background
              sync pass wrote; it never talks to a mail server itself. -->
         <receiver

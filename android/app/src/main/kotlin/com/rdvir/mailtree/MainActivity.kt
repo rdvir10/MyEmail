@@ -26,7 +26,7 @@ import java.io.File
  * confirmation, and there is no way around that short of device-owner
  * privileges, which belong to management software and not to a mail client.
  */
-class MainActivity : FlutterActivity() {
+open class MainActivity : FlutterActivity() {
 
     private val channelName = "mailtree/installer"
     private val widgetChannelName = "mailtree/widget"
