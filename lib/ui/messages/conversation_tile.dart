@@ -18,6 +18,7 @@ class ConversationTile extends StatelessWidget {
     super.key,
     required this.conversation,
     required this.isExpanded,
+    this.isSelected = false,
     required this.onTap,
     this.onLongPress,
     this.density = ListDensity.cozy,
@@ -32,6 +33,10 @@ class ConversationTile extends StatelessWidget {
 
   final Conversation conversation;
   final bool isExpanded;
+
+  /// The open message is inside this closed thread, so this row is where
+  /// the selection is and is painted like a selected message.
+  final bool isSelected;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
   final ListDensity density;
@@ -61,9 +66,12 @@ class ConversationTile extends StatelessWidget {
 
     return Semantics(
       expanded: isExpanded,
+      selected: isSelected,
       label: '${conversation.length} messages',
       child: Material(
-        color: Colors.transparent,
+        color: isSelected
+            ? scheme.secondaryContainer.withValues(alpha: 0.7)
+            : Colors.transparent,
         child: InkWell(
           onTap: onTap,
           onLongPress: onLongPress,

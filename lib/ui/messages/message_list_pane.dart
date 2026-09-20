@@ -335,6 +335,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     conversation: conversation,
                     density: density,
                     isExpanded: row.isExpanded,
+                    // Closed, the row stands for every message in it; if
+                    // the open one is among them this is where it is.
+                    isSelected: !row.isExpanded &&
+                        conversation.messages.any((m) => m.id == selectedId),
                     tickedCount: selecting
                         ? ids.where(ticked.contains).length
                         : null,

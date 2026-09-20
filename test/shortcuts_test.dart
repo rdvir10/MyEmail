@@ -10,6 +10,7 @@ import 'package:myemail/state/folder_tree.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
+import 'package:myemail/ui/messages/conversation_tile.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/html_body_view.dart';
 import 'package:myemail/ui/messages/message_list_pane.dart';
@@ -259,10 +260,21 @@ void main() {
           ).map((m) => m.id).toList();
 
       await press(tester, LogicalKeyboardKey.home);
+      var threadsSeen = 0;
       for (var i = 1; i < 15; i++) {
         await press(tester, LogicalKeyboardKey.arrowDown);
         expect(selected(c), rows()[i], reason: 'row $i');
+        // On a closed thread, the thread's row is the one painted
+        // selected: there is no message row to paint.
+        final threadRow = find.byWidgetPredicate((w) =>
+            w is ConversationTile &&
+            w.conversation.newest.id == selected(c));
+        if (threadRow.evaluate().isNotEmpty) {
+          threadsSeen++;
+          expect(tester.widget<ConversationTile>(threadRow).isSelected, isTrue);
+        }
       }
+      expect(threadsSeen, greaterThan(0), reason: 'the sample data has threads');
     });
 
     testWidgets('closing a thread from inside it, Down moves on from it',

@@ -256,13 +256,16 @@ void main() {
 
     testWidgets('mark all as read clears the unread badge', (tester) async {
       await _pumpTree(tester);
-      expect(find.text('231'), findsOneWidget, reason: 'Newsletters unread');
+      expect(find.textContaining('231/'), findsOneWidget,
+          reason: 'Newsletters unread, then the total');
 
       await _openMenuFor(tester, find.text('Newsletters'));
       await tester.tap(find.text('Mark all as read'));
       await tester.pumpAndSettle();
 
-      expect(find.text('231'), findsNothing);
+      expect(find.textContaining('231/'), findsNothing);
+      expect(find.textContaining('0/'), findsWidgets,
+          reason: 'the total stays; only the unread went');
     });
   });
 }

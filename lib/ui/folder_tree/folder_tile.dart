@@ -275,7 +275,7 @@ class _FolderTileState extends State<FolderTile> {
     final scheme = theme.colorScheme;
     final row = widget.row;
     final folder = row.folder;
-    final count = folder.badgeCount;
+    final counts = formatFolderCounts(folder.unreadCount, folder.totalCount);
     final hasUnread =
         !folder.showsTotalInsteadOfUnread && folder.unreadCount > 0;
     final accent =
@@ -328,10 +328,10 @@ class _FolderTileState extends State<FolderTile> {
                 ),
                 const SizedBox(width: 10),
                 Expanded(child: _label(theme, hasUnread)),
-                if (count > 0) ...[
+                if (counts != null) ...[
                   const SizedBox(width: 8),
                   Text(
-                    _formatCount(count),
+                    counts,
                     style: theme.textTheme.labelSmall?.copyWith(
                       color:
                           hasUnread ? scheme.primary : scheme.onSurfaceVariant,
@@ -396,10 +396,17 @@ class _FolderTileState extends State<FolderTile> {
             : FolderIcons.folder,
       };
 
-  /// Outlook caps the badge rather than letting a five-digit count push the
-  /// folder name out of the row.
-  static String _formatCount(int count) =>
-      count > 999 ? '999+' : count.toString();
+}
+
+/// The numbers after a folder's name: unread, a slash, and everything in
+/// it — "14/2310" — or nothing for an empty folder. The unread count is
+/// capped the way Outlook caps its badge, so a folder with thousands unread
+/// does not push its own name out of the row; the total gets one more digit
+/// because a total is what it is for.
+String? formatFolderCounts(int unread, int total) {
+  if (total <= 0) return null;
+  String cap(int n, int at) => n > at ? '$at+' : '$n';
+  return '${cap(unread, 999)}/${cap(total, 9999)}';
 }
 
 /// What follows the finger during a drag: a small card with the folder name,
