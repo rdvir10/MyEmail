@@ -6,6 +6,7 @@ import '../../domain/account.dart';
 import '../../domain/draft.dart';
 import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
+import '../../domain/address_suggestions.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
@@ -441,6 +442,18 @@ class SampleMailEngine implements MailEngine {
         folderMessages.removeWhere((m) => m.id == previous);
       }
     }
+  }
+
+  @override
+  Future<List<AddressSuggestion>> recentAddresses() async {
+    await _latency();
+    // Every message the sample data has generated so far, so the people in
+    // the inbox are the people suggested.
+    final seen = <MailAddress>[
+      for (final folder in _messages.values)
+        for (final m in folder) ...[m.from, ...m.to],
+    ];
+    return historyFrom(seen);
   }
 
   @override

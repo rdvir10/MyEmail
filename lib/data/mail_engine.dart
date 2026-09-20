@@ -4,6 +4,7 @@ import '../domain/account.dart';
 import '../domain/error_report.dart';
 import 'auth/oauth_token.dart';
 import '../domain/draft.dart';
+import '../domain/address_suggestions.dart';
 import '../domain/mail_attachment.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
@@ -114,6 +115,10 @@ abstract class MailEngine {
 
   /// The body of one message, fetched when it is opened.
   Future<MailBody> loadMessageBody(String messageId);
+
+  /// Everyone the cached mail has been to or from, each address once, with
+  /// how often it appeared. For suggesting recipients as they are typed.
+  Future<List<AddressSuggestion>> recentAddresses();
 
   /// What is attached to a message. Cheap: no file is downloaded.
   Future<List<MailAttachment>> listAttachments(String messageId);

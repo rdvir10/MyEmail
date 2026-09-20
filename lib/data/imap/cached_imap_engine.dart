@@ -8,6 +8,7 @@ import '../../domain/account.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_credentials.dart';
 import '../../domain/mail_folder.dart';
+import '../../domain/address_suggestions.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/draft.dart';
@@ -585,6 +586,10 @@ class CachedImapEngine implements MailEngine {
     final t = await _transport(accountId);
     return _sync(accountId, t).body(path, uid);
   }
+
+  @override
+  Future<List<AddressSuggestion>> recentAddresses() async =>
+      historyFrom(await cache.recentAddresses());
 
   @override
   Future<List<MailAttachment>> listAttachments(String messageId) async {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/display_settings.dart';
+import '../../state/contact_providers.dart';
 import '../../state/display_providers.dart';
 
 /// Settings, View: where the message being read goes, and how much room each
@@ -46,6 +47,48 @@ class ViewSettingsScreen extends ConsumerWidget {
                 : 'A pane on the right needs a wide screen, which in practice '
                     'means a tablet in landscape. On anything narrower, '
                     'choose Bottom to get a pane at all.',
+            theme: theme,
+          ),
+          const Divider(height: 1),
+          const _Heading('Writing'),
+          Consumer(
+            builder: (context, ref, _) {
+              final allowed = ref.watch(contactsAccessProvider).value ?? false;
+              return SwitchListTile(
+                title: const Text('Suggest recipients from contacts'),
+                subtitle: Text(
+                  allowed
+                      ? 'People you have mailed are suggested too.'
+                      : 'Without this, only people you have already mailed '
+                          'are suggested.',
+                ),
+                value: allowed,
+                onChanged: (on) async {
+                  if (on) {
+                    await ref.read(contactsAccessProvider.notifier).ask();
+                    return;
+                  }
+                  // A permission is Android's to take back, not ours.
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context)
+                      ..hideCurrentSnackBar()
+                      ..showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'To stop this, turn off Contacts for MyEmail in '
+                            'Android Settings.',
+                          ),
+                        ),
+                      );
+                  }
+                },
+              );
+            },
+          ),
+          _Note(
+            'Asked for once, the first time you write a message. Nothing is '
+            'read from your contacts until you type in a recipient field, '
+            'and nothing about them leaves the tablet.',
             theme: theme,
           ),
           const Divider(height: 1),

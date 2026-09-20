@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/draft.dart';
+import '../../domain/display_settings.dart';
 import '../../domain/mail_message.dart';
 import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
@@ -10,6 +11,7 @@ import '../../state/providers.dart';
 import '../../state/quick_steps.dart';
 import '../../state/search_providers.dart';
 import '../compose/open_compose.dart';
+import '../settings/settings_screen.dart';
 import '../messages/message_actions.dart';
 import '../quick_steps/quick_steps_screen.dart';
 
@@ -38,7 +40,6 @@ class _RibbonState extends ConsumerState<Ribbon> {
     final theme = Theme.of(context);
     final message = ref.watch(selectedMessageProvider);
     final listId = ref.watch(effectiveSelectedFolderIdProvider);
-    final has = message != null && listId != null;
     final pane = ref.watch(displayProvider).readingPane;
 
     return Material(
@@ -46,99 +47,129 @@ class _RibbonState extends ConsumerState<Ribbon> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // Wider than the screen, the ribbon scrolls sideways rather than
+          // clipping its last buttons; when it fits, the Spacer still pushes
+          // the view buttons to the right. IntrinsicWidth is what lets a
+          // Row hold a Spacer inside a horizontal scroll view.
           SizedBox(
             height: 48,
-            child: Row(
-              children: [
-                const SizedBox(width: 4),
-                _Button(
-                  icon: Icons.sync,
-                  label: 'Sync',
-                  busy: _syncing,
-                  onPressed: _syncing ? null : () => _sync(listId),
+            child: LayoutBuilder(
+              builder: (context, constraints) => SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                  child: IntrinsicWidth(child: _buttons(listId, message, pane)),
                 ),
-                _Button(
-                  icon: Icons.edit_outlined,
-                  label: 'New email',
-                  onPressed: () =>
-                      openCompose(context, ref, kind: ComposeKind.newMessage),
-                ),
-                const _Separator(),
-                _Button(
-                  icon: Icons.delete_outline,
-                  label: 'Delete',
-                  onPressed: has
-                      ? () => MessageActions(ref, listId)
-                          .delete(context, [message])
-                      : null,
-                ),
-                _Button(
-                  icon: Icons.reply,
-                  label: 'Reply',
-                  onPressed: has ? () => _compose(ComposeKind.reply, message) : null,
-                ),
-                _Button(
-                  icon: Icons.reply_all,
-                  label: 'Reply all',
-                  onPressed:
-                      has ? () => _compose(ComposeKind.replyAll, message) : null,
-                ),
-                _Button(
-                  icon: Icons.forward,
-                  label: 'Forward',
-                  onPressed:
-                      has ? () => _compose(ComposeKind.forward, message) : null,
-                ),
-                const _Separator(),
-                _QuickStepsButton(enabled: has, message: message, listId: listId),
-                _Button(
-                  icon: Icons.drive_file_move_outline,
-                  label: 'Move',
-                  onPressed: has
-                      ? () => MessageActions(ref, listId)
-                          .moveWithPrompt(context, [message])
-                      : null,
-                ),
-                _Button(
-                  // The icon and the label say what pressing it will do, not
-                  // what the message currently is. A button labelled with the
-                  // present state reads as a status light.
-                  icon: message?.isRead ?? false
-                      ? Icons.mark_email_unread_outlined
-                      : Icons.mark_email_read_outlined,
-                  label: message?.isRead ?? false ? 'Unread' : 'Read',
-                  onPressed: has
-                      ? () => ref
-                          .read(messagesProvider(listId).notifier)
-                          .setRead(message.id, !message.isRead)
-                      : null,
-                ),
-                const Spacer(),
-                const _Separator(),
-                _Button(
-                  // Cycles right, bottom, off. The label names where the pane
-                  // is now, so the button is readable at a glance as well as
-                  // usable without looking.
-                  icon: pane.icon,
-                  label: 'Pane ${pane.label.toLowerCase()}',
-                  onPressed: () => ref
-                      .read(displayProvider.notifier)
-                      .setReadingPane(pane.next),
-                ),
-                const _Separator(),
-                _Button(
-                  icon: Icons.search,
-                  label: 'Search',
-                  onPressed: () =>
-                      ref.read(searchFocusRequestsProvider.notifier).request(),
-                ),
-                const SizedBox(width: 4),
-              ],
+              ),
             ),
           ),
           const Divider(height: 1),
         ],
       ),
+    );
+  }
+
+  Widget _buttons(
+    String? listId,
+    MailMessage? message,
+    ReadingPanePosition pane,
+  ) {
+    // Parameters promote; the build method's local would not reach here.
+    final has = message != null && listId != null;
+    return Row(
+      children: [
+        const SizedBox(width: 4),
+        _Button(
+          icon: Icons.sync,
+          label: 'Sync',
+          busy: _syncing,
+          onPressed: _syncing ? null : () => _sync(listId),
+        ),
+        _Button(
+          icon: Icons.edit_outlined,
+          label: 'New email',
+          onPressed: () =>
+              openCompose(context, ref, kind: ComposeKind.newMessage),
+        ),
+        const _Separator(),
+        _Button(
+          icon: Icons.delete_outline,
+          label: 'Delete',
+          onPressed: has
+              ? () => MessageActions(ref, listId).delete(context, [message])
+              : null,
+        ),
+        _Button(
+          icon: Icons.reply,
+          label: 'Reply',
+          onPressed: has ? () => _compose(ComposeKind.reply, message) : null,
+        ),
+        _Button(
+          icon: Icons.reply_all,
+          label: 'Reply all',
+          onPressed: has ? () => _compose(ComposeKind.replyAll, message) : null,
+        ),
+        _Button(
+          icon: Icons.forward,
+          label: 'Forward',
+          onPressed: has ? () => _compose(ComposeKind.forward, message) : null,
+        ),
+        const _Separator(),
+        _QuickStepsButton(enabled: has, message: message, listId: listId),
+        _Button(
+          icon: Icons.drive_file_move_outline,
+          label: 'Move',
+          onPressed: has
+              ? () => MessageActions(
+                  ref,
+                  listId,
+                ).moveWithPrompt(context, [message])
+              : null,
+        ),
+        _Button(
+          // The icon and the label say what pressing it will do, not
+          // what the message currently is. A button labelled with the
+          // present state reads as a status light.
+          icon: message?.isRead ?? false
+              ? Icons.mark_email_unread_outlined
+              : Icons.mark_email_read_outlined,
+          label: message?.isRead ?? false ? 'Unread' : 'Read',
+          onPressed: has
+              ? () => ref
+                    .read(messagesProvider(listId).notifier)
+                    .setRead(message.id, !message.isRead)
+              : null,
+        ),
+        const Spacer(),
+        const _Separator(),
+        _Button(
+          // Cycles right, bottom, off. The label names where the pane
+          // is now, so the button is readable at a glance as well as
+          // usable without looking.
+          icon: pane.icon,
+          label: 'Pane ${pane.label.toLowerCase()}',
+          onPressed: () =>
+              ref.read(displayProvider.notifier).setReadingPane(pane.next),
+        ),
+        const _Separator(),
+        _Button(
+          icon: Icons.search,
+          label: 'Search',
+          onPressed: () =>
+              ref.read(searchFocusRequestsProvider.notifier).request(),
+        ),
+        const _Separator(),
+        // The folder pane has Settings at its foot, but the pane can
+        // be hidden, and a tablet's hand is up here anyway.
+        _Button(
+          icon: Icons.settings_outlined,
+          label: 'Settings',
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+          ),
+        ),
+        const SizedBox(width: 4),
+      ],
     );
   }
 
@@ -190,7 +221,9 @@ class _QuickStepsButton extends ConsumerWidget {
           MenuItemButton(
             leadingIcon: Icon(iconForQuickStep(step)),
             onPressed: () => _run(context, ref, step),
-            child: Text('${step.name}   ${describeQuickStep(step, folderIndex)}'),
+            child: Text(
+              '${step.name}   ${describeQuickStep(step, folderIndex)}',
+            ),
           ),
         if (steps.isNotEmpty) const Divider(height: 1),
         MenuItemButton(
@@ -302,9 +335,9 @@ class _Separator extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => VerticalDivider(
-        width: 9,
-        indent: 8,
-        endIndent: 8,
-        color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.5),
-      );
+    width: 9,
+    indent: 8,
+    endIndent: 8,
+    color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.5),
+  );
 }

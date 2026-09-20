@@ -20,6 +20,7 @@ import 'data/updates/apk_installer.dart';
 import 'data/updates/update_service.dart';
 import 'data/ui_state_store.dart';
 import 'data/widget/home_screen_surface.dart';
+import 'data/contacts/device_contacts.dart';
 import 'data/files/attachment_files.dart';
 import 'data/files/file_bridge.dart';
 import 'data/widget/widget_setup_channel.dart';
@@ -28,6 +29,7 @@ import 'state/sync_providers.dart';
 import 'state/update_providers.dart';
 import 'state/providers.dart';
 import 'state/attachment_providers.dart';
+import 'state/contact_providers.dart';
 import 'state/widget_providers.dart';
 import 'theme/app_theme.dart';
 import 'ui/shell/app_shell.dart';
@@ -118,6 +120,7 @@ Future<void> main() async {
             .overrideWithValue(const PackageInstalledVersion()),
         if (onAndroid) ...[
           fileBridgeProvider.overrideWithValue(platformFileBridge()),
+          deviceContactsProvider.overrideWithValue(platformDeviceContacts()),
           attachmentFilesProvider
               .overrideWithValue(const DiskAttachmentFiles()),
           releaseFeedProvider.overrideWithValue(HttpReleaseFeed()),

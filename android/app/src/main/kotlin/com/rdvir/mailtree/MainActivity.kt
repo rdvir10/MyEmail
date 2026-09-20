@@ -34,12 +34,17 @@ class MainActivity : FlutterActivity() {
     private var widgetChannel: MethodChannel? = null
 
     private var files: FilesBridge? = null
+    private var contacts: ContactsBridge? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         // Attachments in and out: opening, sharing, the clipboard and drag
         // and drop, all of which are content URIs underneath.
+        // Recipients suggested from the address book, with the permission
+        // that needs asked through this activity.
+        contacts = ContactsBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+
         files = FilesBridge(this, flutterEngine.dartExecutor.binaryMessenger)
             .also {
                 it.listenForDrops()
@@ -94,6 +99,15 @@ class MainActivity : FlutterActivity() {
         AppWidgetManager.getInstance(this)
             .getAppWidgetIds(ComponentName(this, MailboxCountWidgetProvider::class.java))
             .map { it.toString() }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        if (contacts?.onPermissionResult(requestCode, grantResults) == true) return
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    }
 
     override fun onResume() {
         super.onResume()

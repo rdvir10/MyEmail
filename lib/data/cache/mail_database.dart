@@ -193,6 +193,23 @@ class DriftCacheStore implements CacheStore {
   }
 
   @override
+  Future<List<MailAddress>> recentAddresses({int limit = 2000}) async {
+    // Across every account and folder: the person you write to from one
+    // account is a person you might write to from another. Newest first,
+    // so the name most recently used for an address is the one met first.
+    final rows = await (db.select(db.messages)
+          ..orderBy([(m) => OrderingTerm.desc(m.date)])
+          ..limit(limit))
+        .get();
+    return [
+      for (final r in rows) ...[
+        MailAddress(email: r.fromEmail, name: r.fromName),
+        ..._decodeAddresses(r.recipientsJson),
+      ],
+    ];
+  }
+
+  @override
   Future<int> countMessages(String accountId, String path) async {
     final count = db.messages.uid.count();
     final row = await (db.selectOnly(db.messages)

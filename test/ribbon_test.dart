@@ -35,6 +35,7 @@ const _labels = [
   'Quick Steps',
   'Move',
   'Search',
+  'Settings',
 ];
 
 void main() {
@@ -106,6 +107,20 @@ void main() {
       }
       // Read and Unread are the same button showing one of two states.
       expect(button('Read'), findsOneWidget);
+    });
+
+    testWidgets('when the screen is too narrow for all of them, it scrolls',
+        (tester) async {
+      // The narrowest screen that gets a ribbon at all: the last buttons
+      // would be cut off, and an overflow is an error in a test. Instead
+      // the row slides.
+      await pump(tester, const Size(AppShell.wideBreakpoint, 800));
+
+      expect(tester.takeException(), isNull);
+      expect(button('Settings'), findsOneWidget);
+      await tester.drag(find.byType(Ribbon), const Offset(-400, 0));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
     });
 
     testWidgets('the message commands are disabled until one is selected',

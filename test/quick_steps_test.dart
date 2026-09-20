@@ -6,6 +6,7 @@ import 'package:myemail/domain/quick_step.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/quick_steps.dart';
+import 'package:myemail/ui/folder_tree/folder_tree_panel.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/quick_steps/quick_steps_screen.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
@@ -187,7 +188,11 @@ void main() {
       await tester.pumpWidget(app());
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Settings'));
+      // The ribbon has a Settings button too; this is the tree's route.
+      await tester.tap(find.descendant(
+        of: find.byType(FolderTreePanel),
+        matching: find.text('Settings'),
+      ));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Quick Steps'));
       await tester.pumpAndSettle();

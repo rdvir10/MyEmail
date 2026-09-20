@@ -23,6 +23,11 @@
          user has to allow "Install unknown apps" for MyEmail once before it
          will even offer. Nothing is ever installed silently. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- Suggesting recipients from the address book as you type. Asked for
+         at runtime the first time a recipient field is used, and the app
+         works without it: people you have already written to are suggested
+         from your own mail either way. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS"/>
 
     <application
         android:label="MyEmail"

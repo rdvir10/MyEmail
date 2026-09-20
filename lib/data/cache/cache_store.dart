@@ -133,6 +133,11 @@ abstract class CacheStore {
   });
 
   Future<int> countMessages(String accountId, String path);
+
+  /// Every sender and recipient on the newest [limit] cached messages, in
+  /// message order, newest first. Duplicates included: the caller counts
+  /// them, which is how "the person you write to most" is known.
+  Future<List<MailAddress>> recentAddresses({int limit = 2000});
   Future<({int min, int max})?> uidRange(String accountId, String path);
   Future<CachedMessage?> readMessage(String accountId, String path, int uid);
 
@@ -217,6 +222,16 @@ class MemoryCacheStore implements CacheStore {
       ..sort((a, b) => b.uid.compareTo(a.uid));
     if (offset >= all.length) return const [];
     return all.sublist(offset, (offset + limit).clamp(0, all.length));
+  }
+
+  @override
+  Future<List<MailAddress>> recentAddresses({int limit = 2000}) async {
+    final all = <CachedMessage>[
+      for (final folder in _messages.values) ...folder.values,
+    ]..sort((a, b) => b.date.compareTo(a.date));
+    return [
+      for (final m in all.take(limit)) ...[m.from, ...m.to],
+    ];
   }
 
   @override

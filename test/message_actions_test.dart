@@ -9,6 +9,7 @@ import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_folder.dart';
+import 'package:myemail/domain/address_suggestions.dart';
 import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/folder_tree.dart';
@@ -116,6 +117,10 @@ class _RefusingEngine implements MailEngine {
   @override
   Future<List<MailAttachment>> listAttachments(String messageId) =>
       _inner.listAttachments(messageId);
+
+  @override
+  Future<List<AddressSuggestion>> recentAddresses() =>
+      _inner.recentAddresses();
 
   @override
   Future<Uint8List> fetchAttachment(String messageId, String attachmentId) =>
