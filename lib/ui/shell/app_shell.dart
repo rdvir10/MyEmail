@@ -15,6 +15,8 @@ import '../compose/open_compose.dart';
 import '../folder_tree/folder_tree_panel.dart';
 import '../messages/message_list_pane.dart';
 import '../messages/reading_pane.dart';
+import 'app_shortcuts.dart';
+import 'pane_focus.dart';
 import 'ribbon.dart';
 
 /// Three shapes, chosen on width alone so rotating a tablet moves between
@@ -152,8 +154,6 @@ class _AppShellState extends ConsumerState<AppShell>
     final position = ref.watch(displayProvider).readingPane;
     _pushPendingIfResolved(width, position);
 
-    if (width < AppShell.mediumBreakpoint) return const _NarrowLayout();
-
     // A reading pane needs room. Beside the list it needs a wide screen; under
     // the list it only needs the two-pane width, which is why a tablet in
     // portrait is the case Bottom exists for.
@@ -162,21 +162,29 @@ class _AppShellState extends ConsumerState<AppShell>
     // a single press take the pane away and the way back with it.
     final ribbon = width >= AppShell.wideBreakpoint;
 
-    return switch (position) {
-      ReadingPanePosition.off => _MediumLayout(withRibbon: ribbon),
-      ReadingPanePosition.bottom => _MediumLayout(
-        readingPaneBelow: true,
-        withRibbon: ribbon,
-      ),
-      // No room beside the list. Deliberately falls back to no pane rather
-      // than stacking one: a phone held sideways is 600-ish wide and barely
-      // 400 tall, and splitting that horizontally leaves two halves too short
-      // to use. Bottom is there for anyone who wants the stack.
-      ReadingPanePosition.right =>
-        width >= AppShell.wideBreakpoint
-            ? const _WideLayout()
-            : const _MediumLayout(),
-    };
+    final Widget layout;
+    if (width < AppShell.mediumBreakpoint) {
+      layout = const _NarrowLayout();
+    } else {
+      layout = switch (position) {
+        ReadingPanePosition.off => _MediumLayout(withRibbon: ribbon),
+        ReadingPanePosition.bottom => _MediumLayout(
+          readingPaneBelow: true,
+          withRibbon: ribbon,
+        ),
+        // No room beside the list. Deliberately falls back to no pane rather
+        // than stacking one: a phone held sideways is 600-ish wide and barely
+        // 400 tall, and splitting that horizontally leaves two halves too short
+        // to use. Bottom is there for anyone who wants the stack.
+        ReadingPanePosition.right =>
+          width >= AppShell.wideBreakpoint
+              ? const _WideLayout()
+              : const _MediumLayout(),
+      };
+    }
+    // The keyboard commands sit above every layout, so a keyboard plugged
+    // into a phone gets them too.
+    return AppShortcuts(child: layout);
   }
 }
 
@@ -304,11 +312,14 @@ class _ReadingArea extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final open = ref.watch(selectedMessageProvider);
+    final nodes = ref.watch(paneFocusProvider);
     return open == null
         ? const _NothingOpen()
         : ReadingPane(
             key: ValueKey(open.id),
             message: open,
+            focusNode: nodes.reading,
+            onEscape: nodes.list.requestFocus,
             onPopOut: () => _pushMessage(context, open),
           );
   }
@@ -573,7 +584,11 @@ class MessageScreen extends StatelessWidget {
         ),
         centerTitle: false,
       ),
-      body: ReadingPane(message: message),
+      body: ReadingPane(
+        message: message,
+        // Its own node: this screen may sit on top of the shell's pane.
+        onEscape: () => Navigator.of(context).maybePop(),
+      ),
     );
   }
 }

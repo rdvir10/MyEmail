@@ -13,6 +13,7 @@ import 'notifications_screen.dart';
 import 'signatures_screen.dart';
 import 'sync_screen.dart';
 import 'view_settings_screen.dart';
+import '../shell/app_shortcuts.dart';
 import 'home_widgets_screen.dart';
 
 /// Everything that used to be loose entries at the bottom of the folder tree,
@@ -74,6 +75,12 @@ class SettingsScreen extends ConsumerWidget {
             title: 'Quick Steps',
             subtitle: 'One-tap action chains',
             onTap: () => _open(context, const QuickStepsScreen()),
+          ),
+          _Row(
+            icon: Icons.keyboard_outlined,
+            title: 'Keyboard shortcuts',
+            subtitle: 'For a keyboard attached to the tablet',
+            onTap: () => showShortcutsHelp(context),
           ),
           const Divider(height: 1),
           const _SectionHeading('Accounts'),

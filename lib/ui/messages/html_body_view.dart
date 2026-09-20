@@ -37,11 +37,18 @@ class HtmlBodyView extends StatefulWidget {
   final bool showImages;
 
   @override
-  State<HtmlBodyView> createState() => _HtmlBodyViewState();
+  State<HtmlBodyView> createState() => HtmlBodyViewState();
 }
 
-class _HtmlBodyViewState extends State<HtmlBodyView> {
+/// Public so the reading pane can scroll the body from the keyboard.
+class HtmlBodyViewState extends State<HtmlBodyView> {
   late final WebViewController _controller;
+
+  Future<void> scrollBy(double dy) => _controller.scrollBy(0, dy.round());
+
+  /// The WebView clamps to its content, so a huge number is "the bottom".
+  Future<void> scrollToEnd({required bool top}) =>
+      _controller.scrollTo(0, top ? 0 : 1 << 24);
   late bool _showRemote = widget.showImages;
   Brightness _brightness = Brightness.light;
 
@@ -95,12 +102,13 @@ class _HtmlBodyViewState extends State<HtmlBodyView> {
   }
 
   @override
-  void didUpdateWidget(HtmlBodyView old) {
-    super.didUpdateWidget(old);
-    if (old.html != widget.html) {
+  void didUpdateWidget(HtmlBodyView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.html != widget.html) {
       _showRemote = widget.showImages;
       _load();
-    } else if (old.showImages != widget.showImages && widget.showImages) {
+    } else if (oldWidget.showImages != widget.showImages &&
+        widget.showImages) {
       // The setting was turned on while a message was open.
       _showRemote = true;
       _load();

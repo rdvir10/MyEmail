@@ -1,5 +1,6 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/account.dart';
 import '../../domain/error_report.dart';
@@ -32,7 +33,8 @@ class ComposeScreen extends ConsumerStatefulWidget {
 
 class _ComposeScreenState extends ConsumerState<ComposeScreen> {
   late final HtmlEditorController _editor =
-      HtmlEditorController(initialHtml: widget.draft.htmlBody);
+      HtmlEditorController(initialHtml: widget.draft.htmlBody)
+        ..onKey = _onEditorKey;
   late final TextEditingController _to =
       TextEditingController(text: formatAddresses(widget.draft.to));
   late final TextEditingController _cc =
@@ -170,6 +172,37 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
   /// header, because the message in front of you is not always the one the
   /// answer should come from.
   late String _accountId = widget.draft.accountId;
+
+  /// Ctrl+Enter sends and Esc leaves, from the header fields. The body is a
+  /// WebView, whose keys never reach Flutter; the editor's page reports the
+  /// same two, and they come in through [_onEditorKey].
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final control = HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed;
+    final key = event.logicalKey;
+    if (control &&
+        (key == LogicalKeyboardKey.enter ||
+            key == LogicalKeyboardKey.numpadEnter)) {
+      _onEditorKey('send');
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.escape) {
+      _onEditorKey('close');
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  void _onEditorKey(String key) {
+    if (_sending) return;
+    switch (key) {
+      case 'send':
+        _send();
+      case 'close':
+        Navigator.of(context).maybePop();
+    }
+  }
 
   Future<void> _send() async {
     final to = parseAddresses(_to.text);
@@ -312,7 +345,15 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
             if (context.mounted) Navigator.of(context).pop(false);
         }
       },
-      child: Scaffold(
+      child: Focus(
+        // Keys reach this only from a focused descendant, and a reply has
+        // none: its To is filled, so nothing takes the cursor. Then this
+        // takes the focus itself. A new message gives it to To instead,
+        // which is below here, so its keys pass through all the same.
+        autofocus: widget.draft.to.isNotEmpty,
+        skipTraversal: true,
+        onKeyEvent: _onKey,
+        child: Scaffold(
         appBar: AppBar(
           title: Text(switch (widget.draft.kind) {
             ComposeKind.reply || ComposeKind.replyAll => 'Reply',
@@ -471,6 +512,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
             Expanded(child: HtmlEditor(controller: _editor)),
             _Toolbar(controller: _editor, enabled: !_sending),
           ],
+        ),
         ),
       ),
     );

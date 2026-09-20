@@ -105,6 +105,10 @@ class HtmlEditorController extends ChangeNotifier {
 
   WebViewController? _web;
   final _readyCompleter = Completer<void>();
+
+  /// A key the page reports rather than handles: 'send' for Ctrl+Enter,
+  /// 'close' for Esc. The compose screen decides what they mean.
+  void Function(String key)? onKey;
   Set<String> _activeFormats = const {};
 
   /// Which formats apply where the caret is, so the toolbar can light up.
@@ -129,6 +133,8 @@ class HtmlEditorController extends ChangeNotifier {
           _activeFormats = formats;
           notifyListeners();
         }
+      } else if (data['type'] == 'key' && data['value'] is String) {
+        onKey?.call(data['value'] as String);
       }
     } on FormatException {
       // A malformed bridge message is not worth crashing the editor over.
@@ -294,6 +300,18 @@ String _editorDocument(String bodyHtml, {required bool dark}) {
 
   document.addEventListener('selectionchange', reportFormats);
   document.body.addEventListener('input', reportFormats);
+
+  // Keys pressed in here never reach Flutter, so the two the compose
+  // screen answers to are reported across. Ctrl+Enter is stopped from
+  // also putting a line break in.
+  document.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      post({ type: 'key', value: 'send' });
+    } else if (e.key === 'Escape') {
+      post({ type: 'key', value: 'close' });
+    }
+  });
 
   // Keep the caret visible as the soft keyboard resizes the viewport. The
   // WebView does not scroll to the caret on its own when the document is

@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/draft.dart';
@@ -10,6 +11,7 @@ import '../../state/providers.dart';
 import '../compose/open_compose.dart';
 import 'attachment_bar.dart';
 import 'date_format.dart';
+import '../shell/pane_focus.dart';
 import 'html_body_view.dart';
 import 'message_source.dart';
 
@@ -23,7 +25,20 @@ import 'message_source.dart';
 /// HTML bodies go into the sandboxed [HtmlBodyView] on a device; plain-text
 /// bodies, and every body in the browser preview, render as selectable text.
 class ReadingPane extends ConsumerStatefulWidget {
-  const ReadingPane({super.key, required this.message, this.onPopOut});
+  const ReadingPane({
+    super.key,
+    required this.message,
+    this.onPopOut,
+    this.focusNode,
+    this.onEscape,
+  });
+
+  /// The shell's node for this pane, so F6 can land here. A message on a
+  /// screen of its own gets a node of its own.
+  final FocusNode? focusNode;
+
+  /// Esc: back to the list on a tablet, back a screen on a phone.
+  final VoidCallback? onEscape;
 
   /// Open this message on a screen of its own. Null when it already is one,
   /// which is what keeps a pop-out button off the popped-out copy.
@@ -39,6 +54,77 @@ class ReadingPane extends ConsumerStatefulWidget {
 }
 
 class _ReadingPaneState extends ConsumerState<ReadingPane> {
+  /// The plain-text body's scroll position; the HTML body scrolls inside
+  /// its WebView, reached through [_html].
+  final _textScroll = ScrollController();
+  final _html = GlobalKey<HtmlBodyViewState>();
+  late final FocusNode _ownNode = FocusNode(debugLabel: 'Open message');
+
+  FocusNode get _node => widget.focusNode ?? _ownNode;
+
+  @override
+  void dispose() {
+    _textScroll.dispose();
+    _ownNode.dispose();
+    super.dispose();
+  }
+
+  /// Reading with the keyboard: arrows nudge, Space and the Page keys move
+  /// a screen at a time, Home and End go to the ends. The body is a WebView
+  /// on a device, which scrolls itself only when it has native focus, so
+  /// the keys are answered here and passed to it as scroll requests.
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final shift = HardwareKeyboard.instance.isShiftPressed;
+    final screen = ((context.size?.height ?? 600) - 80).clamp(120.0, 4000.0);
+    switch (event.logicalKey) {
+      case LogicalKeyboardKey.arrowDown:
+        _scrollBy(64);
+      case LogicalKeyboardKey.arrowUp:
+        _scrollBy(-64);
+      case LogicalKeyboardKey.pageDown:
+        _scrollBy(screen);
+      case LogicalKeyboardKey.pageUp:
+        _scrollBy(-screen);
+      case LogicalKeyboardKey.space:
+        _scrollBy(shift ? -screen : screen);
+      case LogicalKeyboardKey.home:
+        _scrollToEnd(top: true);
+      case LogicalKeyboardKey.end:
+        _scrollToEnd(top: false);
+      case LogicalKeyboardKey.escape:
+        if (widget.onEscape == null) return KeyEventResult.ignored;
+        widget.onEscape!();
+      default:
+        return KeyEventResult.ignored;
+    }
+    return KeyEventResult.handled;
+  }
+
+  void _scrollBy(double dy) {
+    final html = _html.currentState;
+    if (html != null) {
+      html.scrollBy(dy);
+    } else if (_textScroll.hasClients) {
+      final p = _textScroll.position;
+      _textScroll.jumpTo(
+        (p.pixels + dy).clamp(p.minScrollExtent, p.maxScrollExtent),
+      );
+    }
+  }
+
+  void _scrollToEnd({required bool top}) {
+    final html = _html.currentState;
+    if (html != null) {
+      html.scrollToEnd(top: top);
+    } else if (_textScroll.hasClients) {
+      final p = _textScroll.position;
+      _textScroll.jumpTo(top ? p.minScrollExtent : p.maxScrollExtent);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -96,7 +182,12 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     final message = live ?? widget.message;
     final body = ref.watch(messageBodyProvider(message.id));
 
-    return Column(
+    return Focus(
+      focusNode: _node,
+      onKeyEvent: _onKey,
+      child: PaneFocusFrame(
+        node: _node,
+        child: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
@@ -142,6 +233,8 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
           ),
         ),
       ],
+        ),
+      ),
     );
   }
 
@@ -166,11 +259,13 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     // does not. Text is the universal fallback.
     if (html != null && html.trim().isNotEmpty && !kIsWeb) {
       return HtmlBodyView(
+        key: _html,
         html: html,
         showImages: ref.watch(displayProvider).alwaysShowImages,
       );
     }
     return SingleChildScrollView(
+      controller: _textScroll,
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
       child: SelectableText(
         b.text,

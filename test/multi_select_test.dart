@@ -307,6 +307,30 @@ void main() {
       );
     });
 
+    testWidgets('its long-press menu offers Select, which ticks the thread',
+        (tester) async {
+      final c = await pump(tester);
+      c.read(displayProvider.notifier).setConversations(true);
+      await tester.pumpAndSettle();
+      final thread = tester.widget<ConversationTile>(
+        find.byType(ConversationTile).first,
+      );
+
+      await tester.longPress(
+        find.byKey(ValueKey('thread:${thread.conversation.id}')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Select'), findsOneWidget);
+      await tester.tap(find.text('Select'));
+      await tester.pumpAndSettle();
+
+      expect(
+        c.read(selectedMessageIdsProvider),
+        thread.conversation.messages.map((m) => m.id).toSet(),
+      );
+      expect(find.byType(Checkbox), findsWidgets);
+    });
+
     testWidgets('a tap on the row still opens it', (tester) async {
       // Unlike a message row, which ticks on tap while selecting: a thread
       // has to open so one message inside it can be picked out.

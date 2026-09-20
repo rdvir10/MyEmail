@@ -3,8 +3,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/mail_message.dart';
+import '../../state/conversations.dart';
+import '../../state/display_providers.dart';
 import '../../state/list_navigation.dart';
 import '../../state/message_providers.dart';
+import '../shell/pane_focus.dart';
 import 'message_actions.dart';
 
 /// Keyboard control of the message list, and landing somewhere sensible when
@@ -25,6 +28,7 @@ class MessageListKeyboard extends ConsumerStatefulWidget {
     required this.child,
     this.landOnOpen = true,
     this.onOpen,
+    this.onScreen,
   });
 
   final String listId;
@@ -37,6 +41,12 @@ class MessageListKeyboard extends ConsumerStatefulWidget {
 
   /// Enter, where the layout wants opening to do something more than select.
   final void Function(MailMessage)? onOpen;
+
+  /// The messages whose rows are on screen, for Ctrl+A. What is on screen
+  /// rather than the whole folder, for the same reason the selection bar's
+  /// button stops there: a delete one press away from thousands of
+  /// messages nobody can see the size of.
+  final List<String> Function()? onScreen;
 
   @override
   ConsumerState<MessageListKeyboard> createState() =>
@@ -68,9 +78,39 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
   void _move(int delta) {
     final next = neighbourOf(_messages, _selected, delta);
     if (next == null) return;
+    _goTo(next);
+  }
+
+  void _goTo(String id) {
     // A key press is a choice, so from here the message counts as opened.
-    ref.read(selectedMessageIdProvider.notifier).select(next);
-    ref.read(lastOpenedInFolderProvider.notifier).remember(widget.listId, next);
+    ref.read(selectedMessageIdProvider.notifier).select(id);
+    ref.read(lastOpenedInFolderProvider.notifier).remember(widget.listId, id);
+  }
+
+  /// Shift with an arrow: tick where you are and where you land, so holding
+  /// it down ticks a run, the way every file list does it.
+  void _extend(int delta) {
+    final from = _selected;
+    _move(delta);
+    final to = _selected;
+    final ticks = ref.read(selectedMessageIdsProvider.notifier);
+    ticks.addAll([?from, ?to]);
+  }
+
+  /// Open or close the conversation the current message is in. Nothing
+  /// happens on a message that is not in a thread, or with conversations
+  /// off, where there is nothing to open.
+  void _setThreadOpen(bool open) {
+    final id = _selected;
+    if (id == null || !ref.read(displayProvider).conversations) return;
+    for (final c in groupIntoConversations(_messages)) {
+      if (!c.isThread || !c.messages.any((m) => m.id == id)) continue;
+      final expanded = ref.read(expandedConversationsProvider);
+      if (expanded.contains(c.id) != open) {
+        ref.read(expandedConversationsProvider.notifier).toggle(c.id);
+      }
+      return;
+    }
   }
 
   MailMessage? get _current {
@@ -87,12 +127,46 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
       return KeyEventResult.ignored;
     }
 
+    final shift = HardwareKeyboard.instance.isShiftPressed;
+    final control = HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed;
+
+    // Ctrl+A is the one Ctrl combination that is about the list itself;
+    // the rest (Ctrl+R, Ctrl+N, ...) bubble up to the shell's commands.
+    if (control) {
+      if (event.logicalKey == LogicalKeyboardKey.keyA) {
+        final onScreen = widget.onScreen?.call() ?? const <String>[];
+        if (onScreen.isEmpty) return KeyEventResult.ignored;
+        ref.read(selectedMessageIdsProvider.notifier).addAll(onScreen);
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
+
     switch (event.logicalKey) {
       case LogicalKeyboardKey.arrowDown:
-        _move(1);
+        shift ? _extend(1) : _move(1);
         return KeyEventResult.handled;
       case LogicalKeyboardKey.arrowUp:
-        _move(-1);
+        shift ? _extend(-1) : _move(-1);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.pageDown:
+        _move(10);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.pageUp:
+        _move(-10);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.home:
+        if (_messages.isNotEmpty) _goTo(_messages.first.id);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.end:
+        if (_messages.isNotEmpty) _goTo(_messages.last.id);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowRight:
+        _setThreadOpen(true);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowLeft:
+        _setThreadOpen(false);
         return KeyEventResult.handled;
       case LogicalKeyboardKey.enter:
       case LogicalKeyboardKey.numpadEnter:
@@ -145,6 +219,8 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
     }
 
     return Focus(
+      // The shell's node for the list, so F6 can come back to it.
+      focusNode: ref.watch(paneFocusProvider).list,
       autofocus: true,
       onKeyEvent: _onKey,
       child: widget.child,

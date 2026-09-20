@@ -18,6 +18,7 @@ import 'message_actions.dart';
 import '../compose/open_compose.dart';
 import 'conversation_tile.dart';
 import '../shell/app_shell.dart';
+import '../shell/pane_focus.dart';
 import 'list_keyboard.dart';
 import 'message_tile.dart';
 import 'rows_on_screen.dart';
@@ -73,7 +74,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         : _folderList(context, ref, folderId, folder, isUnified,
             accountColors, selectedId, actions);
 
-    return Column(
+    return PaneFocusFrame(
+      node: ref.watch(paneFocusProvider).list,
+      child: Column(
       children: [
         // The selection bar takes the search bar's place while messages are
         // ticked. Both at once would be two rows of controls above a list
@@ -90,6 +93,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         Expanded(
           child: MessageListKeyboard(
             listId: folderId,
+            onScreen: () => messagesOnScreen(_listKey),
             // Where there is no reading pane a message opens as its own
             // screen, so landing on one would mean walking into a folder and
             // finding a message already open on top of it.
@@ -105,6 +109,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           ),
         ),
       ],
+      ),
     );
   }
 
@@ -403,6 +408,15 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                 subtitle: Text('$count messages'),
               ),
               const Divider(height: 1),
+              // First, as on a message: the way into ticking several, and
+              // a thread is several already.
+              ListTile(
+                leading: const Icon(Icons.checklist),
+                title: const Text('Select'),
+                subtitle: Text('Tick all $count, then add more'),
+                onTap: () => Navigator.of(context).pop('select'),
+              ),
+              const Divider(height: 1),
               ListTile(
                 leading: const Icon(Icons.drive_file_move_outline),
                 title: Text('Move all $count to…'),
@@ -443,6 +457,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     final messages = conversation.messages;
     final notifier = ref.read(messagesProvider(actions.listId).notifier);
     switch (choice) {
+      case 'select':
+        ref
+            .read(selectedMessageIdsProvider.notifier)
+            .addAll([for (final m in messages) m.id]);
       case 'move':
         await actions.moveWithPrompt(context, messages);
       case 'delete':

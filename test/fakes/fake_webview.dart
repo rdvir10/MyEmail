@@ -26,6 +26,10 @@ class FakeWebViewPlatform extends WebViewPlatform {
   /// Every document handed to a controller, newest last.
   final List<String> loadedHtml = [];
 
+  /// Every scroll a controller was asked for: by (dx, dy), or to (x, y)
+  /// with `to` set.
+  final List<({int x, int y, bool to})> scrolls = [];
+
   /// Every script a controller was asked to run.
   final List<String> ranJavaScript = [];
 
@@ -82,6 +86,14 @@ class _FakeController extends PlatformWebViewController {
   @override
   Future<void> runJavaScript(String javaScript) async =>
       _platform.ranJavaScript.add(javaScript);
+
+  @override
+  Future<void> scrollBy(int x, int y) async =>
+      _platform.scrolls.add((x: x, y: y, to: false));
+
+  @override
+  Future<void> scrollTo(int x, int y) async =>
+      _platform.scrolls.add((x: x, y: y, to: true));
 
   @override
   Future<Object> runJavaScriptReturningResult(String javaScript) async {

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state/folder_drag.dart';
@@ -9,6 +10,7 @@ import '../common/problem_view.dart';
 import '../settings/edit_account_screen.dart';
 import '../messages/message_actions.dart';
 import '../settings/settings_screen.dart';
+import '../shell/pane_focus.dart';
 import 'folder_actions.dart';
 import 'folder_tile.dart';
 
@@ -27,8 +29,14 @@ class FolderTreePanel extends ConsumerWidget {
     final rows = ref.watch(treeRowsProvider);
     final selected = ref.watch(effectiveSelectedFolderIdProvider);
     final foldersAsync = ref.watch(foldersProvider);
+    final node = ref.watch(paneFocusProvider).tree;
 
-    return Column(
+    return Focus(
+      focusNode: node,
+      onKeyEvent: (_, event) => _onKey(ref, rows, selected, event),
+      child: PaneFocusFrame(
+        node: node,
+        child: Column(
       children: [
         const _FolderSearchField(),
         const Divider(height: 1),
@@ -136,7 +144,70 @@ class FolderTreePanel extends ConsumerWidget {
           ),
         ),
       ],
+        ),
+      ),
     );
+  }
+
+  /// The arrow keys walk the folders as they are shown, opening each one as
+  /// they land on it, the way Outlook's tree does. Right shows a folder's
+  /// children; Left hides them, or with nothing to hide goes up a level.
+  /// Only folder rows count: an account heading is not somewhere to be.
+  KeyEventResult _onKey(
+    WidgetRef ref,
+    List<TreeRow> rows,
+    String? selected,
+    KeyEvent event,
+  ) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    // The tree's own search box: arrows there move the caret.
+    if (focusIsInTextField()) return KeyEventResult.ignored;
+
+    final folders = [for (final r in rows) if (r is FolderRow) r];
+    if (folders.isEmpty) return KeyEventResult.ignored;
+    final at = folders.indexWhere((r) => r.folder.id == selected);
+    final row = at < 0 ? null : folders[at];
+
+    void pick(int i) {
+      final target = folders[i.clamp(0, folders.length - 1)];
+      ref.read(selectedFolderIdProvider.notifier).select(target.folder.id);
+    }
+
+    switch (event.logicalKey) {
+      case LogicalKeyboardKey.arrowDown:
+        pick(at < 0 ? 0 : at + 1);
+      case LogicalKeyboardKey.arrowUp:
+        pick(at < 0 ? 0 : at - 1);
+      case LogicalKeyboardKey.home:
+        pick(0);
+      case LogicalKeyboardKey.end:
+        pick(folders.length - 1);
+      case LogicalKeyboardKey.arrowRight:
+        if (row != null && row.hasChildren && !row.isExpanded) {
+          ref.read(expandedFoldersProvider.notifier).expand(row.folder.id);
+        }
+      case LogicalKeyboardKey.arrowLeft:
+        if (row == null) return KeyEventResult.ignored;
+        if (row.hasChildren && row.isExpanded) {
+          ref.read(expandedFoldersProvider.notifier).toggle(row.folder.id);
+        } else if (!row.flat && row.depth > 0) {
+          // The folder above: the nearest row upward one level shallower.
+          for (var i = at - 1; i >= 0; i--) {
+            if (!folders[i].flat && folders[i].depth == row.depth - 1) {
+              pick(i);
+              break;
+            }
+          }
+        }
+      case LogicalKeyboardKey.enter:
+      case LogicalKeyboardKey.numpadEnter:
+        if (selected != null) onFolderSelected?.call(selected);
+      default:
+        return KeyEventResult.ignored;
+    }
+    return KeyEventResult.handled;
   }
 
   /// Messages dropped onto a folder are moved there. The action is the same
