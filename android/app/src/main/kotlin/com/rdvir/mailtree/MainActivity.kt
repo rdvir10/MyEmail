@@ -44,6 +44,8 @@ class MainActivity : FlutterActivity() {
         // Recipients suggested from the address book, with the permission
         // that needs asked through this activity.
         contacts = ContactsBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        // A second window: another copy of this activity, in its own task.
+        WindowsBridge(this, flutterEngine.dartExecutor.binaryMessenger)
 
         files = FilesBridge(this, flutterEngine.dartExecutor.binaryMessenger)
             .also {

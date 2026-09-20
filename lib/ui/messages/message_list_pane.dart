@@ -14,6 +14,8 @@ import '../../state/providers.dart';
 import '../../state/quick_steps.dart';
 import '../../state/search_providers.dart';
 import '../../state/sync_now.dart';
+import '../../state/window_providers.dart';
+import '../../domain/window_handoff.dart';
 import '../quick_steps/quick_steps_screen.dart';
 import 'message_actions.dart';
 import '../compose/open_compose.dart';
@@ -584,7 +586,12 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     final steps = ref.read(quickStepsProvider);
     final folderIndex = ref.read(folderIndexProvider);
     final error = Theme.of(context).colorScheme.error;
+    final windows = ref.read(windowsAvailableProvider).value ?? false;
     final choice = await _menuAt(context, at, [
+      if (windows) ...[
+        _item('window', Icons.open_in_new, 'Open in new window'),
+        const PopupMenuDivider(),
+      ],
       _item('reply', Icons.reply, 'Reply'),
       _item('replyAll', Icons.reply_all, 'Reply all'),
       _item('forward', Icons.forward, 'Forward'),
@@ -660,6 +667,8 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     }
 
     switch (choice) {
+      case 'window':
+        await ref.read(windowOpenerProvider).open(MessageWindow(message));
       case 'reply':
         await openCompose(context, ref,
             kind: ComposeKind.reply, original: message);

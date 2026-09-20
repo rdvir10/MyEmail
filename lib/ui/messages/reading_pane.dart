@@ -8,6 +8,8 @@ import '../../domain/mail_message.dart';
 import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
+import '../../state/window_providers.dart';
+import '../../domain/window_handoff.dart';
 import '../compose/open_compose.dart';
 import 'attachment_bar.dart';
 import 'date_format.dart';
@@ -208,6 +210,12 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
             message: message,
             onPopOut: widget.onPopOut,
             onDelete: _delete,
+            onOpenWindow: (ref.watch(windowsAvailableProvider).value ?? false) &&
+                    widget.onPopOut != null
+                ? () => ref
+                    .read(windowOpenerProvider)
+                    .open(MessageWindow(message))
+                : null,
             // A phone's width, the shell's medium breakpoint: the header
             // has room for one of Flag and Delete, and Delete is the one
             // reached for more.
@@ -301,8 +309,13 @@ class _Header extends StatelessWidget {
     required this.onCompose,
     required this.onDelete,
     this.onPopOut,
+    this.onOpenWindow,
     this.compact = false,
   });
+
+  /// Open this message in a window of its own. Null where there are no
+  /// windows, or where this already is one.
+  final VoidCallback? onOpenWindow;
 
   final MailMessage message;
   final VoidCallback onToggleFlag;
@@ -390,9 +403,15 @@ class _Header extends StatelessWidget {
               icon: const Icon(Icons.more_vert),
               onSelected: (value) => switch (value) {
                 'flag' => onToggleFlag(),
+                'window' => onOpenWindow?.call(),
                 _ => onSaveSource?.call(),
               },
               itemBuilder: (context) => [
+                if (onOpenWindow != null)
+                  const PopupMenuItem(
+                    value: 'window',
+                    child: Text('Open in new window'),
+                  ),
                 if (compact)
                   PopupMenuItem(
                     value: 'flag',

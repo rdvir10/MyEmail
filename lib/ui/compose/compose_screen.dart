@@ -14,6 +14,8 @@ import '../../state/contact_providers.dart';
 import '../../state/compose_providers.dart';
 import '../../state/drop_providers.dart';
 import '../../state/providers.dart';
+import '../../state/window_providers.dart';
+import '../../domain/window_handoff.dart';
 import 'html_editor.dart';
 
 /// Write, reply to or forward a message.
@@ -298,6 +300,17 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
         attachments: _attachments,
       );
 
+  /// Carry on writing in a window of its own. What has been typed goes
+  /// across as it stands, and this copy closes without asking: the
+  /// message has not been lost, it has moved.
+  Future<void> _moveToWindow() async {
+    final draft = await _currentDraft();
+    if (!mounted) return;
+    final navigator = Navigator.of(context);
+    await ref.read(windowOpenerProvider).open(ComposeWindow(draft));
+    navigator.pop(false);
+  }
+
   Future<void> _saveAndLeave() async {
     setState(() {
       _sending = true;
@@ -362,6 +375,12 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
           }),
           centerTitle: false,
           actions: [
+            if (ref.watch(windowsAvailableProvider).value ?? false)
+              IconButton(
+                tooltip: 'Open in new window',
+                icon: const Icon(Icons.open_in_new),
+                onPressed: _sending ? null : _moveToWindow,
+              ),
             IconButton(
               tooltip: 'Attach',
               icon: const Icon(Icons.attach_file),

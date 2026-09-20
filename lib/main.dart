@@ -33,6 +33,10 @@ import 'state/contact_providers.dart';
 import 'state/widget_providers.dart';
 import 'theme/app_theme.dart';
 import 'ui/shell/app_shell.dart';
+import 'data/windows/window_opener.dart';
+import 'domain/window_handoff.dart';
+import 'state/window_providers.dart';
+import 'ui/shell/window_host.dart';
 import 'ui/shell/file_drop_host.dart';
 import 'ui/shell/mailbox_widget_keeper.dart';
 import 'ui/widgets/mailbox_widget_setup.dart';
@@ -79,7 +83,15 @@ Future<void> main() async {
       onAndroid ? AndroidMailNotifier() : FakeMailNotifier(permitted: false);
   final syncState = PrefsSyncStateStore();
 
-  if (onAndroid) {
+  // A second window: this copy of the app was opened to show one thing.
+  // Decided before anything that belongs to the main window — background
+  // sync, notifications, widgets — because a window is not the app, and a
+  // second copy scheduling the same work would double it.
+  final window = await windowRequestFromRoute(
+    WidgetsBinding.instance.platformDispatcher.defaultRouteName,
+  );
+
+  if (onAndroid && window == null) {
     // The channel has to exist before the background isolate posts to it, and
     // the schedule has to match what the settings screen says. Doing both here
     // also repairs the case where Android dropped the work while the app was
@@ -102,7 +114,7 @@ Future<void> main() async {
   // Android opens the app with a configure intent when a home-screen widget
   // is dropped, and expects to be told which mailbox it ended up showing.
   // Read before runApp because it decides what the first screen is.
-  final widgetToSetUp = await widgetAwaitingSetup();
+  final widgetToSetUp = window == null ? await widgetAwaitingSetup() : null;
 
   runApp(
     ProviderScope(
@@ -119,6 +131,7 @@ Future<void> main() async {
         installedVersionProvider
             .overrideWithValue(const PackageInstalledVersion()),
         if (onAndroid) ...[
+          windowOpenerProvider.overrideWithValue(const AndroidWindowOpener()),
           fileBridgeProvider.overrideWithValue(platformFileBridge()),
           deviceContactsProvider.overrideWithValue(platformDeviceContacts()),
           attachmentFilesProvider
@@ -131,17 +144,20 @@ Future<void> main() async {
               .overrideWithValue(PrefsWidgetStateStore()),
         ],
       ],
-      child: MyEmailApp(widgetToSetUp: widgetToSetUp),
+      child: MyEmailApp(widgetToSetUp: widgetToSetUp, window: window),
     ),
   );
 }
 
 class MyEmailApp extends StatefulWidget {
-  const MyEmailApp({super.key, this.widgetToSetUp});
+  const MyEmailApp({super.key, this.widgetToSetUp, this.window});
 
   /// The home-screen widget Android is waiting to hear about, if the app was
   /// opened by placing one.
   final String? widgetToSetUp;
+
+  /// What this copy of the app is a window for, when it is one.
+  final WindowRequest? window;
 
   @override
   State<MyEmailApp> createState() => _MyEmailAppState();
@@ -175,9 +191,14 @@ class _MyEmailAppState extends State<MyEmailApp> {
       darkTheme: buildTheme(Brightness.dark),
       // Light and dark follow the system, as planned.
       themeMode: ThemeMode.system,
-      home: widgetToSetUp == null
-          ? const FileDropHost(child: MailboxWidgetKeeper(child: AppShell()))
-          : MailboxWidgetSetup(appWidgetId: widgetToSetUp),
+      home: switch ((widget.window, widgetToSetUp)) {
+        (final WindowRequest request, _) =>
+          FileDropHost(child: WindowHost(request: request)),
+        (null, final String appWidgetId) =>
+          MailboxWidgetSetup(appWidgetId: appWidgetId),
+        (null, null) =>
+          const FileDropHost(child: MailboxWidgetKeeper(child: AppShell())),
+      },
     );
   }
 }

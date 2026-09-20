@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/display_settings.dart';
 import '../../state/contact_providers.dart';
 import '../../state/display_providers.dart';
+import '../../state/window_providers.dart';
 
 /// Settings, View: where the message being read goes, and how much room each
 /// row in the list gets.
@@ -51,6 +52,26 @@ class ViewSettingsScreen extends ConsumerWidget {
           ),
           const Divider(height: 1),
           const _Heading('Writing'),
+          Consumer(
+            builder: (context, ref, _) {
+              final available =
+                  ref.watch(windowsAvailableProvider).value ?? false;
+              return SwitchListTile(
+                title: const Text('Write in a new window'),
+                subtitle: Text(
+                  available
+                      ? 'New messages and replies open beside the mailbox '
+                          'rather than on top of it.'
+                      : 'Not on this device.',
+                ),
+                value: available && ref.watch(composeInWindowProvider),
+                onChanged: available
+                    ? (on) =>
+                        ref.read(composeInWindowProvider.notifier).set(on)
+                    : null,
+              );
+            },
+          ),
           Consumer(
             builder: (context, ref, _) {
               final allowed = ref.watch(contactsAccessProvider).value ?? false;

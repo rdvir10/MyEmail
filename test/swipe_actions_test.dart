@@ -101,7 +101,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.scrollUntilVisible(find.text('Swipe actions'), 200);
+      // The last row, so both are on screen whatever sits above them.
+      await tester.scrollUntilVisible(find.text('Swipe left'), 200);
 
       expect(find.text('Swipe right'), findsOneWidget);
       expect(find.text('Swipe left'), findsOneWidget);
@@ -116,7 +117,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(find.text('Swipe right'), 200);
+      await tester.scrollUntilVisible(find.text('Swipe left'), 200);
 
       // Two dropdowns carry the same item labels, so the tap has to be
       // scoped to the row it belongs to.

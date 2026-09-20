@@ -7,6 +7,8 @@ import '../../domain/mail_message.dart';
 import '../../state/compose_providers.dart';
 import '../../state/folder_tree.dart';
 import '../../state/providers.dart';
+import '../../state/window_providers.dart';
+import '../../domain/window_handoff.dart';
 import 'compose_screen.dart';
 
 /// Open a compose window.
@@ -57,6 +59,15 @@ Future<void> openCompose(
     // signature, typically — as its own paragraphs, escaped: it is text,
     // not markup, whatever it happens to contain.
     draft = draft.copyWith(htmlBody: '${textAsHtml(bodyText)}${draft.htmlBody}');
+  }
+
+  // A window of its own, if that is how writing is set to happen and this
+  // platform has windows. The draft is built here either way, so the
+  // window opens with the quoted message already in it.
+  if (ref.read(composeInWindowProvider) &&
+      (ref.read(windowsAvailableProvider).value ?? false)) {
+    await ref.read(windowOpenerProvider).open(ComposeWindow(draft));
+    return;
   }
 
   await Navigator.of(context).push(
