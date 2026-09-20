@@ -36,6 +36,8 @@ import 'ui/shell/app_shell.dart';
 import 'data/windows/window_opener.dart';
 import 'domain/window_handoff.dart';
 import 'state/window_providers.dart';
+import 'state/message_transfer.dart';
+import 'data/files/message_files.dart';
 import 'ui/shell/window_host.dart';
 import 'ui/shell/file_drop_host.dart';
 import 'ui/shell/mailbox_widget_keeper.dart';
@@ -132,6 +134,7 @@ Future<void> main() async {
             .overrideWithValue(const PackageInstalledVersion()),
         if (onAndroid) ...[
           windowOpenerProvider.overrideWithValue(const AndroidWindowOpener()),
+          messageFilesProvider.overrideWithValue(const DiskMessageFiles()),
           fileBridgeProvider.overrideWithValue(platformFileBridge()),
           deviceContactsProvider.overrideWithValue(platformDeviceContacts()),
           attachmentFilesProvider

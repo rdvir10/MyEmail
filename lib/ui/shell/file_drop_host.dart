@@ -4,7 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/files/file_bridge.dart';
 import '../../state/attachment_providers.dart';
 import '../../state/drop_providers.dart';
+import '../../state/message_providers.dart';
+import '../../state/message_transfer.dart';
 import '../../state/providers.dart';
+import '../folder_tree/folder_tile.dart';
 import '../compose/open_compose.dart';
 import '../../domain/draft.dart';
 
@@ -70,8 +73,14 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
     );
   }
 
-  Future<void> _dropped(List<IncomingFile> files) async {
-    if (!mounted || files.isEmpty) return;
+  Future<void> _dropped(DroppedFiles dropped) async {
+    if (!mounted) return;
+    if (dropped.label == messageDragLabel) {
+      await _ownMessages(dropped);
+      return;
+    }
+    final files = dropped.files;
+    if (files.isEmpty) return;
     final claimed = ref.read(dropTargetProvider).current;
     debugPrint(
       '[myemail] dropped ${files.length} file(s), '
@@ -92,6 +101,76 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
     );
   }
 
+  /// Messages dragged out of this app — this window or another copy of
+  /// it — and dropped back on it. On a folder they are moved there. Into
+  /// a message being written they are attached, as any file would be.
+  /// Anywhere else they are left alone: a file from outside starts a new
+  /// message, but a message of our own dropped on the list is far more
+  /// likely a slip than a request to forward it.
+  Future<void> _ownMessages(DroppedFiles dropped) async {
+    final ids = [
+      for (final id in (dropped.text ?? '').split('\n'))
+        if (id.trim().isNotEmpty) id.trim(),
+    ];
+    final folderId = folderUnder(
+      dropped.at / MediaQuery.devicePixelRatioOf(context),
+    );
+    if (folderId != null && ids.isNotEmpty) {
+      await _move(ids, folderId);
+      return;
+    }
+    final claimed = ref.read(dropTargetProvider).current;
+    if (claimed != null && dropped.files.isNotEmpty) claimed(dropped.files);
+  }
+
+  Future<void> _move(List<String> ids, String folderId) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final name = ref.read(folderIndexProvider)[folderId]?.displayName ?? '';
+    try {
+      // Through the engine rather than a list: the messages may be another
+      // window's, and not in any list here. Every list is re-read after.
+      await ref.read(mailEngineProvider).moveMessages(ids, folderId);
+      ref.invalidate(messagesProvider);
+      for (final account in ref.read(accountsProvider).value ?? const []) {
+        await ref.read(foldersProvider.notifier).refreshAccount(account.id);
+      }
+      messenger
+        ?..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          content: Text(
+            '${ids.length == 1 ? 'Message' : '${ids.length} messages'} moved to $name',
+          ),
+        ));
+    } catch (e) {
+      messenger
+        ?..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('Could not move: $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) => widget.child;
+}
+
+/// The folder whose row is under [point] (logical pixels), anywhere on
+/// screen, or null. Found by looking, the way a finger does, rather than
+/// by any registry of rows.
+String? folderUnder(Offset point) {
+  String? found;
+  void visit(Element e) {
+    if (found != null) return;
+    final w = e.widget;
+    if (w is FolderTile) {
+      final box = e.renderObject;
+      if (box is RenderBox && box.hasSize && box.attached) {
+        final rect = box.localToGlobal(Offset.zero) & box.size;
+        if (rect.contains(point)) found = w.row.folder.id;
+      }
+      return;
+    }
+    e.visitChildren(visit);
+  }
+
+  WidgetsBinding.instance.rootElement?.visitChildren(visit);
+  return found;
 }

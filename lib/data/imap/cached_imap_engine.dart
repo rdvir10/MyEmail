@@ -592,6 +592,14 @@ class CachedImapEngine implements MailEngine {
       historyFrom(await cache.recentAddresses());
 
   @override
+  Future<String> rawMessage(String messageId) async {
+    final (folderId, uid) = splitMessageId(messageId);
+    final (accountId, path) = splitFolderId(folderId);
+    final t = await _transport(accountId);
+    return t.fetchRaw(path, uid);
+  }
+
+  @override
   Future<List<MailAttachment>> listAttachments(String messageId) async {
     final (folderId, uid) = splitMessageId(messageId);
     final (accountId, path) = splitFolderId(folderId);

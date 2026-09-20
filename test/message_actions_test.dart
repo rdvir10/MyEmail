@@ -125,6 +125,9 @@ class _RefusingEngine implements MailEngine {
   @override
   Future<Uint8List> fetchAttachment(String messageId, String attachmentId) =>
       _inner.fetchAttachment(messageId, attachmentId);
+
+  @override
+  Future<String> rawMessage(String messageId) => _inner.rawMessage(messageId);
   @override
   Future<void> moveMessages(List<String> messageIds, String toFolderId) =>
       _inner.moveMessages(messageIds, toFolderId);

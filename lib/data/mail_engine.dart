@@ -126,6 +126,10 @@ abstract class MailEngine {
   /// The bytes of one attachment, by the id [listAttachments] gave it.
   Future<Uint8List> fetchAttachment(String messageId, String attachmentId);
 
+  /// The message as it arrived: RFC 822 text, headers and all. For saving
+  /// as an `.eml`, or attaching one message to another.
+  Future<String> rawMessage(String messageId);
+
   /// Set or clear \Seen. The folder's unread count follows on next load.
   Future<void> setRead(String messageId, bool isRead);
 

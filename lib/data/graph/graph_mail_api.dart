@@ -301,6 +301,13 @@ class GraphMailApi {
   /// `/$value` rather than the JSON with contentBytes in it: the same data
   /// without a base64 round trip through a string, which for a 20MB file is
   /// the difference between a download and an out-of-memory.
+  /// The message as MIME text, which is what Graph's `$value` on a
+  /// message is: the RFC 822 form, for an `.eml`.
+  Future<String> mime(String messageId) async => utf8.decode(
+        await _bytes(Uri.parse('$base/me/messages/${_id(messageId)}/\$value')),
+        allowMalformed: true,
+      );
+
   Future<Uint8List> attachmentBytes(String messageId, String attachmentId) =>
       _bytes(
         Uri.parse(

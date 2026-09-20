@@ -185,8 +185,21 @@ class FilesBridge(
                 "MyEmail",
                 "drop: ${clip.itemCount} item(s) offered, ${files.size} taken",
             )
-            if (files.isEmpty()) return false
-            channel.invokeMethod("dropped", files)
+            // A text item rides along with this app's own drags: the ids
+            // of the messages, so a copy of the app can move them.
+            val text = (0 until clip.itemCount)
+                .firstNotNullOfOrNull { clip.getItemAt(it).text?.toString() }
+            if (files.isEmpty() && text == null) return false
+            channel.invokeMethod(
+                "dropped",
+                mapOf(
+                    "files" to files,
+                    "label" to clip.description?.label?.toString(),
+                    "text" to text,
+                    "x" to event.x,
+                    "y" to event.y,
+                ),
+            )
             return true
         } catch (e: Exception) {
             android.util.Log.e("MyEmail", "could not take the dropped files", e)
@@ -225,6 +238,15 @@ class FilesBridge(
                         call.argument<String>("path")!!,
                         call.argument<String>("mime"),
                         call.argument<String>("name") ?: "Attachment",
+                    ),
+                )
+                "startDragMany" -> result.success(
+                    startDragMany(
+                        call.argument<List<String>>("paths") ?: emptyList(),
+                        call.argument<List<String?>>("mimes") ?: emptyList(),
+                        call.argument<List<String>>("names") ?: emptyList(),
+                        call.argument<String>("label"),
+                        call.argument<String>("text"),
                     ),
                 )
                 else -> result.notImplemented()
@@ -334,6 +356,36 @@ class FilesBridge(
             if (column >= 0 && cursor.moveToFirst()) return cursor.getString(column)
         }
         return uri.lastPathSegment?.substringAfterLast('/')
+    }
+
+    /**
+     * Several files in one drag: the first makes the ClipData, the rest
+     * are added, and a line of text goes last for whoever knows to read
+     * it. The label is how this app recognises its own drag coming back.
+     */
+    private fun startDragMany(
+        paths: List<String>,
+        mimes: List<String?>,
+        names: List<String>,
+        label: String?,
+        text: String?,
+    ): Boolean {
+        if (paths.isEmpty()) return false
+        val clip = ClipData(
+            label ?: names.firstOrNull() ?: "Files",
+            arrayOf(mimes.firstOrNull() ?: "*/*"),
+            ClipData.Item(uriFor(paths[0])),
+        )
+        for (i in 1 until paths.size) clip.addItem(ClipData.Item(uriFor(paths[i])))
+        if (text != null) clip.addItem(ClipData.Item(text))
+        val shown = if (names.size == 1) names[0] else "${names.size} messages"
+        val flags = View.DRAG_FLAG_GLOBAL or View.DRAG_FLAG_GLOBAL_URI_READ
+        return activity.window.decorView.startDragAndDrop(
+            clip,
+            NameShadow(activity, shown),
+            null,
+            flags,
+        )
     }
 
     private fun startDrag(path: String, mime: String?, name: String): Boolean {

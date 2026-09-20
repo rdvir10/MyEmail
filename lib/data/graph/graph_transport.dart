@@ -304,6 +304,10 @@ class GraphTransport implements ImapTransport {
       api.attachmentBytes(await _remoteId(path, uid), attachmentId);
 
   @override
+  Future<String> fetchRaw(String path, int uid) async =>
+      api.mime(await _remoteId(path, uid));
+
+  @override
   Future<List<int>> searchUids(
     String path,
     String query, {

@@ -144,6 +144,9 @@ class _SingleAccountReversedEngine implements MailEngine {
       _inner.fetchAttachment(messageId, attachmentId);
 
   @override
+  Future<String> rawMessage(String messageId) => _inner.rawMessage(messageId);
+
+  @override
   Future<void> setRead(String messageId, bool isRead) =>
       _inner.setRead(messageId, isRead);
 

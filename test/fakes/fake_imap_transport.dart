@@ -168,6 +168,15 @@ class FakeImapTransport implements ImapTransport {
     return MailBody(text: m.body, html: m.html);
   }
 
+  @override
+  Future<String> fetchRaw(String path, int uid) async {
+    _online();
+    calls.add('UID FETCH $path $uid RAW');
+    final m = _require(path).messages[uid];
+    if (m == null) throw StateError('No message $uid in $path');
+    return 'Subject: ${m.subject}\r\n\r\n${m.body}';
+  }
+
   /// Files on a message, keyed by uid. Empty unless a test puts some there.
   final Map<int, List<MailAttachment>> attachments = {};
 

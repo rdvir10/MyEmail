@@ -72,6 +72,32 @@ class SharedContent {
 /// A port, so the reading pane and the compose screen can be tested without
 /// a phone: [AndroidFileBridge] talks to the platform, [FakeFileBridge]
 /// records.
+/// One file in a drag out of the app.
+class DragFile {
+  const DragFile({required this.path, required this.name, this.mimeType});
+
+  final String path;
+  final String name;
+  final String? mimeType;
+}
+
+/// What landed on the app: the files, and where they came from.
+class DroppedFiles {
+  const DroppedFiles(this.files, {this.label, this.text, this.at = Offset.zero});
+
+  final List<IncomingFile> files;
+
+  /// The drag's label, which this app sets on its own drags so a copy of
+  /// it can tell a message of its own from a file from outside.
+  final String? label;
+
+  /// Text that rode along with the files, if any.
+  final String? text;
+
+  /// Where it landed, in physical pixels of the window.
+  final Offset at;
+}
+
 abstract class FileBridge {
   /// Hand the file to whatever app opens that sort of thing.
   Future<void> open(String path, {String? mimeType});
@@ -97,8 +123,16 @@ abstract class FileBridge {
     required String name,
   });
 
+  /// Begin dragging several files, with a label and a line of text along
+  /// for the ride. True if the drag started.
+  Future<bool> startDragFiles(
+    List<DragFile> files, {
+    String? label,
+    String? text,
+  });
+
   /// Called when files are dropped onto the app from somewhere else.
-  void onDropped(void Function(List<IncomingFile>) handler);
+  void onDropped(void Function(DroppedFiles) handler);
 
   /// What the app was opened to receive from a share sheet, if anything.
   /// Read once; the next call is null.
@@ -113,11 +147,25 @@ class AndroidFileBridge implements FileBridge {
     _channel.setMethodCallHandler((call) async {
       switch (call.method) {
         case 'dropped':
+          final args = call.arguments;
+          final items = args is Map ? args['files'] as List? : args as List?;
           final files = <IncomingFile>[
-            for (final item in (call.arguments as List? ?? const []))
-              ?IncomingFile.fromMap(item),
+            for (final item in items ?? const []) ?IncomingFile.fromMap(item),
           ];
-          if (files.isNotEmpty) _onDropped?.call(files);
+          final dropped = DroppedFiles(
+            files,
+            label: args is Map ? args['label'] as String? : null,
+            text: args is Map ? args['text'] as String? : null,
+            at: args is Map
+                ? Offset(
+                    (args['x'] as num?)?.toDouble() ?? 0,
+                    (args['y'] as num?)?.toDouble() ?? 0,
+                  )
+                : Offset.zero,
+          );
+          if (files.isNotEmpty || dropped.text != null) {
+            _onDropped?.call(dropped);
+          }
         case 'shared':
           final content = SharedContent.fromMap(call.arguments);
           if (content != null) _onShared?.call(content);
@@ -128,12 +176,11 @@ class AndroidFileBridge implements FileBridge {
 
   static const _channel = MethodChannel('mailtree/files');
 
-  void Function(List<IncomingFile>)? _onDropped;
+  void Function(DroppedFiles)? _onDropped;
   void Function(SharedContent)? _onShared;
 
   @override
-  void onDropped(void Function(List<IncomingFile>) handler) =>
-      _onDropped = handler;
+  void onDropped(void Function(DroppedFiles) handler) => _onDropped = handler;
 
   @override
   void onShared(void Function(SharedContent) handler) => _onShared = handler;
@@ -180,6 +227,21 @@ class AndroidFileBridge implements FileBridge {
         {'path': path, 'mime': mimeType, 'name': name},
       ) ??
       false;
+
+  @override
+  Future<bool> startDragFiles(
+    List<DragFile> files, {
+    String? label,
+    String? text,
+  }) async =>
+      await _channel.invokeMethod<bool>('startDragMany', {
+        'paths': [for (final f in files) f.path],
+        'mimes': [for (final f in files) f.mimeType],
+        'names': [for (final f in files) f.name],
+        'label': label,
+        'text': text,
+      }) ??
+      false;
 }
 
 /// Everywhere that is not a phone: the browser preview, and every test.
@@ -189,7 +251,12 @@ class FakeFileBridge implements FileBridge {
   final List<String> copied = [];
   final List<String> dragged = [];
   List<IncomingFile> onClipboard = const [];
-  void Function(List<IncomingFile>)? handler;
+  void Function(DroppedFiles)? handler;
+
+  /// Every drag of several files, as the lists handed over.
+  final List<List<DragFile>> draggedFiles = [];
+  String? draggedLabel;
+  String? draggedText;
 
   @override
   Future<void> open(String path, {String? mimeType}) async => opened.add(path);
@@ -220,11 +287,28 @@ class FakeFileBridge implements FileBridge {
   }
 
   @override
-  void onDropped(void Function(List<IncomingFile>) handler) =>
-      this.handler = handler;
+  Future<bool> startDragFiles(
+    List<DragFile> files, {
+    String? label,
+    String? text,
+  }) async {
+    draggedFiles.add(files);
+    draggedLabel = label;
+    draggedText = text;
+    return true;
+  }
+
+  @override
+  void onDropped(void Function(DroppedFiles) handler) => this.handler = handler;
 
   /// Pretend something was dropped on the app.
-  void drop(List<IncomingFile> files) => handler?.call(files);
+  void drop(
+    List<IncomingFile> files, {
+    String? label,
+    String? text,
+    Offset at = Offset.zero,
+  }) =>
+      handler?.call(DroppedFiles(files, label: label, text: text, at: at));
 
   /// What the app was "opened with", for a test of a cold-start share.
   SharedContent? openedWith;

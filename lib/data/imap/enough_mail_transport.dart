@@ -164,6 +164,18 @@ class EnoughMailTransport implements ImapTransport {
       });
 
   @override
+  Future<String> fetchRaw(String path, int uid) => _run((c) async {
+        await _ensureSelected(c, path);
+        final result = await c.uidFetchMessage(uid, 'BODY.PEEK[]');
+        if (result.messages.isEmpty) {
+          throw StateError('Message $uid in $path no longer exists');
+        }
+        // Rendered from the parsed message rather than read off the wire:
+        // the same headers and parts, in the form every client reads.
+        return result.messages.first.renderMessage();
+      });
+
+  @override
   Future<List<MailAttachment>> listAttachments(String path, int uid) =>
       _run((c) async {
         await _ensureSelected(c, path);

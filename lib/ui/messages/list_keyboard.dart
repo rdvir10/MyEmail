@@ -7,6 +7,7 @@ import '../../state/conversations.dart';
 import '../../state/display_providers.dart';
 import '../../state/list_navigation.dart';
 import '../../state/message_providers.dart';
+import '../../state/message_transfer.dart';
 import '../shell/pane_focus.dart';
 import 'message_actions.dart';
 
@@ -160,6 +161,12 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
         final onScreen = widget.onScreen?.call() ?? const <String>[];
         if (onScreen.isEmpty) return KeyEventResult.ignored;
         ref.read(selectedMessageIdsProvider.notifier).addAll(onScreen);
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.keyC) {
+        final message = _current;
+        if (message == null) return KeyEventResult.ignored;
+        copyMessage(ref, context, message);
         return KeyEventResult.handled;
       }
       return KeyEventResult.ignored;

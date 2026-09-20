@@ -483,6 +483,33 @@ class SampleMailEngine implements MailEngine {
   }
 
   @override
+  Future<String> rawMessage(String messageId) async {
+    await _latency();
+    final folderId = messageId.substring(0, messageId.lastIndexOf('#'));
+    final message = _messages[folderId]?.firstWhere(
+      (m) => m.id == messageId,
+      orElse: () => throw StateError('No such message: $messageId'),
+    );
+    if (message == null) throw StateError('No such message: $messageId');
+    final body = await loadMessageBody(messageId);
+    // A plain message in the form every client reads: the sample data has
+    // no wire form to hand back, so one is written from what it has.
+    String address(MailAddress a) =>
+        a.name == null ? a.email : '${a.name} <${a.email}>';
+    return [
+      'From: ${address(message.from)}',
+      'To: ${message.to.map(address).join(', ')}',
+      'Subject: ${message.subject}',
+      'Date: ${message.date.toUtc().toIso8601String()}',
+      'Message-ID: <${message.uid}@sample.example.com>',
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      body.text,
+    ].join('\r\n');
+  }
+
+  @override
   Future<Uint8List> fetchAttachment(
     String messageId,
     String attachmentId,

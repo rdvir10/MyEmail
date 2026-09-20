@@ -37,6 +37,11 @@ class WindowsBridge(
         try {
             when (call.method) {
                 "available" -> result.success(Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
+                // Split screen, a pop-up, a DeX window: anything but the
+                // whole screen.
+                "inMultiWindow" -> result.success(
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && activity.isInMultiWindowMode,
+                )
                 "open" -> {
                     val route = call.argument<String>("route")
                     if (route.isNullOrEmpty()) {

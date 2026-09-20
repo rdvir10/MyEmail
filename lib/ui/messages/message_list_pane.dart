@@ -15,6 +15,7 @@ import '../../state/quick_steps.dart';
 import '../../state/search_providers.dart';
 import '../../state/sync_now.dart';
 import '../../state/window_providers.dart';
+import '../../state/message_transfer.dart';
 import '../../domain/window_handoff.dart';
 import '../quick_steps/quick_steps_screen.dart';
 import 'message_actions.dart';
@@ -402,12 +403,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     }
                     widget.onOpen(m);
                   },
-                  // A long press ticks: it is how selecting starts on a
-                  // screen with no right button. Adds rather than starts,
-                  // so a long press mid-selection takes one more.
-                  onLongPress: () => ref
-                      .read(selectedMessageIdsProvider.notifier)
-                      .addAll([m.id]),
+                  // No long press of its own: the draggable around this
+                  // row owns the long press, and ticks on its behalf. Two
+                  // long-press recognisers on one row and the inner one
+                  // wins the gesture, which is a drag that never starts.
                   onContextMenu: (at) =>
                       _showMessageMenu(context, ref, actions, m, at),
                   key: ValueKey('tile:${m.id}'),
@@ -421,6 +420,26 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     dragAnchorStrategy: pointerDragAnchorStrategy,
                     feedback: _DragFeedback(message: m),
                     childWhenDragging: Opacity(opacity: 0.35, child: tile),
+                    // Sharing the screen, the pull becomes a drag out of the
+                    // app — as .eml files the other window can take — and
+                    // Android takes the finger, which ends this one. Every
+                    // ticked message comes along if this row is one of them.
+                    // A long press ticks: it is how selecting starts on a
+                    // screen with no right button. Adds rather than starts,
+                    // so a long press mid-selection takes one more. Held
+                    // on and pulled, the row is being dragged, within the
+                    // app or — sharing the screen — out of it.
+                    onDragStarted: () {
+                      final wasTicked = ticked.contains(m.id);
+                      ref
+                          .read(selectedMessageIdsProvider.notifier)
+                          .addAll([m.id]);
+                      if (!ref.read(multiWindowModeProvider)) return;
+                      final all = wasTicked
+                          ? [for (final x in messages) if (ticked.contains(x.id)) x]
+                          : [m];
+                      dragMessages(ref, all);
+                    },
                     child: tile,
                   ),
                 );
@@ -620,6 +639,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           ),
         ),
       if (steps.isNotEmpty) const PopupMenuDivider(),
+      _item('copy', Icons.copy_outlined, 'Copy'),
       _item('select', Icons.checklist, 'Select'),
       _item('move', Icons.drive_file_move_outline, 'Move to…'),
       _item(
@@ -685,6 +705,8 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       case 'forward':
         await openCompose(context, ref,
             kind: ComposeKind.forward, original: message);
+      case 'copy':
+        await copyMessage(ref, context, message);
       case 'select':
         ref.read(selectedMessageIdsProvider.notifier).addAll([message.id]);
       case 'move':

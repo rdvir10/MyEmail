@@ -18,6 +18,10 @@ abstract class WindowOpener {
   /// Whether this platform can have two windows at all.
   Future<bool> available();
 
+  /// Whether this window shares the screen right now: split screen, a
+  /// pop-up, a DeX window.
+  Future<bool> inMultiWindow();
+
   /// True once the window exists. False when the system did not open
   /// one — One UI, asked from a full-screen app, has been seen to answer
   /// with its Recents picker instead — so the caller keeps what it was
@@ -58,6 +62,10 @@ class AndroidWindowOpener implements WindowOpener {
       await _channel.invokeMethod<bool>('available') ?? false;
 
   @override
+  Future<bool> inMultiWindow() async =>
+      await _channel.invokeMethod<bool>('inMultiWindow') ?? false;
+
+  @override
   Future<bool> open(WindowRequest request) async {
     final dir = Directory(
       '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}windows',
@@ -94,8 +102,14 @@ class FakeWindowOpener implements WindowOpener {
   final bool opens;
   final List<WindowRequest> opened = [];
 
+  /// Whether the window is pretending to share the screen.
+  bool multiWindow = false;
+
   @override
   Future<bool> available() async => supported;
+
+  @override
+  Future<bool> inMultiWindow() async => multiWindow;
 
   @override
   Future<bool> open(WindowRequest request) async {

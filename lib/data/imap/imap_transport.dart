@@ -50,6 +50,9 @@ abstract class ImapTransport {
 
   Future<MailBody> fetchBody(String path, int uid);
 
+  /// The whole message as the server holds it, RFC 822 text.
+  Future<String> fetchRaw(String path, int uid);
+
   /// What is attached to a message, without downloading any of it.
   ///
   /// One cheap request on both transports — a BODYSTRUCTURE over IMAP, a

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/imap/imap_mapping.dart';
 import '../../domain/mail_message.dart';
 import '../../state/message_providers.dart';
+import '../../state/message_transfer.dart';
 import '../../state/sync_providers.dart';
 import '../../domain/display_settings.dart';
 import '../../state/display_providers.dart';
@@ -97,9 +98,23 @@ class _AppShellState extends ConsumerState<AppShell>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) return;
+    ref.read(multiWindowModeProvider.notifier).refresh();
     ref.invalidate(messagesProvider);
     ref.invalidate(foldersProvider);
     _openLaunchMessage();
+  }
+
+  /// Entering or leaving split screen changes the window's size, and
+  /// whether a pulled message leaves the app.
+  @override
+  void didChangeMetrics() {
+    if (!mounted) return;
+    try {
+      ref.read(multiWindowModeProvider.notifier).refresh();
+    } on StateError {
+      // The metrics also change as a test's window is reset, after the
+      // providers have gone; nothing to refresh then.
+    }
   }
 
   /// A tap on a new-mail notification launched the app. Select that message's
