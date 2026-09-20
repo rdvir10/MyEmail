@@ -9,6 +9,7 @@ import '../../state/providers.dart';
 import '../../state/search_providers.dart';
 import '../../state/sync_now.dart';
 import '../compose/open_compose.dart';
+import '../messages/forward_as_attachment.dart';
 import '../messages/message_actions.dart';
 import 'pane_focus.dart';
 
@@ -45,6 +46,7 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
       control: HardwareKeyboard.instance.isControlPressed ||
           HardwareKeyboard.instance.isMetaPressed,
       shift: HardwareKeyboard.instance.isShiftPressed,
+      alt: HardwareKeyboard.instance.isAltPressed,
     );
     if (command == null) return KeyEventResult.ignored;
     _run(command);
@@ -73,6 +75,8 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
           await openCompose(context, ref,
               kind: ComposeKind.forward, original: message);
         }
+      case AppCommand.forwardAsAttachment:
+        if (message != null) await forwardAsAttachment(context, ref, [message]);
       case AppCommand.delete:
         if (message != null && listId != null) {
           await MessageActions(ref, listId).delete(context, [message]);
@@ -154,6 +158,7 @@ enum AppCommand {
   reply,
   replyAll,
   forward,
+  forwardAsAttachment,
   delete,
   markRead,
   markUnread,
@@ -174,13 +179,15 @@ AppCommand? commandFor(
   LogicalKeyboardKey key, {
   required bool control,
   required bool shift,
+  bool alt = false,
 }) {
   if (control) {
     return switch (key) {
       LogicalKeyboardKey.keyN => AppCommand.newMessage,
       LogicalKeyboardKey.keyR =>
         shift ? AppCommand.replyAll : AppCommand.reply,
-      LogicalKeyboardKey.keyF => AppCommand.forward,
+      LogicalKeyboardKey.keyF =>
+        alt ? AppCommand.forwardAsAttachment : AppCommand.forward,
       LogicalKeyboardKey.keyD => AppCommand.delete,
       LogicalKeyboardKey.keyQ => AppCommand.markRead,
       LogicalKeyboardKey.keyU => AppCommand.markUnread,
@@ -238,6 +245,7 @@ const shortcutHelp = <String, List<ShortcutHelp>>{
     ShortcutHelp('Ctrl+R', 'Reply'),
     ShortcutHelp('Ctrl+Shift+R', 'Reply all'),
     ShortcutHelp('Ctrl+F', 'Forward'),
+    ShortcutHelp('Ctrl+Alt+F', 'Forward as attachment'),
     ShortcutHelp('Ctrl+D', 'Delete'),
     ShortcutHelp('Ctrl+Q', 'Mark as read'),
     ShortcutHelp('Ctrl+U', 'Mark as unread'),

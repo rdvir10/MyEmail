@@ -18,6 +18,7 @@ import '../../state/window_providers.dart';
 import '../../state/message_transfer.dart';
 import '../../domain/window_handoff.dart';
 import '../quick_steps/quick_steps_screen.dart';
+import 'forward_as_attachment.dart';
 import 'message_actions.dart';
 import '../compose/open_compose.dart';
 import 'conversation_tile.dart';
@@ -136,6 +137,12 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     ref.listen<String?>(selectedMessageIdProvider, (_, id) {
       if (id != null) _reveal(id);
     });
+    // Ticks made on search hits belong to that search: with the box
+    // cleared or retyped, the rows they were on are gone, and a delete
+    // that reached them anyway would be a trap.
+    ref.listen<String>(searchQueryProvider, (_, _) {
+      ref.read(selectedMessageIdsProvider.notifier).clear();
+    });
     // A page arriving under the list can push the selected row about: the
     // unified Inbox merges the new page by date, and rows from the other
     // account land above it. Keep it on screen through that.
@@ -173,6 +180,12 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           SelectionBar(
             listId: folderId,
             onScreen: () => messagesOnScreen(_listKey),
+            // The rows on offer are the hits while searching, and hits can
+            // live in any folder.
+            messages: searching
+                ? ref.watch(searchResultsProvider).value ?? const []
+                : ref.watch(messagesProvider(folderId)).value ?? const [],
+            selectAllIsEverything: searching,
           )
         else
           const MessageSearchBar(),
@@ -237,6 +250,8 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     style: theme.textTheme.bodySmall),
               );
             }
+            final ticked = ref.watch(selectedMessageIdsProvider);
+            final selecting = ticked.isNotEmpty;
             return ListView.separated(
               key: _listKey,
               itemCount: results.length,
@@ -247,6 +262,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                   key: ValueKey('search:${m.id}'),
                   message: m,
                   isSelected: m.id == selectedId,
+                  isTicked: selecting ? ticked.contains(m.id) : null,
+                  onTicked: (_) =>
+                      ref.read(selectedMessageIdsProvider.notifier).toggle(m.id),
                   density: ref.watch(listDensityProvider),
                   accountColor: accountColors[m.accountId],
                   folderLabel: index[m.folderId]?.displayName,
@@ -254,6 +272,13 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     ref.read(selectedMessageIdProvider.notifier).select(m.id);
                     widget.onOpen(m);
                   },
+                  // No drag out of a search: the hits are not one folder's
+                  // rows. A long press ticks, as it does in a folder.
+                  onLongPress: () => ref
+                      .read(selectedMessageIdsProvider.notifier)
+                      .addAll([m.id]),
+                  onContextMenu: (at) =>
+                      _showMessageMenu(context, ref, actions, m, at),
                 );
               },
             );
@@ -614,6 +639,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       _item('reply', Icons.reply, 'Reply'),
       _item('replyAll', Icons.reply_all, 'Reply all'),
       _item('forward', Icons.forward, 'Forward'),
+      _item('forwardAttach', Icons.attach_email_outlined, 'Forward as attachment'),
       const PopupMenuDivider(),
       for (final step in steps)
         PopupMenuItem<String>(
@@ -705,6 +731,8 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       case 'forward':
         await openCompose(context, ref,
             kind: ComposeKind.forward, original: message);
+      case 'forwardAttach':
+        await forwardAsAttachment(context, ref, [message]);
       case 'copy':
         await copyMessage(ref, context, message);
       case 'select':

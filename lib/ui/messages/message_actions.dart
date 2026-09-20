@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/mail_message.dart';
+import '../../state/folder_tree.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
+import '../../state/search_providers.dart';
 import 'move_to_sheet.dart';
 
 /// Move and delete, shared by the swipe gestures, the message menu and the
@@ -48,10 +50,19 @@ class MessageActions {
   ) async {
     if (messages.isEmpty) return;
     final name = ref.read(folderIndexProvider)[toFolderId]?.displayName ?? '';
+    final (held, elsewhere) = _split(messages);
     try {
-      await ref
-          .read(messagesProvider(listId).notifier)
-          .move([for (final m in messages) m.id], toFolderId);
+      if (held.isNotEmpty) {
+        await ref
+            .read(messagesProvider(listId).notifier)
+            .move([for (final m in held) m.id], toFolderId);
+      }
+      if (elsewhere.isNotEmpty) {
+        await ref
+            .read(mailEngineProvider)
+            .moveMessages([for (final m in elsewhere) m.id], toFolderId);
+        await _afterEngineChange(elsewhere, touched: [toFolderId]);
+      }
       ref.read(recentMoveTargetsProvider.notifier).record(toFolderId);
       if (context.mounted) {
         _say(context, '${_count(messages.length)} moved to $name');
@@ -66,13 +77,87 @@ class MessageActions {
     List<MailMessage> messages,
   ) async {
     if (messages.isEmpty) return;
+    final (held, elsewhere) = _split(messages);
     try {
-      await ref
-          .read(messagesProvider(listId).notifier)
-          .delete([for (final m in messages) m.id]);
+      if (held.isNotEmpty) {
+        await ref
+            .read(messagesProvider(listId).notifier)
+            .delete([for (final m in held) m.id]);
+      }
+      if (elsewhere.isNotEmpty) {
+        await ref
+            .read(mailEngineProvider)
+            .deleteMessages([for (final m in elsewhere) m.id]);
+        await _afterEngineChange(elsewhere);
+      }
       if (context.mounted) _say(context, '${_count(messages.length)} deleted');
     } catch (e) {
       if (context.mounted) _say(context, 'Could not delete: $e');
+    }
+  }
+
+  /// Read or unread, for several at once.
+  Future<void> setRead(List<MailMessage> messages, bool isRead) async {
+    final (held, elsewhere) = _split(messages);
+    final notifier = ref.read(messagesProvider(listId).notifier);
+    for (final m in held) {
+      await notifier.setRead(m.id, isRead);
+    }
+    if (elsewhere.isNotEmpty) {
+      final engine = ref.read(mailEngineProvider);
+      for (final m in elsewhere) {
+        await engine.setRead(m.id, isRead);
+      }
+      await _afterEngineChange(elsewhere);
+    }
+  }
+
+  Future<void> setFlagged(List<MailMessage> messages, bool isFlagged) async {
+    final (held, elsewhere) = _split(messages);
+    final notifier = ref.read(messagesProvider(listId).notifier);
+    for (final m in held) {
+      await notifier.setFlagged(m.id, isFlagged);
+    }
+    if (elsewhere.isNotEmpty) {
+      final engine = ref.read(mailEngineProvider);
+      for (final m in elsewhere) {
+        await engine.setFlagged(m.id, isFlagged);
+      }
+      await _afterEngineChange(elsewhere);
+    }
+  }
+
+  /// The messages this list holds, and the rest.
+  ///
+  /// A search hit can live in any folder of any account, and the list's
+  /// notifier only knows the rows it is showing: asked about a message it
+  /// does not hold, it does nothing, quietly. Those go to the engine
+  /// directly, and every list that might show them is re-read afterwards.
+  (List<MailMessage>, List<MailMessage>) _split(List<MailMessage> messages) {
+    final held = {
+      for (final m in ref.read(messagesProvider(listId)).value ?? const [])
+        m.id,
+    };
+    return (
+      [for (final m in messages) if (held.contains(m.id)) m],
+      [for (final m in messages) if (!held.contains(m.id)) m],
+    );
+  }
+
+  Future<void> _afterEngineChange(
+    List<MailMessage> changed, {
+    List<String> touched = const [],
+  }) async {
+    for (final folderId in {
+      ...changed.map((m) => m.folderId),
+      ...touched,
+      kUnifiedInboxId,
+    }) {
+      ref.invalidate(messagesProvider(folderId));
+    }
+    ref.invalidate(searchResultsProvider);
+    for (final accountId in changed.map((m) => m.accountId).toSet()) {
+      await ref.read(foldersProvider.notifier).refreshAccount(accountId);
     }
   }
 

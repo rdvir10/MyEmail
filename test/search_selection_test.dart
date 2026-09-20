@@ -119,7 +119,11 @@ void main() {
       c.read(selectedMessageIdsProvider.notifier).addAll([hits.first.message.id]);
       await tester.pumpAndSettle();
 
-      await search(tester, '');
+      // The bar stands where the search box was while anything is ticked,
+      // so the query cannot be retyped from the screen; it can still change
+      // underneath (a scope change, a cleared box on another pane).
+      c.read(searchQueryProvider.notifier).set('');
+      await tester.pumpAndSettle();
 
       expect(c.read(selectedMessageIdsProvider), isEmpty,
           reason: 'a tick on a hit that is no longer shown is a trap');
