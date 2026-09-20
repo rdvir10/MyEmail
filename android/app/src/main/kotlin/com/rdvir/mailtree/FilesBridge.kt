@@ -2,7 +2,6 @@ package com.rdvir.mailtree
 
 import android.app.Activity
 import android.content.ClipData
-import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -16,6 +15,7 @@ import android.os.Build
 import android.util.TypedValue
 import android.view.DragEvent
 import android.view.View
+import android.view.ViewGroup
 import androidx.core.content.FileProvider
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
@@ -45,6 +45,15 @@ class FilesBridge(
     private val authority: String
         get() = "${activity.packageName}.files"
 
+    /// The transparent sheet that catches drops. Kept so it can be put back
+    /// on top after anything else is added over it.
+    private var catcher: View? = null
+
+    /// Called when the app comes back to the front: a platform view added
+    /// while it was away — a WebView opening a message — is added above
+    /// whatever was there, and the catcher has to be above that.
+    fun keepOnTop() = catcher?.bringToFront()
+
     /**
      * Listen for files dragged into the window from another app.
      *
@@ -54,22 +63,61 @@ class FilesBridge(
      * still catch every drop.
      */
     fun listenForDrops() {
-        activity.window.decorView.setOnDragListener { _, event ->
+        val listener = View.OnDragListener { _, event ->
             when (event.action) {
-                DragEvent.ACTION_DRAG_STARTED ->
-                    event.clipDescription?.hasMimeType("*/*") == true ||
-                        event.clipDescription?.let { hasAnything(it) } == true
+                // True whatever is being dragged. Refusing by type here
+                // means never hearing about the drop, and what can be made
+                // of it is better judged when it lands.
+                DragEvent.ACTION_DRAG_STARTED -> true
                 DragEvent.ACTION_DROP -> handleDrop(event)
                 else -> true
             }
         }
-    }
 
-    private fun hasAnything(description: ClipDescription): Boolean {
-        for (i in 0 until description.mimeTypeCount) {
-            if (description.getMimeType(i) != null) return true
+        val root = activity.findViewById<ViewGroup>(android.R.id.content)
+        if (root == null) {
+            activity.window.decorView.setOnDragListener(listener)
+            return
         }
-        return false
+
+        // A sheet of glass over the whole app, and the reason for it:
+        //
+        // Android gives a drop to the deepest view that said it wanted the
+        // drag, and a WebView always says yes. The message editor is a
+        // WebView, so dropping a file onto the body of a message being
+        // written went to the WebView, which can do nothing with a PDF, and
+        // the app never heard about the drop at all. Dropping on the header
+        // worked, which is how this was found.
+        //
+        // The catcher sits above everything, so it is the deepest
+        // interested view wherever the file lands. It takes no touches: a
+        // view that is not clickable returns false from onTouchEvent, and
+        // the dispatch carries on to the app underneath.
+        val view = View(activity).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            isClickable = false
+            isFocusable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            setOnDragListener(listener)
+        }
+        catcher = view
+        // Posted, not added now. This runs while the activity is being set
+        // up, before Flutter has put its own view in — so adding the
+        // catcher here puts it underneath, where the WebView inside Flutter
+        // takes every drop before it. Hence the first version of this: a
+        // file dropped on a message header attached, and the same file
+        // dropped on the body vanished.
+        root.post {
+            root.addView(view)
+            view.bringToFront()
+        }
+
+        // The window itself as well, for a drop that lands somewhere the
+        // catcher does not cover — a dialog, or a system-drawn inset.
+        activity.window.decorView.setOnDragListener(listener)
     }
 
     private fun handleDrop(event: DragEvent): Boolean {
@@ -85,6 +133,10 @@ class FilesBridge(
             }
         try {
             val files = copyIn(clip)
+            android.util.Log.i(
+                "MyEmail",
+                "drop: ${clip.itemCount} item(s) offered, ${files.size} taken",
+            )
             if (files.isEmpty()) return false
             channel.invokeMethod("dropped", files)
             return true
@@ -169,8 +221,19 @@ class FilesBridge(
             activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         // Android only lets the focused app read this, which is the case
         // here because reading it is something the person just asked for.
-        val clip = clipboard.primaryClip ?: return emptyList()
-        return copyIn(clip)
+        val clip = clipboard.primaryClip
+        val taken = if (clip == null) emptyList() else copyIn(clip)
+        // Shapes, not contents: how many items were on the clipboard, how
+        // many of them were files, and how many came across. Enough to tell
+        // an empty clipboard from one this app could not read, without
+        // putting what was copied into the system log.
+        android.util.Log.i(
+            "MyEmail",
+            "paste: clip=${clip != null} items=${clip?.itemCount ?: 0} " +
+                "uris=${clip?.let { c -> (0 until c.itemCount).count { c.getItemAt(it).uri != null } } ?: 0} " +
+                "taken=${taken.size}",
+        )
+        return taken
     }
 
     /**

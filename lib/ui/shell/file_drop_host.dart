@@ -36,6 +36,10 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
   Future<void> _dropped(List<IncomingFile> files) async {
     if (!mounted || files.isEmpty) return;
     final claimed = ref.read(dropTargetProvider).current;
+    debugPrint(
+      '[myemail] dropped ${files.length} file(s), '
+      '${claimed == null ? 'no message open, starting one' : 'into the open message'}',
+    );
     if (claimed != null) {
       claimed(files);
       return;

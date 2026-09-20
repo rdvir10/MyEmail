@@ -90,6 +90,13 @@ class MainActivity : FlutterActivity() {
             .getAppWidgetIds(ComponentName(this, MailboxCountWidgetProvider::class.java))
             .map { it.toString() }
 
+    override fun onResume() {
+        super.onResume()
+        // Anything Flutter adds — the web view a message body renders in —
+        // goes above what was there, so the drop catcher is put back on top.
+        files?.keepOnTop()
+    }
+
     /**
      * Placing a home-screen widget while the app is already running.
      *
