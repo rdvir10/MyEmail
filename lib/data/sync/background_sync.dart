@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../../domain/account.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
@@ -125,6 +127,16 @@ class BackgroundSync {
     if (next != null && next != watermark) {
       await state.writeWatermark(folder.id, next);
     }
+
+    // Counts and the folder's own name, nothing from any message: enough to
+    // tell "nothing new" from "new but already read" from "muted" when a
+    // notification that was expected does not arrive.
+    debugPrint(
+      '[myemail] pass ${folder.displayName} · ${account.displayName}: '
+      '${messages.length} in window, ${messages.where((m) => !m.isRead).length} '
+      'unread, mark $watermark→$next, ${fresh.length} to announce, '
+      'announce=$announce',
+    );
 
     // The mark moved either way, so turning notifications on later announces
     // what arrives next rather than everything that arrived while they were

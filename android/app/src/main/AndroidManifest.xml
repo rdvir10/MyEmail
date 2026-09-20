@@ -81,22 +81,17 @@
              the installer and throws FileUriExposedException on anything
              modern. The authority must match the one MainActivity passes to
              FileProvider.getUriForFile. -->
-        <!-- Attachments handed to other apps: opened, shared, dragged out or
-             copied to the clipboard. Its own authority rather than the
-             updater's, so each says what it is for and neither can widen
-             the other by accident. -->
+        <!-- One provider, two authorities: the updater hands the installer a
+             downloaded APK, and attachments are opened, shared, dragged and
+             copied through the second name. They were two <provider>
+             elements once, and that broke the updater on every phone: both
+             were the same class, Android instantiates a provider once per
+             class, and the second authority was served by an instance that
+             only knew the first one's paths. The installer was handed a URL
+             it could not open, and 2.10.0 could not update itself. -->
         <provider
             android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.files"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/attachment_paths" />
-        </provider>
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.updates"
+            android:authorities="${applicationId}.updates;${applicationId}.files"
             android:exported="false"
             android:grantUriPermissions="true">
             <meta-data

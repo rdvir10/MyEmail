@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- What the FileProvider in AndroidManifest.xml is allowed to share.
-
-     Exactly one directory: the app's own support directory, which is where
-     apk_installer.dart writes the download. Nothing else about this app is
-     exposed, and nothing outside it is reachable. -->
+<!-- What the FileProvider in AndroidManifest.xml is allowed to share, for
+     both of its names: the downloaded update that apk_installer.dart writes,
+     and the attachments and incoming files under the cache directory. Mail,
+     accounts and the message database live elsewhere and are not reachable
+     through this. -->
 <paths>
     <files-path name="updates" path="." />
     <cache-path name="update-cache" path="." />
