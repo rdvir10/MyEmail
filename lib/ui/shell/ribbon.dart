@@ -5,6 +5,7 @@ import '../../domain/draft.dart';
 import '../../domain/mail_message.dart';
 import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
+import '../../state/sync_now.dart';
 import '../../state/providers.dart';
 import '../../state/quick_steps.dart';
 import '../../state/search_providers.dart';
@@ -152,13 +153,7 @@ class _RibbonState extends ConsumerState<Ribbon> {
   Future<void> _sync(String? listId) async {
     setState(() => _syncing = true);
     try {
-      for (final account in ref.read(accountsProvider).value ?? const []) {
-        await ref.read(foldersProvider.notifier).refreshAccount(account.id);
-      }
-      if (listId != null) {
-        ref.invalidate(messagesProvider(listId));
-        await ref.read(messagesProvider(listId).future);
-      }
+      await syncNow(ref, listId);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)

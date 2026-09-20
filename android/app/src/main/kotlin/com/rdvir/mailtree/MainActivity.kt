@@ -41,7 +41,12 @@ class MainActivity : FlutterActivity() {
         // Attachments in and out: opening, sharing, the clipboard and drag
         // and drop, all of which are content URIs underneath.
         files = FilesBridge(this, flutterEngine.dartExecutor.binaryMessenger)
-            .also { it.listenForDrops() }
+            .also {
+                it.listenForDrops()
+                // Opened from a share sheet: the files and text are on the
+                // intent that started us, and Dart will ask for them.
+                it.takeShare(intent, pushNow = false)
+            }
 
         widgetChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -113,6 +118,9 @@ class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // Shared to an app that was already running: Dart is up, so it is
+        // told straight away.
+        files?.takeShare(intent, pushNow = true)
         if (intent.action != AppWidgetManager.ACTION_APPWIDGET_CONFIGURE) return
 
         val id = intent.getIntExtra(

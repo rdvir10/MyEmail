@@ -61,6 +61,18 @@
             <intent-filter>
                 <action android:name="es.antonborri.home_widget.action.LAUNCH"/>
             </intent-filter>
+            <!-- The share sheet. A photo, a PDF, a page's address or a piece
+                 of text shared from any app becomes a new message here. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="*/*"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="*/*"/>
+            </intent-filter>
         </activity>
 
         <!-- The home-screen widget. It reads what the app and the background

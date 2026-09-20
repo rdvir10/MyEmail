@@ -39,11 +39,21 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// The text field whose outline carries this name.
-  Finder field(String label) => find.ancestor(
-        of: find.text(label),
-        matching: find.byType(TextField),
-      );
+  /// The text field on the same row as this name.
+  ///
+  /// The name is the one in the fixed-width box to the left of the field,
+  /// not the "Bcc" on the button at the end of the Cc row, which is the
+  /// same word in a different place.
+  Finder field(String label) {
+    final name = find.descendant(
+      of: find.byWidgetPredicate((w) => w is SizedBox && w.width == 64),
+      matching: find.text(label),
+    );
+    return find.descendant(
+      of: find.ancestor(of: name, matching: find.byType(Row)),
+      matching: find.byType(TextField),
+    );
+  }
 
   group('what is asked for', () {
     testWidgets('To, Cc and Subject are there from the start', (tester) async {
@@ -56,14 +66,16 @@ void main() {
       expect(field('Subject'), findsOneWidget);
     });
 
-    testWidgets('each is drawn as a box, not a bare line', (tester) async {
-      // The old row was a word and an underline, indistinguishable from a
-      // heading; nothing about it said "type here".
+    testWidgets('each is a light rule beside a muted name, in body type',
+        (tester) async {
+      // Not a bare word, which said nothing, and not an outlined box, which
+      // shouted over the message: a rule under the field, like the body.
       await open(tester, draft());
 
       final to = tester.widget<TextField>(field('To'));
-      expect(to.decoration?.border, isA<OutlineInputBorder>());
-      expect(to.decoration?.labelText, 'To');
+      expect(to.decoration?.border, isA<UnderlineInputBorder>());
+      expect(to.decoration?.filled, isFalse);
+      expect(find.text('To'), findsOneWidget, reason: 'the name, to the left');
     });
 
     testWidgets('Bcc waits behind a button', (tester) async {

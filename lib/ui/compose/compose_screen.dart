@@ -473,28 +473,44 @@ class _Field extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // An outlined box with the name inside it, rather than a bare line of
-    // text with a word to its left: the old row was indistinguishable from
-    // a heading, and nothing about it said "type here".
+    final theme = Theme.of(context);
+    // A name in muted text on the left and a light rule under the field,
+    // in the same type as the body below. Enough to say "type here" — the
+    // first version was a word and nothing else — without the outlined
+    // boxes of the second, which shouted over the message itself.
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+      padding: const EdgeInsets.fromLTRB(16, 2, 8, 2),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
+          SizedBox(
+            width: 64,
+            child: Text(
+              label,
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ),
           Expanded(
             child: TextField(
               controller: controller,
               enabled: enabled,
               autofocus: autofocus,
+              style: theme.textTheme.bodyMedium,
               keyboardType: label == 'Subject'
                   ? TextInputType.text
                   : TextInputType.emailAddress,
               textInputAction: TextInputAction.next,
               decoration: InputDecoration(
-                labelText: label,
-                border: const OutlineInputBorder(),
+                border: UnderlineInputBorder(
+                  borderSide: BorderSide(color: theme.dividerColor),
+                ),
+                enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: theme.dividerColor),
+                ),
                 isDense: true,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                filled: false,
+                contentPadding: const EdgeInsets.symmetric(vertical: 10),
               ),
             ),
           ),

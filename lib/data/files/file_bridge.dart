@@ -31,6 +31,38 @@ class IncomingFile {
   }
 }
 
+/// What another app shared to this one.
+class SharedContent {
+  const SharedContent({
+    this.files = const [],
+    this.text,
+    this.subject,
+  });
+
+  final List<IncomingFile> files;
+  final String? text;
+  final String? subject;
+
+  bool get isEmpty =>
+      files.isEmpty && (text == null || text!.trim().isEmpty);
+
+  static SharedContent? fromMap(Object? value) {
+    if (value is! Map) return null;
+    final files = <IncomingFile>[
+      for (final item in (value['files'] as List? ?? const []))
+        ?IncomingFile.fromMap(item),
+    ];
+    final text = value['text'];
+    final subject = value['subject'];
+    final content = SharedContent(
+      files: files,
+      text: text is String && text.trim().isNotEmpty ? text : null,
+      subject: subject is String && subject.trim().isNotEmpty ? subject : null,
+    );
+    return content.isEmpty ? null : content;
+  }
+}
+
 /// Files leaving and entering the app.
 ///
 /// Every one of these is the same Android idea underneath — a content URI
@@ -67,17 +99,29 @@ abstract class FileBridge {
 
   /// Called when files are dropped onto the app from somewhere else.
   void onDropped(void Function(List<IncomingFile>) handler);
+
+  /// What the app was opened to receive from a share sheet, if anything.
+  /// Read once; the next call is null.
+  Future<SharedContent?> takeShare();
+
+  /// Called when something is shared to the app while it is running.
+  void onShared(void Function(SharedContent) handler);
 }
 
 class AndroidFileBridge implements FileBridge {
   AndroidFileBridge() {
     _channel.setMethodCallHandler((call) async {
-      if (call.method != 'dropped') return null;
-      final files = <IncomingFile>[
-        for (final item in (call.arguments as List? ?? const []))
-          ?IncomingFile.fromMap(item),
-      ];
-      if (files.isNotEmpty) _onDropped?.call(files);
+      switch (call.method) {
+        case 'dropped':
+          final files = <IncomingFile>[
+            for (final item in (call.arguments as List? ?? const []))
+              ?IncomingFile.fromMap(item),
+          ];
+          if (files.isNotEmpty) _onDropped?.call(files);
+        case 'shared':
+          final content = SharedContent.fromMap(call.arguments);
+          if (content != null) _onShared?.call(content);
+      }
       return null;
     });
   }
@@ -85,10 +129,18 @@ class AndroidFileBridge implements FileBridge {
   static const _channel = MethodChannel('mailtree/files');
 
   void Function(List<IncomingFile>)? _onDropped;
+  void Function(SharedContent)? _onShared;
 
   @override
   void onDropped(void Function(List<IncomingFile>) handler) =>
       _onDropped = handler;
+
+  @override
+  void onShared(void Function(SharedContent) handler) => _onShared = handler;
+
+  @override
+  Future<SharedContent?> takeShare() async =>
+      SharedContent.fromMap(await _channel.invokeMethod<Object?>('takeShare'));
 
   @override
   Future<void> open(String path, {String? mimeType}) =>
@@ -173,6 +225,24 @@ class FakeFileBridge implements FileBridge {
 
   /// Pretend something was dropped on the app.
   void drop(List<IncomingFile> files) => handler?.call(files);
+
+  /// What the app was "opened with", for a test of a cold-start share.
+  SharedContent? openedWith;
+  void Function(SharedContent)? shareHandler;
+
+  @override
+  Future<SharedContent?> takeShare() async {
+    final content = openedWith;
+    openedWith = null;
+    return content;
+  }
+
+  @override
+  void onShared(void Function(SharedContent) handler) =>
+      shareHandler = handler;
+
+  /// Pretend something was shared to the running app.
+  void receiveShare(SharedContent content) => shareHandler?.call(content);
 }
 
 FileBridge platformFileBridge() {

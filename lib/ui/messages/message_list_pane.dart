@@ -12,6 +12,7 @@ import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import '../../state/quick_steps.dart';
 import '../../state/search_providers.dart';
+import '../../state/sync_now.dart';
 import '../quick_steps/quick_steps_screen.dart';
 import 'message_actions.dart';
 import '../compose/open_compose.dart';
@@ -216,7 +217,12 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                   )
                 : [for (final m in messages) _Row.message(m)];
 
-            return ListView.separated(
+            // Pulling down is the gesture every mail app answers with a
+            // check, so this one does too. The same check as the ribbon's
+            // Sync button, which on a phone is not there to press.
+            return RefreshIndicator(
+              onRefresh: () => _pullToSync(context, folderId),
+              child: ListView.separated(
               key: _listKey,
               itemCount: rows.length,
               separatorBuilder: (_, _) => const Divider(height: 1, indent: 28),
@@ -300,9 +306,22 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                       )
                     : swipeable;
               },
+              ),
             );
           },
         );
+  }
+
+  Future<void> _pullToSync(BuildContext context, String folderId) async {
+    try {
+      await syncNow(ref, folderId);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text('Could not sync: $e')));
+      }
+    }
   }
 
   /// Conversations flattened into the rows a ListView draws.

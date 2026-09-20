@@ -17,6 +17,7 @@ import android.view.DragEvent
 import android.view.View
 import android.view.ViewGroup
 import androidx.core.content.FileProvider
+import androidx.core.content.IntentCompat
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -48,6 +49,53 @@ class FilesBridge(
     /// The transparent sheet that catches drops. Kept so it can be put back
     /// on top after anything else is added over it.
     private var catcher: View? = null
+
+    /// A share that arrived before Dart was ready to hear about it. On a
+    /// cold start the intent is here long before the Flutter side has set a
+    /// handler, so it waits to be asked for.
+    private var pendingShare: Map<String, Any?>? = null
+
+    /**
+     * Something shared to this app from another: files under EXTRA_STREAM,
+     * text under EXTRA_TEXT, a subject if the sender gave one. Copied in
+     * now, while the grant that came with the intent still holds.
+     *
+     * Kept for Dart to collect on a cold start, and pushed straight across
+     * when the app was already running.
+     */
+    fun takeShare(intent: Intent?, pushNow: Boolean) {
+        if (intent == null) return
+        val action = intent.action
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+
+        val uris = mutableListOf<Uri>()
+        if (action == Intent.ACTION_SEND) {
+            IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                ?.let { uris.add(it) }
+        } else {
+            IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                ?.let { uris.addAll(it) }
+        }
+        intent.clipData?.let { clip ->
+            for (i in 0 until clip.itemCount) {
+                clip.getItemAt(i).uri?.let { if (it !in uris) uris.add(it) }
+            }
+        }
+
+        val share = mapOf(
+            "files" to copyIn(uris),
+            "text" to intent.getStringExtra(Intent.EXTRA_TEXT),
+            "subject" to intent.getStringExtra(Intent.EXTRA_SUBJECT),
+        )
+        // The same intent is not a share twice: a rotation hands the
+        // activity its launching intent again.
+        intent.action = null
+        if (pushNow) {
+            channel.invokeMethod("shared", share)
+        } else {
+            pendingShare = share
+        }
+    }
 
     /// Called when the app comes back to the front: a platform view added
     /// while it was away — a WebView opening a message — is added above
@@ -168,6 +216,10 @@ class FilesBridge(
                     result.success(null)
                 }
                 "paste" -> result.success(paste())
+                "takeShare" -> {
+                    result.success(pendingShare)
+                    pendingShare = null
+                }
                 "startDrag" -> result.success(
                     startDrag(
                         call.argument<String>("path")!!,
@@ -243,11 +295,15 @@ class FilesBridge(
      * withdrawn the moment the drag ends or the other app decides so. What
      * is kept has to be a copy, made now.
      */
-    private fun copyIn(clip: ClipData): List<Map<String, Any?>> {
+    private fun copyIn(clip: ClipData): List<Map<String, Any?>> =
+        copyIn(
+            (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri },
+        )
+
+    private fun copyIn(uris: List<Uri>): List<Map<String, Any?>> {
         val incoming = File(activity.cacheDir, "incoming").apply { mkdirs() }
         val taken = mutableListOf<Map<String, Any?>>()
-        for (i in 0 until clip.itemCount) {
-            val uri = clip.getItemAt(i).uri ?: continue
+        for ((i, uri) in uris.withIndex()) {
             val name = displayName(uri) ?: "file-${System.currentTimeMillis()}-$i"
             val target = File(incoming, name.replace(File.separatorChar, '_'))
             try {

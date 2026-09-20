@@ -21,6 +21,8 @@ Future<void> openCompose(
   MailMessage? original,
   String? accountId,
   List<DraftAttachment> attachments = const [],
+  String? subject,
+  String? bodyText,
 }) async {
   final resolvedAccount = accountId ??
       original?.accountId ??
@@ -45,13 +47,33 @@ Future<void> openCompose(
   // it instant and a flashed dialog looks like a glitch.
   final built = await _withSpinner(context, draftFuture);
   if (built == null || !context.mounted) return;
-  final draft = attachments.isEmpty
-      ? built
-      : built.copyWith(attachments: [...built.attachments, ...attachments]);
+  var draft = built;
+  if (attachments.isNotEmpty) {
+    draft = draft.copyWith(attachments: [...draft.attachments, ...attachments]);
+  }
+  if (subject != null) draft = draft.copyWith(subject: subject);
+  if (bodyText != null) {
+    // Shared text goes above whatever the draft started with — the
+    // signature, typically — as its own paragraphs, escaped: it is text,
+    // not markup, whatever it happens to contain.
+    draft = draft.copyWith(htmlBody: '${textAsHtml(bodyText)}${draft.htmlBody}');
+  }
 
   await Navigator.of(context).push(
     MaterialPageRoute<bool>(builder: (_) => ComposeScreen(draft: draft)),
   );
+}
+
+/// Plain text as HTML paragraphs, with nothing in it taken as markup.
+String textAsHtml(String text) {
+  final escaped = text
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+  return [
+    for (final paragraph in escaped.split(RegExp(r'\n{2,}')))
+      '<p>${paragraph.replaceAll('\n', '<br>')}</p>',
+  ].join();
 }
 
 /// Reopen a saved draft for editing.
