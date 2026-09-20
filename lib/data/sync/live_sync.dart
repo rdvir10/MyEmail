@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../../domain/sync_prefs.dart';
 import 'background_sync.dart';
 
@@ -67,20 +69,36 @@ class LiveSyncLoop {
 
     while (!_stopped && _clock().difference(startedAt) < budget) {
       var failed = false;
+      final passStarted = _clock();
+      debugPrint('[myemail] live: pass ${passes + 1} starting');
       try {
         final report = await onePass();
         passes++;
         if (!report.ok) failures++;
-      } catch (_) {
+        debugPrint(
+          '[myemail] live: pass $passes done in '
+          '${_clock().difference(passStarted).inSeconds}s, ok=${report.ok}',
+        );
+      } catch (e) {
         // Already logged by the pass. Here it only decides how long to wait.
         failures++;
         failed = true;
+        debugPrint(
+          '[myemail] live: pass ${passes + 1} threw after '
+          '${_clock().difference(passStarted).inSeconds}s: $e',
+        );
       }
 
       if (_stopped) break;
       // Deliberately after the stop check: a worker being torn down should
       // not sit in a sleep Android is waiting on.
+      final waitStarted = _clock();
+      debugPrint('[myemail] live: waiting (${failed ? 'retry' : 'next'})');
       await (failed ? _sleep(retryDelay) : waitForNext());
+      debugPrint(
+        '[myemail] live: wait ended after '
+        '${_clock().difference(waitStarted).inSeconds}s',
+      );
     }
 
     return LiveSyncOutcome(

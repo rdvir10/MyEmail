@@ -117,6 +117,13 @@ class FakeMailNotifier implements MailNotifier {
   @override
   Future<void> cancelAll() async => batches.clear();
 
+  /// What a tapped notification carried. Set by a test; read once.
+  String? launchPayload;
+
   @override
-  Future<String?> takeLaunchPayload() async => null;
+  Future<String?> takeLaunchPayload() async {
+    final payload = launchPayload;
+    launchPayload = null;
+    return payload;
+  }
 }

@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:collection/collection.dart';
 import 'package:enough_mail/enough_mail.dart' as em;
 
@@ -400,7 +401,13 @@ class CachedImapEngine implements MailEngine {
     }
     // Any of them waking is reason enough to sync every account: the pass is
     // cheap against the cache and sorting out which one spoke is not.
-    return Future.any(waits).catchError((_) => false);
+    debugPrint('[myemail] watching ${waits.length} of ${folderIds.length} inboxes');
+    final woke = await Future.any(waits).catchError((e) {
+      debugPrint('[myemail] watch failed: $e');
+      return false;
+    });
+    debugPrint('[myemail] watch ended, woke=$woke');
+    return woke;
   }
 
   /// Drop every open connection. Not part of [MailEngine]: the app holds one

@@ -59,7 +59,8 @@ class AppShell extends ConsumerStatefulWidget {
   ConsumerState<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends ConsumerState<AppShell> {
+class _AppShellState extends ConsumerState<AppShell>
+    with WidgetsBindingObserver {
   /// The message a notification tap asked for, still waiting for its folder
   /// to load. Cleared as soon as it has been shown.
   String? _pendingMessageId;
@@ -67,10 +68,36 @@ class _AppShellState extends ConsumerState<AppShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // After the first frame: the notifier may have to talk to the platform,
     // and selecting a folder during a build is a provider modification while
     // the tree is being built.
     WidgetsBinding.instance.addPostFrameCallback((_) => _openLaunchMessage());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// The app has come back to the front.
+  ///
+  /// The background pass writes new mail into the same database the lists
+  /// read from, but a list already on screen holds what it read last time
+  /// and has no idea anything changed. So the notification said "new
+  /// message" and the list did not show it, until a manual sync. Every list
+  /// and the folder counts are re-read here; against the cache that is
+  /// cheap, and it is exactly what the pass just changed.
+  ///
+  /// A notification tapped while the app was running arrives the same way,
+  /// so it is looked for again here rather than only at startup.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    ref.invalidate(messagesProvider);
+    ref.invalidate(foldersProvider);
+    _openLaunchMessage();
   }
 
   /// A tap on a new-mail notification launched the app. Select that message's

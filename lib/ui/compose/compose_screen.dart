@@ -35,11 +35,15 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
       TextEditingController(text: formatAddresses(widget.draft.to));
   late final TextEditingController _cc =
       TextEditingController(text: formatAddresses(widget.draft.cc));
+  late final TextEditingController _bcc =
+      TextEditingController(text: formatAddresses(widget.draft.bcc));
   late final TextEditingController _subject =
       TextEditingController(text: widget.draft.subject);
 
   late List<DraftAttachment> _attachments = List.of(widget.draft.attachments);
-  bool _showCc = false;
+  /// Bcc is the one line that stays hidden until asked for: it is rare, and
+  /// a row nobody uses on every message is a row between them and the body.
+  bool _showBcc = false;
   bool _sending = false;
   /// Something the person can correct by typing — a missing recipient, an
   /// address with a typo. Not a failure, and nothing to report.
@@ -54,7 +58,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
   @override
   void initState() {
     super.initState();
-    _showCc = widget.draft.cc.isNotEmpty;
+    _showBcc = widget.draft.bcc.isNotEmpty;
     _editor.addListener(_onEditorState);
     // While this screen is open, a file dropped anywhere on the app is an
     // attachment for this message rather than the start of a new one. Held
@@ -73,6 +77,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
       ..dispose();
     _to.dispose();
     _cc.dispose();
+    _bcc.dispose();
     _subject.dispose();
     super.dispose();
   }
@@ -245,6 +250,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
   Future<Draft> _currentDraft() async => widget.draft.copyWith(
         to: parseAddresses(_to.text),
         cc: parseAddresses(_cc.text),
+        bcc: parseAddresses(_bcc.text),
         subject: _subject.text,
         htmlBody: await _editor.getHtml(),
         attachments: _attachments,
@@ -349,15 +355,23 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
               label: 'To',
               controller: _to,
               enabled: !_sending,
-              trailing: _showCc
+              // A new message starts with the cursor here. A reply already
+              // has its recipients, so the cursor is better off in the body.
+              autofocus: widget.draft.to.isEmpty,
+            ),
+            _Field(
+              label: 'Cc',
+              controller: _cc,
+              enabled: !_sending,
+              trailing: _showBcc
                   ? null
                   : TextButton(
-                      onPressed: () => setState(() => _showCc = true),
-                      child: const Text('Cc'),
+                      onPressed: () => setState(() => _showBcc = true),
+                      child: const Text('Bcc'),
                     ),
             ),
-            if (_showCc)
-              _Field(label: 'Cc', controller: _cc, enabled: !_sending),
+            if (_showBcc)
+              _Field(label: 'Bcc', controller: _bcc, enabled: !_sending),
             _Field(
               label: 'Subject',
               controller: _subject,
@@ -448,35 +462,39 @@ class _Field extends StatelessWidget {
     required this.controller,
     required this.enabled,
     this.trailing,
+    this.autofocus = false,
   });
 
   final String label;
   final TextEditingController controller;
   final bool enabled;
   final Widget? trailing;
+  final bool autofocus;
 
   @override
   Widget build(BuildContext context) {
+    // An outlined box with the name inside it, rather than a bare line of
+    // text with a word to its left: the old row was indistinguishable from
+    // a heading, and nothing about it said "type here".
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 8, 4),
+      padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
       child: Row(
         children: [
-          SizedBox(
-            width: 56,
-            child: Text(label, style: Theme.of(context).textTheme.bodySmall),
-          ),
           Expanded(
             child: TextField(
               controller: controller,
               enabled: enabled,
+              autofocus: autofocus,
               keyboardType: label == 'Subject'
                   ? TextInputType.text
                   : TextInputType.emailAddress,
-              decoration: const InputDecoration(
-                border: InputBorder.none,
-                filled: false,
+              textInputAction: TextInputAction.next,
+              decoration: InputDecoration(
+                labelText: label,
+                border: const OutlineInputBorder(),
                 isDense: true,
-                contentPadding: EdgeInsets.symmetric(vertical: 8),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
               ),
             ),
           ),

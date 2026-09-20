@@ -331,7 +331,8 @@ class EnoughMailTransport implements ImapTransport {
       _run((c) async {
         await _ensureSelected(c, path);
         final woken = Completer<bool>();
-        void wake(em.ImapEvent _) {
+        void wake(em.ImapEvent event) {
+          debugPrint('[myemail] idle on $path woke: ${event.runtimeType}');
           if (!woken.isCompleted) woken.complete(true);
         }
 
@@ -345,7 +346,9 @@ class EnoughMailTransport implements ImapTransport {
         ];
 
         try {
+          debugPrint('[myemail] idle starting on $path');
           await c.idleStart();
+          debugPrint('[myemail] idle running on $path');
         } catch (e) {
           // No IDLE on this server, or it refused. Degrade to a slow poll
           // rather than failing: the caller's timeout becomes the interval.
@@ -358,7 +361,10 @@ class EnoughMailTransport implements ImapTransport {
         }
 
         try {
-          return await woken.future.timeout(timeout, onTimeout: () => false);
+          return await woken.future.timeout(timeout, onTimeout: () {
+            debugPrint('[myemail] idle on $path timed out');
+            return false;
+          });
         } finally {
           for (final s in subscriptions) {
             await s.cancel();

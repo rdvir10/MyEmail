@@ -22,7 +22,6 @@ class AndroidMailNotifier implements MailNotifier {
   final FlutterLocalNotificationsPlugin _plugin;
   bool _ready = false;
   String? _launchPayload;
-  bool _launchPayloadRead = false;
 
   /// One channel, so the user gets one row in Android's notification settings
   /// rather than one per account. Muting a single account is done in the app,
@@ -171,10 +170,11 @@ class AndroidMailNotifier implements MailNotifier {
   @override
   Future<String?> takeLaunchPayload() async {
     await ensureReady();
-    // Read once. A rebuild must not reopen the message the user already
-    // dismissed, and the launch details keep reporting the same tap forever.
-    if (_launchPayloadRead) return null;
-    _launchPayloadRead = true;
+    // Read and cleared, so a rebuild cannot reopen a message already
+    // dismissed. Not guarded beyond that: a tap while the app is running
+    // arrives through the callback and sets it afresh, and the first
+    // version of this returned null forever after the first read, which
+    // meant every notification tap after the first did nothing.
     final payload = _launchPayload;
     _launchPayload = null;
     return payload;
