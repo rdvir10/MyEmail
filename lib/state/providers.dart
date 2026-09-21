@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -170,18 +172,56 @@ final accountsProvider =
 /// rename can cascade in ways the client cannot fully predict. Optimistic
 /// updates with rollback land here in milestone 4.
 class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
+  /// Counts the changes made to the tree from here, so a listing that was
+  /// already on its way does not undo a rename or a new folder.
+  int _changes = 0;
+
   @override
   Future<Map<String, List<MailFolder>>> build() async {
     final engine = ref.watch(mailEngineProvider);
     final accounts = await ref.watch(accountsProvider.future);
+    var current = true;
+    ref.onDispose(() => current = false);
 
-    // In parallel, and each account's failure stays its own.
-    //
-    // This was a plain Future.wait over the lot, which rejects the moment any
-    // one of them does. One account with a stale sign-in therefore blanked
-    // the entire folder tree: every other account's folders vanished and the
-    // pane showed that one account's error, which reads as the app being
-    // broken for mailboxes that are working perfectly.
+    // The tree as it was last seen, which costs nothing. Listing a work
+    // mailbox is several requests to Microsoft and everything waits on it:
+    // no folders means no folder chosen, which means the phone shows
+    // "Select a folder" for as long as the listing takes.
+    final stored = await Future.wait([
+      for (final a in accounts) engine.cachedFolders(a.id),
+    ]);
+    final known = {
+      for (final (i, account) in accounts.indexed) account.id: stored[i],
+    };
+    if (known.values.any((folders) => folders.isNotEmpty)) {
+      final changes = _changes;
+      unawaited(() async {
+        final (fresh, errors) = await _list(accounts);
+        if (!current || changes != _changes) return;
+        ref.read(folderLoadErrorsProvider.notifier).replace(errors);
+        state = AsyncData(fresh);
+      }());
+      return known;
+    }
+
+    final (fresh, errors) = await _list(accounts);
+    ref.read(folderLoadErrorsProvider.notifier).replace(errors);
+    return fresh;
+  }
+
+  /// Every account's folders, from its server.
+  ///
+  /// In parallel, and each account's failure stays its own.
+  ///
+  /// This was a plain Future.wait over the lot, which rejects the moment any
+  /// one of them does. One account with a stale sign-in therefore blanked
+  /// the entire folder tree: every other account's folders vanished and the
+  /// pane showed that one account's error, which reads as the app being
+  /// broken for mailboxes that are working perfectly.
+  Future<(Map<String, List<MailFolder>>, Map<String, AccountProblem>)> _list(
+    List<Account> accounts,
+  ) async {
+    final engine = ref.read(mailEngineProvider);
     final errors = <String, AccountProblem>{};
     final lists = await Future.wait(
       accounts.map((a) async {
@@ -193,11 +233,10 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
         }
       }),
     );
-
-    ref.read(folderLoadErrorsProvider.notifier).replace(errors);
-    return {
-      for (final (i, account) in accounts.indexed) account.id: lists[i],
-    };
+    return (
+      {for (final (i, account) in accounts.indexed) account.id: lists[i]},
+      errors,
+    );
   }
 
   Future<FolderRename> rename(String folderId, String newName) async {
@@ -303,6 +342,7 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
   Future<void> _reloadAccount(String accountId) async {
     final current = state.value;
     if (current == null) return;
+    _changes++;
     final fresh = await ref.read(mailEngineProvider).loadFolders(accountId);
     // The counts are refreshed without anything waiting for them, so the
     // tree may be gone by the time the server answers — a folder switched,

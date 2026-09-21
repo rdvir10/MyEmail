@@ -621,6 +621,7 @@ class GraphTransport implements ImapTransport {
             isRead: m.isRead,
             isFlagged: m.isFlagged,
             hasAttachments: m.hasAttachments,
+            preview: m.preview,
             messageId: m.internetMessageId,
             // Graph does not return In-Reply-To with a list row, and asking
             // for it costs a second request per message. Threading falls back

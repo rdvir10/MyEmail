@@ -6,6 +6,7 @@ import 'package:myemail/data/imap/cached_imap_engine.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/message_move.dart';
 
 import 'fakes/fake_imap_transport.dart';
 
@@ -264,6 +265,91 @@ void main() {
       expect(server.calls, contains('EXPUNGE [Gmail]/Trash'));
       expect(trash.messages, isEmpty);
       expect(await cache.countMessages(a.id, '[Gmail]/Trash'), 0);
+    });
+  });
+
+  group('putting a delete back', () {
+    Future<Account> seeded() async {
+      seedGmail();
+      server.folder('INBOX')
+        ..deliver(subject: 'Keep me')
+        ..deliver(subject: 'Also keep me');
+      final a = await addAccount();
+      await engine.loadMessages('${a.id}:INBOX');
+      return a;
+    }
+
+    test('goes by the ids the server gave, where it gave them', () async {
+      final a = await seeded();
+      final inbox = '${a.id}:INBOX';
+      final before = await engine.loadMessages(inbox);
+      final doomed = before.firstWhere((m) => m.subject == 'Keep me');
+
+      final moves = await engine.deleteMessages([doomed.id]);
+
+      expect(moves.single.movedIds, hasLength(1));
+      expect(moves.single.toFolderId, '${a.id}:[Gmail]/Trash');
+      await engine.undoMoves(moves);
+
+      final after = await engine.loadMessages(inbox);
+      expect(after.map((m) => m.subject), contains('Keep me'));
+      expect(server.folder('[Gmail]/Trash').messages, isEmpty);
+    });
+
+    test('works on a server that will not say where it put them', () async {
+      // IMAP without UIDPLUS: the move happens, no COPYUID comes back, and
+      // the new UID is unknowable from the response. The Message-ID is the
+      // way back, because it follows the message into its new folder.
+      server.reportsCopyUids = false;
+      final a = await seeded();
+      final inbox = '${a.id}:INBOX';
+      final before = await engine.loadMessages(inbox);
+      final doomed = before.firstWhere((m) => m.subject == 'Keep me');
+
+      final moves = await engine.deleteMessages([doomed.id]);
+
+      expect(moves.single.movedIds, isEmpty, reason: 'the server said nothing');
+      expect(moves.single.messageIds, hasLength(1));
+      expect(canUndoAll(moves, 1), isTrue, reason: 'there is still a way back');
+
+      await engine.undoMoves(moves);
+
+      final after = await engine.loadMessages(inbox);
+      expect(after.map((m) => m.subject), contains('Keep me'));
+      expect(server.folder('[Gmail]/Trash').messages, isEmpty);
+    });
+
+    test('a message with no Message-ID at all cannot be put back', () async {
+      // Plenty of mail in the wild has none. Better to say nothing than to
+      // offer a way back that does not exist.
+      server.reportsCopyUids = false;
+      seedGmail();
+      server.folder('INBOX').deliver(subject: 'Anonymous', messageId: '');
+      final a = await addAccount();
+      final inbox = '${a.id}:INBOX';
+      final before = await engine.loadMessages(inbox);
+
+      final moves = await engine.deleteMessages([before.single.id]);
+
+      expect(canUndoAll(moves, 1), isFalse);
+    });
+
+    test('a move is put back the same way', () async {
+      final a = await seeded();
+      final inbox = '${a.id}:INBOX';
+      final before = await engine.loadMessages(inbox);
+      final one = before.first;
+
+      final moves = await engine.moveMessages([one.id], '${a.id}:Work');
+      expect(server.folder('Work').messages, hasLength(1));
+
+      await engine.undoMoves(moves);
+
+      expect(server.folder('Work').messages, isEmpty);
+      expect(
+        (await engine.loadMessages(inbox)).map((m) => m.subject),
+        contains(one.subject),
+      );
     });
   });
 }

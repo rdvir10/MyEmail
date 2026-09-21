@@ -16,6 +16,7 @@ class MessageMove {
     required this.fromFolderId,
     required this.toFolderId,
     required this.movedIds,
+    this.messageIds = const [],
   });
 
   /// The folder they came out of, and where undo puts them back.
@@ -28,8 +29,21 @@ class MessageMove {
   /// is an IMAP server without UIDPLUS, or a delete that was permanent.
   final List<String> movedIds;
 
-  /// Whether this can be put back.
-  bool get canUndo => movedIds.isNotEmpty && fromFolderId != toFolderId;
+  /// Their `Message-ID` headers, read before they moved.
+  ///
+  /// The way back when [movedIds] is empty. A Message-ID follows a message
+  /// between folders and between servers, so the destination can be looked
+  /// through for them instead. It costs a sync of that folder, which is
+  /// why it is the second choice and not the first.
+  final List<String> messageIds;
+
+  /// Whether this can be put back, by either route.
+  bool get canUndo =>
+      (movedIds.isNotEmpty || messageIds.isNotEmpty) &&
+      fromFolderId != toFolderId;
+
+  /// How many messages this accounts for.
+  int get count => movedIds.isNotEmpty ? movedIds.length : messageIds.length;
 
   @override
   String toString() =>
@@ -44,4 +58,4 @@ class MessageMove {
 bool canUndoAll(List<MessageMove> moves, int messageCount) =>
     moves.isNotEmpty &&
     moves.every((m) => m.canUndo) &&
-    moves.fold(0, (n, m) => n + m.movedIds.length) == messageCount;
+    moves.fold(0, (n, m) => n + m.count) == messageCount;

@@ -144,6 +144,43 @@ void main() {
     });
   });
 
+  group('opening the app', () {
+    test('the tree shows the folders it already knows', () async {
+      // Nothing can be chosen until there are folders, and nothing is shown
+      // until something is chosen: the phone sat on "Select a folder" for as
+      // long as a work mailbox took to list itself.
+      final engine = _StoredFoldersEngine()..gate = Completer<void>();
+      final c = containerFor(engine);
+
+      final folders = await c
+          .read(foldersProvider.future)
+          .timeout(const Duration(seconds: 5));
+
+      expect(folders.values.expand((f) => f), isNotEmpty);
+      expect(engine.gate!.isCompleted, isFalse,
+          reason: 'the listing is still running behind the tree');
+      engine.gate!.complete();
+    });
+
+    test('with nothing stored it waits for the server', () async {
+      final engine = _StoredFoldersEngine()
+        ..gate = Completer<void>()
+        ..hasStored = false;
+      final c = containerFor(engine);
+      var settled = false;
+      unawaited(c.read(foldersProvider.future).then((_) => settled = true));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(settled, isFalse);
+
+      engine.gate!.complete();
+      final folders = await c
+          .read(foldersProvider.future)
+          .timeout(const Duration(seconds: 5));
+      expect(folders.values.expand((f) => f), isNotEmpty);
+    });
+  });
+
   group('deleting a message', () {
     test('does not wait on the folder counts', () async {
       // Refreshing an account is another folder listing over the network.
@@ -222,6 +259,23 @@ class _GatedEngine extends SampleMailEngine {
       throw const ConnectionFailed('No network.');
     }
     return fromServer[folderId] ?? stored[folderId] ?? const [];
+  }
+}
+
+/// An account whose folders were listed once before, so the tree has
+/// something to show while the server is asked again.
+class _StoredFoldersEngine extends SampleMailEngine {
+  Completer<void>? gate;
+  bool hasStored = true;
+
+  @override
+  Future<List<MailFolder>> cachedFolders(String accountId) async =>
+      hasStored ? super.loadFolders(accountId) : const [];
+
+  @override
+  Future<List<MailFolder>> loadFolders(String accountId) async {
+    await gate?.future;
+    return super.loadFolders(accountId);
   }
 }
 

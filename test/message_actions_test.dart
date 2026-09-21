@@ -89,6 +89,10 @@ class _RefusingEngine implements MailEngine {
   @override
   Future<List<MailFolder>> loadFolders(String accountId) =>
       _inner.loadFolders(accountId);
+
+  @override
+  Future<List<MailFolder>> cachedFolders(String accountId) =>
+      _inner.cachedFolders(accountId);
   @override
   Future<FolderRename> renameFolder(String folderId, String newName) =>
       _inner.renameFolder(folderId, newName);
@@ -152,6 +156,9 @@ class _RefusingEngine implements MailEngine {
   @override
   Future<List<MessageMove>> deleteMessages(List<String> messageIds) =>
       _inner.deleteMessages(messageIds);
+
+  @override
+  Future<void> undoMoves(List<MessageMove> moves) => _inner.undoMoves(moves);
 
   @override
   Future<List<MailMessage>> searchMessages(

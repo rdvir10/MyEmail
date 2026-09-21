@@ -268,6 +268,7 @@ class FakeImapTransport implements ImapTransport {
         date: m.date,
         isRead: m.isRead,
         body: m.body,
+        messageId: m.messageId,
       );
       newUids.add(moved.uid);
     }
@@ -375,6 +376,7 @@ class FakeFolder {
     DateTime? date,
     bool isRead = false,
     String body = 'Hello.',
+    String? messageId,
   }) {
     final uid = nextUid++;
     final m = FakeMessage(
@@ -385,6 +387,7 @@ class FakeFolder {
       isRead: isRead,
       body: body,
       modSeq: bump(),
+      messageId: messageId ?? '<m${FakeMessage.seq++}@example.com>',
     );
     messages[uid] = m;
     return m;
@@ -421,9 +424,17 @@ class FakeMessage {
     required this.isRead,
     required this.body,
     required this.modSeq,
+    required this.messageId,
     this.isFlagged = false,
     this.html,
   });
+
+  /// Made when the message is first delivered and kept through every move.
+  /// A real Message-ID follows a message between folders and servers, which
+  /// is what lets one be found again after a move that did not say where.
+  final String messageId;
+
+  static int seq = 0;
 
   final int uid;
   final String subject;
@@ -460,5 +471,6 @@ class FakeMessage {
         isRead: isRead,
         isFlagged: isFlagged,
         hasAttachments: false,
+        messageId: messageId,
       );
 }

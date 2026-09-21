@@ -359,6 +359,25 @@ void main() {
       expect(headers.map((h) => h.subject), ['M1', 'M2', 'M3']);
     });
 
+    test('a list row carries its preview, which Graph gives for free',
+        () async {
+      // The one real difference between a Microsoft account and a Gmail one
+      // here: Graph sends bodyPreview with every row, IMAP sends nothing of
+      // the sort, and this was being thrown away. Without it a work inbox
+      // shows a wall of subjects with no second line under any of them.
+      server.message(
+        'f-inbox',
+        id: 'm1',
+        subject: 'Our call',
+        minutesAgo: 5,
+        preview: 'Hi Ron, confirming Thursday at ten.',
+      );
+
+      final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
+
+      expect(header.preview, 'Hi Ron, confirming Thursday at ten.');
+    });
+
     test('headers carry what the list row shows', () async {
       server.message(
         'f-inbox',
@@ -792,6 +811,7 @@ class _FakeGraph {
     bool isFlagged = false,
     bool hasAttachments = false,
     String? flagStatus,
+    String preview = '',
   }) {
     messages[id] = {
       'id': id,
@@ -809,7 +829,7 @@ class _FakeGraph {
         'flagStatus': flagStatus ?? (isFlagged ? 'flagged' : 'notFlagged'),
       },
       'hasAttachments': hasAttachments,
-      'bodyPreview': '',
+      'bodyPreview': preview,
     };
     _recount(folderId);
   }

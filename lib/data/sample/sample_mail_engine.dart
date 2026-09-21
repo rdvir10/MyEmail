@@ -197,6 +197,12 @@ class SampleMailEngine implements MailEngine {
     return List.unmodifiable(all.sublist(offset, min(all.length, offset + limit)));
   }
 
+  /// Nothing is stored until the folders have been listed once, which is
+  /// what a real account does before its first sync too.
+  @override
+  Future<List<MailFolder>> cachedFolders(String accountId) async =>
+      _folders[accountId] ?? const [];
+
   /// Nothing is cached until a folder has been asked for once, which is
   /// what a real cache does on the first visit to a folder too.
   @override
@@ -283,6 +289,14 @@ class SampleMailEngine implements MailEngine {
           movedIds: entry.value,
         ),
     ];
+  }
+
+  @override
+  Future<void> undoMoves(List<MessageMove> moves) async {
+    for (final move in moves) {
+      if (move.movedIds.isEmpty) continue;
+      await moveMessages(move.movedIds, move.fromFolderId);
+    }
   }
 
   @override

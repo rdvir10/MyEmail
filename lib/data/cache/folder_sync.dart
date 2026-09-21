@@ -187,6 +187,7 @@ class FolderSync {
         isRead: h.isRead,
         isFlagged: h.isFlagged,
         hasAttachments: h.hasAttachments,
+        preview: h.preview,
         messageId: h.messageId,
         inReplyTo: h.inReplyTo,
       );

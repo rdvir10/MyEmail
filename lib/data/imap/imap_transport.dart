@@ -200,6 +200,7 @@ class RemoteHeader {
     required this.isRead,
     required this.isFlagged,
     required this.hasAttachments,
+    this.preview = '',
     this.messageId,
     this.inReplyTo,
   });
@@ -212,6 +213,17 @@ class RemoteHeader {
   final bool isRead;
   final bool isFlagged;
   final bool hasAttachments;
+
+  /// The first line or two of the message, for the list row, where the
+  /// server will give it with the header.
+  ///
+  /// Graph sends `bodyPreview` with every list row and it costs nothing
+  /// extra. IMAP has no equivalent: a preview there means fetching a body
+  /// part per message, so it stays empty until the message is opened and
+  /// the body is cached. That is the whole difference between a work
+  /// account showing two lines under each subject and a Gmail one showing
+  /// them only for mail that has been read.
+  final String preview;
 
   /// This message's own `Message-ID`, and the id of the message it answers.
   ///

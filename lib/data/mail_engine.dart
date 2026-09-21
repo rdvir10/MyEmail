@@ -119,6 +119,14 @@ abstract class MailEngine {
     int limit = 50,
   });
 
+  /// The folder list as it was last seen, with no network at all.
+  ///
+  /// Empty for an account whose folders have never been listed. Shown while
+  /// [loadFolders] runs, because a tree that was right a minute ago beats an
+  /// empty screen saying "Select a folder" for the two seconds a work
+  /// mailbox takes to list itself.
+  Future<List<MailFolder>> cachedFolders(String accountId);
+
   /// What is already stored for a folder, with no network at all.
   ///
   /// The list is shown from this first and corrected when [loadMessages]
@@ -180,6 +188,14 @@ abstract class MailEngine {
   /// Answers the same way [moveMessages] does. A delete that was permanent
   /// has nothing to put back and says so with an empty entry.
   Future<List<MessageMove>> deleteMessages(List<String> messageIds);
+
+  /// Put back what [moveMessages] or [deleteMessages] reported.
+  ///
+  /// Uses the ids the server gave where it gave any. Where it did not, the
+  /// destination is synced and searched for the `Message-ID` of each message
+  /// instead, which is slower but works against a server that moves mail
+  /// without saying where it put it.
+  Future<void> undoMoves(List<MessageMove> moves);
 
   /// Search the server for [query] within [scope], newest first.
   Future<List<MailMessage>> searchMessages(

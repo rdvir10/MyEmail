@@ -184,52 +184,16 @@ class MessageActions {
     }
   }
 
-  /// Put back what a move or a delete took away.
-  ///
-  /// The ids here are the ones the messages have now, in the folder they
-  /// landed in. The ids the list was holding stopped resolving the moment
-  /// the server moved them.
-  Future<void> undo(
-    ScaffoldMessengerState messenger,
-    List<MessageMove> moves,
-  ) async {
-    try {
-      final engine = ref.read(mailEngineProvider);
-      for (final move in moves) {
-        await engine.moveMessages(move.movedIds, move.fromFolderId);
-      }
-      final index = ref.read(folderIndexProvider);
-      for (final folderId in {
-        listId,
-        kUnifiedInboxId,
-        for (final m in moves) ...[m.fromFolderId, m.toFolderId],
-      }) {
-        ref.invalidate(messagesProvider(folderId));
-      }
-      ref.invalidate(searchResultsProvider);
-      for (final accountId in {
-        for (final m in moves) ?index[m.fromFolderId]?.accountId,
-      }) {
-        await ref.read(foldersProvider.notifier).refreshAccount(accountId);
-      }
-      messenger
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
-          content: Text('${_count(moves.fold(0, (n, m) => n + m.movedIds.length))} put back'),
-        ));
-    } catch (e) {
-      // Whatever went wrong, the messages are still where the move left
-      // them; saying so is more use than a silent failure.
-      messenger
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text('Could not undo: $e')));
-    }
-  }
-
   static String _count(int n) => n == 1 ? 'Message' : '$n messages';
 
   /// [undo] and [of] together decide whether the Undo link appears: the
   /// moves must cover every one of the [of] messages acted on.
+  ///
+  /// The link's work is done through the [ProviderContainer] rather than
+  /// through this object's [WidgetRef]. A snackbar outlives the widget that
+  /// raised it — deleting from the reading pane closes the pane on the way
+  /// — and a WidgetRef belonging to a widget that has gone throws the
+  /// moment it is read. The container is the app's, and lasts as long.
   void _say(
     BuildContext context,
     String message, {
@@ -238,6 +202,9 @@ class MessageActions {
   }) {
     final messenger = ScaffoldMessenger.of(context);
     final offer = undo != null && canUndoAll(undo, of);
+    final container = offer
+        ? ProviderScope.containerOf(context, listen: false)
+        : null;
     messenger
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(
@@ -245,9 +212,51 @@ class MessageActions {
         action: offer
             ? SnackBarAction(
                 label: 'Undo',
-                onPressed: () => this.undo(messenger, undo),
+                onPressed: () => undoMoves(container!, messenger, undo, listId),
               )
             : null,
       ));
+  }
+}
+
+/// Put back what a move or a delete took away.
+///
+/// Free of any widget on purpose: see [MessageActions._say]. The ids used
+/// are the ones the messages have now, in the folder they landed in, or
+/// their Message-IDs where the server never said.
+Future<void> undoMoves(
+  ProviderContainer container,
+  ScaffoldMessengerState messenger,
+  List<MessageMove> moves,
+  String listId,
+) async {
+  try {
+    await container.read(mailEngineProvider).undoMoves(moves);
+    final index = container.read(folderIndexProvider);
+    for (final folderId in {
+      listId,
+      kUnifiedInboxId,
+      for (final m in moves) ...[m.fromFolderId, m.toFolderId],
+    }) {
+      container.invalidate(messagesProvider(folderId));
+    }
+    container.invalidate(searchResultsProvider);
+    for (final accountId in {
+      for (final m in moves) ?index[m.fromFolderId]?.accountId,
+    }) {
+      await container.read(foldersProvider.notifier).refreshAccount(accountId);
+    }
+    final total = moves.fold(0, (int n, m) => n + m.count);
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text('${total == 1 ? 'Message' : '$total messages'} put back'),
+      ));
+  } catch (e) {
+    // Whatever went wrong, the messages are still where the move left them.
+    // Saying so is more use than failing silently.
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text('Could not undo: $e')));
   }
 }

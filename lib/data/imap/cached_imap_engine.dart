@@ -446,6 +446,17 @@ class CachedImapEngine implements MailEngine {
       if (cached == null) rethrow;
       remote = cached;
     }
+    return _foldersFrom(accountId, remote);
+  }
+
+  @override
+  Future<List<MailFolder>> cachedFolders(String accountId) async {
+    final stored = folderLists.read(accountId);
+    if (stored == null) return const [];
+    return _foldersFrom(accountId, stored);
+  }
+
+  List<MailFolder> _foldersFrom(String accountId, List<RemoteFolder> remote) {
     final paths = {for (final r in remote) r.path};
     return [
       for (final (i, r) in remote.indexed)
@@ -696,6 +707,10 @@ class CachedImapEngine implements MailEngine {
       }
       if (fromPath == toPath) continue;
       final t = await _transport(accountId);
+      // Read before the move, because afterwards there is nothing left in
+      // this folder to read it from.
+      final headers =
+          await cache.messageIdsFor(accountId, fromPath, group.value);
       final landed = await t.moveMessages(fromPath, group.value, toPath);
       await cache.deleteUids(accountId, fromPath, group.value.toSet());
       // The destination picks the new messages up on its next sync; it may
@@ -708,6 +723,7 @@ class CachedImapEngine implements MailEngine {
           for (final uid in landed ?? const <int>[])
             MailMessage.idFor(toFolderId, uid),
         ],
+        messageIds: headers,
       ));
     }
     return moves;
@@ -721,6 +737,8 @@ class CachedImapEngine implements MailEngine {
       final (accountId, fromPath) = splitFolderId(group.key);
       final t = await _transport(accountId);
       final trash = await _trashPath(accountId, t);
+      final headers =
+          await cache.messageIdsFor(accountId, fromPath, group.value);
 
       if (trash == null || fromPath == trash) {
         // Already in Trash, or the account has none: delete for good. There
@@ -745,11 +763,47 @@ class CachedImapEngine implements MailEngine {
             for (final uid in landed ?? const <int>[])
               MailMessage.idFor(trashId, uid),
           ],
+          messageIds: headers,
         ));
       }
       await cache.deleteUids(accountId, fromPath, group.value.toSet());
     }
     return moves;
+  }
+
+  @override
+  Future<void> undoMoves(List<MessageMove> moves) async {
+    for (final move in moves) {
+      var ids = move.movedIds;
+      if (ids.isEmpty) ids = await _locate(move.toFolderId, move.messageIds);
+      if (ids.isEmpty) {
+        throw const ConnectionFailed(
+          'Those messages could not be found to put back.',
+        );
+      }
+      await moveMessages(ids, move.fromFolderId);
+    }
+  }
+
+  /// Find messages in [folderId] by the `Message-ID` they carry.
+  ///
+  /// The folder is synced first: this is the path taken when the server
+  /// moved the mail without saying where, so the destination may never have
+  /// been opened and have nothing cached at all.
+  Future<List<String>> _locate(
+    String folderId,
+    List<String> messageIds,
+  ) async {
+    if (messageIds.isEmpty) return const [];
+    final (accountId, path) = splitFolderId(folderId);
+    final t = await _transport(accountId);
+    await _sync(accountId, t).sync(path);
+    final uids = await cache.uidsForMessageIds(
+      accountId,
+      path,
+      messageIds.toSet(),
+    );
+    return [for (final uid in uids) MailMessage.idFor(folderId, uid)];
   }
 
   @override

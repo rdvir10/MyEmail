@@ -147,6 +147,25 @@ abstract class CacheStore {
   Future<({int min, int max})?> uidRange(String accountId, String path);
   Future<CachedMessage?> readMessage(String accountId, String path, int uid);
 
+  /// The `Message-ID` header of each of [uids] that has one, in the order
+  /// the uids were given.
+  ///
+  /// A Message-ID follows a message between folders and between servers,
+  /// which is what makes it possible to find a message again after a move
+  /// that did not say where it put it.
+  Future<List<String>> messageIdsFor(
+    String accountId,
+    String path,
+    List<int> uids,
+  );
+
+  /// The uids in [path] whose `Message-ID` is one of [messageIds].
+  Future<List<int>> uidsForMessageIds(
+    String accountId,
+    String path,
+    Set<String> messageIds,
+  );
+
   Future<void> upsertMessages(
     String accountId,
     String path,
@@ -265,6 +284,30 @@ class MemoryCacheStore implements CacheStore {
     int uid,
   ) async =>
       _folder(accountId, path)[uid];
+
+  @override
+  Future<List<String>> messageIdsFor(
+    String accountId,
+    String path,
+    List<int> uids,
+  ) async {
+    final folder = _folder(accountId, path);
+    return [
+      for (final uid in uids)
+        if (folder[uid]?.messageId case final id? when id.isNotEmpty) id,
+    ];
+  }
+
+  @override
+  Future<List<int>> uidsForMessageIds(
+    String accountId,
+    String path,
+    Set<String> messageIds,
+  ) async =>
+      [
+        for (final m in _folder(accountId, path).values)
+          if (m.messageId != null && messageIds.contains(m.messageId)) m.uid,
+      ];
 
   @override
   Future<void> upsertMessages(

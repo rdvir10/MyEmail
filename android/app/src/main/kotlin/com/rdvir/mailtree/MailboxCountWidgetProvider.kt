@@ -1,6 +1,5 @@
 package com.rdvir.mailtree
 
-import android.app.ActivityManager
 import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.graphics.Bitmap
@@ -72,7 +71,7 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
                 sizeTo(context, iconDp)
             } else {
                 setInt(R.id.mailbox_widget_tile, "setColorFilter", colour)
-                sizeToCell(options)
+                sizeToCell(context, options)
             }
 
             // Tapping opens the folder this widget is counting, not just
@@ -149,18 +148,62 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
      * API 31 and up. Below that the sizes in the layout stand, which is the
      * behaviour every device had until now.
      */
-    private fun RemoteViews.sizeToCell(options: Bundle) {
+    private fun RemoteViews.sizeToCell(context: Context, options: Bundle) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
-        val width = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0)
-        val height = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0)
-        if (width <= 0 || height <= 0) return
-
-        val icon = minOf(width.toFloat(), height * 0.72f).coerceIn(44f, 104f)
+        val icon = iconDpFor(context, options) ?: return
         for (id in intArrayOf(R.id.mailbox_widget_tile, R.id.mailbox_widget_glyph)) {
             setViewLayoutWidth(id, icon, TypedValue.COMPLEX_UNIT_DIP)
             setViewLayoutHeight(id, icon, TypedValue.COMPLEX_UNIT_DIP)
         }
         sizeBadges(icon)
+    }
+
+    /**
+     * How big to draw the icon, in dp: the cell the launcher gave, less the
+     * strip the name needs under it.
+     *
+     * The two things this must not do, both of which it used to:
+     *
+     * It must not ask ActivityManager.getLauncherLargeIconSize(). That name
+     * promises the size the launcher draws icons at and does not deliver it:
+     * on any screen under 600dp wide it returns android.R.dimen.app_icon_size,
+     * a framework constant that has been 48dp since Android 1. A launcher
+     * draws its icons at 56 to 66dp, so using it as a ceiling is what made
+     * this widget the small, shy one in a row of app icons. It reads larger
+     * on a tablet, which is why two attempts at this looked fixed here and
+     * changed nothing on the phone.
+     *
+     * And it must not read OPTION_APPWIDGET_MIN_HEIGHT as the height. MIN is
+     * the width in portrait and the height in landscape; MAX is the other way
+     * round. Reading MIN for both understated the height by a whole
+     * orientation, and multiplying that by 0.72 threw away a quarter of what
+     * was left.
+     */
+    private fun iconDpFor(context: Context, options: Bundle): Float? {
+        val portrait = context.resources.configuration.orientation ==
+            android.content.res.Configuration.ORIENTATION_PORTRAIT
+        val width = options.getInt(
+            if (portrait) AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH
+            else AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH,
+            0,
+        )
+        val height = options.getInt(
+            if (portrait) AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT
+            else AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT,
+            0,
+        )
+        // The name's line plus the margin above it.
+        val label = 20f
+        val icon = if (width > 0 && height > 0) {
+            minOf(width.toFloat(), height - label)
+        } else {
+            56f
+        }.coerceIn(48f, 96f)
+        android.util.Log.i(
+            "MyEmail",
+            "widget cell ${width}x${height}dp portrait=$portrait icon=${icon}dp",
+        )
+        return icon
     }
 
     /**
@@ -180,16 +223,8 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
         val foreground = context.getDrawable(R.drawable.ic_launcher_foreground) ?: return null
         val density = context.resources.displayMetrics.density
-        val launcher = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-        var px = launcher?.launcherLargeIconSize ?: (56 * density).toInt()
-        // Never wider than the cell the launcher gave, less room for the
-        // name under it.
-        val width = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0)
-        val height = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0)
-        if (width > 0 && height > 0) {
-            px = minOf(px, (minOf(width.toFloat(), height * 0.72f) * density).toInt())
-        }
-        px = px.coerceAtLeast((40 * density).toInt())
+        val icon = iconDpFor(context, options) ?: 56f
+        val px = (icon * density).toInt()
 
         val bitmap = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
         AdaptiveIconDrawable(ColorDrawable(colour), foreground).apply {

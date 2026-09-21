@@ -210,6 +210,39 @@ class DriftCacheStore implements CacheStore {
   }
 
   @override
+  Future<List<String>> messageIdsFor(
+    String accountId,
+    String path,
+    List<int> uids,
+  ) async {
+    if (uids.isEmpty) return const [];
+    final rows = await (db.select(db.messages)
+          ..where((m) =>
+              _folder(m, accountId, path) & m.uid.isIn(uids) &
+              m.messageId.isNotNull()))
+        .get();
+    final byUid = {for (final r in rows) r.uid: r.messageId};
+    return [
+      for (final uid in uids)
+        if (byUid[uid] case final id? when id.isNotEmpty) id,
+    ];
+  }
+
+  @override
+  Future<List<int>> uidsForMessageIds(
+    String accountId,
+    String path,
+    Set<String> messageIds,
+  ) async {
+    if (messageIds.isEmpty) return const [];
+    final rows = await (db.select(db.messages)
+          ..where((m) =>
+              _folder(m, accountId, path) & m.messageId.isIn(messageIds)))
+        .get();
+    return [for (final r in rows) r.uid];
+  }
+
+  @override
   Future<List<MailAddress>> recentAddresses({int limit = 2000}) async {
     // Across every account and folder: the person you write to from one
     // account is a person you might write to from another. Newest first,
