@@ -20,6 +20,9 @@ const caretMarker = '<span id="mailtree-caret"></span>';
 
 /// An empty line to type into, the caret marker, then the signature, then the
 /// quoted original. Outlook's shape: you write above the quote.
+/// [typedHtml] is for a reply written where there is no editor — the
+/// notification shade — and takes the place of the empty line the caret
+/// would have gone on. Everything under it is the same either way.
 String buildComposeHtml({
   required ComposeKind kind,
   MailMessage? original,
@@ -27,8 +30,11 @@ String buildComposeHtml({
   String? originalText,
   String signatureHtml = '',
   bool signatureOnReply = true,
+  String typedHtml = '',
 }) {
-  final buffer = StringBuffer('<p>$caretMarker<br></p>');
+  final buffer = StringBuffer(
+    typedHtml.isEmpty ? '<p>$caretMarker<br></p>' : typedHtml,
+  );
 
   final wantsSignature = signatureHtml.trim().isNotEmpty &&
       (kind == ComposeKind.newMessage || signatureOnReply);

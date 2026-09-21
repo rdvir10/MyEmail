@@ -139,6 +139,13 @@ abstract class MailEngine {
     int limit = 50,
   });
 
+  /// One message from the cache, by id, with no network at all.
+  ///
+  /// Null when it is not cached, which for a message that just arrived and
+  /// was announced in a notification it will be. For answering a
+  /// notification's buttons, where there is a message id and nothing else.
+  Future<MailMessage?> cachedMessage(String messageId);
+
   /// The body of one message, fetched when it is opened.
   Future<MailBody> loadMessageBody(String messageId);
 

@@ -217,6 +217,15 @@ class SampleMailEngine implements MailEngine {
   }
 
   @override
+  Future<MailMessage?> cachedMessage(String messageId) async {
+    final folderId = messageId.substring(0, messageId.lastIndexOf('#'));
+    for (final m in _messages[folderId] ?? const <MailMessage>[]) {
+      if (m.id == messageId) return m;
+    }
+    return null;
+  }
+
+  @override
   Future<MailBody> loadMessageBody(String messageId) async {
     await _latency();
     final folderId = messageId.substring(0, messageId.lastIndexOf('#'));

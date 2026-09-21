@@ -12,6 +12,8 @@ import 'data/imap/cached_imap_engine.dart';
 import 'data/mail_engine.dart';
 import 'data/sample/sample_mail_engine.dart';
 import 'data/notifications/android_mail_notifier.dart';
+import 'data/notifications/notification_action_isolate.dart';
+import 'data/notifications/notification_actions.dart';
 import 'data/notifications/mail_notifier.dart';
 import 'data/secure_credential_store.dart';
 import 'data/sync/background_worker.dart';
@@ -85,8 +87,29 @@ Future<void> main() async {
   // keeps the recording fake and never schedules anything.
   final onAndroid =
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
-  final MailNotifier notifier =
-      onAndroid ? AndroidMailNotifier() : FakeMailNotifier(permitted: false);
+  // A notification's buttons, pressed while the app is running, go through
+  // the engine that is already open rather than one built from scratch in
+  // another isolate over the same database. The accounts and signatures are
+  // read at the moment of the press, not now: either may have changed since
+  // the app started, and a reply signed with last week's signature is the
+  // sort of thing nobody thinks to report.
+  //
+  // Nothing refreshes the lists afterwards on purpose. Closing the shade
+  // brings the app back to the front, and [AppShell] re-reads everything
+  // when that happens.
+  final MailNotifier notifier = onAndroid
+      ? AndroidMailNotifier(
+          onAction: (response) async {
+            final messageId = response.payload ?? '';
+            final outcome = await NotificationActions(
+              engine: engine,
+              accounts: accountStore.read(),
+              signatures: readSignatures(PrefsUiStateStore(prefs)),
+            ).perform(response.actionId ?? '', messageId, response.input);
+            await reportOutcome(outcome, messageId);
+          },
+        )
+      : FakeMailNotifier(permitted: false);
   final syncState = PrefsSyncStateStore();
 
   // A second window: this copy of the app was opened to show one thing.

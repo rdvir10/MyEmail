@@ -601,6 +601,14 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
+  Future<MailMessage?> cachedMessage(String messageId) async {
+    final (folderId, uid) = splitMessageId(messageId);
+    final (accountId, path) = splitFolderId(folderId);
+    final row = await cache.readMessage(accountId, path, uid);
+    return row?.toMailMessage(accountId: accountId, folderId: folderId);
+  }
+
+  @override
   Future<MailBody> loadMessageBody(String messageId) async {
     final (folderId, uid) = splitMessageId(messageId);
     final (accountId, path) = splitFolderId(folderId);

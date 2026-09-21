@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../data/compose/quote_builder.dart';
+import '../data/compose/reply_draft.dart';
 import '../data/ui_state_store.dart';
 import '../domain/draft.dart';
 import '../domain/mail_message.dart';
@@ -69,65 +69,21 @@ Future<Draft> buildDraft({
     }
   }
 
-  final html = buildComposeHtml(
-    kind: kind,
-    original: original,
-    originalHtml: body?.html,
-    originalText: body?.text,
-    signatureHtml: signature.html,
-    signatureOnReply: signature.onReply,
-  );
-
-  return Draft(
-    accountId: accountId,
-    kind: kind,
-    to: _initialTo(kind, original),
-    cc: kind == ComposeKind.replyAll ? _initialCc(original, accountId, ref) : const [],
-    subject: _initialSubject(kind, original),
-    htmlBody: html,
-    inReplyTo: original == null ? null : '<${original.uid}@mailtree.local>',
-    originalMessageId: original?.id,
-  );
-}
-
-List<MailAddress> _initialTo(ComposeKind kind, MailMessage? original) {
-  if (original == null || kind == ComposeKind.forward) return const [];
-  return [original.from];
-}
-
-/// Reply-all keeps the other recipients but never the account itself, or the
-/// sender ends up on their own reply.
-List<MailAddress> _initialCc(
-  MailMessage? original,
-  String accountId,
-  WidgetRef ref,
-) {
-  if (original == null) return const [];
   final accounts = ref.read(accountsProvider).value ?? const [];
-  final self = accounts
-      .where((a) => a.id == accountId)
-      .map((a) => a.emailAddress.toLowerCase())
-      .toSet();
-  return [
-    for (final a in original.to)
-      if (!self.contains(a.email.toLowerCase())) a,
-  ];
-}
 
-String _initialSubject(ComposeKind kind, MailMessage? original) {
-  if (original == null) return '';
-  final subject = original.subject;
-  return switch (kind) {
-    ComposeKind.reply || ComposeKind.replyAll =>
-      _hasPrefix(subject, 'Re:') ? subject : 'Re: $subject',
-    ComposeKind.forward =>
-      _hasPrefix(subject, 'Fwd:') ? subject : 'Fwd: $subject',
-    ComposeKind.newMessage => '',
-  };
+  return draftFor(
+    kind: kind,
+    accountId: accountId,
+    original: original,
+    body: body,
+    signature: signature,
+    selfEmail: accounts
+        .where((a) => a.id == accountId)
+        .map((a) => a.emailAddress)
+        .firstOrNull ??
+        '',
+  );
 }
-
-bool _hasPrefix(String subject, String prefix) =>
-    subject.toLowerCase().startsWith(prefix.toLowerCase());
 
 /// Save a draft to the Drafts folder and refresh the tree so it shows there.
 ///

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' show Color;
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -5,6 +6,8 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../../domain/account.dart';
 import '../../domain/mail_folder.dart';
 import 'mail_notifier.dart';
+import 'notification_actions.dart';
+import 'notification_action_isolate.dart';
 
 /// The real notifier, on top of flutter_local_notifications.
 ///
@@ -16,10 +19,21 @@ import 'mail_notifier.dart';
 /// Android starts for the background pass — so [ensureReady] has to be safe to
 /// call from either, and neither may assume the other has run.
 class AndroidMailNotifier implements MailNotifier {
-  AndroidMailNotifier({FlutterLocalNotificationsPlugin? plugin})
-      : _plugin = plugin ?? FlutterLocalNotificationsPlugin();
+  AndroidMailNotifier({
+    FlutterLocalNotificationsPlugin? plugin,
+    this.onAction,
+  }) : _plugin = plugin ?? FlutterLocalNotificationsPlugin();
 
   final FlutterLocalNotificationsPlugin _plugin;
+
+  /// Carries out a button press while the app is running.
+  ///
+  /// Android delivers to the app's own isolate when there is one, and to a
+  /// fresh isolate when there is not. The app passes this so the press goes
+  /// through the engine that is already open rather than a second one over
+  /// the same database; without it the isolate route is used for both, which
+  /// works but does the same job twice over.
+  final Future<void> Function(NotificationResponse response)? onAction;
   bool _ready = false;
   String? _launchPayload;
 
@@ -49,8 +63,17 @@ class AndroidMailNotifier implements MailNotifier {
         // 8 job alongside the rest of the icon work.
         android: AndroidInitializationSettings('@drawable/ic_stat_mail'),
       ),
-      onDidReceiveNotificationResponse: (response) =>
-          _launchPayload = response.payload,
+      onDidReceiveNotificationResponse: (response) {
+        if (!NotificationActions.isKnown(response.actionId)) {
+          _launchPayload = response.payload;
+          return;
+        }
+        final handler = onAction;
+        unawaited(handler == null
+            ? handleNotificationActionInIsolate(response)
+            : handler(response));
+      },
+      onDidReceiveBackgroundNotificationResponse: notificationActionEntryPoint,
     );
 
     await _android?.createNotificationChannel(
@@ -99,6 +122,45 @@ class AndroidMailNotifier implements MailNotifier {
 
     final groupKey = 'mailtree.account.${account.id}';
 
+    // Three, because Android shows three and hides the rest behind nothing.
+    //
+    // Reply and Reply all open a box in the shade rather than the app:
+    // `showsUserInterface` is false and the text comes back through
+    // RemoteInput, so the whole thing happens without the app coming to the
+    // front. Delete is the same, without the box.
+    //
+    // All three dismiss the notification as they are pressed. That is the
+    // confirmation; the alternative is a row that sits there saying
+    // "Sending..." while the network decides, which is worse to look at and
+    // no more honest. Anything that goes wrong afterwards says so in a
+    // notification of its own.
+    const replyBox = AndroidNotificationActionInput(label: 'Reply');
+    const actions = <AndroidNotificationAction>[
+      AndroidNotificationAction(
+        NotificationActions.replyId,
+        'Reply',
+        inputs: [replyBox],
+        showsUserInterface: false,
+        cancelNotification: true,
+        semanticAction: SemanticAction.reply,
+      ),
+      AndroidNotificationAction(
+        NotificationActions.replyAllId,
+        'Reply all',
+        inputs: [AndroidNotificationActionInput(label: 'Reply all')],
+        showsUserInterface: false,
+        cancelNotification: true,
+        semanticAction: SemanticAction.reply,
+      ),
+      AndroidNotificationAction(
+        NotificationActions.deleteId,
+        'Delete',
+        showsUserInterface: false,
+        cancelNotification: true,
+        semanticAction: SemanticAction.delete,
+      ),
+    ];
+
     for (final n in notifications) {
       await _plugin.show(
         id: n.id,
@@ -113,6 +175,7 @@ class AndroidMailNotifier implements MailNotifier {
             importance: Importance.high,
             priority: Priority.high,
             category: AndroidNotificationCategory.email,
+            actions: actions,
             when: n.when.millisecondsSinceEpoch,
             color: Color(account.colorValue),
             // The subject and preview are two lines and will be cut off

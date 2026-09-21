@@ -122,6 +122,10 @@ class _RefusingEngine implements MailEngine {
           {int offset = 0, int limit = 50}) =>
       _inner.cachedMessages(folderId, offset: offset, limit: limit);
   @override
+  Future<MailMessage?> cachedMessage(String messageId) =>
+      _inner.cachedMessage(messageId);
+
+  @override
   Future<MailBody> loadMessageBody(String messageId) =>
       _inner.loadMessageBody(messageId);
 

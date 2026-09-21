@@ -142,6 +142,10 @@ class _SingleAccountReversedEngine implements MailEngine {
       _inner.cachedMessages(folderId, offset: offset, limit: limit);
 
   @override
+  Future<MailMessage?> cachedMessage(String messageId) =>
+      _inner.cachedMessage(messageId);
+
+  @override
   Future<MailBody> loadMessageBody(String messageId) =>
       _inner.loadMessageBody(messageId);
 
