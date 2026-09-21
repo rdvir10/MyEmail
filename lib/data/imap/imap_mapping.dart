@@ -114,6 +114,19 @@ RemoteFolder remoteFolderFromMailbox(em.Mailbox box) => RemoteFolder(
 /// mailboxes and parsed MIME text. The engine that drives the connection is
 /// thin and is exercised against a live account instead.
 
+/// A folder name with a `/` in it, made safe to put in a path.
+///
+/// The app's paths are slash-separated, and both a folder's parent and its
+/// own name are read back by splitting on that slash. Outlook lets a
+/// folder be called "AP/AR", and a mailbox at work usually has one: left
+/// alone it fakes a level, so the folder lands under a parent it does not
+/// belong to, or at the top level showing half its own name.
+///
+/// U+2215, the division slash, stands in for it. It is not the separator,
+/// it looks like what the person named the folder, and nothing is lost by
+/// it: a Graph mailbox is addressed by folder id, not by this path.
+String safePathSegment(String name) => name.replaceAll('/', '∕');
+
 /// Paths in the domain always use `/`. Servers use their own delimiter
 /// (Gmail `/`, many others `.`), so the engine converts at the boundary.
 String toModelPath(String serverPath, String delimiter) =>

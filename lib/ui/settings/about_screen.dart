@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/app_release.dart';
 import '../../state/update_providers.dart';
+import 'help_screen.dart';
 
 /// What is installed, and whether there is anything newer.
 ///
@@ -31,6 +32,21 @@ class AboutScreen extends ConsumerWidget {
                   ? 'Reading version'
                   : 'Version ${installed.version}, build ${installed.build}',
             ),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.menu_book_outlined),
+            title: const Text('User manual'),
+            subtitle: const Text('How to use MyEmail, phone and tablet'),
+            trailing: const Icon(Icons.chevron_right, size: 20),
+            onTap: () => HelpScreen.open(context, HelpPage.manual),
+          ),
+          ListTile(
+            leading: const Icon(Icons.checklist_rtl_outlined),
+            title: const Text('What it can do'),
+            subtitle: const Text('Everything on offer, listed per device'),
+            trailing: const Icon(Icons.chevron_right, size: 20),
+            onTap: () => HelpScreen.open(context, HelpPage.features),
           ),
           const Divider(height: 1),
           if (!configured)

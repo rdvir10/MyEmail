@@ -334,6 +334,7 @@ DOCS = [
         lede='Everything MyEmail offers, listed for the phone and for the tablet, '
              'since the same app gives you more where there is more screen.',
         other=('User manual.html', 'Read the user manual'),
+        asset='features.html',
         sidebar=False,
     ),
     dict(
@@ -343,6 +344,7 @@ DOCS = [
         lede='How to use MyEmail on the phone and on the tablet. Where the two '
              'differ, it says so; everything else works the same on both.',
         other=('Features.html', 'See the feature list'),
+        asset='user-manual.html',
         sidebar=True,
     ),
 ]
@@ -374,7 +376,16 @@ for doc in DOCS:
         footer='MyEmail is built for Ron Dvir. This page is generated from '
                f'<code>{html.escape(doc["name"])}.md</code> and works offline.',
     )
-    path = os.path.join(SRC, doc['name'] + '.html')
-    io.open(path, 'w', encoding='utf-8', newline='\n').write(page)
-    print('wrote', doc['name'] + '.html', f'{len(page):,} bytes,',
-          len(sections), 'sections')
+    io.open(os.path.join(SRC, doc['name'] + '.html'), 'w',
+            encoding='utf-8', newline='\n').write(page)
+
+    # The copy the app carries, so About can show it with no signal and
+    # always describe the build it is in.
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    assets = os.path.join(repo, 'assets', 'help')
+    os.makedirs(assets, exist_ok=True)
+    io.open(os.path.join(assets, doc['asset']), 'w',
+            encoding='utf-8', newline='\n').write(page)
+
+    print('wrote', doc['name'] + '.html', 'and assets/help/' + doc['asset'],
+          f'({len(page):,} bytes, {len(sections)} sections)')

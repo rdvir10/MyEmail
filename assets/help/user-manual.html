@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyEmail — user manual</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfd;
+    --card: #ffffff;
+    --fg: #1a1a1f;
+    --muted: #63636e;
+    --faint: #8b8b96;
+    --rule: #e4e4ec;
+    --accent: #2f5ea8;
+    --accent-soft: #eaf0fb;
+    --chip: #f1f2f7;
+    --shadow: 0 1px 2px rgba(16, 20, 40, .06), 0 8px 24px rgba(16, 20, 40, .05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1013;
+      --card: #17181d;
+      --fg: #e8e6ea;
+      --muted: #a6a4ad;
+      --faint: #85838d;
+      --rule: #2b2c34;
+      --accent: #9dc0ff;
+      --accent-soft: #1b2435;
+      --chip: #212229;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px rgba(0, 0, 0, .35);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16.5px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* The cover band */
+  header.cover {
+    background:
+      radial-gradient(120% 140% at 8% 0%, var(--accent-soft) 0%, transparent 60%),
+      var(--card);
+    border-bottom: 1px solid var(--rule);
+  }
+  .cover-inner { max-width: 62rem; margin: 0 auto; padding: 3rem 1.25rem 2.25rem; }
+  .eyebrow {
+    font-size: .74rem; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--accent); font-weight: 700; margin: 0 0 .6rem;
+  }
+  .cover h1 {
+    font-size: clamp(1.9rem, 5vw, 2.7rem); line-height: 1.12;
+    margin: 0 0 .5rem; letter-spacing: -.025em; font-weight: 700;
+  }
+  .cover .lede { color: var(--muted); margin: 0; max-width: 34rem; font-size: 1.04rem; }
+  .badges { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1.25rem; }
+  .badge {
+    display: inline-flex; align-items: center; gap: .4rem;
+    background: var(--chip); color: var(--muted); border: 1px solid var(--rule);
+    border-radius: 999px; padding: .3rem .8rem; font-size: .82rem; font-weight: 600;
+    text-decoration: none;
+  }
+  a.badge:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Body layout: a sticky contents column where there is room */
+  .layout { max-width: 62rem; margin: 0 auto; padding: 0 1.25rem 6rem; }
+  @media (min-width: 62rem) {
+    .layout.sidebar { display: grid; grid-template-columns: 15rem 1fr; gap: 3rem; align-items: start; }
+    nav.contents { position: sticky; top: 1.5rem; max-height: calc(100vh - 3rem); overflow: auto; }
+  }
+  /* No contents column: keep the text to a readable measure rather than
+     letting it run the full width of a tablet. */
+  .layout:not(.sidebar) article { max-width: 44rem; }
+  nav.contents { padding-top: 2.25rem; }
+  nav.contents h2 {
+    font-size: .74rem; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--faint); margin: 0 0 .6rem; border: 0; padding: 0;
+  }
+  nav.contents ol { list-style: none; margin: 0; padding: 0; counter-reset: toc; }
+  nav.contents li { margin: 0; counter-increment: toc; }
+  nav.contents a {
+    display: block; padding: .3rem 0 .3rem 1.6rem; position: relative;
+    color: var(--muted); text-decoration: none; font-size: .92rem; line-height: 1.4;
+    border-left: 2px solid transparent;
+  }
+  nav.contents a::before {
+    content: counter(toc); position: absolute; left: .45rem; top: .3rem;
+    font-size: .74rem; color: var(--faint); font-variant-numeric: tabular-nums;
+  }
+  nav.contents a:hover { color: var(--accent); border-left-color: var(--accent); }
+
+  article { padding-top: 2.25rem; min-width: 0; }
+  article > h2 {
+    font-size: 1.5rem; line-height: 1.25; letter-spacing: -.015em;
+    margin: 3rem 0 1rem; padding-top: 1.75rem; border-top: 1px solid var(--rule);
+    display: flex; align-items: center; gap: .6rem;
+  }
+  article > h2:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+  h3 { font-size: 1.12rem; margin: 2rem 0 .5rem; letter-spacing: -.01em; }
+  h4 { font-size: .95rem; margin: 1.4rem 0 .4rem; color: var(--muted);
+        text-transform: uppercase; letter-spacing: .08em; }
+  p, li { margin: .65rem 0; }
+  ul { padding-left: 1.2rem; }
+  li::marker { color: var(--faint); }
+  strong { font-weight: 650; }
+  a { color: var(--accent); text-underline-offset: .18em; }
+  hr { display: none; }
+
+  h2 svg {
+    width: 1.15em; height: 1.15em; flex: none; fill: none;
+    stroke: var(--accent); stroke-width: 1.6; stroke-linecap: round;
+  }
+
+  code {
+    background: var(--chip); border-radius: 5px; padding: .12em .38em;
+    font: .86em/1.4 ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  }
+  /* Shortcut tables: the first column reads as keys on a keyboard. */
+  table.keys td:first-child code, kbd {
+    display: inline-block; background: var(--card); border: 1px solid var(--rule);
+    border-bottom-width: 2px; border-radius: 6px; padding: .16em .5em;
+    box-shadow: 0 1px 0 rgba(0,0,0,.03); font-weight: 600; white-space: nowrap;
+  }
+
+  table {
+    width: 100%; border-collapse: separate; border-spacing: 0;
+    margin: 1.1rem 0; font-size: .95rem;
+    background: var(--card); border: 1px solid var(--rule);
+    border-radius: 12px; overflow: hidden; box-shadow: var(--shadow);
+  }
+  .scroller { overflow-x: auto; }
+  th, td { text-align: left; padding: .62rem .85rem; vertical-align: top; }
+  th {
+    font-weight: 700; color: var(--faint); font-size: .72rem;
+    text-transform: uppercase; letter-spacing: .1em;
+    background: var(--chip); border-bottom: 1px solid var(--rule);
+  }
+  td { border-bottom: 1px solid var(--rule); }
+  tbody tr:last-child td { border-bottom: 0; }
+  table.keys td:first-child { width: 13rem; }
+
+  footer {
+    max-width: 62rem; margin: 0 auto; padding: 2rem 1.25rem 4rem;
+    color: var(--faint); font-size: .85rem; border-top: 1px solid var(--rule);
+  }
+
+  @media print {
+    body { background: #fff; font-size: 10.5pt; }
+    header.cover { background: #fff; border-bottom: 1pt solid #ccc; }
+    .cover-inner, .layout, footer { max-width: none; padding: 0; }
+    nav.contents { display: none; }
+    .layout { display: block; }
+    article > h2 { break-after: avoid; }
+    table, ul, ol { break-inside: avoid; }
+    table { box-shadow: none; }
+    a { color: inherit; text-decoration: none; }
+  }
+</style>
+</head>
+<body>
+<header class="cover">
+  <div class="cover-inner">
+    <p class="eyebrow">MyEmail · manual</p>
+    <h1>User manual</h1>
+    <p class="lede">How to use MyEmail on the phone and on the tablet. Where the two differ, it says so; everything else works the same on both.</p>
+    <div class="badges"><span class="badge">Version 2.23.1</span><a class="badge" href="Features.html">See the feature list →</a></div>
+  </div>
+</header>
+<div class="layout sidebar">
+<nav class="contents"><h2>Contents</h2><ol><li><a href="#1-getting-started">Getting started</a></li><li><a href="#2-what-is-on-screen">What is on screen</a></li><li><a href="#3-reading-mail">Reading mail</a></li><li><a href="#4-writing-mail">Writing mail</a></li><li><a href="#5-sorting-and-finding">Sorting and finding</a></li><li><a href="#6-tidying-up">Tidying up</a></li><li><a href="#7-folders">Folders</a></li><li><a href="#8-being-told-about-new-mail">Being told about new mail</a></li><li><a href="#9-home-screen-widgets">Home screen widgets</a></li><li><a href="#10-windows-and-split-screen">Windows and split screen</a></li><li><a href="#11-the-keyboard">The keyboard</a></li><li><a href="#12-settings-screen-by-screen">Settings, screen by screen</a></li><li><a href="#13-backup-and-updates">Backup and updates</a></li><li><a href="#14-when-something-looks-wrong">When something looks wrong</a></li></ol></nav>
+<article>
+<p>For the phone and the tablet. Version 2.23.1.</p>
+<p>Where the two differ, it says so. Everything else works the same on both.</p>
+<hr>
+<hr>
+<h2 id="1-getting-started"><span>1. Getting started</span></h2>
+<h3 id="adding-an-account">Adding an account</h3>
+<p><strong>Settings → Accounts → Add</strong>, or the app asks on first run.</p>
+<ul><li><strong>Gmail</strong> needs an <em>app password</em>, not your ordinary one. <code>docs/gmail-app-password.md</code> walks through making one. Two-step verification has to be on first.</li><li><strong>Outlook / Microsoft 365</strong> signs you in the normal way, in a browser window, and no password is stored here.</li></ul>
+<p>Passwords and tokens go into the Android Keystore. They are never written to a file, and they are not in the settings backup unless you ask for that and set a passphrase.</p>
+<h3 id="removing-one">Removing one</h3>
+<p><strong>Settings → Accounts → Remove</strong>. It says what goes with it — the cached mail for that account — and asks before doing it.</p>
+<hr>
+<h2 id="2-what-is-on-screen"><span>2. What is on screen</span></h2>
+<h3 id="phone">Phone</h3>
+<ul><li><strong>Top bar</strong>: the folder you are in, the ☰ drawer for folders, and <strong>⋮</strong> for view and sort.</li><li><strong>Search box</strong> under it.</li><li><strong>The list</strong>, one message per row.</li><li><strong>✏️ button</strong>, bottom right, for a new message.</li><li>Tapping a message opens it on its own screen. Back returns to the list.</li></ul>
+<h3 id="tablet-upright">Tablet, upright</h3>
+<p>Folders on the left, the list beside them. A message opens on its own screen, or below the list if you set the reading pane to <strong>Below</strong>.</p>
+<h3 id="tablet-sideways">Tablet, sideways</h3>
+<p>Folders, list and the open message, all at once, under the <strong>command ribbon</strong>: Sync, New email, Delete, Reply, Reply all, Forward, Quick Steps, Move, Read, Pane, Search, Settings.</p>
+<ul><li>Drag the lines between the panes to resize them; the sizes are remembered.</li><li>The ⇤ button beside the folder name hides the folder pane and brings it back.</li><li><strong>Pane</strong> in the ribbon moves the message pane: right, below, off.</li></ul>
+<hr>
+<h2 id="3-reading-mail"><span>3. Reading mail</span></h2>
+<h3 id="the-list">The list</h3>
+<p>Bold means unread. The blue dot is the same thing. A paperclip means an attachment, a flag means flagged, and the number in a pill (<code>2</code>) means a conversation of that many messages.</p>
+<ul><li>Folders show <code>unread/total</code>, so <code>14/2310</code> is fourteen unread of two thousand three hundred and ten.</li><li>Scroll to the bottom and the next fifty load by themselves.</li><li><strong>Pull down</strong> to check for new mail.</li></ul>
+<h3 id="conversations">Conversations</h3>
+<p>Off unless you turn them on (<strong>⋮ → Conversations</strong>). On, a thread is one row; tap it to open the thread, tap again to close. Everything you can do to a message — swipe, menu, tick — a conversation row does to the whole thread, and says how many that is.</p>
+<h3 id="the-message">The message</h3>
+<p>Reply, Reply all, Forward, Read/Unread, Delete and <strong>⋮</strong> are along the top. On the phone, Delete takes the flag's place and the flag moves into the ⋮ menu.</p>
+<p>The <strong>⋮</strong> menu holds: Open in new window, Print or save as PDF, Create calendar event, Save source, and Flag on the phone.</p>
+<h3 id="full-screen">Full screen</h3>
+<p>The ⛶ button (or <strong>F11</strong>) gives the message the whole display, with the Android bars hidden — worth it for a newsletter laid out for a wide page. A bar with the subject shows briefly and comes back on a <strong>tap</strong>. <strong>Esc</strong>, <strong>F11</strong> or Back leaves.</p>
+<h3 id="pictures">Pictures</h3>
+<p>Pictures are not fetched until you say so, because fetching one tells the sender you read the message, when, and roughly where you are.</p>
+<ul><li><strong>Show images</strong> loads them this once.</li><li>The <strong>⋮</strong> beside it offers <strong>Always show from <em>sender</em></strong> or <strong>Always show from everyone at <em>domain</em></strong> — the second is the one for shops, which send from a different address every time.</li><li><strong>Settings → View → Senders you trust</strong> lists what you have allowed, with a way to take any of it back.</li><li><strong>Settings → View → Load pictures automatically</strong> turns blocking off entirely.</li></ul>
+<h3 id="attachments">Attachments</h3>
+<p>Chips under the header. Tap one to open it. Long-press picks it up so you can drag it into another app in split screen. Its menu has save, share and copy.</p>
+<h3 id="printing">Printing</h3>
+<p><strong>⋮ → Print or save as PDF</strong>, or <strong>Ctrl+P</strong>. Android's print sheet opens, and "Save as PDF" is one of the printers in it. The page gets a header block — subject, from, to, date — then the message as it was.</p>
+<h3 id="meeting-invitations">Meeting invitations</h3>
+<p>An invitation shows as a card under the header: what, when, where, who asked. <strong>Accept</strong>, <strong>Tentative</strong> or <strong>Decline</strong> answers the organiser — through the Outlook calendar for a Microsoft account, and by the standard calendar reply for Gmail. <strong>Add to calendar</strong> hands the event to your calendar app, where you pick which calendar it lands in.</p>
+<p><strong>⋮ → Create calendar event</strong> does the same from an ordinary message — the subject becomes the title and the text becomes the notes — for the mail that says "let's meet Thursday" without a real invitation.</p>
+<hr>
+<h2 id="4-writing-mail"><span>4. Writing mail</span></h2>
+<p><strong>✏️</strong> on the phone, <strong>New email</strong> in the ribbon, or <strong>Ctrl+N</strong>.</p>
+<ul><li><strong>To, Cc, Bcc</strong> suggest people as you type: your contacts first, then everyone you have written to or heard from. Tap a suggestion to fill it in. The first time, Android asks for permission to read contacts; refuse and the suggestions still come from your mail. <strong>Settings → View → Writing</strong> can ask again.</li><li><strong>From</strong> is a menu when you have more than one account. Changing it does not swap the signature already in the body.</li><li><strong>Cc</strong> is always there; <strong>Bcc</strong> appears when you tap it.</li><li>The body is a proper editor — bold, italic, underline, lists — and on a reply the quoted original can be edited too.</li><li><strong>📎</strong> attaches a file, <strong>📋</strong> pastes one from the clipboard, and you can drop a file onto the message from another app in split screen.</li><li><strong>➤</strong> sends. <strong>Ctrl+Enter</strong> does too.</li></ul>
+<h3 id="drafts">Drafts</h3>
+<p>Backing out of a half-written message offers <strong>Save draft</strong>, <strong>Discard</strong> or <strong>Keep writing</strong>. Saved drafts go to the server, so they are in Outlook and on the web as well. Tap one in Drafts to carry on. Attachments do not survive that round trip, and the screen says so rather than losing one quietly.</p>
+<h3 id="signatures">Signatures</h3>
+<p><strong>Settings → Signatures → Edit</strong> opens the same editor the message uses. Paste one from Outlook and it keeps its shape; a logo hosted on a web server is fetched once when you save and kept inside the signature, so it still appears if that server later disappears. The switch decides whether it goes on replies and forwards as well as new messages.</p>
+<p>If your organisation adds a signature on its own mail server — CodeTwo and the like — it is added after sending and does not show here. Leave this empty in that case.</p>
+<h3 id="in-its-own-window-tablet">In its own window (tablet)</h3>
+<p><strong>Open in new window</strong> on the compose screen moves what you are writing into a window of its own. <strong>Settings → View → Writing → Write in a new window</strong> makes every new message start that way.</p>
+<hr>
+<h2 id="5-sorting-and-finding"><span>5. Sorting and finding</span></h2>
+<h3 id="sort">Sort</h3>
+<p><strong>⋮</strong> — on the phone in the top bar, on the tablet beside the folder name:</p>
+<ul><li>Date (newest first) — the default</li><li>Date (oldest first)</li><li>Sender</li><li>Subject</li></ul>
+<p>Sender and Subject run A to Z. Subject ignores "Re:" and "Fwd:", so a reply files with the message it answers. The same menu holds <strong>Conversations</strong> and the row <strong>density</strong> (Compact, Cozy, Comfortable), and a way through to all view settings.</p>
+<h3 id="search">Search</h3>
+<p>Tap the search box and type. It searches <strong>subject, sender and body on the server</strong>, not only what is on the device, so a folder of thousands is fully covered.</p>
+<ul><li>The scope chooser appears in a real folder: <strong>this folder</strong>, <strong>this account</strong>, or <strong>everywhere</strong>.</li><li>Results say which folder each hit is in.</li><li>Long-press a hit to start ticking, then <strong>Select all results</strong> in the bar, and delete, move, flag or <strong>forward as attachment</strong> the lot.</li><li>Results follow whatever sort you have chosen.</li><li>The ⋮ menu is still there while searching.</li></ul>
+<hr>
+<h2 id="6-tidying-up"><span>6. Tidying up</span></h2>
+<h3 id="swipe">Swipe</h3>
+<p>Swipe a row left or right. What each direction does is yours to set (<strong>Settings → View → Swipe actions</strong>): nothing, delete, move, read/unread, flag or archive. The colour and the word appear as you drag, and on a conversation the word carries the count — "Delete 5" — so you know how much is going before you let go.</p>
+<h3 id="selecting-several">Selecting several</h3>
+<p><strong>Long-press</strong> any row to tick it, and keep long-pressing or tapping to add more. The bar at the top replaces the search box and offers: select what is on screen (or all results, in a search), read/unread, flag, <strong>forward as attachment</strong>, move, delete. <strong>Esc</strong> or ✕ clears the selection.</p>
+<p>With a mouse, <strong>right-click</strong> gives the full menu for one row without ticking anything.</p>
+<h3 id="copying-a-message">Copying a message</h3>
+<p><strong>Right-click → Copy</strong>, or <strong>Ctrl+C</strong>, puts the message on the clipboard as an <code>.eml</code> file. Paste it into a message you are writing to attach it, or into a file manager to keep it.</p>
+<h3 id="quick-steps">Quick Steps</h3>
+<p><strong>Settings → Quick Steps</strong> builds named chains — say <em>Mark read, then move to Receipts</em> — and they then appear in the ribbon, in a message's right-click menu, and can be applied in one tap.</p>
+<hr>
+<h2 id="7-folders"><span>7. Folders</span></h2>
+<ul><li><strong>Long-press</strong> a folder for its menu: new subfolder, rename, move, add to Favourites, hide, mark all as read, empty (Trash and Junk only), delete. Each entry only appears where the account allows it.</li><li><strong>Drag</strong> a folder onto another to nest it, onto a folder's edge to reorder it, or onto the account heading to bring it to the top level. Order is kept on this device — IMAP has no such thing.</li><li><strong>Favourites</strong> sit at the top. <strong>Hidden</strong> folders disappear until you reveal them from the row at the bottom of the tree.</li><li>The search box at the top of the tree filters the folders themselves.</li><li><strong>All Inboxes</strong> merges every account's Inbox.</li></ul>
+<hr>
+<h2 id="8-being-told-about-new-mail"><span>8. Being told about new mail</span></h2>
+<p>Two separate things, deliberately.</p>
+<p><strong>Settings → Sync</strong> — how often MyEmail looks:</p>
+<div class="scroller"><table><thead><tr><th>Setting</th><th>What it costs</th></tr></thead><tbody><tr><td>Only when I open MyEmail</td><td>Nothing. Nothing reaches you until you open the app.</td></tr><tr><td>Occasionally</td><td>Easiest on the battery; Android decides when, and overnight that can be much later than asked.</td></tr><tr><td>Every 5 minutes</td><td>A permanent notification, noticeably more battery.</td></tr><tr><td>Push, as it arrives</td><td>Seconds. A permanent notification, and the most battery.</td></tr></tbody></table></div>
+<p><strong>Settings → Notifications</strong> — whether to announce it: a master switch and a mute per account. A muted account still syncs, so its mail is waiting when you open the app.</p>
+<p>Tapping a notification opens that message.</p>
+<hr>
+<h2 id="9-home-screen-widgets"><span>9. Home screen widgets</span></h2>
+<p>Drop the MyEmail widget on the home screen. It asks which account, then which folder, then whether to count everything or only unread, and lets you name it and pick a colour.</p>
+<p>The widget is the size and shape of an app icon: the number top right is what has arrived since you last looked, the number bottom left is what the folder holds. Tapping it opens that folder.</p>
+<p><strong>Settings → Home screen widgets</strong> changes any of that afterwards.</p>
+<hr>
+<h2 id="10-windows-and-split-screen"><span>10. Windows and split screen</span></h2>
+<p>Mostly a tablet thing, and it works in DeX.</p>
+<ul><li><strong>⋮ → Open in new window</strong> on a message, or the ⧉ button while writing.</li><li>From a full-screen app the new window opens full screen; put the two side by side from Recents ("Open in split screen view"), or drag one in. Already in split screen, the new window takes the other half. In DeX each is simply its own window.</li><li>Each window is its own copy of MyEmail. They share the mail on the device but not what is selected, which means two messages can be read side by side.</li><li>In split screen you can <strong>drag a message row</strong> from one window into the other: it arrives as an <code>.eml</code> file, and dropped onto a folder it is moved there.</li></ul>
+<hr>
+<h2 id="11-the-keyboard"><span>11. The keyboard</span></h2>
+<p>Everything, on any device with a keyboard attached. <strong>F1</strong> shows this list in the app.</p>
+<p><strong>Getting around</strong></p>
+<div class="scroller"><table class="keys"><thead><tr><th>Key</th><th>Does</th></tr></thead><tbody><tr><td><code>F6</code> / <code>Shift+F6</code></td><td>Next or previous pane: folders, list, message</td></tr><tr><td><code>Ctrl+.</code> / <code>Ctrl+,</code></td><td>Next or previous message, from anywhere</td></tr><tr><td><code>Ctrl+Shift+I</code></td><td>Go to the Inbox</td></tr><tr><td><code>Ctrl+E</code> or <code>F3</code></td><td>Search</td></tr></tbody></table></div>
+<p><strong>In the folder tree</strong></p>
+<div class="scroller"><table class="keys"><thead><tr><th>Key</th><th>Does</th></tr></thead><tbody><tr><td><code>↑</code> <code>↓</code></td><td>Previous or next folder (it opens as you go)</td></tr><tr><td><code>→</code></td><td>Show the folders inside</td></tr><tr><td><code>←</code></td><td>Hide them, or go up to the folder above</td></tr><tr><td><code>Home</code> <code>End</code></td><td>First or last folder</td></tr><tr><td><code>Enter</code></td><td>Choose (closes the drawer on a phone)</td></tr></tbody></table></div>
+<p><strong>In the message list</strong></p>
+<div class="scroller"><table class="keys"><thead><tr><th>Key</th><th>Does</th></tr></thead><tbody><tr><td><code>↑</code> <code>↓</code></td><td>Previous or next message</td></tr><tr><td><code>Home</code> <code>End</code></td><td>First or last message</td></tr><tr><td><code>Page Up</code> <code>Page Down</code></td><td>Ten messages at a time</td></tr><tr><td><code>Enter</code></td><td>Open</td></tr><tr><td><code>→</code> <code>←</code></td><td>Open or close a conversation</td></tr><tr><td><code>Space</code></td><td>Tick or untick</td></tr><tr><td><code>Shift+↑</code> <code>Shift+↓</code></td><td>Tick a run of messages</td></tr><tr><td><code>Ctrl+A</code></td><td>Tick everything on screen</td></tr><tr><td><code>Delete</code> or <code>Backspace</code></td><td>Delete</td></tr><tr><td><code>Esc</code></td><td>Untick everything</td></tr></tbody></table></div>
+<p><strong>While reading</strong></p>
+<div class="scroller"><table class="keys"><thead><tr><th>Key</th><th>Does</th></tr></thead><tbody><tr><td><code>↑</code> <code>↓</code></td><td>Scroll</td></tr><tr><td><code>Space</code> / <code>Shift+Space</code>, <code>Page</code> keys</td><td>A screen at a time</td></tr><tr><td><code>Home</code> <code>End</code></td><td>Top or bottom</td></tr><tr><td><code>F11</code></td><td>Full screen, and <code>Esc</code> or <code>F11</code> to leave</td></tr><tr><td><code>Esc</code></td><td>Back to the list</td></tr></tbody></table></div>
+<p><strong>Anywhere</strong></p>
+<div class="scroller"><table class="keys"><thead><tr><th>Key</th><th>Does</th></tr></thead><tbody><tr><td><code>Ctrl+N</code></td><td>New message</td></tr><tr><td><code>Ctrl+R</code> / <code>Ctrl+Shift+R</code></td><td>Reply / Reply all</td></tr><tr><td><code>Ctrl+F</code></td><td>Forward</td></tr><tr><td><code>Ctrl+Alt+F</code></td><td>Forward as attachment</td></tr><tr><td><code>Ctrl+P</code></td><td>Print or save as PDF</td></tr><tr><td><code>Ctrl+D</code></td><td>Delete</td></tr><tr><td><code>Ctrl+Q</code> / <code>Ctrl+U</code></td><td>Mark as read / unread</td></tr><tr><td><code>Insert</code> or <code>Ctrl+Shift+G</code></td><td>Flag or unflag</td></tr><tr><td><code>Ctrl+Shift+V</code></td><td>Move to a folder</td></tr><tr><td><code>Ctrl+C</code></td><td>Copy the message as a file</td></tr><tr><td><code>F9</code></td><td>Check for mail now</td></tr><tr><td><code>F1</code> or <code>Ctrl+/</code></td><td>This list</td></tr></tbody></table></div>
+<p><strong>While writing</strong></p>
+<div class="scroller"><table class="keys"><thead><tr><th>Key</th><th>Does</th></tr></thead><tbody><tr><td><code>Ctrl+Enter</code></td><td>Send</td></tr><tr><td><code>Esc</code></td><td>Close (asks about the draft)</td></tr></tbody></table></div>
+<hr>
+<h2 id="12-settings-screen-by-screen"><span>12. Settings, screen by screen</span></h2>
+<p>Reached from the bottom of the folder tree, or <strong>Settings</strong> in the ribbon. Each row says what it is currently set to.</p>
+<ul><li><strong>View</strong> — where the reading pane sits (tablet only; on a phone a message always opens as its own screen), writing in a new window, recipient suggestions from contacts, pictures in messages and the senders you trust, conversations, row density, swipe actions, and sort.</li><li><strong>Sync</strong> — how often to look for mail, and what each choice costs.</li><li><strong>Notifications</strong> — whether to announce it, and which accounts to mute.</li><li><strong>Home screen widgets</strong> — what each placed widget counts and what it is called.</li><li><strong>Quick Steps</strong> — build and reorder the action chains.</li><li><strong>Keyboard shortcuts</strong> — the list above.</li><li><strong>Accounts</strong> — add, edit and remove.</li><li><strong>Signatures</strong> — one per account, with the editor.</li><li><strong>Backup</strong> — save these settings to a file, or restore them.</li><li><strong>About</strong> — the version, and checking for a new one.</li></ul>
+<hr>
+<h2 id="13-backup-and-updates"><span>13. Backup and updates</span></h2>
+<h3 id="backup">Backup</h3>
+<p><strong>Settings → Backup</strong> writes a file holding your accounts (without passwords), the folder tree's shape, favourites, hidden folders, Quick Steps, signatures, swipe actions, sort and the senders you trust. Restoring it on a fresh device puts all of that back; you re-enter the passwords.</p>
+<h3 id="updates">Updates</h3>
+<p><strong>Settings → About → Check for updates</strong> looks at the releases MyEmail is published to, downloads the new version and installs it. Android asks once for permission to install from MyEmail. The app also notices a new version on its own and says so on the About row.</p>
+<hr>
+<h2 id="14-when-something-looks-wrong"><span>14. When something looks wrong</span></h2>
+<p><strong>A message looks broken or blank.</strong> Some senders build mail that needs pictures to make sense. Tap <strong>Show images</strong>. If it still looks wrong, <strong>⋮ → Save source</strong> writes the message exactly as it arrived, which is the thing to look at.</p>
+<p><strong>Archive does nothing.</strong> Gmail has no Archive folder — "All Mail" is a view, not somewhere to move things to. The swipe says so rather than pretending. Use a folder of your own, or a Quick Step.</p>
+<p><strong>An attachment vanished from a draft.</strong> Saving a draft to the server does not carry attachments. The screen says so when it happens; re-attach after reopening.</p>
+<p><strong>Mail arrives late.</strong> Check <strong>Settings → Sync</strong>. "Occasionally" lets Android decide, and overnight it decides slowly. "Every 5 minutes" or "Push" are the ones that are prompt, and both show a permanent notification because Android will not let a background app do that quietly.</p>
+<p><strong>A notification arrived but the message is not in the list.</strong> Pull down to sync, or press <strong>F9</strong>. Mail that a server-side rule filed outside the Inbox is not what the background pass watches.</p>
+<p><strong>Two copies in Sent on Microsoft.</strong> There should not be: Graph files the sent message itself and MyEmail adds nothing. If you see two, say so.</p>
+<p><strong>The widget shows old numbers.</strong> It is redrawn by the background sync, so it is as current as <strong>Settings → Sync</strong> allows. Opening the app refreshes it.</p>
+<p><strong>Not seen on a real device yet.</strong> Full screen reading, and dragging a message between two windows in split screen, are both built and covered by tests but have not been tried by hand on the tablet. If either misbehaves, that is where to look first.</p>
+</article>
+</div>
+<footer>MyEmail is built for Ron Dvir. This page is generated from <code>User manual.md</code> and works offline.</footer>
+</body>
+</html>

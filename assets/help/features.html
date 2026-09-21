@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyEmail — what it can do</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfd;
+    --card: #ffffff;
+    --fg: #1a1a1f;
+    --muted: #63636e;
+    --faint: #8b8b96;
+    --rule: #e4e4ec;
+    --accent: #2f5ea8;
+    --accent-soft: #eaf0fb;
+    --chip: #f1f2f7;
+    --shadow: 0 1px 2px rgba(16, 20, 40, .06), 0 8px 24px rgba(16, 20, 40, .05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1013;
+      --card: #17181d;
+      --fg: #e8e6ea;
+      --muted: #a6a4ad;
+      --faint: #85838d;
+      --rule: #2b2c34;
+      --accent: #9dc0ff;
+      --accent-soft: #1b2435;
+      --chip: #212229;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px rgba(0, 0, 0, .35);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16.5px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* The cover band */
+  header.cover {
+    background:
+      radial-gradient(120% 140% at 8% 0%, var(--accent-soft) 0%, transparent 60%),
+      var(--card);
+    border-bottom: 1px solid var(--rule);
+  }
+  .cover-inner { max-width: 62rem; margin: 0 auto; padding: 3rem 1.25rem 2.25rem; }
+  .eyebrow {
+    font-size: .74rem; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--accent); font-weight: 700; margin: 0 0 .6rem;
+  }
+  .cover h1 {
+    font-size: clamp(1.9rem, 5vw, 2.7rem); line-height: 1.12;
+    margin: 0 0 .5rem; letter-spacing: -.025em; font-weight: 700;
+  }
+  .cover .lede { color: var(--muted); margin: 0; max-width: 34rem; font-size: 1.04rem; }
+  .badges { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1.25rem; }
+  .badge {
+    display: inline-flex; align-items: center; gap: .4rem;
+    background: var(--chip); color: var(--muted); border: 1px solid var(--rule);
+    border-radius: 999px; padding: .3rem .8rem; font-size: .82rem; font-weight: 600;
+    text-decoration: none;
+  }
+  a.badge:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Body layout: a sticky contents column where there is room */
+  .layout { max-width: 62rem; margin: 0 auto; padding: 0 1.25rem 6rem; }
+  @media (min-width: 62rem) {
+    .layout.sidebar { display: grid; grid-template-columns: 15rem 1fr; gap: 3rem; align-items: start; }
+    nav.contents { position: sticky; top: 1.5rem; max-height: calc(100vh - 3rem); overflow: auto; }
+  }
+  /* No contents column: keep the text to a readable measure rather than
+     letting it run the full width of a tablet. */
+  .layout:not(.sidebar) article { max-width: 44rem; }
+  nav.contents { padding-top: 2.25rem; }
+  nav.contents h2 {
+    font-size: .74rem; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--faint); margin: 0 0 .6rem; border: 0; padding: 0;
+  }
+  nav.contents ol { list-style: none; margin: 0; padding: 0; counter-reset: toc; }
+  nav.contents li { margin: 0; counter-increment: toc; }
+  nav.contents a {
+    display: block; padding: .3rem 0 .3rem 1.6rem; position: relative;
+    color: var(--muted); text-decoration: none; font-size: .92rem; line-height: 1.4;
+    border-left: 2px solid transparent;
+  }
+  nav.contents a::before {
+    content: counter(toc); position: absolute; left: .45rem; top: .3rem;
+    font-size: .74rem; color: var(--faint); font-variant-numeric: tabular-nums;
+  }
+  nav.contents a:hover { color: var(--accent); border-left-color: var(--accent); }
+
+  article { padding-top: 2.25rem; min-width: 0; }
+  article > h2 {
+    font-size: 1.5rem; line-height: 1.25; letter-spacing: -.015em;
+    margin: 3rem 0 1rem; padding-top: 1.75rem; border-top: 1px solid var(--rule);
+    display: flex; align-items: center; gap: .6rem;
+  }
+  article > h2:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+  h3 { font-size: 1.12rem; margin: 2rem 0 .5rem; letter-spacing: -.01em; }
+  h4 { font-size: .95rem; margin: 1.4rem 0 .4rem; color: var(--muted);
+        text-transform: uppercase; letter-spacing: .08em; }
+  p, li { margin: .65rem 0; }
+  ul { padding-left: 1.2rem; }
+  li::marker { color: var(--faint); }
+  strong { font-weight: 650; }
+  a { color: var(--accent); text-underline-offset: .18em; }
+  hr { display: none; }
+
+  h2 svg {
+    width: 1.15em; height: 1.15em; flex: none; fill: none;
+    stroke: var(--accent); stroke-width: 1.6; stroke-linecap: round;
+  }
+
+  code {
+    background: var(--chip); border-radius: 5px; padding: .12em .38em;
+    font: .86em/1.4 ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  }
+  /* Shortcut tables: the first column reads as keys on a keyboard. */
+  table.keys td:first-child code, kbd {
+    display: inline-block; background: var(--card); border: 1px solid var(--rule);
+    border-bottom-width: 2px; border-radius: 6px; padding: .16em .5em;
+    box-shadow: 0 1px 0 rgba(0,0,0,.03); font-weight: 600; white-space: nowrap;
+  }
+
+  table {
+    width: 100%; border-collapse: separate; border-spacing: 0;
+    margin: 1.1rem 0; font-size: .95rem;
+    background: var(--card); border: 1px solid var(--rule);
+    border-radius: 12px; overflow: hidden; box-shadow: var(--shadow);
+  }
+  .scroller { overflow-x: auto; }
+  th, td { text-align: left; padding: .62rem .85rem; vertical-align: top; }
+  th {
+    font-weight: 700; color: var(--faint); font-size: .72rem;
+    text-transform: uppercase; letter-spacing: .1em;
+    background: var(--chip); border-bottom: 1px solid var(--rule);
+  }
+  td { border-bottom: 1px solid var(--rule); }
+  tbody tr:last-child td { border-bottom: 0; }
+  table.keys td:first-child { width: 13rem; }
+
+  footer {
+    max-width: 62rem; margin: 0 auto; padding: 2rem 1.25rem 4rem;
+    color: var(--faint); font-size: .85rem; border-top: 1px solid var(--rule);
+  }
+
+  @media print {
+    body { background: #fff; font-size: 10.5pt; }
+    header.cover { background: #fff; border-bottom: 1pt solid #ccc; }
+    .cover-inner, .layout, footer { max-width: none; padding: 0; }
+    nav.contents { display: none; }
+    .layout { display: block; }
+    article > h2 { break-after: avoid; }
+    table, ul, ol { break-inside: avoid; }
+    table { box-shadow: none; }
+    a { color: inherit; text-decoration: none; }
+  }
+</style>
+</head>
+<body>
+<header class="cover">
+  <div class="cover-inner">
+    <p class="eyebrow">MyEmail · features</p>
+    <h1>What it can do</h1>
+    <p class="lede">Everything MyEmail offers, listed for the phone and for the tablet, since the same app gives you more where there is more screen.</p>
+    <div class="badges"><span class="badge">Version 2.23.1</span><a class="badge" href="User manual.html">Read the user manual →</a></div>
+  </div>
+</header>
+<div class="layout">
+<article>
+<p>Version 2.23.1. The same app runs on the phone and the tablet; what changes is how much screen there is to put things on. This file lists what each one offers. The user manual (<code>User manual.md</code>) says how to use it.</p>
+<p>Three sizes decide the layout, and the app picks by itself:</p>
+<div class="scroller"><table><thead><tr><th>Width</th><th>What you get</th><th>Your devices</th></tr></thead><tbody><tr><td>Under 600</td><td>One pane at a time, folders behind a drawer</td><td>Phone, upright</td></tr><tr><td>600 – 1199</td><td>Folders and list side by side, message below or on its own screen</td><td>Tablet upright, phone sideways</td></tr><tr><td>1200 and over</td><td>Folders, list and message side by side, with the command ribbon</td><td>Tablet sideways</td></tr></tbody></table></div>
+<hr>
+<h2 id="on-the-phone"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.2"/><line x1="10.5" y1="18.6" x2="13.5" y2="18.6"/></svg><span>On the phone</span></h2>
+<h3 id="mail">Mail</h3>
+<ul><li>Several accounts at once — Gmail (app password) and Outlook/Microsoft 365 (sign-in).</li><li>One Inbox that merges every account, or each account's folders on their own.</li><li>Full folder tree, nested, with unread and total counts on every folder (<code>14/2310</code>).</li><li>Favourites at the top; folders you never use can be hidden.</li><li>Works offline for anything already fetched: lists, messages you have opened, and their attachments.</li><li>The list loads more as you scroll to the bottom, not just the newest fifty.</li></ul>
+<h3 id="reading">Reading</h3>
+<ul><li>Tap a message and it opens on its own screen; back returns to the list.</li><li>Conversations: a thread folds into one row you can open, or stays off.</li><li>Full screen reading — the body alone with the Android bars hidden.</li><li>Pictures are blocked until you ask, and a sender you trust loads them for good.</li><li>Attachments: open, save, share, or copy to the clipboard.</li><li>Print, or save as PDF.</li><li>Meeting invitations show as a card with Accept, Tentative and Decline, and can be added to your calendar.</li><li>Any message can become a calendar event.</li><li>Save a message exactly as it arrived, or copy it as a file.</li></ul>
+<h3 id="writing">Writing</h3>
+<ul><li>New message, reply, reply all, forward, and forward as attachment.</li><li>Rich editor: bold, italic, underline, bullet and numbered lists, and the quoted original stays editable.</li><li>Recipients suggested as you type, from your contacts and from everyone you have mailed.</li><li>Choose which account a message goes from, even mid-reply.</li><li>A signature per account, written in the same editor, pictures included.</li><li>Attach files, paste a file from the clipboard, and send from the share sheet of any other app.</li><li>Drafts are saved to the server, so they are also on the web and in Outlook.</li></ul>
+<h3 id="sorting-finding-tidying">Sorting, finding, tidying</h3>
+<ul><li>A three-dot menu on the app bar: sort by date (newest or oldest), sender or subject; conversations on or off; row density; and through to all view settings.</li><li>Search across subject, sender and body, scoped to a folder, an account, or everywhere — on the server, not just what is cached.</li><li>Search results can be ticked, select-all'd, then deleted, moved or forwarded.</li><li>Swipe a message — or a whole conversation — left or right; you choose what each direction does.</li><li>Long-press to start ticking; act on the lot at once.</li><li>Move, delete, flag, mark read or unread.</li><li>Quick Steps: named chains of actions (mark read, flag, move, delete) applied in one tap.</li><li>Create, rename, move and delete folders; mark all read; empty Trash and Junk.</li></ul>
+<h3 id="keeping-up">Keeping up</h3>
+<ul><li>Background sync: only when you open the app, occasionally, every five minutes, or push as it arrives.</li><li>Notifications per account, with a master switch and per-account mute.</li><li>Home screen widgets: an app-icon-sized badge per mailbox showing what is new and what is there in total, in a colour and with a name you choose; tapping one opens that folder.</li><li>Updates: the About screen checks for a new version and installs it.</li></ul>
+<h3 id="settings">Settings</h3>
+<p>View · Sync · Notifications · Home screen widgets · Quick Steps · Keyboard shortcuts · Accounts · Signatures · Senders you trust · Backup · About.</p>
+<hr>
+<h2 id="on-the-tablet"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2.2"/><line x1="17.6" y1="12" x2="17.6" y2="12.1"/></svg><span>On the tablet</span></h2>
+<p>Everything above, plus what the extra screen makes possible.</p>
+<h3 id="layout">Layout</h3>
+<ul><li>Folders, message list and the message open at once (sideways).</li><li>The reading pane can sit to the right, below the list, or be turned off.</li><li>Drag the dividers to resize the panes; the widths are remembered.</li><li>Hide the folder pane to give the list and message more room.</li><li>A command ribbon across the top (sideways only): Sync, New email, Delete, Reply, Reply all, Forward, Quick Steps, Move, Read/Unread, Pane, Search, Settings. It scrolls if the screen is narrow.</li><li>The same three-dot view-and-sort menu, beside the folder name.</li></ul>
+<h3 id="with-a-keyboard">With a keyboard</h3>
+<p>The whole app is drivable without touching the screen. <code>F1</code> lists every key.</p>
+<ul><li><strong>Getting around:</strong> <code>F6</code> moves between folders, list and message; <code>Ctrl+.</code> and <code>Ctrl+,</code> step through messages; <code>Ctrl+Shift+I</code> jumps to the Inbox.</li><li><strong>In the list:</strong> arrows, <code>Home</code>/<code>End</code>, <code>Page Up</code>/<code>Down</code>, <code>Enter</code> to open, <code>Space</code> to tick, <code>Shift+arrows</code> to tick a run, <code>Ctrl+A</code> for everything on screen, <code>Delete</code>.</li><li><strong>In the folder tree:</strong> arrows walk the folders and open them as you go; <code>→</code> and <code>←</code> expand and collapse.</li><li><strong>While reading:</strong> arrows, <code>Space</code>, <code>Page</code> keys, <code>Home</code>/<code>End</code> scroll; <code>F11</code> full screen; <code>Esc</code> back to the list.</li><li><strong>Commands:</strong> <code>Ctrl+N</code>, <code>Ctrl+R</code>, <code>Ctrl+Shift+R</code>, <code>Ctrl+F</code>, <code>Ctrl+Alt+F</code>, <code>Ctrl+D</code>, <code>Ctrl+Q</code>, <code>Ctrl+U</code>, <code>Insert</code>, <code>Ctrl+Shift+V</code>, <code>Ctrl+E</code>, <code>Ctrl+P</code>, <code>F9</code>.</li><li><strong>Writing:</strong> <code>Ctrl+Enter</code> sends, <code>Esc</code> closes.</li></ul>
+<h3 id="windows-and-dex">Windows (and DeX)</h3>
+<ul><li>Open a message in a window of its own, or write in one, so the mailbox stays visible behind it.</li><li>Two messages side by side.</li><li>A setting to make every new message open in its own window.</li></ul>
+<h3 id="drag-and-drop">Drag and drop</h3>
+<ul><li>Drag a message onto a folder to move it.</li><li>Drag folders to re-nest or reorder them.</li><li>Drag an attachment out to another app in split screen.</li><li>Drag a message out as an <code>.eml</code> file into another app or another MyEmail window; drop one back onto a folder to move it.</li><li>Drop a file from another app onto a message you are writing to attach it.</li></ul>
+<h3 id="mouse-or-trackpad">Mouse or trackpad</h3>
+<ul><li>Right-click a message for the full menu: reply, reply all, forward, forward as attachment, copy, create event, select, move, read, flag, delete.</li><li>Right-click a conversation row for the same, applied to the whole thread.</li></ul>
+<hr>
+<h2 id="what-the-phone-does-not-have"><span>What the phone does not have</span></h2>
+<ul><li>No side-by-side panes, no ribbon: the phone shows one thing at a time by design.</li><li>The reading-pane setting has no effect there — a message always opens as its own screen.</li><li>Everything else, including sort, search, widgets, notifications, printing, invitations and full screen, works the same on both.</li></ul>
+</article>
+</div>
+<footer>MyEmail is built for Ron Dvir. This page is generated from <code>Features.md</code> and works offline.</footer>
+</body>
+</html>

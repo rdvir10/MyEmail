@@ -9,6 +9,7 @@ import 'package:myemail/data/graph/graph_transport.dart';
 import 'package:myemail/data/imap/imap_transport.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_folder.dart';
 
 /// The mail transport over Microsoft Graph.
 ///
@@ -80,6 +81,25 @@ void main() {
         folders.map((f) => f.path),
         containsAll(<String>['Work', 'Work/Invoices']),
       );
+    });
+
+    test('a folder whose own name has a slash keeps its place', () async {
+      // Outlook allows "AP/AR", and a mailbox at work usually has one.
+      // Joined into the path as-is it would fake a level: the folder would
+      // show under a parent called AP, or at the top level called AR.
+      server
+        ..folder(id: 'f-fin', name: 'Finance', children: 1)
+        ..folder(id: 'f-apar', name: 'AP/AR', parent: 'f-fin')
+        ..folder(id: 'f-ap', name: 'AP');
+
+      final folders = await transport.listFolders();
+      final paths = folders.map((f) => f.path).toList();
+
+      expect(paths, contains('Finance/AP∕AR'));
+      expect(paths, isNot(contains('Finance/AP/AR')),
+          reason: 'one folder, not two levels');
+      expect(MailFolder.nameFor('Finance/AP∕AR'), 'AP∕AR',
+          reason: 'the name reads as the person wrote it');
     });
 
     test('counts come through for the tree badges', () async {

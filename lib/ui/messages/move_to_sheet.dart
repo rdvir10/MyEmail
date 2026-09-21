@@ -31,7 +31,7 @@ Future<String?> showMoveToSheet(
   );
 }
 
-class _MoveToSheet extends ConsumerWidget {
+class _MoveToSheet extends ConsumerStatefulWidget {
   const _MoveToSheet({
     required this.accountId,
     required this.fromFolderId,
@@ -43,7 +43,21 @@ class _MoveToSheet extends ConsumerWidget {
   final int messageCount;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_MoveToSheet> createState() => _MoveToSheetState();
+}
+
+class _MoveToSheetState extends ConsumerState<_MoveToSheet> {
+  /// What has been typed. A mailbox at work holds hundreds of folders, and
+  /// scrolling a list that long to find one is the slow way to do a thing
+  /// people do twenty times a day.
+  String _query = '';
+
+  String get accountId => widget.accountId;
+  String get fromFolderId => widget.fromFolderId;
+  int get messageCount => widget.messageCount;
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final index = ref.watch(folderIndexProvider);
     final all = ref.watch(foldersProvider).value?[accountId] ?? const [];
@@ -65,6 +79,16 @@ class _MoveToSheet extends ConsumerWidget {
     ];
     final recentIds = {for (final f in recents) f.id};
 
+    final query = _query.trim().toLowerCase();
+    final matches = query.isEmpty
+        ? candidates
+        : [
+            for (final f in candidates)
+              if (f.displayName.toLowerCase().contains(query) ||
+                  displayPath(f).toLowerCase().contains(query))
+                f,
+          ];
+
     return SafeArea(
       child: ConstrainedBox(
         constraints: BoxConstraints(
@@ -83,25 +107,64 @@ class _MoveToSheet extends ConsumerWidget {
                 style: theme.textTheme.titleMedium,
               ),
             ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+              child: TextField(
+                onChanged: (value) => setState(() => _query = value),
+                textInputAction: TextInputAction.search,
+                decoration: InputDecoration(
+                  isDense: true,
+                  filled: true,
+                  hintText: 'Search folders',
+                  prefixIcon: const Icon(Icons.search, size: 20),
+                  suffixIcon: _query.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: 'Clear',
+                          icon: const Icon(Icons.close, size: 18),
+                          onPressed: () => setState(() => _query = ''),
+                        ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ),
             const Divider(height: 1),
             Flexible(
               child: ListView(
                 shrinkWrap: true,
                 children: [
-                  if (recents.isNotEmpty) ...[
+                  // Recents are the answer most of the time, so they stay
+                  // at the top — but not while searching, where the point
+                  // is to find the one folder that was typed for.
+                  if (recents.isNotEmpty && query.isEmpty) ...[
                     _SheetHeading(text: 'Recent', theme: theme),
                     for (final f in recents)
                       _FolderOption(folder: f, showPath: true),
                     const Divider(height: 1),
                     _SheetHeading(text: 'All folders', theme: theme),
                   ],
-                  for (final f in candidates)
-                    if (!recentIds.contains(f.id))
-                      _FolderOption(folder: f, showPath: f.parentId != null),
-                  if (candidates.isEmpty)
-                    const ListTile(
+                  for (final f in matches)
+                    if (query.isNotEmpty || !recentIds.contains(f.id))
+                      _FolderOption(
+                        folder: f,
+                        // Indented to its place in the tree, so a folder
+                        // is read as where it lives rather than as a name
+                        // on a list of two hundred. A search is flat: the
+                        // parents it sits under may not be in the results.
+                        depth: query.isEmpty ? _depthOf(f, index) : 0,
+                        showPath: query.isNotEmpty || f.parentId != null,
+                      ),
+                  if (matches.isEmpty)
+                    ListTile(
                       enabled: false,
-                      title: Text('Nowhere to move it to.'),
+                      title: Text(
+                        query.isEmpty
+                            ? 'Nowhere to move it to.'
+                            : 'No folder matches “$_query”.',
+                      ),
                     ),
                 ],
               ),
@@ -112,6 +175,25 @@ class _MoveToSheet extends ConsumerWidget {
       ),
     );
   }
+}
+
+/// How deep a folder sits, by walking the parents the tree itself uses.
+///
+/// Not by counting slashes in the path: Gmail's Trash is `[Gmail]/Trash`
+/// and sits at the top of the tree, so counting would indent it under a
+/// folder that is not shown at all.
+int _depthOf(MailFolder folder, Map<String, MailFolder> index) {
+  var depth = 0;
+  var cursor = folder;
+  while (depth < 4) {
+    final parentId = cursor.parentId;
+    if (parentId == null) break;
+    final parent = index[parentId];
+    if (parent == null) break;
+    cursor = parent;
+    depth++;
+  }
+  return depth;
 }
 
 class _SheetHeading extends StatelessWidget {
@@ -137,16 +219,25 @@ class _SheetHeading extends StatelessWidget {
 }
 
 class _FolderOption extends StatelessWidget {
-  const _FolderOption({required this.folder, required this.showPath});
+  const _FolderOption({
+    required this.folder,
+    required this.showPath,
+    this.depth = 0,
+  });
 
   final MailFolder folder;
   final bool showPath;
+  final int depth;
 
   @override
   Widget build(BuildContext context) {
     final path = displayPath(folder);
     return ListTile(
-      leading: const Icon(Icons.folder_outlined),
+      contentPadding: EdgeInsets.only(left: 16.0 + depth * 18, right: 16),
+      leading: Icon(
+        depth == 0 ? Icons.folder_outlined : Icons.subdirectory_arrow_right,
+        size: depth == 0 ? 24 : 18,
+      ),
       title: Text(folder.displayName),
       subtitle: showPath && path != folder.displayName ? Text(path) : null,
       onTap: () => Navigator.of(context).pop(folder.id),

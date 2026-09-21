@@ -90,7 +90,7 @@ class GraphTransport implements ImapTransport {
     // gives a parent id and a name; the app wants "Work/Invoices".
     final byId = {for (final f in folders) f.id: f};
     String pathOf(GraphFolder folder) {
-      final parts = <String>[folder.displayName];
+      final parts = <String>[safePathSegment(folder.displayName)];
       var cursor = folder;
       // Bounded: a cycle in the parent chain would otherwise hang the sync.
       for (var depth = 0; depth < 16; depth++) {
@@ -100,7 +100,7 @@ class GraphTransport implements ImapTransport {
         // The parent is not in the list when it is the mailbox root, which
         // Graph reports as a parent but never returns as a folder.
         if (parent == null) break;
-        parts.insert(0, parent.displayName);
+        parts.insert(0, safePathSegment(parent.displayName));
         cursor = parent;
       }
       return parts.join('/');
