@@ -326,7 +326,9 @@ class DriftCacheStore implements CacheStore {
             inReplyTo: Value(m.inReplyTo),
           ),
           // A re-fetched header must not wipe a body we already have, so on
-          // conflict only the header columns are rewritten.
+          // conflict only the header columns are rewritten. The preview is
+          // among them only when the header brought one: it is also written
+          // from a fetched body, and an empty one must not erase that.
           onConflict: DoUpdate(
             (_) => MessagesCompanion(
               subject: Value(m.subject),
@@ -339,6 +341,8 @@ class DriftCacheStore implements CacheStore {
               isRead: Value(m.isRead),
               isFlagged: Value(m.isFlagged),
               hasAttachments: Value(m.hasAttachments),
+              preview:
+                  m.preview.isEmpty ? const Value.absent() : Value(m.preview),
             ),
           ),
         );

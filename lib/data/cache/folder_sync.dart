@@ -100,6 +100,27 @@ class FolderSync {
     };
     await store.deleteUids(accountId, path, gone);
 
+    // Rows that have no preview line.
+    //
+    // Two reasons a row has none. It was cached by a version that dropped
+    // the server's preview on the floor, which is most of a work mailbox
+    // and is what this is for. Or the server has no preview to give, which
+    // is every IMAP server, and there [canRefreshHeaders] is false so this
+    // never runs and never costs a round trip that could not help.
+    if (transport.canRefreshHeaders &&
+        cached.any((m) => m.preview.isEmpty && !gone.contains(m.uid))) {
+      final refreshed =
+          await transport.refreshHeaders(path, range.min, range.max);
+      await store.upsertMessages(
+        accountId,
+        path,
+        [
+          for (final h in refreshed)
+            if (h.preview.isNotEmpty) _cached(h),
+        ],
+      );
+    }
+
     await _writeState(path, status);
     return SyncResult(
       added: newHeaders.length,

@@ -592,6 +592,41 @@ void main() {
       });
     });
 
+    test('every pass sees the folder as it is now', () async {
+      // Holding one pass over the folder and sharing it between the three
+      // the sync makes was tried, to save two thirds of the requests. It
+      // hides anything that changed in between, which is a bug waiting for
+      // the moment it matters. The saving has to come from asking once and
+      // passing the answer down.
+      server
+        ..message('f-inbox', id: 'm1', subject: 'A', minutesAgo: 30)
+        ..message('f-inbox', id: 'm2', subject: 'B', minutesAgo: 20);
+      await transport.fetchHeadersFromUid('Inbox', 1);
+      await transport.fetchFlags('Inbox', 1, 2);
+
+      server.remove('m2');
+
+      expect(await transport.existingUids('Inbox', 1, 2), hasLength(1));
+    });
+
+    test('the previews of a range come back with the headers', () async {
+      // What fills in the second lines of a mailbox cached by a version
+      // that dropped them. It is the same page of messages the flags pass
+      // reads, and Graph puts bodyPreview in every row of it.
+      server
+        ..message('f-inbox',
+            id: 'm1', subject: 'A', minutesAgo: 30, preview: 'First line.')
+        ..message('f-inbox',
+            id: 'm2', subject: 'B', minutesAgo: 20, preview: 'Second line.');
+      await transport.fetchHeadersFromUid('Inbox', 1);
+
+      expect(transport.canRefreshHeaders, isTrue);
+      final again = await transport.refreshHeaders('Inbox', 1, 2);
+
+      expect(again.map((h) => h.preview),
+          containsAll(<String>['First line.', 'Second line.']));
+    });
+
     test('flags for a range come back for the whole range', () async {
       // No CONDSTORE equivalent, so the caller compares everything.
       server
@@ -710,6 +745,10 @@ class _FakeGraph {
   /// How many batch requests were made. One per folder listing, not one per
   /// well-known name, is the whole point of batching them.
   int batches = 0;
+
+  /// How many times a folder's messages were paged through. A sync asks the
+  /// same question three or four times over and they should share an answer.
+  int listings = 0;
 
   /// Answer the next [throttle] requests with a 429 and a Retry-After.
   int throttle = 0;
@@ -944,6 +983,7 @@ class _FakeGraph {
 
     // A folder's messages.
     if (request.method == 'GET' && path.endsWith('/messages')) {
+      listings++;
       final folderId = _folderIdIn(path);
       final inFolder = messages.values
           .where((m) => m['_folder'] == folderId)

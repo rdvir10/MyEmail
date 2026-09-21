@@ -164,6 +164,19 @@ class EnoughMailTransport implements ImapTransport {
         return bodyFromMime(result.messages.first);
       });
 
+  /// IMAP has no preview to give: it would mean fetching a body part for
+  /// every row. Previews here are written when a message is opened.
+  @override
+  bool get canRefreshHeaders => false;
+
+  @override
+  Future<List<RemoteHeader>> refreshHeaders(
+    String path,
+    int fromUid,
+    int toUid,
+  ) async =>
+      const [];
+
   @override
   Future<bool> respondToInvite(
     String path,

@@ -68,6 +68,23 @@ abstract class ImapTransport {
     String? iCalUid,
   });
 
+  /// Read the headers of messages already known, where the server gives
+  /// them cheaply, and nothing otherwise.
+  ///
+  /// This exists for previews. Graph sends `bodyPreview` with every list
+  /// row and pages the folder for its flags anyway, so re-reading a range
+  /// costs nothing it was not already spending. IMAP has no preview to
+  /// give at any price, so it declines and the caller does not ask twice.
+  Future<List<RemoteHeader>> refreshHeaders(
+    String path,
+    int fromUid,
+    int toUid,
+  ) async =>
+      const [];
+
+  /// Whether [refreshHeaders] is worth calling at all.
+  bool get canRefreshHeaders => false;
+
   /// What is attached to a message, without downloading any of it.
   ///
   /// One cheap request on both transports — a BODYSTRUCTURE over IMAP, a

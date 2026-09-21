@@ -268,6 +268,69 @@ void main() {
     });
   });
 
+  group('preview lines', () {
+    test('a server that sends them fills in rows cached without one',
+        () async {
+      // What a work mailbox looks like after an update that started keeping
+      // the preview: the newest mail has a second line and everything below
+      // it, cached by the version before, does not. Asking again for the
+      // window costs Graph nothing it was not already spending.
+      seedGmail();
+      final inbox = server.folder('INBOX');
+      inbox.deliver(subject: 'One');
+      inbox.deliver(subject: 'Two');
+      final a = await addAccount();
+      await engine.loadMessages('${a.id}:INBOX');
+      expect(
+        (await cache.readMessages(a.id, 'INBOX')).every((m) => m.preview.isEmpty),
+        isTrue,
+        reason: 'nothing was sent with the headers',
+      );
+
+      // The server starts sending them, and the app syncs again.
+      server.suppliesPreviews = true;
+      for (final m in inbox.messages.values) {
+        m.preview = 'The first line of ${m.subject}.';
+      }
+      await engine.loadMessages('${a.id}:INBOX');
+
+      final rows = await cache.readMessages(a.id, 'INBOX');
+      expect(rows.map((m) => m.preview),
+          everyElement(startsWith('The first line of')));
+    });
+
+    test('a server that sends none is never asked', () async {
+      // An IMAP server has no preview at any price, and a round trip that
+      // cannot help is a round trip not worth making.
+      seedGmail();
+      server.folder('INBOX').deliver(subject: 'One');
+      final a = await addAccount();
+      await engine.loadMessages('${a.id}:INBOX');
+      server.calls.clear();
+
+      await engine.loadMessages('${a.id}:INBOX');
+
+      expect(server.calls.where((c) => c.startsWith('REFRESH')), isEmpty);
+    });
+
+    test('a preview already found in a body is not wiped by an empty one',
+        () async {
+      seedGmail();
+      server.folder('INBOX').deliver(subject: 'One', body: 'Hello there.');
+      final a = await addAccount();
+      final shown = await engine.loadMessages('${a.id}:INBOX');
+      await engine.loadMessageBody(shown.single.id);
+      expect((await cache.readMessages(a.id, 'INBOX')).single.preview,
+          isNotEmpty);
+
+      server.suppliesPreviews = true;
+      await engine.loadMessages('${a.id}:INBOX');
+
+      expect((await cache.readMessages(a.id, 'INBOX')).single.preview,
+          contains('Hello there'));
+    });
+  });
+
   group('putting a delete back', () {
     Future<Account> seeded() async {
       seedGmail();

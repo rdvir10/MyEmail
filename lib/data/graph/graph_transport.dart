@@ -263,6 +263,22 @@ class GraphTransport implements ImapTransport {
   }
 
   @override
+  bool get canRefreshHeaders => true;
+
+  @override
+  Future<List<RemoteHeader>> refreshHeaders(
+    String path,
+    int fromUid,
+    int toUid,
+  ) async {
+    final scan = await _scanBack(path, downToUid: fromUid);
+    return _headers(path, [
+      for (final m in scan.messages)
+        if (_inRange(scan.uids[m.id], fromUid, toUid)) m,
+    ]);
+  }
+
+  @override
   Future<Set<int>> existingUids(String path, int fromUid, int toUid) async {
     final scan = await _scanBack(path, downToUid: fromUid);
     return {
@@ -563,6 +579,15 @@ class GraphTransport implements ImapTransport {
   ///
   /// Numbering happens here, oldest of each page first, so the numbers keep
   /// rising with arrival order.
+  /// Page back through a folder until [downToUid] is reached.
+  ///
+  /// One sync does this three or four times over — new mail, flags,
+  /// deletions, previews — each a page of a hundred messages per request to
+  /// Microsoft. Holding one answer and sharing it between them was tried and
+  /// taken out again: a held scan cannot see mail that arrived since, and a
+  /// transport that reports a folder as it was a moment ago is a bug waiting
+  /// for the moment it matters. Sharing has to come from asking once and
+  /// passing the answer down, not from a cache with a timer on it.
   Future<_Scan> _scanBack(String path, {required int downToUid}) async {
     final folderId = await _folderId(path);
     final messages = <GraphMessage>[];

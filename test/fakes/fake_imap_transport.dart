@@ -248,6 +248,28 @@ class FakeImapTransport implements ImapTransport {
   /// what UIDs the copies were given.
   bool reportsCopyUids = true;
 
+  /// Whether this server hands a preview over with a list row, as Graph
+  /// does and IMAP does not.
+  bool suppliesPreviews = false;
+
+  @override
+  bool get canRefreshHeaders => suppliesPreviews;
+
+  @override
+  Future<List<RemoteHeader>> refreshHeaders(
+    String path,
+    int fromUid,
+    int toUid,
+  ) async {
+    _online();
+    calls.add('REFRESH $path $fromUid:$toUid');
+    if (!suppliesPreviews) return const [];
+    return [
+      for (final m in _require(path).ordered)
+        if (m.uid >= fromUid && m.uid <= toUid) m.header,
+    ];
+  }
+
   @override
   Future<List<int>?> moveMessages(
     String fromPath,
@@ -434,6 +456,10 @@ class FakeMessage {
   /// is what lets one be found again after a move that did not say where.
   final String messageId;
 
+  /// What a server that sends previews would send. Empty for one that does
+  /// not, which is every IMAP server.
+  String preview = '';
+
   static int seq = 0;
 
   final int uid;
@@ -471,6 +497,7 @@ class FakeMessage {
         isRead: isRead,
         isFlagged: isFlagged,
         hasAttachments: false,
+        preview: preview,
         messageId: messageId,
       );
 }
