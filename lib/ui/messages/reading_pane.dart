@@ -21,6 +21,7 @@ import 'date_format.dart';
 import '../shell/pane_focus.dart';
 import '../../data/print/message_printer.dart';
 import '../../state/print_providers.dart';
+import 'full_screen_message.dart';
 import 'html_body_view.dart';
 import 'message_actions.dart';
 import 'message_source.dart';
@@ -253,6 +254,9 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                     !(ref.watch(printingAvailableProvider).value ?? false)
                 ? null
                 : () => _print(message, body.value!),
+            onFullScreen: body.value == null
+                ? null
+                : () => FullScreenMessage.open(context, message),
             onCreateEvent: body.value == null ||
                     !(ref.watch(calendarAvailableProvider).value ?? false)
                 ? null
@@ -407,8 +411,13 @@ class _Header extends StatelessWidget {
     this.onOpenWindow,
     this.onPrint,
     this.onCreateEvent,
+    this.onFullScreen,
     this.compact = false,
   });
+
+  /// The body alone, edge to edge, with the system bars out of the way.
+  /// Null until the body is here: there would be nothing to fill it with.
+  final VoidCallback? onFullScreen;
 
   /// Make a calendar event out of this message. Null until the body is
   /// here, and where there is no calendar app.
@@ -453,15 +462,20 @@ class _Header extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            // First, not last. It is the one button here that changes
-            // where you are rather than what the message is, and grouping it
-            // with the three compose actions would invite mis-taps.
+            // First, not last. These two change where you are rather than
+            // what the message is, and grouping them with the three compose
+            // actions would invite mis-taps.
             if (onPopOut != null)
               IconButton(
-                tooltip: 'Open full screen',
+                tooltip: 'Open on its own screen',
                 icon: const Icon(Icons.open_in_full),
                 onPressed: onPopOut,
               ),
+            IconButton(
+              tooltip: 'Full screen (F11)',
+              icon: const Icon(Icons.fullscreen),
+              onPressed: onFullScreen,
+            ),
             IconButton(
               tooltip: 'Reply',
               icon: const Icon(Icons.reply),

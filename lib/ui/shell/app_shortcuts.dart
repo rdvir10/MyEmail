@@ -13,6 +13,7 @@ import '../../data/print/message_printer.dart';
 import '../../state/display_providers.dart';
 import '../../state/print_providers.dart';
 import '../messages/forward_as_attachment.dart';
+import '../messages/full_screen_message.dart';
 import '../messages/html_body_view.dart';
 import '../messages/message_actions.dart';
 import 'pane_focus.dart';
@@ -81,6 +82,11 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
         }
       case AppCommand.forwardAsAttachment:
         if (message != null) await forwardAsAttachment(context, ref, [message]);
+      case AppCommand.fullScreen:
+        if (message != null &&
+            ref.read(messageBodyProvider(message.id)).value != null) {
+          await FullScreenMessage.open(context, message);
+        }
       case AppCommand.print:
         if (message == null) return;
         final body = ref.read(messageBodyProvider(message.id)).value;
@@ -179,6 +185,7 @@ enum AppCommand {
   forward,
   forwardAsAttachment,
   print,
+  fullScreen,
   delete,
   markRead,
   markUnread,
@@ -228,6 +235,7 @@ AppCommand? commandFor(
     LogicalKeyboardKey.f9 => AppCommand.sync,
     LogicalKeyboardKey.f1 => AppCommand.help,
     LogicalKeyboardKey.f6 => shift ? AppCommand.previousPane : AppCommand.nextPane,
+    LogicalKeyboardKey.f11 => AppCommand.fullScreen,
     _ => null,
   };
 }
@@ -259,6 +267,7 @@ const shortcutHelp = <String, List<ShortcutHelp>>{
     ShortcutHelp('↑  ↓', 'Scroll'),
     ShortcutHelp('Space  Page Down  /  Shift+Space  Page Up', 'A screen at a time'),
     ShortcutHelp('Home  End', 'Top or bottom'),
+    ShortcutHelp('F11', 'Full screen, and Esc or F11 to leave'),
     ShortcutHelp('Esc', 'Back to the list'),
   ],
   'Anywhere': [
