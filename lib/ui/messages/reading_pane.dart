@@ -452,16 +452,28 @@ class _Header extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                message.subject,
-                style: theme.textTheme.titleLarge,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-              ),
+        // On its own line, above the buttons. Sharing a row with seven of
+        // them left the subject a column three words wide, wrapped and cut
+        // — and on a screen of its own the title bar is already saying it,
+        // so there it is not said twice.
+        if (onPopOut != null) ...[
+          Padding(
+            padding: const EdgeInsets.only(right: 8, bottom: 4),
+            child: Text(
+              message.subject,
+              style: theme.textTheme.titleLarge,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
             ),
+          ),
+        ],
+        // Seven buttons on a narrow phone are wider than the phone; they
+        // slide rather than being clipped at the delete.
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
             // First, not last. These two change where you are rather than
             // what the message is, and grouping them with the three compose
             // actions would invite mis-taps.
@@ -556,6 +568,7 @@ class _Header extends StatelessWidget {
               ],
             ),
           ],
+          ),
         ),
         const SizedBox(height: 10),
         Row(
@@ -590,13 +603,7 @@ class _Header extends StatelessWidget {
                           ?.copyWith(color: scheme.onSurfaceVariant),
                     ),
                   const SizedBox(height: 2),
-                  Text(
-                    'To: ${message.to.map((a) => a.display).join(', ')}',
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall
-                        ?.copyWith(color: scheme.onSurfaceVariant),
-                  ),
+                  _Recipients(to: message.to),
                 ],
               ),
             ),
@@ -619,5 +626,103 @@ class _Header extends StatelessWidget {
   static String _initial(MailAddress a) {
     final s = a.display.trim();
     return s.isEmpty ? '?' : s[0].toUpperCase();
+  }
+}
+
+/// Who else got it.
+///
+/// A mail at work goes to nine people, and nine names cut off mid-word
+/// tell you nothing except that the list is long. Two names and a count
+/// say the same thing in one line, and a tap opens the rest — with their
+/// addresses, since "Ron Dvir" is the part you already knew.
+class _Recipients extends StatefulWidget {
+  const _Recipients({required this.to});
+
+  final List<MailAddress> to;
+
+  /// How many fit before it is worth folding them away.
+  static const shown = 2;
+
+  @override
+  State<_Recipients> createState() => _RecipientsState();
+}
+
+class _RecipientsState extends State<_Recipients> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final style = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final to = widget.to;
+    if (to.isEmpty) {
+      return Text('To: (nobody named)', style: style);
+    }
+
+    final hidden = to.length - _Recipients.shown;
+    if (hidden <= 0) {
+      return Text(
+        'To: ${to.map((a) => a.display).join(', ')}',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: style,
+      );
+    }
+
+    if (!_open) {
+      final first = to.take(_Recipients.shown).map((a) => a.display).join(', ');
+      return InkWell(
+        onTap: () => setState(() => _open = true),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Text.rich(
+            TextSpan(
+              children: [
+                TextSpan(text: 'To: $first  '),
+                TextSpan(
+                  text: '+$hidden more',
+                  style: style?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: style,
+          ),
+        ),
+      );
+    }
+
+    return InkWell(
+      onTap: () => setState(() => _open = false),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('To: ${to.length} people', style: style),
+            const SizedBox(height: 2),
+            for (final a in to)
+              Text(
+                a.name == null || a.name!.trim().isEmpty
+                    ? a.email
+                    : '${a.name}  <${a.email}>',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: style,
+              ),
+            Text('Show fewer',
+                style: style?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                )),
+          ],
+        ),
+      ),
+    );
   }
 }

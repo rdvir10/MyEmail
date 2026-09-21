@@ -250,13 +250,29 @@ class GraphMailApi {
   }
 
   /// The body, in both forms the reading pane can show.
+  ///
+  /// Two ways of telling a meeting request from a message, because one is
+  /// not enough: `@odata.type`, which Graph sends for a derived type but
+  /// has been seen left out of a `$select`ed response, and
+  /// `meetingMessageType`, asked for through the cast that names it. A
+  /// mailbox that refuses the cast falls back to the plain question rather
+  /// than failing to show the message at all.
   Future<GraphBody?> body(String messageId) async {
+    final uri = Uri.parse('$base/me/messages/${_id(messageId)}');
     try {
-      final json = await _get(
-        Uri.parse('$base/me/messages/${_id(messageId)}').replace(
+      Map<String, Object?> json;
+      try {
+        json = await _get(uri.replace(queryParameters: {
+          '\$select': 'body,uniqueBody,hasAttachments,'
+              'microsoft.graph.eventMessage/meetingMessageType',
+        }));
+      } on GraphNotFound {
+        rethrow;
+      } catch (_) {
+        json = await _get(uri.replace(
           queryParameters: {'\$select': 'body,uniqueBody,hasAttachments'},
-        ),
-      );
+        ));
+      }
       final body = json['body'];
       if (body is! Map) return null;
       final contentType = '${body['contentType']}'.toLowerCase();
@@ -265,7 +281,8 @@ class GraphMailApi {
         html: contentType == 'html' ? content : null,
         text: contentType == 'html' ? null : content,
         hasAttachments: json['hasAttachments'] == true,
-        isEventMessage: '${json['@odata.type']}'.endsWith('.eventMessage'),
+        isEventMessage: '${json['@odata.type']}'.endsWith('.eventMessage') ||
+            json['meetingMessageType'] != null,
       );
     } on GraphNotFound {
       return null;

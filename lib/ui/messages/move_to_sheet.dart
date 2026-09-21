@@ -63,10 +63,14 @@ class _MoveToSheetState extends ConsumerState<_MoveToSheet> {
     final all = ref.watch(foldersProvider).value?[accountId] ?? const [];
     final overrides = ref.watch(folderOrderProvider);
 
-    final candidates = all
-        .where((f) => f.capabilities.canAcceptMessages && f.id != fromFolderId)
-        .toList()
-      ..sort(folderComparator(overrides));
+    // In the order the tree draws them: a folder, then what is inside it.
+    // Sorting the flat list instead put every subfolder of Deleted Items
+    // in the middle of the user folders, a screen away from the parent
+    // whose name their path was quoting.
+    final candidates = [
+      for (final f in _inTreeOrder(all, folderComparator(overrides)))
+        if (f.capabilities.canAcceptMessages && f.id != fromFolderId) f,
+    ];
 
     // Recents, filtered to this account and to folders that still exist.
     final recents = <MailFolder>[
@@ -85,7 +89,7 @@ class _MoveToSheetState extends ConsumerState<_MoveToSheet> {
         : [
             for (final f in candidates)
               if (f.displayName.toLowerCase().contains(query) ||
-                  displayPath(f).toLowerCase().contains(query))
+                  _pathOf(f, index).toLowerCase().contains(query))
                 f,
           ];
 
@@ -142,7 +146,7 @@ class _MoveToSheetState extends ConsumerState<_MoveToSheet> {
                   if (recents.isNotEmpty && query.isEmpty) ...[
                     _SheetHeading(text: 'Recent', theme: theme),
                     for (final f in recents)
-                      _FolderOption(folder: f, showPath: true),
+                      _FolderOption(folder: f, path: _pathOf(f, index)),
                     const Divider(height: 1),
                     _SheetHeading(text: 'All folders', theme: theme),
                   ],
@@ -150,12 +154,13 @@ class _MoveToSheetState extends ConsumerState<_MoveToSheet> {
                     if (query.isNotEmpty || !recentIds.contains(f.id))
                       _FolderOption(
                         folder: f,
-                        // Indented to its place in the tree, so a folder
-                        // is read as where it lives rather than as a name
-                        // on a list of two hundred. A search is flat: the
-                        // parents it sits under may not be in the results.
+                        // Indented to its place in the tree, so a folder is
+                        // read as where it lives. The path underneath would
+                        // then be saying the same thing twice, so it is kept
+                        // for the search, where the list is flat and the
+                        // parents may not be in it.
                         depth: query.isEmpty ? _depthOf(f, index) : 0,
-                        showPath: query.isNotEmpty || f.parentId != null,
+                        path: query.isEmpty ? null : _pathOf(f, index),
                       ),
                   if (matches.isEmpty)
                     ListTile(
@@ -196,6 +201,64 @@ int _depthOf(MailFolder folder, Map<String, MailFolder> index) {
   return depth;
 }
 
+/// Where a folder lives, in the names the app shows: "Deleted › Invoices"
+/// rather than "Deleted Items › Invoices", since Deleted is what the row
+/// above it is called.
+String _pathOf(MailFolder folder, Map<String, MailFolder> index) {
+  final parts = <String>[folder.displayName];
+  var cursor = folder;
+  for (var depth = 0; depth < 8; depth++) {
+    final parentId = cursor.parentId;
+    if (parentId == null) break;
+    final parent = index[parentId];
+    if (parent == null) break;
+    parts.insert(0, parent.displayName);
+    cursor = parent;
+  }
+  return parts.join(' › ');
+}
+
+/// The account's folders in the order the tree draws them: each folder
+/// followed by what is inside it, every level in the tree's own order.
+///
+/// A folder whose parent is missing from the list is treated as a root, so
+/// nothing is dropped by an unusual mailbox.
+List<MailFolder> _inTreeOrder(
+  List<MailFolder> all,
+  Comparator<MailFolder> compare,
+) {
+  final ids = {for (final f in all) f.id};
+  final children = <String, List<MailFolder>>{};
+  final roots = <MailFolder>[];
+  for (final f in all) {
+    final parentId = f.parentId;
+    if (parentId == null || !ids.contains(parentId)) {
+      roots.add(f);
+    } else {
+      children.putIfAbsent(parentId, () => []).add(f);
+    }
+  }
+
+  final ordered = <MailFolder>[];
+  final seen = <String>{};
+  void walk(List<MailFolder> level) {
+    for (final f in level..sort(compare)) {
+      // A cycle in the parent chain would otherwise loop for ever.
+      if (!seen.add(f.id)) continue;
+      ordered.add(f);
+      final kids = children[f.id];
+      if (kids != null) walk(kids);
+    }
+  }
+
+  walk(roots);
+  // Anything a cycle kept out still belongs on the list.
+  for (final f in all) {
+    if (seen.add(f.id)) ordered.add(f);
+  }
+  return ordered;
+}
+
 class _SheetHeading extends StatelessWidget {
   const _SheetHeading({required this.text, required this.theme});
 
@@ -221,17 +284,20 @@ class _SheetHeading extends StatelessWidget {
 class _FolderOption extends StatelessWidget {
   const _FolderOption({
     required this.folder,
-    required this.showPath,
+    this.path,
     this.depth = 0,
   });
 
   final MailFolder folder;
-  final bool showPath;
+
+  /// Where it lives, shown under the name. Null where the indentation
+  /// already says it.
+  final String? path;
   final int depth;
 
   @override
   Widget build(BuildContext context) {
-    final path = displayPath(folder);
+    final where = path;
     return ListTile(
       contentPadding: EdgeInsets.only(left: 16.0 + depth * 18, right: 16),
       leading: Icon(
@@ -239,7 +305,9 @@ class _FolderOption extends StatelessWidget {
         size: depth == 0 ? 24 : 18,
       ),
       title: Text(folder.displayName),
-      subtitle: showPath && path != folder.displayName ? Text(path) : null,
+      subtitle: where != null && where != folder.displayName
+          ? Text(where, maxLines: 1, overflow: TextOverflow.ellipsis)
+          : null,
       onTap: () => Navigator.of(context).pop(folder.id),
     );
   }

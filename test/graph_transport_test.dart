@@ -8,7 +8,9 @@ import 'package:myemail/data/graph/graph_mail_api.dart';
 import 'package:myemail/data/graph/graph_transport.dart';
 import 'package:myemail/data/imap/imap_transport.dart';
 import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/domain/calendar_invite.dart';
 import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/mail_folder.dart';
 
 /// The mail transport over Microsoft Graph.
@@ -381,6 +383,85 @@ void main() {
       expect(body.html, '<p>Hello</p>');
     });
 
+    group('a meeting request', () {
+      const invitation = 'From: dana@example.com\r\n'
+          'Subject: Review\r\n'
+          'Content-Type: multipart/alternative; boundary="b"\r\n'
+          '\r\n'
+          '--b\r\n'
+          'Content-Type: text/plain\r\n'
+          '\r\n'
+          'Please come.\r\n'
+          '--b\r\n'
+          'Content-Type: text/calendar; method=REQUEST\r\n'
+          '\r\n'
+          'BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:u-1\r\n'
+          'SUMMARY:Review\r\nDTSTART:20260923T184500Z\r\nEND:VEVENT\r\n'
+          'END:VCALENDAR\r\n'
+          '--b--\r\n';
+
+      Future<MailBody> fetch() async {
+        final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
+        return transport.fetchBody('Inbox', header.uid);
+      }
+
+      test('brings its invitation with it', () async {
+        server
+          ..message('f-inbox', id: 'm1', subject: 'Review', minutesAgo: 5)
+          ..bodies['m1'] = ('html', '<p>Please come.</p>')
+          ..mimes['m1'] = invitation
+          ..eventMessages.add('m1');
+
+        final body = await fetch();
+
+        expect(body.calendar, contains('BEGIN:VEVENT'));
+        expect(CalendarInvite.parse(body.calendar!)!.summary, 'Review');
+      });
+
+      test('still does when the type is left out of the answer', () async {
+        // What a mailbox was doing when invitations stopped showing a card:
+        // the selected response carried no @odata.type, so the message read
+        // as an ordinary one and its calendar part was never fetched.
+        server
+          ..message('f-inbox', id: 'm1', subject: 'Review', minutesAgo: 5)
+          ..bodies['m1'] = ('html', '<p>Please come.</p>')
+          ..mimes['m1'] = invitation
+          ..eventMessages.add('m1')
+          ..odataTypeOmitted = true;
+
+        final body = await fetch();
+
+        expect(body.calendar, contains('BEGIN:VEVENT'),
+            reason: 'the cast names it a meeting request instead');
+      });
+
+      test('a mailbox that refuses the cast still shows the message',
+          () async {
+        server
+          ..message('f-inbox', id: 'm1', subject: 'Review', minutesAgo: 5)
+          ..bodies['m1'] = ('html', '<p>Please come.</p>')
+          ..mimes['m1'] = invitation
+          ..eventMessages.add('m1')
+          ..castSelectRefused = true;
+
+        final body = await fetch();
+
+        expect(body.html, '<p>Please come.</p>', reason: 'asked again plainly');
+        expect(body.calendar, contains('BEGIN:VEVENT'),
+            reason: '@odata.type still says what it is');
+      });
+
+      test('an ordinary message fetches no MIME at all', () async {
+        server
+          ..message('f-inbox', id: 'm1', subject: 'Hello', minutesAgo: 5)
+          ..bodies['m1'] = ('html', '<p>Hello</p>');
+
+        final body = await fetch();
+
+        expect(body.calendar, isNull);
+      });
+    });
+
     test('flags for a range come back for the whole range', () async {
       // No CONDSTORE equivalent, so the caller compares everything.
       server
@@ -554,6 +635,18 @@ class _FakeGraph {
     if (wellKnown != null) this.wellKnown[wellKnown] = id;
   }
 
+  /// The message as MIME, by id, for the `$value` form.
+  final Map<String, String> mimes = {};
+
+  /// Messages this server treats as meeting requests.
+  final Set<String> eventMessages = {};
+
+  /// Some mailboxes leave `@odata.type` out of a selected answer.
+  bool odataTypeOmitted = false;
+
+  /// And one may refuse the cast in a select outright.
+  bool castSelectRefused = false;
+
   void message(
     String folderId, {
     required String id,
@@ -716,6 +809,14 @@ class _FakeGraph {
       return json(folder);
     }
 
+    // The whole message as MIME.
+    if (request.method == 'GET' && path.endsWith(r'/$value')) {
+      final id = path.split('/me/messages/').last.replaceAll(r'/$value', '');
+      final mime = mimes[id];
+      if (mime == null) return http.Response('{}', 404);
+      return http.Response(mime, 200, headers: {'content-type': 'text/plain'});
+    }
+
     // One message, headers or body.
     if (request.method == 'GET' && path.contains('/me/messages/')) {
       final id = path.split('/me/messages/').last;
@@ -723,9 +824,21 @@ class _FakeGraph {
       if (message == null) return http.Response('{}', 404);
       if ((query['\$select'] ?? '').contains('body')) {
         final body = bodies[id] ?? ('text', '');
+        final select = query['\$select'] ?? '';
+        if (castSelectRefused && select.contains('microsoft.graph.')) {
+          return http.Response('{"error":{"code":"BadRequest"}}', 400);
+        }
         return json({
           'body': {'contentType': body.$1, 'content': body.$2},
           'hasAttachments': message['hasAttachments'],
+          // Graph names a derived type, and the cast asks for the property
+          // only a meeting request has. A mailbox may answer with either,
+          // or with just one of them.
+          if (eventMessages.contains(id) && !odataTypeOmitted)
+            '@odata.type': '#microsoft.graph.eventMessage',
+          if (eventMessages.contains(id) &&
+              select.contains('meetingMessageType'))
+            'meetingMessageType': 'meetingRequest',
         });
       }
       return json(message);
