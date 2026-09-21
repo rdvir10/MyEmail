@@ -271,4 +271,91 @@ void main() {
       throwsA(isA<SignInExpired>()),
     );
   });
+
+  group('the Keystore', () {
+    test('is read once, not once per request', () async {
+      // Every Graph request asks for a token, and opening a folder is a
+      // dozen requests. Each read is a decrypt over a platform channel.
+      await storeToken(access: 'access-0', expiresIn: const Duration(hours: 1));
+      final counted = _CountingStore(secrets);
+      final repository = OAuthTokenRepository(
+        credentialStore: counted,
+        clock: () => now,
+        oauthClient: () => throw StateError('no refresh was needed'),
+      );
+
+      for (var i = 0; i < 12; i++) {
+        expect(await repository.accessToken('acct-1'), 'access-0');
+      }
+
+      expect(counted.reads, 1);
+    });
+
+    test('is read again when the token in hand was refused', () async {
+      await storeToken(access: 'access-0', expiresIn: const Duration(hours: 1));
+      final counted = _CountingStore(secrets);
+      final repository = OAuthTokenRepository(
+        credentialStore: counted,
+        clock: () => now,
+        oauthClient: () => MicrosoftOAuth(
+          clientId: 'test-client-id',
+          clock: () => now,
+          authority: 'https://login.example/consumers/oauth2/v2.0',
+          httpClient: http_testing.MockClient((_) async => http.Response(
+                jsonEncode({
+                  'access_token': 'access-fresh',
+                  'refresh_token': 'refresh-fresh',
+                  'expires_in': 3599,
+                }),
+                200,
+                headers: const {'content-type': 'application/json'},
+              )),
+        ),
+      );
+
+      await repository.accessToken('acct-1');
+      final again = await repository.accessToken('acct-1', force: true);
+
+      expect(again, 'access-fresh');
+      expect(counted.reads, 2, reason: 'force looks at what is stored');
+      expect(await repository.accessToken('acct-1'), 'access-fresh',
+          reason: 'and what it found replaces what was held');
+    });
+
+    test('a forgotten account leaves nothing behind', () async {
+      await storeToken(access: 'access-0', expiresIn: const Duration(hours: 1));
+      final repository = repositoryWith();
+      await repository.accessToken('acct-1');
+
+      repository.forget('acct-1');
+      await secrets.deleteSecret('acct-1');
+
+      await expectLater(
+        repository.accessToken('acct-1'),
+        throwsA(isA<SignInExpired>()),
+      );
+    });
+  });
+}
+
+/// A credential store that counts how often it is asked.
+class _CountingStore implements CredentialStore {
+  _CountingStore(this._inner);
+
+  final CredentialStore _inner;
+  int reads = 0;
+
+  @override
+  Future<String?> readSecret(String accountId) {
+    reads++;
+    return _inner.readSecret(accountId);
+  }
+
+  @override
+  Future<void> writeSecret(String accountId, String secret) =>
+      _inner.writeSecret(accountId, secret);
+
+  @override
+  Future<void> deleteSecret(String accountId) =>
+      _inner.deleteSecret(accountId);
 }

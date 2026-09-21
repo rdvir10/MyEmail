@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../../domain/folder_role.dart';
@@ -281,23 +282,62 @@ class GraphTransport implements ImapTransport {
       throw const ConnectionFailed('That message is no longer on the server.');
     }
     // The invitation is not in the body Graph hands over; it is in the
-    // message's MIME, the way it was sent. Only fetched for event messages.
+    // message's MIME, the way it was sent. Only fetched for event messages:
+    // the whole message can be tens of megabytes, and downloading it to look
+    // for a part that is almost never there would make every message slow.
     String? calendar;
     if (body.isEventMessage) {
       try {
-        calendar = calendarPartOf(em.MimeMessage.parseFromText(await api.mime(remoteId)));
+        calendar = calendarPartOf(
+          em.MimeMessage.parseFromText(await api.mime(remoteId)),
+        );
       } catch (_) {
         calendar = null;
       }
     }
+    // A meeting the mail system never typed as one: an invitation attached
+    // to an ordinary message, which is how a booking made outside Exchange
+    // arrives. The list of what is attached is one small request and the
+    // reading pane asks for it anyway; only the invitation itself is
+    // downloaded, and only when there is one.
+    calendar ??= body.hasAttachments
+        ? await _calendarFileOn(remoteId)
+        : null;
     return MailBody(text: body.text ?? '', html: body.html, calendar: calendar);
   }
 
-  @override
-  Future<bool> respondToInvite(String path, int uid, InviteResponse response) async {
-    await api.respondToInvite(await _remoteId(path, uid), response);
-    return true;
+  /// The invitation attached to a message, if one of its files is an
+  /// `.ics`. Silent about failure: a message that will not give up its
+  /// attachments still has a body worth showing.
+  Future<String?> _calendarFileOn(String remoteId) async {
+    try {
+      for (final file in await api.attachments(remoteId)) {
+        if (!isCalendarFile(file.mimeType, file.name)) continue;
+        // An invitation is a few kilobytes of text. Something named .ics
+        // and the size of a video is not one, and is not worth the wait.
+        if (file.sizeBytes > 1024 * 1024) continue;
+        final bytes = await api.attachmentBytes(remoteId, file.id);
+        final text = utf8.decode(bytes, allowMalformed: true);
+        if (text.trim().isNotEmpty) return text;
+      }
+    } catch (_) {
+      // No invitation, then.
+    }
+    return null;
   }
+
+  @override
+  Future<bool> respondToInvite(
+    String path,
+    int uid,
+    InviteResponse response, {
+    String? iCalUid,
+  }) async =>
+      api.respondToInvite(
+        await _remoteId(path, uid),
+        response,
+        iCalUid: iCalUid,
+      );
 
   @override
   Future<List<MailAttachment>> listAttachments(String path, int uid) async {
@@ -488,7 +528,8 @@ class GraphTransport implements ImapTransport {
 
   @override
   Future<void> close() async {
-    // Nothing is held open: every call is its own HTTPS request.
+    // One connection to Graph, kept open between requests and let go here.
+    api.close();
   }
 
   // --- plumbing --------------------------------------------------------------

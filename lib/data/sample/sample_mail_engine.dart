@@ -196,6 +196,19 @@ class SampleMailEngine implements MailEngine {
     return List.unmodifiable(all.sublist(offset, min(all.length, offset + limit)));
   }
 
+  /// Nothing is cached until a folder has been asked for once, which is
+  /// what a real cache does on the first visit to a folder too.
+  @override
+  Future<List<MailMessage>> cachedMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    final all = _messages[folderId];
+    if (all == null || offset >= all.length) return const [];
+    return List.unmodifiable(all.sublist(offset, min(all.length, offset + limit)));
+  }
+
   @override
   Future<MailBody> loadMessageBody(String messageId) async {
     await _latency();

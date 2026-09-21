@@ -324,6 +324,11 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     return ref
         .watch(messagesProvider(folderId))
         .when(
+          // A reload keeps what is on screen. The list is refreshed on every
+          // resume, after every delete and after every move, and replacing
+          // a folder full of mail with a spinner each time is how a working
+          // app comes to feel slow.
+          skipLoadingOnReload: true,
           loading: () => const Center(
             child: SizedBox(
               width: 22,

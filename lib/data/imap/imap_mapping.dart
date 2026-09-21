@@ -274,13 +274,49 @@ MailBody bodyFromMime(em.MimeMessage m) {
   );
 }
 
+/// Is this file the invitation rather than something attached beside it?
+///
+/// The media type is the right answer and usually the one given. It is not
+/// always given: a mail system that does not know what an `.ics` is sends it
+/// as `application/octet-stream`, and one that does may still call it
+/// `application/ics`, which is not a registered type but is common. The name
+/// settles those two, and nothing else is called `.ics`.
+bool isCalendarFile(String mimeType, String name) {
+  final type = mimeType.toLowerCase();
+  return type.startsWith('text/calendar') ||
+      type == 'application/ics' ||
+      type == 'application/calendar' ||
+      name.toLowerCase().trim().endsWith('.ics');
+}
+
 /// The invitation inside a message, if it carries one: the first
 /// `text/calendar` part, decoded. Outlook and Google both send meeting
 /// requests this way, beside the readable body.
+///
+/// Failing that, a part that is an `.ics` by name. A meeting booked outside
+/// a mail system — a Zoom or Webex invitation passed on, an agenda sent by an
+/// assistant — arrives as a file hung off an ordinary message, and one sent
+/// with the wrong media type is still an invitation.
 String? calendarPartOf(em.MimeMessage m) {
   final part = m.getPartWithMediaSubtype(em.MediaSubtype.textCalendar);
   final text = part?.decodeContentText();
-  return text == null || text.trim().isEmpty ? null : text;
+  if (text != null && text.trim().isNotEmpty) return text;
+  return _calendarFileIn(m);
+}
+
+String? _calendarFileIn(em.MimeMessage m) {
+  for (final disposition in [
+    em.ContentDisposition.attachment,
+    em.ContentDisposition.inline,
+  ]) {
+    for (final info in m.findContentInfo(disposition: disposition)) {
+      final type = info.contentType?.mediaType.toString() ?? '';
+      if (!isCalendarFile(type, info.fileName ?? '')) continue;
+      final text = m.getPart(info.fetchId)?.decodeContentText();
+      if (text != null && text.trim().isNotEmpty) return text;
+    }
+  }
+  return null;
 }
 
 /// What a message has attached, read from its structure alone.

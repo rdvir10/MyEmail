@@ -170,8 +170,14 @@ class FakeImapTransport implements ImapTransport {
   }
 
   @override
-  Future<bool> respondToInvite(String path, int uid, InviteResponse response) async {
-    calls.add('RESPOND $path $uid ${response.partStat}');
+  Future<bool> respondToInvite(
+    String path,
+    int uid,
+    InviteResponse response, {
+    String? iCalUid,
+  }) async {
+    calls.add('RESPOND $path $uid ${response.partStat}'
+        '${iCalUid == null ? '' : ' uid=$iCalUid'}');
     return false;
   }
 

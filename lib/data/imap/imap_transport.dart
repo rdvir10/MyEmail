@@ -58,7 +58,15 @@ abstract class ImapTransport {
   /// Graph can accept on the calendar itself and tell the organiser in
   /// one call. True if it did. False means "send the reply as mail",
   /// which every calendar server also reads.
-  Future<bool> respondToInvite(String path, int uid, InviteResponse response);
+  ///
+  /// [iCalUid] is the UID the invitation itself carries, which is how a
+  /// calendar server finds the event when the message does not link to it.
+  Future<bool> respondToInvite(
+    String path,
+    int uid,
+    InviteResponse response, {
+    String? iCalUid,
+  });
 
   /// What is attached to a message, without downloading any of it.
   ///

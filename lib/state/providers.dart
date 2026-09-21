@@ -304,6 +304,10 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     final current = state.value;
     if (current == null) return;
     final fresh = await ref.read(mailEngineProvider).loadFolders(accountId);
+    // The counts are refreshed without anything waiting for them, so the
+    // tree may be gone by the time the server answers — a folder switched,
+    // a window closed. Writing to a provider that has been disposed throws.
+    if (!ref.mounted) return;
     state = AsyncData({...current, accountId: fresh});
   }
 }

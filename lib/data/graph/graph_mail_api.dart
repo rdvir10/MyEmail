@@ -17,14 +17,27 @@ import '../mail_engine.dart';
 /// Every call takes its access token from [accessToken] rather than holding
 /// one. Graph tokens last about an hour and a sync can outlive that.
 class GraphMailApi {
-  const GraphMailApi({
+  GraphMailApi({
     required this.accessToken,
     http.Client? httpClient,
     this.sleep,
-  }) : _http = httpClient;
+  }) : _given = httpClient;
 
   final Future<String> Function({bool force}) accessToken;
-  final http.Client? _http;
+
+  /// A client handed in, which belongs to whoever handed it in.
+  final http.Client? _given;
+
+  /// One made here, kept, and closed by [close].
+  ///
+  /// Held rather than made per request because every request to Graph is a
+  /// fresh TLS handshake otherwise, and opening a folder on a work mailbox
+  /// is a dozen requests. Reusing the connection takes the largest single
+  /// constant off the time before mail appears.
+  http.Client? _own;
+
+  http.Client get _client => _given ?? (_own ??= http.Client());
+
   /// Overridden by tests, which must not really wait out a throttle.
   final Future<void> Function(Duration)? sleep;
 
@@ -321,17 +334,71 @@ class GraphMailApi {
   /// `/$value` rather than the JSON with contentBytes in it: the same data
   /// without a base64 round trip through a string, which for a 20MB file is
   /// the difference between a download and an out-of-memory.
+  /// The event a meeting request is about, or null if this mailbox will
+  /// not say which one it is.
+  ///
+  /// `event` is a link on `eventMessage`, not on `message`. A mailbox that
+  /// does not hand the message over as its derived type answers the plain
+  /// path with "Resource not found for the segment 'event'", so the cast
+  /// is asked first: it names the type in the path and always parses. The
+  /// plain path stays for mailboxes that refuse a cast, and the
+  /// invitation's own UID finds the event on the calendar when neither
+  /// works — automatic processing may have put it there without ever
+  /// linking it back to the message.
+  Future<String?> eventIdFor(String messageId, {String? iCalUid}) async {
+    final id = _id(messageId);
+    for (final path in [
+      '$base/me/messages/$id/microsoft.graph.eventMessage/event',
+      '$base/me/messages/$id/event',
+    ]) {
+      try {
+        final json = await _get(
+          Uri.parse(path).replace(queryParameters: {'\$select': 'id'}),
+        );
+        final eventId = json['id'];
+        if (eventId is String && eventId.isNotEmpty) return eventId;
+      } catch (_) {
+        // Ask the next way.
+      }
+    }
+    if (iCalUid == null || iCalUid.isEmpty) return null;
+    try {
+      final json = await _get(Uri.parse('$base/me/events').replace(
+        queryParameters: {
+          '\$filter': "iCalUId eq '${iCalUid.replaceAll("'", "''")}'",
+          '\$select': 'id',
+          '\$top': '1',
+        },
+      ));
+      final value = json['value'];
+      if (value is List && value.isNotEmpty) {
+        final first = value.first;
+        if (first is Map) {
+          final eventId = first['id'];
+          if (eventId is String && eventId.isNotEmpty) return eventId;
+        }
+      }
+    } catch (_) {
+      // The calendar cannot be searched either.
+    }
+    return null;
+  }
+
   /// Answer the invitation an event message carries: accept, tentatively
   /// accept or decline the event on the calendar, telling the organiser.
   /// Two calls, because the message knows its event and the event takes
   /// the answer.
-  Future<void> respondToInvite(String messageId, InviteResponse response) async {
-    final event = await _get(
-      Uri.parse('$base/me/messages/${_id(messageId)}/event')
-          .replace(queryParameters: {'\$select': 'id'}),
-    );
-    final eventId = event['id'];
-    if (eventId is! String || eventId.isEmpty) throw const GraphNotFound();
+  ///
+  /// False when no event could be found to answer on, which is the
+  /// caller's cue to send the reply as mail instead. A refused answer on
+  /// an event that was found is an error and says so.
+  Future<bool> respondToInvite(
+    String messageId,
+    InviteResponse response, {
+    String? iCalUid,
+  }) async {
+    final eventId = await eventIdFor(messageId, iCalUid: iCalUid);
+    if (eventId == null) return false;
     final action = switch (response) {
       InviteResponse.accepted => 'accept',
       InviteResponse.tentative => 'tentativelyAccept',
@@ -341,24 +408,20 @@ class GraphMailApi {
       Uri.parse('$base/me/events/${_id(eventId)}/$action'),
       {'sendResponse': true},
     );
+    return true;
   }
 
   /// A POST whose success is a 202 with nothing in it.
   Future<void> _postNoContent(Uri uri, Map<String, Object?> body) async {
-    final client = _http ?? http.Client();
-    try {
-      final request = http.Request('POST', uri)
-        ..headers['Authorization'] = 'Bearer ${await accessToken()}'
-        ..headers['Content-Type'] = 'application/json'
-        ..body = jsonEncode(body);
-      final response =
-          await http.Response.fromStream(await client.send(request));
-      if (response.statusCode == 404) throw const GraphNotFound();
-      if (response.statusCode >= 400) {
-        throw _failureFor(response.statusCode, const {});
-      }
-    } finally {
-      if (_http == null) client.close();
+    final request = http.Request('POST', uri)
+      ..headers['Authorization'] = 'Bearer ${await accessToken()}'
+      ..headers['Content-Type'] = 'application/json'
+      ..body = jsonEncode(body);
+    final response =
+        await http.Response.fromStream(await _client.send(request));
+    if (response.statusCode == 404) throw const GraphNotFound();
+    if (response.statusCode >= 400) {
+      throw _failureFor(response.statusCode, const {});
     }
   }
 
@@ -465,21 +528,23 @@ class GraphMailApi {
   /// is bytes: decoding a PDF as UTF-8 and re-encoding it produces something
   /// that is the right length and opens in nothing.
   Future<Uint8List> _bytes(Uri uri) async {
-    final client = _http ?? http.Client();
-    try {
-      final request = http.Request('GET', uri)
-        ..headers['Authorization'] = 'Bearer ${await accessToken()}'
-        ..followRedirects = true;
-      final response =
-          await http.Response.fromStream(await client.send(request));
-      if (response.statusCode == 404) throw const GraphNotFound();
-      if (response.statusCode >= 400) {
-        throw _failureFor(response.statusCode, const {});
-      }
-      return response.bodyBytes;
-    } finally {
-      if (_http == null) client.close();
+    final request = http.Request('GET', uri)
+      ..headers['Authorization'] = 'Bearer ${await accessToken()}'
+      ..followRedirects = true;
+    final response =
+        await http.Response.fromStream(await _client.send(request));
+    if (response.statusCode == 404) throw const GraphNotFound();
+    if (response.statusCode >= 400) {
+      throw _failureFor(response.statusCode, const {});
     }
+    return response.bodyBytes;
+  }
+
+  /// Let go of the connection. Only one made here: a client handed in is
+  /// closed by its owner.
+  void close() {
+    _own?.close();
+    _own = null;
   }
 
   Future<Map<String, Object?>> _post(Uri uri, Map<String, Object?> body) =>
@@ -499,13 +564,12 @@ class GraphMailApi {
     http.Request request, {
     int attempt = 0,
   }) async {
-    final client = _http ?? http.Client();
-    try {
+    {
       request.headers['Authorization'] = 'Bearer ${await accessToken()}';
 
       final http.Response response;
       try {
-        response = await http.Response.fromStream(await client.send(request));
+        response = await http.Response.fromStream(await _client.send(request));
       } on Exception catch (e) {
         throw ConnectionFailed('Could not reach Microsoft. ($e)');
       }
@@ -516,10 +580,8 @@ class GraphMailApi {
       final wait = _retryAfter(response);
       if (wait != null && attempt < maxThrottleRetries) {
         await (sleep ?? _realSleep)(wait);
-        // Awaited inside the try on purpose: returning the future would let
-        // the finally below close the client out from under the retry.
-        // A fresh request object too — an http.Request cannot be sent twice.
-        return await _send(_copyOf(request), attempt: attempt + 1);
+        // A fresh request object: an http.Request cannot be sent twice.
+        return _send(_copyOf(request), attempt: attempt + 1);
       }
 
       if (response.statusCode == 404) throw const GraphNotFound();
@@ -543,8 +605,6 @@ class GraphMailApi {
         throw _failureFor(response.statusCode, json);
       }
       return json;
-    } finally {
-      if (_http == null) client.close();
     }
   }
 

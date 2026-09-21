@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../domain/folder_role.dart';
@@ -28,18 +30,89 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
   /// to start with and [loadMore] adds this many at a time.
   static const pageSize = 50;
 
+  /// Counts the changes made to this list from here: a delete, a move, a
+  /// flag, another page loaded.
+  ///
+  /// A refresh runs behind the list and answers a second or two later,
+  /// from a folder read before any of that happened. Writing that answer
+  /// over the top would undo it — a deleted message back on screen, a page
+  /// of older mail gone again — so a refresh whose count has moved on is
+  /// dropped instead.
+  int _changes = 0;
+
   @override
   Future<List<MailMessage>> build() async {
     final engine = ref.watch(mailEngineProvider);
+    // False once this build is over, whether the list was thrown away or
+    // merely rebuilt. A refresh started by an earlier build has nothing
+    // useful left to say, and writing to a provider that is gone throws.
+    var current = true;
+    ref.onDispose(() => current = false);
     // Read, not watched: paging appends in place, and the depth is only
     // here so a refresh comes back as deep as the list had been scrolled
     // rather than snapping back to the first page.
     final limit = pageSize * ref.read(listDepthProvider(folderId)).pages;
-    final lists = await Future.wait([
-      for (final id in await _folderIds()) engine.loadMessages(id, limit: limit),
-    ]);
+    final ids = await _folderIds();
+
+    // What is already known, which costs a database read and no network.
+    // On a work account the sync behind [loadMessages] is a dozen separate
+    // requests to Microsoft, and waiting for all of them before drawing
+    // mail that is already on this device is seconds of blank screen for
+    // nothing.
+    final known = _merged(await Future.wait([
+      for (final id in ids) engine.cachedMessages(id, limit: limit),
+    ]));
+    if (known.isEmpty) {
+      // A folder opened for the first time, or an empty one: there is
+      // nothing to show early, so the server is worth waiting for.
+      return _merged(await Future.wait([
+        for (final id in ids) engine.loadMessages(id, limit: limit),
+      ]));
+    }
+    _refresh(ids, limit, _changes, () => current);
+    return known;
+  }
+
+  /// Ask the server, and correct the list if the answer differs.
+  ///
+  /// Deliberately not awaited, and deliberately quiet about failure: the
+  /// list on screen came from this device and is still worth showing when
+  /// the network is not answering.
+  void _refresh(
+    List<String> ids,
+    int limit,
+    int changes,
+    bool Function() current,
+  ) {
+    final engine = ref.read(mailEngineProvider);
+    unawaited(() async {
+      final List<MailMessage> fresh;
+      try {
+        fresh = _merged(await Future.wait([
+          for (final id in ids) engine.loadMessages(id, limit: limit),
+        ]));
+      } catch (_) {
+        return;
+      }
+      if (!current() || changes != _changes) return;
+      if (!_sameList(state.value, fresh)) state = AsyncData(fresh);
+    }());
+  }
+
+  static List<MailMessage> _merged(List<List<MailMessage>> lists) {
     if (lists.length == 1) return lists.single;
     return [for (final l in lists) ...l]..sort(newestFirst);
+  }
+
+  /// Same messages in the same order and the same state. Compared so an
+  /// unchanged folder does not redraw the list, which on a long list
+  /// costs a frame and loses the keyboard's place in it.
+  static bool _sameList(List<MailMessage>? a, List<MailMessage> b) {
+    if (a == null || a.length != b.length) return false;
+    for (var i = 0; i < b.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   /// The server folders behind this list: one, or every Inbox for the
@@ -93,6 +166,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       }
       final merged = [...current, ...fresh];
       if (folderId == kUnifiedInboxId) merged.sort(newestFirst);
+      _changes++;
       state = AsyncData(merged);
       depth.end(grew: true);
     } catch (_) {
@@ -136,6 +210,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     ];
     if (removed.isEmpty) return;
 
+    _changes++;
     state = AsyncData([
       for (final m in current)
         if (!ids.contains(m.id)) m,
@@ -147,8 +222,14 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       rethrow;
     }
 
+    // The folder counts follow, but nothing on screen is waiting for them:
+    // refreshing an account is another folder listing over the network, and
+    // awaiting it here is why a delete took seconds to finish.
     for (final accountId in removed.map((m) => m.accountId).toSet()) {
-      await ref.read(foldersProvider.notifier).refreshAccount(accountId);
+      unawaited(ref
+          .read(foldersProvider.notifier)
+          .refreshAccount(accountId)
+          .catchError((Object _) {}));
     }
     // Every other list that showed these messages, and the destination.
     for (final folderId in {
@@ -175,6 +256,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       return;
     }
 
+    _changes++;
     state = AsyncData([...current]..[index] = after);
     try {
       final engine = ref.read(mailEngineProvider);

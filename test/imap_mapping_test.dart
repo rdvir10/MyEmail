@@ -1,7 +1,11 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:enough_mail/enough_mail.dart' as em;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/imap/imap_mapping.dart';
 import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/calendar_invite.dart';
 import 'package:myemail/domain/folder_role.dart';
 
 em.Mailbox _box(
@@ -217,6 +221,63 @@ void main() {
         ..addTextHtml('<div>Only <i>html</i> here.<br>Line two</div>');
       final body = bodyFromMime(builder.buildMimeMessage());
       expect(body.text, 'Only html here.\nLine two');
+    });
+  });
+
+  group('the invitation in a message', () {
+    const ics = 'BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n'
+        'UID:u-7\r\nSUMMARY:Our call\r\nDTSTART:20260923T184500Z\r\n'
+        'END:VEVENT\r\nEND:VCALENDAR\r\n';
+
+    test('is read from the calendar part where there is one', () {
+      final builder = em.MessageBuilder.prepareMultipartAlternativeMessage(
+        plainText: 'Please come.',
+        htmlText: '<p>Please come.</p>',
+      )..addText(ics, mediaType: em.MediaType.fromSubtype(
+          em.MediaSubtype.textCalendar,
+        ));
+
+      final body = bodyFromMime(builder.buildMimeMessage());
+
+      expect(body.calendar, contains('UID:u-7'));
+    });
+
+    test('is read from an attached .ics that says it is something else', () {
+      // A booking made outside the mail system and passed on: the meeting is
+      // a file, and the sender's software called it a stream of bytes. It is
+      // still the invitation, and the reading pane should offer it.
+      final builder = em.MessageBuilder()
+        ..addTextHtml('<p>See you then.</p>')
+        ..addBinary(
+          Uint8List.fromList(utf8.encode(ics)),
+          em.MediaType.fromText('application/octet-stream'),
+          filename: 'meeting.ics',
+        );
+
+      final body = bodyFromMime(builder.buildMimeMessage());
+
+      expect(body.calendar, contains('UID:u-7'));
+      expect(CalendarInvite.parse(body.calendar!)!.summary, 'Our call');
+    });
+
+    test('an ordinary attachment is not mistaken for one', () {
+      final builder = em.MessageBuilder()
+        ..addTextHtml('<p>Attached.</p>')
+        ..addBinary(
+          Uint8List.fromList(utf8.encode('%PDF-1.4')),
+          em.MediaType.fromText('application/pdf'),
+          filename: 'report.pdf',
+        );
+
+      expect(bodyFromMime(builder.buildMimeMessage()).calendar, isNull);
+    });
+
+    test('what counts as a calendar file', () {
+      expect(isCalendarFile('text/calendar; method=REQUEST', 'x'), isTrue);
+      expect(isCalendarFile('application/octet-stream', 'invite.ICS'), isTrue);
+      expect(isCalendarFile('application/ics', 'noname'), isTrue);
+      expect(isCalendarFile('application/pdf', 'report.pdf'), isFalse);
+      expect(isCalendarFile('text/plain', 'notes.txt'), isFalse);
     });
   });
 

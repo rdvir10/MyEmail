@@ -337,6 +337,7 @@ class CachedImapEngine implements MailEngine {
       // Put back what worked, or at least what was there. Replacing a
       // credential the server refused would swap one broken sign-in for
       // another and lose the last known-good one on the way.
+      oauthTokens.forget(accountId);
       if (previous == null) {
         await credentialStore.deleteSecret(accountId);
       } else {
@@ -359,6 +360,7 @@ class CachedImapEngine implements MailEngine {
   Future<void> removeAccount(String accountId) async {
     await _transports.remove(accountId)?.close();
     _syncs.remove(accountId);
+    oauthTokens.forget(accountId);
     await credentialStore.deleteSecret(accountId);
     await cache.deleteAccount(accountId);
     // The numbering goes with the cache it keyed. Leaving it would hand the
@@ -565,6 +567,16 @@ class CachedImapEngine implements MailEngine {
     } on ConnectionFailed {
       // Offline: whatever is cached is what there is.
     }
+    return cachedMessages(folderId, offset: offset, limit: limit);
+  }
+
+  @override
+  Future<List<MailMessage>> cachedMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    final (accountId, path) = splitFolderId(folderId);
     final rows = await cache.readMessages(
       accountId,
       path,
@@ -605,7 +617,9 @@ class CachedImapEngine implements MailEngine {
     final (folderId, uid) = splitMessageId(messageId);
     final (accountId, path) = splitFolderId(folderId);
     final t = await _transport(accountId);
-    if (await t.respondToInvite(path, uid, response)) return;
+    if (await t.respondToInvite(path, uid, response, iCalUid: invite.uid)) {
+      return;
+    }
 
     // The server has no calendar of its own to answer on: the reply goes
     // as mail to the organiser, an iCalendar REPLY part beside a line of

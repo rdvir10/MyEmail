@@ -165,7 +165,12 @@ class EnoughMailTransport implements ImapTransport {
       });
 
   @override
-  Future<bool> respondToInvite(String path, int uid, InviteResponse response) async =>
+  Future<bool> respondToInvite(
+    String path,
+    int uid,
+    InviteResponse response, {
+    String? iCalUid,
+  }) async =>
       false; // IMAP has no calendar; the reply goes as mail.
 
   @override

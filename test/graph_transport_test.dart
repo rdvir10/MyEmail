@@ -322,6 +322,26 @@ void main() {
   });
 
   group('reading', () {
+    /// One meeting request, in the two forms it travels in: the calendar
+    /// part of a message Exchange typed as a meeting, and the same event
+    /// as a file somebody attached.
+    const ics = 'BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n'
+        'UID:u-1\r\nSUMMARY:Review\r\nDTSTART:20260923T184500Z\r\n'
+        'END:VEVENT\r\nEND:VCALENDAR\r\n';
+    const invitation = 'From: dana@example.com\r\n'
+        'Subject: Review\r\n'
+        'Content-Type: multipart/alternative; boundary="b"\r\n'
+        '\r\n'
+        '--b\r\n'
+        'Content-Type: text/plain\r\n'
+        '\r\n'
+        'Please come.\r\n'
+        '--b\r\n'
+        'Content-Type: text/calendar; method=REQUEST\r\n'
+        '\r\n'
+        '$ics'
+        '--b--\r\n';
+
     setUp(() {
       server.folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox');
     });
@@ -384,22 +404,6 @@ void main() {
     });
 
     group('a meeting request', () {
-      const invitation = 'From: dana@example.com\r\n'
-          'Subject: Review\r\n'
-          'Content-Type: multipart/alternative; boundary="b"\r\n'
-          '\r\n'
-          '--b\r\n'
-          'Content-Type: text/plain\r\n'
-          '\r\n'
-          'Please come.\r\n'
-          '--b\r\n'
-          'Content-Type: text/calendar; method=REQUEST\r\n'
-          '\r\n'
-          'BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:u-1\r\n'
-          'SUMMARY:Review\r\nDTSTART:20260923T184500Z\r\nEND:VEVENT\r\n'
-          'END:VCALENDAR\r\n'
-          '--b--\r\n';
-
       Future<MailBody> fetch() async {
         final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
         return transport.fetchBody('Inbox', header.uid);
@@ -459,6 +463,113 @@ void main() {
         final body = await fetch();
 
         expect(body.calendar, isNull);
+      });
+
+      test('one attached to an ordinary message is found too', () async {
+        // Not every meeting is booked in Outlook. A Zoom or Webex booking
+        // passed on by whoever made it arrives as a file on a message
+        // Exchange never typed as a meeting request, and often with the
+        // media type of anything at all.
+        server
+          ..message('f-inbox',
+              id: 'm1',
+              subject: 'Our call',
+              minutesAgo: 5,
+              hasAttachments: true)
+          ..bodies['m1'] = ('html', '<p>See you then.</p>')
+          ..attachments['m1'] = [
+            ('a-1', 'meeting.ics', 'application/octet-stream', ics),
+          ];
+
+        final body = await fetch();
+
+        expect(body.calendar, contains('BEGIN:VEVENT'));
+        expect(CalendarInvite.parse(body.calendar!)!.summary, 'Review');
+      });
+
+      test('a message with ordinary files downloads none of them', () async {
+        server
+          ..message('f-inbox',
+              id: 'm1',
+              subject: 'Report',
+              minutesAgo: 5,
+              hasAttachments: true)
+          ..bodies['m1'] = ('html', '<p>Attached.</p>')
+          ..attachments['m1'] = [
+            ('a-1', 'report.pdf', 'application/pdf', 'not really a pdf'),
+          ];
+
+        final body = await fetch();
+
+        expect(body.calendar, isNull);
+        expect(server.fetchedAttachments, isEmpty,
+            reason: 'looking for an invitation must not pull down a deck');
+      });
+    });
+
+    group('answering a meeting request', () {
+      setUp(() {
+        server
+          ..message('f-inbox', id: 'm1', subject: 'Review', minutesAgo: 5)
+          ..bodies['m1'] = ('html', '<p>Please come.</p>')
+          ..mimes['m1'] = invitation
+          ..eventMessages.add('m1');
+      });
+
+      Future<bool> answer() async {
+        final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
+        return transport.respondToInvite(
+          'Inbox',
+          header.uid,
+          InviteResponse.accepted,
+          iCalUid: 'u-1',
+        );
+      }
+
+      test('goes through the cast when the plain link is refused', () async {
+        // The mailbox in the report: "Resource not found for the segment
+        // 'event'". The link belongs to eventMessage, not to message, and
+        // naming that type in the path is what makes it parse.
+        server
+          ..messageEvents['m1'] = 'e-1'
+          ..events['e-1'] = 'u-1'
+          ..eventNeedsCast = true;
+
+        expect(await answer(), isTrue);
+        expect(server.responded, ['e-1:accept']);
+      });
+
+      test('goes through the plain link where the cast is refused', () async {
+        server
+          ..messageEvents['m1'] = 'e-1'
+          ..events['e-1'] = 'u-1'
+          ..eventCastRefused = true;
+
+        expect(await answer(), isTrue);
+        expect(server.responded, ['e-1:accept']);
+      });
+
+      test('finds the event by the invitation UID when neither link works',
+          () async {
+        // Automatic processing put the meeting on the calendar without
+        // leaving anything on the message pointing at it. The UID in the
+        // invitation is the same one the event carries.
+        server
+          ..events['e-9'] = 'u-1'
+          ..eventNeedsCast = true;
+
+        expect(await answer(), isTrue);
+        expect(server.responded, ['e-9:accept']);
+      });
+
+      test('says no rather than failing when there is no event at all',
+          () async {
+        // Nothing here to answer on, which is the caller's cue to send the
+        // reply as mail. Before this the refusal reached the screen instead.
+        server.eventNeedsCast = true;
+
+        expect(await answer(), isFalse);
+        expect(server.responded, isEmpty);
       });
     });
 
@@ -647,6 +758,29 @@ class _FakeGraph {
   /// And one may refuse the cast in a select outright.
   bool castSelectRefused = false;
 
+  /// Files on a message: id to (name, contentType, bytes).
+  final Map<String, List<(String, String, String, String)>> attachments = {};
+
+  /// Which attachment bodies were actually downloaded.
+  final List<String> fetchedAttachments = [];
+
+  /// Events on the calendar: id to the invitation UID it came from.
+  final Map<String, String> events = {};
+
+  /// Which message links to which event, if this mailbox links them at all.
+  final Map<String, String> messageEvents = {};
+
+  /// The mailbox that started all this: it answers `/event` on a plain
+  /// message with "Resource not found for the segment 'event'", and only
+  /// gives up the event when the path names the derived type.
+  bool eventNeedsCast = false;
+
+  /// And one that has never heard of the cast.
+  bool eventCastRefused = false;
+
+  /// Answers given, as 'eventId:action'.
+  final List<String> responded = [];
+
   void message(
     String folderId, {
     required String id,
@@ -809,6 +943,75 @@ class _FakeGraph {
       return json(folder);
     }
 
+    // The event a meeting request is about. A link on eventMessage, not on
+    // message: asking for it without the cast is what a real mailbox
+    // refused, and the app now asks both ways.
+    if (request.method == 'GET' && path.endsWith('/event')) {
+      final rest = path.split('/me/messages/').last;
+      final cast = rest.contains('/microsoft.graph.eventMessage/');
+      final id = rest.split('/').first;
+      if (cast && eventCastRefused) return _parseUri('microsoft.graph');
+      if (!cast && eventNeedsCast) return _parseUri('event');
+      final eventId = messageEvents[id];
+      if (eventId == null) return _parseUri('event');
+      return json({'id': eventId});
+    }
+
+    // The calendar, searched by the UID the invitation carries.
+    if (request.method == 'GET' && path.endsWith('/me/events')) {
+      final filter = query[r'$filter'] ?? '';
+      final wanted = RegExp("iCalUId eq '(.*)'").firstMatch(filter)?.group(1);
+      return json({
+        'value': [
+          for (final e in events.entries)
+            if (e.value == wanted) {'id': e.key},
+        ],
+      });
+    }
+
+    // Accepting, tentatively accepting or declining one.
+    if (request.method == 'POST' && path.contains('/me/events/')) {
+      final rest = path.split('/me/events/').last;
+      final parts = rest.split('/');
+      if (parts.length == 2 && events.containsKey(parts.first)) {
+        responded.add('${parts.first}:${parts.last}');
+        return http.Response('', 202);
+      }
+      return http.Response('{}', 404);
+    }
+
+    // One attachment's bytes.
+    if (request.method == 'GET' &&
+        path.contains('/attachments/') &&
+        path.endsWith(r'/$value')) {
+      final rest = path.split('/me/messages/').last;
+      final messageId = rest.split('/').first;
+      final attachmentId = rest.split('/attachments/').last.split('/').first;
+      for (final a in attachments[messageId] ?? const []) {
+        if (a.$1 != attachmentId) continue;
+        fetchedAttachments.add('$messageId/$attachmentId');
+        return http.Response(a.$4, 200);
+      }
+      return http.Response('{}', 404);
+    }
+
+    // What is attached, without the bytes.
+    if (request.method == 'GET' && path.endsWith('/attachments')) {
+      final id = path.split('/me/messages/').last.replaceAll('/attachments', '');
+      return json({
+        'value': [
+          for (final a in attachments[id] ?? const [])
+            {
+              'id': a.$1,
+              'name': a.$2,
+              'contentType': a.$3,
+              'size': a.$4.length,
+              'isInline': false,
+            },
+        ],
+      });
+    }
+
     // The whole message as MIME.
     if (request.method == 'GET' && path.endsWith(r'/$value')) {
       final id = path.split('/me/messages/').last.replaceAll(r'/$value', '');
@@ -878,6 +1081,19 @@ class _FakeGraph {
 
     return http.Response('{"error":{"code":"NotHandled"}}', 400);
   }
+
+  /// What Microsoft says when a path does not parse: the message in Ron's
+  /// screenshot, word for word.
+  static http.Response _parseUri(String segment) => http.Response(
+        jsonEncode({
+          'error': {
+            'code': 'RequestBroker--ParseUri',
+            'message': "Resource not found for the segment '$segment'.",
+          },
+        }),
+        400,
+        headers: const {'content-type': 'application/json'},
+      );
 
   static String _folderIdIn(String path) {
     final after = path.split('/me/mailFolders/').last;

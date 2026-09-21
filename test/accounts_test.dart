@@ -129,6 +129,14 @@ class _EmptyEngine implements MailEngine {
       _inner.loadMessages(folderId, offset: offset, limit: limit);
 
   @override
+  Future<List<MailMessage>> cachedMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) =>
+      _inner.cachedMessages(folderId, offset: offset, limit: limit);
+
+  @override
   Future<MailBody> loadMessageBody(String messageId) =>
       _inner.loadMessageBody(messageId);
 

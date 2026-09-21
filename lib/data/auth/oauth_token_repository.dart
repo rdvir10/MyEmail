@@ -49,6 +49,18 @@ class OAuthTokenRepository {
   /// credential out of storage, which is worth something on its own.
   final Map<String, OAuthToken> _byResource = {};
 
+  /// The stored record, held in memory between reads.
+  ///
+  /// Every Graph request asks for a token, and opening a folder on a work
+  /// account is a dozen requests: without this, each one decrypts the
+  /// Keystore over a platform channel and parses the JSON again, and the
+  /// sum of that is a visible part of the wait before mail appears.
+  ///
+  /// Replaced whenever a token is written, dropped when the account is
+  /// forgotten, and bypassed by [force] — which is exactly the case where
+  /// what is held turned out to be wrong.
+  final Map<String, OAuthToken> _stored = {};
+
   static String _key(String accountId, List<String> scopes) =>
       '$accountId|${scopes.join(' ')}';
 
@@ -63,14 +75,15 @@ class OAuthTokenRepository {
     bool force = false,
     List<String>? scopes,
   }) async {
-    final stored = OAuthToken.fromStoredJson(
-      await credentialStore.readSecret(accountId),
-    );
+    final stored = (force ? null : _stored[accountId]) ??
+        OAuthToken.fromStoredJson(await credentialStore.readSecret(accountId));
     if (stored == null) {
+      _stored.remove(accountId);
       throw const SignInExpired(
         'This account is not signed in. Remove it and add it again.',
       );
     }
+    _stored[accountId] = stored;
 
     // A resource other than the default one. Its access token never goes to
     // storage, so the freshness check reads the in-memory copy instead.
@@ -103,15 +116,25 @@ class OAuthTokenRepository {
       if (latest != null &&
           latest.refreshToken != stored.refreshToken &&
           latest.isUsableAt(_clock())) {
+        _stored[accountId] = latest;
         return latest.accessToken;
       }
+      _stored.remove(accountId);
       rethrow;
     }
   }
 
   /// Save the token a fresh sign-in produced.
-  Future<void> store(String accountId, OAuthToken token) =>
-      credentialStore.writeSecret(accountId, token.toStoredJson());
+  Future<void> store(String accountId, OAuthToken token) async {
+    await credentialStore.writeSecret(accountId, token.toStoredJson());
+    _stored[accountId] = token;
+  }
+
+  /// Drop everything held for an account, on the way out.
+  void forget(String accountId) {
+    _stored.remove(accountId);
+    _byResource.removeWhere((key, _) => key.startsWith('$accountId|'));
+  }
 
   /// Whether this account's stored secret is an OAuth token rather than a
   /// password, without caring what the account record claims.

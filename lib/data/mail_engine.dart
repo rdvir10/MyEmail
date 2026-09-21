@@ -108,7 +108,23 @@ abstract class MailEngine {
 
   /// Messages in one folder, newest first. [offset] and [limit] page through
   /// it; the list never loads a whole folder at once.
+  ///
+  /// Talks to the server: new mail, changed flags and deletions are all
+  /// taken account of before this answers. Use [cachedMessages] for what is
+  /// already known, which is the same list a moment earlier.
   Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  });
+
+  /// What is already stored for a folder, with no network at all.
+  ///
+  /// The list is shown from this first and corrected when [loadMessages]
+  /// comes back. Mail that is on the screen is mail that was on the screen
+  /// a minute ago; making someone watch a spinner while the server is asked
+  /// to confirm it is time spent showing nothing.
+  Future<List<MailMessage>> cachedMessages(
     String folderId, {
     int offset = 0,
     int limit = 50,
