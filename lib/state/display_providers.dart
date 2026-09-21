@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/ui_state_store.dart';
 import '../domain/display_settings.dart';
+import '../domain/message_sort.dart';
 import 'providers.dart';
 
 /// Settings, View. Persisted the moment they change, because every one of
@@ -34,6 +35,19 @@ class Display extends Notifier<DisplaySettings> {
       state = state.copyWith(density: density);
 
   void setConversations(bool on) => state = state.copyWith(conversations: on);
+
+  /// Changing the field takes the direction that field is normally wanted
+  /// in — dates newest first, names A to Z — rather than carrying the last
+  /// one over and ordering names backwards for no reason.
+  void setSortField(MessageSortField field) => state = state.copyWith(
+        sortField: field,
+        sortAscending: field == state.sortField
+            ? state.sortAscending
+            : field.defaultAscending,
+      );
+
+  void setSortAscending(bool ascending) =>
+      state = state.copyWith(sortAscending: ascending);
 
   void setAlwaysShowImages(bool on) =>
       state = state.copyWith(alwaysShowImages: on);

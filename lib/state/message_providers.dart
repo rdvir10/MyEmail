@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
+import 'display_providers.dart';
+import '../domain/message_sort.dart';
 import 'folder_tree.dart';
 import 'providers.dart';
 
@@ -218,6 +220,26 @@ int newestFirst(MailMessage a, MailMessage b) {
   if (byAccount != 0) return byAccount;
   return b.uid.compareTo(a.uid);
 }
+
+/// A folder's messages in the order the list shows them.
+///
+/// One place, because the rows, the arrow keys and "select what is on
+/// screen" have to agree about what order they are in: sorting only where
+/// the rows are built would leave the keyboard walking the old one.
+final sortedMessagesProvider =
+    Provider.family<List<MailMessage>, String>((ref, folderId) {
+  final messages = ref.watch(messagesProvider(folderId)).value ?? const [];
+  final display = ref.watch(displayProvider);
+  if (display.sortField == MessageSortField.date && !display.sortAscending) {
+    // What the engine already hands over, and what the paging appends to.
+    return messages;
+  }
+  return sortMessages(
+    messages,
+    display.sortField,
+    ascending: display.sortAscending,
+  );
+});
 
 /// How far down a folder's list has been paged.
 ///

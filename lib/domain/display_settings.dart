@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'message_sort.dart';
+
 /// Where the message being read appears.
 ///
 /// Outlook's three, and for the same reasons. The choice only bites on a
@@ -126,7 +128,14 @@ class DisplaySettings {
     this.swipeRight = SwipeAction.move,
     this.swipeLeft = SwipeAction.delete,
     this.alwaysShowImages = false,
+    this.sortField = MessageSortField.date,
+    this.sortAscending = false,
   });
+
+  /// What the list is ordered by, and which way. The defaults are what
+  /// every list did before this was a choice: newest first.
+  final MessageSortField sortField;
+  final bool sortAscending;
 
   final ReadingPanePosition readingPane;
   final ListDensity density;
@@ -159,6 +168,8 @@ class DisplaySettings {
     SwipeAction? swipeRight,
     SwipeAction? swipeLeft,
     bool? alwaysShowImages,
+    MessageSortField? sortField,
+    bool? sortAscending,
   }) {
     return DisplaySettings(
       readingPane: readingPane ?? this.readingPane,
@@ -167,6 +178,8 @@ class DisplaySettings {
       swipeRight: swipeRight ?? this.swipeRight,
       swipeLeft: swipeLeft ?? this.swipeLeft,
       alwaysShowImages: alwaysShowImages ?? this.alwaysShowImages,
+      sortField: sortField ?? this.sortField,
+      sortAscending: sortAscending ?? this.sortAscending,
     );
   }
 
@@ -177,6 +190,8 @@ class DisplaySettings {
         'swipeRight': swipeRight.name,
         'swipeLeft': swipeLeft.name,
         'alwaysShowImages': alwaysShowImages,
+        'sortField': sortField.name,
+        'sortAscending': sortAscending,
       };
 
   /// Tolerant of anything: a value written by a newer build, or a corrupted
@@ -195,6 +210,17 @@ class DisplaySettings {
           : false,
       alwaysShowImages: json['alwaysShowImages'] is bool
           ? json['alwaysShowImages'] as bool
+          : false,
+      // Neither key exists in a record written before sorting was a
+      // choice, and a value from a newer build is not one this one knows:
+      // both fall back to the order every list already had.
+      sortField: _byName(
+        MessageSortField.values,
+        json['sortField'],
+        MessageSortField.date,
+      ),
+      sortAscending: json['sortAscending'] is bool
+          ? json['sortAscending'] as bool
           : false,
       // An install from before swipes were configurable has neither key, and
       // falls back to exactly what it was already doing.
@@ -225,14 +251,30 @@ class DisplaySettings {
       other.density == density &&
       other.conversations == conversations &&
       other.swipeRight == swipeRight &&
-      other.swipeLeft == swipeLeft;
+      other.swipeLeft == swipeLeft &&
+      other.alwaysShowImages == alwaysShowImages &&
+      other.sortField == sortField &&
+      other.sortAscending == sortAscending;
 
+  // Every field, without exception: Riverpod skips notifying when the new
+  // state equals the old, so a field left out here is a setting that can
+  // be changed and have nothing happen.
   @override
-  int get hashCode =>
-      Object.hash(readingPane, density, conversations, swipeRight, swipeLeft);
+  int get hashCode => Object.hash(
+        readingPane,
+        density,
+        conversations,
+        swipeRight,
+        swipeLeft,
+        alwaysShowImages,
+        sortField,
+        sortAscending,
+      );
 
   @override
   String toString() => 'DisplaySettings(${readingPane.name}, ${density.name}, '
       'conversations: $conversations, '
-      'swipe: ${swipeRight.name}/${swipeLeft.name})';
+      'swipe: ${swipeRight.name}/${swipeLeft.name}, '
+      'images: $alwaysShowImages, '
+      'sort: ${sortField.name}${sortAscending ? ' ascending' : ''})';
 }

@@ -16,6 +16,7 @@ import '../compose/open_compose.dart';
 import '../folder_tree/folder_tree_panel.dart';
 import '../messages/message_list_pane.dart';
 import '../messages/reading_pane.dart';
+import '../messages/view_options_sheet.dart';
 import 'app_shortcuts.dart';
 import 'pane_focus.dart';
 import 'ribbon.dart';
@@ -219,6 +220,16 @@ class _NarrowLayout extends ConsumerWidget {
       appBar: AppBar(
         title: Text(folder?.displayName ?? 'MyEmail'),
         centerTitle: false,
+        actions: [
+          // Sorting and what a row looks like, a tap from the list rather
+          // than four taps into Settings. On screen while searching too,
+          // because that is when the order matters most.
+          IconButton(
+            tooltip: 'View and sort',
+            icon: const Icon(Icons.more_vert),
+            onPressed: () => showViewOptions(context),
+          ),
+        ],
       ),
       drawer: Drawer(
         child: SafeArea(
@@ -573,6 +584,12 @@ class _FolderTitleBar extends ConsumerWidget {
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
+              IconButton(
+                tooltip: 'View and sort',
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.more_vert, size: 20),
+                onPressed: () => showViewOptions(context),
+              ),
             ],
           ),
         ),

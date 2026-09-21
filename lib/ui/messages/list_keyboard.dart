@@ -56,7 +56,7 @@ class MessageListKeyboard extends ConsumerStatefulWidget {
 
 class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
   List<MailMessage> get _all =>
-      ref.read(messagesProvider(widget.listId)).value ?? const [];
+      ref.read(sortedMessagesProvider(widget.listId));
 
   /// The rows on screen, in order: what the arrows move through. A message
   /// folded into a closed thread is not one of them.

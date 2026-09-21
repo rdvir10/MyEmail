@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/display_settings.dart';
+import '../../domain/message_sort.dart';
 import '../../domain/draft.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_message.dart';
@@ -270,12 +271,20 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             }
             final ticked = ref.watch(selectedMessageIdsProvider);
             final selecting = ticked.isNotEmpty;
+            final display = ref.watch(displayProvider);
+            // The order the list is in applies to what a search turns up
+            // too: the same question asked of a smaller set.
+            final ordered = sortMessages(
+              results,
+              display.sortField,
+              ascending: display.sortAscending,
+            );
             return ListView.separated(
               key: _listKey,
-              itemCount: results.length,
+              itemCount: ordered.length,
               separatorBuilder: (_, _) => const Divider(height: 1, indent: 28),
               itemBuilder: (context, i) {
-                final m = results[i];
+                final m = ordered[i];
                 return MessageTile(
                   key: ValueKey('search:${m.id}'),
                   message: m,
@@ -336,7 +345,8 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
               ),
             ),
           ),
-          data: (messages) {
+          data: (fetched) {
+            final messages = ref.watch(sortedMessagesProvider(folderId));
             if (messages.isEmpty) {
               return Center(
                 child: Text(
@@ -348,9 +358,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             final density = ref.watch(listDensityProvider);
             final ticked = ref.watch(selectedMessageIdsProvider);
             final selecting = ticked.isNotEmpty;
-            final rows = ref.watch(displayProvider).conversations
+            final display = ref.watch(displayProvider);
+            final rows = display.conversations
                 ? _conversationRows(
-                    groupIntoConversations(messages),
+                    _inSortOrder(groupIntoConversations(messages), display),
                     ref.watch(expandedConversationsProvider),
                   )
                 : [for (final m in messages) _Row.message(m)];
@@ -529,6 +540,23 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           ..showSnackBar(SnackBar(content: Text('Could not sync: $e')));
       }
     }
+  }
+
+  /// Threads in the list's order, judged by the message that stands for
+  /// the row: the newest one, which is what the row shows.
+  static List<Conversation> _inSortOrder(
+    List<Conversation> conversations,
+    DisplaySettings display,
+  ) {
+    if (display.sortField == MessageSortField.date && !display.sortAscending) {
+      return conversations;
+    }
+    return [...conversations]..sort((a, b) => compareMessages(
+          a.newest,
+          b.newest,
+          display.sortField,
+          ascending: display.sortAscending,
+        ));
   }
 
   /// Conversations flattened into the rows a ListView draws.
