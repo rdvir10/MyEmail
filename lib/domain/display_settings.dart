@@ -128,14 +128,12 @@ class DisplaySettings {
     this.swipeRight = SwipeAction.move,
     this.swipeLeft = SwipeAction.delete,
     this.alwaysShowImages = false,
-    this.sortField = MessageSortField.date,
-    this.sortAscending = false,
+    this.sort = MessageSort.dateNewest,
   });
 
-  /// What the list is ordered by, and which way. The defaults are what
-  /// every list did before this was a choice: newest first.
-  final MessageSortField sortField;
-  final bool sortAscending;
+  /// What the list is ordered by. The default is what every list did
+  /// before this was a choice.
+  final MessageSort sort;
 
   final ReadingPanePosition readingPane;
   final ListDensity density;
@@ -168,8 +166,7 @@ class DisplaySettings {
     SwipeAction? swipeRight,
     SwipeAction? swipeLeft,
     bool? alwaysShowImages,
-    MessageSortField? sortField,
-    bool? sortAscending,
+    MessageSort? sort,
   }) {
     return DisplaySettings(
       readingPane: readingPane ?? this.readingPane,
@@ -178,8 +175,7 @@ class DisplaySettings {
       swipeRight: swipeRight ?? this.swipeRight,
       swipeLeft: swipeLeft ?? this.swipeLeft,
       alwaysShowImages: alwaysShowImages ?? this.alwaysShowImages,
-      sortField: sortField ?? this.sortField,
-      sortAscending: sortAscending ?? this.sortAscending,
+      sort: sort ?? this.sort,
     );
   }
 
@@ -190,8 +186,7 @@ class DisplaySettings {
         'swipeRight': swipeRight.name,
         'swipeLeft': swipeLeft.name,
         'alwaysShowImages': alwaysShowImages,
-        'sortField': sortField.name,
-        'sortAscending': sortAscending,
+        'sort': sort.name,
       };
 
   /// Tolerant of anything: a value written by a newer build, or a corrupted
@@ -211,17 +206,10 @@ class DisplaySettings {
       alwaysShowImages: json['alwaysShowImages'] is bool
           ? json['alwaysShowImages'] as bool
           : false,
-      // Neither key exists in a record written before sorting was a
-      // choice, and a value from a newer build is not one this one knows:
-      // both fall back to the order every list already had.
-      sortField: _byName(
-        MessageSortField.values,
-        json['sortField'],
-        MessageSortField.date,
-      ),
-      sortAscending: json['sortAscending'] is bool
-          ? json['sortAscending'] as bool
-          : false,
+      // A record written before sorting existed has no key at all, and one
+      // written by 2.23.0 has the field and direction it used to keep as
+      // two. Either way it lands on an order that was already being shown.
+      sort: _sortFrom(json),
       // An install from before swipes were configurable has neither key, and
       // falls back to exactly what it was already doing.
       swipeRight: _byName(
@@ -235,6 +223,17 @@ class DisplaySettings {
         SwipeAction.delete,
       ),
     );
+  }
+
+  static MessageSort _sortFrom(Map<String, Object?> json) {
+    final named = _byName(MessageSort.values, json['sort'], MessageSort.dateNewest);
+    if (json['sort'] != null) return named;
+    final ascending = json['sortAscending'] == true;
+    return switch (json['sortField']) {
+      'sender' => MessageSort.sender,
+      'subject' => MessageSort.subject,
+      _ => ascending ? MessageSort.dateOldest : MessageSort.dateNewest,
+    };
   }
 
   static T _byName<T extends Enum>(List<T> values, Object? name, T fallback) {
@@ -253,8 +252,7 @@ class DisplaySettings {
       other.swipeRight == swipeRight &&
       other.swipeLeft == swipeLeft &&
       other.alwaysShowImages == alwaysShowImages &&
-      other.sortField == sortField &&
-      other.sortAscending == sortAscending;
+      other.sort == sort;
 
   // Every field, without exception: Riverpod skips notifying when the new
   // state equals the old, so a field left out here is a setting that can
@@ -267,8 +265,7 @@ class DisplaySettings {
         swipeRight,
         swipeLeft,
         alwaysShowImages,
-        sortField,
-        sortAscending,
+        sort,
       );
 
   @override
@@ -276,5 +273,5 @@ class DisplaySettings {
       'conversations: $conversations, '
       'swipe: ${swipeRight.name}/${swipeLeft.name}, '
       'images: $alwaysShowImages, '
-      'sort: ${sortField.name}${sortAscending ? ' ascending' : ''})';
+      'sort: ${sort.name})';
 }

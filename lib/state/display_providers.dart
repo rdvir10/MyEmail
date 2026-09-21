@@ -36,18 +36,7 @@ class Display extends Notifier<DisplaySettings> {
 
   void setConversations(bool on) => state = state.copyWith(conversations: on);
 
-  /// Changing the field takes the direction that field is normally wanted
-  /// in — dates newest first, names A to Z — rather than carrying the last
-  /// one over and ordering names backwards for no reason.
-  void setSortField(MessageSortField field) => state = state.copyWith(
-        sortField: field,
-        sortAscending: field == state.sortField
-            ? state.sortAscending
-            : field.defaultAscending,
-      );
-
-  void setSortAscending(bool ascending) =>
-      state = state.copyWith(sortAscending: ascending);
+  void setSort(MessageSort sort) => state = state.copyWith(sort: sort);
 
   void setAlwaysShowImages(bool on) =>
       state = state.copyWith(alwaysShowImages: on);

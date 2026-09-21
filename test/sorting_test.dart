@@ -40,18 +40,16 @@ void main() {
       );
 
   group('the order', () {
-    test('by date, newest first, is what it always was', () {
-      final sorted = sortMessages(
+    test('by date, either way round', () {
+      final newest = sortMessages(
         [m(1, day: 1), m(2, day: 9), m(3, day: 5)],
-        MessageSortField.date,
-        ascending: false,
+        MessageSort.dateNewest,
       );
-      expect(sorted.map((x) => x.uid), [2, 3, 1]);
+      expect(newest.map((x) => x.uid), [2, 3, 1]);
 
       final oldest = sortMessages(
         [m(1, day: 1), m(2, day: 9)],
-        MessageSortField.date,
-        ascending: true,
+        MessageSort.dateOldest,
       );
       expect(oldest.map((x) => x.uid), [1, 2]);
     });
@@ -62,10 +60,9 @@ void main() {
           m(1, from: 'aaron@example.com', name: 'Zoe Adams'),
           m(2, from: 'zed@example.com', name: 'Adam Zane'),
         ],
-        MessageSortField.sender,
-        ascending: true,
+        MessageSort.sender,
       );
-      expect(sorted.map((x) => x.uid), [2, 1]);
+      expect(sorted.map((x) => x.uid), [2, 1], reason: 'A to Z, always');
     });
 
     test('by subject ignores Re: and Fwd:, so a reply sorts with its thread',
@@ -77,8 +74,7 @@ void main() {
           m(3, subject: 'Apples'),
           m(4, subject: 'FW: Berries'),
         ],
-        MessageSortField.subject,
-        ascending: true,
+        MessageSort.subject,
       );
       expect(sorted.map((x) => x.subject), [
         'Re: Apples',
@@ -92,65 +88,58 @@ void main() {
       // Two from the same person on the same day: without a tie-break the
       // list would shuffle itself on every rebuild.
       final same = [m(2, day: 3), m(1, day: 3)];
-      final once = sortMessages(same, MessageSortField.sender, ascending: true);
-      final twice =
-          sortMessages(once.reversed.toList(), MessageSortField.sender, ascending: true);
+      final once = sortMessages(same, MessageSort.sender);
+      final twice = sortMessages(once.reversed.toList(), MessageSort.sender);
       expect(once.map((x) => x.uid), twice.map((x) => x.uid));
     });
 
-    test('the direction is named for the field', () {
-      expect(MessageSortField.date.directionLabel(ascending: false),
-          'Newest first');
-      expect(MessageSortField.sender.directionLabel(ascending: true), 'A to Z');
-      expect(MessageSortField.date.defaultAscending, isFalse);
-      expect(MessageSortField.subject.defaultAscending, isTrue);
+    test('four choices, and only dates run backwards', () {
+      expect(MessageSort.values.map((s) => s.label), [
+        'Date (newest first)',
+        'Date (oldest first)',
+        'Sender',
+        'Subject',
+      ]);
+      expect(MessageSort.dateNewest.ascending, isFalse);
+      expect(MessageSort.dateOldest.ascending, isTrue);
+      expect(MessageSort.sender.ascending, isTrue);
     });
   });
 
   group('the setting', () {
-    ProviderContainer container() {
-      final c = ProviderContainer(
-        overrides: [uiStateStoreProvider.overrideWithValue(MemoryUiStateStore())],
-      );
-      addTearDown(c.dispose);
-      return c;
-    }
-
     test('defaults to newest first, and survives storage', () {
-      const settings = DisplaySettings();
-      expect(settings.sortField, MessageSortField.date);
-      expect(settings.sortAscending, isFalse);
+      expect(const DisplaySettings().sort, MessageSort.dateNewest);
 
-      const changed = DisplaySettings(
-        sortField: MessageSortField.sender,
-        sortAscending: true,
-      );
-      final restored = DisplaySettings.fromJson(changed.toJson());
-      expect(restored.sortField, MessageSortField.sender);
-      expect(restored.sortAscending, isTrue);
+      const changed = DisplaySettings(sort: MessageSort.sender);
+      expect(DisplaySettings.fromJson(changed.toJson()).sort, MessageSort.sender);
     });
 
     test('a record written before sorting existed is newest first', () {
       final old = DisplaySettings.fromJson(const {'density': 'compact'});
-      expect(old.sortField, MessageSortField.date);
-      expect(old.sortAscending, isFalse);
+      expect(old.sort, MessageSort.dateNewest);
     });
 
-    test('changing the field takes that field\'s usual direction', () {
-      final c = container();
-      final notifier = c.read(displayProvider.notifier);
+    test('a record from the build that kept a field and a direction', () {
+      // 2.23.0 wrote those two keys; they name the same four orders.
+      expect(
+        DisplaySettings.fromJson(const {'sortField': 'date', 'sortAscending': true}).sort,
+        MessageSort.dateOldest,
+      );
+      expect(
+        DisplaySettings.fromJson(const {'sortField': 'subject', 'sortAscending': true}).sort,
+        MessageSort.subject,
+      );
+      expect(
+        DisplaySettings.fromJson(const {'sortField': 'date', 'sortAscending': false}).sort,
+        MessageSort.dateNewest,
+      );
+    });
 
-      notifier.setSortField(MessageSortField.sender);
-      expect(c.read(displayProvider).sortAscending, isTrue, reason: 'A to Z');
-
-      notifier.setSortAscending(false);
-      notifier.setSortField(MessageSortField.sender);
-      expect(c.read(displayProvider).sortAscending, isFalse,
-          reason: 'the same field again leaves the direction alone');
-
-      notifier.setSortField(MessageSortField.date);
-      expect(c.read(displayProvider).sortAscending, isFalse,
-          reason: 'newest first');
+    test('a value from a newer build falls back rather than failing', () {
+      expect(
+        DisplaySettings.fromJson(const {'sort': 'byColour'}).sort,
+        MessageSort.dateNewest,
+      );
     });
   });
 
@@ -192,7 +181,7 @@ void main() {
       await tester.tapAt(const Offset(200, 40)); // close the sheet
       await tester.pumpAndSettle();
 
-      expect(c.read(displayProvider).sortField, MessageSortField.sender);
+      expect(c.read(displayProvider).sort, MessageSort.sender);
       final senders = shownSenders(tester);
       final ordered = [...senders]..sort();
       expect(senders, ordered, reason: 'A to Z, as the sheet said');
@@ -202,7 +191,7 @@ void main() {
       // The list and the keyboard read one sorted list; sorting only where
       // the rows are built would leave the keys walking the old order.
       final c = await pump(tester, const Size(1400, 900));
-      c.read(displayProvider.notifier).setSortField(MessageSortField.subject);
+      c.read(displayProvider.notifier).setSort(MessageSort.subject);
       await tester.pumpAndSettle();
 
       final folder = c.read(effectiveSelectedFolderIdProvider)!;
@@ -218,7 +207,7 @@ void main() {
 
     testWidgets('search results follow the same order', (tester) async {
       final c = await pump(tester, const Size(400, 900));
-      c.read(displayProvider.notifier).setSortField(MessageSortField.sender);
+      c.read(displayProvider.notifier).setSort(MessageSort.sender);
       await tester.pumpAndSettle();
 
       await tester.enterText(find.byType(TextField).last, 'the');

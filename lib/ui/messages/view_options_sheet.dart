@@ -9,10 +9,10 @@ import '../settings/view_settings_screen.dart';
 /// What the list looks like and what order it is in, from wherever the
 /// list is.
 ///
-/// A sheet rather than a menu: it holds a choice of three, a direction, a
-/// switch and a row of densities, and a popup menu of radio items reads
-/// as a list of commands that do not look like they belong together.
-/// Everything here is also under Settings, View — this is the short way.
+/// A sheet rather than a menu: it holds a choice of four, a switch and a
+/// row of densities, and a popup menu of radio items reads as a list of
+/// commands that do not look like they belong together. Everything here
+/// is also under Settings, View — this is the short way.
 Future<void> showViewOptions(BuildContext context) => showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -36,29 +36,18 @@ class _ViewOptions extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _Heading('Sort by', theme: theme),
-            for (final field in MessageSortField.values)
-              RadioListTile<MessageSortField>(
+            for (final sort in MessageSort.values)
+              RadioListTile<MessageSort>(
                 dense: true,
-                value: field,
+                value: sort,
                 // ignore: deprecated_member_use
-                groupValue: display.sortField,
-                title: Text(field.label),
+                groupValue: display.sort,
+                title: Text(sort.label),
                 // ignore: deprecated_member_use
                 onChanged: (chosen) {
-                  if (chosen != null) notifier.setSortField(chosen);
+                  if (chosen != null) notifier.setSort(chosen);
                 },
               ),
-            SwitchListTile(
-              dense: true,
-              title: Text(
-                display.sortField.directionLabel(ascending: display.sortAscending),
-              ),
-              subtitle: Text(
-                'Off: ${display.sortField.directionLabel(ascending: !display.sortAscending).toLowerCase()}',
-              ),
-              value: display.sortAscending,
-              onChanged: notifier.setSortAscending,
-            ),
             const Divider(height: 1),
             _Heading('Show', theme: theme),
             SwitchListTile(

@@ -271,14 +271,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             }
             final ticked = ref.watch(selectedMessageIdsProvider);
             final selecting = ticked.isNotEmpty;
-            final display = ref.watch(displayProvider);
             // The order the list is in applies to what a search turns up
             // too: the same question asked of a smaller set.
-            final ordered = sortMessages(
-              results,
-              display.sortField,
-              ascending: display.sortAscending,
-            );
+            final ordered =
+                sortMessages(results, ref.watch(displayProvider).sort);
             return ListView.separated(
               key: _listKey,
               itemCount: ordered.length,
@@ -548,15 +544,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     List<Conversation> conversations,
     DisplaySettings display,
   ) {
-    if (display.sortField == MessageSortField.date && !display.sortAscending) {
-      return conversations;
-    }
-    return [...conversations]..sort((a, b) => compareMessages(
-          a.newest,
-          b.newest,
-          display.sortField,
-          ascending: display.sortAscending,
-        ));
+    if (display.sort == MessageSort.dateNewest) return conversations;
+    return [...conversations]
+      ..sort((a, b) => compareMessages(a.newest, b.newest, display.sort));
   }
 
   /// Conversations flattened into the rows a ListView draws.

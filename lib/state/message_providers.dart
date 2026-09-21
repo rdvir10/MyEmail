@@ -229,16 +229,12 @@ int newestFirst(MailMessage a, MailMessage b) {
 final sortedMessagesProvider =
     Provider.family<List<MailMessage>, String>((ref, folderId) {
   final messages = ref.watch(messagesProvider(folderId)).value ?? const [];
-  final display = ref.watch(displayProvider);
-  if (display.sortField == MessageSortField.date && !display.sortAscending) {
+  final sort = ref.watch(displayProvider).sort;
+  if (sort == MessageSort.dateNewest) {
     // What the engine already hands over, and what the paging appends to.
     return messages;
   }
-  return sortMessages(
-    messages,
-    display.sortField,
-    ascending: display.sortAscending,
-  );
+  return sortMessages(messages, sort);
 });
 
 /// How far down a folder's list has been paged.
