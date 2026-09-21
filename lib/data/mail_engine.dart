@@ -9,6 +9,7 @@ import '../domain/calendar_invite.dart';
 import '../domain/mail_attachment.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
+import '../domain/message_move.dart';
 
 /// Everything the UI is allowed to know about talking to mail.
 ///
@@ -164,11 +165,21 @@ abstract class MailEngine {
 
   /// Move messages into [toFolderId]. Every message must come from the same
   /// account as the destination; IMAP cannot move between mailboxes.
-  Future<void> moveMessages(List<String> messageIds, String toFolderId);
+  ///
+  /// Answers with what moved where, one entry per source folder, so the
+  /// caller can offer to put it back. See [MessageMove] for why the ids in
+  /// it are not the ids that went in.
+  Future<List<MessageMove>> moveMessages(
+    List<String> messageIds,
+    String toFolderId,
+  );
 
   /// Delete messages the way the provider expects: into Trash from anywhere
   /// else, and permanently when already in Trash.
-  Future<void> deleteMessages(List<String> messageIds);
+  ///
+  /// Answers the same way [moveMessages] does. A delete that was permanent
+  /// has nothing to put back and says so with an empty entry.
+  Future<List<MessageMove>> deleteMessages(List<String> messageIds);
 
   /// Search the server for [query] within [scope], newest first.
   Future<List<MailMessage>> searchMessages(

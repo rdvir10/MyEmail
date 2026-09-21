@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/mail_message.dart';
+import '../../domain/message_move.dart';
 import '../../state/folder_tree.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
@@ -14,6 +15,14 @@ import 'move_to_sheet.dart';
 /// Each reports what happened in a snackbar, because the message leaves the
 /// list and there is otherwise nothing to see. Failures put the row back and
 /// say why.
+///
+/// Where the whole thing can be put back, the snackbar offers Undo. A delete
+/// is a move into Trash, so both are undone the same way: a move back to
+/// where each message came from, using the ids the server gave them on the
+/// way out. Undo is offered only when every message is accounted for — a
+/// batch that was half moved and half deleted for good would come back half
+/// its size, and an Undo that quietly does less than it says is worse than
+/// none.
 class MessageActions {
   const MessageActions(this.ref, this.listId);
 
@@ -51,21 +60,27 @@ class MessageActions {
     if (messages.isEmpty) return;
     final name = ref.read(folderIndexProvider)[toFolderId]?.displayName ?? '';
     final (held, elsewhere) = _split(messages);
+    final moves = <MessageMove>[];
     try {
       if (held.isNotEmpty) {
-        await ref
+        moves.addAll(await ref
             .read(messagesProvider(listId).notifier)
-            .move([for (final m in held) m.id], toFolderId);
+            .move([for (final m in held) m.id], toFolderId));
       }
       if (elsewhere.isNotEmpty) {
-        await ref
+        moves.addAll(await ref
             .read(mailEngineProvider)
-            .moveMessages([for (final m in elsewhere) m.id], toFolderId);
+            .moveMessages([for (final m in elsewhere) m.id], toFolderId));
         await _afterEngineChange(elsewhere, touched: [toFolderId]);
       }
       ref.read(recentMoveTargetsProvider.notifier).record(toFolderId);
       if (context.mounted) {
-        _say(context, '${_count(messages.length)} moved to $name');
+        _say(
+          context,
+          '${_count(messages.length)} moved to $name',
+          undo: moves,
+          of: messages.length,
+        );
       }
     } catch (e) {
       if (context.mounted) _say(context, 'Could not move: $e');
@@ -78,19 +93,27 @@ class MessageActions {
   ) async {
     if (messages.isEmpty) return;
     final (held, elsewhere) = _split(messages);
+    final moves = <MessageMove>[];
     try {
       if (held.isNotEmpty) {
-        await ref
+        moves.addAll(await ref
             .read(messagesProvider(listId).notifier)
-            .delete([for (final m in held) m.id]);
+            .delete([for (final m in held) m.id]));
       }
       if (elsewhere.isNotEmpty) {
-        await ref
+        moves.addAll(await ref
             .read(mailEngineProvider)
-            .deleteMessages([for (final m in elsewhere) m.id]);
+            .deleteMessages([for (final m in elsewhere) m.id]));
         await _afterEngineChange(elsewhere);
       }
-      if (context.mounted) _say(context, '${_count(messages.length)} deleted');
+      if (context.mounted) {
+        _say(
+          context,
+          '${_count(messages.length)} deleted',
+          undo: moves,
+          of: messages.length,
+        );
+      }
     } catch (e) {
       if (context.mounted) _say(context, 'Could not delete: $e');
     }
@@ -161,11 +184,70 @@ class MessageActions {
     }
   }
 
+  /// Put back what a move or a delete took away.
+  ///
+  /// The ids here are the ones the messages have now, in the folder they
+  /// landed in. The ids the list was holding stopped resolving the moment
+  /// the server moved them.
+  Future<void> undo(
+    ScaffoldMessengerState messenger,
+    List<MessageMove> moves,
+  ) async {
+    try {
+      final engine = ref.read(mailEngineProvider);
+      for (final move in moves) {
+        await engine.moveMessages(move.movedIds, move.fromFolderId);
+      }
+      final index = ref.read(folderIndexProvider);
+      for (final folderId in {
+        listId,
+        kUnifiedInboxId,
+        for (final m in moves) ...[m.fromFolderId, m.toFolderId],
+      }) {
+        ref.invalidate(messagesProvider(folderId));
+      }
+      ref.invalidate(searchResultsProvider);
+      for (final accountId in {
+        for (final m in moves) ?index[m.fromFolderId]?.accountId,
+      }) {
+        await ref.read(foldersProvider.notifier).refreshAccount(accountId);
+      }
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          content: Text('${_count(moves.fold(0, (n, m) => n + m.movedIds.length))} put back'),
+        ));
+    } catch (e) {
+      // Whatever went wrong, the messages are still where the move left
+      // them; saying so is more use than a silent failure.
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('Could not undo: $e')));
+    }
+  }
+
   static String _count(int n) => n == 1 ? 'Message' : '$n messages';
 
-  void _say(BuildContext context, String message) {
-    ScaffoldMessenger.of(context)
+  /// [undo] and [of] together decide whether the Undo link appears: the
+  /// moves must cover every one of the [of] messages acted on.
+  void _say(
+    BuildContext context,
+    String message, {
+    List<MessageMove>? undo,
+    int of = 0,
+  }) {
+    final messenger = ScaffoldMessenger.of(context);
+    final offer = undo != null && canUndoAll(undo, of);
+    messenger
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        action: offer
+            ? SnackBarAction(
+                label: 'Undo',
+                onPressed: () => this.undo(messenger, undo),
+              )
+            : null,
+      ));
   }
 }

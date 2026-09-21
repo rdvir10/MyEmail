@@ -12,6 +12,7 @@ import '../../domain/address_suggestions.dart';
 import '../../domain/calendar_invite.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/message_move.dart';
 import '../../domain/draft.dart';
 import '../account_store.dart';
 import '../auth/microsoft_oauth.dart';
@@ -678,9 +679,13 @@ class CachedImapEngine implements MailEngine {
       _setFlag(messageId, MessageFlag.flagged, isFlagged);
 
   @override
-  Future<void> moveMessages(List<String> messageIds, String toFolderId) async {
-    if (messageIds.isEmpty) return;
+  Future<List<MessageMove>> moveMessages(
+    List<String> messageIds,
+    String toFolderId,
+  ) async {
+    if (messageIds.isEmpty) return const [];
     final (toAccount, toPath) = splitFolderId(toFolderId);
+    final moves = <MessageMove>[];
     for (final group in _groupByFolder(messageIds).entries) {
       final (accountId, fromPath) = splitFolderId(group.key);
       if (accountId != toAccount) {
@@ -691,33 +696,60 @@ class CachedImapEngine implements MailEngine {
       }
       if (fromPath == toPath) continue;
       final t = await _transport(accountId);
-      await t.moveMessages(fromPath, group.value, toPath);
+      final landed = await t.moveMessages(fromPath, group.value, toPath);
       await cache.deleteUids(accountId, fromPath, group.value.toSet());
       // The destination picks the new messages up on its next sync; it may
       // not be cached at all yet, and guessing UIDs would be worse.
       await _syncIfCached(accountId, t, toPath);
+      moves.add(MessageMove(
+        fromFolderId: group.key,
+        toFolderId: toFolderId,
+        movedIds: [
+          for (final uid in landed ?? const <int>[])
+            MailMessage.idFor(toFolderId, uid),
+        ],
+      ));
     }
+    return moves;
   }
 
   @override
-  Future<void> deleteMessages(List<String> messageIds) async {
-    if (messageIds.isEmpty) return;
+  Future<List<MessageMove>> deleteMessages(List<String> messageIds) async {
+    if (messageIds.isEmpty) return const [];
+    final moves = <MessageMove>[];
     for (final group in _groupByFolder(messageIds).entries) {
       final (accountId, fromPath) = splitFolderId(group.key);
       final t = await _transport(accountId);
       final trash = await _trashPath(accountId, t);
 
       if (trash == null || fromPath == trash) {
-        // Already in Trash, or the account has none: delete for good.
+        // Already in Trash, or the account has none: delete for good. There
+        // is nothing to put back, and the empty entry is how the caller
+        // knows not to offer.
         await t.storeFlag(fromPath,
             uids: group.value, flag: MessageFlag.deleted, set: true);
         await t.expunge(fromPath);
+        moves.add(MessageMove(
+          fromFolderId: group.key,
+          toFolderId: group.key,
+          movedIds: const [],
+        ));
       } else {
-        await t.moveMessages(fromPath, group.value, trash);
+        final landed = await t.moveMessages(fromPath, group.value, trash);
         await _syncIfCached(accountId, t, trash);
+        final trashId = '$accountId:$trash';
+        moves.add(MessageMove(
+          fromFolderId: group.key,
+          toFolderId: trashId,
+          movedIds: [
+            for (final uid in landed ?? const <int>[])
+              MailMessage.idFor(trashId, uid),
+          ],
+        ));
       }
       await cache.deleteUids(accountId, fromPath, group.value.toSet());
     }
+    return moves;
   }
 
   @override

@@ -11,6 +11,7 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/message_move.dart';
 import '../compose/quote_builder.dart';
 import '../imap/imap_mapping.dart';
 import '../auth/oauth_token.dart';
@@ -224,9 +225,13 @@ class SampleMailEngine implements MailEngine {
   }
 
   @override
-  Future<void> moveMessages(List<String> messageIds, String toFolderId) async {
+  Future<List<MessageMove>> moveMessages(
+    List<String> messageIds,
+    String toFolderId,
+  ) async {
     await _latency();
     final target = _require(toFolderId);
+    final landed = <String, List<String>>{};
     for (final id in messageIds) {
       final fromId = id.substring(0, id.lastIndexOf('#'));
       if (fromId == toFolderId) continue;
@@ -266,18 +271,28 @@ class SampleMailEngine implements MailEngine {
           hasAttachments: message.hasAttachments,
         ),
       );
+      (landed[fromId] ??= []).add(MailMessage.idFor(toFolderId, uid));
       _adjustCounts(source, removed: message);
       _adjustCounts(target, added: message);
     }
+    return [
+      for (final entry in landed.entries)
+        MessageMove(
+          fromFolderId: entry.key,
+          toFolderId: toFolderId,
+          movedIds: entry.value,
+        ),
+    ];
   }
 
   @override
-  Future<void> deleteMessages(List<String> messageIds) async {
+  Future<List<MessageMove>> deleteMessages(List<String> messageIds) async {
     // Gmail's convention: into Trash from anywhere else, gone from Trash.
     final byFolder = <String, List<String>>{};
     for (final id in messageIds) {
       (byFolder[id.substring(0, id.lastIndexOf('#'))] ??= []).add(id);
     }
+    final moves = <MessageMove>[];
     for (final entry in byFolder.entries) {
       final source = _require(entry.key);
       final trash = _folders[source.accountId]!
@@ -291,10 +306,16 @@ class SampleMailEngine implements MailEngine {
           final i = list.indexWhere((m) => m.id == id);
           if (i >= 0) _adjustCounts(_require(entry.key), removed: list.removeAt(i));
         }
+        moves.add(MessageMove(
+          fromFolderId: entry.key,
+          toFolderId: entry.key,
+          movedIds: const [],
+        ));
       } else {
-        await moveMessages(entry.value, trash.id);
+        moves.addAll(await moveMessages(entry.value, trash.id));
       }
     }
+    return moves;
   }
 
   void _adjustCounts(

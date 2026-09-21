@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
+import '../domain/message_move.dart';
 import 'display_providers.dart';
 import '../domain/message_sort.dart';
 import 'folder_tree.dart';
@@ -184,39 +185,40 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
   /// Move messages out of this list. The rows go at once and come back if
   /// the engine refuses, so a failed move never silently loses a message
   /// from view.
-  Future<void> move(List<String> messageIds, String toFolderId) =>
+  Future<List<MessageMove>> move(List<String> messageIds, String toFolderId) =>
       _removeThen(
         messageIds,
         () => ref.read(mailEngineProvider).moveMessages(messageIds, toFolderId),
         touchedFolderIds: [toFolderId],
       );
 
-  Future<void> delete(List<String> messageIds) => _removeThen(
+  Future<List<MessageMove>> delete(List<String> messageIds) => _removeThen(
         messageIds,
         () => ref.read(mailEngineProvider).deleteMessages(messageIds),
       );
 
-  Future<void> _removeThen(
+  Future<List<MessageMove>> _removeThen(
     List<String> messageIds,
-    Future<void> Function() op, {
+    Future<List<MessageMove>> Function() op, {
     List<String> touchedFolderIds = const [],
   }) async {
     final current = state.value;
-    if (current == null || messageIds.isEmpty) return;
+    if (current == null || messageIds.isEmpty) return const [];
     final ids = messageIds.toSet();
     final removed = [
       for (final m in current)
         if (ids.contains(m.id)) m,
     ];
-    if (removed.isEmpty) return;
+    if (removed.isEmpty) return const [];
 
     _changes++;
     state = AsyncData([
       for (final m in current)
         if (!ids.contains(m.id)) m,
     ]);
+    final List<MessageMove> moves;
     try {
-      await op();
+      moves = await op();
     } catch (_) {
       state = AsyncData(current);
       rethrow;
@@ -239,6 +241,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     }) {
       if (folderId != this.folderId) ref.invalidate(messagesProvider(folderId));
     }
+    return moves;
   }
 
   Future<void> _setFlags(

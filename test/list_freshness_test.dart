@@ -8,6 +8,7 @@ import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 
@@ -203,10 +204,11 @@ class _GatedEngine extends SampleMailEngine {
   /// was, which is the point: a sync already in flight read the folder
   /// before the delete reached it.
   @override
-  Future<void> deleteMessages(List<String> messageIds) async {
+  Future<List<MessageMove>> deleteMessages(List<String> messageIds) async {
     for (final list in stored.values) {
       list.removeWhere((m) => messageIds.contains(m.id));
     }
+    return const [];
   }
 
   @override

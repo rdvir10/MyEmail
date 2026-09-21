@@ -13,6 +13,7 @@ import 'package:myemail/domain/address_suggestions.dart';
 import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/domain/calendar_invite.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/state/folder_tree.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
@@ -143,10 +144,13 @@ class _RefusingEngine implements MailEngine {
   ) =>
       _inner.respondToInvite(messageId, invite, response);
   @override
-  Future<void> moveMessages(List<String> messageIds, String toFolderId) =>
+  Future<List<MessageMove>> moveMessages(
+    List<String> messageIds,
+    String toFolderId,
+  ) =>
       _inner.moveMessages(messageIds, toFolderId);
   @override
-  Future<void> deleteMessages(List<String> messageIds) =>
+  Future<List<MessageMove>> deleteMessages(List<String> messageIds) =>
       _inner.deleteMessages(messageIds);
 
   @override

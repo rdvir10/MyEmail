@@ -13,6 +13,7 @@ import 'package:myemail/domain/address_suggestions.dart';
 import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/domain/calendar_invite.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/accounts/add_account_screen.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
@@ -172,11 +173,14 @@ class _EmptyEngine implements MailEngine {
       _inner.setFlagged(messageId, isFlagged);
 
   @override
-  Future<void> moveMessages(List<String> messageIds, String toFolderId) =>
+  Future<List<MessageMove>> moveMessages(
+    List<String> messageIds,
+    String toFolderId,
+  ) =>
       _inner.moveMessages(messageIds, toFolderId);
 
   @override
-  Future<void> deleteMessages(List<String> messageIds) =>
+  Future<List<MessageMove>> deleteMessages(List<String> messageIds) =>
       _inner.deleteMessages(messageIds);
 
   @override
