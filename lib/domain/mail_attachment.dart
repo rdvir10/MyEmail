@@ -1,3 +1,5 @@
+import 'file_types.dart';
+
 /// A file that came with a message.
 ///
 /// Listed without being downloaded: both IMAP and Graph will describe what is
@@ -19,9 +21,16 @@ class MailAttachment {
 
   final String name;
 
-  /// What the sender said it is. Not to be trusted for anything but choosing
-  /// an icon and an app to open it with.
+  /// What the sender said it is. Not to be trusted, and mostly not used:
+  /// see [openAs], which is what gets handed to the system.
   final String mimeType;
+
+  /// The type to open, share, copy or drag this file as.
+  ///
+  /// Decided by the name, because the sender's answer is so often
+  /// `application/octet-stream` that acting on it is how a PDF ends up being
+  /// offered to an archive viewer. See [mimeTypeForFile].
+  String get openAs => mimeTypeForFile(name, declared: mimeType);
 
   /// As the server reports it. Encoded size on IMAP, so a base64 part reads
   /// about a third larger than the file that comes out of it.

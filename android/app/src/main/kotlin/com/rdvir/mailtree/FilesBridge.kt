@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Color
@@ -16,6 +17,7 @@ import android.util.TypedValue
 import android.view.DragEvent
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import androidx.core.content.IntentCompat
 import io.flutter.plugin.common.BinaryMessenger
@@ -260,16 +262,51 @@ class FilesBridge(
         FileProvider.getUriForFile(activity, authority, File(path))
 
     private fun view(path: String, mime: String?) {
+        val type = typeFor(mime, File(path).name)
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uriFor(path), mime ?: "*/*")
+            setDataAndType(uriFor(path), type)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        // A chooser rather than the bare intent: with no app for the type,
-        // startActivity throws and a chooser says "no apps can open this",
-        // which is the difference between a crash and an answer.
-        activity.startActivity(Intent.createChooser(intent, null))
+        // The plain intent first, so a PDF goes straight to whatever the
+        // person chose to read PDFs with. Wrapping every open in a chooser
+        // means being asked every time and never being able to answer:
+        // "Always" has nothing to attach itself to.
+        //
+        // With nothing installed for the type that throws, and the chooser
+        // is the fallback, because it says "no apps can open this" rather
+        // than crashing.
+        try {
+            activity.startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            activity.startActivity(Intent.createChooser(intent, null))
+        }
     }
+
+    /**
+     * What to tell Android this file is.
+     *
+     * The caller has already preferred the file name over whatever the
+     * sender claimed. This is the second line of defence: a type with
+     * parameters on it (application/pdf; name=x.pdf) matches nothing, and
+     * a vague one is worth one more look at the extension before giving
+     * up. A mail system that calls every attachment a stream of bytes is
+     * how a PDF ends up being offered to an archive viewer.
+     */
+    private fun typeFor(mime: String?, name: String): String {
+        val given = mime?.substringBefore(';')?.trim()?.lowercase()
+        if (!given.isNullOrEmpty() && !vague(given)) return given
+        val extension = name.substringAfterLast('.', "").lowercase()
+        val known = MimeTypeMap.getSingleton()
+            .getMimeTypeFromExtension(extension)
+        return known ?: given ?: "*/*"
+    }
+
+    private fun vague(type: String): Boolean =
+        type == "application/octet-stream" ||
+            type == "binary/octet-stream" ||
+            type == "application/unknown" ||
+            type == "*/*"
 
     private fun share(path: String, mime: String?) {
         val intent = Intent(Intent.ACTION_SEND).apply {

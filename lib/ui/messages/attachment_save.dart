@@ -14,7 +14,7 @@ Future<bool> saveAttachmentAs(MailAttachment attachment, File file) async {
   final uri = await FilePicker.saveFile(
     fileName: safeFileName(attachment.name),
     bytes: await file.readAsBytes(),
-    mimeType: attachment.mimeType,
+    mimeType: attachment.openAs,
     dialogTitle: 'Save attachment',
   );
   return uri != null;

@@ -105,7 +105,7 @@ class _AttachmentChip extends ConsumerWidget {
                   Icon(
                     state?.error != null
                         ? Icons.error_outline
-                        : _iconFor(attachment.mimeType),
+                        : _iconFor(attachment.openAs),
                     size: 18,
                     color: state?.error != null
                         ? scheme.error
@@ -193,7 +193,7 @@ class AttachmentActions {
     try {
       await ref
           .read(fileBridgeProvider)
-          .open(file.path, mimeType: attachment.mimeType);
+          .open(file.path, mimeType: attachment.openAs);
     } catch (e) {
       if (context.mounted) _say(context, 'Nothing here opens that sort of file.');
     }
@@ -204,7 +204,7 @@ class AttachmentActions {
     if (file == null || !context.mounted) return;
     await ref.read(fileBridgeProvider).startDrag(
           file.path,
-          mimeType: attachment.mimeType,
+          mimeType: attachment.openAs,
           name: attachment.name,
         );
   }
@@ -214,7 +214,7 @@ class AttachmentActions {
     if (file == null || !context.mounted) return;
     await ref.read(fileBridgeProvider).copyToClipboard(
           file.path,
-          mimeType: attachment.mimeType,
+          mimeType: attachment.openAs,
           name: attachment.name,
         );
     if (context.mounted) _say(context, 'Copied. Paste it wherever it goes.');
@@ -225,7 +225,7 @@ class AttachmentActions {
     if (file == null || !context.mounted) return;
     await ref
         .read(fileBridgeProvider)
-        .share(file.path, mimeType: attachment.mimeType);
+        .share(file.path, mimeType: attachment.openAs);
   }
 
   Future<void> save(BuildContext context) async {
