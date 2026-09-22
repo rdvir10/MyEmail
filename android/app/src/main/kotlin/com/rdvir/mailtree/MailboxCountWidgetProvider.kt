@@ -194,14 +194,25 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
         )
         // The name's line plus the margin above it.
         val label = 20f
+        // A launcher does not draw its icons edge to edge either: it insets
+        // them inside the cell, and an icon that fills the cell therefore
+        // comes out bigger than the ones beside it, which is what filling it
+        // did. There is no API that reports the inset. This is the figure the
+        // device gives back: a Pixel 9 Pro reports a 65dp cell and draws its
+        // own icons at about 53dp.
+        //
+        // Read off the phone rather than guessed, and the line below logs
+        // both numbers so the next adjustment can be read off too.
+        val inset = 0.82f
         val icon = if (width > 0 && height > 0) {
-            minOf(width.toFloat(), height - label)
+            minOf(width * inset, height - label)
         } else {
             56f
-        }.coerceIn(48f, 96f)
+        }.coerceIn(40f, 96f)
         android.util.Log.i(
             "MyEmail",
-            "widget cell ${width}x${height}dp portrait=$portrait icon=${icon}dp",
+            "widget cell ${width}x${height}dp portrait=$portrait " +
+                "inset=$inset icon=${icon}dp",
         )
         return icon
     }
