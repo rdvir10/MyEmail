@@ -15,6 +15,16 @@ import '../cache/mail_database.dart';
 /// after the message they belonged to is deleted: reusing one would make a
 /// stale cache row point at a different message, which is precisely what
 /// UIDVALIDITY exists to prevent.
+///
+/// That last paragraph was a lie for three releases, and it is worth saying
+/// how. The highest number handed out is read back as `MAX(uid)` over this
+/// table, and forgetting a message deleted its row. Delete the newest message
+/// in a folder — which is what anyone does with mail they have just read —
+/// and the maximum dropped by one, so the next message to arrive was given
+/// the number the deleted one had just given up. The cache row keyed on that
+/// number then held one message's header and another's body, and the reading
+/// pane showed exactly that: the wrong message under the right subject. A
+/// spent number now stays spent; see [forgetMoved].
 abstract class GraphIdMap {
   /// The number for this Graph id, assigning one if it has not been seen.
   ///
@@ -46,6 +56,12 @@ abstract class GraphIdMap {
   /// are never handed out again: a cache row that still mentions one must
   /// resolve to nothing rather than to whatever message came next.
   Future<void> forgetMoved(String accountId, String path, List<int> uids);
+
+  /// What a forgotten number's remote id reads as: nothing.
+  ///
+  /// A real Graph id is a long opaque string and is never empty, so this can
+  /// never be mistaken for one.
+  static const forgotten = '';
 
   Future<void> forgetAccount(String accountId);
 }
@@ -114,7 +130,10 @@ class DriftGraphIdMap implements GraphIdMap {
               t.path.equals(path) &
               t.remoteId.isIn(remoteIds)))
         .get();
-    return {for (final r in rows) r.remoteId: r.uid};
+    return {
+      for (final r in rows)
+        if (r.remoteId != GraphIdMap.forgotten) r.remoteId: r.uid,
+    };
   }
 
   @override
@@ -130,7 +149,12 @@ class DriftGraphIdMap implements GraphIdMap {
               t.path.equals(path) &
               t.uid.isIn(uids)))
         .get();
-    return {for (final r in rows) r.uid: r.remoteId};
+    return {
+      for (final r in rows)
+        // A number that has been spent resolves to nothing, which is what a
+        // caller holding a stale one has to be told.
+        if (r.remoteId != GraphIdMap.forgotten) r.uid: r.remoteId,
+    };
   }
 
   @override
@@ -151,14 +175,34 @@ class DriftGraphIdMap implements GraphIdMap {
           .go();
 
   @override
-  Future<void> forgetMoved(String accountId, String path, List<int> uids) {
-    if (uids.isEmpty) return Future.value();
-    return (db.delete(db.graphIds)
-          ..where((t) =>
-              t.accountId.equals(accountId) &
-              t.path.equals(path) &
-              t.uid.isIn(uids)))
-        .go();
+  Future<void> forgetMoved(
+    String accountId,
+    String path,
+    List<int> uids,
+  ) async {
+    if (uids.isEmpty) return;
+    await db.transaction(() async {
+      // Blanked, not deleted. Deleting let the number be handed out again to
+      // the next message to arrive, and a cache row still carrying it then
+      // described one message while holding another's body.
+      await (db.update(db.graphIds)
+            ..where((t) =>
+                t.accountId.equals(accountId) &
+                t.path.equals(path) &
+                t.uid.isIn(uids)))
+          .write(const GraphIdsCompanion(
+            remoteId: Value(GraphIdMap.forgotten),
+          ));
+      // Only the highest spent number has to survive to keep the count
+      // moving forward. The rest are swept up so the table does not grow a
+      // row for every message ever deleted.
+      await db.customStatement(
+        'DELETE FROM graph_ids WHERE account_id = ? AND path = ? '
+        'AND remote_id = ? AND uid < '
+        '(SELECT MAX(uid) FROM graph_ids WHERE account_id = ? AND path = ?)',
+        [accountId, path, GraphIdMap.forgotten, accountId, path],
+      );
+    });
   }
 
   @override

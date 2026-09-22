@@ -101,7 +101,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -137,6 +137,29 @@ class MailDatabase extends _$MailDatabase {
             ).get();
             final has = columns.any((c) => c.read<String>('name') == 'calendar');
             if (!has) await m.addColumn(messages, messages.calendar);
+          }
+          if (from < 5) {
+            // Throwing away every cached body on a Microsoft account, once.
+            //
+            // Until now a deleted message's number could be handed out again
+            // to the next message to arrive, and the cache row keyed on that
+            // number kept the old body under the new header. There is no way
+            // to tell afterwards which rows those are: the header that
+            // overwrote the old one also overwrote the Message-ID that would
+            // have given it away. So the bodies go, and each comes back the
+            // next time that message is opened. Headers, flags and previews
+            // stay, so nothing visible in a list changes.
+            //
+            // Only folders with Graph numbering, which is what
+            // [GraphIds] holds. IMAP hands out its own UIDs and never reuses
+            // one inside a UIDVALIDITY, so a Gmail account was never at risk
+            // and keeps every body it has cached.
+            await customStatement(
+              'UPDATE messages SET body_text = NULL, body_html = NULL, '
+              'calendar = NULL WHERE EXISTS ('
+              'SELECT 1 FROM graph_ids g WHERE g.account_id = '
+              'messages.account_id AND g.path = messages.path)',
+            );
           }
         },
       );
@@ -302,6 +325,7 @@ class DriftCacheStore implements CacheStore {
     List<CachedMessage> messages,
   ) async {
     if (messages.isEmpty) return;
+    await _dropBodiesOfReplacedMessages(accountId, path, messages);
     await db.batch((b) {
       for (final m in messages) {
         b.insert(
@@ -348,6 +372,54 @@ class DriftCacheStore implements CacheStore {
         );
       }
     });
+  }
+
+  /// Where a number now belongs to a different message, throw away what was
+  /// cached under it.
+  ///
+  /// The upsert below keeps the body on purpose, so that re-reading a header
+  /// does not cost a body already fetched. That is right while a number means
+  /// the same message and catastrophic the moment it does not: the row ends
+  /// up holding one message's header and another's body, and the reading pane
+  /// shows the wrong message under the right subject.
+  ///
+  /// The `Message-ID` is what tells them apart. It belongs to the message and
+  /// follows it everywhere, so a number whose Message-ID has changed is a
+  /// number that has changed hands. Only acted on where both are known: an
+  /// older row may have none, and guessing there would throw away good
+  /// bodies.
+  Future<void> _dropBodiesOfReplacedMessages(
+    String accountId,
+    String path,
+    List<CachedMessage> messages,
+  ) async {
+    final incoming = {
+      for (final m in messages)
+        if (m.messageId case final id? when id.isNotEmpty) m.uid: id,
+    };
+    if (incoming.isEmpty) return;
+    final rows = await (db.select(db.messages)
+          ..where((t) =>
+              _folder(t, accountId, path) &
+              t.uid.isIn(incoming.keys) &
+              t.messageId.isNotNull()))
+        .get();
+    final changed = [
+      for (final r in rows)
+        if (r.messageId != null &&
+            r.messageId!.isNotEmpty &&
+            r.messageId != incoming[r.uid])
+          r.uid,
+    ];
+    if (changed.isEmpty) return;
+    await (db.update(db.messages)
+          ..where((t) => _folder(t, accountId, path) & t.uid.isIn(changed)))
+        .write(const MessagesCompanion(
+          bodyText: Value(null),
+          bodyHtml: Value(null),
+          calendar: Value(null),
+          preview: Value(''),
+        ));
   }
 
   @override

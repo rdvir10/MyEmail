@@ -61,6 +61,46 @@ void main() {
     await db.close();
   }
 
+  /// A database as it stood at schema 4, with or without a Microsoft
+  /// account having ever numbered anything in it.
+  Future<void> buildVersion4({required bool withGraph}) async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    if (withGraph) {
+      await DriftGraphIdMap(db).uidsFor('acct-1', 'INBOX', ['g-11']);
+    }
+    await db.customStatement('PRAGMA user_version = 4');
+    await db.close();
+  }
+
+  test('a Microsoft account gives up its cached bodies once', () async {
+    // Until version 5 a deleted message's number could be handed out again,
+    // and the row keyed on it kept the old body under the new header. There
+    // is no telling afterwards which rows those are, so they all go and come
+    // back as messages are opened. Headers stay, so no list changes.
+    await buildVersion4(withGraph: true);
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final cached = await DriftCacheStore(db).readMessages('acct-1', 'INBOX');
+
+    expect(cached, hasLength(1));
+    expect(cached.single.subject, 'Cached before the upgrade');
+    expect(cached.single.bodyHtml, isNull);
+  });
+
+  test('a Gmail account keeps every body it had', () async {
+    // IMAP hands out its own UIDs and never reuses one inside a UIDVALIDITY,
+    // so Gmail was never at risk and must not pay for the repair.
+    await buildVersion4(withGraph: false);
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final cached = await DriftCacheStore(db).readMessages('acct-1', 'INBOX');
+
+    expect(cached.single.bodyHtml, '<p>A body worth keeping</p>');
+  });
+
   test('a version 3 database gains the calendar column and keeps its rows',
       () async {
     await buildVersion3();
