@@ -10,7 +10,11 @@ import 'package:myemail/data/auth/oauth_token_repository.dart';
 import 'package:myemail/data/compose/graph_sender.dart';
 import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/mail_engine.dart';
+import 'dart:typed_data';
+
+import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/draft.dart';
+import 'package:myemail/domain/mail_message.dart' show MailAddress;
 
 /// Sending through Microsoft Graph.
 ///
@@ -167,27 +171,225 @@ void main() {
     });
   });
 
-  test('an oversized message is refused before it is uploaded', () async {
-    // Graph caps the request body at 4 MB and base64 inflates by a third.
-    // Past that it wants an upload session, which this does not do; failing
-    // here names the reason instead of returning a bare 413.
-    var posted = false;
-    final sender = senderWith(
-      (_) async {
-        posted = true;
-        return http.Response('', 202);
-      },
-      // A small limit rather than a large message: the check is what is under
-      // test, and encoding three real megabytes takes minutes.
-      maxMimeBytes: 200,
-    );
+  group('a message too large to post in one request', () {
+    Account account() => const Account(
+          id: 'a',
+          displayName: 'Hadco',
+          emailAddress: 'rdvir@hadco-metal.com',
+          provider: MailProvider.outlook,
+          authMethod: AuthMethod.oauth,
+          colorValue: 0xFF0F6CBD,
+        );
 
-    await expectLater(
-      sender.send(message(body: 'x' * 500)),
-      throwsA(isA<SendFailed>()
-          .having((e) => e.message, 'message', contains('too large'))),
-    );
-    expect(posted, isFalse);
+    Draft draftWith(List<DraftAttachment> attachments) => Draft(
+          accountId: 'a',
+          kind: ComposeKind.newMessage,
+          to: const [MailAddress(email: 'someone@example.com')],
+          subject: 'Drawings',
+          htmlBody: '<p>Attached.</p>',
+          attachments: attachments,
+        );
+
+    DraftAttachment file(String name, int size) => DraftAttachment(
+          fileName: name,
+          mimeType: 'application/pdf',
+          bytes: Uint8List(size),
+        );
+
+    /// A Microsoft that answers the whole route: create the draft, take the
+    /// attachments, send it.
+    ({
+      List<String> calls,
+      List<String> ranges,
+      GraphSender sender,
+    }) fakeGraph({int maxMimeBytes = 4000}) {
+      final calls = <String>[];
+      final ranges = <String>[];
+      final sender = GraphSender(
+        accessToken: ({bool force = false}) async => 'graph-token',
+        maxMimeBytes: maxMimeBytes,
+        httpClient: http_testing.MockClient((request) async {
+          final path = request.url.path;
+          if (request.url.host == 'upload.example') {
+            ranges.add(request.headers['Content-Range'] ?? '');
+            final range = request.headers['Content-Range'] ?? '';
+            final done = range.split('/').last;
+            final end = range.split('-').last.split('/').first;
+            final last = (int.parse(end) + 1) == int.parse(done);
+            return http.Response('', last ? 201 : 202);
+          }
+          if (path.endsWith('/createUploadSession')) {
+            calls.add('session');
+            return http.Response(
+              jsonEncode({'uploadUrl': 'https://upload.example/put'}),
+              200,
+            );
+          }
+          if (path.endsWith('/attachments')) {
+            calls.add('attach');
+            return http.Response(jsonEncode({'id': 'att-1'}), 201);
+          }
+          if (path.endsWith('/send')) {
+            calls.add('send');
+            return http.Response('', 202);
+          }
+          if (path.endsWith('/me/messages')) {
+            calls.add('draft');
+            return http.Response(jsonEncode({'id': 'draft-1'}), 201);
+          }
+          calls.add('sendMail');
+          return http.Response('', 202);
+        }),
+      );
+      return (calls: calls, ranges: ranges, sender: sender);
+    }
+
+    test('goes up as a draft, its files, and then a send', () async {
+      final graph = fakeGraph();
+
+      await graph.sender.sendDraft(
+        draft: draftWith([file('drawing.pdf', 3000)]),
+        account: account(),
+      );
+
+      expect(graph.calls, ['draft', 'attach', 'send']);
+    });
+
+    test('a small message still goes in one request', () async {
+      // The common case must not get slower to make the rare one work.
+      final graph = fakeGraph(maxMimeBytes: 1 << 20);
+
+      await graph.sender.sendDraft(
+        draft: draftWith(const []),
+        account: account(),
+      );
+
+      expect(graph.calls, ['sendMail']);
+    });
+
+    test('a file too big to post goes up in chunks', () async {
+      final graph = fakeGraph();
+      final big = GraphSender.uploadChunkBytes + 10;
+
+      await graph.sender.sendDraft(
+        draft: draftWith([file('huge.pdf', big)]),
+        account: account(),
+      );
+
+      expect(graph.calls, ['draft', 'session', 'send']);
+      expect(graph.ranges, hasLength(2), reason: 'two chunks for one file');
+      expect(graph.ranges.first,
+          'bytes 0-${GraphSender.uploadChunkBytes - 1}/$big');
+      expect(graph.ranges.last, 'bytes ${GraphSender.uploadChunkBytes}-'
+          '${big - 1}/$big');
+    });
+
+    test('the chunks carry no bearer token, as Microsoft asks', () async {
+      // The upload URL is already authorised, and sending a token with the
+      // chunks is refused — a confusing way to fail on the last leg.
+      String? auth;
+      final sender = GraphSender(
+        accessToken: ({bool force = false}) async => 'graph-token',
+        maxMimeBytes: 4000,
+        httpClient: http_testing.MockClient((request) async {
+          if (request.url.host == 'upload.example') {
+            auth = request.headers['Authorization'];
+            return http.Response('', 201);
+          }
+          if (request.url.path.endsWith('/createUploadSession')) {
+            return http.Response(
+              jsonEncode({'uploadUrl': 'https://upload.example/put'}),
+              200,
+            );
+          }
+          if (request.url.path.endsWith('/me/messages')) {
+            return http.Response(jsonEncode({'id': 'draft-1'}), 201);
+          }
+          return http.Response('', 202);
+        }),
+      );
+
+      await sender.sendDraft(
+        draft: draftWith([file('huge.pdf', GraphSender.uploadChunkBytes + 1)]),
+        account: account(),
+      );
+
+      expect(auth, isNull);
+    });
+
+    test('a body too large on its own says so, and blames no attachment',
+        () async {
+      // A screenshot pasted into the message cannot be split off the way a
+      // file can, so the advice has to be different.
+      final graph = fakeGraph();
+
+      await expectLater(
+        graph.sender.sendDraft(
+          draft: Draft(
+            accountId: 'a',
+            kind: ComposeKind.newMessage,
+            to: const [MailAddress(email: 'someone@example.com')],
+            subject: 'Look',
+            htmlBody: '<p>${'x' * 5000}</p>',
+          ),
+          account: account(),
+        ),
+        throwsA(isA<SendFailed>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('before any attachments'), contains('Pictures')),
+        )),
+      );
+      expect(graph.calls, isEmpty, reason: 'nothing was uploaded');
+    });
+
+    test('more than Microsoft will ever take is refused before uploading',
+        () async {
+      final graph = fakeGraph();
+
+      await expectLater(
+        graph.sender.sendDraft(
+          draft: draftWith([file('enormous.bin', GraphSender.maxTotalBytes + 1)]),
+          account: account(),
+        ),
+        throwsA(isA<SendFailed>().having(
+          (e) => e.message,
+          'message',
+          contains('nothing was sent'),
+        )),
+      );
+      expect(graph.calls, isEmpty);
+    });
+
+    test('a failure part way leaves the message in Drafts and says so',
+        () async {
+      final sender = GraphSender(
+        accessToken: ({bool force = false}) async => 'graph-token',
+        maxMimeBytes: 4000,
+        httpClient: http_testing.MockClient((request) async {
+          if (request.url.path.endsWith('/me/messages')) {
+            return http.Response(jsonEncode({'id': 'draft-1'}), 201);
+          }
+          if (request.url.path.endsWith('/createUploadSession')) {
+            return http.Response(
+              jsonEncode({
+                'error': {'code': 'ErrorAccessDenied'},
+              }),
+              403,
+            );
+          }
+          return http.Response('', 202);
+        }),
+      );
+
+      await expectLater(
+        sender.sendDraft(
+          draft: draftWith([file('huge.pdf', GraphSender.uploadChunkBytes + 1)]),
+          account: account(),
+        ),
+        throwsA(isA<AuthenticationFailed>()),
+      );
+    });
   });
 
   group('tokens for two resources', () {

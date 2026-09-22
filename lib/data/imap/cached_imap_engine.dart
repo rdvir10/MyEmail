@@ -1029,7 +1029,7 @@ class CachedImapEngine implements MailEngine {
     final credentials = await _credentialsFor(account);
 
     final message = buildMimeMessage(draft: draft, account: account);
-    await _send(account, credentials, message);
+    await _send(account, credentials, message, draft: draft);
 
     // It is away, so the copy in Drafts is now a duplicate of sent mail.
     await _dropPreviousDraft(draft.savedAs);
@@ -1103,8 +1103,9 @@ class CachedImapEngine implements MailEngine {
   Future<void> _send(
     Account account,
     MailCredentials credentials,
-    em.MimeMessage message,
-  ) async {
+    em.MimeMessage message, {
+    Draft? draft,
+  }) async {
     final injected = senderFactory?.call(account, credentials);
     if (injected != null) return injected.send(message);
 
@@ -1115,7 +1116,12 @@ class CachedImapEngine implements MailEngine {
             accessToken: ({bool force = false}) =>
                 oauthTokens.accessToken(account.id, force: force),
           );
-      return sender.send(message);
+      // The draft, not just the built message: a message too large to post
+      // in one request has to be assembled on the server from its parts,
+      // and the parts are in the draft.
+      return draft == null
+          ? sender.send(message)
+          : sender.sendDraft(draft: draft, account: account);
     }
 
     return SmtpSender.forProvider(
