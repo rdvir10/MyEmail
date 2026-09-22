@@ -8,7 +8,7 @@
 # Nothing is fetched: no web fonts, no scripts from anywhere. The pages
 # are opened from a synced folder on a tablet that may be offline, so
 # everything they need is inside them.
-import io, os, re, html
+import io, os, re, html, subprocess
 
 SRC = r'C:\Users\Ron\OneDrive\AI Projects\Email client'
 
@@ -331,8 +331,9 @@ DOCS = [
         name='Features',
         title='MyEmail — what it can do',
         heading='What it can do',
-        lede='Everything MyEmail offers, listed for the phone and for the tablet, '
-             'since the same app gives you more where there is more screen.',
+        lede='Everything MyEmail offers, listed for the tablet and for the '
+             'phone, since the same app gives you more where there is more '
+             'screen.',
         other=('User manual.html', 'Read the user manual'),
         asset='features.html',
         sidebar=False,
@@ -361,7 +362,12 @@ for doc in DOCS:
         )
         nav = f'<nav class="contents"><h2>Contents</h2><ol>{links}</ol></nav>\n'
 
-    badges = f'<span class="badge">Version 2.23.1</span>' \
+    # Read out of the document rather than written here. The cover said
+    # 2.23.1 for ten releases, because a version in two places is a version
+    # that is wrong in one of them.
+    found = re.search(r'Version (\d+\.\d+\.\d+)', md)
+    version = found.group(1) if found else ''
+    badges = f'<span class="badge">Version {version}</span>' \
              f'<a class="badge" href="{doc["other"][0]}">{doc["other"][1]} →</a>'
 
     page = TEMPLATE.format(
@@ -389,3 +395,39 @@ for doc in DOCS:
 
     print('wrote', doc['name'] + '.html', 'and assets/help/' + doc['asset'],
           f'({len(page):,} bytes, {len(sections)} sections)')
+
+
+# And a PDF of each, printed from the page that was just written.
+#
+# Here rather than done by hand, because it was done by hand once and then
+# sat a dozen releases out of date while the HTML beside it moved on. The
+# print stylesheet in the template is what makes these readable: it drops
+# the contents sidebar and lets the text have the width of the paper.
+#
+# Chrome headless does the printing. No browser, no PDFs, and it says so
+# rather than failing: the HTML is the copy that matters, and the app reads
+# that one.
+BROWSERS = [
+    r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+    r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+    r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+    r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+]
+
+browser = next((b for b in BROWSERS if os.path.exists(b)), None)
+if browser is None:
+    print('no Chrome or Edge found, so no PDFs; the HTML is up to date')
+else:
+    for doc in DOCS:
+        source = os.path.join(SRC, doc['name'] + '.html')
+        target = os.path.join(SRC, doc['name'] + '.pdf')
+        url = 'file:///' + source.replace('\\', '/').replace(' ', '%20')
+        subprocess.run(
+            [browser, '--headless', '--disable-gpu',
+             '--no-pdf-header-footer', '--print-to-pdf=' + target, url],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        size = os.path.getsize(target)
+        print('wrote', doc['name'] + '.pdf', f'({size:,} bytes)')
