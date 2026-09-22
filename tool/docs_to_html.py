@@ -350,8 +350,32 @@ DOCS = [
     ),
 ]
 
+def app_version():
+    """The version the app is about to be, from the one place that decides.
+
+    The documents used to carry a version somebody typed into them, and it
+    said 2.23.1 for ten releases. A version in two places is a version that
+    is wrong in one of them, so there is now one place: pubspec.yaml.
+    """
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    text = io.open(os.path.join(repo, 'pubspec.yaml'), encoding='utf-8').read()
+    found = re.search(r'(?m)^version:\s*([0-9.]+)\+', text)
+    return found.group(1) if found else ''
+
+
+VERSION = app_version()
+
 for doc in DOCS:
-    md = io.open(os.path.join(SRC, doc['name'] + '.md'), encoding='utf-8').read()
+    source = os.path.join(SRC, doc['name'] + '.md')
+    md = io.open(source, encoding='utf-8').read()
+
+    # Stamped back into the Markdown as well, because that file is read on
+    # its own and a stale version in it would be the same bug again.
+    if VERSION:
+        stamped = re.sub(r'Version \d+\.\d+\.\d+', f'Version {VERSION}', md)
+        if stamped != md:
+            io.open(source, 'w', encoding='utf-8', newline='\n').write(stamped)
+            md = stamped
     body, sections = convert(md, skip_contents=doc['sidebar'])
 
     nav = ''
@@ -362,12 +386,7 @@ for doc in DOCS:
         )
         nav = f'<nav class="contents"><h2>Contents</h2><ol>{links}</ol></nav>\n'
 
-    # Read out of the document rather than written here. The cover said
-    # 2.23.1 for ten releases, because a version in two places is a version
-    # that is wrong in one of them.
-    found = re.search(r'Version (\d+\.\d+\.\d+)', md)
-    version = found.group(1) if found else ''
-    badges = f'<span class="badge">Version {version}</span>' \
+    badges = f'<span class="badge">Version {VERSION}</span>' \
              f'<a class="badge" href="{doc["other"][0]}">{doc["other"][1]} →</a>'
 
     page = TEMPLATE.format(

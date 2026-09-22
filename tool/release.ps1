@@ -76,6 +76,13 @@ $content = $content -replace '(?m)^version:\s*[0-9.]+\+\d+\s*$', "version: $Vers
 Set-Content -Path $pubspec -Value $content -NoNewline
 Write-Host "Version $Version, build $build" -ForegroundColor Cyan
 
+# --- 2b. the documents --------------------------------------------------
+# Regenerated with the version just stamped, so About never describes an
+# older build than the one it is in. They went ten releases out of date
+# because this was a step somebody had to remember.
+& python "$repoRoot\tool\docs_to_html.py"
+if ($LASTEXITCODE -ne 0) { throw "Could not regenerate the documents." }
+
 # --- 3. build -------------------------------------------------------------
 $env:PATH = "$env:USERPROFILE\tools\flutter\bin;$env:PATH"
 & flutter build apk --release --target-platform android-arm64
