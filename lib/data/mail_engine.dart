@@ -58,6 +58,10 @@ abstract class MailEngine {
     required String accountId,
     String? displayName,
     int? colorValue,
+
+    /// The name on mail sent from this account. Empty clears it, which puts
+    /// the account back to sending under its folder-list name.
+    String? senderName,
   });
 
   /// Replace the app password an account signs in with, keeping the account.

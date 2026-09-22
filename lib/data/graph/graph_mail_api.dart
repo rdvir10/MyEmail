@@ -85,8 +85,8 @@ class GraphMailApi {
   /// down with its list row, which is the difference between a folder opening
   /// at once and it opening after a megabyte.
   static const headerFields =
-      'id,subject,from,toRecipients,receivedDateTime,isRead,flag,'
-      'hasAttachments,bodyPreview,internetMessageId,conversationId';
+      'id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,'
+      'flag,hasAttachments,bodyPreview,internetMessageId,conversationId';
 
   // --- folders ---------------------------------------------------------------
 
@@ -742,6 +742,8 @@ class GraphMessage {
     required this.fromName,
     required this.to,
     required this.received,
+    this.cc = const [],
+    this.isMeeting = false,
     required this.isRead,
     required this.isFlagged,
     required this.hasAttachments,
@@ -754,6 +756,13 @@ class GraphMessage {
   final String fromEmail;
   final String? fromName;
   final List<({String email, String? name})> to;
+
+  /// Everyone copied openly. Comes with the list row, so it costs nothing.
+  final List<({String email, String? name})> cc;
+
+  /// A meeting request, change or cancellation. Graph types these as a
+  /// derived kind of message and says so in the list row itself.
+  final bool isMeeting;
   final DateTime received;
   final bool isRead;
   final bool isFlagged;
@@ -777,6 +786,12 @@ class GraphMessage {
         if (json['toRecipients'] is List)
           for (final r in json['toRecipients'] as List) ?_address(r),
       ],
+      cc: [
+        if (json['ccRecipients'] is List)
+          for (final r in json['ccRecipients'] as List) ?_address(r),
+      ],
+      isMeeting: '${json['@odata.type']}'.endsWith('.eventMessage') ||
+          json['meetingMessageType'] != null,
       received: DateTime.tryParse('${json['receivedDateTime']}')?.toUtc() ??
           DateTime.now().toUtc(),
       isRead: json['isRead'] == true,

@@ -603,7 +603,7 @@ class _Header extends StatelessWidget {
                           ?.copyWith(color: scheme.onSurfaceVariant),
                     ),
                   const SizedBox(height: 2),
-                  _Recipients(to: message.to),
+                  _Recipients(to: message.to, cc: message.cc),
                 ],
               ),
             ),
@@ -635,58 +635,57 @@ class _Header extends StatelessWidget {
 /// tell you nothing except that the list is long. Two names and a count
 /// say the same thing in one line, and a tap opens the rest — with their
 /// addresses, since "Ron Dvir" is the part you already knew.
-class _Recipients extends StatefulWidget {
-  const _Recipients({required this.to});
+/// Who a message went to: every name, with the address beside it.
+///
+/// Shown in full by default, because on a work mailbox the copy list is
+/// often the point of the message — who else is watching this thread is
+/// what decides how you answer it. Folding it to the first two names, which
+/// is what this did, described a different message.
+///
+/// The link folds it away for anyone who would rather have the room, and
+/// the choice is remembered rather than asked again on the next message.
+class _Recipients extends ConsumerWidget {
+  const _Recipients({required this.to, required this.cc});
 
   final List<MailAddress> to;
+  final List<MailAddress> cc;
 
-  /// How many fit before it is worth folding them away.
-  static const shown = 2;
-
-  @override
-  State<_Recipients> createState() => _RecipientsState();
-}
-
-class _RecipientsState extends State<_Recipients> {
-  bool _open = false;
+  /// How many names the folded line names before it starts counting.
+  static const named = 2;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final style = theme.textTheme.bodySmall
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
-    final to = widget.to;
-    if (to.isEmpty) {
+    final link = style?.copyWith(
+      color: theme.colorScheme.primary,
+      fontWeight: FontWeight.w600,
+    );
+    final open = ref.watch(
+      displayProvider.select((d) => d.showRecipientDetails),
+    );
+    void toggle() => ref
+        .read(displayProvider.notifier)
+        .setShowRecipientDetails(!open);
+
+    if (to.isEmpty && cc.isEmpty) {
       return Text('To: (nobody named)', style: style);
     }
 
-    final hidden = to.length - _Recipients.shown;
-    if (hidden <= 0) {
-      return Text(
-        'To: ${to.map((a) => a.display).join(', ')}',
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: style,
-      );
-    }
-
-    if (!_open) {
-      final first = to.take(_Recipients.shown).map((a) => a.display).join(', ');
+    if (!open) {
+      // One paragraph rather than a row of two, so the link cannot be
+      // pushed off the end by a long list of names. The summary ellipsises
+      // and "Details" always has somewhere to sit.
       return InkWell(
-        onTap: () => setState(() => _open = true),
+        onTap: toggle,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 2),
           child: Text.rich(
             TextSpan(
               children: [
-                TextSpan(text: 'To: $first  '),
-                TextSpan(
-                  text: '+$hidden more',
-                  style: style?.copyWith(
-                    color: theme.colorScheme.primary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
+                TextSpan(text: '${_summary()}  '),
+                TextSpan(text: 'Details', style: link),
               ],
             ),
             maxLines: 1,
@@ -697,32 +696,75 @@ class _RecipientsState extends State<_Recipients> {
       );
     }
 
-    return InkWell(
-      onTap: () => setState(() => _open = false),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('To: ${to.length} people', style: style),
-            const SizedBox(height: 2),
-            for (final a in to)
-              Text(
-                a.name == null || a.name!.trim().isEmpty
-                    ? a.email
-                    : '${a.name}  <${a.email}>',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: style,
-              ),
-            Text('Show fewer',
-                style: style?.copyWith(
-                  color: theme.colorScheme.primary,
-                  fontWeight: FontWeight.w600,
-                )),
-          ],
-        ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (to.isNotEmpty) _block(context, 'To', to, style),
+          if (cc.isNotEmpty) _block(context, 'CC', cc, style),
+          InkWell(
+            onTap: toggle,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text('Hide details', style: link),
+            ),
+          ),
+        ],
       ),
     );
   }
+
+  /// "To: Itay Toledano, Sharon Shiloh · CC 4"
+  String _summary() {
+    final parts = <String>[];
+    if (to.isNotEmpty) {
+      final first = to.take(named).map((a) => a.display).join(', ');
+      final rest = to.length - named;
+      parts.add(rest > 0 ? 'To: $first +$rest' : 'To: $first');
+    }
+    if (cc.isNotEmpty) parts.add('CC ${cc.length}');
+    return parts.join('  \u00b7  ');
+  }
+
+  /// One label and the names under it, each with its address.
+  ///
+  /// Selectable, because an address in a header is something people copy.
+  Widget _block(
+    BuildContext context,
+    String label,
+    List<MailAddress> people,
+    TextStyle? style,
+  ) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: 2),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 30,
+              child: Text(
+                '$label:',
+                style: style?.copyWith(fontWeight: FontWeight.w600),
+              ),
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final a in people)
+                    Text(
+                      a.name == null || a.name!.trim().isEmpty
+                          ? a.email
+                          : '${a.name}  ${a.email}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: style,
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
 }

@@ -81,6 +81,7 @@ class SampleMailEngine implements MailEngine {
     required String accountId,
     String? displayName,
     int? colorValue,
+    String? senderName,
   }) async {
     await _latency();
     final i = _accounts.indexWhere((a) => a.id == accountId);
@@ -89,6 +90,7 @@ class SampleMailEngine implements MailEngine {
     final updated = _accounts[i].copyWith(
       displayName: (trimmed == null || trimmed.isEmpty) ? null : trimmed,
       colorValue: colorValue,
+      senderName: senderName?.trim(),
     );
     _accounts[i] = updated;
     return updated;

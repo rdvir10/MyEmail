@@ -34,11 +34,23 @@ class Messages extends Table {
 
   /// JSON list of `{"email": ..., "name": ...}`.
   TextColumn get recipientsJson => text()();
+
+  /// The same, for everyone copied openly. Added in schema 6; null on rows
+  /// cached before, which read as nobody copied until the folder syncs.
+  TextColumn get copiedJson => text().nullable()();
   DateTimeColumn get date => dateTime()();
   BoolColumn get isRead => boolean()();
   BoolColumn get isFlagged => boolean()();
   BoolColumn get hasAttachments => boolean()();
   TextColumn get preview => text().withDefault(const Constant(''))();
+
+  /// What the files on it add up to. Added in schema 6, 0 where unknown.
+  IntColumn get attachmentBytes =>
+      integer().withDefault(const Constant(0))();
+
+  /// An invitation, a change to one, or a cancellation. Added in schema 6;
+  /// false on rows cached before, until that folder next syncs.
+  BoolColumn get isMeeting => boolean().withDefault(const Constant(false))();
   TextColumn get bodyText => text().nullable()();
   TextColumn get bodyHtml => text().nullable()();
 
@@ -101,7 +113,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -137,6 +149,28 @@ class MailDatabase extends _$MailDatabase {
             ).get();
             final has = columns.any((c) => c.read<String>('name') == 'calendar');
             if (!has) await m.addColumn(messages, messages.calendar);
+          }
+          if (from < 6) {
+            // Who else a message went to, and what its files weigh. Both
+            // are read with the header, so every folder fills them in on
+            // its next sync; until then a message reads as copied to
+            // nobody and its files as weighing nothing, which is what the
+            // nullable and the default are for.
+            final columns = await customSelect(
+              'PRAGMA table_info(messages)',
+            ).get();
+            final names = {
+              for (final c in columns) c.read<String>('name'),
+            };
+            if (!names.contains('copied_json')) {
+              await m.addColumn(messages, messages.copiedJson);
+            }
+            if (!names.contains('attachment_bytes')) {
+              await m.addColumn(messages, messages.attachmentBytes);
+            }
+            if (!names.contains('is_meeting')) {
+              await m.addColumn(messages, messages.isMeeting);
+            }
           }
           if (from < 5) {
             // Throwing away every cached body on a Microsoft account, once.
@@ -338,10 +372,13 @@ class DriftCacheStore implements CacheStore {
             fromEmail: m.from.email,
             fromName: Value(m.from.name),
             recipientsJson: _encodeAddresses(m.to),
+            copiedJson: Value(_encodeAddresses(m.cc)),
             date: m.date,
             isRead: m.isRead,
             isFlagged: m.isFlagged,
             hasAttachments: m.hasAttachments,
+            attachmentBytes: Value(m.attachmentBytes),
+            isMeeting: Value(m.isMeeting),
             preview: Value(m.preview),
             bodyText: Value(m.bodyText),
             bodyHtml: Value(m.bodyHtml),
@@ -359,12 +396,19 @@ class DriftCacheStore implements CacheStore {
               fromEmail: Value(m.from.email),
               fromName: Value(m.from.name),
               recipientsJson: Value(_encodeAddresses(m.to)),
+              copiedJson: Value(_encodeAddresses(m.cc)),
               date: Value(m.date),
               messageId: Value(m.messageId),
               inReplyTo: Value(m.inReplyTo),
               isRead: Value(m.isRead),
               isFlagged: Value(m.isFlagged),
               hasAttachments: Value(m.hasAttachments),
+              isMeeting: Value(m.isMeeting),
+              // Only when the server said. A re-read header that carries no
+              // size must not erase one that was found.
+              attachmentBytes: m.attachmentBytes > 0
+                  ? Value(m.attachmentBytes)
+                  : const Value.absent(),
               preview:
                   m.preview.isEmpty ? const Value.absent() : Value(m.preview),
             ),
@@ -536,10 +580,15 @@ class DriftCacheStore implements CacheStore {
         subject: r.subject,
         from: MailAddress(email: r.fromEmail, name: r.fromName),
         to: _decodeAddresses(r.recipientsJson),
+        cc: r.copiedJson == null
+            ? const []
+            : _decodeAddresses(r.copiedJson!),
         date: r.date,
         isRead: r.isRead,
         isFlagged: r.isFlagged,
         hasAttachments: r.hasAttachments,
+        attachmentBytes: r.attachmentBytes,
+        isMeeting: r.isMeeting,
         preview: r.preview,
         bodyText: r.bodyText,
         bodyHtml: r.bodyHtml,

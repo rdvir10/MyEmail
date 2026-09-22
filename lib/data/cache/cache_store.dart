@@ -39,6 +39,9 @@ class CachedMessage {
     required this.isRead,
     required this.isFlagged,
     required this.hasAttachments,
+    this.cc = const [],
+    this.attachmentBytes = 0,
+    this.isMeeting = false,
     this.preview = '',
     this.bodyText,
     this.bodyHtml,
@@ -51,10 +54,17 @@ class CachedMessage {
   final String subject;
   final MailAddress from;
   final List<MailAddress> to;
+  final List<MailAddress> cc;
   final DateTime date;
   final bool isRead;
   final bool isFlagged;
   final bool hasAttachments;
+
+  /// See [MailMessage.attachmentBytes].
+  final int attachmentBytes;
+
+  /// See [MailMessage.isMeeting].
+  final bool isMeeting;
   final String preview;
   final String? bodyText;
   final String? bodyHtml;
@@ -82,10 +92,13 @@ class CachedMessage {
       subject: subject,
       from: from,
       to: to,
+      cc: cc,
       date: date,
       isRead: isRead ?? this.isRead,
       isFlagged: isFlagged ?? this.isFlagged,
       hasAttachments: hasAttachments,
+      attachmentBytes: attachmentBytes,
+      isMeeting: isMeeting,
       preview: preview ?? this.preview,
       bodyText: bodyText ?? this.bodyText,
       bodyHtml: bodyHtml ?? this.bodyHtml,
@@ -104,11 +117,14 @@ class CachedMessage {
       subject: subject,
       from: from,
       to: to,
+      cc: cc,
       date: date,
       preview: preview,
       isRead: isRead,
       isFlagged: isFlagged,
       hasAttachments: hasAttachments,
+      attachmentBytes: attachmentBytes,
+      isMeeting: isMeeting,
       messageId: messageId,
       inReplyTo: inReplyTo,
     );

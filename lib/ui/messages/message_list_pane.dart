@@ -19,6 +19,7 @@ import '../../state/window_providers.dart';
 import '../../state/message_transfer.dart';
 import '../../state/calendar_providers.dart';
 import '../../domain/window_handoff.dart';
+import 'date_format.dart';
 import '../quick_steps/quick_steps_screen.dart';
 import 'forward_as_attachment.dart';
 import 'message_actions.dart';
@@ -372,6 +373,11 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             // Sync button, which on a phone is not there to press.
             // One more row than there are messages while the folder has
             // older mail: reaching it fetches the next page.
+            // Sorted by sender or subject the rows are not in date order
+            // at all, and a bar over them would name a grouping that is not
+            // there.
+            final byDate = display.sort == MessageSort.dateNewest ||
+                display.sort == MessageSort.dateOldest;
             final hasMore = ref.watch(listHasMoreProvider(folderId));
             return RefreshIndicator(
               onRefresh: () => _pullToSync(context, folderId),
@@ -389,10 +395,20 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     );
                   }
                   final row = rows[i];
+                  // A bar above the first row of each day, drawn as part of
+                  // that row rather than as one of its own: the list's
+                  // indices are load-bearing — paging, the keyboard's
+                  // cursor, scrolling a selection into view — and slipping
+                  // extra items between them would move every one of them.
+                  final bar = byDate &&
+                          !row.indented &&
+                          (i == 0 || startsNewDay(rows[i - 1].date, row.date))
+                      ? _DateBar(date: row.date)
+                      : null;
                   final conversation = row.conversation;
                   if (conversation != null) {
                     final ids = [for (final m in conversation.messages) m.id];
-                    return _SwipeableRow(
+                    return _under(bar, _SwipeableRow(
                       key: ValueKey('thread:${conversation.id}'),
                       messages: conversation.messages,
                       actions: actions,
@@ -436,7 +452,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                           at,
                         ),
                       ),
-                    );
+                    ));
                   }
 
                   final m = row.message!;
@@ -518,12 +534,15 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                   );
                   // Inside an open thread, indented so the run of replies reads
                   // as belonging to the row above it.
-                  return row.indented
-                      ? Padding(
-                          padding: const EdgeInsets.only(left: 20),
-                          child: swipeable,
-                        )
-                      : swipeable;
+                  return _under(
+                    bar,
+                    row.indented
+                        ? Padding(
+                            padding: const EdgeInsets.only(left: 20),
+                            child: swipeable,
+                          )
+                        : swipeable,
+                  );
                 },
               ),
             );
@@ -579,6 +598,18 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     }
     return rows;
   }
+
+  /// A row, with the day's bar above it where one belongs.
+  ///
+  /// Part of the row rather than an item of its own: the list's indices are
+  /// load-bearing — paging, the keyboard's cursor, scrolling a selection
+  /// into view — and slipping extra items between them would move every one.
+  static Widget _under(Widget? bar, Widget row) => bar == null
+      ? row
+      : Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [bar, row],
+        );
 
   /// A menu at the pointer, which is where a right click puts one.
   Future<String?> _menuAt(
@@ -1109,6 +1140,37 @@ class _Row {
 
   /// A message shown inside an open thread rather than at the top level.
   final bool indented;
+
+  /// When this row happened, whichever kind it is.
+  DateTime get date => message?.date ?? conversation!.newest.date;
+}
+
+/// The bar that separates one day from the next.
+///
+/// Only where the list is in date order. Sorted by sender or subject the
+/// rows are not in date order at all, and a date bar over them would be
+/// describing a grouping that is not there.
+class _DateBar extends StatelessWidget {
+  const _DateBar({required this.date});
+
+  final DateTime date;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+      padding: const EdgeInsets.fromLTRB(16, 5, 16, 5),
+      child: Text(
+        formatDateBar(date),
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
 }
 
 /// The last row of a list that has older mail: being built is the signal

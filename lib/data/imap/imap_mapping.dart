@@ -71,10 +71,13 @@ RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
     subject: (subject == null || subject.isEmpty) ? '(No subject)' : subject,
     from: from == null ? const MailAddress(email: '') : addressFromMime(from),
     to: [for (final a in m.to ?? const <em.MailAddress>[]) addressFromMime(a)],
+    cc: [for (final a in m.cc ?? const <em.MailAddress>[]) addressFromMime(a)],
     date: m.decodeDate() ?? fallbackDate ?? DateTime.now(),
     isRead: m.isSeen,
     isFlagged: m.isFlagged,
     hasAttachments: m.hasAttachments(),
+    attachmentBytes: attachmentBytesOf(m),
+    isMeeting: carriesInvitation(m),
     messageId: normaliseMessageId(
       m.envelope?.messageId ?? m.getHeaderValue('message-id'),
     ),
@@ -317,6 +320,42 @@ String? _calendarFileIn(em.MimeMessage m) {
     }
   }
   return null;
+}
+
+/// Whether a message carries an invitation, from its structure alone.
+///
+/// The structure is what the header fetch already asks for, so this costs
+/// nothing and can be known before a message is opened — which is the whole
+/// point: a list that says which rows are meetings is a list you can read
+/// without opening anything.
+bool carriesInvitation(em.MimeMessage message) {
+  if (message.getPartWithMediaSubtype(em.MediaSubtype.textCalendar) != null) {
+    return true;
+  }
+  for (final disposition in [
+    em.ContentDisposition.attachment,
+    em.ContentDisposition.inline,
+  ]) {
+    for (final info in message.findContentInfo(disposition: disposition)) {
+      final type = info.contentType?.mediaType.toString() ?? '';
+      if (isCalendarFile(type, info.fileName ?? '')) return true;
+    }
+  }
+  return false;
+}
+
+/// What the files on a message add up to, in bytes.
+///
+/// Free: the BODYSTRUCTURE the header fetch already asks for carries a size
+/// per part, so this costs nothing beyond the arithmetic. Inline parts are
+/// left out — a logo in a signature is not a file anyone attached, and
+/// counting it would make every signed message look like it carries one.
+int attachmentBytesOf(em.MimeMessage message) {
+  var total = 0;
+  for (final a in attachmentsOf(message)) {
+    if (!a.isInline) total += a.sizeBytes;
+  }
+  return total;
 }
 
 /// What a message has attached, read from its structure alone.

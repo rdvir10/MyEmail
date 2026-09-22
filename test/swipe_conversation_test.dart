@@ -161,10 +161,12 @@ void main() {
               .length ==
           1);
 
-      await tester.drag(
-        find.byKey(ValueKey('tile:${loose.id}')),
-        const Offset(-600, 0),
-      );
+      // Rows carry a sender address and the list carries date bars now,
+      // so the row this picks may be below the fold.
+      final row = find.byKey(ValueKey('tile:${loose.id}'));
+      await tester.ensureVisible(row);
+      await tester.pumpAndSettle();
+      await tester.drag(row, const Offset(-600, 0));
       await tester.pumpAndSettle();
 
       expect(listOf(c).any((x) => x.id == loose.id), isFalse);

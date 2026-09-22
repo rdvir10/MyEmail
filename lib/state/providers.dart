@@ -114,11 +114,13 @@ class Accounts extends AsyncNotifier<List<Account>> {
     required String accountId,
     String? displayName,
     int? colorValue,
+    String? senderName,
   }) async {
     final updated = await ref.read(mailEngineProvider).updateAccount(
           accountId: accountId,
           displayName: displayName,
           colorValue: colorValue,
+          senderName: senderName,
         );
     state = AsyncData([
       for (final a in state.value ?? const <Account>[])

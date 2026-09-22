@@ -17,6 +17,31 @@ String formatMessageDate(DateTime date, {DateTime? now}) {
   return '${two(d.day)}/${two(d.month)}/${d.year}';
 }
 
+/// The bar that separates one day from the next in a list.
+///
+/// "Today", "Yesterday", then the weekday and date. The two words carry
+/// more than a date does: most of what anyone is looking for is in them,
+/// and a row of numbers makes that a thing to work out rather than read.
+String formatDateBar(DateTime date, {DateTime? now}) {
+  final n = (now ?? DateTime.now()).toLocal();
+  final d = date.toLocal();
+  final today = DateTime(n.year, n.month, n.day);
+  final day = DateTime(d.year, d.month, d.day);
+  final difference = today.difference(day).inDays;
+  final written = '${_weekdays[d.weekday - 1]} ${d.day} ${_months[d.month - 1]}'
+      '${d.year == n.year ? '' : ' ${d.year}'}';
+  if (difference == 0) return 'Today \u00b7 $written';
+  if (difference == 1) return 'Yesterday \u00b7 $written';
+  return written;
+}
+
+/// Whether two moments fall on different days, in the reader's own zone.
+bool startsNewDay(DateTime a, DateTime b) {
+  final x = a.toLocal();
+  final y = b.toLocal();
+  return x.year != y.year || x.month != y.month || x.day != y.day;
+}
+
 /// The reading pane's fuller form, e.g. "Mon 14 Sep 2026, 09:41".
 String formatMessageDateLong(DateTime date) {
   final d = date.toLocal();

@@ -151,7 +151,29 @@ void main() {
     testWidgets('starts from the current name', (tester) async {
       await tester.pumpWidget(app());
 
-      expect(find.widgetWithText(TextField, 'Personal'), findsOneWidget);
+      // Two fields carry the name now: the folder-list label holds it, and
+      // the sender name offers it as what it falls back to.
+      final label = find.ancestor(
+        of: find.text('Name in the folder list'),
+        matching: find.byType(TextField),
+      );
+      expect(label, findsOneWidget);
+      expect(tester.widget<TextField>(label).controller!.text, 'Personal');
+    });
+
+    testWidgets('the sender name is empty until one is chosen',
+        (tester) async {
+      // Empty rather than pre-filled with the label: the field has to be
+      // able to say "nothing chosen here", or clearing it would be the same
+      // as typing the label and the fallback could never come back.
+      await tester.pumpWidget(app());
+
+      final sender = find.ancestor(
+        of: find.text('Name on mail you send'),
+        matching: find.byType(TextField),
+      );
+      expect(sender, findsOneWidget);
+      expect(tester.widget<TextField>(sender).controller!.text, isEmpty);
     });
 
     testWidgets('Save is dead until something actually changes',

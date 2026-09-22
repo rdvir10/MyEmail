@@ -19,7 +19,7 @@ em.MimeMessage buildMimeMessage({
   required Draft draft,
   required Account account,
 }) {
-  final from = em.MailAddress(account.displayName, account.emailAddress);
+  final from = em.MailAddress(account.senderName, account.emailAddress);
   final builder = em.MessageBuilder()
     ..from = [from]
     ..to = [for (final a in draft.to) _addr(a)]

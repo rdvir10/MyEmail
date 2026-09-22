@@ -27,6 +27,7 @@ class Account {
     required this.provider,
     required this.authMethod,
     required this.colorValue,
+    this.chosenSenderName,
   });
 
   final String id;
@@ -38,19 +39,50 @@ class Account {
   /// Accent used to tell accounts apart in the tree and in unified views.
   final int colorValue;
 
+  /// A sender name chosen for this account, or null for none.
+  ///
+  /// Read through [senderName], which falls back. This is the raw choice,
+  /// and exists separately so a settings screen can tell "not set" from
+  /// "set to the same thing as the label".
+  final String? chosenSenderName;
+
+  /// The name on mail sent from this account.
+  ///
+  /// Separate from [displayName] because they answer different questions.
+  /// The tree label is for the person reading it — "Hadco", "Personal" —
+  /// and wants to be short. The sender name is what everyone else sees at
+  /// the top of a message from you, and wants to be your name.
+  ///
+  /// Unset, it falls back to the tree label, which is what every account
+  /// sent under before this was a choice.
+  String get senderName {
+    final chosen = chosenSenderName?.trim() ?? '';
+    return chosen.isEmpty ? displayName : chosen;
+  }
+
+  /// Whether a name of its own has been chosen, for a settings screen that
+  /// must tell "not set" from "set to the same thing".
+  bool get hasOwnSenderName => (chosenSenderName?.trim() ?? '').isNotEmpty;
+
   /// Only the two things a person may change after the fact.
   ///
   /// The address, provider and auth method are deliberately not here. They
   /// are what the stored secret was proved against and what the cache is
   /// keyed on, so changing one is adding a different account, not editing
   /// this one.
-  Account copyWith({String? displayName, int? colorValue}) => Account(
+  Account copyWith({
+    String? displayName,
+    int? colorValue,
+    String? senderName,
+  }) =>
+      Account(
         id: id,
         displayName: displayName ?? this.displayName,
         emailAddress: emailAddress,
         provider: provider,
         authMethod: authMethod,
         colorValue: colorValue ?? this.colorValue,
+        chosenSenderName: senderName ?? chosenSenderName,
       );
 
   @override

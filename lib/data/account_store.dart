@@ -54,6 +54,9 @@ class MemoryAccountStore implements AccountStore {
 Map<String, dynamic> accountToJson(Account a) => {
       'id': a.id,
       'displayName': a.displayName,
+      // Only when one was chosen. Absent means "use the label",
+      // which is what every account did before this existed.
+      if (a.hasOwnSenderName) 'senderName': a.senderName,
       'emailAddress': a.emailAddress,
       'provider': a.provider.name,
       'authMethod': a.authMethod.name,
@@ -63,6 +66,8 @@ Map<String, dynamic> accountToJson(Account a) => {
 Account accountFromJson(Map<String, dynamic> j) => Account(
       id: j['id'] as String,
       displayName: j['displayName'] as String,
+      chosenSenderName:
+          j['senderName'] is String ? j['senderName'] as String : null,
       emailAddress: j['emailAddress'] as String,
       provider: MailProvider.values.byName(j['provider'] as String),
       authMethod: AuthMethod.values.byName(j['authMethod'] as String),

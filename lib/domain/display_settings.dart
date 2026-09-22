@@ -129,6 +129,7 @@ class DisplaySettings {
     this.swipeLeft = SwipeAction.delete,
     this.alwaysShowImages = false,
     this.sort = MessageSort.dateNewest,
+    this.showRecipientDetails = true,
   });
 
   /// What the list is ordered by. The default is what every list did
@@ -153,6 +154,14 @@ class DisplaySettings {
   /// who reads a lot of mail from shops, where the pictures are the message.
   final bool alwaysShowImages;
 
+  /// Show every name a message went to, with their addresses, above it.
+  ///
+  /// On by default. A work message is addressed to two people and copied to
+  /// five, and which five is often the whole point of it; a header that
+  /// names only the first two describes a different message. The link folds
+  /// it away for anyone who would rather have the room.
+  final bool showRecipientDetails;
+
   /// Group a list by conversation rather than showing every message.
   ///
   /// Off by default, because it changes what a row means and that is not a
@@ -167,6 +176,7 @@ class DisplaySettings {
     SwipeAction? swipeLeft,
     bool? alwaysShowImages,
     MessageSort? sort,
+    bool? showRecipientDetails,
   }) {
     return DisplaySettings(
       readingPane: readingPane ?? this.readingPane,
@@ -176,6 +186,8 @@ class DisplaySettings {
       swipeLeft: swipeLeft ?? this.swipeLeft,
       alwaysShowImages: alwaysShowImages ?? this.alwaysShowImages,
       sort: sort ?? this.sort,
+      showRecipientDetails:
+          showRecipientDetails ?? this.showRecipientDetails,
     );
   }
 
@@ -187,6 +199,7 @@ class DisplaySettings {
         'swipeLeft': swipeLeft.name,
         'alwaysShowImages': alwaysShowImages,
         'sort': sort.name,
+        'showRecipientDetails': showRecipientDetails,
       };
 
   /// Tolerant of anything: a value written by a newer build, or a corrupted
@@ -206,6 +219,9 @@ class DisplaySettings {
       alwaysShowImages: json['alwaysShowImages'] is bool
           ? json['alwaysShowImages'] as bool
           : false,
+      showRecipientDetails: json['showRecipientDetails'] is bool
+          ? json['showRecipientDetails'] as bool
+          : true,
       // A record written before sorting existed has no key at all, and one
       // written by 2.23.0 has the field and direction it used to keep as
       // two. Either way it lands on an order that was already being shown.
@@ -252,7 +268,8 @@ class DisplaySettings {
       other.swipeRight == swipeRight &&
       other.swipeLeft == swipeLeft &&
       other.alwaysShowImages == alwaysShowImages &&
-      other.sort == sort;
+      other.sort == sort &&
+      other.showRecipientDetails == showRecipientDetails;
 
   // Every field, without exception: Riverpod skips notifying when the new
   // state equals the old, so a field left out here is a setting that can
@@ -266,6 +283,7 @@ class DisplaySettings {
         swipeLeft,
         alwaysShowImages,
         sort,
+        showRecipientDetails,
       );
 
   @override
@@ -273,5 +291,6 @@ class DisplaySettings {
       'conversations: $conversations, '
       'swipe: ${swipeRight.name}/${swipeLeft.name}, '
       'images: $alwaysShowImages, '
-      'sort: ${sort.name})';
+      'sort: ${sort.name}, '
+      'recipients: $showRecipientDetails)';
 }

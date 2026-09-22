@@ -31,6 +31,9 @@ class EditAccountScreen extends ConsumerStatefulWidget {
 class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
   late final TextEditingController _name =
       TextEditingController(text: widget.account.displayName);
+  late final TextEditingController _sender = TextEditingController(
+    text: widget.account.hasOwnSenderName ? widget.account.senderName : '',
+  );
   final TextEditingController _password = TextEditingController();
   late int _color = widget.account.colorValue;
   bool _busy = false;
@@ -54,6 +57,7 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
   @override
   void dispose() {
     _name.dispose();
+    _sender.dispose();
     _password.dispose();
     super.dispose();
   }
@@ -100,7 +104,11 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
 
   bool get _changed =>
       _name.text.trim() != widget.account.displayName ||
+      _sender.text.trim() != _storedSenderName ||
       _color != widget.account.colorValue;
+
+  String get _storedSenderName =>
+      widget.account.hasOwnSenderName ? widget.account.senderName : '';
 
   Future<void> _save() async {
     setState(() {
@@ -112,6 +120,7 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
             accountId: widget.account.id,
             displayName: _name.text,
             colorValue: _color,
+            senderName: _sender.text,
           );
       if (mounted) Navigator.of(context).maybePop();
     } catch (e) {
@@ -144,6 +153,30 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
             ),
             onChanged: (_) => setState(() {}),
           ),
+          const SizedBox(height: 20),
+          TextField(
+            controller: _sender,
+            enabled: !_busy,
+            textCapitalization: TextCapitalization.words,
+            decoration: InputDecoration(
+              labelText: 'Name on mail you send',
+              hintText: widget.account.displayName,
+              helperText: 'What people see in the From line. Left empty, the '
+                  'name above is used.',
+              helperMaxLines: 3,
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+          if (widget.account.provider == MailProvider.outlook) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Microsoft may replace this with the name in your work '
+              'directory on mail you send. That is the server\u2019s choice, '
+              'not the app\u2019s.',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ],
           const SizedBox(height: 28),
           Text('Colour', style: theme.textTheme.labelLarge),
           const SizedBox(height: 4),

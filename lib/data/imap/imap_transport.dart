@@ -217,6 +217,9 @@ class RemoteHeader {
     required this.isRead,
     required this.isFlagged,
     required this.hasAttachments,
+    this.cc = const [],
+    this.attachmentBytes = 0,
+    this.isMeeting = false,
     this.preview = '',
     this.messageId,
     this.inReplyTo,
@@ -226,10 +229,19 @@ class RemoteHeader {
   final String subject;
   final MailAddress from;
   final List<MailAddress> to;
+
+  /// Everyone copied openly. See [MailMessage.cc].
+  final List<MailAddress> cc;
   final DateTime date;
   final bool isRead;
   final bool isFlagged;
   final bool hasAttachments;
+
+  /// What the files on it add up to. See [MailMessage.attachmentBytes].
+  final int attachmentBytes;
+
+  /// See [MailMessage.isMeeting].
+  final bool isMeeting;
 
   /// The first line or two of the message, for the list row, where the
   /// server will give it with the header.

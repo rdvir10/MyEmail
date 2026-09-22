@@ -642,6 +642,10 @@ class GraphTransport implements ImapTransport {
             to: [
               for (final t in m.to) MailAddress(email: t.email, name: t.name),
             ],
+            cc: [
+              for (final t in m.cc) MailAddress(email: t.email, name: t.name),
+            ],
+            isMeeting: m.isMeeting,
             date: m.received,
             isRead: m.isRead,
             isFlagged: m.isFlagged,

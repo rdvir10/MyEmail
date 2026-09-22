@@ -65,6 +65,7 @@ class _EmptyEngine implements MailEngine {
     required String accountId,
     String? displayName,
     int? colorValue,
+    String? senderName,
   }) =>
       _inner.updateAccount(
         accountId: accountId,

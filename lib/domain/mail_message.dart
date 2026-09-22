@@ -41,9 +41,12 @@ class MailMessage {
     required this.to,
     required this.date,
     required this.preview,
+    this.cc = const [],
     this.isRead = false,
     this.isFlagged = false,
     this.hasAttachments = false,
+    this.attachmentBytes = 0,
+    this.isMeeting = false,
     this.messageId,
     this.inReplyTo,
   });
@@ -57,6 +60,14 @@ class MailMessage {
   final String subject;
   final MailAddress from;
   final List<MailAddress> to;
+
+  /// Everyone else it went to openly.
+  ///
+  /// Worth as much as [to] on a work mailbox: a message addressed to two
+  /// people and copied to five is a message five people are watching, and
+  /// a header that shows only the two is describing a different message.
+  /// Bcc is deliberately absent — it is not in what arrives.
+  final List<MailAddress> cc;
   final DateTime date;
 
   /// The first line or so of the body, for the list.
@@ -64,6 +75,21 @@ class MailMessage {
   final bool isRead;
   final bool isFlagged;
   final bool hasAttachments;
+
+  /// An invitation, a change to one, or a cancellation.
+  ///
+  /// Known from the header alone, which is what lets the list say so before
+  /// anything is opened. Over IMAP the structure the header fetch already
+  /// asks for names a `text/calendar` part; Microsoft types the message as
+  /// a meeting request outright. Neither costs a request.
+  final bool isMeeting;
+
+  /// What the files on it add up to, or 0 where the server did not say.
+  ///
+  /// Free over IMAP: the structure the header fetch already asks for
+  /// carries a size per part. Microsoft sends no size with a list row, so
+  /// this is 0 there unless the sizes were asked for separately.
+  final int attachmentBytes;
 
   /// This message's own `Message-ID`, and the id of the one it answers.
   /// Both are what conversation grouping chains on. Either can be null: the

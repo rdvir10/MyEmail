@@ -14,7 +14,11 @@ import 'fakes/fake_webview.dart';
 void main() {
   setUpAll(FakeWebViewPlatform.install);
 
-  MailMessage message({List<MailAddress> to = const []}) => MailMessage(
+  MailMessage message({
+    List<MailAddress> to = const [],
+    List<MailAddress> cc = const [],
+  }) =>
+      MailMessage(
         id: 'a:INBOX#1',
         accountId: 'a',
         folderId: 'a:INBOX',
@@ -23,6 +27,7 @@ void main() {
         preview: '',
         from: const MailAddress(email: 'mike@example.com', name: 'Mike McD'),
         to: to,
+        cc: cc,
         date: DateTime(2026, 9, 21, 16, 26),
         isRead: true,
       );
@@ -84,38 +89,68 @@ void main() {
   });
 
   group('who it went to', () {
-    testWidgets('a short list is named in full', (tester) async {
+    testWidgets('every name is there, with its address', (tester) async {
       final m = message(to: const [
         MailAddress(email: 'nadav@example.com', name: 'Nadav Elster'),
         MailAddress(email: 'ron@example.com', name: 'Ron Dvir'),
       ]);
       await pump(tester, m: m, home: MessageScreen(message: m));
 
-      expect(find.textContaining('Nadav Elster, Ron Dvir'), findsOneWidget);
-      expect(find.textContaining('more'), findsNothing);
+      expect(find.textContaining('Nadav Elster'), findsOneWidget);
+      expect(find.textContaining('nadav@example.com'), findsOneWidget);
+      expect(find.textContaining('Ron Dvir'), findsOneWidget);
     });
 
-    testWidgets('a long one folds, and opens on a tap', (tester) async {
+    testWidgets('a long list is not folded away', (tester) async {
+      // Folding to the first two was what this did, and on a work mailbox
+      // the copy list is often the point of the message.
       final m = message(to: [
         for (var i = 0; i < 9; i++)
           MailAddress(email: 'person$i@example.com', name: 'Person $i'),
       ]);
       await pump(tester, m: m, home: MessageScreen(message: m));
 
-      expect(find.textContaining('+7 more'), findsOneWidget);
-      expect(find.textContaining('Person 8'), findsNothing);
-
-      await tester.tap(find.textContaining('+7 more'));
-      await tester.pumpAndSettle();
-
-      expect(find.text('To: 9 people'), findsOneWidget);
-      // Opened, the addresses are there too: the names were the part
-      // already known.
+      expect(find.textContaining('Person 8'), findsOneWidget);
       expect(find.textContaining('person8@example.com'), findsOneWidget);
+    });
 
-      await tester.tap(find.text('Show fewer'));
+    testWidgets('everyone copied is named too', (tester) async {
+      final m = message(
+        to: const [MailAddress(email: 'nadav@example.com', name: 'Nadav')],
+        cc: const [
+          MailAddress(email: 'michal@example.com', name: 'Michal Raz'),
+          MailAddress(email: 'nik@example.com', name: 'Nik Shatzir'),
+        ],
+      );
+      await pump(tester, m: m, home: MessageScreen(message: m));
+
+      expect(find.text('CC:'), findsOneWidget);
+      expect(find.textContaining('Michal Raz'), findsOneWidget);
+      expect(find.textContaining('Nik Shatzir'), findsOneWidget);
+    });
+
+    testWidgets('and it folds away for anyone who wants the room',
+        (tester) async {
+      final m = message(
+        to: const [
+          MailAddress(email: 'nadav@example.com', name: 'Nadav Elster'),
+          MailAddress(email: 'ron@example.com', name: 'Ron Dvir'),
+          MailAddress(email: 'barry@example.com', name: 'Barry Boyd'),
+        ],
+        cc: const [MailAddress(email: 'michal@example.com', name: 'Michal')],
+      );
+      await pump(tester, m: m, home: MessageScreen(message: m));
+
+      await tester.tap(find.text('Hide details'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('+7 more'), findsOneWidget);
+
+      expect(find.textContaining('Barry Boyd'), findsNothing);
+      expect(find.textContaining('CC 1'), findsOneWidget);
+
+      // The link is a span inside the summary line, not a Text of its own.
+      await tester.tap(find.textContaining('Details'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Barry Boyd'), findsOneWidget);
     });
 
     testWidgets('a message addressed to nobody says so', (tester) async {

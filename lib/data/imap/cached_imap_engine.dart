@@ -269,6 +269,7 @@ class CachedImapEngine implements MailEngine {
     required String accountId,
     String? displayName,
     int? colorValue,
+    String? senderName,
   }) async {
     final accounts = accountStore.read();
     final existing = accounts.where((a) => a.id == accountId).firstOrNull;
@@ -280,6 +281,10 @@ class CachedImapEngine implements MailEngine {
       // tell which mailbox it is, so it falls back rather than being stored.
       displayName: (trimmed == null || trimmed.isEmpty) ? null : trimmed,
       colorValue: colorValue,
+      // Empty is a choice here rather than a mistake: it means "send under
+      // the name above", which is what the field says and what every
+      // account did before it existed.
+      senderName: senderName?.trim(),
     );
     await accountStore.write([
       for (final a in accounts) a.id == accountId ? updated : a,
@@ -649,7 +654,7 @@ class CachedImapEngine implements MailEngine {
       throw const SendFailed('The invitation names no organiser to reply to.');
     }
     final account = accountStore.read().firstWhere((a) => a.id == accountId);
-    final me = MailAddress(email: account.emailAddress, name: account.displayName);
+    final me = MailAddress(email: account.emailAddress, name: account.senderName);
     await sendDraft(Draft(
       accountId: accountId,
       kind: ComposeKind.reply,

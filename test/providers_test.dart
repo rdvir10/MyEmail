@@ -67,6 +67,7 @@ class _SingleAccountReversedEngine implements MailEngine {
     required String accountId,
     String? displayName,
     int? colorValue,
+    String? senderName,
   }) =>
       _inner.updateAccount(
         accountId: accountId,

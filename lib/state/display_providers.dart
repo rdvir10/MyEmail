@@ -36,6 +36,9 @@ class Display extends Notifier<DisplaySettings> {
 
   void setConversations(bool on) => state = state.copyWith(conversations: on);
 
+  void setShowRecipientDetails(bool on) =>
+      state = state.copyWith(showRecipientDetails: on);
+
   void setSort(MessageSort sort) => state = state.copyWith(sort: sort);
 
   void setAlwaysShowImages(bool on) =>

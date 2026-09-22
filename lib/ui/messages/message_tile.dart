@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../domain/display_settings.dart';
+import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import 'date_format.dart';
 
@@ -149,6 +150,16 @@ class MessageTile extends StatelessWidget {
                           ),
                         ],
                       ),
+                      if (senderAddress case final address?) ...[
+                        Text(
+                          address,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 2),
                       Row(
                         children: [
@@ -217,11 +228,44 @@ class MessageTile extends StatelessWidget {
 
   bool get showsPreview => density.previewLines > 0;
 
+  /// The sender's address, where it is worth a line of its own.
+  ///
+  /// Only when there is a name to sit above it. A row whose sender is just
+  /// an address would otherwise print it twice, and a compact list has no
+  /// room to spend on that.
+  String? get senderAddress {
+    if (density == ListDensity.compact) return null;
+    final name = message.from.name?.trim() ?? '';
+    final email = message.from.email.trim();
+    if (name.isEmpty || email.isEmpty) return null;
+    if (name.toLowerCase() == email.toLowerCase()) return null;
+    return email;
+  }
+
   /// Attachment and flag, in that order, at the end of the last line.
+  ///
+  /// The attachment mark carries a size where the server gave one. It is
+  /// free over IMAP, which reports a size per part with the structure the
+  /// header fetch already asks for; Microsoft sends none with a list row,
+  /// so there the paperclip stands on its own rather than lying about it.
   List<Widget> _marks(ThemeData theme, ColorScheme scheme) => [
+        // An invitation goes first: it is the one mark that changes what the
+        // row is rather than describing what is on it.
+        if (message.isMeeting) ...[
+          const SizedBox(width: 6),
+          Icon(Icons.event, size: 14, color: scheme.primary),
+        ],
         if (message.hasAttachments) ...[
           const SizedBox(width: 6),
           Icon(Icons.attach_file, size: 14, color: scheme.onSurfaceVariant),
+          if (message.attachmentBytes > 0) ...[
+            const SizedBox(width: 2),
+            Text(
+              formatFileSize(message.attachmentBytes),
+              style: theme.textTheme.labelSmall
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ],
         ],
         if (message.isFlagged) ...[
           const SizedBox(width: 6),

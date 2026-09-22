@@ -348,7 +348,15 @@ String wrapHtmlForDisplay(
       // Tells the WebView which form controls and scrollbars to draw, so a
       // dark message does not get a light scrollbar down the side of it.
       ':root{color-scheme:${dark ? 'dark' : 'light'}}'
-      'body{margin:12px 16px;font:15px/1.45 -apple-system,Roboto,sans-serif;'
+      // No line-height and no paragraph margins of our own.
+      //
+      // Both were here, and both were added on top of spacing the sender had
+      // already decided. Outlook writes a paragraph per line with its own
+      // margins; a line-height of 1.45 over that turned a dense note into
+      // something you scroll through. The message is shown as it was
+      // written, which is the only rule that cannot be wrong for somebody.
+      'body{margin:10px 14px;font-family:-apple-system,Roboto,sans-serif;'
+      'font-size:15px;'
       'color:$fg;background:$bg;word-wrap:break-word;overflow-wrap:anywhere}'
       'a{color:${dark ? '#a8c8ff' : '#0f6cbd'}}'
       'img{max-width:100%;height:auto}'
