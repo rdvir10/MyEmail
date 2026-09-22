@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -136,7 +137,7 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
       }
       messenger
         ?..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
+        ..showSnackBar(SnackBar(duration: kBottomMessage, 
           content: Text(
             '${ids.length == 1 ? 'Message' : '${ids.length} messages'} moved to $name',
           ),
@@ -144,7 +145,7 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
     } catch (e) {
       messenger
         ?..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text('Could not move: $e')));
+        ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not move: $e')));
     }
   }
 

@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -69,7 +70,7 @@ class _SignatureEditorScreenState extends ConsumerState<SignatureEditorScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context)
           ..hideCurrentSnackBar()
-          ..showSnackBar(SnackBar(content: Text('Could not save: $e')));
+          ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not save: $e')));
       }
     } finally {
       if (mounted) setState(() => _saving = false);

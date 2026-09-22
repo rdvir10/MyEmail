@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -120,7 +121,7 @@ void _sayHidden(BuildContext context, WidgetRef ref, MailFolder folder) {
   ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
     ..showSnackBar(
-      SnackBar(
+      SnackBar(duration: kBottomMessage, 
         content: Text('${folder.displayName} hidden'),
         action: SnackBarAction(
           label: 'Undo',
@@ -193,7 +194,7 @@ Future<void> _guarded(
 void _snack(BuildContext context, String message) {
   ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
-    ..showSnackBar(SnackBar(content: Text(message)));
+    ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text(message)));
 }
 
 class _FolderActionsSheet extends StatelessWidget {

@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -181,7 +182,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (!await ref.read(windowOpenerProvider).open(MessageWindow(message))) {
       messenger?.showSnackBar(
-        const SnackBar(content: Text('Could not open a window.')),
+        const SnackBar(duration: kBottomMessage, content: Text('Could not open a window.')),
       );
     }
   }
@@ -195,7 +196,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text('Could not update: $e')));
+        ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not update: $e')));
     }
   }
 
@@ -309,7 +310,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
         );
     if (!ok) {
       messenger?.showSnackBar(
-        const SnackBar(content: Text('No calendar app to add it to.')),
+        const SnackBar(duration: kBottomMessage, content: Text('No calendar app to add it to.')),
       );
     }
   }
@@ -331,11 +332,11 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
           );
       if (!ok) {
         messenger?.showSnackBar(
-          const SnackBar(content: Text('Printing is not available here.')),
+          const SnackBar(duration: kBottomMessage, content: Text('Printing is not available here.')),
         );
       }
     } catch (e) {
-      messenger?.showSnackBar(SnackBar(content: Text('Could not print. $e')));
+      messenger?.showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not print. $e')));
     }
   }
 
@@ -345,11 +346,11 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
       final saved = await saveMessageSource(widget.message, body);
       if (!saved) return; // They changed their mind in the file picker.
       messenger?.showSnackBar(
-        const SnackBar(content: Text('Message source saved')),
+        const SnackBar(duration: kBottomMessage, content: Text('Message source saved')),
       );
     } catch (e) {
       messenger?.showSnackBar(
-        SnackBar(content: Text('Could not save the source. $e')),
+        SnackBar(duration: kBottomMessage, content: Text('Could not save the source. $e')),
       );
     }
   }
@@ -377,7 +378,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
           ref.read(trustedSendersProvider.notifier).trust(entry);
           ScaffoldMessenger.maybeOf(context)
             ?..hideCurrentSnackBar()
-            ..showSnackBar(SnackBar(
+            ..showSnackBar(SnackBar(duration: kBottomMessage, 
               content: Text('Pictures will load from ${describeTrustEntry(entry).toLowerCase()}'),
               action: SnackBarAction(
                 label: 'Undo',

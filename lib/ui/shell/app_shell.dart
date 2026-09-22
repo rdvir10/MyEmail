@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/imap/imap_mapping.dart';
 import '../../domain/mail_message.dart';
+import '../../data/notifications/notification_action_isolate.dart';
 import '../../state/message_providers.dart';
 import '../../state/message_transfer.dart';
 import '../../state/sync_providers.dart';
@@ -103,6 +104,29 @@ class _AppShellState extends ConsumerState<AppShell>
     ref.invalidate(messagesProvider);
     ref.invalidate(foldersProvider);
     _openLaunchMessage();
+    _carryOutPressedButtons();
+  }
+
+  /// Anything pressed on a notification and not yet done.
+  ///
+  /// WorkManager is what normally carries these out, but it decides when to
+  /// run and can wait minutes. Opening the app is a better moment than
+  /// most: it is exactly when somebody would notice that the message they
+  /// deleted from the shade is still sitting there.
+  ///
+  /// The queue is taken rather than read, so this and the worker cannot
+  /// both act on the same press. Afterwards the lists are re-read, because
+  /// what just happened is a delete or a reply that the screen knows
+  /// nothing about.
+  Future<void> _carryOutPressedButtons() async {
+    try {
+      final done = await drainPendingNotificationActions();
+      if (done == 0 || !mounted) return;
+      ref.invalidate(messagesProvider);
+      ref.invalidate(foldersProvider);
+    } catch (_) {
+      // The worker will find them still queued. Nothing to say here.
+    }
   }
 
   /// Entering or leaving split screen changes the window's size, and

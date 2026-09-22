@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -131,13 +132,13 @@ class AccountsScreen extends ConsumerWidget {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
-          SnackBar(content: Text('${account.emailAddress} removed')),
+          SnackBar(duration: kBottomMessage, content: Text('${account.emailAddress} removed')),
         );
     } catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text('Could not remove it: $e')));
+        ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not remove it: $e')));
     }
   }
 }

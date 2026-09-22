@@ -16,6 +16,7 @@ import '../secure_credential_store.dart';
 import '../widget/home_screen_surface.dart';
 import '../widget/mailbox_widgets.dart';
 import '../widget/widget_state_store.dart';
+import '../notifications/notification_action_isolate.dart';
 import 'background_sync.dart';
 import 'live_sync.dart';
 import 'sync_state_store.dart';
@@ -43,6 +44,14 @@ const _uniqueName = 'mailtree.new-mail.periodic';
 /// running, which is the failure that shows up as double notifications.
 const _liveTaskName = 'mailtree.live';
 const _liveUniqueName = 'mailtree.live.foreground';
+
+/// Carrying out a notification button that was pressed.
+///
+/// Its own task because it has nothing to do with checking for mail and must
+/// run whatever the sync settings say: somebody pressed Delete, and that is
+/// not something to hold until the next scheduled pass.
+const _actionsTaskName = 'mailtree.notification-actions';
+const _actionsUniqueName = 'mailtree.notification-actions.pending';
 
 /// The ongoing notification the foreground service is legally required to
 /// show. Its own channel, set to the lowest importance Android allows for a
@@ -162,15 +171,51 @@ Future<void> _startLiveWorker(SyncPrefs prefs) async {
 bool get _supported =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
+/// Ask for everything waiting in the queue to be carried out.
+///
+/// `append`, not `replace`: two presses in quick succession must both be
+/// done, and replacing the job would drop the first one's work on the floor
+/// even though its entry is still in the queue.
+Future<void> runPendingNotificationActions() async {
+  if (!_supported) return;
+  await Workmanager().initialize(backgroundCallbackDispatcher);
+  await Workmanager().registerOneOffTask(
+    _actionsUniqueName,
+    _actionsTaskName,
+    existingWorkPolicy: ExistingWorkPolicy.append,
+    constraints: Constraints(networkType: NetworkType.connected),
+    backoffPolicy: BackoffPolicy.linear,
+    backoffPolicyDelay: const Duration(seconds: 30),
+  );
+}
+
 @pragma('vm:entry-point')
 void backgroundCallbackDispatcher() {
   Workmanager().executeTask((task, inputData) async {
     return switch (task) {
       _taskName => _runOnePass(),
       _liveTaskName => _runLive(inputData),
+      _actionsTaskName => _runPendingActions(),
       _ => Future.value(true),
     };
   });
+}
+
+/// Carry out the notification buttons that are waiting.
+///
+/// True whatever happens. A false would have WorkManager try again with
+/// backoff, and the queue is already emptied by the time anything can fail
+/// — so a retry would do nothing except wake the phone up again.
+Future<bool> _runPendingActions() async {
+  DartPluginRegistrant.ensureInitialized();
+  try {
+    final done = await drainPendingNotificationActions();
+    if (done > 0) debugPrint('[myemail] carried out $done from the shade');
+  } catch (e, stack) {
+    debugPrint('[myemail] pending notification actions failed: $e');
+    debugPrint('$stack');
+  }
+  return true;
 }
 
 /// The foreground modes: one worker that stays alive and loops.

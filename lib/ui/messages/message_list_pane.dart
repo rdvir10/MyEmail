@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -557,7 +558,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       if (context.mounted) {
         ScaffoldMessenger.of(context)
           ..hideCurrentSnackBar()
-          ..showSnackBar(SnackBar(content: Text('Could not sync: $e')));
+          ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not sync: $e')));
       }
     }
   }
@@ -797,13 +798,13 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         if (context.mounted) {
           ScaffoldMessenger.of(context)
             ..hideCurrentSnackBar()
-            ..showSnackBar(SnackBar(content: Text('${step.name} applied')));
+            ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('${step.name} applied')));
         }
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(context)
             ..hideCurrentSnackBar()
-            ..showSnackBar(SnackBar(content: Text('${step.name} failed: $e')));
+            ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('${step.name} failed: $e')));
         }
       }
       return;
@@ -818,7 +819,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           ScaffoldMessenger.of(context)
             ..hideCurrentSnackBar()
             ..showSnackBar(
-              const SnackBar(content: Text('Could not open a window.')),
+              const SnackBar(duration: kBottomMessage, content: Text('Could not open a window.')),
             );
         }
       case 'reply':
@@ -958,7 +959,7 @@ class _SwipeableRow extends ConsumerWidget {
             ScaffoldMessenger.of(context)
               ..hideCurrentSnackBar()
               ..showSnackBar(
-                const SnackBar(
+                const SnackBar(duration: kBottomMessage, 
                   content: Text('This account has no Archive folder.'),
                 ),
               );

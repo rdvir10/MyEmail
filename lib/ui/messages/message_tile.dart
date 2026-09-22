@@ -128,9 +128,26 @@ class MessageTile extends StatelessWidget {
                     children: [
                       Row(
                         children: [
+                          // One line, not two. The name reads first and the
+                          // address follows it quietly; a line of its own
+                          // doubled the height of every row to say something
+                          // most rows did not need to say at all.
                           Expanded(
-                            child: Text(
-                              message.from.display,
+                            child: Text.rich(
+                              TextSpan(
+                                children: [
+                                  TextSpan(text: message.from.display),
+                                  if (senderAddress case final address?)
+                                    TextSpan(
+                                      text: '   $address',
+                                      style: theme.textTheme.labelSmall
+                                          ?.copyWith(
+                                        color: scheme.onSurfaceVariant,
+                                        fontWeight: FontWeight.normal,
+                                      ),
+                                    ),
+                                ],
+                              ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: theme.textTheme.bodyMedium?.copyWith(
@@ -150,16 +167,6 @@ class MessageTile extends StatelessWidget {
                           ),
                         ],
                       ),
-                      if (senderAddress case final address?) ...[
-                        Text(
-                          address,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: scheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
                       const SizedBox(height: 2),
                       Row(
                         children: [

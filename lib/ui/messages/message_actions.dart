@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -37,9 +38,10 @@ class MessageActions {
     List<MailMessage> messages,
   ) async {
     if (messages.isEmpty) return;
+    final to = _reporterFor(context);
     final accountId = messages.first.accountId;
     if (messages.any((m) => m.accountId != accountId)) {
-      _say(context, 'Those messages are in different accounts.');
+      _say(to, 'Those messages are in different accounts.');
       return;
     }
     final target = await showMoveToSheet(
@@ -58,6 +60,7 @@ class MessageActions {
     String toFolderId,
   ) async {
     if (messages.isEmpty) return;
+    final to = _reporterFor(context);
     final name = ref.read(folderIndexProvider)[toFolderId]?.displayName ?? '';
     final (held, elsewhere) = _split(messages);
     final moves = <MessageMove>[];
@@ -74,16 +77,14 @@ class MessageActions {
         await _afterEngineChange(elsewhere, touched: [toFolderId]);
       }
       ref.read(recentMoveTargetsProvider.notifier).record(toFolderId);
-      if (context.mounted) {
-        _say(
-          context,
-          '${_count(messages.length)} moved to $name',
-          undo: moves,
-          of: messages.length,
-        );
-      }
+      _say(
+        to,
+        '${_count(messages.length)} moved to $name',
+        undo: moves,
+        of: messages.length,
+      );
     } catch (e) {
-      if (context.mounted) _say(context, 'Could not move: $e');
+      _say(to, 'Could not move: $e');
     }
   }
 
@@ -92,6 +93,7 @@ class MessageActions {
     List<MailMessage> messages,
   ) async {
     if (messages.isEmpty) return;
+    final to = _reporterFor(context);
     final (held, elsewhere) = _split(messages);
     final moves = <MessageMove>[];
     try {
@@ -106,16 +108,14 @@ class MessageActions {
             .deleteMessages([for (final m in elsewhere) m.id]));
         await _afterEngineChange(elsewhere);
       }
-      if (context.mounted) {
-        _say(
-          context,
-          '${_count(messages.length)} deleted',
-          undo: moves,
-          of: messages.length,
-        );
-      }
+      _say(
+        to,
+        '${_count(messages.length)} deleted',
+        undo: moves,
+        of: messages.length,
+      );
     } catch (e) {
-      if (context.mounted) _say(context, 'Could not delete: $e');
+      _say(to, 'Could not delete: $e');
     }
   }
 
@@ -195,19 +195,17 @@ class MessageActions {
   /// — and a WidgetRef belonging to a widget that has gone throws the
   /// moment it is read. The container is the app's, and lasts as long.
   void _say(
-    BuildContext context,
+    _Reporter to,
     String message, {
     List<MessageMove>? undo,
     int of = 0,
   }) {
-    final messenger = ScaffoldMessenger.of(context);
+    final messenger = to.messenger;
     final offer = undo != null && canUndoAll(undo, of);
-    final container = offer
-        ? ProviderScope.containerOf(context, listen: false)
-        : null;
+    final container = offer ? to.container : null;
     messenger
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
+      ..showSnackBar(SnackBar(duration: kBottomMessage, 
         content: Text(message),
         action: offer
             ? SnackBarAction(
@@ -217,6 +215,26 @@ class MessageActions {
             : null,
       ));
   }
+
+  /// Everything saying something needs, taken while the widget is still
+  /// there to take it from.
+  ///
+  /// A swipe is why this exists. The row that was swiped is dismissed
+  /// before the delete finishes, so by the time there is anything to
+  /// report its `BuildContext` is gone — and the report was guarded by
+  /// `context.mounted`, so it simply never appeared. No message, and no
+  /// Undo with it, on the one gesture people use most.
+  _Reporter _reporterFor(BuildContext context) => _Reporter(
+        messenger: ScaffoldMessenger.of(context),
+        container: ProviderScope.containerOf(context, listen: false),
+      );
+}
+
+class _Reporter {
+  const _Reporter({required this.messenger, required this.container});
+
+  final ScaffoldMessengerState messenger;
+  final ProviderContainer container;
 }
 
 /// Put back what a move or a delete took away.
@@ -249,7 +267,7 @@ Future<void> undoMoves(
     final total = moves.fold(0, (int n, m) => n + m.count);
     messenger
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
+      ..showSnackBar(SnackBar(duration: kBottomMessage, 
         content: Text('${total == 1 ? 'Message' : '$total messages'} put back'),
       ));
   } catch (e) {
@@ -257,6 +275,6 @@ Future<void> undoMoves(
     // Saying so is more use than failing silently.
     messenger
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text('Could not undo: $e')));
+      ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not undo: $e')));
   }
 }

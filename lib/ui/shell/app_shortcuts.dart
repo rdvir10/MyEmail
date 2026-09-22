@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -132,7 +133,7 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
           if (mounted) {
             ScaffoldMessenger.of(context)
               ..hideCurrentSnackBar()
-              ..showSnackBar(SnackBar(content: Text('Could not sync: $e')));
+              ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not sync: $e')));
           }
         }
       case AppCommand.help:

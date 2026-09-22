@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -189,7 +190,7 @@ class _RibbonState extends ConsumerState<Ribbon> {
       if (mounted) {
         ScaffoldMessenger.of(context)
           ..hideCurrentSnackBar()
-          ..showSnackBar(SnackBar(content: Text('Could not sync: $e')));
+          ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not sync: $e')));
       }
     } finally {
       if (mounted) setState(() => _syncing = false);
@@ -261,13 +262,13 @@ class _QuickStepsButton extends ConsumerWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context)
           ..hideCurrentSnackBar()
-          ..showSnackBar(SnackBar(content: Text('${step.name} applied')));
+          ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('${step.name} applied')));
       }
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context)
           ..hideCurrentSnackBar()
-          ..showSnackBar(SnackBar(content: Text('Could not apply it: $e')));
+          ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not apply it: $e')));
       }
     }
   }

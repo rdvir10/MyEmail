@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -37,13 +38,13 @@ class _InviteCardState extends ConsumerState<InviteCard> {
           .record(widget.message.id, response);
       messenger
         ?..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
+        ..showSnackBar(SnackBar(duration: kBottomMessage, 
           content: Text('${response.word}. The organiser has been told.'),
         ));
     } catch (e) {
       messenger
         ?..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text('Could not reply: $e')));
+        ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not reply: $e')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -62,7 +63,7 @@ class _InviteCardState extends ConsumerState<InviteCard> {
         );
     if (!ok) {
       messenger?.showSnackBar(
-        const SnackBar(content: Text('No calendar app to add it to.')),
+        const SnackBar(duration: kBottomMessage, content: Text('No calendar app to add it to.')),
       );
     }
   }

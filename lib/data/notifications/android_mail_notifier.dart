@@ -8,6 +8,7 @@ import '../../domain/mail_folder.dart';
 import 'mail_notifier.dart';
 import 'notification_actions.dart';
 import 'notification_action_isolate.dart';
+import 'pending_actions.dart';
 
 /// The real notifier, on top of flutter_local_notifications.
 ///
@@ -70,7 +71,14 @@ class AndroidMailNotifier implements MailNotifier {
         }
         final handler = onAction;
         unawaited(handler == null
-            ? handleNotificationActionInIsolate(response)
+            // No app-side handler: write the press down and let the worker
+            // carry it out, the same way a press with no app at all is
+            // handled.
+            ? queueNotificationAction(PendingAction(
+                actionId: response.actionId!,
+                messageId: response.payload ?? '',
+                typed: response.input,
+              ))
             : handler(response));
       },
       onDidReceiveBackgroundNotificationResponse: notificationActionEntryPoint,

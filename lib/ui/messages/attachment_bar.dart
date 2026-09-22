@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -276,5 +277,5 @@ class AttachmentActions {
 
   void _say(BuildContext context, String message) =>
       ScaffoldMessenger.maybeOf(context)
-          ?.showSnackBar(SnackBar(content: Text(message)));
+          ?.showSnackBar(SnackBar(duration: kBottomMessage, content: Text(message)));
 }

@@ -1,3 +1,4 @@
+import './bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -34,7 +35,7 @@ class ProblemView extends ConsumerWidget {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(
+      ..showSnackBar(const SnackBar(duration: kBottomMessage, 
         content: Text('Problem details copied. Paste them anywhere.'),
       ));
   }
@@ -85,7 +86,7 @@ class ProblemView extends ConsumerWidget {
     if (!opened && context.mounted) {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(
+        ..showSnackBar(const SnackBar(duration: kBottomMessage, 
           content: Text('Could not open a browser. Use Copy details instead.'),
         ));
     }

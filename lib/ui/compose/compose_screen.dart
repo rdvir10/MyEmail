@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -115,7 +116,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
 
   void _say(String message) => ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
-    ..showSnackBar(SnackBar(content: Text(message)));
+    ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text(message)));
 
   Future<void> _addAttachment() async {
     // file_picker 13: pickFiles is static, returns the files directly, and
@@ -135,7 +136,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
           ScaffoldMessenger.of(context)
             ..hideCurrentSnackBar()
             ..showSnackBar(
-                SnackBar(content: Text('Could not read ${f.name}: $e')));
+                SnackBar(duration: kBottomMessage, content: Text('Could not read ${f.name}: $e')));
         }
       }
     }
@@ -229,7 +230,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
       Navigator.of(context).pop(true);
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('Message sent')));
+        ..showSnackBar(const SnackBar(duration: kBottomMessage, content: Text('Message sent')));
     } catch (e) {
       // One catch rather than four. Every failure the send path throws on
       // purpose already carries a sentence written for a person, and what the
@@ -314,7 +315,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
     } else {
       messenger
         ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(
+        ..showSnackBar(const SnackBar(duration: kBottomMessage, 
           content: Text('Could not open a window. Still here.'),
         ));
     }
@@ -332,7 +333,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
       Navigator.of(context).pop(false);
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('Saved to Drafts')));
+        ..showSnackBar(const SnackBar(duration: kBottomMessage, content: Text('Saved to Drafts')));
     } catch (e) {
       // Staying put is the right failure: popping now would lose the message
       // that could not be saved, which is the thing being protected against.

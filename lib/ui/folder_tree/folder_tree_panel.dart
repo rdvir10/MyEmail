@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -245,7 +246,7 @@ class FolderTreePanel extends ConsumerWidget {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text('Could not move folder: $e')));
+        ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not move folder: $e')));
     }
   }
 }

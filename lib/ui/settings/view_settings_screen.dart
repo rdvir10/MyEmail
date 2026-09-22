@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -96,7 +97,7 @@ class ViewSettingsScreen extends ConsumerWidget {
                     ScaffoldMessenger.of(context)
                       ..hideCurrentSnackBar()
                       ..showSnackBar(
-                        const SnackBar(
+                        const SnackBar(duration: kBottomMessage, 
                           content: Text(
                             'To stop this, turn off Contacts for MyEmail in '
                             'Android Settings.',

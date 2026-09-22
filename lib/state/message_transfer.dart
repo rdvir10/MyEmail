@@ -1,3 +1,4 @@
+import '../ui/common/bottom_message.dart';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -62,11 +63,11 @@ Future<void> copyMessage(
         );
     messenger
       ?..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('Message copied')));
+      ..showSnackBar(const SnackBar(duration: kBottomMessage, content: Text('Message copied')));
   } catch (e) {
     messenger
       ?..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text('Could not copy: $e')));
+      ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not copy: $e')));
   }
 }
 

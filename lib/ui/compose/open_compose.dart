@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -34,7 +35,7 @@ Future<void> openCompose(
   if (resolvedAccount == null) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('Add an account first.')));
+      ..showSnackBar(const SnackBar(duration: kBottomMessage, content: Text('Add an account first.')));
     return;
   }
 

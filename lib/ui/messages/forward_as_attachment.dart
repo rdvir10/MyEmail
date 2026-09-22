@@ -1,3 +1,4 @@
+import '../common/bottom_message.dart';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -42,7 +43,7 @@ Future<void> forwardAsAttachment(
   } catch (e) {
     messenger
       ?..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text('Could not fetch the messages: $e')));
+      ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not fetch the messages: $e')));
     return;
   }
   if (!context.mounted) return;
