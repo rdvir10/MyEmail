@@ -190,6 +190,40 @@ void main() {
       );
       expect(stored!.accessToken, 'access-2');
     });
+
+    test('and the probe is handed the new token, not the one held in memory',
+        () async {
+      // A Microsoft transport asks the token repository, not the store, and
+      // the repository still held the old token. The probe tested the very
+      // sign-in being replaced, and a good new one was rolled back.
+      late CachedImapEngine probing;
+      final presented = <String>[];
+      probing = CachedImapEngine(
+        accountStore: accounts,
+        credentialStore: secrets,
+        cache: MemoryCacheStore(),
+        transportFactory: (account, _) => _TokenPresentingTransport(
+          present: () async {
+            presented.add(await probing.oauthTokens.accessToken(account.id));
+          },
+        )..folder('INBOX', role: FolderRole.inbox),
+      );
+      final account = await probing.addOAuthAccount(
+        displayName: 'Personal',
+        emailAddress: 'someone@example.com',
+        provider: MailProvider.outlook,
+        token: token(),
+      );
+      // In use, so held in memory.
+      expect(await probing.oauthTokens.accessToken(account.id), 'access-1');
+
+      await probing.updateOAuthToken(
+        accountId: account.id,
+        token: token(access: 'access-2'),
+      );
+
+      expect(presented.last, 'access-2');
+    });
   });
 
   group('folders', () {
@@ -284,6 +318,20 @@ void main() {
       expect(CachedImapEngine.imapHostFor(MailProvider.gmail), 'imap.gmail.com');
     });
   });
+}
+
+/// A transport that gets its token the way the Graph one does, from the
+/// engine's token repository, on every request.
+class _TokenPresentingTransport extends FakeImapTransport {
+  _TokenPresentingTransport({required this.present});
+
+  final Future<void> Function() present;
+
+  @override
+  Future<List<RemoteFolder>> listFolders() async {
+    await present();
+    return super.listFolders();
+  }
 }
 
 /// A transport that refuses to work unless the account's secret is already in

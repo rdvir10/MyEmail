@@ -110,18 +110,35 @@ class OAuthTokenRepository {
       // Nothing was overwritten on the way here, so the winner's token is
       // sitting in the store already. Re-read before concluding anything: if
       // it has moved on, this was the race and not a real sign-out.
-      final latest = OAuthToken.fromStoredJson(
-        await credentialStore.readSecret(accountId),
-      );
-      if (latest != null &&
-          latest.refreshToken != stored.refreshToken &&
-          latest.isUsableAt(_clock())) {
-        _stored[accountId] = latest;
-        return latest.accessToken;
-      }
+      final newer = await _newerSignIn(accountId, stored);
+      if (newer != null) return newer;
       _stored.remove(accountId);
       rethrow;
+    } on SignInNeedsConsent {
+      // What "Sign in again" is for. The new sign-in is written to the store,
+      // but a repository in another isolate — the live worker, which runs for
+      // an hour — still holds the old one, and refreshing that keeps getting
+      // this answer. Only an expiry used to send it back to the store, so the
+      // account went on failing there as if the sign-in had not happened.
+      final newer = await _newerSignIn(accountId, stored);
+      if (newer != null) return newer;
+      rethrow;
     }
+  }
+
+  /// A token from a sign-in newer than [held], if the store has one: its
+  /// access token if still good, otherwise a refresh of it. Null when the
+  /// store holds the same sign-in as [held], or none.
+  Future<String?> _newerSignIn(String accountId, OAuthToken held) async {
+    final latest = OAuthToken.fromStoredJson(
+      await credentialStore.readSecret(accountId),
+    );
+    if (latest == null || latest.refreshToken == held.refreshToken) {
+      return null;
+    }
+    _stored[accountId] = latest;
+    if (latest.isUsableAt(_clock())) return latest.accessToken;
+    return (await _refreshOnce(accountId, latest, null)).accessToken;
   }
 
   /// Save the token a fresh sign-in produced.

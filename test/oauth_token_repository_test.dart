@@ -335,6 +335,56 @@ void main() {
         throwsA(isA<SignInExpired>()),
       );
     });
+
+    test('a sign-in redone elsewhere is found when the old one is refused',
+        () async {
+      // The live worker holds its own copy for an hour. After "Sign in
+      // again" in the app, refreshing the old copy is still refused for
+      // consent, and only an expiry used to send it back to the store.
+      await storeToken(access: 'access-0', expiresIn: const Duration(minutes: 4));
+      var consentRefused = true;
+      final worker = repositoryWith(handler: (request) async {
+        final spent = Uri.splitQueryString(request.body)['refresh_token'];
+        if (spent == 'refresh-0' && consentRefused) {
+          return http.Response(
+            jsonEncode({
+              'error': 'invalid_grant',
+              'error_description': 'AADSTS70000: The user needs to consent.',
+            }),
+            400,
+            headers: const {'content-type': 'application/json'},
+          );
+        }
+        return http.Response(
+          jsonEncode({
+            'access_token': 'access-after-$spent',
+            'refresh_token': 'refresh-after-$spent',
+            'expires_in': 3599,
+          }),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      });
+      // The worker has read, and holds, the old sign-in.
+      await expectLater(
+        worker.accessToken('acct-1'),
+        throwsA(isA<SignInNeedsConsent>()),
+      );
+
+      // The person signs in again in the app: a new token in the store,
+      // already a few minutes old.
+      await secrets.writeSecret(
+        'acct-1',
+        OAuthToken(
+          accessToken: 'access-new',
+          refreshToken: 'refresh-new',
+          expiresAt: now.add(const Duration(minutes: 2)),
+        ).toStoredJson(),
+      );
+
+      expect(await worker.accessToken('acct-1'), 'access-after-refresh-new',
+          reason: 'the new sign-in is found and refreshed, not refused again');
+    });
   });
 }
 

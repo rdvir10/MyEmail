@@ -336,6 +336,11 @@ class CachedImapEngine implements MailEngine {
     // the new sign-in as stale, which is exactly what it was meant to fix.
     final previous = await credentialStore.readSecret(accountId);
     await credentialStore.writeSecret(accountId, storedSecret);
+    // And let go of the copy held in memory, which is what the probe would
+    // otherwise be handed: the old token, the very one being replaced. Its
+    // refresh failed again, the probe failed, and the good new sign-in was
+    // rolled back and reported as failed.
+    oauthTokens.forget(accountId);
 
     final probe = _transportFactory(account, credentials);
     try {
