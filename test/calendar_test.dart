@@ -180,6 +180,43 @@ void main() {
       expect(e.end!.hour, 11);
     });
 
+    testWidgets('a time in a zone that cannot be worked out is not offered',
+        (tester) async {
+      // Added, it would go in at that hour of the phone's own clock.
+      final c = ProviderContainer(overrides: [
+        mailEngineProvider.overrideWithValue(engine),
+        deviceCalendarProvider.overrideWithValue(calendar),
+      ]);
+      addTearDown(c.dispose);
+      final message = MailMessage(
+        id: 'acct-personal:INBOX#1',
+        accountId: 'acct-personal',
+        folderId: 'acct-personal:INBOX',
+        uid: 1,
+        subject: 'Invitation: Far away',
+        from: const MailAddress(email: 'dana@example.com'),
+        to: const [MailAddress(email: 'ron@example.com')],
+        date: DateTime(2026, 9, 20),
+        preview: '',
+      );
+      final invite = CalendarInvite.parse(
+        'BEGIN:VCALENDAR\nMETHOD:REQUEST\nBEGIN:VEVENT\nUID:z\n'
+        'SUMMARY:Far away\nDTSTART;TZID=Somewhere:20260921T130000\n'
+        'END:VEVENT\nEND:VCALENDAR',
+      )!;
+
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: MaterialApp(
+          home: Scaffold(body: InviteCard(message: message, invite: invite)),
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Accept'), findsOneWidget);
+      expect(find.text('Add to calendar'), findsNothing);
+    });
+
     testWidgets('any message can become an event from the menu',
         (tester) async {
       final c = await pump(tester);

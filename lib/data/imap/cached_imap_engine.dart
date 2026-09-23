@@ -762,7 +762,14 @@ class CachedImapEngine implements MailEngine {
     final (folderId, uid) = splitMessageId(messageId);
     final (accountId, path) = splitFolderId(folderId);
     final t = await _transport(accountId);
-    if (await t.respondToInvite(path, uid, response, iCalUid: invite.uid)) {
+    // Not by UID for one occurrence of a series: the UID is the series',
+    // and the event it finds is the whole series.
+    if (await t.respondToInvite(
+      path,
+      uid,
+      response,
+      iCalUid: invite.recurrenceId == null ? invite.uid : null,
+    )) {
       return;
     }
 

@@ -73,6 +73,30 @@ void main() {
     expect(message.decodeTextHtmlPart(), isNot(contains('Personal')));
   });
 
+  test('one occurrence of a series is not looked up by the series UID',
+      () async {
+    // On Microsoft the UID finds the calendar's event for the whole series,
+    // and answering that declined every occurrence.
+    final account = await personal();
+    final occurrence = CalendarInvite.parse(
+      'BEGIN:VCALENDAR\nMETHOD:REQUEST\nBEGIN:VEVENT\nUID:series\n'
+      'RECURRENCE-ID:20260929T170000Z\nSUMMARY:Weekly\n'
+      'DTSTART:20260929T170000Z\nORGANIZER:mailto:dana@example.com\n'
+      'END:VEVENT\nEND:VCALENDAR',
+    )!;
+
+    await engine.respondToInvite(
+        '${account.id}:INBOX#1', occurrence, InviteResponse.declined);
+    await engine.respondToInvite(
+        '${account.id}:INBOX#1', invite(), InviteResponse.declined);
+
+    final asked = server.calls.where((c) => c.startsWith('RESPOND')).toList();
+    expect(asked.first, isNot(contains('uid=')));
+    expect(asked.last, contains('uid=abc'), reason: 'a single event still is');
+    expect(sent.first.renderMessage(),
+        contains('RECURRENCE-ID:20260929T170000Z'));
+  });
+
   test('an invitation that names no organiser says so and sends nothing',
       () async {
     final account = await personal();

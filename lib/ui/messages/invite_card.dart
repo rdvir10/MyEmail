@@ -139,7 +139,9 @@ class _InviteCardState extends ConsumerState<InviteCard> {
                   child: const Text('Decline'),
                 ),
               ],
-              if (calendar && !i.isCancellation)
+              // Not for a time in a zone that could not be worked out: it
+              // would go in at the right hour of the wrong day's clock.
+              if (calendar && !i.isCancellation && i.timeIsKnown)
                 TextButton.icon(
                   onPressed: _addToCalendar,
                   icon: const Icon(Icons.calendar_month_outlined, size: 18),

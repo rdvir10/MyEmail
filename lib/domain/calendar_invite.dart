@@ -22,6 +22,8 @@ class CalendarInvite {
     this.attendees = const [],
     this.sequence = 0,
     this.dtStamp,
+    this.recurrenceId,
+    this.startAsWritten,
   });
 
   /// REQUEST for an invitation, CANCEL for one withdrawn, REPLY for an
@@ -30,9 +32,14 @@ class CalendarInvite {
   final String uid;
   final String summary;
 
-  /// Local time on the device when the invitation named a time zone the
-  /// device does not know; UTC when it said Z; a date at midnight when it
-  /// is a whole day.
+  /// UTC when the invitation said Z, or named a time zone it defines (every
+  /// calendar that sends invitations defines the zones it names); a date at
+  /// midnight when it is a whole day. Otherwise the time as written, with
+  /// [timeZone] saying whose it is, and [timeIsKnown] false.
+  ///
+  /// A named zone used to be read as the device's own, so a 13:00 meeting
+  /// in New York went into a calendar in Israel at 13:00, seven hours early,
+  /// and the answer carried the same wrong time.
   final DateTime start;
   final DateTime? end;
   final bool isAllDay;
@@ -47,21 +54,38 @@ class CalendarInvite {
   final int sequence;
   final DateTime? dtStamp;
 
+  /// Which occurrence of a series this is about, as the line a reply has to
+  /// carry, or null for a single event or the whole series. Without it, a
+  /// decline of one moved occurrence declined every one.
+  final String? recurrenceId;
+
+  /// The DTSTART line as the sender wrote it, for a time whose zone could
+  /// not be worked out: a reply echoes that rather than guessing.
+  final String? startAsWritten;
+
+  /// Whether [start] is a real instant (or a whole day), rather than a time
+  /// in a zone that could not be worked out.
+  bool get timeIsKnown => isAllDay || start.isUtc || timeZone == null;
+
   bool get isRequest => method == 'REQUEST';
   bool get isCancellation => method == 'CANCEL';
 
   /// Parse the part, or null if there is no VEVENT in it.
   static CalendarInvite? parse(String ics) {
-    final lines = _unfold(ics);
+    final lines = [for (final l in _unfold(ics)) ?_Line.parse(l)];
+    final zones = _Zone.all(lines);
     var method = 'PUBLISH';
     var inEvent = false;
+    // How deep inside the event: its own properties are at 0. A reminder
+    // (VALARM) nested in it has a DESCRIPTION of its own, "REMINDER" on
+    // every Exchange and Teams invitation, which was taken for the event's.
+    var depth = 0;
     var seen = false;
     String? uid;
     String? summary;
-    DateTime? start;
-    DateTime? end;
-    var allDay = false;
-    String? tz;
+    _Line? startLine;
+    _Line? endLine;
+    _Line? recurrenceLine;
     String? location;
     String? description;
     MailAddress? organizer;
@@ -70,18 +94,9 @@ class CalendarInvite {
     DateTime? stamp;
 
     for (final line in lines) {
-      final colon = _valueStart(line);
-      if (colon < 0) continue;
-      final head = line.substring(0, colon);
-      final value = line.substring(colon + 1);
-      final parts = head.split(';');
-      final name = parts.first.toUpperCase();
-      final params = <String, String>{
-        for (final p in parts.skip(1))
-          if (p.contains('='))
-            p.substring(0, p.indexOf('=')).toUpperCase():
-                p.substring(p.indexOf('=') + 1).replaceAll('"', ''),
-      };
+      final name = line.name;
+      final value = line.value;
+      final params = line.params;
 
       if (!inEvent) {
         if (name == 'METHOD') method = value.trim().toUpperCase();
@@ -92,22 +107,30 @@ class CalendarInvite {
         }
         continue;
       }
-      if (name == 'END' && value.trim().toUpperCase() == 'VEVENT') {
-        inEvent = false;
+      if (name == 'BEGIN') {
+        depth++;
         continue;
       }
+      if (name == 'END') {
+        if (depth > 0) {
+          depth--;
+        } else if (value.trim().toUpperCase() == 'VEVENT') {
+          inEvent = false;
+        }
+        continue;
+      }
+      if (depth > 0) continue;
       switch (name) {
         case 'UID':
           uid = value.trim();
         case 'SUMMARY':
           summary = _unescape(value);
         case 'DTSTART':
-          final (at, wholeDay) = _date(value, params);
-          start = at;
-          allDay = wholeDay;
-          tz ??= params['TZID'];
+          startLine = line;
         case 'DTEND':
-          end = _date(value, params).$1;
+          endLine = line;
+        case 'RECURRENCE-ID':
+          recurrenceLine = line;
         case 'LOCATION':
           location = _unescape(value);
         case 'DESCRIPTION':
@@ -120,16 +143,19 @@ class CalendarInvite {
         case 'SEQUENCE':
           sequence = int.tryParse(value.trim()) ?? 0;
         case 'DTSTAMP':
-          stamp = _date(value, params).$1;
+          stamp = _date(value, params, zones).$1;
       }
     }
-    if (!seen || start == null) return null;
+    if (!seen || startLine == null) return null;
+    final (start, allDay) = _date(startLine.value, startLine.params, zones);
+    final tz = startLine.params['TZID'];
+    final known = allDay || start.isUtc || tz == null;
     return CalendarInvite(
       method: method,
       uid: uid ?? '',
       summary: summary ?? '(No title)',
       start: start,
-      end: end,
+      end: endLine == null ? null : _date(endLine.value, endLine.params, zones).$1,
       isAllDay: allDay,
       timeZone: tz,
       location: location,
@@ -138,7 +164,227 @@ class CalendarInvite {
       attendees: attendees,
       sequence: sequence,
       dtStamp: stamp,
+      recurrenceId: recurrenceLine == null
+          ? null
+          : _asReplyLine(recurrenceLine, zones),
+      startAsWritten: known ? null : startLine.raw,
     );
+  }
+}
+
+/// One content line, split into its name, parameters and value.
+class _Line {
+  _Line(this.raw, this.name, this.params, this.value);
+
+  final String raw;
+  final String name;
+  final Map<String, String> params;
+  final String value;
+
+  static _Line? parse(String raw) {
+    final colon = _valueStart(raw);
+    if (colon < 0) return null;
+    final parts = raw.substring(0, colon).split(';');
+    return _Line(
+      raw,
+      parts.first.toUpperCase(),
+      {
+        for (final p in parts.skip(1))
+          if (p.contains('='))
+            p.substring(0, p.indexOf('=')).toUpperCase():
+                p.substring(p.indexOf('=') + 1).replaceAll('"', ''),
+      },
+      raw.substring(colon + 1),
+    );
+  }
+}
+
+/// A date-time line as a reply should carry it: in UTC where the zone was
+/// worked out, which needs no VTIMEZONE beside it; as written otherwise.
+String _asReplyLine(_Line line, Map<String, _Zone> zones) {
+  final (at, wholeDay) = _date(line.value, line.params, zones);
+  if (wholeDay) return '${line.name};VALUE=DATE:${_dateOnly(at)}';
+  if (at.isUtc) return '${line.name}:${_stamp(at)}';
+  return line.raw;
+}
+
+/// A VTIMEZONE: the offsets a named zone keeps, and when it changes them.
+///
+/// Every calendar that sends invitations defines, beside the event, each
+/// zone the event names. Exchange names them the Windows way ("Eastern
+/// Standard Time"), which nothing on a phone knows, so the definition is
+/// what is read. The rules in them are yearly: a month and the nth or last
+/// weekday of it.
+class _Zone {
+  _Zone(this.observances);
+
+  final List<_Observance> observances;
+
+  static Map<String, _Zone> all(List<_Line> lines) {
+    final zones = <String, _Zone>{};
+    String? id;
+    List<_Observance>? observances;
+    _Observance? current;
+    for (final line in lines) {
+      final value = line.value.trim().toUpperCase();
+      if (line.name == 'BEGIN' && value == 'VTIMEZONE') {
+        id = null;
+        observances = [];
+      } else if (observances == null) {
+        continue;
+      } else if (line.name == 'END' && value == 'VTIMEZONE') {
+        if (id != null) zones[id] = _Zone(observances);
+        observances = null;
+      } else if (line.name == 'BEGIN' &&
+          (value == 'STANDARD' || value == 'DAYLIGHT')) {
+        current = _Observance();
+      } else if (line.name == 'END' &&
+          (value == 'STANDARD' || value == 'DAYLIGHT')) {
+        if (current != null && current.isComplete) observances.add(current);
+        current = null;
+      } else if (line.name == 'TZID' && current == null) {
+        id = line.value.trim();
+      } else if (current != null) {
+        current.read(line);
+      }
+    }
+    return zones;
+  }
+
+  /// The instant a wall-clock time in this zone is, or null if the zone's
+  /// rules are not ones this reads.
+  DateTime? instantOf(DateTime local) {
+    _Observance? inForce;
+    DateTime? since;
+    for (final o in observances) {
+      final onset = o.lastOnsetAtOrBefore(local);
+      if (onset == null) continue;
+      if (since == null || onset.isAfter(since)) {
+        since = onset;
+        inForce = o;
+      }
+    }
+    final offset = inForce?.offsetTo;
+    if (offset == null) return null;
+    return DateTime.utc(local.year, local.month, local.day, local.hour,
+            local.minute, local.second)
+        .subtract(offset);
+  }
+}
+
+/// A STANDARD or DAYLIGHT part of a zone: the offset from its onset on, and
+/// the rule for when that onset comes round again.
+class _Observance {
+  DateTime? start;
+  Duration? offsetTo;
+  int? month;
+  int? ordinal;
+  int? weekday;
+  int? monthDay;
+  DateTime? until;
+  bool unreadable = false;
+  final List<DateTime> extra = [];
+
+  bool get isComplete => start != null && offsetTo != null && !unreadable;
+
+  void read(_Line line) {
+    switch (line.name) {
+      case 'DTSTART':
+        start = _wallClock(line.value.trim());
+      case 'TZOFFSETTO':
+        offsetTo = _offset(line.value.trim());
+      case 'RDATE':
+        for (final v in line.value.split(',')) {
+          final at = _wallClock(v.trim());
+          if (at != null) extra.add(at);
+        }
+      case 'RRULE':
+        final rule = {
+          for (final part in line.value.split(';'))
+            if (part.contains('='))
+              part.substring(0, part.indexOf('=')).toUpperCase():
+                  part.substring(part.indexOf('=') + 1).toUpperCase(),
+        };
+        if (rule['FREQ'] != 'YEARLY') {
+          unreadable = true;
+          return;
+        }
+        month = int.tryParse(rule['BYMONTH'] ?? '');
+        monthDay = int.tryParse(rule['BYMONTHDAY'] ?? '');
+        final byDay = RegExp(r'^([+-]?\d)?(MO|TU|WE|TH|FR|SA|SU)$')
+            .firstMatch(rule['BYDAY'] ?? '');
+        if (byDay != null) {
+          ordinal = int.tryParse(byDay[1] ?? '1');
+          weekday = const ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU']
+                  .indexOf(byDay[2]!) +
+              1;
+        }
+        final untilText = rule['UNTIL'];
+        if (untilText != null) until = _wallClock(untilText);
+        if (month == null || (weekday == null && monthDay == null)) {
+          unreadable = true;
+        }
+    }
+  }
+
+  /// When this last took effect at or before [local], wall clock to wall
+  /// clock; null if not yet.
+  DateTime? lastOnsetAtOrBefore(DateTime local) {
+    final first = start;
+    if (first == null || first.isAfter(local)) return null;
+    DateTime? best;
+    void consider(DateTime at) {
+      if (at.isAfter(local) || at.isBefore(first)) return;
+      if (until != null && at.isAfter(until!)) return;
+      if (best == null || at.isAfter(best!)) best = at;
+    }
+
+    if (month == null) {
+      consider(first);
+    } else {
+      for (final year in [local.year, local.year - 1]) {
+        final day = _dayIn(year);
+        if (day == null) continue;
+        consider(DateTime(year, month!, day, first.hour, first.minute,
+            first.second));
+      }
+    }
+    extra.forEach(consider);
+    return best;
+  }
+
+  int? _dayIn(int year) {
+    if (monthDay != null) return monthDay;
+    final n = ordinal ?? 1;
+    if (n > 0) {
+      final firstOfMonth = DateTime(year, month!);
+      final shift = (weekday! - firstOfMonth.weekday + 7) % 7;
+      final day = 1 + shift + (n - 1) * 7;
+      return day <= DateTime(year, month! + 1, 0).day ? day : null;
+    }
+    final last = DateTime(year, month! + 1, 0);
+    final shift = (last.weekday - weekday! + 7) % 7;
+    final day = last.day - shift - (-n - 1) * 7;
+    return day >= 1 ? day : null;
+  }
+
+  static DateTime? _wallClock(String v) {
+    final m = RegExp(r'^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?')
+        .firstMatch(v);
+    if (m == null) return null;
+    return DateTime(int.parse(m[1]!), int.parse(m[2]!), int.parse(m[3]!),
+        int.parse(m[4]!), int.parse(m[5]!), int.parse(m[6] ?? '0'));
+  }
+
+  static Duration? _offset(String v) {
+    final m = RegExp(r'^([+-])(\d{2})(\d{2})(\d{2})?$').firstMatch(v);
+    if (m == null) return null;
+    final size = Duration(
+      hours: int.parse(m[2]!),
+      minutes: int.parse(m[3]!),
+      seconds: int.parse(m[4] ?? '0'),
+    );
+    return m[1] == '-' ? -size : size;
   }
 }
 
@@ -182,9 +428,14 @@ String iMipReply(
     'DTSTAMP:$stamp',
     if (organizer != null) 'ORGANIZER:mailto:${organizer.email}',
     'ATTENDEE$cn;PARTSTAT=${response.partStat}:mailto:${attendee.email}',
+    // The occurrence answered, when it is one of a series. Left out, the
+    // organiser's calendar applied the answer to every occurrence.
+    ?invite.recurrenceId,
     'SUMMARY:${_escape(invite.summary)}',
     if (invite.isAllDay)
       'DTSTART;VALUE=DATE:${_dateOnly(invite.start)}'
+    else if (invite.startAsWritten != null)
+      invite.startAsWritten!
     else
       'DTSTART:${_stamp(invite.start.toUtc())}',
     'SEQUENCE:${invite.sequence}',
@@ -224,7 +475,11 @@ int _valueStart(String line) {
   return -1;
 }
 
-(DateTime, bool) _date(String value, Map<String, String> params) {
+(DateTime, bool) _date(
+  String value,
+  Map<String, String> params, [
+  Map<String, _Zone> zones = const {},
+]) {
   final v = value.trim();
   if (params['VALUE'] == 'DATE' || (v.length == 8 && !v.contains('T'))) {
     return (
@@ -243,7 +498,9 @@ int _valueStart(String line) {
   final mi = int.parse(v.substring(11, 13));
   final s = v.length >= 15 ? int.parse(v.substring(13, 15)) : 0;
   if (v.endsWith('Z')) return (DateTime.utc(y, mo, d, h, mi, s), false);
-  return (DateTime(y, mo, d, h, mi, s), false);
+  final local = DateTime(y, mo, d, h, mi, s);
+  final zone = zones[params['TZID']];
+  return (zone?.instantOf(local) ?? local, false);
 }
 
 MailAddress? _address(String value, Map<String, String> params) {
