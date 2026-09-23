@@ -162,6 +162,53 @@ void main() {
       engine.gate!.complete();
     });
 
+    // The listing behind the tree started before the change and finishes
+    // after it. Taken as the latest word, it put the old tree back: the
+    // folder under its old name, or a deleted one back and failing.
+    group('a listing already on its way cannot undo', () {
+      Future<(ProviderContainer, _StoredFoldersEngine, Completer<void>)>
+          launch() async {
+        final engine = _StoredFoldersEngine()..gate = Completer<void>();
+        final c = containerFor(engine);
+        c.listen(foldersProvider, (_, _) {});
+        await c.read(foldersProvider.future);
+        final held = engine.gate!;
+        engine.gate = null; // only the listing from the launch is held
+        return (c, engine, held);
+      }
+
+      List<String> paths(ProviderContainer c) => [
+            for (final list in c.read(foldersProvider).value!.values)
+              for (final f in list) f.path,
+          ];
+
+      test('a rename', () async {
+        final (c, _, held) = await launch();
+
+        await c
+            .read(foldersProvider.notifier)
+            .rename('acct-personal:Finance', 'Money');
+        held.complete();
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        expect(paths(c), contains('Money'));
+        expect(paths(c), isNot(contains('Finance')));
+      });
+
+      test('a delete', () async {
+        final (c, _, held) = await launch();
+
+        await c
+            .read(foldersProvider.notifier)
+            .delete('acct-personal:Finance/Banking');
+        held.complete();
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        expect(paths(c), isNot(contains('Finance/Banking')));
+        expect(paths(c), contains('Finance'));
+      });
+    });
+
     test('with nothing stored it waits for the server', () async {
       final engine = _StoredFoldersEngine()
         ..gate = Completer<void>()
@@ -272,10 +319,14 @@ class _StoredFoldersEngine extends SampleMailEngine {
   Future<List<MailFolder>> cachedFolders(String accountId) async =>
       hasStored ? super.loadFolders(accountId) : const [];
 
+  /// The tree as it stood when the listing was asked for, handed over when
+  /// the gate opens: a slow server answers with what it saw back then.
   @override
   Future<List<MailFolder>> loadFolders(String accountId) async {
-    await gate?.future;
-    return super.loadFolders(accountId);
+    final held = gate;
+    final seen = await super.loadFolders(accountId);
+    await held?.future;
+    return seen;
   }
 }
 

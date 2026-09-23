@@ -150,7 +150,9 @@ class Accounts extends AsyncNotifier<List<Account>> {
     } else {
       throw ArgumentError('signInAgain needs either a password or a token');
     }
-    ref.invalidate(foldersProvider);
+    // The tree is the caller's to refresh: it watches the accounts, so this
+    // notifier cannot invalidate it (Riverpod refuses the circle, in a
+    // debug build by throwing after the new sign-in was already stored).
   }
 
   Future<void> remove(String accountId) async {

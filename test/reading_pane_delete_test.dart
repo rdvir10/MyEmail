@@ -82,6 +82,36 @@ void main() {
       expect(inList(c, id), isFalse);
     });
 
+    testWidgets('Undo still works once the screen has closed',
+        (tester) async {
+      // The bar outlives the screen that raised it. Its Undo read that
+      // screen's ref, gone by then, and on the phone in 2.28.0 the message
+      // stayed deleted with nothing said.
+      final (c, id) = await openFirst(tester);
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+      final gone = c
+          .read(messagesProvider(folder))
+          .value!
+          .firstWhere((m) => m.id == id);
+
+      await tester.tap(inPane(find.byTooltip('Delete')));
+      await tester.pumpAndSettle();
+      expect(find.byType(MessageScreen), findsNothing);
+      expect(inList(c, id), isFalse);
+
+      await tester.tap(find.text('Undo'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Message put back'), findsOneWidget);
+      // By what it is: put back, it may have a new id.
+      expect(
+        c.read(messagesProvider(folder)).value!.where(
+              (m) => m.subject == gone.subject && m.date == gone.date,
+            ),
+        hasLength(1),
+      );
+    });
+
     testWidgets('the flag moved into the three-dot menu', (tester) async {
       final (c, id) = await openFirst(tester);
       final folder = c.read(effectiveSelectedFolderIdProvider)!;

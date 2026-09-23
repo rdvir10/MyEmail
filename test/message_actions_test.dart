@@ -226,12 +226,18 @@ void main() {
       expect(after.firstWhere((m) => m.id == target.id).isRead, isFalse);
     });
 
+    // Both lists already built, as they are once each has been looked at.
+    // Read for the first time after the change, the other list was fresh
+    // whether or not anything told it to be.
     test('a change made through the unified inbox reaches the real folder',
         () async {
       final c = container();
       await c.read(foldersProvider.future);
       final unified = await c.read(messagesProvider(kUnifiedInboxId).future);
       final target = unified.firstWhere((m) => !m.isFlagged);
+      c.listen(messagesProvider(target.folderId), (_, _) {});
+      final before = await c.read(messagesProvider(target.folderId).future);
+      expect(before.firstWhere((m) => m.id == target.id).isFlagged, isFalse);
 
       await c
           .read(messagesProvider(kUnifiedInboxId).notifier)
@@ -239,6 +245,23 @@ void main() {
 
       final real = await c.read(messagesProvider(target.folderId).future);
       expect(real.firstWhere((m) => m.id == target.id).isFlagged, isTrue);
+    });
+
+    test('a message deleted in its folder leaves the unified inbox', () async {
+      final c = container();
+      await c.read(foldersProvider.future);
+      c.listen(messagesProvider(kUnifiedInboxId), (_, _) {});
+      final unified = await c.read(messagesProvider(kUnifiedInboxId).future);
+      final target = unified.first;
+      final real = await c.read(messagesProvider(target.folderId).future);
+      expect(real.any((m) => m.id == target.id), isTrue);
+
+      await c.read(messagesProvider(target.folderId).notifier).delete([
+        target.id,
+      ]);
+
+      final after = await c.read(messagesProvider(kUnifiedInboxId).future);
+      expect(after.any((m) => m.id == target.id), isFalse);
     });
 
     test('a no-op change does not touch the engine', () async {

@@ -93,7 +93,21 @@ void main() {
       expect(saved.notify, isTrue,
           reason: 'turning sync back on should not need the switch set again');
       expect(scheduler.last?.syncs, isFalse);
-      expect(notifier.batches, isEmpty, reason: 'and what was showing is gone');
+      // Counted rather than looked at: nothing had been posted, so an empty
+      // shade said nothing about whether it was cleared.
+      expect(notifier.cancelAllCalls, 1,
+          reason: 'and what was showing is gone');
+    });
+
+    test('moving between two modes that sync leaves the shade alone',
+        () async {
+      final c = container();
+      await c.read(syncSettingsProvider.future);
+      await c.read(syncSettingsProvider.notifier).setMode(SyncMode.periodic);
+
+      await c.read(syncSettingsProvider.notifier).setMode(SyncMode.realtime);
+
+      expect(notifier.cancelAllCalls, 0);
     });
 
     test('the occasional mode asks, since it is to announce what it finds',
@@ -304,7 +318,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect((await state.readPrefs()).notify, isFalse);
-      expect(notifier.batches, isEmpty);
+      expect(notifier.cancelAllCalls, 1);
     });
 
     testWidgets('turning an account off mutes it', (tester) async {

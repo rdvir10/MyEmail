@@ -200,6 +200,75 @@ void main() {
   });
 
   group('in the list', () {
+    // The row is kept before the selection moves on. Taken after the move,
+    // it was the next message that went, not the one on screen.
+    for (final key in [LogicalKeyboardKey.delete, LogicalKeyboardKey.backspace]) {
+      testWidgets('${key.keyLabel} deletes the selected message, not the next',
+          (tester) async {
+        final c = await pump(tester);
+        final ids = listIds(c);
+        for (var i = 0; i < 3; i++) {
+          await press(tester, LogicalKeyboardKey.arrowDown);
+        }
+        expect(selected(c), ids[3]);
+
+        await press(tester, key);
+
+        expect(listIds(c), isNot(contains(ids[3])));
+        expect(listIds(c), hasLength(ids.length - 1));
+        expect(selected(c), ids[4]);
+      });
+    }
+
+    testWidgets('Delete on the last row takes that one', (tester) async {
+      final c = await pump(tester);
+      final ids = listIds(c);
+      await press(tester, LogicalKeyboardKey.end);
+
+      await press(tester, LogicalKeyboardKey.delete);
+
+      expect(listIds(c), isNot(contains(ids.last)));
+      // More of the folder may have loaded behind it, so not a count.
+      expect(listIds(c), contains(ids[ids.length - 2]));
+    });
+
+    testWidgets('holding Delete goes on deleting, one message a repeat',
+        (tester) async {
+      // As in Outlook. Pinned, because the shortcuts elsewhere ignore a held
+      // key on purpose, and this one does not.
+      final c = await pump(tester);
+      final ids = listIds(c);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.delete);
+      await tester.pump();
+      await tester.sendKeyRepeatEvent(LogicalKeyboardKey.delete);
+      await tester.pump();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.delete);
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pumpAndSettle();
+
+      expect(listIds(c), isNot(contains(ids[0])));
+      expect(listIds(c), isNot(contains(ids[1])));
+      expect(listIds(c), hasLength(ids.length - 2));
+      expect(selected(c), ids[2]);
+    });
+
+    testWidgets('Ctrl+D from the open message deletes that one',
+        (tester) async {
+      final c = await pump(tester);
+      final ids = listIds(c);
+      await press(tester, LogicalKeyboardKey.arrowDown);
+      final open = selected(c)!;
+      expect(open, ids[1]);
+      panes(c).reading.requestFocus();
+      await tester.pumpAndSettle();
+
+      await press(tester, LogicalKeyboardKey.keyD, control: true);
+
+      expect(listIds(c), isNot(contains(open)));
+      expect(listIds(c), hasLength(ids.length - 1));
+    });
+
     testWidgets('End and Home go to the last and first message',
         (tester) async {
       final c = await pump(tester);

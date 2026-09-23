@@ -456,13 +456,17 @@ void main() {
 
     testWidgets('restoring asks before it overwrites anything',
         (tester) async {
+      // A file with something in it: an empty one proved nothing, since
+      // restoring it and cancelling it leave the same empty settings.
+      await seedSettings();
       final files = _FakeBackupFiles()
         ..toPick = (await service.export()).toJsonString();
       final target = MemoryUiStateStore();
+      final targetAccounts = MemoryAccountStore();
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
-            accountStoreProvider.overrideWithValue(MemoryAccountStore()),
+            accountStoreProvider.overrideWithValue(targetAccounts),
             uiStateStoreProvider.overrideWithValue(target),
             backupFilesProvider.overrideWithValue(files),
           ],
@@ -478,8 +482,13 @@ void main() {
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
 
-      expect(target.readIds(UiStateKeys.favorites), isEmpty,
+      expect(targetAccounts.read(), isEmpty,
           reason: 'cancelling must write nothing at all');
+      for (final key in BackupService.exported.keys) {
+        expect(target.readIds(key), isEmpty, reason: key);
+        expect(target.readOrder(key), isEmpty, reason: key);
+        expect(target.readString(key), isNull, reason: key);
+      }
     });
 
     testWidgets('after a restore the app shows what was restored',
@@ -491,9 +500,10 @@ void main() {
         ..toPick = (await service.export()).toJsonString();
       final target = MemoryUiStateStore();
       await target.writeIds(UiStateKeys.favorites, {'x:Old'});
+      final targetAccounts = MemoryAccountStore();
       final c = ProviderContainer(
         overrides: [
-          accountStoreProvider.overrideWithValue(MemoryAccountStore()),
+          accountStoreProvider.overrideWithValue(targetAccounts),
           uiStateStoreProvider.overrideWithValue(target),
           backupFilesProvider.overrideWithValue(files),
         ],
@@ -516,6 +526,182 @@ void main() {
       final restored = target.readIds(UiStateKeys.favorites);
       expect(restored, isNot({'x:Old'}));
       expect(c.read(favoriteFoldersProvider), restored);
+      expect(targetAccounts.read(), hasLength(2));
+      expect(find.textContaining('2 accounts added'), findsOneWidget);
+    });
+
+    group('with sign-in details', () {
+      const passphrase = 'correct horse battery staple';
+
+      /// A vault with a cheap iteration count: the real 120,000 is there to
+      /// slow an attacker down, and would only slow the suite down here.
+      BackupService serviceOver(
+        MemoryAccountStore store,
+        MemoryUiStateStore ui,
+        MemoryCredentialStore creds,
+      ) =>
+          BackupService(
+            accountStore: store,
+            uiState: ui,
+            credentialStore: creds,
+            vault: const SecretVault(iterations: 1000),
+          );
+
+      Future<void> pumpOver(
+        WidgetTester tester, {
+        required MemoryAccountStore store,
+        required MemoryUiStateStore ui,
+        required MemoryCredentialStore creds,
+        required _FakeBackupFiles files,
+      }) async {
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              accountStoreProvider.overrideWithValue(store),
+              uiStateStoreProvider.overrideWithValue(ui),
+              backupServiceProvider
+                  .overrideWithValue(serviceOver(store, ui, creds)),
+              backupFilesProvider.overrideWithValue(files),
+            ],
+            child: const MaterialApp(home: BackupScreen()),
+          ),
+        );
+      }
+
+      Finder field(String label) => find.widgetWithText(TextField, label);
+
+      /// The vault's work runs outside the test's clock: real time is let
+      /// pass, a little at a time, with a frame after each.
+      Future<void> settleVault(WidgetTester tester) async {
+        for (var i = 0; i < 20; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 50)),
+          );
+          await tester.pump();
+        }
+        await tester.pumpAndSettle();
+      }
+      FilledButton save(WidgetTester tester) =>
+          tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Save'));
+
+      Future<String> sealedFile() async {
+        final creds = MemoryCredentialStore();
+        await creds.writeSecret('acct-aaa', 'abcdabcdabcdabcd');
+        await seedSettings();
+        return (await serviceOver(accounts, uiState, creds)
+                .export(passphrase: passphrase))
+            .toJsonString();
+      }
+
+      testWidgets('Save waits for a passphrase long enough and typed twice',
+          (tester) async {
+        // Sealed under a typo, the file opens for nobody.
+        final creds = MemoryCredentialStore();
+        await creds.writeSecret('acct-aaa', 'abcdabcdabcdabcd');
+        final files = _FakeBackupFiles();
+        await pumpOver(tester,
+            store: accounts, ui: uiState, creds: creds, files: files);
+        await tester.tap(find.text('Save to a file'));
+        await tester.pumpAndSettle();
+
+        expect(save(tester).onPressed, isNull, reason: 'nothing typed');
+        await tester.enterText(field('Passphrase'), 'too short');
+        await tester.enterText(field('Type it again'), 'too short');
+        await tester.pump();
+        expect(save(tester).onPressed, isNull, reason: 'too short');
+        await tester.enterText(field('Passphrase'), passphrase);
+        await tester.enterText(field('Type it again'), '${passphrase}x');
+        await tester.pump();
+        expect(save(tester).onPressed, isNull, reason: 'not the same twice');
+        await tester.enterText(field('Type it again'), passphrase);
+        await tester.pump();
+        expect(save(tester).onPressed, isNotNull);
+
+        await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+        await settleVault(tester);
+
+        expect(files.saved, isNotNull);
+        expect(SettingsBackup.parse(files.saved!).hasSecrets, isTrue);
+        expect(files.saved, isNot(contains('abcdabcdabcdabcd')));
+      });
+
+      testWidgets('a sealed file is restored signed in, after a wrong try',
+          (tester) async {
+        final files = _FakeBackupFiles()..toPick = await sealedFile();
+        final store = MemoryAccountStore();
+        final creds = MemoryCredentialStore();
+        await pumpOver(tester,
+            store: store, ui: MemoryUiStateStore(), creds: creds, files: files);
+
+        await tester.tap(find.text('Restore from a file'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining('carries sign-in details'), findsOneWidget,
+            reason: 'not "never put in the file", of a file that has them');
+        await tester.tap(find.widgetWithText(FilledButton, 'Restore'));
+        await tester.pumpAndSettle();
+
+        await tester.enterText(field('Passphrase'), 'wrong passphrase');
+        await tester.pump();
+        await tester.tap(find.widgetWithText(FilledButton, 'Restore'));
+        await settleVault(tester);
+        expect(find.text('That passphrase did not open the file. Try again.'),
+            findsOneWidget);
+        expect(store.read(), isEmpty);
+
+        await tester.enterText(field('Passphrase'), passphrase);
+        await tester.pump();
+        await tester.tap(find.widgetWithText(FilledButton, 'Restore'));
+        await settleVault(tester);
+
+        expect(store.read(), hasLength(2));
+        expect(await tester.runAsync(() => creds.readSecret('acct-aaa')),
+            'abcdabcdabcdabcd');
+        expect(find.textContaining('1 signed in'), findsOneWidget);
+      });
+
+      testWidgets('cancelling at the passphrase writes nothing',
+          (tester) async {
+        final files = _FakeBackupFiles()..toPick = await sealedFile();
+        final store = MemoryAccountStore();
+        final ui = MemoryUiStateStore();
+        await pumpOver(tester,
+            store: store,
+            ui: ui,
+            creds: MemoryCredentialStore(),
+            files: files);
+
+        await tester.tap(find.text('Restore from a file'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Restore'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Cancel'));
+        await tester.pumpAndSettle();
+
+        expect(store.read(), isEmpty);
+        expect(ui.readIds(UiStateKeys.favorites), isEmpty);
+        expect(find.textContaining('restored'), findsNothing);
+      });
+    });
+
+    testWidgets('a file without them says new accounts will need signing in',
+        (tester) async {
+      final files = _FakeBackupFiles()
+        ..toPick = (await service.export()).toJsonString();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            accountStoreProvider.overrideWithValue(MemoryAccountStore()),
+            uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+            backupFilesProvider.overrideWithValue(files),
+          ],
+          child: const MaterialApp(home: BackupScreen()),
+        ),
+      );
+
+      await tester.tap(find.text('Restore from a file'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('no sign-in details in it'), findsOneWidget);
     });
 
     testWidgets('a file that is not ours is reported, not swallowed',

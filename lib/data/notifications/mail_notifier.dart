@@ -120,8 +120,14 @@ class FakeMailNotifier implements MailNotifier {
     batches.add((account: account, folder: folder, notifications: notifications));
   }
 
+  /// How many times everything showing was taken down.
+  int cancelAllCalls = 0;
+
   @override
-  Future<void> cancelAll() async => batches.clear();
+  Future<void> cancelAll() async {
+    cancelAllCalls++;
+    batches.clear();
+  }
 
   /// What a tapped notification carried. Set by a test; read once.
   String? launchPayload;

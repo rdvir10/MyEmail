@@ -233,6 +233,53 @@ void main() {
       expect(subjects.where((s) => s == subject), isEmpty);
     });
 
+    // The row that raised the bar is gone by the time Undo is tapped, and so
+    // is anything it held.
+    testWidgets('Undo after a swipe puts the row back', (tester) async {
+      wide(tester);
+      await tester.pumpWidget(app());
+      await tester.pumpAndSettle();
+      final first = tester.widget<MessageTile>(find.byType(MessageTile).first);
+      final subject = first.message.subject;
+
+      await tester.drag(find.byType(MessageTile).first, const Offset(-500, 0));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Undo'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Message put back'), findsOneWidget);
+      final subjects = tester
+          .widgetList<MessageTile>(find.byType(MessageTile))
+          .map((t) => t.message.subject);
+      expect(subjects.where((s) => s == subject), hasLength(1));
+    });
+
+    testWidgets('Undo after a move puts it back', (tester) async {
+      wide(tester);
+      await tester.pumpWidget(app());
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Inbox').first);
+      await tester.pumpAndSettle();
+      final moved = tester
+          .widget<MessageTile>(find.byType(MessageTile).first)
+          .message;
+
+      await tester.drag(find.byType(MessageTile).first, const Offset(500, 0));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ListTile, 'Travel').first);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('moved to Travel'), findsOneWidget);
+      await tester.tap(find.text('Undo'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Message put back'), findsOneWidget);
+      final back = tester
+          .widgetList<MessageTile>(find.byType(MessageTile))
+          .map((t) => t.message)
+          .where((m) => m.subject == moved.subject && m.date == moved.date);
+      expect(back, hasLength(1));
+    });
+
     testWidgets('swiping right opens Move to, and cancelling keeps the row',
         (tester) async {
       wide(tester);

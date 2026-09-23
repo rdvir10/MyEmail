@@ -72,14 +72,21 @@ void main() {
   testWidgets('landing does not mark the message read', (tester) async {
     // Walking past a folder in the tree is not reading what is in it. Only a
     // message the person chose counts as opened.
+    //
+    // It compared the row with itself, read twice with nothing in between,
+    // so it could not fail. The sample's newest message is unread: landing
+    // on it has to leave it so, in the list and on the server.
     final c = await pump(tester);
-    final first = tester.widget<MessageTile>(find.byType(MessageTile).first);
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    final landed = c.read(selectedMessageIdProvider)!;
+    final folder = c.read(effectiveSelectedFolderIdProvider)!;
 
-    expect(c.read(selectedMessageIdProvider), first.message.id);
-    expect(
-      tester.widget<MessageTile>(find.byType(MessageTile).first).message.isRead,
-      first.message.isRead,
-    );
+    final row = tester.widget<MessageTile>(find.byType(MessageTile).first);
+    expect(row.message.id, landed);
+    expect(row.message.isRead, isFalse);
+    final listed = c.read(messagesProvider(folder)).value!;
+    expect(listed.firstWhere((m) => m.id == landed).isRead, isFalse);
   });
 
   testWidgets('coming back lands where the folder was left', (tester) async {

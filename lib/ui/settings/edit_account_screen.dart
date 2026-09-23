@@ -79,6 +79,8 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
             appPassword: appPassword,
             token: token,
           );
+      // The tree lists this account again, so its "Sign in again" goes.
+      ref.invalidate(foldersProvider);
       if (!mounted) return;
       _password.clear();
       setState(() => _signInResult = 'Signed in. Nothing cached was lost.');

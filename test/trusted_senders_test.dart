@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/print/message_printer.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/trusted_senders.dart';
+import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/state/message_providers.dart';
+import 'package:myemail/state/print_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/trusted_senders.dart';
 import 'package:myemail/ui/messages/reading_pane.dart';
@@ -100,13 +103,31 @@ void main() {
       isRead: true,
     );
 
-    Future<ProviderContainer> pump(WidgetTester tester, {Widget? home}) async {
+    // The blocked page keeps the address, renamed, so finding the address
+    // alone could not tell a loaded picture from a blocked one.
+    void expectLoaded(String page) {
+      expect(page, contains('src="https://shop.example/banner.png"'));
+      expect(page, isNot(contains('data-blocked-src="https')));
+    }
+
+    void expectBlocked(String page) {
+      expect(page, contains('data-blocked-src="https://shop.example/'));
+      expect(page, isNot(contains(' src="https://')));
+      expect(page, isNot(contains('<img src="https://')));
+    }
+
+    Future<ProviderContainer> pump(
+      WidgetTester tester, {
+      Widget? home,
+      FakeMessagePrinter? printer,
+    }) async {
       tester.view.physicalSize = const Size(1000, 1200);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       final c = ProviderContainer(overrides: [
         uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        if (printer != null) messagePrinterProvider.overrideWithValue(printer),
         messageBodyProvider(message.id).overrideWith(
           (ref) async => const MailBody(
             text: 'Sale',
@@ -137,7 +158,54 @@ void main() {
       expect(c.read(trustedSendersProvider), {'@shop.example'});
       expect(find.text('Images are blocked'), findsNothing,
           reason: 'trusting loads them at once, as proof it took');
-      expect(platform.loadedHtml.last, contains('https://shop.example/banner.png'));
+      expectLoaded(platform.loadedHtml.last);
+    });
+
+    testWidgets('an untrusted sender reaches the page with pictures blocked',
+        (tester) async {
+      await pump(tester);
+
+      expectBlocked(platform.loadedHtml.last);
+    });
+
+    testWidgets('Show images loads them, for this message', (tester) async {
+      final c = await pump(tester);
+
+      await tester.tap(find.text('Show images'));
+      await tester.pumpAndSettle();
+
+      expectLoaded(platform.loadedHtml.last);
+      expect(c.read(trustedSendersProvider), isEmpty);
+    });
+
+    testWidgets('the setting to always show them loads them', (tester) async {
+      final c = await pump(tester);
+      c.read(displayProvider.notifier).setAlwaysShowImages(true);
+      await tester.pumpAndSettle();
+
+      expectLoaded(platform.loadedHtml.last);
+    });
+
+    testWidgets('printing leaves out what the pane leaves out',
+        (tester) async {
+      // The page printed is built apart from the one on screen, and a
+      // picture fetched for the paper tells the sender just the same.
+      final printer = FakeMessagePrinter();
+      final c = await pump(tester, printer: printer);
+      Future<void> print() async {
+        await tester.tap(find.byTooltip('More'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Print or save as PDF…'));
+        await tester.pumpAndSettle();
+      }
+
+      await print();
+      expectBlocked(printer.printed.last.html);
+
+      c.read(trustedSendersProvider.notifier).trust('offers@shop.example');
+      await tester.pumpAndSettle();
+      await print();
+      expectLoaded(printer.printed.last.html);
     });
 
     testWidgets('a trusted sender is never asked about again', (tester) async {
@@ -156,7 +224,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Images are blocked'), findsNothing);
-      expect(platform.loadedHtml.last, contains('https://shop.example/banner.png'));
+      expectLoaded(platform.loadedHtml.last);
     });
 
     testWidgets('trusting can be undone from the message itself',

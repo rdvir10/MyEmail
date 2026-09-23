@@ -344,39 +344,53 @@ void main() {
       expect(state.watermarks.values.single, 1);
     });
 
-    test('an unreachable account does not silence the other one', () async {
-      final good = FakeImapTransport()..folder('INBOX', role: FolderRole.inbox);
-      final bad = _BrokenTransport();
-      engine = CachedImapEngine(
-        accountStore: MemoryAccountStore(),
-        credentialStore: MemoryCredentialStore(),
-        cache: cache,
-        transportFactory: (account, _) =>
-            account.emailAddress.startsWith('me@') ? good : bad,
-      );
-      await addAccount();
-      // The broken one is added with a transport that only fails later, so the
-      // sign-in probe still passes.
-      bad.failing = false;
-      await engine.addAccount(
-        displayName: 'Work',
-        emailAddress: 'work@example.com',
-        provider: MailProvider.gmail,
-        secret: 'abcdabcdabcdabcd',
-      );
-      bad.failing = true;
-
-      await sync().run();
-      good.folder('INBOX').deliver(
-            subject: 'Still arrives',
-            date: _now.subtract(const Duration(minutes: 5)),
+    // In both places: listed second, the healthy account had already been
+    // counted when the broken one threw, so a failure that ended the whole
+    // pass went unnoticed.
+    for (final brokenFirst in [true, false]) {
+      test(
+          'an unreachable account does not silence the other one, '
+          'listed ${brokenFirst ? 'first' : 'second'}', () async {
+        final good = FakeImapTransport()
+          ..folder('INBOX', role: FolderRole.inbox);
+        final bad = _BrokenTransport();
+        engine = CachedImapEngine(
+          accountStore: MemoryAccountStore(),
+          credentialStore: MemoryCredentialStore(),
+          cache: cache,
+          transportFactory: (account, _) =>
+              account.emailAddress.startsWith('me@') ? good : bad,
+        );
+        // The broken one is added with a transport that only fails later, so
+        // the sign-in probe still passes.
+        Future<void> addBroken() async {
+          bad.failing = false;
+          await engine.addAccount(
+            displayName: 'Work',
+            emailAddress: 'work@example.com',
+            provider: MailProvider.gmail,
+            secret: 'abcdabcdabcdabcd',
           );
-      final report = await sync().run();
+          bad.failing = true;
+        }
 
-      expect(report.posted, 1);
-      expect(report.failures, hasLength(1));
-      expect(report.failures.single, contains('work@example.com'));
-    });
+        if (brokenFirst) await addBroken();
+        await addAccount();
+        if (!brokenFirst) await addBroken();
+
+        await sync().run();
+        good.folder('INBOX').deliver(
+              subject: 'Still arrives',
+              date: _now.subtract(const Duration(minutes: 5)),
+            );
+        final report = await sync().run();
+
+        expect(report.posted, 1);
+        expect(report.foldersScanned, greaterThan(0));
+        expect(report.failures, hasLength(1));
+        expect(report.failures.single, contains('work@example.com'));
+      });
+    }
   });
 
   group('MailNotification', () {

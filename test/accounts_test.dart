@@ -23,6 +23,12 @@ class _EmptyEngine implements MailEngine {
   final _inner = SampleMailEngine();
   final List<Account> _accounts = [];
 
+  /// Answer every sign-in as a server with the wrong password would.
+  bool refuse = false;
+
+  /// Every secret it was handed, as it arrived.
+  final secrets = <String>[];
+
   @override
   Future<List<Account>> loadAccounts() async => List.of(_accounts);
 
@@ -33,6 +39,12 @@ class _EmptyEngine implements MailEngine {
     required MailProvider provider,
     required String secret,
   }) async {
+    secrets.add(secret);
+    if (refuse) {
+      throw const AuthenticationFailed(
+        'Gmail did not accept that app password.',
+      );
+    }
     final a = await _inner.addAccount(
       displayName: displayName,
       emailAddress: emailAddress,
@@ -305,9 +317,10 @@ void main() {
       expect(find.text('Search folders'), findsNothing);
     });
 
-    testWidgets('a refused password shows the server message inline',
+    testWidgets('a blank password is caught before the server is asked',
         (tester) async {
-      await tester.pumpWidget(app(_EmptyEngine()));
+      final engine = _EmptyEngine();
+      await tester.pumpWidget(app(engine));
       await tester.pumpAndSettle();
 
       await tester.enterText(
@@ -317,13 +330,16 @@ void main() {
       await tester.tap(find.text('Sign in'));
       await tester.pumpAndSettle();
 
-      // Local validation catches whitespace-only before the engine does.
       expect(find.text('Enter the app password.'), findsOneWidget);
+      expect(engine.secrets, isEmpty);
     });
 
-    testWidgets('signing in adds the account and lands in the tree',
+    testWidgets('a refused password shows the server message inline',
         (tester) async {
-      await tester.pumpWidget(app(_EmptyEngine()));
+      // The blank one above never reached the server, so what the form does
+      // when the server says no was never seen.
+      final engine = _EmptyEngine()..refuse = true;
+      await tester.pumpWidget(app(engine));
       await tester.pumpAndSettle();
 
       await tester.enterText(
@@ -333,6 +349,27 @@ void main() {
       await tester.tap(find.text('Sign in'));
       await tester.pumpAndSettle();
 
+      expect(find.byType(AddAccountScreen), findsOneWidget);
+      expect(find.textContaining('did not accept that app password'),
+          findsWidgets);
+      expect(await engine.loadAccounts(), isEmpty);
+    });
+
+    testWidgets('signing in adds the account and lands in the tree',
+        (tester) async {
+      final engine = _EmptyEngine();
+      await tester.pumpWidget(app(engine));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'Gmail address'), 'me@example.com');
+      await tester.enterText(find.widgetWithText(TextFormField, 'App password'),
+          'abcd efgh ijkl mnop');
+      await tester.tap(find.text('Sign in'));
+      await tester.pumpAndSettle();
+
+      // Google shows it in groups of four; the groups are not the password.
+      expect(engine.secrets, ['abcdefghijklmnop']);
       expect(find.text('Welcome to MyEmail'), findsNothing);
       expect(find.byType(AddAccountScreen), findsNothing);
 

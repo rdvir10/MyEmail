@@ -104,11 +104,17 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('Restore these settings?'),
+          // Which of the two files this is. It said sign-ins are never in
+          // the file even of one saved with them, just before asking for the
+          // passphrase that unlocks them.
           content: Text(
             'The file holds ${backup.summary}.\n\n'
-            'This replaces the settings on this device. Accounts already set '
-            'up here keep their sign-in; any new ones will need signing in, '
-            'because sign-in details are never put in the file.',
+            'This replaces the settings on this device. '
+            '${backup.hasSecrets ? 'The file carries sign-in details too, '
+                'locked with a passphrase: give it next and the accounts '
+                'arrive signed in.' : 'Accounts already set up here keep '
+                'their sign-in; any new ones will need signing in, because '
+                'this file has no sign-in details in it.'}',
           ),
           actions: [
             TextButton(

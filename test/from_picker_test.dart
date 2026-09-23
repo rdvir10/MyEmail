@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/draft.dart';
+import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
 
@@ -12,10 +13,10 @@ import 'fakes/fake_webview.dart';
 void main() {
   setUpAll(FakeWebViewPlatform.install);
 
-  Draft draft(String accountId) => Draft(
+  Draft draft(String accountId, {List<MailAddress> to = const []}) => Draft(
         accountId: accountId,
         kind: ComposeKind.reply,
-        to: const [],
+        to: to,
         cc: const [],
         bcc: const [],
         subject: 'Re: numbers',
@@ -23,8 +24,12 @@ void main() {
         attachments: const [],
       );
 
-  Future<ProviderContainer> open(WidgetTester tester, SampleMailEngine engine,
-      String accountId) async {
+  Future<ProviderContainer> open(
+    WidgetTester tester,
+    SampleMailEngine engine,
+    String accountId, {
+    List<MailAddress> to = const [],
+  }) async {
     tester.view.physicalSize = const Size(900, 1200);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -37,7 +42,7 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: c,
-        child: MaterialApp(home: ComposeScreen(draft: draft(accountId))),
+        child: MaterialApp(home: ComposeScreen(draft: draft(accountId, to: to))),
       ),
     );
     await tester.pumpAndSettle();
@@ -57,9 +62,16 @@ void main() {
   });
 
   testWidgets('choosing another account sends from it', (tester) async {
-    final engine = SampleMailEngine();
+    // Sent, not only shown: the picker could say one account while the
+    // message went from the one the original arrived at.
+    final engine = _Recording();
     final accounts = (await tester.runAsync(engine.loadAccounts))!;
-    await open(tester, engine, accounts.first.id);
+    await open(
+      tester,
+      engine,
+      accounts.first.id,
+      to: const [MailAddress(email: 'dana@example.com')],
+    );
 
     await tester.tap(picker);
     await tester.pumpAndSettle();
@@ -68,6 +80,11 @@ void main() {
 
     final chosen = tester.widget<DropdownButton<String>>(picker).value;
     expect(chosen, accounts[1].id);
+
+    await tester.tap(find.byTooltip('Send'));
+    await tester.pumpAndSettle();
+
+    expect(engine.sent.single.accountId, accounts[1].id);
   });
 
   testWidgets('with one account there is nothing to choose', (tester) async {
@@ -86,4 +103,12 @@ void main() {
     expect(find.textContaining('From ${accounts.first.emailAddress}'),
         findsOneWidget);
   });
+}
+
+/// The sample engine, keeping what it was asked to send.
+class _Recording extends SampleMailEngine {
+  final sent = <Draft>[];
+
+  @override
+  Future<void> sendDraft(Draft draft) async => sent.add(draft);
 }

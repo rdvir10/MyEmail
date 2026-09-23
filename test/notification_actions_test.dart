@@ -214,6 +214,19 @@ void main() {
 
       expect(outcome, ActionOutcome.savedAsDraft);
       expect(outcome.message, contains('Drafts'));
+      // Where it says: the words are nowhere else, the notification they
+      // were typed into having gone.
+      expect(server.calls.where((c) => c.startsWith('APPEND')), [
+        r'APPEND [Gmail]/Drafts \Draft',
+      ]);
+      final draft = em.MimeMessage.parseFromText(server.appended.single);
+      expect(draft.decodeSubject(), 'Re: Thursday');
+      expect(
+        '${draft.decodeTextPlainPart()}${draft.decodeTextHtmlPart()}',
+        contains('Ten works.'),
+      );
+      expect(server.folder('INBOX').ordered.single.isRead, isFalse,
+          reason: 'not answered, so not read either');
     });
 
     test('a message already gone says so rather than failing quietly',
