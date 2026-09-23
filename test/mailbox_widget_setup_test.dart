@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/ui_state_store.dart';
@@ -9,6 +10,7 @@ import 'package:myemail/state/folder_tree.dart' show kUnifiedInboxId;
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/widget_providers.dart';
 import 'package:myemail/ui/shell/mailbox_widget_keeper.dart';
+import 'package:myemail/ui/settings/home_widgets_screen.dart';
 import 'package:myemail/ui/widgets/mailbox_widget_setup.dart';
 
 /// Placing a widget: being asked whose mail, which folder, and how it should
@@ -54,6 +56,44 @@ void main() {
     await tester.pumpAndSettle();
     return c;
   }
+
+  testWidgets('changed from Settings, Done comes back to the list',
+      (tester) async {
+    // The way back was a test that was always true, so nothing closed and
+    // the screen sat on "Saving…".
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    store.mailboxes['7'] = const WidgetMailbox(
+      folderId: kUnifiedInboxId,
+      label: 'On the kitchen tablet',
+    );
+    // Android's answer to which widgets are on the home screen.
+    const channel = MethodChannel('mailtree/widget');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (_) async => <String>['7']);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container(),
+        child: const MaterialApp(home: HomeWidgetsScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('On the kitchen tablet'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('All inboxes'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(MailboxWidgetSetup), findsNothing);
+    expect(find.text('Saving…'), findsNothing);
+    expect(find.byType(HomeWidgetsScreen), findsOneWidget);
+  });
 
   group('step one: whose mail', () {
     testWidgets('lists the accounts, not their folders', (tester) async {

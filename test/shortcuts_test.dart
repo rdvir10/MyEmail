@@ -7,9 +7,11 @@ import 'package:myemail/domain/message_sort.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/conversations.dart';
 import 'package:myemail/state/display_providers.dart';
+import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/state/folder_tree.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/search_providers.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
 import 'package:myemail/ui/messages/conversation_tile.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
@@ -305,6 +307,84 @@ void main() {
           reason: 'the row after the thread, not the top of the list');
     });
 
+    testWidgets('closing a thread leaves the selection where it was',
+        (tester) async {
+      // Folded away, the selected message was taken for gone, and the pane
+      // jumped to the first message in the folder.
+      final c = await pump(tester);
+      c.read(displayProvider.notifier).setConversations(true);
+      await tester.pumpAndSettle();
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+      final all = c.read(messagesProvider(folder)).value!;
+      final rows = visibleMessages(all,
+              conversations: true,
+              expandedIds: const {},
+              sort: MessageSort.dateNewest)
+          .map((m) => m.id)
+          .toList();
+      final thread = groupIntoConversations(all).firstWhere(
+          (t) => t.isThread && rows.indexOf(t.newest.id) > 0);
+      c.read(selectedMessageIdProvider.notifier).select(thread.newest.id);
+      await tester.pumpAndSettle();
+      await press(tester, LogicalKeyboardKey.arrowRight);
+      await press(tester, LogicalKeyboardKey.arrowDown);
+      final inside = selected(c);
+      expect(inside, isNot(thread.newest.id));
+
+      await press(tester, LogicalKeyboardKey.arrowLeft);
+
+      expect(selected(c), inside);
+    });
+
+    testWidgets('in search results the arrows walk the hits', (tester) async {
+      // They walked the folder's list behind the results, so Down from a
+      // hit in another folder opened a message not in the results at all.
+      final c = await pump(tester);
+      final open = c.read(effectiveSelectedFolderIdProvider)!;
+      await tester.enterText(find.byType(TextField).last, 'the');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+      final hits = sortMessages(
+        c.read(searchResultsProvider).value!,
+        c.read(displayProvider).sort,
+      );
+      final i = hits.indexWhere((m) => m.folderId != open);
+      expect(i, inInclusiveRange(0, hits.length - 2));
+      c.read(selectedMessageIdProvider.notifier).select(hits[i].id);
+      panes(c).list.requestFocus();
+      await tester.pumpAndSettle();
+
+      await press(tester, LogicalKeyboardKey.arrowDown);
+
+      expect(selected(c), hits[i + 1].id);
+    });
+
+    testWidgets('the list stays where it was scrolled as more of it loads',
+        (tester) async {
+      // Each page that arrived brought the list back up to the selected
+      // message at the top.
+      final c = await pump(tester);
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+      final list = find
+          .ancestor(
+            of: find.byType(MessageTile).first,
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      await tester.drag(list, const Offset(0, -1500));
+      await tester.pumpAndSettle();
+      final position = tester.state<ScrollableState>(list).position;
+      final scrolled = position.pixels;
+      expect(scrolled, greaterThan(0));
+
+      final more = c.read(messagesProvider(folder).notifier).loadMore();
+      await tester.pumpAndSettle();
+      await more;
+      await tester.pumpAndSettle();
+
+      expect(position.pixels, greaterThan(0));
+    });
+
     testWidgets('Shift+Down ticks a run', (tester) async {
       final c = await pump(tester);
       final ids = listIds(c);
@@ -449,6 +529,30 @@ void main() {
       expect(folder(c), rows[at + 1].folder.id);
       await press(tester, LogicalKeyboardKey.arrowUp);
       expect(folder(c), rows[at].folder.id);
+    });
+
+    testWidgets('a favourite, in the tree twice, does not trap Down',
+        (tester) async {
+      // Found by folder id, Down went back to the favourite's first row and
+      // round again, so nothing below it could be reached.
+      final c = await pump(tester);
+      final inbox = c
+          .read(treeRowsProvider)
+          .whereType<FolderRow>()
+          .firstWhere((r) => r.folder.role == FolderRole.inbox);
+      c.read(favoriteFoldersProvider.notifier).toggle(inbox.folder.id);
+      await tester.pumpAndSettle();
+      panes(c).tree.requestFocus();
+      await tester.pumpAndSettle();
+      final rows = c.read(treeRowsProvider).whereType<FolderRow>().toList();
+      expect(rows.where((r) => r.folder.id == inbox.folder.id), hasLength(2));
+
+      await press(tester, LogicalKeyboardKey.home);
+      for (var i = 1; i < rows.length; i++) {
+        await press(tester, LogicalKeyboardKey.arrowDown);
+      }
+
+      expect(folder(c), rows.last.folder.id);
     });
 
     testWidgets('End and Home go to the last and first folder',

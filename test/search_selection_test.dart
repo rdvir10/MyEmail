@@ -2,6 +2,7 @@ import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
@@ -18,13 +19,19 @@ import 'fakes/fake_webview.dart';
 void main() {
   setUpAll(FakeWebViewPlatform.install);
 
-  Future<ProviderContainer> pump(WidgetTester tester) async {
+  Future<ProviderContainer> pump(
+    WidgetTester tester, {
+    SampleMailEngine? engine,
+  }) async {
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final c = ProviderContainer(
-      overrides: [uiStateStoreProvider.overrideWithValue(MemoryUiStateStore())],
+      overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        mailEngineProvider.overrideWithValue(engine ?? SampleMailEngine()),
+      ],
     );
     addTearDown(c.dispose);
     await tester.pumpWidget(
@@ -94,6 +101,55 @@ void main() {
         expect(again.any((x) => x.id == m.id), isFalse, reason: m.subject);
       }
       expect(c.read(selectedMessageIdsProvider), isEmpty);
+    });
+
+    testWidgets('a hit the open list also shows leaves the results when deleted',
+        (tester) async {
+      // The list's own delete went through and said so, and the row stayed
+      // in the results; deleting it again hit a message already gone.
+      final c = await pump(tester);
+      final open = c.read(effectiveSelectedFolderIdProvider)!;
+      final shown = {
+        for (final m in c.read(messagesProvider(open)).value!) m.id,
+      };
+      final hits = await search(tester, 'the');
+      final both = hits.map((t) => t.message).firstWhere(
+            (m) => shown.contains(m.id),
+          );
+      c.read(selectedMessageIdsProvider.notifier).addAll([both.id]);
+      await tester.pumpAndSettle();
+
+      await tester.tap(inBar(find.byTooltip('Delete')));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+
+      expect(
+        c.read(searchResultsProvider).value!.any((m) => m.id == both.id),
+        isFalse,
+      );
+    });
+
+    testWidgets('marking several read goes on past one that fails, and says so',
+        (tester) async {
+      // It stopped at the first failure, said nothing, and left the ticks.
+      final engine = _RefusesOne();
+      final c = await pump(tester, engine: engine);
+      final hits = (await search(tester, 'the'))
+          .map((t) => t.message)
+          .where((m) => !m.isRead)
+          .take(3)
+          .toList();
+      expect(hits, hasLength(3));
+      engine.refused = hits[1].id;
+      c.read(selectedMessageIdsProvider.notifier).addAll(hits.map((m) => m.id));
+      await tester.pumpAndSettle();
+
+      await tester.tap(inBar(find.byTooltip('Mark read')));
+      await tester.pumpAndSettle();
+
+      expect(engine.markedRead, {hits[0].id, hits[2].id});
+      expect(find.textContaining('Could not mark read 1 of 3'), findsOneWidget);
     });
 
     testWidgets('Forward as attachment starts a message carrying them whole',
@@ -175,4 +231,17 @@ void main() {
       expect(find.textContaining('.eml'), findsOneWidget);
     });
   });
+}
+
+/// The sample engine, refusing to change one message.
+class _RefusesOne extends SampleMailEngine {
+  String? refused;
+  final markedRead = <String>{};
+
+  @override
+  Future<void> setRead(String messageId, bool isRead) async {
+    if (messageId == refused) throw StateError('the server said no');
+    await super.setRead(messageId, isRead);
+    if (isRead) markedRead.add(messageId);
+  }
 }

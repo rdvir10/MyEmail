@@ -91,12 +91,14 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       if (secondLook) return;
       final folderId = ref.read(effectiveSelectedFolderIdProvider);
       if (folderId == null) return;
-      final rows = visibleMessages(
-        ref.read(sortedMessagesProvider(folderId)),
-        conversations: ref.read(displayProvider).conversations,
-        expandedIds: ref.read(expandedConversationsProvider),
-        sort: ref.read(displayProvider).sort,
-      );
+      final rows = _searching
+          ? _searchRows()
+          : visibleMessages(
+              ref.read(sortedMessagesProvider(folderId)),
+              conversations: ref.read(displayProvider).conversations,
+              expandedIds: ref.read(expandedConversationsProvider),
+              sort: ref.read(displayProvider).sort,
+            );
       final at = rows.indexWhere((m) => m.id == id);
       if (at < 0 || rows.length < 2) return;
       final position = _scroll.position;
@@ -112,6 +114,25 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
 
   /// The built row showing [id]: its own tile, or the closed thread it is
   /// folded into.
+  bool get _searching => ref.read(searchQueryProvider).trim().isNotEmpty;
+
+  /// The search hits in the order they are drawn.
+  List<MailMessage> _searchRows() => sortMessages(
+        ref.read(searchResultsProvider).value ?? const [],
+        ref.read(displayProvider).sort,
+      );
+
+  /// Whether [id]'s row is on screen now, not merely built.
+  bool _isShowing(String id) {
+    final row = _rowFor(id)?.findRenderObject();
+    final list = _listKey.currentContext?.findRenderObject();
+    if (row is! RenderBox || list is! RenderBox) return false;
+    if (!row.attached || !list.attached) return false;
+    final rowRect = row.localToGlobal(Offset.zero) & row.size;
+    final listRect = list.localToGlobal(Offset.zero) & list.size;
+    return rowRect.overlaps(listRect);
+  }
+
   BuildContext? _rowFor(String id) {
     BuildContext? found;
     void visit(Element e) {
@@ -159,7 +180,12 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     ) {
       final id = ref.read(selectedMessageIdProvider);
       if (id == null || !next.hasValue) return;
-      if (prev?.value?.length != next.value?.length) _reveal(id);
+      // Only a row that was on screen is kept there. Brought back every time
+      // the list grew, the list snapped back to it from wherever it had
+      // been scrolled, once for each page loaded on the way down.
+      if (prev?.value?.length != next.value?.length && _isShowing(id)) {
+        _reveal(id);
+      }
     });
 
     final folder = ref.watch(folderIndexProvider)[folderId];
@@ -208,6 +234,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           Expanded(
             child: MessageListKeyboard(
               listId: folderId,
+              rows: searching ? _searchRows : null,
               onScreen: () => messagesOnScreen(_listKey),
               // Where there is no reading pane a message opens as its own
               // screen, so landing on one would mean walking into a folder and
@@ -280,6 +307,8 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                 sortMessages(results, ref.watch(displayProvider).sort);
             return ListView.separated(
               key: _listKey,
+              // So a selection the keys move follows on screen here too.
+              controller: _scroll,
               itemCount: ordered.length,
               separatorBuilder: (_, _) => const Divider(height: 1, indent: 28),
               itemBuilder: (context, i) {
@@ -730,7 +759,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         'Forward as attachment',
       ),
       const PopupMenuDivider(),
-      for (final step in steps)
+      // Only the steps that can finish on this message: one that files
+      // into another account's folder cannot.
+      for (final step in steps.where((s) => s.appliesTo(message.accountId)))
         PopupMenuItem<String>(
           value: 'qs:${step.id}',
           child: Row(
@@ -864,9 +895,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       // Through the actions, which send a search hit from another folder
       // to the engine: the open list passed over it without a word.
       case 'read':
-        await actions.setRead([message], !message.isRead);
+        await actions.setRead(context, [message], !message.isRead);
       case 'flag':
-        await actions.setFlagged([message], !message.isFlagged);
+        await actions.setFlagged(context, [message], !message.isFlagged);
       case 'delete':
         await actions.delete(context, [message]);
     }
@@ -946,9 +977,9 @@ class _SwipeableRow extends ConsumerWidget {
       // flagged — to every message, rather than flipping each on its own
       // and leaving the row in a state nobody asked for.
       case SwipeAction.toggleRead:
-        await actions.setRead(messages, anyUnread(messages));
+        await actions.setRead(context, messages, anyUnread(messages));
       case SwipeAction.toggleFlag:
-        await actions.setFlagged(messages, !anyFlagged(messages));
+        await actions.setFlagged(context, messages, !anyFlagged(messages));
       case SwipeAction.archive:
         final target = archiveFolderIdFor(ref, messages.first.accountId);
         if (target == null) {

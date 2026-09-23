@@ -168,11 +168,18 @@ class FolderTreePanel extends ConsumerWidget {
 
     final folders = [for (final r in rows) if (r is FolderRow) r];
     if (folders.isEmpty) return KeyEventResult.ignored;
-    final at = folders.indexWhere((r) => r.folder.id == selected);
+    // The row the keys are on, not just the folder: a favourite is in the
+    // tree twice, and found by folder id Down went back to its first row
+    // and round again, so nothing below it could be reached.
+    final keyed = ref.read(_keyedRowProvider);
+    var at = folders
+        .indexWhere((r) => r.key == keyed && r.folder.id == selected);
+    if (at < 0) at = folders.indexWhere((r) => r.folder.id == selected);
     final row = at < 0 ? null : folders[at];
 
     void pick(int i) {
       final target = folders[i.clamp(0, folders.length - 1)];
+      ref.read(_keyedRowProvider.notifier).set(target.key);
       ref.read(selectedFolderIdProvider.notifier).select(target.folder.id);
     }
 
@@ -250,6 +257,17 @@ class FolderTreePanel extends ConsumerWidget {
     }
   }
 }
+
+/// Which row the arrow keys last moved to, by its key.
+class _KeyedRow extends Notifier<String?> {
+  @override
+  String? build() => null;
+
+  void set(String key) => state = key;
+}
+
+final _keyedRowProvider =
+    NotifierProvider<_KeyedRow, String?>(_KeyedRow.new);
 
 class _FolderSearchField extends ConsumerStatefulWidget {
   const _FolderSearchField();

@@ -1,5 +1,5 @@
 import 'package:flutter/foundation.dart'
-    show defaultTargetPlatform, kIsWeb, TargetPlatform, debugPrint;
+    show defaultTargetPlatform, kIsWeb, TargetPlatform, debugPrint, mapEquals;
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -36,9 +36,15 @@ class HtmlBodyView extends StatefulWidget {
     this.showImages = false,
     this.senderEmail,
     this.onTrust,
+    this.inlinePictures = const {},
   });
 
   final String html;
+
+  /// The pictures [html] names by Content-ID, as data: URIs; see
+  /// [withInlinePictures]. They come after the body, so a change here
+  /// loads the page again without hiding pictures the reader asked for.
+  final Map<String, String> inlinePictures;
 
   /// Start with the pictures already loaded, from the setting of the same
   /// name, or because this sender is trusted. The bar offering to load them
@@ -147,6 +153,8 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
       // The setting was turned on while a message was open.
       _showRemote = true;
       _load();
+    } else if (!mapEquals(oldWidget.inlinePictures, widget.inlinePictures)) {
+      _load();
     }
   }
 
@@ -156,8 +164,10 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
   }
 
   void _load() {
-    final source =
-        _showRemote ? widget.html : stripRemoteContent(widget.html);
+    final source = withInlinePictures(
+      _showRemote ? widget.html : stripRemoteContent(widget.html),
+      widget.inlinePictures,
+    );
     // The WebView's own background shows during the load and behind a short
     // body. Matching it to the document avoids a white flash on a dark screen.
     _loading = true;
@@ -398,8 +408,15 @@ String wrapHtmlForDisplay(
   Brightness brightness = Brightness.light,
   bool remoteAllowed = false,
 }) {
-  final hasHtmlTag = RegExp(r'<html[\s>]', caseSensitive: false).hasMatch(html);
-  final body = removeDocumentDirectives(hasHtmlTag ? _extractBody(html) : html);
+  final isDocument =
+      RegExp(r'<(html|body)[\s>]', caseSensitive: false).hasMatch(html);
+  final body = removeDocumentDirectives(isDocument ? _extractBody(html) : html);
+  // The message's own look, which only the inside of its <body> used to
+  // survive: the stylesheets in its head, and the body's colours, style,
+  // direction and language. A newsletter styled from its head came out as
+  // bare text, and a right-to-left message came out left to right.
+  final sheets = isDocument ? _headStyles(html) : '';
+  final bodyTag = isDocument ? _bodyTag(html) : '<body>';
   final dark = readsAsDark(html, brightness);
   final laidOutFor = declaredLayoutWidth(body);
   final fg = dark ? '#e6e1e5' : '#1c1b1f';
@@ -433,8 +450,9 @@ String wrapHtmlForDisplay(
       // takes the shape of the message with it. A box the size the sender
       // asked for keeps the layout standing and says plainly that something
       // is not being shown.
+      // A picture named by Content-ID and not (yet) put in place too.
       'img[data-blocked-src],img[data-blocked-srcset],'
-      'img[data-blocked-background]{min-width:16px;min-height:16px;'
+      'img[data-blocked-background],img[src^="cid:" i]{min-width:16px;min-height:16px;'
       'background:${dark ? '#2b2930' : '#f1f1f4'};'
       'border:1px dashed $rule;border-radius:4px;box-sizing:border-box}'
       // Only where the message has not asked for a width of its own. Capping
@@ -443,7 +461,66 @@ String wrapHtmlForDisplay(
       'pre{white-space:pre-wrap}'
       'blockquote{margin:8px 0;padding-left:12px;'
       'border-left:3px solid $rule;color:$quoted}'
-      '</style></head><body>$body</body></html>';
+      // After ours, so the sender's rules win where the two disagree.
+      '</style>$sheets</head>$bodyTag$body</body></html>';
+}
+
+/// The `<style>` blocks from the message's head, with only their `media`.
+String _headStyles(String html) {
+  final lower = html.toLowerCase();
+  final bodyAt = lower.indexOf('<body');
+  final headEnd = lower.indexOf('</head');
+  final head = bodyAt >= 0
+      ? html.substring(0, bodyAt)
+      : headEnd >= 0
+          ? html.substring(0, headEnd)
+          : '';
+  final media = RegExp(r'''\bmedia\s*=\s*("[^"]*"|'[^']*')''',
+      caseSensitive: false);
+  return [
+    for (final m in RegExp(r'<style\b([^>]*)>([\s\S]*?)</style\s*>',
+            caseSensitive: false)
+        .allMatches(head))
+      '<style${switch (media.firstMatch(m[1]!)) {
+        final a? => ' media=${a[1]}',
+        null => '',
+      }}>${m[2]}</style>',
+  ].join();
+}
+
+/// A `<body>` tag carrying the source body's look: `bgcolor` and `text` as
+/// the colours they stand for, then its own `style` (which, as in a
+/// browser, beats them), and its `dir`, `lang` and `class`.
+String _bodyTag(String html) {
+  final tag =
+      RegExp(r'<body\b([^>]*)>', caseSensitive: false).firstMatch(html);
+  if (tag == null) return '<body>';
+  final attrs = <String, String>{};
+  for (final m in RegExp(
+    r'''([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))''',
+  ).allMatches(tag[1]!)) {
+    attrs.putIfAbsent(m[1]!.toLowerCase(), () => m[2] ?? m[3] ?? m[4] ?? '');
+  }
+  // Only what a colour, a direction or a class name can be made of.
+  String only(String? value, String allowed) =>
+      (value ?? '').replaceAll(RegExp('[^$allowed]'), '').trim();
+  final background = only(attrs['bgcolor'], r'#\w(),.% ');
+  final text = only(attrs['text'], r'#\w(),.% ');
+  final style = (attrs['style'] ?? '').trim().replaceAll('"', '&quot;');
+  final css = [
+    if (background.isNotEmpty) 'background:$background',
+    if (text.isNotEmpty) 'color:$text',
+    if (style.isNotEmpty) style,
+  ].join(';');
+  final dir = only(attrs['dir'], r'\w');
+  final lang = only(attrs['lang'], r'\w-');
+  final classes = only(attrs['class'], r'\w\- ');
+  return '<body'
+      '${css.isEmpty ? '' : ' style="$css"'}'
+      '${dir.isEmpty ? '' : ' dir="$dir"'}'
+      '${lang.isEmpty ? '' : ' lang="$lang"'}'
+      '${classes.isEmpty ? '' : ' class="$classes"'}'
+      '>';
 }
 
 String _extractBody(String html) {

@@ -172,6 +172,47 @@ void main() {
           reason: 'the delete after the move never ran');
     });
 
+    test("a step filing into one account does not start on another's mail",
+        () async {
+      // It marked the message read, then failed on the move between
+      // accounts: read, and not filed.
+      final step = _step('File to Travel', const [
+        QuickStepAction(QuickStepActionType.markRead),
+        QuickStepAction(QuickStepActionType.moveTo,
+            folderId: 'acct-personal:Travel'),
+      ]);
+      expect(step.appliesTo('acct-personal'), isTrue);
+      expect(step.appliesTo('acct-side'), isFalse);
+      expect(
+        _step('Flag', const [QuickStepAction(QuickStepActionType.flag)])
+            .appliesTo('acct-side'),
+        isTrue,
+        reason: 'a step that files nowhere fits every account',
+      );
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      await container.read(foldersProvider.future);
+      final other = (await container
+              .read(messagesProvider('acct-side:INBOX').future))
+          .firstWhere((m) => !m.isRead);
+
+      await expectLater(
+        runQuickStep(
+          step: step,
+          notifier: container.read(messagesProvider('acct-side:INBOX').notifier),
+          message: other,
+          engine: container.read(mailEngineProvider),
+        ),
+        throwsStateError,
+      );
+      final after = container
+          .read(messagesProvider('acct-side:INBOX'))
+          .value!
+          .firstWhere((m) => m.id == other.id);
+      expect(after.isRead, isFalse, reason: 'nothing was done');
+    });
+
     test('on a search hit from another folder, it reaches that message',
         () async {
       // The open list passed over a message it did not hold without a

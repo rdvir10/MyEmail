@@ -33,6 +33,13 @@ class FakeWebViewPlatform extends WebViewPlatform {
   /// Every script a controller was asked to run.
   final List<String> ranJavaScript = [];
 
+  /// Every address a controller was asked to load, newest last.
+  final List<Uri> loadedUrls = [];
+
+  /// The newest page's navigation handler, so a test can play the browser
+  /// being sent somewhere (a sign-in redirect, say).
+  NavigationRequestCallback? navigationHandler;
+
   @override
   PlatformWebViewController createPlatformWebViewController(
     PlatformWebViewControllerCreationParams params,
@@ -49,7 +56,7 @@ class FakeWebViewPlatform extends WebViewPlatform {
   PlatformNavigationDelegate createPlatformNavigationDelegate(
     PlatformNavigationDelegateCreationParams params,
   ) =>
-      _FakeNavigationDelegate(params);
+      _FakeNavigationDelegate(params, this);
 
   @override
   PlatformWebViewCookieManager createPlatformCookieManager(
@@ -66,6 +73,13 @@ class _FakeController extends PlatformWebViewController {
   @override
   Future<void> loadHtmlString(String html, {String? baseUrl}) async =>
       _platform.loadedHtml.add(html);
+
+  @override
+  Future<void> loadRequest(LoadRequestParams params) async =>
+      _platform.loadedUrls.add(params.uri);
+
+  @override
+  Future<void> clearCache() async {}
 
   @override
   Future<void> setJavaScriptMode(JavaScriptMode mode) async {}
@@ -113,12 +127,16 @@ class _FakeWidget extends PlatformWebViewWidget {
 }
 
 class _FakeNavigationDelegate extends PlatformNavigationDelegate {
-  _FakeNavigationDelegate(super.params) : super.implementation();
+  _FakeNavigationDelegate(super.params, this._platform)
+      : super.implementation();
+
+  final FakeWebViewPlatform _platform;
 
   @override
   Future<void> setOnNavigationRequest(
     NavigationRequestCallback onNavigationRequest,
-  ) async {}
+  ) async =>
+      _platform.navigationHandler = onNavigationRequest;
 
   @override
   Future<void> setOnPageFinished(PageEventCallback onPageFinished) async {}
@@ -137,4 +155,7 @@ class _FakeNavigationDelegate extends PlatformNavigationDelegate {
 
 class _FakeCookieManager extends PlatformWebViewCookieManager {
   _FakeCookieManager(super.params) : super.implementation();
+
+  @override
+  Future<bool> clearCookies() async => true;
 }

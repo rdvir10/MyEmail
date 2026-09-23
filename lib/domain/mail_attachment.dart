@@ -13,6 +13,7 @@ class MailAttachment {
     required this.mimeType,
     required this.sizeBytes,
     this.isInline = false,
+    this.contentId,
   });
 
   /// How to ask for the bytes later. A part id on IMAP, an attachment id on
@@ -40,12 +41,18 @@ class MailAttachment {
   /// HTML refers to — rather than something the sender attached on purpose.
   final bool isInline;
 
+  /// The name the message's HTML gives this part in a `cid:` link, without
+  /// the angle brackets. How a pasted screenshot or a signature's logo is
+  /// put in the body rather than under it. Null for most files.
+  final String? contentId;
+
   MailAttachment copyWith({String? name, int? sizeBytes}) => MailAttachment(
         id: id,
         name: name ?? this.name,
         mimeType: mimeType,
         sizeBytes: sizeBytes ?? this.sizeBytes,
         isInline: isInline,
+        contentId: contentId,
       );
 
   @override

@@ -33,3 +33,35 @@ String contentPolicyTag({required bool remoteAllowed}) {
       "content=\"default-src 'none'; $fetches frame-src 'none'; "
       "object-src 'none'; form-action 'none'; base-uri 'none'\">";
 }
+
+/// Whether [html] names any picture by Content-ID.
+bool namesInlinePictures(String html) =>
+    html.toLowerCase().contains('cid:');
+
+/// [html] with each picture it names by Content-ID replaced by the data:
+/// URI [pictures] has for it, keyed by Content-ID in lower case.
+///
+/// A WebView handed the HTML alone has nothing to load for `cid:`, so a
+/// screenshot pasted into an Outlook message, or the logo in a signature,
+/// was a broken image with the picture only reachable as a chip under it.
+/// A name not among [pictures] is left as it is.
+String withInlinePictures(String html, Map<String, String> pictures) {
+  if (pictures.isEmpty) return html;
+  return html.replaceAllMapped(
+    RegExp(
+      r'''((?<![-\w])(?:src|background)\s*=\s*["']?\s*|url\(\s*["']?\s*)cid:([^"'\s)>]+)''',
+      caseSensitive: false,
+    ),
+    (m) {
+      // A cid: link is URL-encoded (RFC 2392); the header it names is not.
+      var id = m[2]!;
+      try {
+        id = Uri.decodeComponent(id);
+      } catch (_) {
+        // Taken as written.
+      }
+      final uri = pictures[id.toLowerCase()];
+      return uri == null ? m[0]! : '${m[1]}$uri';
+    },
+  );
+}

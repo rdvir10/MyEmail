@@ -403,14 +403,24 @@ class GraphTransport implements ImapTransport {
   @override
   Future<List<MailAttachment>> listAttachments(String path, int uid) async {
     final remoteId = await _remoteId(path, uid);
+    final listed = await api.attachments(remoteId);
+    // Asked only of what the body could show: a part marked inline, or a
+    // picture. A file nobody draws needs no second request.
+    final contentIds = await Future.wait([
+      for (final a in listed)
+        a.isInline || a.mimeType.toLowerCase().startsWith('image/')
+            ? api.contentIdOf(remoteId, a.id)
+            : Future<String?>.value(),
+    ]);
     return [
-      for (final a in await api.attachments(remoteId))
+      for (final (i, a) in listed.indexed)
         MailAttachment(
           id: a.id,
           name: safeFileName(a.name),
           mimeType: a.mimeType,
           sizeBytes: a.sizeBytes,
           isInline: a.isInline,
+          contentId: contentIds[i],
         ),
     ];
   }

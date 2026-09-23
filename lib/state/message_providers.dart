@@ -329,8 +329,15 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       rethrow;
     }
 
+    // The count moves now, and the server's follows without anything
+    // waiting for it. Awaited, marking thirty messages read was thirty
+    // folder listings end to end.
     if (isRead != null) {
-      await ref.read(foldersProvider.notifier).refreshAccount(after.accountId);
+      final folders = ref.read(foldersProvider.notifier)
+        ..countUnread(after.folderId, isRead ? -1 : 1);
+      unawaited(
+        folders.refreshAccount(after.accountId).catchError((Object _) {}),
+      );
     }
     // Keep the other view of this message honest.
     if (folderId == kUnifiedInboxId) {

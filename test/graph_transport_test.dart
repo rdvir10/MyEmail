@@ -477,6 +477,29 @@ void main() {
       expect(body.html, '<p>Hello</p>');
     });
 
+    test('a picture the body shows says which one it is', () async {
+      // The listing cannot select contentId, so a pasted screenshot could
+      // not be matched to the cid: link naming it and never showed.
+      server
+        ..message('f-inbox',
+            id: 'm1', subject: 'Look', minutesAgo: 5, hasAttachments: true)
+        ..attachments['m1'] = [
+          ('a-1', 'image001.png', 'image/png', 'png bytes'),
+          ('a-2', 'report.pdf', 'application/pdf', 'pdf bytes'),
+        ]
+        ..contentIds['a-1'] = '<image001.png@01DA>';
+      final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
+
+      final files = await transport.listAttachments('Inbox', header.uid);
+
+      expect(files.first.contentId, 'image001.png@01DA');
+      expect(files.first.isInline, isTrue);
+      expect(files.last.contentId, isNull);
+      expect(server.contentIdLookups, ['a-1'],
+          reason: 'a file nobody draws needs no second request');
+      expect(server.fetchedAttachments, isEmpty);
+    });
+
     group('a meeting request', () {
       Future<MailBody> fetch() async {
         final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
@@ -1124,6 +1147,12 @@ class _FakeGraph {
   /// Which attachment bodies were actually downloaded.
   final List<String> fetchedAttachments = [];
 
+  /// Inline files: attachment id to its Content-ID header.
+  final Map<String, String> contentIds = {};
+
+  /// Which attachments were asked for their Content-ID.
+  final List<String> contentIdLookups = [];
+
   /// Events on the calendar: id to the invitation UID it came from.
   final Map<String, String> events = {};
 
@@ -1361,6 +1390,19 @@ class _FakeGraph {
       return http.Response('{}', 404);
     }
 
+    // One file's Content-ID, asked of it cast to a file.
+    if (request.method == 'GET' &&
+        path.endsWith('/microsoft.graph.fileAttachment')) {
+      final attachmentId =
+          path.split('/attachments/').last.split('/').first;
+      contentIdLookups.add(attachmentId);
+      return json({
+        'id': attachmentId,
+        if (contentIds[attachmentId] != null)
+          'contentId': contentIds[attachmentId],
+      });
+    }
+
     // One attachment's bytes.
     if (request.method == 'GET' &&
         path.contains('/attachments/') &&
@@ -1387,7 +1429,7 @@ class _FakeGraph {
               'name': a.$2,
               'contentType': a.$3,
               'size': a.$4.length,
-              'isInline': false,
+              'isInline': contentIds.containsKey(a.$1),
             },
         ],
       });

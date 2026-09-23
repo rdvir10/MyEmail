@@ -117,7 +117,8 @@ class SelectionBar extends ConsumerWidget {
                             : Icons.mark_email_unread_outlined,
                       ),
                       onPressed: () =>
-                          then(() => actions.setRead(chosen, mostlyUnread)),
+                          then(() =>
+                              actions.setRead(context, chosen, mostlyUnread)),
                     ),
                     IconButton(
                       tooltip: mostlyUnflagged ? 'Flag' : 'Remove flag',
@@ -125,7 +126,8 @@ class SelectionBar extends ConsumerWidget {
                         mostlyUnflagged ? Icons.flag_outlined : Icons.flag,
                       ),
                       onPressed: () => then(
-                        () => actions.setFlagged(chosen, mostlyUnflagged),
+                        () => actions.setFlagged(
+                            context, chosen, mostlyUnflagged),
                       ),
                     ),
                     IconButton(

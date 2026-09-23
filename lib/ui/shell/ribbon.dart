@@ -214,7 +214,13 @@ class _QuickStepsButton extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final steps = ref.watch(quickStepsProvider);
+    final target = message;
+    // Only the steps that can finish on this message: one that files into
+    // another account's folder cannot.
+    final steps = [
+      for (final s in ref.watch(quickStepsProvider))
+        if (target == null || s.appliesTo(target.accountId)) s,
+    ];
     final folderIndex = ref.watch(folderIndexProvider);
 
     return MenuAnchor(

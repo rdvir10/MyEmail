@@ -303,6 +303,44 @@ void main() {
     });
   });
 
+  group('attachmentsOf', () {
+    test('a picture named by Content-ID says so, marked inline or not', () {
+      // Nothing matched the body's cid: links to the parts they name, so a
+      // pasted screenshot showed as a broken image. And a part with a
+      // Content-ID and no disposition was not listed at all.
+      final root = em.BodyPart()
+        ..contentType = em.ContentTypeHeader('multipart/related');
+      root
+        ..addPart(
+          em.BodyPart()..contentType = em.ContentTypeHeader('text/html'),
+        )
+        ..addPart(
+          em.BodyPart()
+            ..contentType = em.ContentTypeHeader('image/png; name=logo.png')
+            ..cid = '<logo@x>'
+            ..size = 300,
+        )
+        ..addPart(
+          em.BodyPart()
+            ..contentType = em.ContentTypeHeader('image/jpeg')
+            ..contentDisposition =
+                em.ContentDispositionHeader('inline; filename=shot.jpg')
+            ..cid = '<Shot@Y>'
+            ..size = 900,
+        );
+      final message = em.MimeMessage()..body = root;
+
+      final files = attachmentsOf(message);
+
+      expect({
+        for (final a in files) a.name: (a.id, a.isInline, a.contentId),
+      }, {
+        'shot.jpg': ('3', true, 'Shot@Y'),
+        'logo.png': ('2', true, 'logo@x'),
+      });
+    });
+  });
+
   group('htmlToText / preview', () {
     test('strips tags, decodes entities, keeps paragraph breaks', () {
       const html = '<html><head><style>p{}</style></head><body>'

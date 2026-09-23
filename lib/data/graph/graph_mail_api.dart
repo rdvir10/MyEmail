@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
+import '../compose/mime_parts.dart' show bareContentId;
 import '../mail_engine.dart';
 
 /// A thin, typed client over the Microsoft Graph mail endpoints.
@@ -364,6 +365,29 @@ class GraphMailApi {
             isInline: item['isInline'] == true,
           ),
     ];
+  }
+
+  /// The name the message's HTML gives one attachment in a `cid:` link, or
+  /// null if it has none or will not say.
+  ///
+  /// One at a time, and cast to a file in the path: `contentId` is not on
+  /// the base attachment type, so the listing cannot select it, and listing
+  /// without a selection downloads every file on the message.
+  Future<String?> contentIdOf(String messageId, String attachmentId) async {
+    try {
+      final json = await _get(
+        Uri.parse(
+          '$base/me/messages/${_id(messageId)}'
+          '/attachments/${Uri.encodeComponent(attachmentId)}'
+          '/microsoft.graph.fileAttachment',
+        ).replace(queryParameters: {'\$select': 'id,contentId'}),
+      );
+      final id = json['contentId'];
+      return id is String ? bareContentId(id) : null;
+    } catch (_) {
+      // A picture shown as a chip rather than in the body; nothing worse.
+      return null;
+    }
   }
 
   /// The bytes of one attachment.

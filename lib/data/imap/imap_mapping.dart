@@ -9,6 +9,7 @@ import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
+import '../compose/mime_parts.dart' show bareContentId;
 import 'imap_transport.dart';
 
 /// `<accountId>:<path>`; account ids never contain a colon.
@@ -408,10 +409,45 @@ List<MailAttachment> attachmentsOf(em.MimeMessage message) {
           mimeType: mime,
           sizeBytes: info.size ?? 0,
           isInline: disposition == em.ContentDisposition.inline,
+          contentId: bareContentId(info.cid),
         ),
       );
     }
   }
+  // A picture the HTML shows is not always marked inline: some senders give
+  // it a Content-ID and no disposition at all, and the body finds it by
+  // that alone. Such a part is inline, whatever it forgot to say.
+  final listed = {for (final a in found) a.id};
+  void walk(em.BodyPart part) {
+    final id = part.fetchId;
+    final type = part.contentType?.mediaType;
+    final contentId = bareContentId(part.cid);
+    if (id != null &&
+        contentId != null &&
+        part.contentDisposition == null &&
+        type?.top == em.MediaToptype.image &&
+        listed.add(id)) {
+      final mime = '$type';
+      found.add(
+        MailAttachment(
+          id: id,
+          name: safeFileName(
+            part.contentType?.parameters['name'] ?? _nameFromType(mime, id),
+          ),
+          mimeType: mime,
+          sizeBytes: part.size ?? 0,
+          isInline: true,
+          contentId: contentId,
+        ),
+      );
+    }
+    for (final child in part.parts ?? const <em.BodyPart>[]) {
+      walk(child);
+    }
+  }
+
+  final body = message.body;
+  if (body != null) walk(body);
   return found;
 }
 

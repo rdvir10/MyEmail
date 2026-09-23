@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/account.dart';
 import '../../domain/quick_step.dart';
 import '../../state/folder_tree.dart';
 import '../../state/providers.dart';
@@ -178,11 +179,21 @@ class _EditQuickStepScreenState extends ConsumerState<_EditQuickStepScreen> {
 
   Future<String?> _pickFolder() async {
     final folders = ref.read(foldersProvider).value ?? const {};
+    final accounts = ref.read(accountsProvider).value ?? const <Account>[];
+    final names = {for (final a in accounts) a.id: a.displayName};
+    final order = {for (final (i, a) in accounts.indexed) a.id: i};
+    // By account, then by path, and each row says whose it is: with two
+    // Microsoft accounts every Inbox and Archive came twice, unlabelled.
     final options = [
       for (final list in folders.values)
         for (final f in list)
           if (f.capabilities.canAcceptMessages) f,
-    ]..sort((a, b) => a.path.toLowerCase().compareTo(b.path.toLowerCase()));
+    ]..sort((a, b) {
+        final byAccount =
+            (order[a.accountId] ?? 0).compareTo(order[b.accountId] ?? 0);
+        if (byAccount != 0) return byAccount;
+        return a.path.toLowerCase().compareTo(b.path.toLowerCase());
+      });
 
     return showModalBottomSheet<String>(
       context: context,
@@ -200,7 +211,12 @@ class _EditQuickStepScreenState extends ConsumerState<_EditQuickStepScreen> {
                 ListTile(
                   leading: const Icon(Icons.folder_outlined),
                   title: Text(f.displayName),
-                  subtitle: Text(displayPath(f)),
+                  subtitle: Text(
+                    accounts.length < 2
+                        ? displayPath(f)
+                        : '${names[f.accountId] ?? f.accountId} · '
+                            '${displayPath(f)}',
+                  ),
                   onTap: () => Navigator.of(context).pop(f.id),
                 ),
             ],

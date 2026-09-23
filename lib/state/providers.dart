@@ -316,6 +316,24 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
   /// Re-read one account's folders, e.g. after a flag change moved a count.
   Future<void> refreshAccount(String accountId) => _reloadAccount(accountId);
 
+  /// One message in [folderId] read (-1) or unread (+1), counted at once.
+  /// The refresh after it puts the server's own count in its place.
+  void countUnread(String folderId, int change) {
+    final all = state.value;
+    if (all == null) return;
+    state = AsyncData({
+      for (final MapEntry(:key, :value) in all.entries)
+        key: [
+          for (final f in value)
+            f.id == folderId
+                ? f.copyWith(
+                    unreadCount: (f.unreadCount + change).clamp(0, 1 << 30),
+                  )
+                : f,
+        ],
+    });
+  }
+
   // ---------------------------------------------------------------------------
 
   MailFolder? _current(String folderId) {

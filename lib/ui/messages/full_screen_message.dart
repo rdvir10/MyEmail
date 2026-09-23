@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/mail_message.dart';
 import '../../domain/trusted_senders.dart';
+import '../../state/attachment_providers.dart';
 import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/trusted_senders.dart';
@@ -211,6 +212,7 @@ class _FullScreenMessageState extends ConsumerState<FullScreenMessage> {
         key: _html,
         html: html,
         showImages: showImages,
+        inlinePictures: watchInlinePictures(ref, widget.message.id, html),
         senderEmail: widget.message.from.email,
         onTrust: (entry) =>
             ref.read(trustedSendersProvider.notifier).trust(entry),

@@ -155,6 +155,7 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
           .read(backupServiceProvider)
           .import(backup, passphrase: passphrase);
       ref.invalidate(accountsProviderForRefresh);
+      reloadRestoredSettings(ref);
       if (!mounted) return;
       setState(() => _done = _reportText(report));
 

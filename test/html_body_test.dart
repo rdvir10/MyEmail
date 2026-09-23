@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/domain/html_safety.dart';
 import 'package:myemail/ui/messages/html_body_view.dart';
 
 void main() {
@@ -153,6 +154,49 @@ void main() {
     });
   });
 
+  group('pictures named by Content-ID', () {
+    // A WebView has nothing to load for cid:, so each was a broken image.
+    const pictures = {'image001.png@01da': 'data:image/png;base64,AAA'};
+
+    test('are put in place however the link is written', () {
+      for (final (html, out) in [
+        (
+          '<img src="cid:image001.png@01DA">',
+          '<img src="data:image/png;base64,AAA">',
+        ),
+        (
+          "<img SRC='CID:image001.png%4001DA'>",
+          "<img SRC='data:image/png;base64,AAA'>",
+        ),
+        (
+          '<img src=cid:image001.png@01DA width=10>',
+          '<img src=data:image/png;base64,AAA width=10>',
+        ),
+        (
+          '<td background="cid:image001.png@01DA">',
+          '<td background="data:image/png;base64,AAA">',
+        ),
+        (
+          '<div style="background:url(cid:image001.png@01DA)">',
+          '<div style="background:url(data:image/png;base64,AAA)">',
+        ),
+      ]) {
+        expect(withInlinePictures(html, pictures), out, reason: html);
+      }
+    });
+
+    test('one not fetched keeps its link, and the placeholder box', () {
+      const html = '<img src="cid:other@x">';
+      expect(withInlinePictures(html, pictures), html);
+      expect(wrapHtmlForDisplay(html), contains('img[src^="cid:" i]'));
+    });
+
+    test('text that only mentions one is left alone', () {
+      const html = '<p>cid:image001.png@01DA</p>';
+      expect(withInlinePictures(html, pictures), html);
+    });
+  });
+
   group('wrapHtmlForDisplay', () {
     test('wraps a fragment in a document with viewport and defaults', () {
       final out = wrapHtmlForDisplay('<p>Hi</p>');
@@ -162,13 +206,45 @@ void main() {
       expect(out, contains('<body><p>Hi</p></body>'));
     });
 
-    test('keeps only the body of a full document', () {
+    test('keeps the body of a full document and the styles in its head', () {
+      // Only the inside of <body> was kept, so a message styled from its
+      // head came out as bare text.
       const full = '<html><head><title>x</title><style>p{color:red}</style>'
+          '<style media="screen">.m{margin:0}</style>'
           '</head><body class="m"><p>Body</p></body></html>';
       final out = wrapHtmlForDisplay(full);
-      expect(out, contains('<body><p>Body</p></body>'));
+      expect(out, contains('<body class="m"><p>Body</p></body>'));
       expect(out, isNot(contains('<title>')));
       expect('<html'.allMatches(out).length, 1, reason: 'no nested html');
+      expect(out, contains('<style>p{color:red}</style>'));
+      expect(out, contains('<style media="screen">.m{margin:0}</style>'));
+      // After the defaults, so the sender's rules win.
+      expect(
+        out.indexOf('p{color:red}'),
+        greaterThan(out.indexOf('blockquote{')),
+      );
+    });
+
+    test("the body's own colours, style and direction come along", () {
+      // Dropped with the tag: a right-to-left message came out left to
+      // right, and a coloured one on white.
+      const full = '<html><body bgcolor="#f0f0f0" text=#333 '
+          "style='margin:0;font-family:\"Segoe UI\"' dir=\"rtl\" lang=\"he\">"
+          '<p>x</p></body></html>';
+      final out = wrapHtmlForDisplay(full);
+      expect(
+        out,
+        contains('<body style="background:#f0f0f0;color:#333;'
+            'margin:0;font-family:&quot;Segoe UI&quot;" dir="rtl" lang="he">'
+            '<p>x</p></body>'),
+      );
+    });
+
+    test("the body's attributes cannot break out of the tag", () {
+      const full = "<html><body bgcolor='red\" onload=\"x' dir=\"rtl;x\">"
+          '<p>x</p></body></html>';
+      final out = wrapHtmlForDisplay(full);
+      expect(out, contains('<body style="background:red onloadx" dir="rtlx">'));
     });
 
     test('an html tag without a body still renders its content', () {

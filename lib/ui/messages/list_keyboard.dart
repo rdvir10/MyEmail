@@ -30,10 +30,16 @@ class MessageListKeyboard extends ConsumerStatefulWidget {
     this.landOnOpen = true,
     this.onOpen,
     this.onScreen,
+    this.rows,
   });
 
   final String listId;
   final Widget child;
+
+  /// The rows on screen when they are not the list's own: search results.
+  /// The keys walked the folder's list behind them, so Down from a hit
+  /// opened a message that was not in the results at all.
+  final List<MailMessage> Function()? rows;
 
   /// Off where there is no reading pane. On a phone a message opens as its own
   /// screen, so landing on one would mean walking into a folder and finding a
@@ -56,27 +62,33 @@ class MessageListKeyboard extends ConsumerStatefulWidget {
 
 class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
   List<MailMessage> get _all =>
-      ref.read(sortedMessagesProvider(widget.listId));
+      widget.rows?.call() ?? ref.read(sortedMessagesProvider(widget.listId));
 
   /// The rows on screen, in order: what the arrows move through. A message
-  /// folded into a closed thread is not one of them.
-  List<MailMessage> get _messages => visibleMessages(
-        _all,
-        conversations: ref.read(displayProvider).conversations,
-        expandedIds: ref.read(expandedConversationsProvider),
-        sort: ref.read(displayProvider).sort,
-      );
+  /// folded into a closed thread is not one of them. Search results are
+  /// never threaded.
+  List<MailMessage> get _messages => widget.rows != null
+      ? _all
+      : visibleMessages(
+          _all,
+          conversations: ref.read(displayProvider).conversations,
+          expandedIds: ref.read(expandedConversationsProvider),
+          sort: ref.read(displayProvider).sort,
+        );
 
   /// Where the selection is, as a row: itself, or the row of the thread
   /// it is folded into, so closing a thread and pressing Down moves on
   /// from the thread rather than from the top of the list.
-  String? get _selectedRow {
-    final id = _selected;
+  String? get _selectedRow => _rowOf(_selected);
+
+  String? _rowOf(String? id) {
     if (id == null) return null;
     final rows = _messages;
     if (rows.any((m) => m.id == id)) return id;
-    for (final c in groupIntoConversations(_all)) {
-      if (c.messages.any((m) => m.id == id)) return c.newest.id;
+    if (widget.rows == null) {
+      for (final c in groupIntoConversations(_all)) {
+        if (c.messages.any((m) => m.id == id)) return c.newest.id;
+      }
     }
     return id;
   }
@@ -88,9 +100,14 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
     final messages = _messages;
     if (messages.isEmpty) return;
 
+    // A selection folded into a thread just closed is still here, as that
+    // thread's row. Taken for gone, it moved to the top of the folder.
+    final row = _selectedRow;
+    if (row != null && messages.any((m) => m.id == row)) return;
     final target = messageToLandOn(
       messages: messages,
-      lastOpened: ref.read(lastOpenedInFolderProvider)[widget.listId],
+      lastOpened:
+          _rowOf(ref.read(lastOpenedInFolderProvider)[widget.listId]),
       current: _selected,
     );
     if (target == null || target == _selected) return;

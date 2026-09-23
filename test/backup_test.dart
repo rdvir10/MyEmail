@@ -293,6 +293,13 @@ void main() {
       expect(fresh.read().single.senderName, 'Ron Dvir');
     });
 
+    test('every setting a restore writes is read again on screen', () {
+      // A restore writes under the notifiers, which read once and write
+      // their whole state back on any change: the old favourites went on
+      // showing, and the next star wrote them back over the restored ones.
+      expect(reloadedAfterRestore, BackupService.exported.keys.toSet());
+    });
+
     test('a key this build does not know is skipped, not written blind',
         () async {
       // A file from a newer version. Writing an unknown key could put a value
@@ -473,6 +480,42 @@ void main() {
 
       expect(target.readIds(UiStateKeys.favorites), isEmpty,
           reason: 'cancelling must write nothing at all');
+    });
+
+    testWidgets('after a restore the app shows what was restored',
+        (tester) async {
+      // The screens had read their settings once and went on showing the
+      // old ones, and the next change wrote those back over the restore.
+      await seedSettings();
+      final files = _FakeBackupFiles()
+        ..toPick = (await service.export()).toJsonString();
+      final target = MemoryUiStateStore();
+      await target.writeIds(UiStateKeys.favorites, {'x:Old'});
+      final c = ProviderContainer(
+        overrides: [
+          accountStoreProvider.overrideWithValue(MemoryAccountStore()),
+          uiStateStoreProvider.overrideWithValue(target),
+          backupFilesProvider.overrideWithValue(files),
+        ],
+      );
+      addTearDown(c.dispose);
+      c.listen(favoriteFoldersProvider, (_, _) {});
+      expect(c.read(favoriteFoldersProvider), {'x:Old'});
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: const MaterialApp(home: BackupScreen()),
+        ),
+      );
+
+      await tester.tap(find.text('Restore from a file'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Restore'));
+      await tester.pumpAndSettle();
+
+      final restored = target.readIds(UiStateKeys.favorites);
+      expect(restored, isNot({'x:Old'}));
+      expect(c.read(favoriteFoldersProvider), restored);
     });
 
     testWidgets('a file that is not ours is reported, not swallowed',

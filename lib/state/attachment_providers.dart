@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/files/attachment_files.dart';
 import '../data/files/file_bridge.dart';
+import '../domain/html_safety.dart';
 import '../domain/mail_attachment.dart';
 import 'providers.dart';
 
@@ -23,6 +25,52 @@ final attachmentsProvider =
     FutureProvider.family<List<MailAttachment>, String>((ref, messageId) async {
   return ref.watch(mailEngineProvider).listAttachments(messageId);
 });
+
+/// The pictures a message's HTML names by Content-ID, as data: URIs keyed
+/// by Content-ID in lower case, for [withInlinePictures] to put in place.
+///
+/// Fetched only for a message that names one (see [watchInlinePictures]),
+/// and only up to [maxInlinePictureBytes] between them: past that, the rest
+/// stay chips. A picture that cannot be fetched is left out; the body is
+/// still worth reading without it.
+final inlinePicturesProvider =
+    FutureProvider.family<Map<String, String>, String>((ref, messageId) async {
+  final attachments = await ref.watch(attachmentsProvider(messageId).future);
+  final engine = ref.watch(mailEngineProvider);
+  final pictures = <String, String>{};
+  var room = maxInlinePictureBytes;
+  for (final a in attachments) {
+    final contentId = a.contentId?.toLowerCase();
+    if (contentId == null || pictures.containsKey(contentId)) continue;
+    final type = a.mimeType.toLowerCase().startsWith('image/')
+        ? a.mimeType.toLowerCase()
+        : a.openAs;
+    if (!type.startsWith('image/') || a.sizeBytes > room) continue;
+    try {
+      final bytes = await engine.fetchAttachment(messageId, a.id);
+      if (bytes.length > room) continue;
+      room -= bytes.length;
+      pictures[contentId] = 'data:$type;base64,${base64Encode(bytes)}';
+    } catch (_) {
+      // Shown as a chip, as before.
+    }
+  }
+  return pictures;
+});
+
+/// More than a screenful of screenshots; not a message's worth of photos.
+const maxInlinePictureBytes = 15 * 1024 * 1024;
+
+/// The pictures [html] names by Content-ID, once they are here: none while
+/// they are coming, and none asked for when it names none.
+Map<String, String> watchInlinePictures(
+  WidgetRef ref,
+  String messageId,
+  String html,
+) =>
+    namesInlinePictures(html)
+        ? ref.watch(inlinePicturesProvider(messageId)).value ?? const {}
+        : const {};
 
 /// One attachment on its way to the disk.
 ///

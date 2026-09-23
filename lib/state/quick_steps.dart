@@ -106,6 +106,13 @@ Future<void> runQuickStep({
   void Function(String folderId)? onMoved,
   void Function()? onElsewhere,
 }) async {
+  // Before anything is done, so a step that cannot finish does not start.
+  if (!step.appliesTo(message.accountId)) {
+    throw StateError(
+      '${step.name} files into another account, so it cannot run on this '
+      "account's mail.",
+    );
+  }
   if (!notifier.holds(message.id)) {
     if (engine == null) {
       throw StateError('That message is not in this list any more.');

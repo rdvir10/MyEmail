@@ -75,6 +75,14 @@ class QuickStep {
 
   /// Everything up to and including the first terminal action; anything after
   /// it could never run.
+  /// Whether this step can run on a message from [accountId]. A move files
+  /// into one account's folder, and mail cannot move between accounts: run
+  /// on another's message, the step marked it read or flagged it and then
+  /// failed on the move, leaving it half done.
+  bool appliesTo(String accountId) => effectiveActions.every((a) =>
+      a.type != QuickStepActionType.moveTo ||
+      (a.folderId?.startsWith('$accountId:') ?? false));
+
   List<QuickStepAction> get effectiveActions {
     final result = <QuickStepAction>[];
     for (final a in actions) {

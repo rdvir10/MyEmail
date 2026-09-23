@@ -2,6 +2,7 @@ import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/mail_engine.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/message_move.dart';
 import '../../state/folder_tree.dart';
@@ -69,6 +70,7 @@ class MessageActions {
         moves.addAll(await ref
             .read(messagesProvider(listId).notifier)
             .move([for (final m in held) m.id], toFolderId));
+        _refreshSearch();
       }
       if (elsewhere.isNotEmpty) {
         moves.addAll(await ref
@@ -107,6 +109,7 @@ class MessageActions {
         moves.addAll(await ref
             .read(messagesProvider(listId).notifier)
             .delete([for (final m in held) m.id]));
+        _refreshSearch();
       }
       if (elsewhere.isNotEmpty) {
         moves.addAll(await ref
@@ -132,33 +135,85 @@ class MessageActions {
   }
 
   /// Read or unread, for several at once.
-  Future<void> setRead(List<MailMessage> messages, bool isRead) async {
-    final (held, elsewhere) = _split(messages);
+  Future<void> setRead(
+    BuildContext context,
+    List<MailMessage> messages,
+    bool isRead,
+  ) =>
+      _setEach(
+        context,
+        messages,
+        held: (n, m) => n.setRead(m.id, isRead),
+        engine: (e, m) => e.setRead(m.id, isRead),
+        what: isRead ? 'mark read' : 'mark unread',
+      );
+
+  Future<void> setFlagged(
+    BuildContext context,
+    List<MailMessage> messages,
+    bool isFlagged,
+  ) =>
+      _setEach(
+        context,
+        messages,
+        held: (n, m) => n.setFlagged(m.id, isFlagged),
+        engine: (e, m) => e.setFlagged(m.id, isFlagged),
+        what: isFlagged ? 'flag' : 'unflag',
+      );
+
+  /// One change, on every message, whatever happens to any one of them.
+  ///
+  /// It stopped at the first that failed and said nothing, leaving the rest
+  /// untouched and the ticks in place. Now each is tried, and what failed is
+  /// counted and said.
+  Future<void> _setEach(
+    BuildContext context,
+    List<MailMessage> messages, {
+    required Future<void> Function(Messages, MailMessage) held,
+    required Future<void> Function(MailEngine, MailMessage) engine,
+    required String what,
+  }) async {
+    if (messages.isEmpty) return;
+    final to = _reporterFor(context);
+    final (here, elsewhere) = _split(messages);
     final notifier = ref.read(messagesProvider(listId).notifier);
-    for (final m in held) {
-      await notifier.setRead(m.id, isRead);
+    var failed = 0;
+    Object? why;
+    for (final m in here) {
+      try {
+        await held(notifier, m);
+      } catch (e) {
+        failed++;
+        why ??= e;
+      }
     }
     if (elsewhere.isNotEmpty) {
-      final engine = ref.read(mailEngineProvider);
+      final mail = ref.read(mailEngineProvider);
       for (final m in elsewhere) {
-        await engine.setRead(m.id, isRead);
+        try {
+          await engine(mail, m);
+        } catch (e) {
+          failed++;
+          why ??= e;
+        }
       }
       await _afterEngineChange(elsewhere);
+    } else {
+      _refreshSearch();
+    }
+    if (failed > 0) {
+      _say(to, messages.length == 1
+          ? 'Could not $what it: $why'
+          : 'Could not $what $failed of ${messages.length}: $why');
     }
   }
 
-  Future<void> setFlagged(List<MailMessage> messages, bool isFlagged) async {
-    final (held, elsewhere) = _split(messages);
-    final notifier = ref.read(messagesProvider(listId).notifier);
-    for (final m in held) {
-      await notifier.setFlagged(m.id, isFlagged);
-    }
-    if (elsewhere.isNotEmpty) {
-      final engine = ref.read(mailEngineProvider);
-      for (final m in elsewhere) {
-        await engine.setFlagged(m.id, isFlagged);
-      }
-      await _afterEngineChange(elsewhere);
+  /// A search on screen shows the messages just changed, so it is asked
+  /// again. It was only asked for a hit from another folder: one the open
+  /// list also held stayed in the results as it was, deleted or not.
+  void _refreshSearch() {
+    if (ref.read(searchQueryProvider).trim().isNotEmpty) {
+      ref.invalidate(searchResultsProvider);
     }
   }
 
@@ -217,7 +272,7 @@ class MessageActions {
     final container = offer ? to.container : null;
     messenger
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(duration: kBottomMessage, 
+      ..showSnackBar(SnackBar(duration: kBottomMessage, persist: false,
         content: Text(message),
         action: offer
             ? SnackBarAction(

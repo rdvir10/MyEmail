@@ -121,7 +121,7 @@ void _sayHidden(BuildContext context, WidgetRef ref, MailFolder folder) {
   ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
     ..showSnackBar(
-      SnackBar(duration: kBottomMessage, 
+      SnackBar(duration: kBottomMessage, persist: false,
         content: Text('${folder.displayName} hidden'),
         action: SnackBarAction(
           label: 'Undo',

@@ -22,6 +22,7 @@ import 'date_format.dart';
 import '../shell/pane_focus.dart';
 import '../../data/print/message_printer.dart';
 import '../../state/print_providers.dart';
+import '../../state/attachment_providers.dart';
 import 'full_screen_message.dart';
 import 'html_body_view.dart';
 import 'message_actions.dart';
@@ -392,12 +393,13 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
         key: _html,
         html: html,
         showImages: _showsImages,
+        inlinePictures: watchInlinePictures(ref, widget.message.id, html),
         senderEmail: widget.message.from.email,
         onTrust: (entry) {
           ref.read(trustedSendersProvider.notifier).trust(entry);
           ScaffoldMessenger.maybeOf(context)
             ?..hideCurrentSnackBar()
-            ..showSnackBar(SnackBar(duration: kBottomMessage, 
+            ..showSnackBar(SnackBar(duration: kBottomMessage, persist: false,
               content: Text('Pictures will load from ${describeTrustEntry(entry).toLowerCase()}'),
               action: SnackBarAction(
                 label: 'Undo',

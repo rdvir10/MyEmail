@@ -68,6 +68,10 @@ class _MicrosoftSignInScreenState extends ConsumerState<MicrosoftSignInScreen> {
   }
 
   Future<void> _start() async {
+    // A try again is a fresh sign-in. Left set, the redirect of the second
+    // try was taken for a repeat of the first and dropped, and the screen
+    // sat on Microsoft's page with nothing happening.
+    _handled = false;
     setState(() {
       _error = null;
       _loading = true;

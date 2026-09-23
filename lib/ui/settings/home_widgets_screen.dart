@@ -43,7 +43,9 @@ class _HomeWidgetsScreenState extends ConsumerState<HomeWidgetsScreen> {
     };
   }
 
-  void _reload() => setState(() => _placed = _load());
+  void _reload() => setState(() {
+        _placed = _load();
+      });
 
   @override
   Widget build(BuildContext context) {
@@ -101,17 +103,19 @@ class _HomeWidgetsScreenState extends ConsumerState<HomeWidgetsScreen> {
                   ),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () async {
+                    final here = ModalRoute.of(context);
                     await Navigator.of(context).push(
                       MaterialPageRoute<void>(
                         builder: (_) => MailboxWidgetSetup(
                           appWidgetId: id,
                           existing: placed[id],
                           // Not Android's placement dance: this widget is
-                          // already placed, so finishing just comes back.
+                          // already placed, so finishing comes back here,
+                          // past however many setup pages were open. The
+                          // test used to be always true, so nothing closed
+                          // and the screen sat on "Saving…".
                           onDone: () => Navigator.of(context)
-                              .popUntil((r) => r.isFirst || r.settings.name == null
-                                  ? true
-                                  : true),
+                              .popUntil((r) => r == here || r.isFirst),
                         ),
                       ),
                     );
