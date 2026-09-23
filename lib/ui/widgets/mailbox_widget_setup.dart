@@ -238,7 +238,9 @@ class _AppearanceStep extends ConsumerStatefulWidget {
 
 class _AppearanceStepState extends ConsumerState<_AppearanceStep> {
   late WidgetCount _counts = widget.mailbox.counts;
-  late WidgetColour _colour = widget.mailbox.colour;
+
+  /// Null is the account's own colour, as on [WidgetMailbox.colour].
+  late WidgetColour? _colour = widget.mailbox.colour;
   late final _name = TextEditingController(text: widget.mailbox.label ?? '');
   bool _saving = false;
 
@@ -258,6 +260,7 @@ class _AppearanceStepState extends ConsumerState<_AppearanceStep> {
             label: typed.isEmpty ? null : typed,
             clearLabel: typed.isEmpty,
             colour: _colour,
+            clearColour: _colour == null,
           ),
           engine: ref.read(mailEngineProvider),
         );
@@ -268,9 +271,19 @@ class _AppearanceStepState extends ConsumerState<_AppearanceStep> {
     await finishWidgetSetup();
   }
 
+  /// Whose folder this is. Null for All inboxes, which is every account's.
+  Account? _account(List<Account> accounts) {
+    final accountId = widget.mailbox.folderId.split(':').first;
+    return accounts.where((a) => a.id == accountId).firstOrNull;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final account = _account(ref.watch(accountsProvider).value ?? const []);
+    // With no account there is no account colour to follow, and what the
+    // tile is drawn in then is orange; the swatches say so.
+    final shown = _colour ?? (account == null ? WidgetColour.orange : null);
     return Scaffold(
       appBar: AppBar(title: const Text('How it should look')),
       body: ListView(
@@ -306,10 +319,19 @@ class _AppearanceStepState extends ConsumerState<_AppearanceStep> {
               spacing: 12,
               runSpacing: 12,
               children: [
+                if (account != null)
+                  _Swatch(
+                    colour: Color(account.colorValue),
+                    label: 'Same as ${account.displayName}',
+                    mark: Icons.person_outline,
+                    chosen: shown == null,
+                    onTap: () => setState(() => _colour = null),
+                  ),
                 for (final colour in WidgetColour.values)
                   _Swatch(
-                    colour: colour,
-                    chosen: colour == _colour,
+                    colour: Color(colour.value),
+                    label: colour.label,
+                    chosen: colour == shown,
                     onTap: () => setState(() => _colour = colour),
                   ),
               ],
@@ -318,8 +340,12 @@ class _AppearanceStepState extends ConsumerState<_AppearanceStep> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
             child: Text(
-              'Two widgets side by side are told apart by their colour long '
-              'before anyone reads the name under them.',
+              account == null
+                  ? 'Two widgets side by side are told apart by their colour '
+                      'long before anyone reads the name under them.'
+                  : 'The first is ${account.displayName}\u2019s own colour, and '
+                      'changes with it in Settings. Pick another to tell two '
+                      'widgets of the same account apart.',
               style: theme.textTheme.bodySmall,
             ),
           ),
@@ -364,13 +390,21 @@ class _AppearanceStepState extends ConsumerState<_AppearanceStep> {
 class _Swatch extends StatelessWidget {
   const _Swatch({
     required this.colour,
+    required this.label,
     required this.chosen,
     required this.onTap,
+    this.mark,
   });
 
-  final WidgetColour colour;
+  final Color colour;
+  final String label;
   final bool chosen;
   final VoidCallback onTap;
+
+  /// Drawn on the swatch while it is not chosen. The account's colour
+  /// carries one, because it can sit right beside a fixed colour it nearly
+  /// matches, and the two mean different things.
+  final IconData? mark;
 
   @override
   Widget build(BuildContext context) {
@@ -378,9 +412,9 @@ class _Swatch extends StatelessWidget {
     return Semantics(
       button: true,
       selected: chosen,
-      label: colour.label,
+      label: label,
       child: Tooltip(
-        message: colour.label,
+        message: label,
         child: InkWell(
           onTap: onTap,
           borderRadius: BorderRadius.circular(14),
@@ -388,7 +422,7 @@ class _Swatch extends StatelessWidget {
             width: 52,
             height: 52,
             decoration: BoxDecoration(
-              color: Color(colour.value),
+              color: colour,
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
                 // The chosen one is ringed rather than ticked in a corner:
@@ -400,7 +434,9 @@ class _Swatch extends StatelessWidget {
             ),
             child: chosen
                 ? const Icon(Icons.check, color: Colors.white, size: 22)
-                : null,
+                : (mark == null
+                    ? null
+                    : Icon(mark, color: Colors.white70, size: 22)),
           ),
         ),
       ),

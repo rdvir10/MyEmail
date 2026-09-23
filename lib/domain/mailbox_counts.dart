@@ -20,7 +20,7 @@ enum WidgetCount {
       };
 }
 
-/// What colour a widget's tile is.
+/// The colours a widget's tile can be picked in, over its account's own.
 ///
 /// A short list rather than a colour wheel. The point is telling two widgets
 /// apart at a glance on a busy home screen, which half a dozen clearly

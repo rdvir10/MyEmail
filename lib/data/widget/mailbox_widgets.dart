@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../../domain/account.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mailbox_counts.dart';
 import '../../state/folder_tree.dart' show kUnifiedInboxId;
@@ -76,9 +77,10 @@ class MailboxWidgets {
       if (mailboxes.isEmpty) return;
 
       final mark = await store.readOpenedAt();
+      final accounts = await engine.loadAccounts();
       final counts = <String, MailboxCounts>{};
       for (final folderId in mailboxes.values.map((m) => m.folderId).toSet()) {
-        final count = await _count(engine, folderId, mark);
+        final count = await _count(engine, accounts, folderId, mark);
         if (count != null) counts[folderId] = count;
       }
 
@@ -93,7 +95,13 @@ class MailboxWidgets {
         );
         await surface.putString('widget.${entry.key}.mode', mailbox.counts.name);
         await surface.putString('widget.${entry.key}.label', mailbox.label);
-        await surface.putInt('widget.${entry.key}.colour', mailbox.colour.argb);
+        // Written on every pass rather than once at setup: a widget on its
+        // account's colour has to follow a recolour in Settings. Signed and
+        // inside 32 bits, as WidgetColour.argb explains.
+        await surface.putInt(
+          'widget.${entry.key}.colour',
+          mailbox.tileColour(accounts).toSigned(32),
+        );
       }
       for (final c in counts.values) {
         await surface.putString('count.${c.folderId}.label', c.label);
@@ -113,10 +121,10 @@ class MailboxWidgets {
 
   Future<MailboxCounts?> _count(
     MailEngine engine,
+    List<Account> accounts,
     String folderId,
     DateTime? mark,
   ) async {
-    final accounts = await engine.loadAccounts();
     if (folderId == kUnifiedInboxId) {
       var total = 0;
       var unread = 0;

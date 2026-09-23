@@ -195,8 +195,7 @@ void main() {
     });
 
 
-    testWidgets('a colour can be chosen, and orange is where it starts',
-        (tester) async {
+    testWidgets('a colour can be chosen', (tester) async {
       await pumpSetup(tester);
       await reachTheLastStep(tester);
 
@@ -210,14 +209,64 @@ void main() {
       expect(surface.values['widget.42.colour'], WidgetColour.teal.argb);
     });
 
-    testWidgets('left alone, it stays the colour of the app', (tester) async {
+    testWidgets('All inboxes, left alone, is orange: it has no account colour',
+        (tester) async {
       await pumpSetup(tester);
       await reachTheLastStep(tester);
 
+      expect(find.byTooltip('Same as Personal'), findsNothing);
       await tester.tap(find.text('Done'));
       await tester.pumpAndSettle();
 
-      expect(store.mailboxes['42']?.colour, WidgetColour.orange);
+      expect(surface.values['widget.42.colour'], WidgetColour.orange.argb);
+    });
+
+    Future<void> reachAnInbox(WidgetTester tester) async {
+      await tester.tap(find.text('Personal'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Inbox'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets("an account's widget starts in the account's colour",
+        (tester) async {
+      await pumpSetup(tester);
+      await reachAnInbox(tester);
+
+      expect(find.byTooltip('Same as Personal'), findsOneWidget);
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+
+      // Null, not a copy of the colour, so it follows a recolour later.
+      expect(store.mailboxes['42']?.colour, isNull);
+      expect(surface.values['widget.42.colour'], 0xFF0F6CBD.toSigned(32));
+    });
+
+    testWidgets("a colour picked over the account's is kept", (tester) async {
+      await pumpSetup(tester);
+      await reachAnInbox(tester);
+
+      await tester.tap(find.byTooltip('Teal'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+
+      expect(store.mailboxes['42']?.colour, WidgetColour.teal);
+      expect(surface.values['widget.42.colour'], WidgetColour.teal.argb);
+    });
+
+    testWidgets("and can be taken back to the account's", (tester) async {
+      await pumpSetup(tester);
+      await reachAnInbox(tester);
+
+      await tester.tap(find.byTooltip('Teal'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Same as Personal'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+
+      expect(store.mailboxes['42']?.colour, isNull);
     });
 
     testWidgets('nothing is remembered until the last step', (tester) async {

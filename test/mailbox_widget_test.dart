@@ -92,6 +92,34 @@ void main() {
       expect(surface.redraws, 1);
     });
 
+    test("a widget on its account's colour follows a recolour", () async {
+      final account = (await engine.loadAccounts()).first;
+      final inbox = await anInbox();
+      await widgets.setUp(
+          appWidgetId: '7', mailbox: WidgetMailbox(folderId: inbox), engine: engine);
+      expect(surface.values['widget.7.colour'], account.colorValue.toSigned(32));
+
+      await engine.updateAccount(accountId: account.id, colorValue: 0xFFB4009E);
+      await widgets.refresh(engine);
+
+      expect(surface.values['widget.7.colour'], 0xFFB4009E.toSigned(32));
+    });
+
+    test('a picked colour stays put when the account is recoloured', () async {
+      final account = (await engine.loadAccounts()).first;
+      final inbox = await anInbox();
+      await widgets.setUp(
+        appWidgetId: '7',
+        mailbox: WidgetMailbox(folderId: inbox, colour: WidgetColour.teal),
+        engine: engine,
+      );
+
+      await engine.updateAccount(accountId: account.id, colorValue: 0xFFB4009E);
+      await widgets.refresh(engine);
+
+      expect(surface.values['widget.7.colour'], WidgetColour.teal.argb);
+    });
+
     test('the name says whose mailbox it is', () async {
       // Two accounts both have an Inbox, and a widget with no name on it is a
       // number without a subject.
@@ -200,6 +228,32 @@ void main() {
       expect(
         WidgetMailbox.fromJson({'folder': 'a:INBOX', 'label': '  '})?.label,
         isNull,
+      );
+    });
+
+    test("a colour picked over the account's survives too", () {
+      const mailbox = WidgetMailbox(
+        folderId: 'a:INBOX',
+        colour: WidgetColour.teal,
+      );
+
+      expect(WidgetMailbox.fromJson(mailbox.toJson()), mailbox);
+    });
+
+    test("widgets placed before now move to their account's colour", () {
+      // They always stored a colour, orange unless changed, so a choice
+      // cannot be told from a default. Following the account is the point.
+      expect(
+        WidgetMailbox.fromJson({'folder': 'a:INBOX', 'colour': 'teal'})?.colour,
+        isNull,
+      );
+    });
+
+    test('except All inboxes, which has no account colour to move to', () {
+      expect(
+        WidgetMailbox.fromJson({'folder': kUnifiedInboxId, 'colour': 'teal'})
+            ?.colour,
+        WidgetColour.teal,
       );
     });
 
@@ -383,15 +437,42 @@ void main() {
           reason: 'an opaque colour is negative once it fits in 32 bits');
     });
 
+    test("an account's colour is sent signed as well", () async {
+      // The account's colour comes from Settings, not from WidgetColour, so
+      // it does not pass through argb on its way.
+      final engine = SampleMailEngine();
+      final surface = FakeHomeScreenSurface();
+      final store = MemoryWidgetStateStore();
+      final account = (await engine.loadAccounts()).first;
+      final inbox = (await engine.loadFolders(account.id))
+          .firstWhere((f) => f.role == FolderRole.inbox);
+
+      await MailboxWidgets(surface: surface, store: store).setUp(
+        appWidgetId: '7',
+        mailbox: WidgetMailbox(folderId: inbox.id),
+        engine: engine,
+      );
+
+      expect(surface.values['widget.7.colour'], isNegative);
+    });
+
     test('every number written is one Android can store as an int', () async {
       // Not just the colour: anything over two billion has the same problem,
       // and a mailbox count is written the same way.
       final engine = SampleMailEngine();
       final surface = FakeHomeScreenSurface();
       final store = MemoryWidgetStateStore();
+      final account = (await engine.loadAccounts()).first;
+      final inbox = (await engine.loadFolders(account.id))
+          .firstWhere((f) => f.role == FolderRole.inbox);
       await MailboxWidgets(surface: surface, store: store).setUp(
         appWidgetId: '7',
         mailbox: const WidgetMailbox(folderId: kUnifiedInboxId),
+        engine: engine,
+      );
+      await MailboxWidgets(surface: surface, store: store).setUp(
+        appWidgetId: '8',
+        mailbox: WidgetMailbox(folderId: inbox.id),
         engine: engine,
       );
 

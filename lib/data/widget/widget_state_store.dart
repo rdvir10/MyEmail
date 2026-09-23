@@ -2,7 +2,9 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../domain/account.dart';
 import '../../domain/mailbox_counts.dart';
+import '../../state/folder_tree.dart' show kUnifiedInboxId;
 
 /// What one placed widget is showing.
 class WidgetMailbox {
@@ -10,7 +12,7 @@ class WidgetMailbox {
     required this.folderId,
     this.counts = WidgetCount.all,
     this.label,
-    this.colour = WidgetColour.orange,
+    this.colour,
   });
 
   final String folderId;
@@ -27,29 +29,56 @@ class WidgetMailbox {
 
   /// The tile colour, so two widgets side by side are told apart before
   /// either of them is read.
-  final WidgetColour colour;
+  ///
+  /// Null means the account's own colour, the one Settings gives it, and it
+  /// follows the account when that is recoloured. A colour is only held here
+  /// when one was picked over it — which is how two widgets on one account,
+  /// an Inbox and a Sent, still come out different.
+  final WidgetColour? colour;
+
+  /// What the tile is drawn in: the colour picked for it, or else its
+  /// account's. All inboxes has no account of its own, and neither does a
+  /// widget whose account has gone, so those fall back to orange.
+  ///
+  /// The Dart value, 0xFF……, which does not fit a Java int. Anything sending
+  /// this to Android converts it first, the way [WidgetColour.argb] does.
+  int tileColour(Iterable<Account> accounts) {
+    final picked = colour;
+    if (picked != null) return picked.value;
+    // A folder id is `<accountId>:<path>`, and a path may hold colons of its
+    // own, so the first one is the split.
+    final accountId = folderId.split(':').first;
+    for (final account in accounts) {
+      if (account.id == accountId) return account.colorValue;
+    }
+    return WidgetColour.orange.value;
+  }
 
   /// [clearLabel] because passing null to [label] cannot mean "back to the
-  /// default name" and "leave it alone" at the same time.
+  /// default name" and "leave it alone" at the same time; [clearColour] for
+  /// the same reason, meaning back to the account's colour.
   WidgetMailbox copyWith({
     String? folderId,
     WidgetCount? counts,
     String? label,
     bool clearLabel = false,
     WidgetColour? colour,
+    bool clearColour = false,
   }) =>
       WidgetMailbox(
         folderId: folderId ?? this.folderId,
         counts: counts ?? this.counts,
         label: clearLabel ? null : (label ?? this.label),
-        colour: colour ?? this.colour,
+        colour: clearColour ? null : (colour ?? this.colour),
       );
 
   Map<String, Object?> toJson() => {
         'folder': folderId,
         'counts': counts.name,
         if (label != null) 'label': label,
-        'colour': colour.name,
+        // Not under 'colour', which is what widgets placed before the
+        // account's colour could be used wrote. See [_colourFrom].
+        if (colour != null) 'chosenColour': colour!.name,
       };
 
   /// Tolerant of the older shape, where the value was the folder id on its
@@ -68,8 +97,24 @@ class WidgetMailbox {
         orElse: () => WidgetCount.all,
       ),
       label: label is String && label.trim().isNotEmpty ? label : null,
-      colour: WidgetColour.byName(value['colour'] as String?),
+      colour: _colourFrom(folder, value),
     );
+  }
+
+  /// The colour a stored widget was given, if it was given one.
+  ///
+  /// Widgets placed before the account's colour could be used wrote theirs
+  /// under 'colour', and always wrote one — orange unless it was changed — so
+  /// there is no telling a choice from a default. Those move to the account's
+  /// colour, which is the point of the change. All inboxes has no account
+  /// colour to move to, so it keeps what it had.
+  static WidgetColour? _colourFrom(String folder, Map<dynamic, dynamic> value) {
+    final chosen = value['chosenColour'];
+    if (chosen is String) return WidgetColour.values.asNameMap()[chosen];
+    if (folder == kUnifiedInboxId) {
+      return WidgetColour.byName(value['colour'] as String?);
+    }
+    return null;
   }
 
   @override
@@ -85,7 +130,8 @@ class WidgetMailbox {
 
   @override
   String toString() =>
-      'WidgetMailbox($folderId, ${counts.name}${label == null ? '' : ', "$label"'})';
+      'WidgetMailbox($folderId, ${counts.name}${label == null ? '' : ', "$label"'}'
+      '${colour == null ? '' : ', ${colour!.name}'})';
 }
 
 /// What the home-screen widgets need remembered between runs.

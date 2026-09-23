@@ -181,7 +181,8 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
           Text('Colour', style: theme.textTheme.labelLarge),
           const SizedBox(height: 4),
           Text(
-            'Marks this account in the folder tree and in the unified Inbox.',
+            'Marks this account in the folder tree, the unified Inbox, its '
+            'notifications and its home-screen widgets.',
             style: theme.textTheme.bodySmall
                 ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
           ),

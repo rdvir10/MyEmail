@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'dart:ui' show Color;
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -9,6 +10,7 @@ import 'mail_notifier.dart';
 import 'notification_actions.dart';
 import 'notification_action_isolate.dart';
 import 'pending_actions.dart';
+import 'sender_badge.dart';
 
 /// The real notifier, on top of flutter_local_notifications.
 ///
@@ -37,6 +39,26 @@ class AndroidMailNotifier implements MailNotifier {
   final Future<void> Function(NotificationResponse response)? onAction;
   bool _ready = false;
   String? _launchPayload;
+
+  /// Badges already drawn, by letter and colour, so a pass announcing ten
+  /// messages from three people draws three.
+  final _badges = <String, Future<Uint8List?>>{};
+
+  /// Set once a badge has failed to draw. The likeliest cause is an isolate
+  /// with no screen, where every badge would fail the same way, and each
+  /// failure can cost the full wait before its notification goes out.
+  bool _badgesFailed = false;
+
+  Future<AndroidBitmap<Object>?> _badgeFor(String sender, int colorValue) async {
+    if (_badgesFailed) return null;
+    final initial = senderInitial(sender);
+    final png = await _badges.putIfAbsent(
+      '$initial:$colorValue',
+      () => drawSenderBadge(initial, colorValue),
+    );
+    if (png == null) _badgesFailed = true;
+    return png == null ? null : ByteArrayAndroidBitmap(png);
+  }
 
   /// One channel, so the user gets one row in Android's notification settings
   /// rather than one per account. Muting a single account is done in the app,
@@ -186,6 +208,7 @@ class AndroidMailNotifier implements MailNotifier {
             actions: actions,
             when: n.when.millisecondsSinceEpoch,
             color: Color(account.colorValue),
+            largeIcon: await _badgeFor(n.title, account.colorValue),
             // The subject and preview are two lines and will be cut off
             // otherwise; expanding the notification should show the whole
             // thing, which is often the entire message.
