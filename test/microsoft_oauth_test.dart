@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart' as http_testing;
 import 'package:myemail/data/auth/microsoft_oauth.dart';
 import 'package:myemail/data/auth/oauth_token.dart';
+import 'package:myemail/domain/error_report.dart' show Retryable;
 
 /// The device code flow, against a fake token endpoint.
 ///
@@ -298,6 +299,18 @@ void main() {
       await expectLater(
         oauth.refresh(stored),
         throwsA(isA<SignInFailed>()),
+      );
+    });
+
+    test('and says it is one, so offline is read as offline', () async {
+      // Whatever only wanted a token for something else falls back to the
+      // cache on a connection problem; a plain sign-in failure went past.
+      final oauth = oauthWith((_) async => throw const SocketFailure());
+
+      await expectLater(
+        oauth.refresh(stored),
+        throwsA(isA<SignInUnreachable>().having(
+            (e) => e, 'retryable', isA<Retryable>())),
       );
     });
 

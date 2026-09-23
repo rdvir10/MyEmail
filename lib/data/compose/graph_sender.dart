@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../../domain/account.dart';
 import '../../domain/draft.dart';
+import '../auth/microsoft_oauth.dart' show SignInUnreachable;
 import '../mail_engine.dart';
 import 'smtp_sender.dart' show buildMimeMessage;
 
@@ -119,22 +120,17 @@ class GraphSender {
   }
 
   Future<void> _postWholeMessage(http.Client client, List<int> mime) async {
-    final http.Response response;
-    try {
-      response = await client.post(
-        sendMailUri,
-        headers: {
-          'Authorization': 'Bearer ${await accessToken()}',
-          // text/plain is what tells Graph the body is base64 MIME rather
-          // than its own JSON. application/json here is rejected as
-          // malformed JSON, which reads as a bug in the message.
-          'Content-Type': 'text/plain',
-        },
-        body: base64Encode(mime),
-      );
-    } on Exception catch (e) {
-      throw ConnectionFailed('Could not reach Microsoft to send. ($e)');
-    }
+    final response = await _authorised((token) => client.post(
+          sendMailUri,
+          headers: {
+            'Authorization': 'Bearer $token',
+            // text/plain is what tells Graph the body is base64 MIME rather
+            // than its own JSON. application/json here is rejected as
+            // malformed JSON, which reads as a bug in the message.
+            'Content-Type': 'text/plain',
+          },
+          body: base64Encode(mime),
+        ));
 
     // 202 means accepted for delivery, not delivered. Graph returns no body.
     if (response.statusCode == 202) return;
@@ -190,10 +186,10 @@ class GraphSender {
   }
 
   Future<String> _createDraft(http.Client client, List<int> mime) async {
-    final response = await _guarded(() async => client.post(
+    final response = await _authorised((token) => client.post(
           messagesUri,
           headers: {
-            'Authorization': 'Bearer ${await accessToken()}',
+            'Authorization': 'Bearer $token',
             'Content-Type': 'text/plain',
           },
           body: base64Encode(mime),
@@ -217,11 +213,11 @@ class GraphSender {
     String messageId,
     DraftAttachment attachment,
   ) async {
-    final response = await _guarded(() async => client.post(
+    final response = await _authorised((token) => client.post(
           Uri.parse('$base/me/messages/${Uri.encodeComponent(messageId)}'
               '/attachments'),
           headers: {
-            'Authorization': 'Bearer ${await accessToken()}',
+            'Authorization': 'Bearer $token',
             'Content-Type': 'application/json',
           },
           body: jsonEncode({
@@ -249,11 +245,11 @@ class GraphSender {
     String messageId,
     DraftAttachment attachment,
   ) async {
-    final opened = await _guarded(() async => client.post(
+    final opened = await _authorised((token) => client.post(
           Uri.parse('$base/me/messages/${Uri.encodeComponent(messageId)}'
               '/attachments/createUploadSession'),
           headers: {
-            'Authorization': 'Bearer ${await accessToken()}',
+            'Authorization': 'Bearer $token',
             'Content-Type': 'application/json',
           },
           body: jsonEncode({
@@ -310,14 +306,33 @@ class GraphSender {
     http.Client client,
     String messageId,
   ) async {
-    final response = await _guarded(() async => client.post(
+    final response = await _authorised((token) => client.post(
           Uri.parse(
             '$base/me/messages/${Uri.encodeComponent(messageId)}/send',
           ),
-          headers: {'Authorization': 'Bearer ${await accessToken()}'},
+          headers: {'Authorization': 'Bearer $token'},
         ));
     if (response.statusCode == 202 || response.statusCode == 200) return;
     throw _failureFor(response);
+  }
+
+  /// With the account's token, and once more with a freshly refreshed one
+  /// if Microsoft turns the first away: see GraphMailApi's own. A refresh
+  /// that could not reach Microsoft, like any other network failure, reads
+  /// as a connection problem rather than as a refusal.
+  Future<http.Response> _authorised(
+    Future<http.Response> Function(String token) request,
+  ) async {
+    for (var forced = false;; forced = true) {
+      final String token;
+      try {
+        token = await accessToken(force: forced);
+      } on SignInUnreachable catch (e) {
+        throw ConnectionFailed(e.message);
+      }
+      final response = await _guarded(() => request(token));
+      if (response.statusCode != 401 || forced) return response;
+    }
   }
 
   /// A network failure reads as a network failure rather than as a refusal.

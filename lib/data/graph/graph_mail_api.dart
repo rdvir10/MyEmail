@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
+import '../auth/microsoft_oauth.dart' show SignInUnreachable;
 import '../mail_engine.dart';
 
 /// A thin, typed client over the Microsoft Graph mail endpoints.
@@ -157,36 +158,71 @@ class GraphMailApi {
   /// A name the mailbox does not have simply does not appear. Archive is the
   /// common case — plenty of mailboxes have never had one.
   Future<Map<String, String>> wellKnownFolderIds() async {
-    // One request, not one per name. Six at once was a burst, and a burst is
-    // what Graph throttles hardest — adding an account could fail outright
-    // with a 429 before anything had loaded.
-    final json = await _post(Uri.parse('$base/\$batch'), {
-      'requests': [
-        for (final name in wellKnownNames)
-          {
-            'id': name,
-            'method': 'GET',
-            'url': '/me/mailFolders/$name?\$select=id',
-          },
-      ],
-    });
-
     final found = <String, String>{};
-    final responses = json['responses'];
-    if (responses is! List) return found;
-    for (final entry in responses) {
-      if (entry is! Map) continue;
-      // A batch answers 200 even when the requests inside it did not, so each
-      // one carries its own status. A 404 here is a mailbox with no Archive,
-      // which is ordinary.
-      if (entry['status'] != 200) continue;
-      final name = entry['id'];
-      final body = entry['body'];
-      if (name is! String || body is! Map) continue;
-      final id = body['id'];
-      if (id is String && id.isNotEmpty) found[name] = id;
+    var asking = wellKnownNames;
+    for (var attempt = 0;; attempt++) {
+      // One request, not one per name. Six at once was a burst, and a burst
+      // is what Graph throttles hardest — adding an account could fail
+      // outright with a 429 before anything had loaded.
+      final json = await _post(Uri.parse('$base/\$batch'), {
+        'requests': [
+          for (final name in asking)
+            {
+              'id': name,
+              'method': 'GET',
+              'url': '/me/mailFolders/$name?\$select=id',
+            },
+        ],
+      });
+
+      // A batch answers 200 even when the requests inside it did not, so
+      // each one carries its own status. A 404 is a mailbox with no Archive,
+      // which is ordinary. A 429 or a 5xx is no answer at all: Graph
+      // throttles the requests inside a batch one by one. Read as "no such
+      // folder", a throttled Inbox was listed as an ordinary folder, and the
+      // account went without notifications, the unified Inbox and Undo
+      // until a later listing happened to get through.
+      final again = <String>[];
+      var wait = Duration.zero;
+      final responses = json['responses'];
+      for (final entry in responses is List ? responses : const []) {
+        if (entry is! Map) continue;
+        final name = entry['id'];
+        if (name is! String) continue;
+        final status = entry['status'];
+        if (status == 200) {
+          final body = entry['body'];
+          final id = body is Map ? body['id'] : null;
+          if (id is String && id.isNotEmpty) found[name] = id;
+        } else if (status == 429 || (status is int && status >= 500)) {
+          again.add(name);
+          final asked = _innerRetryAfter(entry['headers']);
+          if (asked > wait) wait = asked;
+        }
+      }
+      if (again.isEmpty) return found;
+      if (attempt >= maxThrottleRetries || wait > maxThrottleWait) {
+        throw const ConnectionFailed(
+          'Microsoft is busy and would not say which folder is the Inbox. '
+          'Try again shortly.',
+        );
+      }
+      await (sleep ?? _realSleep)(wait);
+      asking = again;
     }
-    return found;
+  }
+
+  /// How long one request inside a batch asked to be left, 2 s if it did
+  /// not say.
+  static Duration _innerRetryAfter(Object? headers) {
+    if (headers is Map) {
+      for (final MapEntry(:key, :value) in headers.entries) {
+        if ('$key'.toLowerCase() != 'retry-after') continue;
+        final seconds = int.tryParse('$value'.trim());
+        if (seconds != null) return Duration(seconds: seconds);
+      }
+    }
+    return const Duration(seconds: 2);
   }
 
   Future<GraphFolder> createFolder({
@@ -414,12 +450,9 @@ class GraphMailApi {
 
   /// A POST whose success is a 202 with nothing in it.
   Future<void> _postNoContent(Uri uri, Map<String, Object?> body) async {
-    final request = http.Request('POST', uri)
-      ..headers['Authorization'] = 'Bearer ${await accessToken()}'
+    final response = await _authorised(() => http.Request('POST', uri)
       ..headers['Content-Type'] = 'application/json'
-      ..body = jsonEncode(body);
-    final response =
-        await http.Response.fromStream(await _client.send(request));
+      ..body = jsonEncode(body));
     if (response.statusCode == 404) throw const GraphNotFound();
     if (response.statusCode >= 400) {
       throw _failureFor(response.statusCode, const {});
@@ -533,11 +566,9 @@ class GraphMailApi {
   /// is bytes: decoding a PDF as UTF-8 and re-encoding it produces something
   /// that is the right length and opens in nothing.
   Future<Uint8List> _bytes(Uri uri) async {
-    final request = http.Request('GET', uri)
-      ..headers['Authorization'] = 'Bearer ${await accessToken()}'
-      ..followRedirects = true;
-    final response =
-        await http.Response.fromStream(await _client.send(request));
+    final response = await _authorised(
+      () => http.Request('GET', uri)..followRedirects = true,
+    );
     if (response.statusCode == 404) throw const GraphNotFound();
     if (response.statusCode >= 400) {
       throw _failureFor(response.statusCode, const {});
@@ -565,19 +596,45 @@ class GraphMailApi {
   Future<Map<String, Object?>> _delete(Uri uri) =>
       _send(http.Request('DELETE', uri));
 
-  Future<Map<String, Object?>> _send(
-    http.Request request, {
-    int attempt = 0,
-  }) async {
-    {
-      request.headers['Authorization'] = 'Bearer ${await accessToken()}';
+  /// The account's token, with a refresh that could not reach Microsoft
+  /// read as what it is: no connection. See [SignInUnreachable].
+  Future<String> _token({bool force = false}) async {
+    try {
+      return await accessToken(force: force);
+    } on SignInUnreachable catch (e) {
+      throw ConnectionFailed(e.message);
+    }
+  }
 
+  /// Send what [build] makes with the account's token, and once more with a
+  /// freshly refreshed one if Microsoft turns the first away.
+  ///
+  /// A token can look good here and not be: a clock running a few minutes
+  /// slow, or Microsoft withdrawing it early. A 401 went straight to "sign
+  /// in again", for up to an hour, when one refresh would have done. A
+  /// second 401 is the real thing. [build] is called for each try because
+  /// a request cannot be sent twice.
+  Future<http.Response> _authorised(http.Request Function() build) async {
+    for (var forced = false;; forced = true) {
+      final request = build()
+        ..headers['Authorization'] = 'Bearer ${await _token(force: forced)}';
       final http.Response response;
       try {
         response = await http.Response.fromStream(await _client.send(request));
       } on Exception catch (e) {
         throw ConnectionFailed('Could not reach Microsoft. ($e)');
       }
+      if (response.statusCode != 401 || forced) return response;
+    }
+  }
+
+  Future<Map<String, Object?>> _send(
+    http.Request request, {
+    int attempt = 0,
+  }) async {
+    {
+      // Copies, so the one given is never sent and can be copied again.
+      final response = await _authorised(() => _copyOf(request));
 
       // Throttled, and Graph has said how long to wait. Waiting it out is the
       // whole remedy, and doing it here means nothing above this ever has to
@@ -585,8 +642,7 @@ class GraphMailApi {
       final wait = _retryAfter(response);
       if (wait != null && attempt < maxThrottleRetries) {
         await (sleep ?? _realSleep)(wait);
-        // A fresh request object: an http.Request cannot be sent twice.
-        return _send(_copyOf(request), attempt: attempt + 1);
+        return _send(request, attempt: attempt + 1);
       }
 
       if (response.statusCode == 404) throw const GraphNotFound();

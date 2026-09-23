@@ -204,6 +204,38 @@ void main() {
       expect(server.batches, 1);
     });
 
+    test('a throttled lookup inside the batch does not demote the Inbox',
+        () async {
+      // Graph throttles the requests in a batch one by one and answers the
+      // batch itself with a 200. Read as "no such folder", the Inbox was
+      // listed as an ordinary folder.
+      server
+        ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+        ..folder(id: 'f-trash', name: 'Deleted Items', wellKnown: 'deleteditems')
+        ..throttledInBatch['inbox'] = 1;
+
+      final folders = await patientTransport.listFolders();
+
+      expect(folders.firstWhere((f) => f.path == 'Inbox').role,
+          FolderRole.inbox);
+      expect(folders.firstWhere((f) => f.path == 'Deleted Items').role,
+          FolderRole.deleted);
+      expect(server.batches, 2, reason: 'only the throttled name again');
+    });
+
+    test('and one that stays throttled fails the listing instead', () async {
+      // A folder list with no Inbox in it is worse than no new list: it is
+      // stored, and read as the truth until the next one.
+      server
+        ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+        ..throttledInBatch['inbox'] = 99;
+
+      await expectLater(
+        patientTransport.listFolders(),
+        throwsA(isA<ConnectionFailed>()),
+      );
+    });
+
     test('being throttled is waited out rather than handed over', () async {
       // Graph says how long to wait in a Retry-After header. Reporting "rate
       // limited" instead leaves someone with nothing to do but tap the same
@@ -745,6 +777,78 @@ void main() {
       expect(inArchive.single.uid, moved!.single);
     });
 
+    test('emptying a folder of 250 deletes all 250', () async {
+      // Deleting page by page with an offset stepped over every other page:
+      // 100 were left on the server while the app showed the folder empty.
+      server.folder(id: 'f-junk', name: 'Junk Email', wellKnown: 'junkemail');
+      for (var i = 0; i < 250; i++) {
+        server.message('f-junk', id: 'j$i', subject: 'J$i', minutesAgo: i + 1);
+      }
+
+      await transport.storeFlagOnAll('Junk Email',
+          flag: MessageFlag.deleted, set: true);
+
+      expect(server.messages.values.where((m) => m['_folder'] == 'f-junk'),
+          isEmpty);
+    });
+
+    test('a message leaving mid-scan does not take the next one with it',
+        () async {
+      // Pages are asked for by offset, one request each. One message gone
+      // between two of them moved the rest up a place, the first of the
+      // next page was never seen, and the sync dropped it as deleted.
+      for (var i = 0; i < 150; i++) {
+        server.message('f-inbox', id: 'm$i', subject: 'M$i', minutesAgo: i + 1);
+      }
+      // The whole folder is the cached window, so the scan reads it all.
+      final window = DateTime.utc(2000);
+      final uidOf = {
+        for (final h in await transport.fetchHeadersFromUid('Inbox', 1,
+            windowStart: window))
+          h.subject: h.uid,
+      };
+      expect(uidOf, hasLength(150));
+      final top = uidOf.values.reduce((a, b) => a > b ? a : b);
+      final start = server.listings;
+      server.afterListing = (n) {
+        if (n == start + 1) server.remove('m0');
+      };
+
+      final existing =
+          await transport.existingUids('Inbox', 1, top, windowStart: window);
+
+      // M0 was on the first page before it went, so it was seen; M100 was
+      // the first of the second page, which is the one that went missing.
+      expect(existing, contains(uidOf['M100']));
+      expect(existing, containsAll([for (var i = 1; i < 150; i++) uidOf['M$i']]));
+    });
+
+    test('and when more go than the pages overlap, the scan starts again',
+        () async {
+      for (var i = 0; i < 150; i++) {
+        server.message('f-inbox', id: 'm$i', subject: 'M$i', minutesAgo: i + 1);
+      }
+      final window = DateTime.utc(2000);
+      final uidOf = {
+        for (final h in await transport.fetchHeadersFromUid('Inbox', 1,
+            windowStart: window))
+          h.subject: h.uid,
+      };
+      final top = uidOf.values.reduce((a, b) => a > b ? a : b);
+      final start = server.listings;
+      server.afterListing = (n) {
+        if (n != start + 1) return;
+        for (var i = 0; i < 20; i++) {
+          server.remove('m$i');
+        }
+      };
+
+      final existing =
+          await transport.existingUids('Inbox', 1, top, windowStart: window);
+
+      expect(existing, containsAll([for (var i = 20; i < 150; i++) uidOf['M$i']]));
+    });
+
     test('marking all read skips what is already read', () async {
       // A second "mark all read" over a large folder would otherwise be
       // thousands of pointless writes.
@@ -911,6 +1015,14 @@ class _FakeGraph {
   /// How many batch requests were made. One per folder listing, not one per
   /// well-known name, is the whole point of batching them.
   int batches = 0;
+
+  /// Called once each listing of a folder's messages has been read, with
+  /// how many there have been: the moment to change the folder under a
+  /// scan that is part way through.
+  void Function(int listings)? afterListing;
+
+  /// Names whose lookup inside a batch is throttled, and how many times.
+  final Map<String, int> throttledInBatch = {};
 
   /// How many times a folder's messages were paged through. A sync asks the
   /// same question three or four times over and they should share an answer.
@@ -1115,7 +1227,18 @@ class _FakeGraph {
       return json({
         'responses': [
           for (final r in requests)
-            if (wellKnown.containsKey((r as Map)['id']))
+            if ((throttledInBatch[(r as Map)['id']] ?? 0) > 0 &&
+                (throttledInBatch[r['id']] = throttledInBatch[r['id']]! - 1) >=
+                    0)
+              {
+                'id': r['id'],
+                'status': 429,
+                'headers': {'Retry-After': '1'},
+                'body': {
+                  'error': {'code': 'ApplicationThrottled'},
+                },
+              }
+            else if (wellKnown.containsKey(r['id']))
               {
                 'id': r['id'],
                 'status': 200,
@@ -1166,6 +1289,7 @@ class _FakeGraph {
       final skip = int.tryParse(query['\$skip'] ?? '0') ?? 0;
       final top = int.tryParse(query['\$top'] ?? '50') ?? 50;
       final page = inFolder.skip(skip).take(top).toList();
+      afterListing?.call(listings);
       return json({'value': page});
     }
 

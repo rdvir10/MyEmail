@@ -139,6 +139,36 @@ void main() {
       );
     });
 
+    test('a token turned away once is refreshed, and the send goes out',
+        () async {
+      final presented = <String?>[];
+      final sender = senderWith(
+        (request) async {
+          presented.add(request.headers['Authorization']);
+          return request.headers['Authorization'] == 'Bearer fresh'
+              ? http.Response('', 202)
+              : http.Response('{}', 401);
+        },
+        token: ({bool force = false}) async => force ? 'fresh' : 'stale',
+      );
+
+      await sender.send(message());
+
+      expect(presented, ['Bearer stale', 'Bearer fresh']);
+    });
+
+    test('a refresh that cannot reach Microsoft says there is no connection',
+        () async {
+      final sender = senderWith(
+        (_) async => fail('nothing is sent without a token'),
+        token: ({bool force = false}) async =>
+            throw const SignInUnreachable('Could not reach Microsoft.'),
+      );
+
+      await expectLater(
+          sender.send(message()), throwsA(isA<ConnectionFailed>()));
+    });
+
     test('throttling says to wait rather than looking permanent', () async {
       await expectMessage(429, 'TooManyRequests', contains('Wait a minute'));
     });

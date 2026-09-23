@@ -485,6 +485,9 @@ class GraphTransport implements ImapTransport {
     required bool set,
   }) async {
     final folderId = await _folderId(path);
+    if (flag == MessageFlag.deleted && set) {
+      return _deleteAll(folderId);
+    }
     // Paged rather than one call: "mark all read" on a folder of thousands is
     // thousands of requests either way, and holding them all in memory first
     // buys nothing.
@@ -503,6 +506,33 @@ class GraphTransport implements ImapTransport {
         await _applyFlag(m.id, flag, set);
       }
       if (messages.length < _pageSize) return;
+    }
+  }
+
+  /// Empty a folder: delete from the top of it until nothing is left.
+  ///
+  /// Not page by page with an offset. Each page deleted moves the rest up
+  /// by a page, so the offset of the next one stepped over a page nobody
+  /// had deleted: emptying 250 messages left 100 behind, while the app
+  /// showed the folder empty until the next sync brought them back.
+  Future<void> _deleteAll(String folderId) async {
+    final tried = <String>{};
+    while (true) {
+      final messages = await api.messages(folderId, top: _pageSize);
+      final fresh = [
+        for (final m in messages)
+          if (tried.add(m.id)) m,
+      ];
+      if (messages.isEmpty) return;
+      if (fresh.isEmpty) {
+        // Deleted, and still there. Going round again would never end.
+        throw const ConnectionFailed(
+          'Microsoft would not delete some of the messages in that folder.',
+        );
+      }
+      for (final m in fresh) {
+        await _applyFlag(m.id, MessageFlag.deleted, true);
+      }
     }
   }
 
@@ -646,21 +676,64 @@ class GraphTransport implements ImapTransport {
   /// transport that reports a folder as it was a moment ago is a bug waiting
   /// for the moment it matters. Sharing has to come from asking once and
   /// passing the answer down, not from a cache with a timer on it.
+  ///
+  /// Pages overlap by [_overlap], and each has to hold one of the last
+  /// messages of the page before. Pages are asked for by offset, one request
+  /// each, so a message leaving the folder between two of them moved every
+  /// later one up a place, and the first of the next page was never seen:
+  /// the sync then took it for deleted and dropped it from the cache, where
+  /// nothing brought it back. When the folder moves by more than the
+  /// overlap between two pages, the scan starts again.
   Future<_Scan> _scanBack(
     String path, {
     required int downToUid,
     DateTime? downToDate,
   }) async {
     final folderId = await _folderId(path);
-    final messages = <GraphMessage>[];
+    for (var attempt = 0;; attempt++) {
+      final scan = await _scanOnce(
+        folderId,
+        path,
+        downToUid: downToUid,
+        downToDate: downToDate,
+      );
+      if (scan != null) return scan;
+      if (attempt >= 2) {
+        throw const ConnectionFailed(
+          'The folder kept changing while it was being read. Try again in a '
+          'moment.',
+        );
+      }
+    }
+  }
+
+  /// How many messages each page shares with the one before it.
+  static const _overlap = 10;
+
+  /// One pass of [_scanBack], or null if the folder moved under it.
+  Future<_Scan?> _scanOnce(
+    String folderId,
+    String path, {
+    required int downToUid,
+    DateTime? downToDate,
+  }) async {
+    // By id, so a message seen on two pages is one message.
+    final messages = <String, GraphMessage>{};
     final uids = <String, int>{};
+    List<GraphMessage>? previous;
 
     for (var page = 0; page < _maxPages; page++) {
       final batch = await api.messages(
         folderId,
-        skip: page * _pageSize,
+        skip: page * (_pageSize - _overlap),
         top: _pageSize,
       );
+      if (previous != null) {
+        final tail = {
+          for (final m in previous.skip(_pageSize - _overlap)) m.id,
+        };
+        if (!batch.any((m) => tail.contains(m.id))) return null;
+      }
       if (batch.isEmpty) break;
 
       // Oldest first within the page, so the numbers handed out ascend.
@@ -669,8 +742,11 @@ class GraphTransport implements ImapTransport {
         path,
         [for (final m in batch.reversed) m.id],
       );
-      messages.addAll(batch);
+      for (final m in batch) {
+        messages[m.id] = m;
+      }
       uids.addAll(assigned);
+      previous = batch;
 
       if (batch.length < _pageSize) break;
       if (downToDate != null) {
@@ -686,7 +762,7 @@ class GraphTransport implements ImapTransport {
       if (lowest <= downToUid) break;
     }
 
-    return _Scan(messages: messages, uids: uids);
+    return _Scan(messages: messages.values.toList(), uids: uids);
   }
 
   Future<List<RemoteHeader>> _headers(

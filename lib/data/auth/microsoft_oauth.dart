@@ -359,7 +359,7 @@ class MicrosoftOAuth {
         body: form,
       );
     } catch (e) {
-      throw SignInFailed('Could not reach Microsoft to sign in. ($e)');
+      throw SignInUnreachable('Could not reach Microsoft to sign in. ($e)');
     }
 
     final Object? body;
@@ -486,6 +486,18 @@ class SignInFailed implements Exception, ReadableError {
   final String message;
   @override
   String toString() => message;
+}
+
+/// The sign-in could not be tried at all: no connection to Microsoft.
+///
+/// A [SignInFailed] still, for every screen that shows one, but also
+/// [Retryable], and read as being offline by whatever was only after a
+/// token for something else. As a sign-in failure it went past every place
+/// that falls back to the cache when there is no connection, so a Microsoft
+/// account more than an hour into a flight showed errors instead of mail.
+@immutable
+class SignInUnreachable extends SignInFailed implements Retryable {
+  const SignInUnreachable(super.message);
 }
 
 /// Consent was not given.
