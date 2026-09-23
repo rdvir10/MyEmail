@@ -40,12 +40,40 @@ void main() {
         bodyHtml: '<p>A body worth keeping</p>',
       );
 
+  // Each fixture is today's database with everything later versions added
+  // taken back out, so the upgrade has real work to do. They used to keep
+  // schema 6's columns, so its step never ran: it could have been deleted
+  // and every test here would still have passed, while every device
+  // upgrading from 2.35 or earlier failed on every cache read.
+
+  /// What schema 6 added: who else a message went to, what its files weigh,
+  /// and whether it is a meeting request.
+  Future<void> dropSchema6(MailDatabase db) async {
+    for (final column in ['copied_json', 'attachment_bytes', 'is_meeting']) {
+      await db.customStatement('ALTER TABLE messages DROP COLUMN $column');
+    }
+  }
+
+  /// A database as it stood at schema 1: before threading headers.
+  Future<void> buildVersion1() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await dropSchema6(db);
+    await db.customStatement('DROP TABLE IF EXISTS graph_ids');
+    for (final column in ['calendar', 'message_id', 'in_reply_to']) {
+      await db.customStatement('ALTER TABLE messages DROP COLUMN $column');
+    }
+    await db.customStatement('PRAGMA user_version = 1');
+    await db.close();
+  }
+
   /// A database as it stood at schema 2: everything the app had then, and
   /// none of what version 3 added.
   Future<void> buildVersion2() async {
     final db = MailDatabase(NativeDatabase(file));
     await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
     // Roll it back to what a device on the previous release actually has.
+    await dropSchema6(db);
     await db.customStatement('DROP TABLE IF EXISTS graph_ids');
     await db.customStatement('ALTER TABLE messages DROP COLUMN calendar');
     await db.customStatement('PRAGMA user_version = 2');
@@ -56,6 +84,7 @@ void main() {
   Future<void> buildVersion3() async {
     final db = MailDatabase(NativeDatabase(file));
     await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await dropSchema6(db);
     await db.customStatement('ALTER TABLE messages DROP COLUMN calendar');
     await db.customStatement('PRAGMA user_version = 3');
     await db.close();
@@ -69,9 +98,70 @@ void main() {
     if (withGraph) {
       await DriftGraphIdMap(db).uidsFor('acct-1', 'INBOX', ['g-11']);
     }
+    await dropSchema6(db);
     await db.customStatement('PRAGMA user_version = 4');
     await db.close();
   }
+
+  /// A database as it stood at schema 5, the one most devices upgrade from.
+  Future<void> buildVersion5() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await dropSchema6(db);
+    await db.customStatement('PRAGMA user_version = 5');
+    await db.close();
+  }
+
+  test('a version 5 database gains the schema 6 columns and keeps its rows',
+      () async {
+    await buildVersion5();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    final cached = await store.readMessages('acct-1', 'INBOX');
+
+    expect(cached, hasLength(1));
+    expect(cached.single.bodyHtml, '<p>A body worth keeping</p>');
+    expect(cached.single.cc, isEmpty, reason: 'cached before Cc was kept');
+    expect(cached.single.attachmentBytes, 0);
+    expect(cached.single.isMeeting, isFalse);
+
+    // And the new columns take what a sync writes.
+    await store.upsertMessages('acct-1', 'INBOX', [
+      CachedMessage(
+        uid: 12,
+        subject: 'After the upgrade',
+        from: const MailAddress(email: 'dana@example.com'),
+        to: const [MailAddress(email: 'me@example.com')],
+        cc: const [MailAddress(email: 'sam@example.com')],
+        date: DateTime.utc(2026, 9, 2),
+        isRead: false,
+        isFlagged: false,
+        hasAttachments: true,
+        attachmentBytes: 2048,
+        isMeeting: true,
+      ),
+    ]);
+    final after = await store.readMessage('acct-1', 'INBOX', 12);
+    expect(after!.cc.single.email, 'sam@example.com');
+    expect(after.attachmentBytes, 2048);
+    expect(after.isMeeting, isTrue);
+  });
+
+  test('a version 1 database comes all the way up and keeps its rows',
+      () async {
+    // Every step, from before the threading headers.
+    await buildVersion1();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final cached = await DriftCacheStore(db).readMessages('acct-1', 'INBOX');
+
+    expect(cached.single.subject, 'Cached before the upgrade');
+    expect(cached.single.bodyHtml, '<p>A body worth keeping</p>');
+    expect(cached.single.messageId, isNull);
+  });
 
   test('a Microsoft account gives up its cached bodies once', () async {
     // Until version 5 a deleted message's number could be handed out again,
