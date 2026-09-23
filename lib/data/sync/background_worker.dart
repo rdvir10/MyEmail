@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
 import '../../domain/folder_role.dart';
+import '../../domain/mail_folder.dart';
 import '../../domain/sync_prefs.dart';
 import '../account_store.dart';
 import '../cache/mail_database.dart';
@@ -138,12 +139,14 @@ Future<void> cancelBackgroundSchedule() async {
 ///
 /// A one-off rather than a periodic task, because what is wanted is one
 /// process that stays alive and loops, not a job that runs and exits. It
-/// re-enqueues itself when its budget is spent; see [_runLive].
-Future<void> _startLiveWorker(SyncPrefs prefs) async {
+/// re-enqueues itself when its budget is spent; see [_runLive]. [after]
+/// holds the start back, for a worker handing over after it failed.
+Future<void> _startLiveWorker(SyncPrefs prefs, {Duration? after}) async {
   await Workmanager().registerOneOffTask(
     _liveUniqueName,
     _liveTaskName,
     inputData: {'mode': prefs.mode.name},
+    initialDelay: after,
     // `replace`, so changing from five-minute to push does not leave the
     // previous worker running alongside the new one.
     existingWorkPolicy: ExistingWorkPolicy.replace,
@@ -281,6 +284,17 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
   } catch (e, stack) {
     debugPrint('[myemail] live worker threw: $e');
     debugPrint('$stack');
+    // Still hand over, a minute on, while the settings ask for it. Ending
+    // here used to leave push off with nothing to say so until the app was
+    // next opened; the delay keeps a fault that repeats from spinning.
+    try {
+      final current = await PrefsSyncStateStore().readPrefs();
+      if (current.mode.needsForegroundService) {
+        await _startLiveWorker(current, after: const Duration(minutes: 1));
+      }
+    } catch (e) {
+      debugPrint('[myemail] could not hand the live worker over: $e');
+    }
     return true;
   } finally {
     await engine?.close();
@@ -297,13 +311,34 @@ Future<void> _waitForNext(SyncMode mode, CachedImapEngine engine) async {
   // Push: hold an IDLE on every watched inbox and return the moment one of
   // them speaks. The renew interval caps it, because a server drops an IDLE
   // that is never re-issued and silence would look identical to no mail.
+  //
+  // The inboxes come from the folder lists the pass just saved, not from the
+  // server. Asking the server again was redundant, and it threw for any
+  // account that could not be reached in anything but a plain connection
+  // failure — a revoked app password, a Microsoft sign-in to redo — which
+  // ended the worker and every account's notifications with it.
   final inboxes = <String>[];
   for (final account in await engine.loadAccounts()) {
-    for (final folder in await engine.loadFolders(account.id)) {
+    for (final folder in await _foldersToWatch(engine, account.id)) {
       if (folder.role == FolderRole.inbox) inboxes.add(folder.id);
     }
   }
   await engine.awaitNewMail(inboxes, timeout: idleRenewInterval);
+}
+
+/// The account's folders as last saved, asking the server only when nothing
+/// has been saved yet, and never letting one account's trouble out.
+Future<List<MailFolder>> _foldersToWatch(
+  CachedImapEngine engine,
+  String accountId,
+) async {
+  try {
+    final saved = await engine.cachedFolders(accountId);
+    return saved.isNotEmpty ? saved : await engine.loadFolders(accountId);
+  } catch (e) {
+    debugPrint('[myemail] not watching $accountId: $e');
+    return const [];
+  }
 }
 
 Future<bool> _runOnePass() async {

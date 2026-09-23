@@ -159,7 +159,15 @@ abstract class ImapTransport {
   ///
   /// A server without IDLE returns false after [timeout] rather than
   /// throwing, which degrades the caller to a slow poll instead of an error.
-  Future<bool> awaitChanges(String path, {required Duration timeout});
+  ///
+  /// [cancel] ends the wait early, returning false. While a wait is running
+  /// the connection can be used for nothing else, so a wait that has lost the
+  /// race to another account must be ended, not left to run out.
+  Future<bool> awaitChanges(
+    String path, {
+    required Duration timeout,
+    Future<void>? cancel,
+  });
 
   Future<void> close();
 }

@@ -533,12 +533,19 @@ class GraphTransport implements ImapTransport {
   }
 
   @override
-  Future<bool> awaitChanges(String path, {required Duration timeout}) async {
+  Future<bool> awaitChanges(
+    String path, {
+    required Duration timeout,
+    Future<void>? cancel,
+  }) async {
     // Graph's push is a webhook to a public HTTPS endpoint, which an app on a
     // tablet has no way to receive. Waiting out the timeout and reporting
     // nothing is what the interface documents for a server without IDLE, and
     // it degrades the caller to a poll rather than an error.
-    await Future<void>.delayed(timeout);
+    await Future.any([
+      Future<void>.delayed(timeout),
+      ?cancel,
+    ]);
     return false;
   }
 

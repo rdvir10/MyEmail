@@ -356,12 +356,24 @@ class FakeImapTransport implements ImapTransport {
     return m;
   }
 
+  /// How many waits ended because they were called off.
+  int idleCancelled = 0;
+
   @override
-  Future<bool> awaitChanges(String path, {required Duration timeout}) async {
+  Future<bool> awaitChanges(
+    String path, {
+    required Duration timeout,
+    Future<void>? cancel,
+  }) async {
     _online();
     calls.add('IDLE $path');
     final waiter = Completer<bool>();
     _idle = waiter;
+    cancel?.then((_) {
+      if (waiter.isCompleted) return;
+      idleCancelled++;
+      waiter.complete(false);
+    });
     final woken = await waiter.future.timeout(
       timeout,
       onTimeout: () => false,

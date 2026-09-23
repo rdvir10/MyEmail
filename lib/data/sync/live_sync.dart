@@ -31,6 +31,7 @@ class LiveSyncLoop {
     required this.waitForNext,
     this.budget = liveSyncBudget,
     this.retryDelay = const Duration(seconds: 30),
+    this.minimumGap = const Duration(seconds: 10),
     Future<void> Function(Duration)? sleep,
     DateTime Function()? clock,
     this.stopSignal,
@@ -46,8 +47,15 @@ class LiveSyncLoop {
   /// How long this worker may live before handing over to a fresh one.
   final Duration budget;
 
-  /// How long to wait after a pass that failed outright.
+  /// How long to wait after a pass that failed outright, or a wait that did.
   final Duration retryDelay;
+
+  /// The least time from the start of one pass to the start of the next,
+  /// however quickly the wait between them came back. A wait that returns at
+  /// once — a server refusing every connection, a watch that cannot start —
+  /// would otherwise turn the loop into passes back to back for the whole
+  /// budget. Mail arriving in a burst waits this long at most.
+  final Duration minimumGap;
 
   final Future<void> Function(Duration) _sleep;
   final DateTime Function() _clock;
@@ -94,11 +102,28 @@ class LiveSyncLoop {
       // not sit in a sleep Android is waiting on.
       final waitStarted = _clock();
       debugPrint('[myemail] live: waiting (${failed ? 'retry' : 'next'})');
-      await (failed ? _sleep(retryDelay) : waitForNext());
+      if (failed) {
+        await _sleep(retryDelay);
+      } else {
+        try {
+          await waitForNext();
+        } catch (e) {
+          // The wait is part of the loop, and the loop must outlive anything
+          // one account can do. This used to escape run(), which ended the
+          // worker and every account's notifications with it.
+          debugPrint('[myemail] live: wait threw: $e');
+          if (_stopped) break;
+          await _sleep(retryDelay);
+        }
+      }
       debugPrint(
         '[myemail] live: wait ended after '
         '${_clock().difference(waitStarted).inSeconds}s',
       );
+
+      if (_stopped) break;
+      final sincePass = _clock().difference(passStarted);
+      if (sincePass < minimumGap) await _sleep(minimumGap - sincePass);
     }
 
     return LiveSyncOutcome(

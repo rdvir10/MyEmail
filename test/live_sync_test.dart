@@ -67,6 +67,51 @@ void main() {
       expect(outcome.passes, 1);
     });
 
+    test('a wait that throws is waited out, not the end of the loop',
+        () async {
+      // It used to escape run(): the worker ended and every account's
+      // notifications with it, because one account's folder list failed.
+      var waits = 0;
+      final outcome = await LiveSyncLoop(
+        onePass: () async => const BackgroundSyncReport(),
+        waitForNext: () async {
+          waits++;
+          if (waits == 1) throw StateError('sign in again');
+          clock.advance(const Duration(minutes: 5));
+        },
+        budget: const Duration(minutes: 20),
+        clock: clock.call,
+        sleep: (d) async {
+          slept.add(d);
+          clock.advance(d);
+        },
+      ).run();
+
+      expect(outcome.passes, greaterThan(1));
+      expect(slept, contains(const Duration(seconds: 30)),
+          reason: 'backs off after the wait that threw');
+    });
+
+    test('a wait that returns at once cannot make passes back to back',
+        () async {
+      // A server refusing every connection ends each wait at once; without a
+      // floor the loop ran pass after pass for fifty minutes.
+      final outcome = await LiveSyncLoop(
+        onePass: () async => const BackgroundSyncReport(),
+        waitForNext: () async {},
+        budget: const Duration(minutes: 10),
+        clock: clock.call,
+        sleep: (d) async {
+          slept.add(d);
+          clock.advance(d);
+        },
+      ).run();
+
+      expect(outcome.passes, lessThanOrEqualTo(60),
+          reason: 'at most one pass every ten seconds');
+      expect(slept.every((d) => d <= const Duration(seconds: 10)), isTrue);
+    });
+
     test('keeps checking until the budget is spent, then hands over', () async {
       final outcome = await loop(
         onePass: () async => const BackgroundSyncReport(),
@@ -261,12 +306,86 @@ void main() {
       final account = await addAccount();
       server.offline = true;
 
+      final started = DateTime.now();
       final woken = await engine.awaitNewMail(
         ['${account.id}:INBOX'],
-        timeout: const Duration(milliseconds: 20),
+        timeout: const Duration(seconds: 5),
+        failureBackoff: const Duration(milliseconds: 300),
       );
 
-      expect(woken, isFalse, reason: 'it degrades to a timeout, not a throw');
+      expect(woken, isFalse, reason: 'it degrades to a wait, not a throw');
+      // It used to return the instant the connect failed, and the loop spun.
+      expect(DateTime.now().difference(started),
+          greaterThanOrEqualTo(const Duration(milliseconds: 250)));
+    });
+  });
+
+  group('awaitNewMail with two accounts', () {
+    late FakeImapTransport gmail;
+    late FakeImapTransport other;
+    late CachedImapEngine engine;
+    late String gmailInbox;
+    late String otherInbox;
+
+    setUp(() async {
+      gmail = FakeImapTransport()..folder('INBOX', role: FolderRole.inbox);
+      other = FakeImapTransport()..folder('INBOX', role: FolderRole.inbox);
+      engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (account, _) =>
+            account.emailAddress.startsWith('me') ? gmail : other,
+      );
+      final a = await engine.addAccount(
+        displayName: 'Personal',
+        emailAddress: 'me@example.com',
+        provider: MailProvider.gmail,
+        secret: 'abcdabcdabcdabcd',
+      );
+      final b = await engine.addAccount(
+        displayName: 'Side',
+        emailAddress: 'side@example.com',
+        provider: MailProvider.gmail,
+        secret: 'abcdabcdabcdabcd',
+      );
+      gmailInbox = '${a.id}:INBOX';
+      otherInbox = '${b.id}:INBOX';
+    });
+
+    test('one account failing at once does not end the wait for the other',
+        () async {
+      other.offline = true;
+      final waiting = engine.awaitNewMail(
+        [gmailInbox, otherInbox],
+        timeout: const Duration(seconds: 5),
+        failureBackoff: const Duration(seconds: 5),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(gmail.isIdling, isTrue,
+          reason: 'still watching the one that works');
+
+      gmail.deliverWhileIdle('INBOX', subject: 'Arrived');
+      expect(await waiting, isTrue);
+    });
+
+    test('when one wakes, the other is called off and its connection freed',
+        () async {
+      // Left running, the loser held its account's connection, and the pass
+      // that followed waited behind it for as long as twenty-four minutes.
+      final waiting = engine.awaitNewMail(
+        [gmailInbox, otherInbox],
+        timeout: const Duration(minutes: 24),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(gmail.isIdling && other.isIdling, isTrue);
+
+      gmail.deliverWhileIdle('INBOX', subject: 'Arrived');
+      expect(await waiting, isTrue);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(other.idleCancelled, 1);
+      expect(other.isIdling, isFalse);
     });
   });
 }

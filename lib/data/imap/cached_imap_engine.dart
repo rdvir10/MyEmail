@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -381,10 +382,16 @@ class CachedImapEngine implements MailEngine {
 
   /// Wait until any of [folderIds] has something new, or [timeout] passes.
   ///
-  /// One IDLE per account, raced. The losers are left waiting rather than
-  /// cancelled: each is idling its own connection, and a connection already
-  /// held open costs nothing more to keep until its own timeout. Cancelling
-  /// them would mean a round trip per account for no gain.
+  /// One IDLE per account, raced. When one ends, the others are called off.
+  /// An IDLE holds its account's connection, and every command for that
+  /// account queues behind it, so a loser left to run out its own timeout
+  /// held the next pass up for as long as twenty-four minutes.
+  ///
+  /// A watch that fails leaves the race rather than ending it. It used to
+  /// end it: an account that could not connect made every wait return at
+  /// once, and push mode ran pass after pass with no pause for as long as
+  /// the network was out. Only when every watch has failed does the wait
+  /// end, and then after [failureBackoff], not straight away.
   ///
   /// Returns true if a server spoke. False means the timeout was reached, or
   /// no folder could be watched at all, and the caller should treat both the
@@ -392,30 +399,49 @@ class CachedImapEngine implements MailEngine {
   Future<bool> awaitNewMail(
     List<String> folderIds, {
     required Duration timeout,
+    Duration failureBackoff = const Duration(minutes: 1),
   }) async {
     if (folderIds.isEmpty) return false;
-    final waits = <Future<bool>>[];
+    final over = Completer<void>();
+    final watches = <Future<bool>>[];
     for (final folderId in folderIds) {
       final (accountId, path) = splitFolderId(folderId);
       try {
         final t = await _transport(accountId);
-        waits.add(t.awaitChanges(path, timeout: timeout));
+        watches.add(
+          t.awaitChanges(path, timeout: timeout, cancel: over.future),
+        );
       } catch (_) {
         // This account cannot be watched right now. The others still can, and
         // the next ordinary pass will pick this one up.
       }
     }
-    if (waits.isEmpty) {
+    if (watches.isEmpty) {
       await Future<void>.delayed(timeout);
       return false;
     }
+
+    final backoff = timeout < failureBackoff ? timeout : failureBackoff;
+    final allFailed = Completer<bool>();
+    var failed = 0;
+    Future<bool> stayInRaceUnlessAllFail(Future<bool> watch) =>
+        watch.catchError((Object e) {
+          debugPrint('[myemail] watch failed: $e');
+          if (++failed == watches.length && !allFailed.isCompleted) {
+            allFailed.complete(Future<bool>.delayed(backoff, () => false));
+          }
+          // Never completes: this watch no longer has a say.
+          return Completer<bool>().future;
+        });
+
     // Any of them waking is reason enough to sync every account: the pass is
     // cheap against the cache and sorting out which one spoke is not.
-    debugPrint('[myemail] watching ${waits.length} of ${folderIds.length} inboxes');
-    final woke = await Future.any(waits).catchError((e) {
-      debugPrint('[myemail] watch failed: $e');
-      return false;
-    });
+    debugPrint('[myemail] watching ${watches.length} of ${folderIds.length} inboxes');
+    final woke = await Future.any([
+      for (final w in watches) stayInRaceUnlessAllFail(w),
+      allFailed.future,
+    ]);
+    if (!over.isCompleted) over.complete();
     debugPrint('[myemail] watch ended, woke=$woke');
     return woke;
   }

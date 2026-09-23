@@ -377,7 +377,11 @@ class EnoughMailTransport implements ImapTransport {
   /// deleting something, which the next ordinary sync will notice; waking the
   /// whole pass for it would turn housekeeping elsewhere into battery here.
   @override
-  Future<bool> awaitChanges(String path, {required Duration timeout}) =>
+  Future<bool> awaitChanges(
+    String path, {
+    required Duration timeout,
+    Future<void>? cancel,
+  }) =>
       // Its own handling of a lost connection (it wakes, below), and a limit
       // just past its own timeout for a socket that dies without saying so.
       _run(limit: timeout + commandLimit, watchLoss: false, (c) async {
@@ -387,6 +391,12 @@ class EnoughMailTransport implements ImapTransport {
           debugPrint('[myemail] idle on $path woke: ${event.runtimeType}');
           if (!woken.isCompleted) woken.complete(true);
         }
+
+        // Called off: end with nothing to report, and let the finally below
+        // send DONE so the connection is free for the pass that follows.
+        cancel?.then((_) {
+          if (!woken.isCompleted) woken.complete(false);
+        });
 
         final subscriptions = [
           c.eventBus.on<em.ImapMessagesExistEvent>().listen(wake),
@@ -408,7 +418,10 @@ class EnoughMailTransport implements ImapTransport {
             await s.cancel();
           }
           debugPrint('[myemail] idle unavailable on $path: $e');
-          await Future<void>.delayed(timeout);
+          await Future.any([
+            Future<void>.delayed(timeout),
+            ?cancel,
+          ]);
           return false;
         }
 
