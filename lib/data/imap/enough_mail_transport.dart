@@ -26,7 +26,19 @@ class EnoughMailTransport implements ImapTransport {
     required this.credentials,
     this.port = 993,
     this.isLogEnabled = false,
+    this.useTls = true,
+    this.commandLimit = defaultCommandLimit,
+    this.transferLimit = defaultTransferLimit,
   });
+
+  /// Always true in the app. Off only for a test talking to a local fake
+  /// server, which has no certificate to offer.
+  final bool useTls;
+
+  /// See [defaultCommandLimit] and [defaultTransferLimit]; settable so a test
+  /// does not have to wait minutes to see one run out.
+  final Duration commandLimit;
+  final Duration transferLimit;
 
   final String host;
   final String user;
@@ -40,6 +52,9 @@ class EnoughMailTransport implements ImapTransport {
   final bool isLogEnabled;
 
   em.ImapClient? _client;
+
+  /// Completes when [_client]'s connection is lost. See [_run].
+  Future<void>? _clientLost;
   Map<String, em.Mailbox> _boxes = {};
   String _delimiter = '/';
   String? _selectedPath;
@@ -155,7 +170,7 @@ class EnoughMailTransport implements ImapTransport {
       });
 
   @override
-  Future<MailBody> fetchBody(String path, int uid) => _run((c) async {
+  Future<MailBody> fetchBody(String path, int uid) => _run(limit: transferLimit, (c) async {
         await _ensureSelected(c, path);
         final result = await c.uidFetchMessage(uid, 'BODY.PEEK[]');
         if (result.messages.isEmpty) {
@@ -187,7 +202,7 @@ class EnoughMailTransport implements ImapTransport {
       false; // IMAP has no calendar; the reply goes as mail.
 
   @override
-  Future<String> fetchRaw(String path, int uid) => _run((c) async {
+  Future<String> fetchRaw(String path, int uid) => _run(limit: transferLimit, (c) async {
         await _ensureSelected(c, path);
         final result = await c.uidFetchMessage(uid, 'BODY.PEEK[]');
         if (result.messages.isEmpty) {
@@ -212,7 +227,7 @@ class EnoughMailTransport implements ImapTransport {
 
   @override
   Future<Uint8List> fetchAttachment(String path, int uid, String attachmentId) =>
-      _run((c) async {
+      _run(limit: transferLimit, (c) async {
         await _ensureSelected(c, path);
         // PEEK, so downloading a file does not mark the message read.
         final result =
@@ -311,7 +326,7 @@ class EnoughMailTransport implements ImapTransport {
     bool seen = true,
     bool draft = false,
   }) =>
-      _run((c) async {
+      _run(limit: transferLimit, (c) async {
         final box = await _box(c, path);
         await c.appendMessageText(
           mimeText,
@@ -363,7 +378,9 @@ class EnoughMailTransport implements ImapTransport {
   /// whole pass for it would turn housekeeping elsewhere into battery here.
   @override
   Future<bool> awaitChanges(String path, {required Duration timeout}) =>
-      _run((c) async {
+      // Its own handling of a lost connection (it wakes, below), and a limit
+      // just past its own timeout for a socket that dies without saying so.
+      _run(limit: timeout + commandLimit, watchLoss: false, (c) async {
         await _ensureSelected(c, path);
         final woken = Completer<bool>();
         void wake(em.ImapEvent event) {
@@ -416,33 +433,93 @@ class EnoughMailTransport implements ImapTransport {
   Future<void> close() async {
     final c = _client;
     _client = null;
+    _clientLost = null;
     _selectedPath = null;
     if (c == null) return;
+    // Bounded: on a connection that has died without saying so, LOGOUT is
+    // never answered, and a close that waits for it holds the queue as
+    // surely as the command that found the connection dead.
     try {
-      if (c.isLoggedIn) await c.logout();
+      if (c.isLoggedIn) await c.logout().timeout(_goodbyeLimit);
     } catch (_) {}
     try {
-      await c.disconnect();
+      await c.disconnect().timeout(_goodbyeLimit);
     } catch (_) {}
   }
 
   // --- plumbing --------------------------------------------------------------
 
+  /// How long one ordinary command may take, connecting included, before the
+  /// connection is taken to be dead.
+  ///
+  /// enough_mail puts no limit on anything, and never fails a command whose
+  /// connection drops: it announces the loss and leaves the command waiting.
+  /// Every command for the account queues behind that one, so a network
+  /// switch in the middle of a fetch used to stop that account's sync, and
+  /// its notifications, until the app was killed.
+  static const defaultCommandLimit = Duration(minutes: 2);
+
+  /// For commands that carry a whole message or file, which on a slow
+  /// connection can take minutes and still be healthy.
+  static const defaultTransferLimit = Duration(minutes: 10);
+
+  static const _goodbyeLimit = Duration(seconds: 5);
+
   /// Serialise [op] behind everything queued before it, on a live client.
-  /// A dropped socket resets the connection so the next call reconnects.
-  Future<T> _run<T>(Future<T> Function(em.ImapClient c) op) {
+  ///
+  /// A dropped socket, a lost connection or a command over [limit] (the
+  /// [commandLimit] when not given) ends the op with [ConnectionFailed] and
+  /// lets go of the client, so the next call reconnects rather than waiting
+  /// behind a command that will never finish. [watchLoss] is off only for
+  /// IDLE, which wakes on a lost connection itself.
+  Future<T> _run<T>(
+    Future<T> Function(em.ImapClient c) op, {
+    Duration? limit,
+    bool watchLoss = true,
+  }) {
     final completer = Completer<T>();
     _tail = _tail.then((_) async {
       try {
-        completer.complete(await op(await _ensureClient()));
+        completer.complete(
+          await _attempt(op, watchLoss).timeout(limit ?? commandLimit),
+        );
       } on SocketException catch (e, st) {
         await close();
         completer.completeError(ConnectionFailed('Connection lost: $e'), st);
+      } on TimeoutException catch (_, st) {
+        await close();
+        completer.completeError(
+          ConnectionFailed(
+            'The mail server stopped answering, so the connection was '
+            'dropped. It is tried again on the next sync.',
+          ),
+          st,
+        );
+      } on _ConnectionLost catch (_, st) {
+        await close();
+        completer.completeError(
+          const ConnectionFailed('Connection lost. It is tried again on the '
+              'next sync.'),
+          st,
+        );
       } catch (e, st) {
         completer.completeError(e, st);
       }
     });
     return completer.future;
+  }
+
+  Future<T> _attempt<T>(
+    Future<T> Function(em.ImapClient c) op,
+    bool watchLoss,
+  ) async {
+    final client = await _ensureClient();
+    final lost = _clientLost;
+    if (!watchLoss || lost == null) return op(client);
+    return Future.any([
+      op(client),
+      lost.then<T>((_) => throw const _ConnectionLost()),
+    ]);
   }
 
   Future<em.ImapClient> _ensureClient() async {
@@ -451,8 +528,9 @@ class EnoughMailTransport implements ImapTransport {
       return existing;
     }
     await close();
+    em.ImapClient client;
     try {
-      return _client = await _connect(forceTokenRefresh: false);
+      client = await _connect(forceTokenRefresh: false);
     } on AuthenticationFailed {
       // One retry, and only for OAuth. isUsableAt decides a token is still
       // good by reading the device clock, so a tablet whose clock has drifted
@@ -462,14 +540,26 @@ class EnoughMailTransport implements ImapTransport {
       // failed. A wrong app password, by contrast, is still wrong the second
       // time.
       if (credentials is! OAuthCredentials) rethrow;
-      return _client = await _connect(forceTokenRefresh: true);
+      client = await _connect(forceTokenRefresh: true);
     }
+    _clientLost = _lossOf(client);
+    return _client = client;
+  }
+
+  /// A future that completes when [client] announces its connection is gone,
+  /// which is all enough_mail does about it.
+  static Future<void> _lossOf(em.ImapClient client) {
+    final lost = Completer<void>();
+    client.eventBus.on<em.ImapConnectionLostEvent>().listen((_) {
+      if (!lost.isCompleted) lost.complete();
+    });
+    return lost.future;
   }
 
   Future<em.ImapClient> _connect({required bool forceTokenRefresh}) async {
     final client = em.ImapClient(isLogEnabled: isLogEnabled);
     try {
-      await client.connectToServer(host, port, isSecure: true);
+      await client.connectToServer(host, port, isSecure: useTls);
     } on Exception catch (e) {
       throw ConnectionFailed('Could not reach $host. Check the connection. ($e)');
     }
@@ -568,4 +658,9 @@ class EnoughMailTransport implements ImapTransport {
         MessageFlag.deleted => em.MessageFlags.deleted,
         MessageFlag.answered => em.MessageFlags.answered,
       };
+}
+
+/// The client announced its connection was lost while a command waited.
+class _ConnectionLost implements Exception {
+  const _ConnectionLost();
 }

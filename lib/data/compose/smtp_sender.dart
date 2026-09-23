@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:enough_mail/enough_mail.dart' as em;
 
 import '../../domain/account.dart';
@@ -179,14 +181,25 @@ class SmtpSender {
         MailProvider.outlook => true,
       };
 
+  /// How long each step may take before the server is taken to have gone.
+  ///
+  /// enough_mail limits nothing past the socket's own connect, and does not
+  /// fail a command whose connection drops, so without these a send on a
+  /// dying connection never returned: the Send button spun, and a reply from
+  /// a notification hung its isolate until Android killed it.
+  static const stepLimit = Duration(seconds: 60);
+
+  /// For handing over the message itself, which can be large.
+  static const transferLimit = Duration(minutes: 10);
+
   Future<void> send(em.MimeMessage message) async {
     final client = em.SmtpClient('myemail', isLogEnabled: isLogEnabled);
     try {
       try {
         await client.connectToServer(host, port, isSecure: !useStartTls);
-        await client.ehlo();
+        await client.ehlo().timeout(stepLimit);
         if (useStartTls) {
-          final upgraded = await client.startTls();
+          final upgraded = await client.startTls().timeout(stepLimit);
           if (!upgraded.isOkStatus) {
             // Stop here rather than carrying on. Authenticating now would put
             // the app password, or the OAuth token, onto the wire as plain
@@ -212,27 +225,45 @@ class SmtpSender {
                 client.serverInfo.supportsAuth(em.AuthMechanism.plain)
                     ? em.AuthMechanism.plain
                     : em.AuthMechanism.login;
-            await client.authenticate(user, password, mechanism);
+            await client
+                .authenticate(user, password, mechanism)
+                .timeout(stepLimit);
           case OAuthCredentials(:final accessToken):
             // enough_mail builds the SASL XOAUTH2 string itself, so this
             // wants the bare access token and not a base64 anything.
-            await client.authenticate(
-              user,
-              await accessToken(),
-              em.AuthMechanism.xoauth2,
-            );
+            final token = await accessToken();
+            await client
+                .authenticate(user, token, em.AuthMechanism.xoauth2)
+                .timeout(stepLimit);
         }
       } on em.SmtpException catch (e) {
         throw AuthenticationFailed(sendSignInFailureMessage(e.message));
+      } on TimeoutException {
+        throw ConnectionFailed(
+          '$host stopped answering while signing in, so nothing was sent.',
+        );
       }
 
       // Text of our own making, not sendMessage: see wireText for the two
       // things enough_mail's own framing gets wrong.
-      final response = await client.sendMessageText(
-        wireText(message),
-        message.from!.first,
-        envelopeRecipients(message),
-      );
+      final em.SmtpResponse response;
+      try {
+        response = await client
+            .sendMessageText(
+              wireText(message),
+              message.from!.first,
+              envelopeRecipients(message),
+            )
+            .timeout(transferLimit);
+      } on TimeoutException {
+        // The message may be on the server already; only its answer is
+        // missing. Saying it failed outright could make someone send twice.
+        throw const SendFailed(
+          'The mail server stopped answering while the message was being '
+          'handed over, so it may or may not have been sent. Check Sent '
+          'before sending it again.',
+        );
+      }
       if (!response.isOkStatus) {
         throw SendFailed(
           'The server would not accept the message: '
@@ -242,13 +273,29 @@ class SmtpSender {
     } on em.SmtpException catch (e) {
       throw SendFailed('Sending failed: ${e.message ?? e.toString()}');
     } finally {
+      await _hangUp(client);
+    }
+  }
+
+  /// Say goodbye if there is anyone to say it to, and never wait long.
+  ///
+  /// QUIT on a connection that was never made used to wait forever: the
+  /// socket had never been assigned, the write failed out of sight, and the
+  /// command it was waiting for never completed. So a send while offline
+  /// never reported that it could not connect.
+  static Future<void> _hangUp(em.SmtpClient client) async {
+    if (client.isConnected) {
       try {
-        await client.quit();
+        await client.quit().timeout(const Duration(seconds: 5));
+        return;
       } catch (_) {
         // The message is already sent or already failed; a rude disconnect
         // changes nothing.
       }
     }
+    try {
+      await client.disconnect().timeout(const Duration(seconds: 5));
+    } catch (_) {}
   }
 
   /// Turn the server's refusal to let us send into something actionable.
