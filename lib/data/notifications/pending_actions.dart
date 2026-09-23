@@ -55,10 +55,11 @@ class PendingAction {
 
 /// One press, claimed by one drain.
 class ClaimedAction {
-  ClaimedAction._(this.action, this._file);
+  ClaimedAction._(this.action, this._file, this._claim);
 
   final PendingAction action;
   final File _file;
+  final File _claim;
 }
 
 /// The queue of pressed notification buttons, waiting to be carried out.
@@ -75,13 +76,15 @@ class ClaimedAction {
 /// halfway, and the work is done by something with a proper lifetime: the
 /// WorkManager job, or the app the next time it is opened.
 ///
-/// One file per press, claimed by renaming it. Three isolates use this —
-/// the one Android starts for a button, the WorkManager job and the app —
-/// and it used to be one list in preferences, read, changed and written
-/// back. Two drains at once could both act on a press, so a reply went
-/// twice; a press written while a drain ran was wiped, typed reply and all.
-/// A rename either happens or does not, so exactly one drain gets each
-/// press, and writing a new one touches nothing else.
+/// One file per press, claimed by creating a `.claim` file beside it that
+/// must not already exist. Three isolates use this — the one Android starts
+/// for a button, the WorkManager job and the app — and it used to be one
+/// list in preferences, read, changed and written back. Two drains at once
+/// could both act on a press, so a reply went twice; a press written while
+/// a drain ran was wiped, typed reply and all. Creating a file that must be
+/// new either happens or does not, on every system, so exactly one drain
+/// gets each press, and writing a new one touches nothing else. (A rename
+/// is not enough: on Windows two drains can both rename the same file.)
 ///
 /// A drain that cannot carry a press out puts it back ([putBack]) rather
 /// than dropping it, so what was typed into a reply is not lost to a
@@ -135,9 +138,8 @@ class PendingActions {
   Future<List<ClaimedAction>> take() async {
     final dir = await _directory();
     await _bringInLegacy(dir);
-    await _reclaimAbandoned(dir);
+    await _releaseAbandoned(dir);
 
-    final token = _unique();
     final waiting = [
       for (final entity in await dir.list().toList())
         if (entity is File && entity.path.endsWith('.json')) entity,
@@ -145,62 +147,66 @@ class PendingActions {
 
     final claimed = <ClaimedAction>[];
     for (final file in waiting) {
-      final File mine;
+      final claim = File('${file.path}.claim');
       try {
-        mine = await file.rename('${file.path}.$token.taken');
-        // A rename keeps the time the press was written. Stamped with the
-        // time it was claimed, or one that waited half an hour would look
-        // abandoned the moment it was taken, and be taken again.
-        await mine.setLastModified(DateTime.now());
+        await claim.create(exclusive: true);
       } on FileSystemException {
-        continue; // Another drain got there first.
+        continue; // Another drain has it.
       }
       PendingAction? action;
       try {
-        action = PendingAction.fromJson(jsonDecode(await mine.readAsString()));
+        action = PendingAction.fromJson(jsonDecode(await file.readAsString()));
+      } on FileSystemException {
+        // Carried out and removed by another drain on the way here.
+        await _delete(claim);
+        continue;
       } on FormatException {
         action = null;
       }
       if (action == null) {
         // Unreadable: carried around it would be tried for ever.
-        await _delete(mine);
+        await _delete(file);
+        await _delete(claim);
         continue;
       }
-      claimed.add(ClaimedAction._(action, mine));
+      claimed.add(ClaimedAction._(action, file, claim));
     }
     return claimed;
   }
 
-  /// Carried out, or given up on: gone from the queue.
-  Future<void> done(ClaimedAction claim) => _delete(claim._file);
+  /// Carried out, or given up on: gone from the queue. The press first and
+  /// then its claim, so no other drain can claim it in between.
+  Future<void> done(ClaimedAction claim) async {
+    await _delete(claim._file);
+    await _delete(claim._claim);
+  }
 
   /// Not carried out, and worth another try later: back in the queue, in
   /// its old place. [counted] adds to its attempts; being offline is not
   /// counted, because it says nothing about whether the press can work.
   Future<void> putBack(ClaimedAction claim, {bool counted = true}) async {
     final dir = await _directory();
+    final base = claim._file.uri.pathSegments.last;
+    await _delete(claim._file);
     await _write(
       dir,
-      _nameOf(claim._file),
+      base.substring(0, base.length - '.json'.length),
       counted ? claim.action.tried() : claim.action,
     );
-    await _delete(claim._file);
+    await _delete(claim._claim);
   }
 
-  static String _nameOf(File claimed) {
-    final base = claimed.uri.pathSegments.last;
-    return base.substring(0, base.indexOf('.json'));
-  }
-
-  Future<void> _reclaimAbandoned(Directory dir) async {
+  /// Claims held by a drain that was killed part way: let go, so the press
+  /// can be taken again.
+  Future<void> _releaseAbandoned(Directory dir) async {
     final cutoff = DateTime.now().subtract(abandonedAfter);
     for (final entity in await dir.list().toList()) {
-      if (entity is! File || !entity.path.endsWith('.taken')) continue;
+      if (entity is! File || !entity.path.endsWith('.claim')) continue;
       try {
         if ((await entity.lastModified()).isAfter(cutoff)) continue;
-        await entity.rename(_in(dir, '${_nameOf(entity)}.json'));
+        await entity.delete();
       } on FileSystemException {
-        // Reclaimed by someone else in the meantime.
+        // Let go of by someone else in the meantime.
       }
     }
   }
