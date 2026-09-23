@@ -10,6 +10,7 @@ import 'display_providers.dart';
 import '../domain/message_sort.dart';
 import 'folder_tree.dart';
 import 'providers.dart';
+import 'search_providers.dart';
 
 /// The messages shown for a folder, newest first, and the flag changes made
 /// to them.
@@ -424,17 +425,28 @@ class SelectedMessageId extends Notifier<String?> {
 final selectedMessageIdProvider =
     NotifierProvider<SelectedMessageId, String?>(SelectedMessageId.new);
 
-/// The opened message, resolved against the current folder's list. Null when
-/// nothing is open or the folder changed underneath it, so a stale selection
-/// clears itself instead of needing to be cleared. Because it is looked up
-/// live, flag changes made in the list show in the reading pane at once.
+/// The opened message, resolved against the current folder's list, then
+/// against the search results. Null when nothing is open or the folder
+/// changed underneath it, so a stale selection clears itself instead of
+/// needing to be cleared. Because it is looked up live, flag changes made in
+/// the list show in the reading pane at once.
+///
+/// The search results are the second place because a hit can live in any
+/// folder of any account, or further back than the list has loaded. On the
+/// tablet, where tapping a row selects it rather than opening a screen of its
+/// own, such a hit resolved to nothing: the reading pane stayed empty and
+/// the ribbon's actions greyed out. Clearing the search clears it the same
+/// way changing folder does.
 final selectedMessageProvider = Provider<MailMessage?>((ref) {
   final id = ref.watch(selectedMessageIdProvider);
   final folderId = ref.watch(effectiveSelectedFolderIdProvider);
   if (id == null || folderId == null) return null;
   final messages = ref.watch(messagesProvider(folderId)).value;
-  if (messages == null) return null;
-  for (final m in messages) {
+  for (final m in messages ?? const <MailMessage>[]) {
+    if (m.id == id) return m;
+  }
+  final hits = ref.watch(searchResultsProvider).value;
+  for (final m in hits ?? const <MailMessage>[]) {
     if (m.id == id) return m;
   }
   return null;

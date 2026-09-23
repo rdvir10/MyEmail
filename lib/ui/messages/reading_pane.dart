@@ -157,10 +157,24 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
   Future<void> _markRead() async {
     final listId = _listId;
     if (!mounted || listId == null) return;
+    final message = widget.message;
     try {
-      await ref
-          .read(messagesProvider(listId).notifier)
-          .setRead(widget.message.id, true);
+      final held = ref
+              .read(messagesProvider(listId))
+              .value
+              ?.any((m) => m.id == message.id) ??
+          false;
+      if (held) {
+        await ref.read(messagesProvider(listId).notifier).setRead(message.id, true);
+        return;
+      }
+      // A search hit from another folder, or from further back than the list
+      // has loaded. The list quietly ignores a message it does not hold, so
+      // opening one used to leave it unread; it goes to the engine instead,
+      // and the list it does belong to is re-read.
+      await ref.read(mailEngineProvider).setRead(message.id, true);
+      ref.invalidate(messagesProvider(message.folderId));
+      await ref.read(foldersProvider.notifier).refreshAccount(message.accountId);
     } catch (_) {
       // Offline or refused: the message simply stays unread. Nothing to tell
       // the user about an action they did not take.

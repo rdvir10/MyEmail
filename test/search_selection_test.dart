@@ -128,6 +128,34 @@ void main() {
       expect(c.read(selectedMessageIdsProvider), isEmpty,
           reason: 'a tick on a hit that is no longer shown is a trap');
     });
+
+    testWidgets('a hit from a folder that is not open opens in the pane',
+        (tester) async {
+      // On the tablet a tap selects rather than pushing a screen, and the
+      // pane looked the selection up in the open folder's list alone: a hit
+      // from Sent, Archive or further back left it empty.
+      final c = await pump(tester);
+      final hits = await search(tester, 'the');
+      final listId = c.read(effectiveSelectedFolderIdProvider)!;
+      final listed = {
+        for (final m in c.read(messagesProvider(listId)).value ?? const [])
+          m.id,
+      };
+      final elsewhere = hits
+          .map((t) => t.message)
+          .where((m) => !listed.contains(m.id) && !m.isRead)
+          .firstOrNull;
+      expect(elsewhere, isNotNull,
+          reason: 'the sample data needs an unread hit outside the open list');
+
+      await tester.tap(find.byKey(ValueKey('search:${elsewhere!.id}')));
+      await tester.pumpAndSettle();
+
+      expect(c.read(selectedMessageProvider)?.id, elsewhere.id);
+      final stored = await c.read(mailEngineProvider).cachedMessage(elsewhere.id);
+      expect(stored?.isRead, isTrue,
+          reason: 'opened, so read, like any other message');
+    });
   });
 
   group('in a folder', () {
