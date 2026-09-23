@@ -903,11 +903,17 @@ class CachedImapEngine implements MailEngine {
               subject: h.subject,
               from: h.from,
               to: h.to,
+              cc: h.cc,
+              replyTo: h.replyTo,
               date: h.date,
-              preview: '',
+              preview: h.preview,
               isRead: h.isRead,
               isFlagged: h.isFlagged,
               hasAttachments: h.hasAttachments,
+              attachmentBytes: h.attachmentBytes,
+              isMeeting: h.isMeeting,
+              messageId: h.messageId,
+              inReplyTo: h.inReplyTo,
             ),
           );
         }
@@ -1031,6 +1037,9 @@ class CachedImapEngine implements MailEngine {
       newest.max,
     );
   }
+
+  @override
+  Future<void> discardDraft(String savedAs) => _dropPreviousDraft(savedAs);
 
   /// Remove the copy a draft was opened from, so saving twice does not leave
   /// two. Best-effort: a draft that failed to delete is untidy, not broken.

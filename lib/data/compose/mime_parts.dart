@@ -3,6 +3,7 @@ import 'package:enough_mail/enough_mail.dart' as em;
 import '../../domain/draft.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
+import '../mail_engine.dart' show rawMessageBytes;
 
 /// Reading a message's own MIME back into the pieces a draft needs.
 ///
@@ -21,7 +22,7 @@ import '../../domain/mail_message.dart';
 /// Content-ID, so the `cid:` link in the quote still finds it. An attached
 /// message comes across whole, as the `.eml` it was.
 List<DraftAttachment> attachmentsInMime(String raw) {
-  final message = em.MimeMessage.parseFromText(raw);
+  final message = em.MimeMessage.parseFromData(rawMessageBytes(raw));
   final found = <DraftAttachment>[];
 
   void visit(em.MimePart part) {
@@ -62,7 +63,7 @@ List<DraftAttachment> attachmentsInMime(String raw) {
 /// people out and started a new thread.
 ({List<MailAddress> bcc, String? inReplyTo, List<String> references})
     savedDraftHeaders(String raw) {
-  final message = em.MimeMessage.parseFromText(raw);
+  final message = em.MimeMessage.parseFromData(rawMessageBytes(raw));
   final inReplyTo = message.getHeaderValue('in-reply-to')?.trim();
   final references = [
     for (final id in (message.getHeaderValue('references') ?? '')

@@ -190,6 +190,28 @@ void main() {
       expect(m.preview, isEmpty, reason: 'filled from the cached body later');
     });
 
+    test('Reply-To comes through when it names someone else', () {
+      final mime = build()
+        ..setHeader('reply-to', 'Support <ticket-4411@vendor.example>');
+      final m = messageFromMime(accountId: 'a', folderId: 'a:INBOX', m: mime);
+      final h = remoteHeaderFromMime(mime);
+
+      expect(m.replyTo.single.email, 'ticket-4411@vendor.example');
+      expect(h.replyTo.single.email, 'ticket-4411@vendor.example');
+      expect(h.replyTo.single.name, 'Support');
+    });
+
+    test("an ENVELOPE's Reply-To that repeats From is no Reply-To", () {
+      // Servers fill the envelope's Reply-To in with From when the header
+      // is absent.
+      final mime = build()
+        ..envelope = em.Envelope(
+          from: [em.MailAddress('Dana Levi', 'dana@example.com')],
+          replyTo: [em.MailAddress('Dana Levi', 'dana@example.com')],
+        );
+      expect(remoteHeaderFromMime(mime).replyTo, isEmpty);
+    });
+
     test('a missing subject is labelled', () {
       final mime = build()..setHeader('subject', '');
       final m = messageFromMime(accountId: 'a', folderId: 'a:INBOX', m: mime);

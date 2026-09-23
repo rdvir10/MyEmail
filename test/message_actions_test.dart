@@ -178,6 +178,9 @@ class _RefusingEngine implements MailEngine {
 
   @override
   Future<String?> saveDraft(Draft draft) => _inner.saveDraft(draft);
+
+  @override
+  Future<void> discardDraft(String savedAs) => _inner.discardDraft(savedAs);
 }
 
 void main() {

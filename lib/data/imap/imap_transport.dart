@@ -245,6 +245,7 @@ class RemoteHeader {
     required this.isFlagged,
     required this.hasAttachments,
     this.cc = const [],
+    this.replyTo = const [],
     this.attachmentBytes = 0,
     this.isMeeting = false,
     this.preview = '',
@@ -259,6 +260,9 @@ class RemoteHeader {
 
   /// Everyone copied openly. See [MailMessage.cc].
   final List<MailAddress> cc;
+
+  /// See [MailMessage.replyTo].
+  final List<MailAddress> replyTo;
   final DateTime date;
   final bool isRead;
   final bool isFlagged;

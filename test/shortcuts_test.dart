@@ -118,10 +118,8 @@ void main() {
       await press(tester, LogicalKeyboardKey.keyR, control: true);
       expect(find.byType(ComposeScreen), findsOneWidget);
       expect(find.text('Reply'), findsWidgets);
-      // A reply carries the quoted message, so leaving asks first.
+      // Nothing typed, so leaving asks nothing: the reply can be had again.
       await tester.pageBack();
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Discard'));
       await tester.pumpAndSettle();
       expect(find.byType(ComposeScreen), findsNothing);
 
@@ -650,6 +648,12 @@ void main() {
       await pump(tester);
       await press(tester, LogicalKeyboardKey.keyR, control: true);
       expect(find.byType(ComposeScreen), findsOneWidget);
+      await tester.enterText(
+        find.byWidgetPredicate((w) =>
+            w is TextField && (w.controller?.text.startsWith('Re: ') ?? false)),
+        'Re: and one more thing',
+      );
+      await tester.pump();
 
       await press(tester, LogicalKeyboardKey.escape);
 

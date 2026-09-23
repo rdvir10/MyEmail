@@ -26,23 +26,81 @@ class AddressSuggestion {
   MailAddress get asAddress => MailAddress(email: email, name: name);
 
   /// What goes into the field when this is chosen.
-  String get formatted => name == null || name!.isEmpty
-      ? email
-      : '$name <$email>';
+  String get formatted => formatRecipient(name, email);
+}
+
+/// One recipient as a recipients field shows it.
+///
+/// A name holding a comma, semicolon, angle bracket or quote is quoted, as
+/// RFC 5322 has it, so reading the field back finds one person and not two.
+String formatRecipient(String? name, String email) {
+  if (name == null || name.isEmpty) return email;
+  if (!RegExp(r'[,;<>"\\]').hasMatch(name)) return '$name <$email>';
+  final escaped = name.replaceAll(r'\', r'\\').replaceAll('"', r'\"');
+  return '"$escaped" <$email>';
+}
+
+/// Where each recipient in a field ends: every comma or semicolon that is
+/// not inside a quoted name or an `<address>`.
+///
+/// `"Levi, Dana" <dana@example.com>` is one person. Split on every comma it
+/// was two, `"Levi"` and `Dana" <dana@example.com>`, and the first was
+/// refused as not looking like an address.
+List<int> recipientSeparators(String text) {
+  final at = <int>[];
+  var quoted = false;
+  var angled = false;
+  for (var i = 0; i < text.length; i++) {
+    final c = text[i];
+    if (quoted) {
+      if (c == r'\') {
+        i++;
+      } else if (c == '"') {
+        quoted = false;
+      }
+    } else if (c == '"') {
+      quoted = true;
+    } else if (c == '<') {
+      angled = true;
+    } else if (c == '>') {
+      angled = false;
+    } else if (!angled && (c == ',' || c == ';')) {
+      at.add(i);
+    }
+  }
+  return at;
+}
+
+/// A recipients field cut into one piece per recipient, untrimmed.
+List<String> splitRecipients(String text) {
+  final pieces = <String>[];
+  var start = 0;
+  for (final cut in recipientSeparators(text)) {
+    pieces.add(text.substring(start, cut));
+    start = cut + 1;
+  }
+  pieces.add(text.substring(start));
+  return pieces;
+}
+
+int _lastSeparator(String text) {
+  final all = recipientSeparators(text);
+  return all.isEmpty ? -1 : all.last;
 }
 
 /// The part of a recipients field that is still being typed: whatever
-/// follows the last comma or semicolon, trimmed.
+/// follows the last comma or semicolon, trimmed, without an opening quote.
 String lastRecipientToken(String text) {
-  final cut = text.lastIndexOf(RegExp(r'[,;]'));
-  return (cut < 0 ? text : text.substring(cut + 1)).trim();
+  final cut = _lastSeparator(text);
+  final token = (cut < 0 ? text : text.substring(cut + 1)).trim();
+  return token.startsWith('"') ? token.substring(1) : token;
 }
 
 /// The field's text with the token being typed replaced by [chosen], and a
 /// comma ready for the next one — which is what typing into a recipients
 /// field means: one name after another.
 String completeLastRecipient(String text, AddressSuggestion chosen) {
-  final cut = text.lastIndexOf(RegExp(r'[,;]'));
+  final cut = _lastSeparator(text);
   final kept = cut < 0 ? '' : text.substring(0, cut + 1);
   final lead = kept.isEmpty ? '' : '$kept ';
   return '$lead${chosen.formatted}, ';

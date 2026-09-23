@@ -66,12 +66,15 @@ RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
   }
   final subject = m.decodeSubject()?.trim();
   final from = m.from?.firstOrNull ?? m.sender;
+  final sender =
+      from == null ? const MailAddress(email: '') : addressFromMime(from);
   return RemoteHeader(
     uid: uid,
     subject: (subject == null || subject.isEmpty) ? '(No subject)' : subject,
-    from: from == null ? const MailAddress(email: '') : addressFromMime(from),
+    from: sender,
     to: [for (final a in m.to ?? const <em.MailAddress>[]) addressFromMime(a)],
     cc: [for (final a in m.cc ?? const <em.MailAddress>[]) addressFromMime(a)],
+    replyTo: _replyToOf(m, sender),
     date: m.decodeDate() ?? fallbackDate ?? DateTime.now(),
     isRead: m.isSeen,
     isFlagged: m.isFlagged,
@@ -84,6 +87,18 @@ RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
     inReplyTo: normaliseMessageId(
       m.envelope?.inReplyTo ?? m.getHeaderValue('in-reply-to'),
     ),
+  );
+}
+
+/// Reply-To from the ENVELOPE the header fetch already asks for, or from
+/// the header itself when the message was parsed whole.
+List<MailAddress> _replyToOf(em.MimeMessage m, MailAddress sender) {
+  final listed = m.envelope?.replyTo ??
+      m.decodeHeaderMailAddressValue('reply-to') ??
+      const <em.MailAddress>[];
+  return replyToBesidesSender(
+    [for (final a in listed) addressFromMime(a)],
+    sender,
   );
 }
 
@@ -236,16 +251,18 @@ MailMessage messageFromMime({
   }
   final subject = m.decodeSubject()?.trim();
   final from = m.from?.firstOrNull ?? m.sender;
+  final sender =
+      from == null ? const MailAddress(email: '') : addressFromMime(from);
   return MailMessage(
     id: MailMessage.idFor(folderId, uid),
     accountId: accountId,
     folderId: folderId,
     uid: uid,
     subject: (subject == null || subject.isEmpty) ? '(No subject)' : subject,
-    from: from == null
-        ? const MailAddress(email: '')
-        : addressFromMime(from),
+    from: sender,
     to: [for (final a in m.to ?? const <em.MailAddress>[]) addressFromMime(a)],
+    cc: [for (final a in m.cc ?? const <em.MailAddress>[]) addressFromMime(a)],
+    replyTo: _replyToOf(m, sender),
     date: m.decodeDate() ?? fallbackDate ?? DateTime.now(),
     preview: '',
     isRead: m.isSeen,

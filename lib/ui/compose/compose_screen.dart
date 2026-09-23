@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import '../common/bottom_message.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -26,15 +29,23 @@ import 'html_editor.dart';
 /// rather than HTML because it has to sit above the soft keyboard and track
 /// its inset, which an in-page toolbar cannot do.
 class ComposeScreen extends ConsumerStatefulWidget {
-  const ComposeScreen({super.key, required this.draft});
+  const ComposeScreen({super.key, required this.draft, this.disposable = true});
 
   final Draft draft;
+
+  /// Whether closing the window as it opened loses nothing, because what it
+  /// opened with can be had again: a new message, reply or forward as the
+  /// app builds it, or a draft already in Drafts. False for one carried
+  /// across from another window, or holding what another app shared, which
+  /// exists nowhere else; leaving that always asks.
+  final bool disposable;
 
   @override
   ConsumerState<ComposeScreen> createState() => _ComposeScreenState();
 }
 
-class _ComposeScreenState extends ConsumerState<ComposeScreen> {
+class _ComposeScreenState extends ConsumerState<ComposeScreen>
+    with WidgetsBindingObserver {
   late final HtmlEditorController _editor =
       HtmlEditorController(initialHtml: widget.draft.htmlBody)
         ..onKey = _onEditorKey;
@@ -62,9 +73,29 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
   /// Where a dropped file goes while this screen is open.
   DropTargets? _drops;
 
+  /// The editor's document once it had loaded, before anything was typed:
+  /// what "unchanged" is measured against. The browser rewrites markup as
+  /// it parses, so the draft's own HTML would never compare equal.
+  String? _openedHtml;
+
+  /// A copy put in Drafts because the app went into the background, where
+  /// Android may end it without a word: the file picker, a switch to
+  /// another app, Recents. Kept apart from the copy this was opened from, so
+  /// Discard still means discard and a reopened draft is never overwritten
+  /// behind the person's back. Each later background save replaces it, and
+  /// it goes once the window ends any other way. If the app is ended, it is
+  /// what is left.
+  String? _backgroundCopy;
+
+  /// What [_backgroundCopy] holds, so an unchanged message is not saved
+  /// again every time the app is put away.
+  String? _backgroundCopyOf;
+  bool _backgroundSaving = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _showBcc = widget.draft.bcc.isNotEmpty;
     _editor.addListener(_onEditorState);
     // While this screen is open, a file dropped anywhere on the app is an
@@ -78,6 +109,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _drops?.release(_takeIncoming);
     _editor
       ..removeListener(_onEditorState)
@@ -90,6 +122,75 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
   }
 
   void _onEditorState() => setState(() {});
+
+  Future<void> _noteOpened() async {
+    _openedHtml ??= await _editor.getHtml();
+  }
+
+  /// Whether leaving loses nothing: the window is as it opened, and what it
+  /// opened with can be had again.
+  ///
+  /// Asked on its own, "is there anything here" said yes to every reply,
+  /// which has a recipient and a subject before a word is typed, so backing
+  /// out of one opened by mistake always asked to save it.
+  bool _unchanged(Draft now) =>
+      widget.disposable &&
+      now.accountId == widget.draft.accountId &&
+      _to.text == formatAddresses(widget.draft.to) &&
+      _cc.text == formatAddresses(widget.draft.cc) &&
+      _bcc.text == formatAddresses(widget.draft.bcc) &&
+      _subject.text == widget.draft.subject &&
+      listEquals(_attachments, widget.draft.attachments) &&
+      now.htmlBody == (_openedHtml ?? widget.draft.htmlBody);
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) _saveInBackground();
+  }
+
+  /// Put what is written in Drafts as the app goes into the background.
+  /// Quietly: nothing on screen changes, and a failure changes nothing
+  /// either, because the window is still open with everything in it.
+  Future<void> _saveInBackground() async {
+    if (_sending || _backgroundSaving) return;
+    _backgroundSaving = true;
+    try {
+      final now = await _currentDraft();
+      if (!now.isWorthSaving || _unchanged(now)) return;
+      final holds = _fingerprint(now);
+      if (holds == _backgroundCopyOf || !mounted) return;
+      final saved = await saveDraft(ref, now.withSavedAs(_backgroundCopy));
+      _backgroundCopy = saved.savedAs;
+      _backgroundCopyOf = holds;
+    } catch (_) {
+      // Offline, most likely. The message is still on screen.
+    } finally {
+      _backgroundSaving = false;
+    }
+  }
+
+  String _fingerprint(Draft d) => [
+        d.accountId,
+        d.to,
+        d.cc,
+        d.bcc,
+        d.subject,
+        d.htmlBody,
+        for (final a in d.attachments) identityHashCode(a),
+      ].join('\u0000');
+
+  /// The window is ending some other way, so the background copy has done
+  /// its job. Not waited for: leaving must not hang on the network, and a
+  /// copy that fails to go is untidy rather than wrong.
+  void _dropBackgroundCopy() {
+    final copy = _backgroundCopy;
+    if (copy == null) return;
+    _backgroundCopy = null;
+    _backgroundCopyOf = null;
+    unawaited(
+      ref.read(mailEngineProvider).discardDraft(copy).catchError((_) {}),
+    );
+  }
 
   /// Files dropped on the app or pasted from the clipboard.
   Future<void> _takeIncoming(List<IncomingFile> files) async {
@@ -210,11 +311,14 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
   Future<void> _send() async {
     final to = parseAddresses(_to.text);
     final cc = parseAddresses(_cc.text);
-    if (to.isEmpty && cc.isEmpty) {
+    final bcc = parseAddresses(_bcc.text);
+    if (to.isEmpty && cc.isEmpty && bcc.isEmpty) {
       setState(() => _invalid = 'Add at least one recipient.');
       return;
     }
-    if (!addressesLookValid([...to, ...cc])) {
+    // Bcc too: a mistyped blind copy is as undeliverable as any other, and
+    // is the one nobody else on the message would notice missing.
+    if (!addressesLookValid([...to, ...cc, ...bcc])) {
       setState(() => _invalid = 'One of the addresses does not look right.');
       return;
     }
@@ -227,6 +331,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
     try {
       await sendDraft(ref, await _currentDraft());
       if (!mounted) return;
+      _dropBackgroundCopy();
       Navigator.of(context).pop(true);
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
@@ -253,9 +358,8 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
   /// changing your mind should not produce a dialog, still less a blank draft
   /// on the server.
   Future<_LeaveChoice> _askOnLeave() async {
-    if (!await _currentDraft().then((d) => d.isWorthSaving)) {
-      return _LeaveChoice.discard;
-    }
+    final now = await _currentDraft();
+    if (!now.isWorthSaving || _unchanged(now)) return _LeaveChoice.discard;
     if (!mounted) return _LeaveChoice.keepWriting;
     final choice = await showDialog<_LeaveChoice>(
       context: context,
@@ -311,6 +415,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
     final messenger = ScaffoldMessenger.of(context);
     final opened = await ref.read(windowOpenerProvider).open(ComposeWindow(draft));
     if (opened) {
+      if (mounted) _dropBackgroundCopy();
       navigator.pop(false);
     } else {
       messenger
@@ -330,6 +435,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
     try {
       await saveDraft(ref, await _currentDraft());
       if (!mounted) return;
+      _dropBackgroundCopy();
       Navigator.of(context).pop(false);
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
@@ -365,7 +471,9 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
           case _LeaveChoice.save:
             await _saveAndLeave();
           case _LeaveChoice.discard:
-            if (context.mounted) Navigator.of(context).pop(false);
+            if (!context.mounted) return;
+            _dropBackgroundCopy();
+            Navigator.of(context).pop(false);
         }
       },
       child: Focus(
@@ -543,7 +651,9 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
                 child: ProblemView(problem: _problem!),
               ),
             const Divider(height: 1),
-            Expanded(child: HtmlEditor(controller: _editor)),
+            Expanded(
+              child: HtmlEditor(controller: _editor, onReady: _noteOpened),
+            ),
             EditorToolbar(controller: _editor, enabled: !_sending),
           ],
         ),

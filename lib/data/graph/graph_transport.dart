@@ -347,7 +347,7 @@ class GraphTransport implements ImapTransport {
     if (body.isEventMessage) {
       try {
         calendar = calendarPartOf(
-          em.MimeMessage.parseFromText(await api.mime(remoteId)),
+          em.MimeMessage.parseFromData(await api.mimeBytes(remoteId)),
         );
       } catch (_) {
         calendar = null;
@@ -712,6 +712,13 @@ class GraphTransport implements ImapTransport {
             cc: [
               for (final t in m.cc) MailAddress(email: t.email, name: t.name),
             ],
+            replyTo: replyToBesidesSender(
+              [
+                for (final t in m.replyTo)
+                  MailAddress(email: t.email, name: t.name),
+              ],
+              MailAddress(email: m.fromEmail, name: m.fromName),
+            ),
             isMeeting: m.isMeeting,
             date: m.received,
             isRead: m.isRead,

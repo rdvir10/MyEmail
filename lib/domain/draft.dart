@@ -1,5 +1,6 @@
 import 'error_report.dart';
 import 'package:flutter/foundation.dart';
+import 'package:html/parser.dart' as html_parser;
 
 import 'mail_message.dart';
 
@@ -97,6 +98,25 @@ class Draft {
   /// says it did.
   final List<String> lostAttachmentNames;
 
+  /// The same draft, saved as [savedAs] or, given null, not saved at all,
+  /// which [copyWith] cannot say.
+  Draft withSavedAs(String? savedAs) => Draft(
+        accountId: accountId,
+        kind: kind,
+        to: to,
+        cc: cc,
+        bcc: bcc,
+        subject: subject,
+        htmlBody: htmlBody,
+        attachments: attachments,
+        inReplyTo: inReplyTo,
+        references: references,
+        originalMessageId: originalMessageId,
+        savedAs: savedAs,
+        calendarReply: calendarReply,
+        lostAttachmentNames: lostAttachmentNames,
+      );
+
   /// Whether there is anything worth keeping. An untouched compose window
   /// backed out of should not leave a blank draft on the server.
   bool get isWorthSaving =>
@@ -107,16 +127,17 @@ class Draft {
 
   /// The editor always holds some markup, and on a reply it holds the whole
   /// quoted original, so "is the body empty" cannot be a string test on the
-  /// HTML. Tags and whitespace do not count as having written anything.
+  /// HTML. Tags and whitespace do not count as having written anything, and
+  /// neither does what the window put there itself: the signature, and the
+  /// quote with its "On ..., Dana wrote:" line. Counted, they made every
+  /// untouched window on an account with a signature ask to be saved.
   bool get htmlBodyHasText {
-    final text = htmlBody
-        .replaceAll(RegExp(r'<blockquote[\s\S]*?</blockquote>',
-            caseSensitive: false), '')
-        .replaceAll(RegExp(r'<[^>]*>'), ' ')
-        .replaceAll('&nbsp;', ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    return text.isNotEmpty;
+    final body = html_parser.parseFragment(htmlBody);
+    for (final added in body.querySelectorAll(
+        'blockquote, .mailtree-signature, .mailtree-quote')) {
+      added.remove();
+    }
+    return (body.text ?? '').replaceAll('\u00a0', ' ').trim().isNotEmpty;
   }
 
   bool get hasRecipients => to.isNotEmpty || cc.isNotEmpty || bcc.isNotEmpty;

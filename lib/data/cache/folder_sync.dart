@@ -246,6 +246,7 @@ class FolderSync {
         isFlagged: h.isFlagged,
         hasAttachments: h.hasAttachments,
         cc: h.cc,
+        replyTo: h.replyTo,
         attachmentBytes: h.attachmentBytes,
         isMeeting: h.isMeeting,
         preview: h.preview,

@@ -80,6 +80,131 @@ void main() {
     });
   });
 
+  group('who a reply goes to', () {
+    const noreply = MailAddress(email: 'noreply@vendor.example');
+    const ticket =
+        MailAddress(email: 'ticket-4411@vendor.example', name: 'Support');
+
+    MailMessage from(MailAddress sender, {List<MailAddress> replyTo = const []}) =>
+        MailMessage(
+          id: 'a:INBOX#8',
+          accountId: 'a',
+          folderId: 'a:INBOX',
+          uid: 8,
+          subject: 'Your ticket',
+          from: sender,
+          to: const [me, nadav],
+          cc: const [michal],
+          replyTo: replyTo,
+          date: DateTime(2026, 9, 20, 9),
+          preview: '',
+        );
+
+    Draft reply(MailMessage m, {ComposeKind kind = ComposeKind.reply}) =>
+        draftFor(kind: kind, accountId: 'a', original: m, selfEmail: me.email);
+
+    test('the Reply-To address, when the message names one', () {
+      // A support desk sends from noreply@ and asks for answers at the
+      // ticket address. Answering From sent them where nobody reads.
+      final draft = reply(from(noreply, replyTo: const [ticket]));
+      expect(draft.to, [ticket]);
+    });
+
+    test('and reply all neither drops the others nor adds the no-reply', () {
+      final draft =
+          reply(from(noreply, replyTo: const [ticket]), kind: ComposeKind.replyAll);
+      expect(draft.to, [ticket]);
+      expect(draft.cc.map((a) => a.email), [nadav.email, michal.email]);
+    });
+
+    test('a message the account sent goes to the people it went to', () {
+      // Answering from Sent used to address the reply to the account.
+      final draft = reply(from(me));
+      expect(draft.to.map((a) => a.email), [nadav.email]);
+    });
+
+    test('a Reply-To that only repeats the sender is no Reply-To', () {
+      // An IMAP server's ENVELOPE fills Reply-To in with From when the
+      // header is absent.
+      expect(replyToBesidesSender(const [dana], dana), isEmpty);
+      expect(replyToBesidesSender(const [ticket], noreply), [ticket]);
+    });
+  });
+
+  group('the thread a reply joins', () {
+    MailMessage threaded({String? messageId, String? inReplyTo}) => MailMessage(
+          id: 'a:INBOX#7',
+          accountId: 'a',
+          folderId: 'a:INBOX',
+          uid: 7,
+          subject: 'Budget',
+          from: dana,
+          to: const [me],
+          date: DateTime(2026, 9, 20, 9),
+          preview: '',
+          messageId: messageId,
+          inReplyTo: inReplyTo,
+        );
+
+    String sent(Draft draft) => buildMimeMessage(
+          draft: draft,
+          account: const Account(
+            id: 'a',
+            displayName: 'Ron',
+            emailAddress: 'ron@example.com',
+            provider: MailProvider.gmail,
+            authMethod: AuthMethod.appPassword,
+            colorValue: 0xFF0F6CBD,
+          ),
+        ).renderMessage();
+
+    test("answers the original's own Message-ID", () {
+      // It used to be an id made up from the UID, which matched nothing, so
+      // every reply opened a new conversation for the person getting it.
+      final draft = draftFor(
+        kind: ComposeKind.reply,
+        accountId: 'a',
+        original: threaded(messageId: 'real@x', inReplyTo: 'first@x'),
+      );
+      expect(draft.inReplyTo, 'real@x');
+
+      final rendered = sent(draft);
+      expect(rendered, contains('In-Reply-To: <real@x>'));
+      expect(rendered, contains('References: <first@x> <real@x>'));
+      expect(rendered, isNot(contains('mailtree.local')));
+    });
+
+    test('an id written with its brackets is not given a second pair', () {
+      // Microsoft hands the id over with them; the cache strips them.
+      final draft = draftFor(
+        kind: ComposeKind.reply,
+        accountId: 'a',
+        original: threaded(messageId: '<real@x>'),
+      );
+      expect(sent(draft), contains('In-Reply-To: <real@x>'));
+    });
+
+    test('nothing is claimed when the original had no Message-ID', () {
+      final draft = draftFor(
+        kind: ComposeKind.reply,
+        accountId: 'a',
+        original: threaded(),
+      );
+      expect(draft.inReplyTo, isNull);
+      expect(sent(draft), isNot(contains('In-Reply-To')));
+    });
+
+    test('a forward starts a conversation of its own', () {
+      final draft = draftFor(
+        kind: ComposeKind.forward,
+        accountId: 'a',
+        original: threaded(messageId: 'real@x'),
+      );
+      expect(draft.inReplyTo, isNull);
+      expect(draft.references, isEmpty);
+    });
+  });
+
   group('a message changes state without losing its Cc', () {
     test('marking read keeps Cc, size and the meeting flag', () {
       final m = MailMessage(
@@ -108,6 +233,25 @@ void main() {
           WindowRequest.decode(MessageWindow(m).encode()) as MessageWindow;
       expect(back.message.cc.map((a) => a.email),
           [michal.email, nik.email]);
+    });
+
+    test('Reply-To survives both as well', () {
+      final m = MailMessage(
+        id: 'a:INBOX#7',
+        accountId: 'a',
+        folderId: 'a:INBOX',
+        uid: 7,
+        subject: 'Budget',
+        from: dana,
+        to: const [me],
+        replyTo: const [nik],
+        date: DateTime(2026, 9, 20, 9),
+        preview: '',
+      );
+      expect(m.copyWith(isRead: true).replyTo, [nik]);
+      final back =
+          WindowRequest.decode(MessageWindow(m).encode()) as MessageWindow;
+      expect(back.message.replyTo, [nik]);
     });
   });
 

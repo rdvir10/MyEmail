@@ -96,9 +96,12 @@ String quotedOriginal({String? html, String? text}) {
 ///
 /// The HTML is parsed, the way the WebView will parse it, and rebuilt from
 /// what is known to be safe: an allow-list of elements and attributes.
-/// Anything else is either removed with its contents (scripts, styles,
-/// embedded documents, forms, `<meta>`, `<base>`, `<link>`, SVG and MathML)
-/// or unwrapped so its text survives (unknown tags such as Office's `<o:p>`).
+/// Anything else is either removed with its contents (scripts, embedded
+/// documents, forms, `<meta>`, `<base>`, `<link>`, SVG and MathML) or
+/// unwrapped so its text survives (unknown tags such as Office's `<o:p>`).
+/// `<style>` stays, less anything that fetches: it runs nothing, and most
+/// HTML mail is laid out by one, so dropping it sent a forwarded newsletter
+/// or booking out as an unstyled heap.
 ///
 /// This used to be a set of regular expressions, and they were bypassed:
 /// `<img src="x"onerror=...>` and `<svg/onload=...>` carry a handler with no
@@ -111,8 +114,9 @@ String quotedOriginal({String? html, String? text}) {
 /// Links keep http, https, mailto and tel targets only. Images keep inline
 /// `data:image/` and `cid:` sources; remote ones are renamed to
 /// `data-blocked-src` so the layout survives without the act of replying
-/// telling the sender. `url(...)` in inline styles is neutralised for the
-/// same reason.
+/// telling the sender, and [restoreBlockedImages] points them back before
+/// the message goes out. `url(...)` in styles is neutralised for the same
+/// reason.
 ///
 /// [ownDraft] is for a draft reopened from the Drafts folder: the same
 /// cleaning, except remote pictures keep their `src`. They are the writer's
@@ -126,7 +130,7 @@ String sanitiseForEditing(String html, {bool ownDraft = false}) {
 
 /// Removed together with everything inside them.
 const _dropped = {
-  'script', 'style', 'noscript', 'template', 'iframe', 'frame', 'frameset',
+  'script', 'noscript', 'template', 'iframe', 'frame', 'frameset',
   'object', 'embed', 'applet', 'param', 'form', 'input', 'button', 'select',
   'option', 'optgroup', 'textarea', 'datalist', 'output', 'meta', 'base',
   'link', 'title', 'head', 'audio', 'video', 'source', 'track', 'canvas',
@@ -179,6 +183,12 @@ void _cleanElement(dom.Element el, {required bool keepRemoteImages}) {
       el.namespaceUri != 'http://www.w3.org/1999/xhtml';
   if (foreign || _dropped.contains(name)) {
     el.remove();
+    return;
+  }
+  if (name == 'style') {
+    final css = _neutraliseStyleSheet(el.text);
+    el.attributes.clear();
+    el.text = css;
     return;
   }
 
@@ -251,6 +261,43 @@ String? _imageSource(String attr, String value,
 String _neutraliseStyle(String style) => style
     .replaceAll(RegExp(r'url\s*\([^)]*\)', caseSensitive: false), 'none')
     .replaceAll(RegExp(r'expression\s*\(', caseSensitive: false), '(');
+
+/// A style sheet likewise, less its imports, which fetch by a bare string
+/// as well as by url(). No `<` survives, because a style element's text is
+/// written out as it is: taking something out of the middle must not be able
+/// to leave a `</style>` behind that ends it early.
+String _neutraliseStyleSheet(String css) => _neutraliseStyle(css)
+    .replaceAll(RegExp(r'@import[^;]*;?', caseSensitive: false), '')
+    .replaceAll('<', r'\3c ');
+
+const _imageAttributes = ['src', 'srcset', 'background', 'poster'];
+
+bool _isRemote(String value) {
+  final url = _normalisedUrl(value);
+  final scheme = _schemeOf(url);
+  return scheme == 'http' || scheme == 'https' || url.startsWith('//');
+}
+
+/// The editor's HTML as it goes out: each picture the quote had blocked,
+/// pointed back at where it lives.
+///
+/// Renaming a remote source kept the act of replying from telling the
+/// sender. It was never meant for the recipient, who got an empty box where
+/// every picture of a forwarded newsletter or booking had been. Only what
+/// [sanitiseForEditing] renames comes back, a remote address, so a message
+/// cannot use this to put anything else into a source.
+String restoreBlockedImages(String html) {
+  if (!html.contains('data-blocked-')) return html;
+  final fragment = html_parser.parseFragment(html);
+  for (final el in fragment.querySelectorAll('*')) {
+    for (final attr in _imageAttributes) {
+      final value = el.attributes.remove('data-blocked-$attr');
+      if (value == null || !_isRemote(value)) continue;
+      el.attributes.putIfAbsent(attr, () => value);
+    }
+  }
+  return fragment.outerHtml;
+}
 
 /// The plain-text alternative for the sent message, derived from the editor's
 /// HTML so the two halves say the same thing.

@@ -32,38 +32,74 @@ Draft draftFor({
     typedHtml: typedText.trim().isEmpty ? '' : asParagraphs(typedText),
   );
 
+  final mine = {
+    for (final e in [selfEmail, ...otherAccountEmails])
+      if (e.trim().isNotEmpty) e.trim().toLowerCase(),
+  };
+  final to = _to(kind, original, mine);
+  // The original's own Message-ID, which is what every client threads on,
+  // and what it answered before it. A forward starts a conversation of its
+  // own. These used to be an id made up from the UID, which matched nothing
+  // anywhere, so every reply opened a new thread for the person getting it.
+  final answering = original != null && kind != ComposeKind.forward;
+
   return Draft(
     accountId: accountId,
     kind: kind,
-    to: _to(kind, original),
-    cc: kind == ComposeKind.replyAll
-        ? _cc(original, {selfEmail, ...otherAccountEmails})
-        : const [],
+    to: to,
+    cc: kind == ComposeKind.replyAll ? _cc(original, mine, to) : const [],
     subject: subjectFor(kind, original),
     htmlBody: html,
-    inReplyTo: original == null ? null : '<${original.uid}@mailtree.local>',
+    inReplyTo: answering ? original.messageId : null,
+    references: [
+      if (answering && original.inReplyTo != null) original.inReplyTo!,
+    ],
     originalMessageId: original?.id,
   );
 }
 
-List<MailAddress> _to(ComposeKind kind, MailMessage? original) {
+/// Who a reply goes to.
+///
+/// Reply-To when the message has one: the ticket address behind a no-reply
+/// sender, a list, a web form. The From address only otherwise; answering it
+/// regardless sent replies to addresses that drop them. And a message the
+/// account sent itself, answered from Sent, goes to the people it went to,
+/// not back to the account.
+List<MailAddress> _to(
+  ComposeKind kind,
+  MailMessage? original,
+  Set<String> mine,
+) {
   if (original == null || kind == ComposeKind.forward) return const [];
+  if (mine.contains(original.from.email.toLowerCase())) {
+    final others = [
+      for (final a in original.to)
+        if (!mine.contains(a.email.toLowerCase())) a,
+    ];
+    return others.isEmpty ? original.to : others;
+  }
+  if (original.replyTo.isNotEmpty) return original.replyTo;
   return [original.from];
 }
 
 /// Reply-all keeps everyone else who had the message, from its To and its
 /// Cc, but never the account itself, or the sender ends up on their own
-/// reply, and never the original sender, who is already the To. Each address
-/// once.
+/// reply, never whoever the reply is already addressed to, and never the
+/// original sender, who is either that or asked not to be answered. Each
+/// address once.
 ///
 /// Only To used to be read, so everyone who had been copied was left off the
 /// answer without a word, from the compose screen and from the notification.
-List<MailAddress> _cc(MailMessage? original, Set<String> mine) {
+List<MailAddress> _cc(
+  MailMessage? original,
+  Set<String> mine,
+  List<MailAddress> to,
+) {
   if (original == null) return const [];
   final skip = {
-    for (final e in mine)
-      if (e.trim().isNotEmpty) e.trim().toLowerCase(),
+    ...mine,
     original.from.email.toLowerCase(),
+    for (final a in to) a.email.toLowerCase(),
   };
   return [
     for (final a in [...original.to, ...original.cc])

@@ -18,7 +18,10 @@ sealed class WindowRequest {
 
   static WindowRequest fromJson(Map<String, Object?> json) =>
       switch (json['window']) {
-        'compose' => ComposeWindow(_draftFromJson(json['draft'] as Map)),
+        'compose' => ComposeWindow(
+            _draftFromJson(json['draft'] as Map),
+            disposable: json['disposable'] == true,
+          ),
         'message' => MessageWindow(_messageFromJson(json['message'] as Map)),
         final other => throw FormatException('not a window: $other'),
       };
@@ -31,14 +34,20 @@ sealed class WindowRequest {
 
 /// A message being written, moved to a window of its own.
 class ComposeWindow extends WindowRequest {
-  const ComposeWindow(this.draft);
+  const ComposeWindow(this.draft, {this.disposable = false});
 
   final Draft draft;
+
+  /// Whether the draft is only what a new compose window starts with, so
+  /// closing it untouched loses nothing. False for one moved across from
+  /// another window, which holds typing that exists nowhere else.
+  final bool disposable;
 
   @override
   Map<String, Object?> toJson() => {
         'window': 'compose',
         'draft': _draftToJson(draft),
+        if (disposable) 'disposable': true,
       };
 }
 
@@ -122,6 +131,8 @@ Map<String, Object?> _messageToJson(MailMessage m) => {
       'from': _addressToJson(m.from),
       'to': [for (final a in m.to) _addressToJson(a)],
       'cc': [for (final a in m.cc) _addressToJson(a)],
+      if (m.replyTo.isNotEmpty)
+        'replyTo': [for (final a in m.replyTo) _addressToJson(a)],
       'date': m.date.toUtc().toIso8601String(),
       'preview': m.preview,
       'isRead': m.isRead,
@@ -144,6 +155,10 @@ MailMessage _messageFromJson(Map json) => MailMessage(
       // Absent in a request written before these were carried.
       cc: [
         for (final a in (json['cc'] as List?) ?? const [])
+          _addressFromJson(a as Map),
+      ],
+      replyTo: [
+        for (final a in (json['replyTo'] as List?) ?? const [])
           _addressFromJson(a as Map),
       ],
       date: DateTime.parse(json['date'] as String),

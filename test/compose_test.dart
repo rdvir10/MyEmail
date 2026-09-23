@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/compose/quote_builder.dart';
 import 'package:myemail/data/compose/smtp_sender.dart';
 import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/address_suggestions.dart';
 import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/compose_providers.dart';
@@ -131,6 +132,30 @@ void main() {
 
     test('an unknown tag loses the tag but keeps its words', () {
       expect(sanitiseForEditing('<p>One<o:p>two</o:p></p>'), '<p>Onetwo</p>');
+    });
+
+    test('a style sheet stays, less what it would fetch', () {
+      // Most HTML mail is laid out by one; dropping it forwarded a booking
+      // or a newsletter as an unstyled heap.
+      final out = sanitiseForEditing(
+        '<html><head><style>@import "https://t.example/x.css";'
+        '.hero{background:url(https://t.example/b.png);color:#123}</style>'
+        '</head><body><p class="hero">Hi</p></body></html>',
+      );
+      expect(out, contains('<style>'));
+      expect(out, contains('color:#123'));
+      expect(out, isNot(contains('t.example')));
+      expect(out, contains('<p class="hero">Hi</p>'));
+    });
+
+    test('nothing taken out of a style sheet can end it early', () {
+      // The sheet's text is written out as it is. Removing the import from
+      // "<@import a;/style>" would otherwise leave a closing tag, and the
+      // script after it would be markup.
+      final out =
+          sanitiseForEditing('<style><@import a;/style><script>x()</style>');
+      expect(RegExp('</style').allMatches(out), hasLength(1));
+      expect(out, isNot(contains('<script')));
     });
 
     test('a reopened draft keeps its own remote pictures, and nothing else',
@@ -332,6 +357,36 @@ void main() {
     test('empty input yields no recipients rather than one blank one', () {
       expect(parseAddresses('  , ; '), isEmpty);
     });
+
+    test('a name with a comma in it is one person, not two', () {
+      // Outlook directories name people "Surname, Given". Reply-all to one
+      // of them split the name at its comma, and the send was refused
+      // because "Levi" did not look like an address.
+      const levi = MailAddress(email: 'dana@example.com', name: 'Levi, Dana');
+      const sam = MailAddress(email: 'sam@example.com', name: 'Sam "Q" Cohen');
+      final field = formatAddresses([levi, sam]);
+
+      expect(field,
+          r'"Levi, Dana" <dana@example.com>, "Sam \"Q\" Cohen" <sam@example.com>');
+      final parsed = parseAddresses(field);
+      expect(parsed.map((a) => (a.name, a.email)), [
+        ('Levi, Dana', 'dana@example.com'),
+        ('Sam "Q" Cohen', 'sam@example.com'),
+      ]);
+      expect(addressesLookValid(parsed), isTrue);
+    });
+
+    test('a suggestion chosen for such a name goes in quoted', () {
+      const chosen =
+          AddressSuggestion(email: 'dana@example.com', name: 'Levi, Dana');
+      final field = completeLastRecipient('sam@example.com, lev', chosen);
+
+      expect(field, 'sam@example.com, "Levi, Dana" <dana@example.com>, ');
+      expect(parseAddresses(field).map((a) => a.email),
+          ['sam@example.com', 'dana@example.com']);
+      expect(lastRecipientToken('sam@example.com, "Levi, Da'), 'Levi, Da',
+          reason: 'still typing inside the quotes');
+    });
   });
 
   group('buildMimeMessage', () {
@@ -391,6 +446,39 @@ void main() {
       final rendered =
           buildMimeMessage(draft: draft(), account: _account).renderMessage();
       expect(rendered, isNot(contains('In-Reply-To')));
+    });
+
+    test('a forwarded picture reaches the recipient', () {
+      // Blocked while the reply was written, so writing it told the sender
+      // nothing; the recipient used to get an empty box instead.
+      final html = buildComposeHtml(
+        kind: ComposeKind.forward,
+        original: _original(),
+        originalHtml: '<img src="https://cdn.example/hero.png" '
+            'srcset="https://cdn.example/hero2.png 2x"><p>Booking</p>',
+      );
+      expect(html, contains('data-blocked-src'), reason: 'blocked in the editor');
+
+      // Collapsed, because the encoder folds long lines at their spaces.
+      final sent = buildMimeMessage(draft: draft(html: html), account: _account)
+          .decodeTextHtmlPart()!
+          .replaceAll(RegExp(r'\s+'), ' ');
+      expect(sent, contains('src="https://cdn.example/hero.png"'));
+      expect(sent, contains('srcset="https://cdn.example/hero2.png 2x"'));
+      expect(sent, isNot(contains('data-blocked-')));
+    });
+
+    test('only a remote address comes back as a source', () {
+      // data-blocked-src is on the sanitiser's allow-list, so a message can
+      // carry its own; turning that into a source must not let anything in.
+      final out = restoreBlockedImages(
+        '<img data-blocked-src="javascript:alert(1)">'
+        '<img data-blocked-src="cid:x">'
+        '<img data-blocked-src="//cdn.example/a.png">',
+      );
+      expect(out, isNot(contains('javascript')));
+      expect(out, isNot(contains('cid:')));
+      expect(out, contains('src="//cdn.example/a.png"'));
     });
 
     test('attachments are carried with their names', () {

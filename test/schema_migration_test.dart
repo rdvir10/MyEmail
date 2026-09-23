@@ -46,9 +46,15 @@ void main() {
   // and every test here would still have passed, while every device
   // upgrading from 2.35 or earlier failed on every cache read.
 
+  /// What schema 7 added: Reply-To.
+  Future<void> dropSchema7(MailDatabase db) async {
+    await db.customStatement('ALTER TABLE messages DROP COLUMN reply_to_json');
+  }
+
   /// What schema 6 added: who else a message went to, what its files weigh,
-  /// and whether it is a meeting request.
+  /// and whether it is a meeting request. And everything after it.
   Future<void> dropSchema6(MailDatabase db) async {
+    await dropSchema7(db);
     for (final column in ['copied_json', 'attachment_bytes', 'is_meeting']) {
       await db.customStatement('ALTER TABLE messages DROP COLUMN $column');
     }
@@ -111,6 +117,44 @@ void main() {
     await db.customStatement('PRAGMA user_version = 5');
     await db.close();
   }
+
+  /// A database as it stood at schema 6, the one every device upgrades from.
+  Future<void> buildVersion6() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await dropSchema7(db);
+    await db.customStatement('PRAGMA user_version = 6');
+    await db.close();
+  }
+
+  test('a version 6 database gains Reply-To and keeps its rows', () async {
+    await buildVersion6();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    final cached = await store.readMessages('acct-1', 'INBOX');
+
+    expect(cached.single.bodyHtml, '<p>A body worth keeping</p>');
+    expect(cached.single.replyTo, isEmpty,
+        reason: 'cached before Reply-To was kept, so a reply goes to From');
+
+    await store.upsertMessages('acct-1', 'INBOX', [
+      CachedMessage(
+        uid: 12,
+        subject: 'Your ticket',
+        from: const MailAddress(email: 'noreply@vendor.example'),
+        to: const [MailAddress(email: 'me@example.com')],
+        replyTo: const [MailAddress(email: 'ticket-4411@vendor.example')],
+        date: DateTime.utc(2026, 9, 2),
+        isRead: false,
+        isFlagged: false,
+        hasAttachments: false,
+      ),
+    ]);
+    final after = await store.readMessage('acct-1', 'INBOX', 12);
+    expect(after!.replyTo.single.email, 'ticket-4411@vendor.example');
+  });
 
   test('a version 5 database gains the schema 6 columns and keeps its rows',
       () async {

@@ -1,11 +1,16 @@
 import 'dart:async';
 
 import 'package:enough_mail/enough_mail.dart' as em;
+// SmtpCommand is how SmtpClient lets a caller drive a conversation of its
+// own; the package uses it for every command but does not export it.
+// ignore: implementation_imports
+import 'package:enough_mail/src/private/smtp/smtp_command.dart';
 
 import '../../domain/account.dart';
 import '../../domain/draft.dart';
 import '../../domain/mail_credentials.dart';
 import '../../domain/mail_message.dart' as domain;
+import '../imap/imap_mapping.dart' show normaliseMessageId;
 import '../mail_engine.dart';
 import 'quote_builder.dart';
 
@@ -32,17 +37,23 @@ em.MimeMessage buildMimeMessage({
         : draft.subject.trim();
 
   // Threading: a reply that omits these starts a new conversation in every
-  // client that shows threads.
-  final inReplyTo = draft.inReplyTo;
+  // client that shows threads. The cache keeps ids without their angle
+  // brackets and a saved draft's header has them, so each is put in its
+  // written form here.
+  final inReplyTo = _angled(draft.inReplyTo);
   if (inReplyTo != null) {
     builder.setHeader('In-Reply-To', inReplyTo);
-    final references = [...draft.references, inReplyTo];
+    final references = [
+      for (final id in draft.references) ?_angled(id),
+      inReplyTo,
+    ];
     builder.setHeader('References', references.join(' '));
   }
 
+  final html = restoreBlockedImages(draft.htmlBody);
   builder.addMultipartAlternative(
-    plainText: plainTextFromHtml(draft.htmlBody),
-    htmlText: draft.htmlBody,
+    plainText: plainTextFromHtml(html),
+    htmlText: html,
   );
 
   // An answer to an invitation: the calendar part goes beside the text,
@@ -80,6 +91,11 @@ em.MimeMessage buildMimeMessage({
 
 em.MailAddress _addr(domain.MailAddress a) =>
     em.MailAddress(a.name, a.email);
+
+String? _angled(String? id) {
+  final bare = normaliseMessageId(id);
+  return bare == null ? null : '<$bare>';
+}
 
 /// Everyone the message is delivered to: To, Cc and Bcc, each address once.
 ///
@@ -123,10 +139,87 @@ String wireText(em.MimeMessage message) {
   );
   final stuffed = (visible + body)
       .replaceAllMapped(RegExp(r'(^|\r\n)\.'), (m) => '${m[1]}..');
-  // sendMessageText adds CRLF before the final dot itself.
+  // EnvelopeCommand adds CRLF before the final dot itself.
   return stuffed.endsWith('\r\n')
       ? stuffed.substring(0, stuffed.length - 2)
       : stuffed;
+}
+
+/// MAIL FROM, a RCPT TO for each recipient, then DATA, reading every reply.
+///
+/// enough_mail's own version reads only the reply to the last RCPT. A
+/// mistyped Bcc anywhere but last was refused, the message went to the rest,
+/// and the app said it was sent; a refused MAIL FROM surfaced as the "MAIL
+/// first" that followed it rather than the reason. Here any refused
+/// recipient stops the send before DATA, naming the addresses, so nobody
+/// gets a copy until the list is right. A refused MAIL FROM or DATA ends it
+/// with the server's own words.
+class EnvelopeCommand extends SmtpCommand {
+  EnvelopeCommand({
+    required this.text,
+    required this.from,
+    required this.recipients,
+  }) : super('MAIL FROM:<$from>');
+
+  /// What goes between DATA and the final dot: [wireText].
+  final String text;
+  final String from;
+  final List<String> recipients;
+
+  /// Each recipient the server refused, with what it said.
+  final refused = <String, String>{};
+
+  var _step = _EnvelopeStep.mailFrom;
+  var _index = 0;
+
+  @override
+  String? nextCommand(em.SmtpResponse response) {
+    switch (_step) {
+      case _EnvelopeStep.mailFrom:
+        if (!response.isOkStatus) return null;
+        if (recipients.isEmpty) {
+          throw const SendFailed('The message has nobody to go to.');
+        }
+        _step = _EnvelopeStep.recipients;
+        return 'RCPT TO:<${recipients.first}>';
+      case _EnvelopeStep.recipients:
+        if (!response.isOkStatus) {
+          refused[recipients[_index]] =
+              response.message ?? '${response.code}';
+        }
+        _index++;
+        if (_index < recipients.length) {
+          return 'RCPT TO:<${recipients[_index]}>';
+        }
+        if (refused.isNotEmpty) throw RecipientsRefused(refused);
+        _step = _EnvelopeStep.data;
+        return 'DATA';
+      case _EnvelopeStep.data:
+        if (response.code != 354) return null;
+        _step = _EnvelopeStep.done;
+        return '$text\r\n.';
+      case _EnvelopeStep.done:
+        return null;
+    }
+  }
+}
+
+enum _EnvelopeStep { mailFrom, recipients, data, done }
+
+/// The server would not take some of the recipients, so nothing was sent.
+class RecipientsRefused extends SendFailed {
+  RecipientsRefused(this.refused) : super(_describe(refused));
+
+  final Map<String, String> refused;
+
+  static String _describe(Map<String, String> refused) {
+    final lines = [
+      for (final MapEntry(:key, :value) in refused.entries) '$key: $value',
+    ];
+    return 'The mail server would not take '
+        '${refused.length == 1 ? 'this address' : 'these addresses'}, so '
+        'nothing was sent:\n${lines.join('\n')}';
+  }
 }
 
 /// SMTP over TLS for one account.
@@ -245,15 +338,18 @@ class SmtpSender {
       }
 
       // Text of our own making, not sendMessage: see wireText for the two
-      // things enough_mail's own framing gets wrong.
+      // things enough_mail's own framing gets wrong. And an envelope of our
+      // own making: see EnvelopeCommand for what its envelope gets wrong.
       final em.SmtpResponse response;
       try {
         response = await client
-            .sendMessageText(
-              wireText(message),
-              message.from!.first,
-              envelopeRecipients(message),
-            )
+            .sendCommand(EnvelopeCommand(
+              text: wireText(message),
+              from: message.from!.first.email,
+              recipients: [
+                for (final a in envelopeRecipients(message)) a.email,
+              ],
+            ))
             .timeout(transferLimit);
       } on TimeoutException {
         // The message may be on the server already; only its answer is

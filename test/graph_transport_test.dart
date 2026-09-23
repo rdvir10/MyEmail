@@ -405,6 +405,25 @@ void main() {
       expect(header.hasAttachments, isTrue);
     });
 
+    test('headers carry Reply-To, and it is asked for', () async {
+      // Without it a reply to a no-reply sender went to the no-reply.
+      expect(GraphMailApi.headerFields.split(','), contains('replyTo'));
+      server
+        ..message('f-inbox', id: 'm1', subject: 'Ticket', minutesAgo: 5,
+            from: 'noreply@vendor.example',
+            replyTo: ['ticket-4411@vendor.example'])
+        ..message('f-inbox', id: 'm2', subject: 'Lunch?', minutesAgo: 4,
+            from: 'dana@example.com', replyTo: ['dana@example.com']);
+
+      final headers = await transport.fetchHeadersFromUid('Inbox', 1);
+      final byId = {for (final h in headers) h.subject: h};
+
+      expect(byId['Ticket']!.replyTo.single.email,
+          'ticket-4411@vendor.example');
+      expect(byId['Lunch?']!.replyTo, isEmpty,
+          reason: 'naming only the sender is the same as not saying');
+    });
+
     test('a flag marked complete still reads as flagged', () async {
       // Outlook shows a completed follow-up with the flag still on, so
       // treating only "flagged" as flagged would lose it on sync.
@@ -431,6 +450,26 @@ void main() {
         final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
         return transport.fetchBody('Inbox', header.uid);
       }
+
+      test('a title in Hebrew comes through as Hebrew', () async {
+        // The message now comes over as bytes. Its calendar part is 8-bit
+        // UTF-8, and has to be read as that and not one byte per letter.
+        server
+          ..message('f-inbox', id: 'm1', subject: 'Review', minutesAgo: 5)
+          ..bodies['m1'] = ('html', '<p>Please come.</p>')
+          ..mimes['m1'] = invitation
+              .replaceFirst('SUMMARY:Review', 'SUMMARY:סקירה רבעונית')
+              .replaceFirst(
+                'Content-Type: text/calendar; method=REQUEST\r\n',
+                'Content-Type: text/calendar; method=REQUEST; charset=utf-8\r\n'
+                    'Content-Transfer-Encoding: 8bit\r\n',
+              )
+          ..eventMessages.add('m1');
+
+        final body = await fetch();
+
+        expect(CalendarInvite.parse(body.calendar!)!.summary, 'סקירה רבעונית');
+      });
 
       test('brings its invitation with it', () async {
         server
@@ -978,6 +1017,7 @@ class _FakeGraph {
     bool hasAttachments = false,
     String? flagStatus,
     String preview = '',
+    List<String> replyTo = const [],
   }) {
     messages[id] = {
       'id': id,
@@ -987,6 +1027,12 @@ class _FakeGraph {
         'emailAddress': {'address': from, 'name': ?fromName},
       },
       'toRecipients': const [],
+      'replyTo': [
+        for (final a in replyTo)
+          {
+            'emailAddress': {'address': a},
+          },
+      ],
       'receivedDateTime': DateTime.utc(2026, 9, 18, 12)
           .subtract(Duration(minutes: minutesAgo))
           .toIso8601String(),
@@ -1204,7 +1250,9 @@ class _FakeGraph {
       final id = path.split('/me/messages/').last.replaceAll(r'/$value', '');
       final mime = mimes[id];
       if (mime == null) return http.Response('{}', 404);
-      return http.Response(mime, 200, headers: {'content-type': 'text/plain'});
+      // The bytes as sent, which for 8-bit mail are UTF-8.
+      return http.Response.bytes(utf8.encode(mime), 200,
+          headers: {'content-type': 'text/plain'});
     }
 
     // One message, headers or body.

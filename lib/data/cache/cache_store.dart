@@ -40,6 +40,7 @@ class CachedMessage {
     required this.isFlagged,
     required this.hasAttachments,
     this.cc = const [],
+    this.replyTo = const [],
     this.attachmentBytes = 0,
     this.isMeeting = false,
     this.preview = '',
@@ -55,6 +56,9 @@ class CachedMessage {
   final MailAddress from;
   final List<MailAddress> to;
   final List<MailAddress> cc;
+
+  /// See [MailMessage.replyTo].
+  final List<MailAddress> replyTo;
   final DateTime date;
   final bool isRead;
   final bool isFlagged;
@@ -93,6 +97,7 @@ class CachedMessage {
       from: from,
       to: to,
       cc: cc,
+      replyTo: replyTo,
       date: date,
       isRead: isRead ?? this.isRead,
       isFlagged: isFlagged ?? this.isFlagged,
@@ -118,6 +123,7 @@ class CachedMessage {
       from: from,
       to: to,
       cc: cc,
+      replyTo: replyTo,
       date: date,
       preview: preview,
       isRead: isRead,

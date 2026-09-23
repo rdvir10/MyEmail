@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -62,20 +64,29 @@ Future<void> openCompose(
     draft = draft.copyWith(htmlBody: '${textAsHtml(bodyText)}${draft.htmlBody}');
   }
 
+  // Closing it untouched loses nothing only if nothing came in from outside:
+  // text or files shared from another app are asked about.
+  final disposable =
+      attachments.isEmpty && subject == null && bodyText == null;
+
   // A window of its own, if that is how writing is set to happen and this
   // platform has windows. The draft is built here either way, so the
   // window opens with the quoted message already in it.
   if (ref.read(composeInWindowProvider) &&
       (ref.read(windowsAvailableProvider).value ?? false)) {
     // A window the system did not open falls through to here.
-    if (await ref.read(windowOpenerProvider).open(ComposeWindow(draft))) {
+    if (await ref
+        .read(windowOpenerProvider)
+        .open(ComposeWindow(draft, disposable: disposable))) {
       return;
     }
     if (!context.mounted) return;
   }
 
   await Navigator.of(context).push(
-    MaterialPageRoute<bool>(builder: (_) => ComposeScreen(draft: draft)),
+    MaterialPageRoute<bool>(
+      builder: (_) => ComposeScreen(draft: draft, disposable: disposable),
+    ),
   );
 }
 
@@ -101,10 +112,22 @@ Future<void> openSavedDraft(
   WidgetRef ref,
   MailMessage message,
 ) async {
-  final draft = await _withSpinner(
-    context,
-    draftFromMessage(ref: ref, message: message),
-  );
+  final Draft? loaded;
+  try {
+    loaded = await _withSpinner(
+      context,
+      draftFromMessage(ref: ref, message: message),
+    );
+  } on DraftNotLoaded catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+            SnackBar(duration: kBottomMessage, content: Text(e.message)));
+    }
+    return;
+  }
+  final draft = loaded;
   if (draft == null || !context.mounted) return;
   await Navigator.of(context).push(
     MaterialPageRoute<bool>(builder: (_) => ComposeScreen(draft: draft)),
@@ -129,6 +152,9 @@ Future<T?> _withSpinner<T>(BuildContext context, Future<T> work) async {
   var done = false;
   var dialogShown = false;
   final result = work.whenComplete(() => done = true);
+  // Listened to at once, so a failure inside the first 150 ms is not
+  // reported as unhandled before the await below gets to it.
+  unawaited(result.then<void>((_) {}, onError: (Object _) {}));
 
   await Future<void>.delayed(const Duration(milliseconds: 150));
   if (!done && context.mounted) {
@@ -136,9 +162,13 @@ Future<T?> _withSpinner<T>(BuildContext context, Future<T> work) async {
     unawaitedShowDialog(context);
   }
 
-  final value = await result;
-  if (dialogShown && context.mounted) Navigator.of(context).pop();
-  return value;
+  try {
+    return await result;
+  } finally {
+    // On a failure too, or the spinner stays up over a screen that has
+    // nothing left to wait for.
+    if (dialogShown && context.mounted) Navigator.of(context).pop();
+  }
 }
 
 void unawaitedShowDialog(BuildContext context) {

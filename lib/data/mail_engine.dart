@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../domain/account.dart';
@@ -165,6 +166,11 @@ abstract class MailEngine {
 
   /// The message as it arrived: RFC 822 text, headers and all. For saving
   /// as an `.eml`, or attaching one message to another.
+  ///
+  /// One character per byte, the way the wire has it. Back to bytes with
+  /// [rawMessageBytes], never with UTF-8: that turned every byte of a
+  /// message sent in 8-bit, Hebrew from Thunderbird say, into two, and the
+  /// `.eml` arrived garbled.
   Future<String> rawMessage(String messageId);
 
   /// Answer the invitation in a message: on the calendar where the server
@@ -229,6 +235,10 @@ abstract class MailEngine {
   /// of this feature worth having. Returns the new message id, or null where
   /// the account has no Drafts folder to put it in.
   Future<String?> saveDraft(Draft draft);
+
+  /// Remove a copy [saveDraft] put in Drafts, for good rather than into
+  /// Trash: it was only ever a safety copy. Best-effort.
+  Future<void> discardDraft(String savedAs);
 }
 
 /// Where a search looks.
@@ -341,4 +351,15 @@ class FolderNameConflict implements Exception {
 
   @override
   String toString() => 'FolderNameConflict: "$path" already exists';
+}
+
+/// [MailEngine.rawMessage]'s text as the bytes it stands for.
+///
+/// A character past 0xFF means the text was never one character per byte,
+/// written out by the app itself say, and then it is UTF-8.
+Uint8List rawMessageBytes(String raw) {
+  for (final unit in raw.codeUnits) {
+    if (unit > 0xFF) return Uint8List.fromList(utf8.encode(raw));
+  }
+  return Uint8List.fromList(latin1.encode(raw));
 }

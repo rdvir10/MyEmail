@@ -38,6 +38,10 @@ class Messages extends Table {
   /// The same, for everyone copied openly. Added in schema 6; null on rows
   /// cached before, which read as nobody copied until the folder syncs.
   TextColumn get copiedJson => text().nullable()();
+
+  /// The same, for Reply-To where it names someone besides the sender.
+  /// Added in schema 7; null on rows cached before, and on most messages.
+  TextColumn get replyToJson => text().nullable()();
   DateTimeColumn get date => dateTime()();
   BoolColumn get isRead => boolean()();
   BoolColumn get isFlagged => boolean()();
@@ -113,7 +117,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 7;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -170,6 +174,16 @@ class MailDatabase extends _$MailDatabase {
             }
             if (!names.contains('is_meeting')) {
               await m.addColumn(messages, messages.isMeeting);
+            }
+          }
+          if (from < 7) {
+            // Reply-To, read with the header like the rest. A message
+            // cached before answers its From until its folder syncs again.
+            final columns = await customSelect(
+              'PRAGMA table_info(messages)',
+            ).get();
+            if (!columns.any((c) => c.read<String>('name') == 'reply_to_json')) {
+              await m.addColumn(messages, messages.replyToJson);
             }
           }
           if (from < 5) {
@@ -373,6 +387,9 @@ class DriftCacheStore implements CacheStore {
             fromName: Value(m.from.name),
             recipientsJson: _encodeAddresses(m.to),
             copiedJson: Value(_encodeAddresses(m.cc)),
+            replyToJson: Value(
+              m.replyTo.isEmpty ? null : _encodeAddresses(m.replyTo),
+            ),
             date: m.date,
             isRead: m.isRead,
             isFlagged: m.isFlagged,
@@ -397,6 +414,9 @@ class DriftCacheStore implements CacheStore {
               fromName: Value(m.from.name),
               recipientsJson: Value(_encodeAddresses(m.to)),
               copiedJson: Value(_encodeAddresses(m.cc)),
+              replyToJson: Value(
+                m.replyTo.isEmpty ? null : _encodeAddresses(m.replyTo),
+              ),
               date: Value(m.date),
               messageId: Value(m.messageId),
               inReplyTo: Value(m.inReplyTo),
@@ -583,6 +603,9 @@ class DriftCacheStore implements CacheStore {
         cc: r.copiedJson == null
             ? const []
             : _decodeAddresses(r.copiedJson!),
+        replyTo: r.replyToJson == null
+            ? const []
+            : _decodeAddresses(r.replyToJson!),
         date: r.date,
         isRead: r.isRead,
         isFlagged: r.isFlagged,

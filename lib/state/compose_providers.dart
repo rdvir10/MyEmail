@@ -6,7 +6,10 @@ import '../data/compose/mime_parts.dart';
 import '../data/compose/quote_builder.dart' show sanitiseForEditing;
 import '../data/compose/reply_draft.dart';
 import '../data/ui_state_store.dart';
+import '../domain/address_suggestions.dart'
+    show formatRecipient, splitRecipients;
 import '../domain/draft.dart';
+import '../domain/error_report.dart' show ReadableError;
 import '../domain/mail_message.dart';
 import '../domain/signature.dart';
 import 'message_providers.dart';
@@ -133,11 +136,14 @@ Future<Draft> draftFromMessage({
   required MailMessage message,
 }) async {
   final engine = ref.read(mailEngineProvider);
-  MailBody? body;
+  final MailBody body;
   try {
     body = await engine.loadMessageBody(message.id);
-  } catch (_) {
-    body = MailBody(text: message.preview);
+  } catch (e) {
+    // Not opened with the preview standing in for it. That looked like the
+    // draft, and saving it replaced the whole of the real one in Drafts
+    // with its first line.
+    throw DraftNotLoaded(e);
   }
   final draft = Draft(
     accountId: message.accountId,
@@ -171,6 +177,21 @@ Future<Draft> draftFromMessage({
   }
 }
 
+/// A saved draft that could not be read, so it was not opened.
+class DraftNotLoaded implements Exception, ReadableError {
+  const DraftNotLoaded(this.cause);
+
+  final Object cause;
+
+  @override
+  String get message => cause is ReadableError
+      ? 'This draft could not be opened: ${(cause as ReadableError).message}'
+      : 'This draft could not be opened. Try again once connected.';
+
+  @override
+  String toString() => message;
+}
+
 String _asHtml(String text) => text.isEmpty
     ? '<p><br></p>'
     : text
@@ -195,16 +216,21 @@ Future<void> sendDraft(WidgetRef ref, Draft draft) async {
   }
 }
 
-/// Parse a recipients field: commas or semicolons, optional display names.
+/// Parse a recipients field: commas or semicolons, optional display names,
+/// which may be quoted and may then hold commas of their own.
 List<MailAddress> parseAddresses(String raw) {
-  final parts = raw.split(RegExp(r'[,;]'));
   final result = <MailAddress>[];
-  for (final part in parts) {
+  for (final part in splitRecipients(raw)) {
     final trimmed = part.trim();
     if (trimmed.isEmpty) continue;
-    final angled = RegExp(r'^(.*?)<([^>]+)>$').firstMatch(trimmed);
+    final angled = RegExp(r'^(.*)<([^<>]+)>$').firstMatch(trimmed);
     if (angled != null) {
-      final name = angled.group(1)!.trim().replaceAll(RegExp(r'^"|"$'), '');
+      var name = angled.group(1)!.trim();
+      if (name.length >= 2 && name.startsWith('"') && name.endsWith('"')) {
+        name = name
+            .substring(1, name.length - 1)
+            .replaceAllMapped(RegExp(r'\\(.)'), (m) => m[1]!);
+      }
       result.add(MailAddress(
         email: angled.group(2)!.trim(),
         name: name.isEmpty ? null : name,
@@ -217,9 +243,9 @@ List<MailAddress> parseAddresses(String raw) {
 }
 
 /// What a recipients field shows for a parsed list.
-String formatAddresses(List<MailAddress> addresses) =>
-    addresses.map((a) => a.name == null ? a.email : '${a.name} <${a.email}>')
-        .join(', ');
+String formatAddresses(List<MailAddress> addresses) => addresses
+    .map((a) => formatRecipient(a.name, a.email))
+    .join(', ');
 
 /// Whether every address looks like an address. Deliberately loose: the
 /// server is the real authority, and a strict regex rejects valid addresses.

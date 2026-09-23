@@ -16,7 +16,10 @@ import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/data/compose/quote_builder.dart';
+import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
+import 'package:myemail/ui/compose/open_compose.dart';
 
 import 'fakes/fake_imap_transport.dart';
 import 'fakes/fake_webview.dart';
@@ -94,6 +97,27 @@ void main() {
         _draft(subject: '', html: '<div>  &nbsp; <br></div>', to: const [])
             .isWorthSaving,
         isFalse,
+      );
+    });
+
+    test('a signature the window put there is not writing', () {
+      // Built the way a new message really is. Counted as text, every new
+      // message on an account with a signature asked to be saved, and
+      // Save draft put a signature on its own into Drafts.
+      final untouched = Draft(
+        accountId: 'a',
+        kind: ComposeKind.newMessage,
+        htmlBody: buildComposeHtml(
+          kind: ComposeKind.newMessage,
+          signatureHtml: '<p>Ron Dvir<br>MyHomeStudio</p>',
+        ),
+      );
+      expect(untouched.isWorthSaving, isFalse);
+      expect(
+        untouched
+            .copyWith(htmlBody: '<p>Hello</p>${untouched.htmlBody}')
+            .isWorthSaving,
+        isTrue,
       );
     });
   });
@@ -198,11 +222,20 @@ void main() {
 
     /// Compose pushed onto a route, so there is something to go back to.
     /// As the app's root it has no back button and pageBack cannot work.
-    Future<void> open(WidgetTester tester, Draft draft) async {
+    ///
+    /// Not [disposable] unless asked: most of these stand for a message
+    /// with writing in it, which is what a draft carried across from another
+    /// window is.
+    Future<void> open(
+      WidgetTester tester,
+      Draft draft, {
+      bool disposable = false,
+      SampleMailEngine? engine,
+    }) async {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
-            mailEngineProvider.overrideWithValue(SampleMailEngine()),
+            mailEngineProvider.overrideWithValue(engine ?? SampleMailEngine()),
           ],
           child: MaterialApp(
             home: Builder(
@@ -211,7 +244,8 @@ void main() {
                   child: ElevatedButton(
                     onPressed: () => Navigator.of(context).push(
                       MaterialPageRoute<bool>(
-                        builder: (_) => ComposeScreen(draft: draft),
+                        builder: (_) =>
+                            ComposeScreen(draft: draft, disposable: disposable),
                       ),
                     ),
                     child: const Text('open compose'),
@@ -302,7 +336,180 @@ void main() {
 
       expect(find.textContaining('updates the copy in Drafts'), findsOneWidget);
     });
+
+    testWidgets('backing out of an untouched reply asks nothing',
+        (tester) async {
+      // A reply has a recipient and a subject before anything is typed, so
+      // one opened by mistake always asked to be saved.
+      await open(
+        tester,
+        Draft(
+          accountId: 'acct-personal',
+          kind: ComposeKind.reply,
+          to: const [MailAddress(email: 'dana@example.com', name: 'Dana')],
+          subject: 'Re: Budget',
+          htmlBody: buildComposeHtml(
+            kind: ComposeKind.reply,
+            original: MailMessage(
+              id: 'acct-personal:INBOX#7',
+              accountId: 'acct-personal',
+              folderId: 'acct-personal:INBOX',
+              uid: 7,
+              subject: 'Budget',
+              from: const MailAddress(email: 'dana@example.com', name: 'Dana'),
+              to: const [],
+              date: DateTime(2026, 9, 20),
+              preview: '',
+            ),
+            originalText: 'The numbers',
+            signatureHtml: '<p>Ron</p>',
+          ),
+        ),
+        disposable: true,
+      );
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Keep this message?'), findsNothing);
+      expect(find.byType(ComposeScreen), findsNothing);
+    });
+
+    testWidgets('but once anything changes, it asks', (tester) async {
+      await open(
+        tester,
+        const Draft(
+          accountId: 'acct-personal',
+          kind: ComposeKind.reply,
+          to: [MailAddress(email: 'dana@example.com')],
+          subject: 'Re: Budget',
+          htmlBody: '<p><br></p>',
+        ),
+        disposable: true,
+      );
+
+      await tester.enterText(
+          find.widgetWithText(TextField, 'Re: Budget'), 'Re: Budget, again');
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Keep this message?'), findsOneWidget);
+    });
+
+    testWidgets(
+        'going into the background puts it in Drafts, and Discard takes '
+        'that copy out again', (tester) async {
+      // Android can end the app while the file picker is up or it sits in
+      // Recents, and a message that lived only on screen went with it.
+      final engine = SampleMailEngine();
+      const draftsId = 'acct-personal:[Gmail]/Drafts';
+      Future<List<String>> drafts() async =>
+          (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+              .map((m) => m.subject)
+              .toList();
+      final before = await drafts();
+      await open(tester, _draft(accountId: 'acct-personal'), engine: engine);
+
+      for (final state in [
+        AppLifecycleState.inactive,
+        AppLifecycleState.hidden,
+        AppLifecycleState.paused,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      await tester.pumpAndSettle(const Duration(milliseconds: 50));
+      expect(await drafts(), unorderedEquals([...before, 'Half written']));
+      expect(find.byType(ComposeScreen), findsOneWidget,
+          reason: 'nothing on screen changes');
+
+      for (final state in [
+        AppLifecycleState.hidden,
+        AppLifecycleState.inactive,
+        AppLifecycleState.resumed,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Discard'));
+      await tester.pumpAndSettle(const Duration(milliseconds: 50));
+
+      expect(await drafts(), unorderedEquals(before));
+    });
+
+    testWidgets('a draft whose body cannot be read is not opened',
+        (tester) async {
+      // It used to open with its one-line preview standing in for the
+      // body, and saving that replaced the whole draft in Drafts.
+      final saved = MailMessage(
+        id: 'acct-personal:[Gmail]/Drafts#99',
+        accountId: 'acct-personal',
+        folderId: 'acct-personal:[Gmail]/Drafts',
+        uid: 99,
+        subject: 'Long draft',
+        from: const MailAddress(email: 'me@example.com'),
+        to: const [MailAddress(email: 'dana@example.com')],
+        date: DateTime(2026, 9, 20),
+        preview: 'Only the first line',
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            mailEngineProvider.overrideWithValue(_OfflineBodies()),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: Consumer(
+                builder: (context, ref, _) => ElevatedButton(
+                  onPressed: () => openSavedDraft(context, ref, saved),
+                  child: const Text('open draft'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('open draft'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ComposeScreen), findsNothing);
+      expect(find.byType(CircularProgressIndicator), findsNothing,
+          reason: 'the spinner comes down on a failure too');
+      expect(find.textContaining('could not be opened'), findsOneWidget);
+    });
+
+    testWidgets('a Bcc that is not an address stops the send',
+        (tester) async {
+      // To and Cc were checked and Bcc was not, so a mistyped blind copy went
+      // to the server, which could refuse it while taking the rest.
+      await open(
+        tester,
+        const Draft(
+          accountId: 'acct-personal',
+          kind: ComposeKind.newMessage,
+          to: [MailAddress(email: 'you@example.com')],
+          bcc: [MailAddress(email: 'bob.example.com')],
+          subject: 'Hi',
+          htmlBody: '<p>Hi</p>',
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Send'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('One of the addresses does not look right.'),
+          findsOneWidget);
+      expect(find.byType(ComposeScreen), findsOneWidget);
+    });
   });
+}
+
+/// Has the folders and lists, and no connection for a body.
+class _OfflineBodies extends SampleMailEngine {
+  @override
+  Future<MailBody> loadMessageBody(String messageId) async =>
+      throw const ConnectionFailed('Could not reach the server.');
 }
 
 /// Accepts every message and sends nothing.

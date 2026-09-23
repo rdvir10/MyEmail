@@ -1,11 +1,10 @@
 import '../common/bottom_message.dart';
-import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/files/message_files.dart';
+import '../../data/mail_engine.dart' show rawMessageBytes;
 import '../../domain/draft.dart';
 import '../../domain/mail_message.dart';
 import '../../state/providers.dart';
@@ -22,7 +21,7 @@ Future<List<DraftAttachment>> emlAttachments(
       DraftAttachment(
         fileName: emlFileName(m),
         mimeType: emlMimeType,
-        bytes: Uint8List.fromList(utf8.encode(await engine.rawMessage(m.id))),
+        bytes: rawMessageBytes(await engine.rawMessage(m.id)),
       ),
   ];
 }

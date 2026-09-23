@@ -85,8 +85,9 @@ class GraphMailApi {
   /// down with its list row, which is the difference between a folder opening
   /// at once and it opening after a megabyte.
   static const headerFields =
-      'id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,'
-      'flag,hasAttachments,bodyPreview,internetMessageId,conversationId';
+      'id,subject,from,toRecipients,ccRecipients,replyTo,receivedDateTime,'
+      'isRead,flag,hasAttachments,bodyPreview,internetMessageId,'
+      'conversationId';
 
   // --- folders ---------------------------------------------------------------
 
@@ -425,12 +426,16 @@ class GraphMailApi {
     }
   }
 
-  /// The message as MIME text, which is what Graph's `$value` on a
-  /// message is: the RFC 822 form, for an `.eml`.
-  Future<String> mime(String messageId) async => utf8.decode(
-        await _bytes(Uri.parse('$base/me/messages/${_id(messageId)}/\$value')),
-        allowMalformed: true,
-      );
+  /// The message as MIME, which is what Graph's `$value` on a message is:
+  /// the RFC 822 form, for an `.eml`. One character per byte, as
+  /// [MailEngine.rawMessage] has it; decoding it as UTF-8 put a U+FFFD in
+  /// place of every 8-bit byte that was not.
+  Future<String> mime(String messageId) async =>
+      latin1.decode(await mimeBytes(messageId));
+
+  /// The same, as the bytes themselves.
+  Future<Uint8List> mimeBytes(String messageId) =>
+      _bytes(Uri.parse('$base/me/messages/${_id(messageId)}/\$value'));
 
   Future<Uint8List> attachmentBytes(String messageId, String attachmentId) =>
       _bytes(
@@ -743,6 +748,7 @@ class GraphMessage {
     required this.to,
     required this.received,
     this.cc = const [],
+    this.replyTo = const [],
     this.isMeeting = false,
     required this.isRead,
     required this.isFlagged,
@@ -759,6 +765,9 @@ class GraphMessage {
 
   /// Everyone copied openly. Comes with the list row, so it costs nothing.
   final List<({String email, String? name})> cc;
+
+  /// Where replies are asked to go. Empty when the message did not say.
+  final List<({String email, String? name})> replyTo;
 
   /// A meeting request, change or cancellation. Graph types these as a
   /// derived kind of message and says so in the list row itself.
@@ -789,6 +798,10 @@ class GraphMessage {
       cc: [
         if (json['ccRecipients'] is List)
           for (final r in json['ccRecipients'] as List) ?_address(r),
+      ],
+      replyTo: [
+        if (json['replyTo'] is List)
+          for (final r in json['replyTo'] as List) ?_address(r),
       ],
       isMeeting: '${json['@odata.type']}'.endsWith('.eventMessage') ||
           json['meetingMessageType'] != null,

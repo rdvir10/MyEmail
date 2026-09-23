@@ -24,6 +24,26 @@ class MailAddress {
   String toString() => name == null ? email : '$name <$email>';
 }
 
+/// A message's Reply-To, less the case where it only repeats the sender.
+///
+/// Empty means "reply to From". An IMAP server's ENVELOPE fills Reply-To in
+/// with From when the header is absent, so without this every message would
+/// carry its sender twice.
+List<MailAddress> replyToBesidesSender(
+  List<MailAddress> replyTo,
+  MailAddress from,
+) {
+  final named = [
+    for (final a in replyTo)
+      if (a.email.trim().isNotEmpty) a,
+  ];
+  if (named.length == 1 &&
+      named.first.email.toLowerCase() == from.email.toLowerCase()) {
+    return const [];
+  }
+  return named;
+}
+
 /// A message as it appears in a list: headers and a preview, no body.
 ///
 /// Identity is `<folderId>#<uid>`. IMAP UIDs are only unique within a folder
@@ -42,6 +62,7 @@ class MailMessage {
     required this.date,
     required this.preview,
     this.cc = const [],
+    this.replyTo = const [],
     this.isRead = false,
     this.isFlagged = false,
     this.hasAttachments = false,
@@ -68,6 +89,12 @@ class MailMessage {
   /// a header that shows only the two is describing a different message.
   /// Bcc is deliberately absent — it is not in what arrives.
   final List<MailAddress> cc;
+
+  /// Where the sender asked for replies to go, when that is not [from]:
+  /// a ticket address behind a no-reply sender, a list, a form. Empty when
+  /// the header was absent or named only the sender, and on anything cached
+  /// before it was read.
+  final List<MailAddress> replyTo;
   final DateTime date;
 
   /// The first line or so of the body, for the list.
@@ -111,6 +138,7 @@ class MailMessage {
       from: from,
       to: to,
       cc: cc,
+      replyTo: replyTo,
       date: date,
       preview: preview,
       isRead: isRead ?? this.isRead,

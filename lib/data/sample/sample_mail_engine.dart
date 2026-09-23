@@ -409,6 +409,13 @@ class SampleMailEngine implements MailEngine {
   }
 
   @override
+  Future<void> discardDraft(String savedAs) async {
+    await _latency();
+    final folderId = savedAs.substring(0, savedAs.lastIndexOf('#'));
+    _messages[folderId]?.removeWhere((m) => m.id == savedAs);
+  }
+
+  @override
   Future<String?> saveDraft(Draft draft) async {
     await _latency();
     final drafts = (_folders[draft.accountId] ?? const <MailFolder>[])
@@ -569,7 +576,8 @@ class SampleMailEngine implements MailEngine {
     // no wire form to hand back, so one is written from what it has.
     String address(MailAddress a) =>
         a.name == null ? a.email : '${a.name} <${a.email}>';
-    return [
+    // One character per byte of the UTF-8 it declares, as a server's is.
+    return latin1.decode(utf8.encode([
       'From: ${address(message.from)}',
       'To: ${message.to.map(address).join(', ')}',
       'Subject: ${message.subject}',
@@ -577,9 +585,10 @@ class SampleMailEngine implements MailEngine {
       'Message-ID: <${message.uid}@sample.example.com>',
       'MIME-Version: 1.0',
       'Content-Type: text/plain; charset=utf-8',
+      'Content-Transfer-Encoding: 8bit',
       '',
       body.text,
-    ].join('\r\n');
+    ].join('\r\n')));
   }
 
   @override

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 import '../../domain/mail_message.dart';
+import '../mail_engine.dart' show rawMessageBytes;
 
 /// A message written out as a file, so it can go where files go: onto the
 /// clipboard, into a drag, into another message as an attachment.
@@ -23,7 +24,7 @@ class DiskMessageFiles implements MessageFiles {
     final dir = Directory('${root.path}${Platform.pathSeparator}eml');
     await dir.create(recursive: true);
     final file = File('${dir.path}${Platform.pathSeparator}$fileName');
-    await file.writeAsString(raw, flush: true);
+    await file.writeAsBytes(rawMessageBytes(raw), flush: true);
     return file;
   }
 }
