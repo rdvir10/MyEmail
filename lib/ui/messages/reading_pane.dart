@@ -342,7 +342,12 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     try {
       final ok = await ref.read(messagePrinterProvider).print(
             title: message.subject.trim().isEmpty ? 'Message' : message.subject,
-            html: printableMessage(message, body, bodyHtml: shown),
+            html: printableMessage(
+              message,
+              body,
+              bodyHtml: shown,
+              remoteAllowed: _showsImages,
+            ),
           );
       if (!ok) {
         messenger?.showSnackBar(

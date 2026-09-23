@@ -29,11 +29,22 @@
          from your own mail either way. -->
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
 
+    <!-- No Android backup, and no copying to a new phone. Left on, the whole
+         mail cache (work mail included) went to the Google backup, and a
+         restore brought back the secure-storage files without the Keystore
+         key that unlocks them, so every account failed to connect and could
+         not even be removed and added again. The app's own settings backup
+         is the way to move to a new device. allowBackup covers Android 11
+         and older; the extraction rules cover 12 and newer, where
+         allowBackup alone still lets a device-to-device transfer through. -->
     <application
         android:label="MyEmail"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher_round">
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -51,6 +62,14 @@
             <meta-data
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
+              />
+            <!-- No routes from outside. This activity is exported, and with
+                 deep linking on, any app could start it on a route of its
+                 choosing through the intent's data. The one route the app
+                 uses, a second window's, comes only to WindowActivity. -->
+            <meta-data
+              android:name="flutter_deeplinking_enabled"
+              android:value="false"
               />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
@@ -99,6 +118,10 @@
             <meta-data
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
+              />
+            <meta-data
+              android:name="flutter_deeplinking_enabled"
+              android:value="false"
               />
         </activity>
 

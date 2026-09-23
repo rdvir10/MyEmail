@@ -91,15 +91,16 @@ void main() {
     setUp(() async => dir = await Directory.systemTemp.createTemp('windows'));
     tearDown(() => dir.delete(recursive: true));
 
-    test('names a file, which is read once and taken away', () async {
-      final file = File('${dir.path}${Platform.pathSeparator}w.json');
-      await file.writeAsString(MessageWindow(message).encode());
-      final route = Uri(
-        path: windowRoutePrefix,
-        queryParameters: {'file': file.path},
-      ).toString();
+    String routeTo(String path) =>
+        Uri(path: windowRoutePrefix, queryParameters: {'file': path})
+            .toString();
 
-      final request = await windowRequestFromRoute(route);
+    test('names a file, which is read once and taken away', () async {
+      final file = File('${dir.path}${Platform.pathSeparator}1234567.json');
+      await file.writeAsString(MessageWindow(message).encode());
+
+      final request =
+          await windowRequestFromRoute(routeTo(file.path), handoffDir: dir);
 
       expect(request, isA<MessageWindow>());
       expect((request as MessageWindow).message.id, message.id);
@@ -108,16 +109,74 @@ void main() {
     });
 
     test('is not the ordinary start', () async {
-      expect(await windowRequestFromRoute('/'), isNull);
+      expect(await windowRequestFromRoute('/', handoffDir: dir), isNull);
     });
 
     test('with its file gone, is nothing to show', () async {
-      final route = Uri(
-        path: windowRoutePrefix,
-        queryParameters: {'file': '${dir.path}/missing.json'},
-      ).toString();
+      expect(
+        await windowRequestFromRoute(
+          routeTo('${dir.path}${Platform.pathSeparator}7654321.json'),
+          handoffDir: dir,
+        ),
+        isNull,
+      );
+    });
 
-      expect(await windowRequestFromRoute(route), isNull);
+    // Another app can start the app on a route of its choosing. A route
+    // naming any file the app could reach used to read it and delete it,
+    // the stored sign-ins among them.
+    test('a file outside the windows folder is neither read nor deleted',
+        () async {
+      final elsewhere = await Directory.systemTemp.createTemp('private');
+      addTearDown(() => elsewhere.delete(recursive: true));
+      final secret = File('${elsewhere.path}${Platform.pathSeparator}1.json');
+      await secret.writeAsString(MessageWindow(message).encode());
+
+      expect(
+        await windowRequestFromRoute(routeTo(secret.path), handoffDir: dir),
+        isNull,
+      );
+      expect(secret.existsSync(), isTrue);
+    });
+
+    test('nor a way out of it through ..', () async {
+      final sibling = File('${dir.parent.path}${Platform.pathSeparator}'
+          '${DateTime.now().microsecondsSinceEpoch}.json');
+      await sibling.writeAsString(MessageWindow(message).encode());
+      addTearDown(() {
+        if (sibling.existsSync()) sibling.deleteSync();
+      });
+      final sep = Platform.pathSeparator;
+      final escaping = '${dir.path}$sep..$sep${sibling.uri.pathSegments.last}';
+
+      expect(
+        await windowRequestFromRoute(routeTo(escaping), handoffDir: dir),
+        isNull,
+      );
+      expect(sibling.existsSync(), isTrue);
+    });
+
+    test('nor a file in it that is not named as a hand-off', () async {
+      final other = File('${dir.path}${Platform.pathSeparator}notes.xml');
+      await other.writeAsString('<map/>');
+
+      expect(
+        await windowRequestFromRoute(routeTo(other.path), handoffDir: dir),
+        isNull,
+      );
+      expect(other.existsSync(), isTrue);
+    });
+
+    test('a hand-off that does not read as a window is left in place',
+        () async {
+      final broken = File('${dir.path}${Platform.pathSeparator}42.json');
+      await broken.writeAsString('not a window');
+
+      expect(
+        await windowRequestFromRoute(routeTo(broken.path), handoffDir: dir),
+        isNull,
+      );
+      expect(broken.existsSync(), isTrue);
     });
   });
 }

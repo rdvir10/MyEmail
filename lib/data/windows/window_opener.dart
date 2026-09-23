@@ -37,19 +37,48 @@ const windowRoutePrefix = '/window';
 /// is restarted by the system after a crash gets nothing to show and
 /// falls back to being the ordinary app, which beats a stale draft that
 /// was sent an hour ago coming back.
-Future<WindowRequest?> windowRequestFromRoute(String route) async {
+///
+/// Only a file [AndroidWindowOpener.open] could have written is touched:
+/// one named by a timestamp, directly inside [handoffDir] (the app's own
+/// windows folder when not given). The path used to be taken as it came,
+/// and the file read and deleted before it was checked to be a window at
+/// all, so a route naming any file the app can reach deleted it — the
+/// stored sign-ins among them. And it is only deleted once it has been
+/// read as a window, so a file that is not one is left alone.
+Future<WindowRequest?> windowRequestFromRoute(
+  String route, {
+  Directory? handoffDir,
+}) async {
   if (!route.startsWith(windowRoutePrefix)) return null;
   final path = Uri.parse(route).queryParameters['file'];
   if (path == null) return null;
+  final dir = handoffDir ?? await windowHandoffDirectory();
+  if (!isWindowHandoffFile(path, dir)) {
+    debugPrint('[myemail] ignored a window route outside the windows folder');
+    return null;
+  }
   final file = File(path);
   try {
-    final text = await file.readAsString();
+    final request = WindowRequest.decode(await file.readAsString());
     await file.delete();
-    return WindowRequest.decode(text);
+    return request;
   } catch (e) {
     debugPrint('[myemail] could not read the window handoff: $e');
     return null;
   }
+}
+
+/// Where window hand-offs are written and the only place they are read from.
+Future<Directory> windowHandoffDirectory() async => Directory(
+      '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}windows',
+    );
+
+/// Whether [path] is a hand-off file directly inside [dir]: a timestamp and
+/// `.json`, with no way out of the folder in between.
+bool isWindowHandoffFile(String path, Directory dir) {
+  final file = File(path);
+  final name = file.uri.pathSegments.isEmpty ? '' : file.uri.pathSegments.last;
+  return RegExp(r'^\d+\.json$').hasMatch(name) && file.parent.path == dir.path;
 }
 
 class AndroidWindowOpener implements WindowOpener {
@@ -67,9 +96,7 @@ class AndroidWindowOpener implements WindowOpener {
 
   @override
   Future<bool> open(WindowRequest request) async {
-    final dir = Directory(
-      '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}windows',
-    );
+    final dir = await windowHandoffDirectory();
     await dir.create(recursive: true);
     final file = File(
       '${dir.path}${Platform.pathSeparator}'

@@ -93,14 +93,14 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
         final body = ref.read(messageBodyProvider(message.id)).value;
         if (body == null) return;
         final html = body.html ?? '';
+        final showImages = ref.read(displayProvider).alwaysShowImages;
         await ref.read(messagePrinterProvider).print(
               title: message.subject.trim().isEmpty ? 'Message' : message.subject,
               html: printableMessage(
                 message,
                 body,
-                bodyHtml: ref.read(displayProvider).alwaysShowImages
-                    ? html
-                    : stripRemoteContent(html),
+                bodyHtml: showImages ? html : stripRemoteContent(html),
+                remoteAllowed: showImages,
               ),
             );
       case AppCommand.delete:

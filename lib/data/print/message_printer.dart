@@ -49,10 +49,15 @@ class FakeMessagePrinter implements MessagePrinter {
 /// The page a message prints as: a header block the way Outlook prints
 /// one — subject, who, to whom, when — then the body as it was, at page
 /// width. Plain text goes in a `pre` so its line breaks survive.
+///
+/// [remoteAllowed] follows what the reading pane shows: without it the page
+/// fetches nothing from the network, so printing a message cannot tell its
+/// sender it was read, however the pictures are written.
 String printableMessage(
   MailMessage message,
   MailBody body, {
   required String bodyHtml,
+  bool remoteAllowed = false,
 }) {
   String esc(String s) => s
       .replaceAll('&', '&amp;')
@@ -73,6 +78,7 @@ String printableMessage(
 
   return '''<!doctype html>
 <html><head><meta charset="utf-8">
+${contentPolicyTag(remoteAllowed: remoteAllowed)}
 <meta name="viewport" content="width=device-width">
 <style>
   body { font-family: sans-serif; font-size: 12pt; color: #111; margin: 0; }

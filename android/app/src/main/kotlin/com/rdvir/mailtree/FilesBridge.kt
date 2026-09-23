@@ -3,6 +3,7 @@ package com.rdvir.mailtree
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentResolver
 import android.content.Context
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -359,10 +360,50 @@ class FilesBridge(
             (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri },
         )
 
+    /**
+     * Whether a file handed in from outside may be read.
+     *
+     * The copy is made with this app's own permissions, which reach its
+     * private files. So not a file:// path, and not this app's own provider
+     * except for the folders it shares on purpose: either would let another
+     * app have the mail database or the stored sign-ins attached to a new
+     * message, next to text of its choosing, one tap from being sent.
+     */
+    private fun mayCopyIn(uri: Uri): Boolean {
+        if (uri.scheme != ContentResolver.SCHEME_CONTENT) return false
+        return when (uri.authority) {
+            null -> false
+            "${activity.packageName}.files", "${activity.packageName}.updates" ->
+                isSharedCacheFile(uri)
+            else -> true
+        }
+    }
+
+    /**
+     * One of this app's own files that it hands out anyway — an attachment,
+     * a message saved as .eml, a file shared in earlier — which is what a
+     * drag from one of its windows into another carries.
+     */
+    private fun isSharedCacheFile(uri: Uri): Boolean {
+        val segments = uri.pathSegments
+        // update_paths.xml names the cache directory "update-cache".
+        if (segments.size < 3 || segments.first() != "update-cache") return false
+        if (segments.any { it == ".." || it.contains('/') }) return false
+        val file = File(activity.cacheDir, segments.drop(1).joinToString(File.separator))
+            .canonicalFile
+        return SHARED_CACHE_FOLDERS.any { folder ->
+            file.path.startsWith(File(activity.cacheDir, folder).canonicalPath + File.separator)
+        }
+    }
+
     private fun copyIn(uris: List<Uri>): List<Map<String, Any?>> {
         val incoming = File(activity.cacheDir, "incoming").apply { mkdirs() }
         val taken = mutableListOf<Map<String, Any?>>()
         for ((i, uri) in uris.withIndex()) {
+            if (!mayCopyIn(uri)) {
+                android.util.Log.w("MyEmail", "refused to copy in $uri")
+                continue
+            }
             val name = displayName(uri) ?: "file-${System.currentTimeMillis()}-$i"
             val target = File(incoming, name.replace(File.separatorChar, '_'))
             try {
@@ -482,5 +523,12 @@ class FilesBridge(
 
     companion object {
         const val CHANNEL = "mailtree/files"
+
+        /**
+         * The cache folders the app hands files out from: attachments
+         * (attachment_files.dart), messages saved as .eml
+         * (message_files.dart), and files shared in (copyIn, above).
+         */
+        val SHARED_CACHE_FOLDERS = listOf("attachments", "eml", "incoming")
     }
 }

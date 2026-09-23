@@ -36,6 +36,19 @@ open class MainActivity : FlutterActivity() {
     private var files: FilesBridge? = null
     private var contacts: ContactsBridge? = null
 
+    /**
+     * A route only for a window the app itself opened.
+     *
+     * FlutterActivity takes the initial route from a "route" extra on
+     * whatever intent started it, and this activity is exported: it is the
+     * launcher and the share target. Any app could therefore start it on a
+     * window route naming a file, and the app used to read that file and
+     * delete it — the stored sign-ins among the files it could reach. The
+     * window activity is not exported, so only the app can start that.
+     */
+    override fun getInitialRoute(): String? =
+        if (this is WindowActivity) super.getInitialRoute() else null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 

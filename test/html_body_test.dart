@@ -194,6 +194,40 @@ void main() {
         expect(out, contains('<p>Hi</p>'), reason: html);
       }
     });
+
+    String policyOf(String page) =>
+        RegExp(r'Content-Security-Policy" content="([^"]*)"')
+            .firstMatch(page)!
+            .group(1)!;
+
+    // The rewriting that hides pictures reads text, and a message can name a
+    // remote resource in more ways than a pattern covers. With pictures
+    // hidden the page itself may fetch nothing.
+    test('with pictures hidden, the page may fetch nothing at all', () {
+      final policy = policyOf(wrapHtmlForDisplay(
+          '<svg><image href="https://t/p.gif"/></svg>'
+          '<object data="https://t/x"></object>'));
+      expect(policy, contains("default-src 'none'"));
+      expect(policy, isNot(contains('*')));
+      expect(policy, isNot(contains('http')));
+    });
+
+    test('with pictures shown, still no frames, plugins or form posts', () {
+      // A login form posted in place, or a link aimed at an iframe, showed
+      // the sender's page inside the pane under the app's header.
+      final policy =
+          policyOf(wrapHtmlForDisplay('<p>Hi</p>', remoteAllowed: true));
+      expect(policy, contains('img-src *'));
+      expect(policy, contains("frame-src 'none'"));
+      expect(policy, contains("object-src 'none'"));
+      expect(policy, contains("form-action 'none'"));
+    });
+
+    test('the policy comes before anything the message brings', () {
+      final page = wrapHtmlForDisplay('<p>Hi</p>');
+      expect(page.indexOf('Content-Security-Policy'),
+          lessThan(page.indexOf('<p>Hi</p>')));
+    });
   });
 
   group('paneNavigation', () {

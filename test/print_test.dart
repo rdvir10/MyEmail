@@ -65,6 +65,26 @@ void main() {
       expect(page, contains('<pre'));
       expect(page, contains('line one\nline &lt;two&gt;'));
     });
+
+    test('printed with pictures hidden, the page fetches nothing', () {
+      // Printing must not tell the sender the message was read, however its
+      // pictures are written.
+      final hidden = printableMessage(
+        message,
+        const MailBody(text: 'x'),
+        bodyHtml: '<img src="https://t/p.gif">',
+      );
+      final shown = printableMessage(
+        message,
+        const MailBody(text: 'x'),
+        bodyHtml: '<img src="https://t/p.gif">',
+        remoteAllowed: true,
+      );
+
+      expect(hidden, contains("default-src 'none'"));
+      expect(hidden, isNot(contains('img-src *')));
+      expect(shown, contains('img-src *'));
+    });
   });
 
   group('from the reading pane', () {

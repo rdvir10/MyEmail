@@ -121,6 +121,14 @@ void main() {
       expect(out, isNot(contains('t.example')));
     });
 
+    test('a srcset with a remote entry after an inline one fetches nothing',
+        () {
+      // Only the first entry used to be looked at, and phones pick 2x.
+      final out = sanitiseForEditing(
+          '<img srcset="data:image/png;base64,AA 1x, https://t.example/p.png 2x">');
+      expect(out, isNot(matches(RegExp(r'(?<!-)srcset='))));
+    });
+
     test('an unknown tag loses the tag but keeps its words', () {
       expect(sanitiseForEditing('<p>One<o:p>two</o:p></p>'), '<p>Onetwo</p>');
     });

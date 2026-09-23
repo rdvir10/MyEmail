@@ -98,7 +98,11 @@ class ProblemReport {
         redactAddress: redactAddress,
       );
 
-  String get issueTitle => IssueTracker.titleFor(doing: doing, error: error);
+  /// The title of a public issue, so every address in it is masked.
+  String get issueTitle => redactForPublic(
+        IssueTracker.titleFor(doing: doing, error: error),
+        account: account,
+      );
 }
 
 /// Everything worth knowing about a failure, as text to paste somewhere.
@@ -143,7 +147,35 @@ String buildErrorReport({
     'Error: ${error.runtimeType}',
     '$error',
   ];
-  return lines.join('\n');
+  final text = lines.join('\n');
+  return redactAddress ? redactForPublic(text, account: account) : text;
+}
+
+/// [text] with every email address in it masked, for somewhere public.
+///
+/// Every one, wherever it is. Only the report's Address line used to be
+/// masked, while the address also sat in what the app was doing ("Signing in
+/// again to ron@…"), in the issue title built from that, and sometimes in the
+/// error itself — so the public issue carried it in full despite the dialog
+/// saying it would be shortened. The account's name goes too when it is the
+/// address's local part, which is what an account added without a name is
+/// called: "Account: ron" beside "r***@gmail.com" gives the address back.
+String redactForPublic(String text, {Account? account}) {
+  var out = text.replaceAllMapped(
+    RegExp(r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+'),
+    (m) => maskAddress(m[0]!),
+  );
+  final address = account?.emailAddress ?? '';
+  final at = address.indexOf('@');
+  if (at > 1) {
+    final local = address.substring(0, at);
+    out = out.replaceAll(
+      RegExp('(?<![A-Za-z0-9._%+-])${RegExp.escape(local)}(?![A-Za-z0-9._%+-])',
+          caseSensitive: false),
+      '${local[0]}***',
+    );
+  }
+  return out;
 }
 
 /// An address with its local part hidden, for a report going somewhere public.

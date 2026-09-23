@@ -165,7 +165,11 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
       ..setBackgroundColor(
         readsAsDark(source, _brightness) ? const Color(0xFF1C1B1F) : Colors.white,
       )
-      ..loadHtmlString(wrapHtmlForDisplay(source, brightness: _brightness));
+      ..loadHtmlString(wrapHtmlForDisplay(
+        source,
+        brightness: _brightness,
+        remoteAllowed: _showRemote,
+      ));
   }
 
   @override
@@ -392,6 +396,7 @@ const maxLayoutWidth = 1400;
 String wrapHtmlForDisplay(
   String html, {
   Brightness brightness = Brightness.light,
+  bool remoteAllowed = false,
 }) {
   final hasHtmlTag = RegExp(r'<html[\s>]', caseSensitive: false).hasMatch(html);
   final body = removeDocumentDirectives(hasHtmlTag ? _extractBody(html) : html);
@@ -403,6 +408,8 @@ String wrapHtmlForDisplay(
   final quoted = dark ? '#b6b0b6' : '#444';
   return '<!doctype html><html><head>'
       '<meta charset="utf-8">'
+      // First in the head, before anything the message brings.
+      '${contentPolicyTag(remoteAllowed: remoteAllowed)}'
       // A message built to a fixed width is laid out at that width and
       // scaled to fit; everything else is laid out to the screen.
       '<meta name="viewport" content="${laidOutFor == null ? 'width=device-width, initial-scale=1' : 'width=$laidOutFor'}">'

@@ -87,6 +87,50 @@ void main() {
       expect(Uri.decodeFull(url.toString()), contains('m***@work.example'));
     });
 
+    test('the way the screens really build it, no address survives', () {
+      // Edit account puts the address in what it was doing, and an account
+      // added without a name is called by the address's local part. Only the
+      // Address line used to be masked; the title and the rest carried the
+      // whole address into a public issue.
+      const unnamed = Account(
+        id: 'acct-2',
+        displayName: 'rdvir10',
+        emailAddress: 'rdvir10@gmail.com',
+        provider: MailProvider.gmail,
+        authMethod: AuthMethod.appPassword,
+        colorValue: 0xFF107C41,
+      );
+      const problem = ProblemReport(
+        doing: 'Signing in again to rdvir10@gmail.com',
+        error: AuthenticationFailed('rdvir10@gmail.com was refused'),
+        account: unnamed,
+      );
+      final url = IssueTracker.newIssueUrl(
+        title: problem.issueTitle,
+        report: problem.text(redactAddress: true),
+      );
+      // The title and the body: the repository's own path is the owner's
+      // name, which is not the reporter's address.
+      final published = [
+        url.queryParameters['title'],
+        url.queryParameters['body'],
+      ].join(' ');
+
+      expect(published, isNot(contains('rdvir10')));
+      expect(published, contains('r***@gmail.com'));
+      expect(problem.issueTitle, 'Signing in again to r***@gmail.com — '
+          'AuthenticationFailed');
+    });
+
+    test('the clipboard copy keeps everything', () {
+      const problem = ProblemReport(
+        doing: 'Signing in again to me@work.example',
+        error: AuthenticationFailed('Refused.'),
+        account: account,
+      );
+      expect(problem.text(), contains('Signing in again to me@work.example'));
+    });
+
     test('masking keeps enough to tell two accounts apart', () {
       expect(maskAddress('ron.dvir@outlook.com'), 'r***@outlook.com');
       expect(maskAddress('ron@myhomestudio.club'), 'r***@myhomestudio.club');
