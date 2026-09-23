@@ -17,6 +17,7 @@ class SyncScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final settings = ref.watch(syncSettingsProvider);
+    final stoppedAt = ref.watch(stalledLiveSyncProvider).value;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Sync'), centerTitle: false),
@@ -31,6 +32,18 @@ class SyncScreen extends ConsumerWidget {
                   style: theme.textTheme.bodyMedium,
                 ),
               ),
+              if (stoppedAt != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Text(
+                    'Android stopped this at '
+                    '${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(stoppedAt))}'
+                    '. It allows it about six hours a day unless MyEmail is '
+                    'opened, and opening it has started it again.',
+                    style: theme.textTheme.bodyMedium
+                        ?.copyWith(color: theme.colorScheme.error),
+                  ),
+                ),
               RadioGroup<SyncMode>(
                 groupValue: prefs.mode,
                 onChanged: (mode) =>

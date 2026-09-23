@@ -61,6 +61,7 @@ class BackgroundSync {
 
     var posted = 0;
     var scanned = 0;
+    var unreachable = 0;
     final failures = <String>[];
 
     for (final account in accounts) {
@@ -79,6 +80,7 @@ class BackgroundSync {
         // One unreachable account must not stop the others: a stale app
         // password on a second mailbox would otherwise silence the first.
         failures.add('${account.emailAddress}: $e');
+        if (e is ConnectionFailed) unreachable++;
       }
     }
 
@@ -86,6 +88,8 @@ class BackgroundSync {
       posted: posted,
       foldersScanned: scanned,
       failures: failures,
+      accounts: accounts.length,
+      unreachable: unreachable,
     );
   }
 
@@ -161,13 +165,30 @@ class BackgroundSyncReport {
     this.posted = 0,
     this.foldersScanned = 0,
     this.failures = const [],
+    this.accounts = 0,
+    this.unreachable = 0,
   });
 
   final int posted;
   final int foldersScanned;
   final List<String> failures;
 
+  /// How many accounts the pass tried, and how many of those it could not
+  /// reach at all.
+  final int accounts;
+  final int unreachable;
+
   bool get ok => failures.isEmpty;
+
+  /// Whether trying again soon could go better: every account failed, and
+  /// at least one only for want of a connection.
+  ///
+  /// Not merely "something failed". WorkManager answers a failed pass with
+  /// an exponential backoff, and one account whose sign-in had lapsed
+  /// failed every pass, so "Occasionally" soon ran every five hours for
+  /// the healthy accounts too. Retrying cannot fix a sign-in.
+  bool get worthRetrying =>
+      accounts > 0 && failures.length >= accounts && unreachable > 0;
 
   @override
   String toString() => 'BackgroundSyncReport(posted: $posted, '

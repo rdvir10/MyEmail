@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
+import '../../domain/account.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/sync_prefs.dart';
@@ -206,19 +207,22 @@ void backgroundCallbackDispatcher() {
 
 /// Carry out the notification buttons that are waiting.
 ///
-/// True whatever happens. A false would have WorkManager try again with
-/// backoff, and the queue is already emptied by the time anything can fail
-/// — so a retry would do nothing except wake the phone up again.
+/// False when something went back in the queue, so WorkManager tries again
+/// with backoff: what cannot be done now (offline, say) is kept for later
+/// rather than dropped.
 Future<bool> _runPendingActions() async {
   DartPluginRegistrant.ensureInitialized();
   try {
-    final done = await drainPendingNotificationActions();
-    if (done > 0) debugPrint('[myemail] carried out $done from the shade');
+    final result = await drainPendingNotificationActions();
+    if (result.done > 0) {
+      debugPrint('[myemail] carried out ${result.done} from the shade');
+    }
+    return result.waiting == 0;
   } catch (e, stack) {
     debugPrint('[myemail] pending notification actions failed: $e');
     debugPrint('$stack');
+    return true;
   }
-  return true;
 }
 
 /// The foreground modes: one worker that stays alive and loops.
@@ -266,8 +270,15 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
       // The widgets are brought up to date after every pass rather than when
       // the worker finishes, because this worker runs for hours.
       onePass: () async {
+        // The account list as it is now. This worker runs for most of an
+        // hour, and read it once at the start: an account removed in the
+        // app went on being synced and announced here, and one added was
+        // not watched until the next worker.
+        await prefs.reloadCache();
+        await liveEngine.releaseRemovedAccounts();
         final report = await sync.run();
         await widgets.refresh(liveEngine);
+        await state.writeLastLivePass(DateTime.now());
         return report;
       },
       waitForNext: () => _waitForNext(mode, liveEngine),
@@ -318,13 +329,28 @@ Future<void> _waitForNext(SyncMode mode, CachedImapEngine engine) async {
   // failure — a revoked app password, a Microsoft sign-in to redo — which
   // ended the worker and every account's notifications with it.
   final inboxes = <String>[];
+  final watched = <Account>[];
   for (final account in await engine.loadAccounts()) {
     for (final folder in await _foldersToWatch(engine, account.id)) {
-      if (folder.role == FolderRole.inbox) inboxes.add(folder.id);
+      if (folder.role != FolderRole.inbox) continue;
+      inboxes.add(folder.id);
+      watched.add(account);
     }
   }
-  await engine.awaitNewMail(inboxes, timeout: idleRenewInterval);
+  await engine.awaitNewMail(inboxes, timeout: liveWaitFor(watched));
 }
+
+/// How long the push worker waits for news before looking anyway.
+///
+/// The IDLE renewal, unless a watched account cannot IDLE. Microsoft's
+/// mail comes over Graph, where waiting is a plain sleep, so its new mail
+/// was found only when Gmail spoke or the renewal came round: up to 24
+/// minutes, slower than the five-minute mode. With one watched, the wait
+/// is the five-minute mode's.
+Duration liveWaitFor(Iterable<Account> watched) =>
+    watched.every(CachedImapEngine.hearsNewMail)
+        ? idleRenewInterval
+        : frequentSyncInterval;
 
 /// The account's folders as last saved, asking the server only when nothing
 /// has been saved yet, and never letting one account's trouble out.
@@ -379,9 +405,9 @@ Future<bool> _runOnePass() async {
       debugPrint('[myemail] background pass failure: $failure');
     }
 
-    // Returning false asks WorkManager to retry with backoff. Worth it for a
-    // mailbox that could not be reached; not worth it when the pass ran fine.
-    return report.ok;
+    // Returning false asks WorkManager to retry with backoff: see
+    // BackgroundSyncReport.worthRetrying for why that is so rarely right.
+    return !report.worthRetrying;
   } catch (e, stack) {
     debugPrint('[myemail] background pass threw: $e\n$stack');
     return false;

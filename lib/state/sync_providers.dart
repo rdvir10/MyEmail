@@ -47,14 +47,25 @@ class SyncSettings extends AsyncNotifier<SyncPrefs> {
 
   /// How often to look.
   ///
-  /// Asks for notification permission on the way into a foreground mode, and
-  /// only then: those show a permanent notification whether or not new mail is
-  /// ever announced, and Android will not start the service without it. The
-  /// occasional mode needs no permission at all, which is the point of
-  /// keeping these two settings apart.
+  /// Asks for notification permission on the way into a foreground mode:
+  /// those show a permanent notification whether or not new mail is ever
+  /// announced, and Android will not start the service without it.
+  ///
+  /// The occasional mode asks too when new mail is to be announced, which
+  /// it is from the start. It used not to, and on a new phone every
+  /// notification it raised was dropped by Android without a word. A no
+  /// there does not stop it syncing: the mode stands, and the screen shows
+  /// that Android is blocking the notifications.
   Future<bool> setMode(SyncMode mode) async {
     final current = state.value ?? const SyncPrefs();
     if (mode.needsForegroundService && !await _ensurePermission()) return false;
+    if (mode.isOn && !mode.needsForegroundService && current.notify) {
+      await _ensurePermission();
+    }
+    if (mode.needsForegroundService && mode != current.mode) {
+      // A worker about to start fresh has not stopped; see liveSyncStalled.
+      await ref.read(syncStateStoreProvider).writeLastLivePass(DateTime.now());
+    }
     await _save(current.copyWith(mode: mode));
     if (!mode.isOn) await ref.read(mailNotifierProvider).cancelAll();
     return true;
@@ -91,3 +102,27 @@ class SyncSettings extends AsyncNotifier<SyncPrefs> {
 
 final syncSettingsProvider =
     AsyncNotifierProvider<SyncSettings, SyncPrefs>(SyncSettings.new);
+
+/// When the push or five-minute worker last ran, if it has stopped when it
+/// should be running; null otherwise. See [liveSyncStalled].
+final stalledLiveSyncProvider = FutureProvider<DateTime?>((ref) async {
+  final prefs = await ref.watch(syncSettingsProvider.future);
+  final last = await ref.watch(syncStateStoreProvider).readLastLivePass();
+  return liveSyncStalled(prefs, last, DateTime.now()) ? last : null;
+});
+
+/// Start the push or five-minute worker again if Android has stopped it.
+///
+/// Opening the app is what resets Android's six-hour allowance, so this is
+/// the moment. Returns whether it had to.
+Future<bool> restartStalledLiveSync(
+  SyncStateStore store,
+  BackgroundScheduler scheduler, {
+  DateTime? now,
+}) async {
+  final prefs = await store.readPrefs();
+  final last = await store.readLastLivePass();
+  if (!liveSyncStalled(prefs, last, now ?? DateTime.now())) return false;
+  await scheduler.apply(prefs);
+  return true;
+}

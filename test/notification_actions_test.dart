@@ -243,9 +243,22 @@ void main() {
       expect(server.folder('[Gmail]/Trash').messages, hasLength(1));
     });
 
-    test('a failure leaves the message where it was and says so', () async {
+    test('offline, the message stays and the press waits, quietly', () async {
       final (account, message) = await arrival();
       server.offline = true;
+
+      final outcome = await actionsFor(account)
+          .perform(NotificationActions.deleteId, message.id, null);
+
+      expect(outcome, ActionOutcome.offline);
+      expect(outcome.worthRetrying, isTrue);
+      expect(server.folder('INBOX').messages, hasLength(1));
+      expect(outcome.message, isNull, reason: 'it will be done later');
+    });
+
+    test('a failure leaves the message where it was and says so', () async {
+      final (account, message) = await arrival();
+      server.failWith = StateError('the server said no');
 
       final outcome = await actionsFor(account)
           .perform(NotificationActions.deleteId, message.id, null);

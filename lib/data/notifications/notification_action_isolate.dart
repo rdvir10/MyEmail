@@ -67,69 +67,147 @@ Future<void> queueNotificationAction(PendingAction action) async {
   }
 }
 
+/// What one drain did with what it took.
+class DrainResult {
+  const DrainResult({this.done = 0, this.waiting = 0});
+
+  /// Carried out, or finally given up on and reported.
+  final int done;
+
+  /// Put back for another try: offline, or failed and not yet given up on.
+  final int waiting;
+}
+
+/// How many real failures a press gets before it is given up on and
+/// reported. Being offline is not counted.
+const maxActionAttempts = 5;
+
 /// Carry out everything waiting, with an engine built for the purpose.
 ///
-/// Returns how many were done. Safe to call from anywhere: the queue is
-/// taken rather than read, so two callers cannot both act on one press.
-Future<int> drainPendingNotificationActions() async {
-  final waiting = await PendingActions().take();
-  if (waiting.isEmpty) return 0;
+/// Safe to call from anywhere: each press is claimed by exactly one caller.
+/// A press that cannot be carried out now goes back in the queue, and one
+/// action failing, or its report failing, does not stop the rest. The queue
+/// used to be emptied before anything was tried, so opening the app offline
+/// threw away a reply typed into a notification.
+///
+/// [open] and [report] are for tests; [report] also lets the app post
+/// through a notifier that is already set up (see [reportOutcome]).
+Future<DrainResult> drainPendingNotificationActions({
+  PendingActions? queue,
+  Future<(NotificationActions, Future<void> Function())> Function()? open,
+  Future<void> Function(ActionOutcome outcome, PendingAction action)? report,
+}) async {
+  final pending = queue ?? PendingActions();
+  final claimed = await pending.take();
+  if (claimed.isEmpty) return const DrainResult();
 
-  MailDatabase? database;
-  CachedImapEngine? engine;
+  final NotificationActions actions;
+  final Future<void> Function() close;
   try {
-    final prefs = await SharedPreferencesWithCache.create(
-      cacheOptions: const SharedPreferencesWithCacheOptions(),
-    );
-    database = MailDatabase.open();
-    final accountStore = PrefsAccountStore(prefs);
-    engine = CachedImapEngine(
-      accountStore: accountStore,
-      credentialStore: SecureCredentialStore(),
-      cache: DriftCacheStore(database),
-      folderLists: PrefsFolderListStore(prefs),
-      graphIdMap: DriftGraphIdMap(database),
-    );
-    final actions = NotificationActions(
+    (actions, close) = await (open ?? _openActions)();
+  } catch (e, stack) {
+    debugPrint('[myemail] could not open the mail to act on: $e');
+    debugPrint('$stack');
+    for (final claim in claimed) {
+      await pending.putBack(claim, counted: false);
+    }
+    return DrainResult(waiting: claimed.length);
+  }
+
+  var done = 0;
+  var waiting = 0;
+  try {
+    for (final claim in claimed) {
+      final action = claim.action;
+      ActionOutcome outcome;
+      try {
+        outcome = await actions.perform(
+          action.actionId,
+          action.messageId,
+          action.typed,
+        );
+      } catch (_) {
+        outcome = ActionOutcome.failed;
+      }
+      final offline = outcome == ActionOutcome.offline;
+      if (outcome.worthRetrying &&
+          (offline || action.attempts + 1 < maxActionAttempts)) {
+        await pending.putBack(claim, counted: !offline);
+        waiting++;
+        continue;
+      }
+      await pending.done(claim);
+      done++;
+      try {
+        await (report ?? reportOutcome)(outcome, action);
+      } catch (e) {
+        debugPrint('[myemail] could not report a notification action: $e');
+      }
+    }
+  } finally {
+    await close();
+  }
+  return DrainResult(done: done, waiting: waiting);
+}
+
+Future<(NotificationActions, Future<void> Function())> _openActions() async {
+  final prefs = await SharedPreferencesWithCache.create(
+    cacheOptions: const SharedPreferencesWithCacheOptions(),
+  );
+  final database = MailDatabase.open();
+  final accountStore = PrefsAccountStore(prefs);
+  final engine = CachedImapEngine(
+    accountStore: accountStore,
+    credentialStore: SecureCredentialStore(),
+    cache: DriftCacheStore(database),
+    folderLists: PrefsFolderListStore(prefs),
+    graphIdMap: DriftGraphIdMap(database),
+  );
+  return (
+    NotificationActions(
       engine: engine,
       accounts: accountStore.read(),
       signatures: readSignatures(PrefsUiStateStore(prefs)),
-    );
-    for (final action in waiting) {
-      final outcome = await actions.perform(
-        action.actionId,
-        action.messageId,
-        action.typed,
-      );
-      await reportOutcome(outcome, action.messageId);
-    }
-    return waiting.length;
-  } catch (e, stack) {
-    debugPrint('[myemail] notification action failed: $e');
-    debugPrint('$stack');
-    return 0;
-  } finally {
-    await engine?.close();
-    await database?.close();
-  }
+    ),
+    () async {
+      await engine.close();
+      await database.close();
+    },
+  );
 }
 
 /// Say something only where there is something to say. A reply that went and
 /// a message that was deleted are both confirmed by the notification going
 /// away; a row saying "Sent" would be one more thing to dismiss.
-Future<void> reportOutcome(ActionOutcome outcome, String messageId) async {
-  final text = outcome.message;
+///
+/// [pluginReady] in the app, where the notifications plugin is already set
+/// up with the handler that opens a tapped message. Setting it up again
+/// replaced that handler with none, and until the app was restarted a tap
+/// on new mail brought the app forward without opening the message.
+Future<void> reportOutcome(
+  ActionOutcome outcome,
+  PendingAction action, {
+  bool pluginReady = false,
+}) async {
+  var text = outcome.message;
   if (text == null) return;
+  // Given up on: what was typed is shown, rather than gone for good.
+  final typed = action.typed?.trim() ?? '';
+  if (outcome == ActionOutcome.notKept && typed.isNotEmpty) {
+    text = '$text What you wrote: "$typed"';
+  }
   final plugin = FlutterLocalNotificationsPlugin();
-  await plugin.initialize(
-    settings: const InitializationSettings(
-      android: AndroidInitializationSettings('@drawable/ic_stat_mail'),
-    ),
-  );
+  if (!pluginReady) {
+    await plugin.initialize(
+      settings: const InitializationSettings(
+        android: AndroidInitializationSettings('@drawable/ic_stat_mail'),
+      ),
+    );
+  }
   await plugin.show(
     // Its own id, derived from the message, so two failures for two messages
     // do not overwrite one another.
-    id: ('action:$messageId').hashCode & 0x7fffffff,
+    id: ('action:${action.messageId}').hashCode & 0x7fffffff,
     title: 'MyEmail',
     body: text,
     notificationDetails: const NotificationDetails(

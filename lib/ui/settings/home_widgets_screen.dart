@@ -33,11 +33,10 @@ class _HomeWidgetsScreenState extends ConsumerState<HomeWidgetsScreen> {
   Future<Map<String, WidgetMailbox>> _load() async {
     final live = await placedWidgetIds();
     final known = await ref.read(widgetStateStoreProvider).readMailboxes();
-    // An empty answer means Android was not asked — a test, the browser
-    // preview, an older build of the Android half — not that every widget
-    // has been removed. Better to show what is remembered than to claim
-    // there is nothing.
-    if (live.isEmpty) return known;
+    // No answer means Android was not asked — a test, the browser preview,
+    // an older build of the Android half. Better to show what is remembered
+    // than to claim there is nothing. An empty answer is no widgets.
+    if (live == null) return known;
     return {
       for (final id in live)
         if (known[id] != null) id: known[id]!,

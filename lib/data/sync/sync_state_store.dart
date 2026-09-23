@@ -29,11 +29,17 @@ abstract class SyncStateStore {
   Future<int?> readWatermark(String folderId);
 
   Future<void> writeWatermark(String folderId, int uid);
+
+  /// When the push or five-minute worker last finished a pass. How the app
+  /// can tell that Android has stopped it.
+  Future<DateTime?> readLastLivePass();
+  Future<void> writeLastLivePass(DateTime at);
 }
 
 abstract final class SyncStateKeys {
   static const prefs = 'notify.prefs.v1';
   static const watermarkPrefix = 'notify.mark.';
+  static const lastLivePass = 'sync.live.last';
 
   static String watermark(String folderId) => '$watermarkPrefix$folderId';
 }
@@ -71,6 +77,16 @@ class PrefsSyncStateStore implements SyncStateStore {
   Future<void> writeWatermark(String folderId, int uid) =>
       _prefs.setInt(SyncStateKeys.watermark(folderId), uid);
 
+  @override
+  Future<DateTime?> readLastLivePass() async {
+    final ms = await _prefs.getInt(SyncStateKeys.lastLivePass);
+    return ms == null ? null : DateTime.fromMillisecondsSinceEpoch(ms);
+  }
+
+  @override
+  Future<void> writeLastLivePass(DateTime at) =>
+      _prefs.setInt(SyncStateKeys.lastLivePass, at.millisecondsSinceEpoch);
+
   // Watermarks for a removed account are deliberately not cleaned up. A folder
   // id starts with the account id, and account ids carry the millisecond they
   // were created, so a stale key can never be matched by a later account. The
@@ -100,4 +116,12 @@ class MemorySyncStateStore implements SyncStateStore {
   @override
   Future<void> writeWatermark(String folderId, int uid) async =>
       _watermarks[folderId] = uid;
+
+  DateTime? lastLivePass;
+
+  @override
+  Future<DateTime?> readLastLivePass() async => lastLivePass;
+
+  @override
+  Future<void> writeLastLivePass(DateTime at) async => lastLivePass = at;
 }

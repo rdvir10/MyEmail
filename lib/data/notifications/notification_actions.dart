@@ -59,6 +59,8 @@ class NotificationActions {
     try {
       await engine.deleteMessages([messageId]);
       return ActionOutcome.deleted;
+    } on ConnectionFailed {
+      return ActionOutcome.offline;
     } catch (_) {
       return ActionOutcome.failed;
     }
@@ -82,7 +84,7 @@ class NotificationActions {
     try {
       original = await engine.cachedMessage(messageId);
     } catch (_) {
-      return ActionOutcome.failed;
+      return ActionOutcome.notKept;
     }
     // Deleted from another device between the notification and the reply.
     if (original == null) return ActionOutcome.gone;
@@ -113,13 +115,19 @@ class NotificationActions {
 
     try {
       await engine.sendDraft(draft);
-    } catch (_) {
+    } catch (sending) {
       try {
-        await engine.saveDraft(draft);
-        return ActionOutcome.savedAsDraft;
+        // Null is an account with no Drafts folder: nothing was kept, and
+        // saying "It is in Drafts" would send someone looking for it.
+        if (await engine.saveDraft(draft) != null) {
+          return ActionOutcome.savedAsDraft;
+        }
       } catch (_) {
-        return ActionOutcome.failed;
+        // Neither went. What was typed is still in the queue; see below.
       }
+      return sending is ConnectionFailed
+          ? ActionOutcome.offline
+          : ActionOutcome.notKept;
     }
 
     // Answered mail is read mail. Best-effort: the reply has gone, and
@@ -146,7 +154,17 @@ enum ActionOutcome {
   /// The message is no longer on this device: answered or deleted elsewhere.
   gone,
   failed,
+
+  /// No connection. Nothing is wrong with the press: it waits for one.
+  offline,
+
+  /// A reply that could be neither sent nor saved. What was typed is kept
+  /// in the queue to try again, and shown if it is finally given up on.
+  notKept,
   unknown;
+
+  /// Whether the press should go back in the queue rather than be dropped.
+  bool get worthRetrying => this == failed || this == offline || this == notKept;
 
   /// What to tell the person, or null where silence is the right answer.
   ///
@@ -161,5 +179,7 @@ enum ActionOutcome {
         savedAsDraft => 'Your reply could not be sent. It is in Drafts.',
         gone => 'That message is no longer here.',
         failed => 'That did not work. The message is where it was.',
+        offline => null,
+        notKept => 'Your reply could not be sent, or kept in Drafts.',
       };
 }

@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../../domain/account.dart';
 import '../../domain/folder_role.dart';
+import '../../domain/mail_folder.dart';
+import '../../domain/mail_message.dart';
 import '../../domain/mailbox_counts.dart';
 import '../../state/folder_tree.dart' show kUnifiedInboxId;
 import '../mail_engine.dart';
@@ -79,19 +81,29 @@ class MailboxWidgets {
       final mark = await store.readOpenedAt();
       final accounts = await engine.loadAccounts();
       final counts = <String, MailboxCounts>{};
+      // Could not be counted this time. One account needing a sign-in used
+      // to stop every widget here, Gmail and All inboxes included, until it
+      // was signed in again; now only its own widget keeps what it showed.
+      final unknown = <String>{};
       for (final folderId in mailboxes.values.map((m) => m.folderId).toSet()) {
-        final count = await _count(engine, accounts, folderId, mark);
-        if (count != null) counts[folderId] = count;
+        try {
+          final count = await _count(engine, accounts, folderId, mark);
+          if (count != null) counts[folderId] = count;
+        } catch (e) {
+          debugPrint('[myemail] could not count $folderId for a widget: $e');
+          unknown.add(folderId);
+        }
       }
 
       for (final entry in mailboxes.entries) {
         final mailbox = entry.value;
         final found = counts[mailbox.folderId];
+        final kept = unknown.contains(mailbox.folderId);
         // A folder that has gone leaves the widget unassigned rather than
         // showing zeroes, which would read as an empty mailbox.
         await surface.putString(
           'widget.${entry.key}.folder',
-          found == null ? null : mailbox.folderId,
+          found == null && !kept ? null : mailbox.folderId,
         );
         await surface.putString('widget.${entry.key}.mode', mailbox.counts.name);
         await surface.putString('widget.${entry.key}.label', mailbox.label);
@@ -130,14 +142,25 @@ class MailboxWidgets {
       var unread = 0;
       var fresh = 0;
       for (final account in accounts) {
-        for (final folder in await engine.loadFolders(account.id)) {
+        // An account that cannot be asked counts as it was last seen,
+        // rather than taking All inboxes down with it.
+        List<MailFolder> folders;
+        try {
+          folders = await engine.loadFolders(account.id);
+        } catch (_) {
+          folders = await engine.cachedFolders(account.id);
+        }
+        for (final folder in folders) {
           if (folder.role != FolderRole.inbox) continue;
           total += folder.totalCount;
           unread += folder.unreadCount;
-          fresh += arrivedSince(
-            await engine.loadMessages(folder.id, limit: window),
-            mark,
-          );
+          List<MailMessage> recent;
+          try {
+            recent = await engine.loadMessages(folder.id, limit: window);
+          } catch (_) {
+            recent = await engine.cachedMessages(folder.id, limit: window);
+          }
+          fresh += arrivedSince(recent, mark);
         }
       }
       return MailboxCounts(

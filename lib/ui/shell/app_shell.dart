@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/imap/imap_mapping.dart';
 import '../../domain/mail_message.dart';
 import '../../data/notifications/notification_action_isolate.dart';
+import '../../data/sync/background_worker.dart'
+    show runPendingNotificationActions;
 import '../../state/message_providers.dart';
 import '../../state/message_transfer.dart';
 import '../../state/sync_providers.dart';
@@ -105,6 +107,20 @@ class _AppShellState extends ConsumerState<AppShell>
     ref.invalidate(foldersProvider);
     _openLaunchMessage();
     _carryOutPressedButtons();
+    _restartStalledSync();
+  }
+
+  /// Push or five-minute sync that Android stopped starts again here: see
+  /// [restartStalledLiveSync].
+  Future<void> _restartStalledSync() async {
+    try {
+      await restartStalledLiveSync(
+        ref.read(syncStateStoreProvider),
+        ref.read(backgroundSchedulerProvider),
+      );
+    } catch (e) {
+      debugPrint('[myemail] could not restart background sync: $e');
+    }
   }
 
   /// Anything pressed on a notification and not yet done.
@@ -120,8 +136,13 @@ class _AppShellState extends ConsumerState<AppShell>
   /// nothing about.
   Future<void> _carryOutPressedButtons() async {
     try {
-      final done = await drainPendingNotificationActions();
-      if (done == 0 || !mounted) return;
+      final result = await drainPendingNotificationActions(
+        report: (outcome, action) =>
+            reportOutcome(outcome, action, pluginReady: true),
+      );
+      // Kept for later: WorkManager waits for a connection, and retries.
+      if (result.waiting > 0) await runPendingNotificationActions();
+      if (result.done == 0 || !mounted) return;
       ref.invalidate(messagesProvider);
       ref.invalidate(foldersProvider);
     } catch (_) {

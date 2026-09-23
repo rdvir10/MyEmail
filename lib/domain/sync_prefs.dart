@@ -46,12 +46,33 @@ enum SyncMode {
               'can be much later than you asked for.',
         SyncMode.frequent =>
           'MyEmail shows a permanent notification and uses noticeably more '
-              'battery.',
+              'battery. Android allows this about six hours a day unless '
+              'MyEmail is opened.',
         SyncMode.realtime =>
           'Mail arrives in seconds. MyEmail shows a permanent notification '
-              'and holds a connection open, which costs the most battery.',
+              'and holds a connection open, which costs the most battery. '
+              'Android allows this about six hours a day unless MyEmail is '
+              'opened.',
       };
 }
+
+/// How long push or five-minute sync can go without a pass before it is
+/// taken to have stopped. A healthy worker passes at least every IDLE
+/// renewal.
+const liveSyncStallAfter = Duration(minutes: 40);
+
+/// Whether the push or five-minute worker has stopped when it should be
+/// running.
+///
+/// Android 15 gives a data-sync foreground service six hours a day, reset
+/// only by opening the app, so push left on overnight stopped with nothing
+/// to say so. Null [lastPass] is a worker that has not had its first pass,
+/// which is not the same thing.
+bool liveSyncStalled(SyncPrefs prefs, DateTime? lastPass, DateTime now) =>
+    prefs.syncs &&
+    prefs.mode.needsForegroundService &&
+    lastPass != null &&
+    now.difference(lastPass) > liveSyncStallAfter;
 
 /// How often [SyncMode.frequent] checks. Named rather than inlined because
 /// the whole reason that mode needs a foreground service is that this number

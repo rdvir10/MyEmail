@@ -414,6 +414,28 @@ class CachedImapEngine implements MailEngine {
     _syncs.remove(accountId);
   }
 
+  /// Whether new mail for [account] is heard as it arrives. Microsoft goes
+  /// over Graph, which has no IDLE: waiting on it is a plain sleep.
+  static bool hearsNewMail(Account account) =>
+      !(account.provider == MailProvider.outlook &&
+          account.authMethod == AuthMethod.oauth);
+
+  /// Let go of every account that is no longer in the account list.
+  ///
+  /// For an engine in another isolate than the app's, which is where an
+  /// account is removed: the push worker runs for most of an hour, and went
+  /// on syncing a removed account and announcing its mail, able to write its
+  /// sign-in back as it refreshed.
+  Future<void> releaseRemovedAccounts() async {
+    final current = {for (final a in accountStore.read()) a.id};
+    for (final id in {..._transports.keys, ..._syncs.keys}) {
+      if (current.contains(id)) continue;
+      await _transports.remove(id)?.close();
+      _syncs.remove(id);
+      oauthTokens.forget(id);
+    }
+  }
+
   @override
   Future<void> removeAccount(String accountId) async {
     await _transports.remove(accountId)?.close();

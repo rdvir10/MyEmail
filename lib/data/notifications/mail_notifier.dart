@@ -99,8 +99,14 @@ class FakeMailNotifier implements MailNotifier {
   @override
   Future<void> ensureReady() async => readyCalls++;
 
+  /// How many times Android's permission dialog would have been shown.
+  int permissionRequests = 0;
+
   @override
-  Future<bool> requestPermission() async => permitted;
+  Future<bool> requestPermission() async {
+    permissionRequests++;
+    return permitted;
+  }
 
   @override
   Future<bool> isPermitted() async => permitted;

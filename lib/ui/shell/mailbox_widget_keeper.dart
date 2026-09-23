@@ -81,7 +81,7 @@ class _MailboxWidgetKeeperState extends ConsumerState<MailboxWidgetKeeper>
     // Only the app can ask Android what is still on the home screen, so this
     // is where a widget that was dragged to the bin stops being counted.
     final placed = await placedWidgetIds();
-    if (placed.isNotEmpty) await widgets.refresh(engine, placed: placed);
+    if (placed != null) await widgets.refresh(engine, placed: placed);
   }
 
   @override

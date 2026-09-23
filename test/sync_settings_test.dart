@@ -96,10 +96,10 @@ void main() {
       expect(notifier.batches, isEmpty, reason: 'and what was showing is gone');
     });
 
-    test('the occasional mode never asks for notification permission',
+    test('the occasional mode asks, since it is to announce what it finds',
         () async {
-      // It shows nothing of its own, so there is nothing to permit. Asking
-      // would be the app demanding something it does not need.
+      // Notifications are on from the start. Never asked, a new phone
+      // dropped every one of them without a word.
       notifier.permitted = false;
       final c = container();
       await c.read(syncSettingsProvider.future);
@@ -108,8 +108,20 @@ void main() {
           .read(syncSettingsProvider.notifier)
           .setMode(SyncMode.periodic);
 
-      expect(ok, isTrue);
+      expect(notifier.permissionRequests, 1);
+      expect(ok, isTrue, reason: 'a no stops the announcing, not the syncing');
       expect((await state.readPrefs()).mode, SyncMode.periodic);
+    });
+
+    test('but not when it is only to keep the app current', () async {
+      final c = container();
+      await c.read(syncSettingsProvider.future);
+      await c.read(syncSettingsProvider.notifier).setNotify(false);
+      notifier.permissionRequests = 0;
+
+      await c.read(syncSettingsProvider.notifier).setMode(SyncMode.periodic);
+
+      expect(notifier.permissionRequests, 0);
     });
 
     test('a foreground mode does ask, because Android insists on a permanent '

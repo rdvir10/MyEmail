@@ -13,6 +13,7 @@ import 'data/mail_engine.dart';
 import 'data/sample/sample_mail_engine.dart';
 import 'data/notifications/android_mail_notifier.dart';
 import 'data/notifications/notification_action_isolate.dart';
+import 'data/notifications/pending_actions.dart';
 import 'data/notifications/notification_actions.dart';
 import 'data/notifications/mail_notifier.dart';
 import 'data/secure_credential_store.dart';
@@ -100,13 +101,33 @@ Future<void> main() async {
   final MailNotifier notifier = onAndroid
       ? AndroidMailNotifier(
           onAction: (response) async {
-            final messageId = response.payload ?? '';
-            final outcome = await NotificationActions(
-              engine: engine,
-              accounts: accountStore.read(),
-              signatures: readSignatures(PrefsUiStateStore(prefs)),
-            ).perform(response.actionId ?? '', messageId, response.input);
-            await reportOutcome(outcome, messageId);
+            final actionId = response.actionId;
+            final messageId = response.payload;
+            if (!NotificationActions.isKnown(actionId) ||
+                messageId == null ||
+                messageId.isEmpty) {
+              return;
+            }
+            // Through the queue, as when the app is closed, so a press that
+            // cannot be carried out now is kept and tried again, not lost.
+            await PendingActions().add(PendingAction(
+              actionId: actionId!,
+              messageId: messageId,
+              typed: response.input,
+            ));
+            final result = await drainPendingNotificationActions(
+              open: () async => (
+                NotificationActions(
+                  engine: engine,
+                  accounts: accountStore.read(),
+                  signatures: readSignatures(PrefsUiStateStore(prefs)),
+                ),
+                () async {},
+              ),
+              report: (outcome, action) =>
+                  reportOutcome(outcome, action, pluginReady: true),
+            );
+            if (result.waiting > 0) await runPendingNotificationActions();
           },
         )
       : FakeMailNotifier(permitted: false);
