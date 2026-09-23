@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../../domain/html_safety.dart';
 import '../../domain/trusted_senders.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
@@ -16,9 +17,13 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 ///    otherwise; the sender learns nothing from a message being opened.
 ///    Doing this in Dart rather than through a WebView setting means it is
 ///    the same on every platform and can be unit tested.
-///  * Every navigation cancelled inside the WebView and handed to the system
-///    browser or mail app instead, so a link can never replace the message
-///    with a page that looks like one.
+///  * Every navigation cancelled inside the WebView. One that follows a tap
+///    on the message is handed to the system browser or mail app, so a link
+///    can never replace the message with a page that looks like one; one
+///    nobody tapped for is dropped, because the message started it by itself.
+///  * `<meta>` and `<base>` removed. A `<meta http-equiv=refresh>` works with
+///    JavaScript off, and used to open the sender's page in the browser the
+///    moment a message was opened, images blocked or not.
 ///
 /// The view fills whatever height it is given, so the host must bound it
 /// (the reading pane puts it in an Expanded). Sizing a JavaScript-free
@@ -65,6 +70,13 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
   late bool _showRemote = widget.showImages;
   Brightness _brightness = Brightness.light;
 
+  /// When the reader last touched or clicked the message. A navigation is
+  /// only passed on if it follows one closely.
+  DateTime? _touchedAt;
+
+  /// Between handing the WebView a document and it finishing that load.
+  bool _loading = false;
+
   @override
   void initState() {
     super.initState();
@@ -73,15 +85,25 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
       ..setNavigationDelegate(
         NavigationDelegate(
           onNavigationRequest: (request) {
-            final uri = Uri.tryParse(request.url);
-            if (uri == null) return NavigationDecision.prevent;
-            // The html-string load itself arrives as about:blank / data.
-            if (uri.scheme == 'about' || uri.scheme == 'data') {
-              return NavigationDecision.navigate;
+            switch (paneNavigation(
+              request.url,
+              loading: _loading,
+              touchedAt: _touchedAt,
+              now: DateTime.now(),
+            )) {
+              case PaneNavigation.load:
+                return NavigationDecision.navigate;
+              case PaneNavigation.openOutside:
+                // One tap, one page: a second navigation riding on the same
+                // touch is the message's, not the reader's.
+                _touchedAt = null;
+                openExternally(Uri.parse(request.url));
+                return NavigationDecision.prevent;
+              case PaneNavigation.drop:
+                return NavigationDecision.prevent;
             }
-            openExternally(uri);
-            return NavigationDecision.prevent;
           },
+          onPageFinished: (_) => _loading = false,
         ),
       );
 
@@ -138,6 +160,7 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
         _showRemote ? widget.html : stripRemoteContent(widget.html);
     // The WebView's own background shows during the load and behind a short
     // body. Matching it to the document avoids a white flash on a dark screen.
+    _loading = true;
     _controller
       ..setBackgroundColor(
         readsAsDark(source, _brightness) ? const Color(0xFF1C1B1F) : Colors.white,
@@ -183,10 +206,49 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
               ),
             ),
           ),
-        Expanded(child: WebViewWidget(controller: _controller)),
+        Expanded(
+          // Sees the pointer on its way to the WebView without taking it.
+          child: Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerDown: (_) => _touchedAt = DateTime.now(),
+            child: WebViewWidget(controller: _controller),
+          ),
+        ),
       ],
     );
   }
+}
+
+/// What the reading pane does with a navigation.
+enum PaneNavigation { load, openOutside, drop }
+
+/// How long after a touch a navigation still counts as the reader's.
+const tapWindow = Duration(seconds: 2);
+
+/// Decide what happens to a navigation the message's WebView asks for.
+///
+/// The document's own load arrives as about: or data:, and a data: page is
+/// only accepted while that load is under way, so a tapped `data:` link
+/// cannot replace the message with a page that imitates one. Anything else
+/// leaves the app, and only when the reader touched the message just before:
+/// a `<meta http-equiv=refresh>` or an iframe navigates with nobody touching
+/// anything, and those are dropped. A link followed from a physical keyboard
+/// is dropped too, which is the price of telling the two apart without
+/// JavaScript.
+PaneNavigation paneNavigation(
+  String url, {
+  required bool loading,
+  required DateTime? touchedAt,
+  required DateTime now,
+}) {
+  final uri = Uri.tryParse(url);
+  if (uri == null) return PaneNavigation.drop;
+  if (uri.scheme == 'about') return PaneNavigation.load;
+  if (uri.scheme == 'data') {
+    return loading ? PaneNavigation.load : PaneNavigation.drop;
+  }
+  final tapped = touchedAt != null && now.difference(touchedAt) <= tapWindow;
+  return tapped ? PaneNavigation.openOutside : PaneNavigation.drop;
 }
 
 /// Links leave the app. Only schemes a person would expect to open are
@@ -332,7 +394,7 @@ String wrapHtmlForDisplay(
   Brightness brightness = Brightness.light,
 }) {
   final hasHtmlTag = RegExp(r'<html[\s>]', caseSensitive: false).hasMatch(html);
-  final body = hasHtmlTag ? _extractBody(html) : html;
+  final body = removeDocumentDirectives(hasHtmlTag ? _extractBody(html) : html);
   final dark = readsAsDark(html, brightness);
   final laidOutFor = declaredLayoutWidth(body);
   final fg = dark ? '#e6e1e5' : '#1c1b1f';

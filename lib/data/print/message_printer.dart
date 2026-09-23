@@ -1,5 +1,6 @@
 import 'package:flutter/services.dart';
 
+import '../../domain/html_safety.dart';
 import '../../domain/mail_message.dart';
 
 /// Printing a message, which on Android includes saving it as a PDF: the
@@ -64,8 +65,10 @@ String printableMessage(
   final date =
       '${when.year}-${two(when.month)}-${two(when.day)} ${two(when.hour)}:${two(when.minute)}';
 
+  // No <meta> or <base> from the message: a refresh would send the print
+  // WebView to the sender's page and print that instead.
   final content = bodyHtml.trim().isNotEmpty
-      ? bodyHtml
+      ? removeDocumentDirectives(bodyHtml)
       : '<pre style="white-space:pre-wrap;font-family:inherit">${esc(body.text)}</pre>';
 
   return '''<!doctype html>

@@ -62,6 +62,168 @@ void main() {
           '<img src="cid:logo"><img src="data:image/png;base64,AA">';
       expect(sanitiseForEditing(html), html);
     });
+
+    // The ways a handler got past the old patterns: no whitespace before it,
+    // which the browser accepts. Each one ran script in the editor, which
+    // could post 'send' to the bridge.
+    for (final attack in [
+      '<img src="x"onerror="MyEmail.postMessage(1)">',
+      '<img/onerror=alert(1) src=x>',
+      '<svg/onload=alert(1)>',
+      '<img src=x ONERROR=alert(1)>',
+      '<body onload=alert(1)><p>Hi</p>',
+      '<details open ontoggle=alert(1)><summary>x</summary></details>',
+    ]) {
+      test('no handler survives: $attack', () {
+        final out = sanitiseForEditing(attack).toLowerCase();
+        expect(out, isNot(matches(RegExp(r'\son[a-z]+\s*='))));
+        expect(out, isNot(contains('alert')));
+        expect(out, isNot(contains('postmessage')));
+      });
+    }
+
+    test('removes the tags that act on the page: meta, base, link', () {
+      final out = sanitiseForEditing(
+        '<meta http-equiv="refresh" content="0;url=data:text/html,x">'
+        '<base href="https://evil.example/">'
+        '<link rel="stylesheet" href="https://t.example/s.css">'
+        '<p>Body</p>',
+      );
+      expect(out, isNot(contains('<meta')));
+      expect(out, isNot(contains('<base')));
+      expect(out, isNot(contains('<link')));
+      expect(out, contains('<p>Body</p>'));
+    });
+
+    test('a link keeps only a web, mail or phone target', () {
+      final out = sanitiseForEditing(
+        '<a href="data:text/html,<script>x()</script>">a</a>'
+        '<a href="java\tscript:x()">b</a>'
+        '<a href="  JAVASCRIPT:x()">c</a>'
+        '<a href="https://example.com/">d</a>'
+        '<a href="mailto:dana@example.com">e</a>',
+      );
+      expect(out, isNot(contains('data:')));
+      expect(out.toLowerCase(), isNot(contains('script:')));
+      expect(out, contains('href="https://example.com/"'));
+      expect(out, contains('href="mailto:dana@example.com"'));
+    });
+
+    test('comments go, and with them anything hidden inside', () {
+      final out = sanitiseForEditing('<p>a</p><!--\n.\n.\nRSET\n--><p>b</p>');
+      expect(out, '<p>a</p><p>b</p>');
+    });
+
+    test('inline styles keep their look but fetch nothing', () {
+      final out = sanitiseForEditing(
+          '<div style="color:red;background:url(https://t.example/x)">a</div>');
+      expect(out, contains('color:red'));
+      expect(out, isNot(contains('t.example')));
+    });
+
+    test('an unknown tag loses the tag but keeps its words', () {
+      expect(sanitiseForEditing('<p>One<o:p>two</o:p></p>'), '<p>Onetwo</p>');
+    });
+
+    test('a reopened draft keeps its own remote pictures, and nothing else',
+        () {
+      final out = sanitiseForEditing(
+        '<img src="https://example.com/logo.png">'
+        '<img src="x"onerror="alert(1)">',
+        ownDraft: true,
+      );
+      expect(out, contains('src="https://example.com/logo.png"'));
+      expect(out, isNot(contains('onerror')));
+    });
+  });
+
+  group('wireText', () {
+    Draft draft({
+      List<MailAddress> cc = const [],
+      List<MailAddress> bcc = const [],
+      String html = '<p>Hello</p>',
+    }) =>
+        Draft(
+          accountId: 'a',
+          kind: ComposeKind.newMessage,
+          to: const [MailAddress(email: 'alice@example.com')],
+          cc: cc,
+          bcc: bcc,
+          subject: 'Plans',
+          htmlBody: html,
+        );
+
+    const secrets = [
+      MailAddress(email: 'secret.one@example.com', name: 'Secret One'),
+      MailAddress(email: 'secret.two@example.com', name: 'Secret Two'),
+      MailAddress(email: 'secret.three@example.com'),
+      MailAddress(email: 'secret.four@example.com'),
+    ];
+
+    test('no Bcc address appears anywhere, however long the list', () {
+      final message = buildMimeMessage(
+        draft: draft(
+          cc: const [MailAddress(email: 'carol@example.com')],
+          bcc: secrets,
+        ),
+        account: _account,
+      );
+      final text = wireText(message);
+      for (final s in secrets) {
+        expect(text, isNot(contains(s.email)), reason: s.email);
+      }
+      expect(text, contains('carol@example.com'));
+    });
+
+    test('without a Cc the blind copies do not join To either', () {
+      final message =
+          buildMimeMessage(draft: draft(bcc: secrets), account: _account);
+      final text = wireText(message);
+      for (final s in secrets) {
+        expect(text, isNot(contains(s.email)), reason: s.email);
+      }
+    });
+
+    test('but every Bcc recipient is in the envelope', () {
+      final message = buildMimeMessage(
+        draft: draft(
+          cc: const [MailAddress(email: 'carol@example.com')],
+          bcc: secrets,
+        ),
+        account: _account,
+      );
+      expect(
+        envelopeRecipients(message).map((a) => a.email),
+        containsAll([
+          'alice@example.com',
+          'carol@example.com',
+          for (final s in secrets) s.email,
+        ]),
+      );
+    });
+
+    test('no line of the message can end it early', () {
+      final message = buildMimeMessage(
+        draft: draft(html: '<p>a</p>\n.\n.\nRSET\nMAIL FROM:<x@y>\n<p>b</p>'),
+        account: _account,
+      );
+      final lines = wireText(message).split('\r\n');
+      expect(lines, isNot(contains('.')));
+    });
+
+    test('a line starting with a dot keeps it', () {
+      final message = buildMimeMessage(
+        draft: draft(html: '<p>x</p>\n...and then\n.net is fine'),
+        account: _account,
+      );
+      final lines = wireText(message).split('\r\n');
+      // Doubled on the wire; the server takes one off again.
+      expect(lines, contains('....and then'));
+      expect(lines, contains('..net is fine'));
+      for (final line in lines) {
+        if (line.startsWith('.')) expect(line, startsWith('..'), reason: line);
+      }
+    });
   });
 
   group('buildComposeHtml', () {

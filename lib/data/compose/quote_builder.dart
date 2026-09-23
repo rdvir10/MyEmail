@@ -1,3 +1,6 @@
+import 'package:html/dom.dart' as dom;
+import 'package:html/parser.dart' as html_parser;
+
 import '../../domain/draft.dart';
 import '../../domain/mail_message.dart';
 import '../imap/imap_mapping.dart';
@@ -90,52 +93,164 @@ String quotedOriginal({String? html, String? text}) {
 }
 
 /// Strip everything executable from HTML that is about to become editable.
-String sanitiseForEditing(String html) {
-  var s = html;
+///
+/// The HTML is parsed, the way the WebView will parse it, and rebuilt from
+/// what is known to be safe: an allow-list of elements and attributes.
+/// Anything else is either removed with its contents (scripts, styles,
+/// embedded documents, forms, `<meta>`, `<base>`, `<link>`, SVG and MathML)
+/// or unwrapped so its text survives (unknown tags such as Office's `<o:p>`).
+///
+/// This used to be a set of regular expressions, and they were bypassed:
+/// `<img src="x"onerror=...>` and `<svg/onload=...>` carry a handler with no
+/// space before it, which the browser accepts and the pattern did not, and a
+/// `<meta http-equiv=refresh>` could replace the whole editor with a page of
+/// the sender's. Both let a received message send mail from the account the
+/// moment Reply was tapped. A parser sees attributes the way the browser
+/// does, so there is no spelling of a handler it can miss.
+///
+/// Links keep http, https, mailto and tel targets only. Images keep inline
+/// `data:image/` and `cid:` sources; remote ones are renamed to
+/// `data-blocked-src` so the layout survives without the act of replying
+/// telling the sender. `url(...)` in inline styles is neutralised for the
+/// same reason.
+///
+/// [ownDraft] is for a draft reopened from the Drafts folder: the same
+/// cleaning, except remote pictures keep their `src`. They are the writer's
+/// own, and renaming them would send them to the recipients broken. The
+/// editor's policy still stops them loading while it is open.
+String sanitiseForEditing(String html, {bool ownDraft = false}) {
+  final fragment = html_parser.parseFragment(html);
+  _cleanChildren(fragment, keepRemoteImages: ownDraft);
+  return fragment.outerHtml;
+}
 
-  // Whole elements whose content is code or an embedded document.
-  for (final tag in ['script', 'style', 'iframe', 'object', 'embed', 'form']) {
-    s = s.replaceAll(
-      RegExp('<$tag\\b[^>]*>[\\s\\S]*?</$tag>', caseSensitive: false),
-      '',
-    );
-    s = s.replaceAll(RegExp('<$tag\\b[^>]*/?>', caseSensitive: false), '');
+/// Removed together with everything inside them.
+const _dropped = {
+  'script', 'style', 'noscript', 'template', 'iframe', 'frame', 'frameset',
+  'object', 'embed', 'applet', 'param', 'form', 'input', 'button', 'select',
+  'option', 'optgroup', 'textarea', 'datalist', 'output', 'meta', 'base',
+  'link', 'title', 'head', 'audio', 'video', 'source', 'track', 'canvas',
+  'map', 'area', 'portal', 'dialog', 'slot',
+};
+
+/// Kept as they are, less any attribute not on [_attributes].
+const _elements = {
+  'a', 'abbr', 'address', 'article', 'aside', 'b', 'bdi', 'bdo', 'big',
+  'blockquote', 'br', 'caption', 'center', 'cite', 'code', 'col', 'colgroup',
+  'dd', 'del', 'details', 'dfn', 'div', 'dl', 'dt', 'em', 'figcaption',
+  'figure', 'font', 'footer', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header',
+  'hr', 'i', 'img', 'ins', 'kbd', 'li', 'main', 'mark', 'nav', 'ol', 'p',
+  'pre', 'q', 's', 'samp', 'section', 'small', 'span', 'strike', 'strong',
+  'sub', 'summary', 'sup', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead',
+  'time', 'tr', 'tt', 'u', 'ul', 'var', 'wbr',
+};
+
+/// Presentation attributes mail actually uses. No `id`: the editor finds its
+/// caret by id, and a quote must not be able to move it.
+const _attributes = {
+  'abbr', 'align', 'alt', 'bgcolor', 'border', 'cellpadding', 'cellspacing',
+  'class', 'color', 'colspan', 'datetime', 'dir', 'face', 'headers', 'height',
+  'hspace', 'lang', 'name', 'nowrap', 'reversed', 'rowspan', 'scope', 'size',
+  'span', 'start', 'style', 'summary', 'title', 'type', 'valign', 'value',
+  'vspace', 'width',
+  // Written by this function on an earlier pass, so a reopened draft keeps
+  // its blocked pictures in place.
+  'data-blocked-src', 'data-blocked-srcset', 'data-blocked-background',
+  'data-blocked-poster',
+};
+
+const _linkSchemes = {'http', 'https', 'mailto', 'tel'};
+
+void _cleanChildren(dom.Node parent, {required bool keepRemoteImages}) {
+  for (final node in parent.nodes.toList()) {
+    if (node is dom.Element) {
+      _cleanElement(node, keepRemoteImages: keepRemoteImages);
+    } else if (node is! dom.Text) {
+      // Comments and anything else that is not text or an element. A comment
+      // is invisible, and was the hiding place for the SMTP injection.
+      node.remove();
+    }
+  }
+}
+
+void _cleanElement(dom.Element el, {required bool keepRemoteImages}) {
+  final name = (el.localName ?? '').toLowerCase();
+  final foreign = el.namespaceUri != null &&
+      el.namespaceUri != 'http://www.w3.org/1999/xhtml';
+  if (foreign || _dropped.contains(name)) {
+    el.remove();
+    return;
   }
 
-  // Inline event handlers: on*="..." / on*='...' / on*=bare.
-  s = s.replaceAll(
-    RegExp(r'''\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)''',
-        caseSensitive: false),
-    '',
-  );
+  _cleanChildren(el, keepRemoteImages: keepRemoteImages);
 
-  // Script-bearing URL schemes, in either attribute.
-  s = s.replaceAll(
-    RegExp(r'''\b(href|src)\s*=\s*(["']?)\s*(javascript|vbscript):[^"'\s>]*\2''',
-        caseSensitive: false),
-    '',
-  );
+  if (!_elements.contains(name)) {
+    // Keep the words, lose the tag.
+    final parent = el.parentNode;
+    if (parent == null) return;
+    for (final child in el.nodes.toList()) {
+      parent.insertBefore(child, el);
+    }
+    el.remove();
+    return;
+  }
 
-  // `data:` is a phishing vector in a link, but an inline image is exactly
-  // what a data: src is for and mail uses it for embedded logos. Drop it from
-  // href only; stripping it from src would blank legitimate images.
-  s = s.replaceAll(
-    RegExp(r'''\bhref\s*=\s*(["']?)\s*data:[^"'\s>]*\1''',
-        caseSensitive: false),
-    '',
-  );
-
-  // Remote images: keep the tag so the layout survives, drop the fetch.
-  s = s.replaceAllMapped(
-    RegExp(
-      r'''(?<![-\w])(src|srcset|poster|background)\s*=\s*(["']?)(\s*(?:https?:)?//)''',
-      caseSensitive: false,
-    ),
-    (m) => 'data-blocked-${m[1]!.toLowerCase()}=${m[2]}${m[3]}',
-  );
-
-  return s;
+  final kept = <Object, String>{};
+  el.attributes.forEach((key, value) {
+    final attr = key.toString().toLowerCase();
+    if (attr.startsWith('on')) return;
+    if (attr == 'href') {
+      if (name == 'a' && _isAllowedLink(value)) kept['href'] = value;
+      return;
+    }
+    if (attr == 'src' || attr == 'srcset' || attr == 'background' ||
+        attr == 'poster') {
+      final safe = _imageSource(attr, value,
+          onImage: name == 'img', keepRemote: keepRemoteImages);
+      if (safe != null) kept[safe] = value;
+      return;
+    }
+    if (!_attributes.contains(attr)) return;
+    kept[attr] = attr == 'style' ? _neutraliseStyle(value) : value;
+  });
+  el.attributes
+    ..clear()
+    ..addAll(kept);
 }
+
+/// A URL with the characters browsers ignore taken out, so `java\tscript:`
+/// is seen for what it is.
+String _normalisedUrl(String value) =>
+    value.replaceAll(RegExp(r'[\x00-\x20]'), '').toLowerCase();
+
+String? _schemeOf(String normalised) =>
+    RegExp(r'^([a-z][a-z0-9+.\-]*):').firstMatch(normalised)?.group(1);
+
+bool _isAllowedLink(String value) {
+  final scheme = _schemeOf(_normalisedUrl(value));
+  // No scheme is a relative link, which in the editor goes nowhere.
+  return scheme == null || _linkSchemes.contains(scheme);
+}
+
+/// Where an image-like attribute ends up: kept as it is (inline data or a
+/// cid part), renamed so it fetches nothing (remote), or dropped (null).
+String? _imageSource(String attr, String value,
+    {required bool onImage, required bool keepRemote}) {
+  final url = _normalisedUrl(value);
+  final scheme = _schemeOf(url);
+  final remote = scheme == 'http' || scheme == 'https' || url.startsWith('//');
+  if (remote) return keepRemote ? attr : 'data-blocked-$attr';
+  if (attr == 'src' && onImage &&
+      (scheme == 'cid' || url.startsWith('data:image/'))) {
+    return 'src';
+  }
+  return null;
+}
+
+/// Inline styles keep their look but not their fetches.
+String _neutraliseStyle(String style) => style
+    .replaceAll(RegExp(r'url\s*\([^)]*\)', caseSensitive: false), 'none')
+    .replaceAll(RegExp(r'expression\s*\(', caseSensitive: false), '(');
 
 /// The plain-text alternative for the sent message, derived from the editor's
 /// HTML so the two halves say the same thing.

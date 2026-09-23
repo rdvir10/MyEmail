@@ -68,6 +68,54 @@ em.MimeMessage buildMimeMessage({
 em.MailAddress _addr(domain.MailAddress a) =>
     em.MailAddress(a.name, a.email);
 
+/// Everyone the message is delivered to: To, Cc and Bcc, each address once.
+///
+/// Passed to the server as the envelope, which is the only place Bcc
+/// recipients belong.
+List<em.MailAddress> envelopeRecipients(em.MimeMessage message) {
+  final seen = <String>{};
+  return [
+    for (final a in [...?message.to, ...?message.cc, ...?message.bcc])
+      if (seen.add(a.email.toLowerCase())) a,
+  ];
+}
+
+/// The bytes that go between DATA and the final dot.
+///
+/// Done here rather than left to enough_mail, which gets two things wrong.
+///
+/// Bcc: it removes the header with a pattern that takes only its first
+/// physical line. A Bcc list longer than about 76 characters is folded onto
+/// continuation lines, those survive, and because they start with
+/// whitespace they join the header above them — Cc, or To — so every
+/// recipient sees the blind copies. Here the header goes with all its
+/// continuation lines.
+///
+/// Dot-stuffing: RFC 5321 4.5.2 says every line that starts with a dot gets
+/// another one. enough_mail pads only lines that are exactly a dot, and of
+/// two such lines in a row only the first. A second bare dot ended the
+/// message early and whatever followed reached the server as commands, so
+/// a message quoting hidden `.` lines could make a reply send mail of the
+/// sender's choosing; and "...and then" arrived as "..and then". Here every
+/// leading dot is doubled, so no line of the message can be the terminator.
+String wireText(em.MimeMessage message) {
+  final rendered =
+      message.renderMessage().replaceAll(RegExp(r'\r?\n'), '\r\n');
+  final end = rendered.indexOf('\r\n\r\n');
+  final head = end < 0 ? rendered : rendered.substring(0, end + 2);
+  final body = end < 0 ? '' : rendered.substring(end + 2);
+  final visible = head.replaceAll(
+    RegExp(r'^Bcc:.*\r\n(?:[ \t].*\r\n)*', multiLine: true, caseSensitive: false),
+    '',
+  );
+  final stuffed = (visible + body)
+      .replaceAllMapped(RegExp(r'(^|\r\n)\.'), (m) => '${m[1]}..');
+  // sendMessageText adds CRLF before the final dot itself.
+  return stuffed.endsWith('\r\n')
+      ? stuffed.substring(0, stuffed.length - 2)
+      : stuffed;
+}
+
 /// SMTP over TLS for one account.
 class SmtpSender {
   const SmtpSender({
@@ -167,7 +215,13 @@ class SmtpSender {
         throw AuthenticationFailed(sendSignInFailureMessage(e.message));
       }
 
-      final response = await client.sendMessage(message);
+      // Text of our own making, not sendMessage: see wireText for the two
+      // things enough_mail's own framing gets wrong.
+      final response = await client.sendMessageText(
+        wireText(message),
+        message.from!.first,
+        envelopeRecipients(message),
+      );
       if (!response.isOkStatus) {
         throw SendFailed(
           'The server would not accept the message: '

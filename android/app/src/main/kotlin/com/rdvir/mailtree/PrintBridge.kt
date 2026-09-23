@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.print.PrintAttributes
 import android.print.PrintManager
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import io.flutter.plugin.common.BinaryMessenger
@@ -58,7 +59,20 @@ class PrintBridge(
         web.settings.javaScriptEnabled = false
         web.settings.loadsImagesAutomatically = true
         web.webViewClient = object : WebViewClient() {
+            private var printed = false
+
+            // The page is printed as it was handed over. Nothing in it may
+            // navigate the WebView elsewhere: a meta refresh would otherwise
+            // load the sender's page, and a second onPageFinished would open
+            // a second print sheet for it.
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = true
+
+            @Deprecated("Kept for WebViews older than API 24")
+            override fun shouldOverrideUrlLoading(view: WebView, url: String?) = true
+
             override fun onPageFinished(view: WebView, url: String?) {
+                if (printed) return
+                printed = true
                 val manager = activity.getSystemService(Context.PRINT_SERVICE) as PrintManager
                 val job = title.take(80)
                 manager.print(

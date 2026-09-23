@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/compose/quote_builder.dart' show sanitiseForEditing;
 import '../data/compose/reply_draft.dart';
 import '../data/ui_state_store.dart';
 import '../domain/draft.dart';
@@ -122,7 +123,11 @@ Future<Draft> draftFromMessage({
     kind: ComposeKind.newMessage,
     to: message.to,
     subject: message.subject == '(No subject)' ? '' : message.subject,
-    htmlBody: body.html ?? _asHtml(body.text),
+    // Cleaned like a quote: a Drafts folder can hold messages written by
+    // other clients, and the editor runs JavaScript.
+    htmlBody: body.html == null
+        ? _asHtml(body.text)
+        : sanitiseForEditing(body.html!, ownDraft: true),
     savedAs: message.id,
     lostAttachmentNames:
         message.hasAttachments ? const ['the original attachment'] : const [],

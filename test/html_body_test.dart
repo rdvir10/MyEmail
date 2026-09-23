@@ -176,6 +176,62 @@ void main() {
       expect(out, contains('<p>Loose</p>'));
       expect('<html'.allMatches(out).length, 1);
     });
+
+    // A refresh works with JavaScript off, wherever it sits, and opened the
+    // sender's page the moment the message was opened.
+    test('a meta refresh or base in the message is gone', () {
+      for (final html in [
+        '<meta http-equiv="refresh" content="0;url=https://t.example/">'
+            '<p>Hi</p>',
+        '<html><body><META HTTP-EQUIV=refresh CONTENT="0;url=https://t/">'
+            '<p>Hi</p></body></html>',
+        '<p>Hi</p><base href="https://evil.example/">',
+      ]) {
+        final out = wrapHtmlForDisplay(html);
+        expect(out, isNot(contains('t.example')), reason: html);
+        expect(out.toLowerCase(), isNot(contains('refresh')), reason: html);
+        expect(out, isNot(contains('<base')), reason: html);
+        expect(out, contains('<p>Hi</p>'), reason: html);
+      }
+    });
+  });
+
+  group('paneNavigation', () {
+    final now = DateTime(2026, 9, 23, 12);
+
+    PaneNavigation decide(String url,
+            {bool loading = false, DateTime? touchedAt}) =>
+        paneNavigation(url, loading: loading, touchedAt: touchedAt, now: now);
+
+    test('a link tapped just now opens outside the app', () {
+      expect(
+        decide('https://example.com/',
+            touchedAt: now.subtract(const Duration(milliseconds: 300))),
+        PaneNavigation.openOutside,
+      );
+    });
+
+    test('a navigation nobody tapped for is dropped', () {
+      expect(decide('https://t.example/'), PaneNavigation.drop);
+      expect(
+        decide('https://t.example/',
+            touchedAt: now.subtract(const Duration(seconds: 30))),
+        PaneNavigation.drop,
+      );
+    });
+
+    test('a data: page only while the message itself is loading', () {
+      expect(decide('data:text/html,x', loading: true), PaneNavigation.load);
+      expect(
+        decide('data:text/html,x', touchedAt: now),
+        PaneNavigation.drop,
+        reason: 'a tapped data: link must not replace the message',
+      );
+    });
+
+    test('about:blank is always the WebView\'s own', () {
+      expect(decide('about:blank'), PaneNavigation.load);
+    });
   });
 
   group('dark mode', () {

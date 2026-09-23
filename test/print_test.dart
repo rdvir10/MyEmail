@@ -43,6 +43,18 @@ void main() {
       expect(page, contains('<p>Body <b>here</b></p>'));
     });
 
+    test('a refresh in the message cannot send the printer elsewhere', () {
+      final page = printableMessage(
+        message,
+        const MailBody(text: 'x'),
+        bodyHtml: '<meta http-equiv="refresh" content="0;url=https://t/">'
+            '<p>Body</p>',
+      );
+
+      expect(page, isNot(contains('https://t/')));
+      expect(page, contains('<p>Body</p>'));
+    });
+
     test('a plain-text message keeps its line breaks', () {
       final page = printableMessage(
         message,

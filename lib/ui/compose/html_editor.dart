@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -12,9 +13,15 @@ import 'package:webview_flutter/webview_flutter.dart';
 /// parse the original into its own model first, and no Dart model represents
 /// arbitrary mail HTML without destroying it.
 ///
-/// The document has JavaScript on, because the bridge needs it. Everything
-/// placed into it has already been through `sanitiseForEditing`, which strips
-/// scripts, handlers and remote fetches before it gets here.
+/// The document has JavaScript on, because the bridge needs it, so what a
+/// received message can do inside it is closed off three ways. Everything
+/// quoted has been through `sanitiseForEditing`, which rebuilds it from an
+/// allow-list. The document carries a Content-Security-Policy that lets only
+/// its own script run (by nonce) and fetches nothing from the network, so a
+/// handler that got past the sanitiser still could not execute or phone
+/// home. And once the document has loaded, nothing may navigate it: a
+/// `<meta http-equiv=refresh>` or a tapped link cannot swap the editor for a
+/// page of the sender's that talks to the bridge.
 ///
 /// Height: the editor fills what it is given. A contenteditable cannot report
 /// its own height to Flutter without polling, so the host bounds it.
@@ -35,6 +42,16 @@ class HtmlEditor extends StatefulWidget {
 class _HtmlEditorState extends State<HtmlEditor> {
   late final WebViewController _web;
 
+  /// Set when the editor document has finished loading. From then on every
+  /// navigation is refused, including about: and data:, which are only
+  /// allowed for the load itself.
+  bool _documentLoaded = false;
+
+  /// The one script allowed to run in the document, named by the CSP.
+  final String _nonce = base64Url
+      .encode(List<int>.generate(18, (_) => Random.secure().nextInt(256)))
+      .replaceAll('=', '');
+
   @override
   void initState() {
     super.initState();
@@ -50,16 +67,14 @@ class _HtmlEditorState extends State<HtmlEditor> {
       ..setNavigationDelegate(
         NavigationDelegate(
           // Nothing in an editor should navigate. Tapping a link in the quote
-          // must not replace the document being written.
-          onNavigationRequest: (request) {
-            final uri = Uri.tryParse(request.url);
-            final isBootstrap =
-                uri != null && (uri.scheme == 'about' || uri.scheme == 'data');
-            return isBootstrap
-                ? NavigationDecision.navigate
-                : NavigationDecision.prevent;
-          },
+          // must not replace the document being written, and neither may
+          // anything the quote does by itself.
+          onNavigationRequest: (request) =>
+              editorAllowsNavigation(request.url, loaded: _documentLoaded)
+                  ? NavigationDecision.navigate
+                  : NavigationDecision.prevent,
           onPageFinished: (_) {
+            _documentLoaded = true;
             widget.controller._attach(_web);
             widget.onReady?.call();
           },
@@ -82,7 +97,7 @@ class _HtmlEditorState extends State<HtmlEditor> {
       _loaded = true;
       _brightness = next;
       _web.loadHtmlString(
-        _editorDocument(widget.controller.initialHtml, dark: dark),
+        editorDocument(widget.controller.initialHtml, dark: dark, nonce: _nonce),
       );
       return;
     }
@@ -187,12 +202,30 @@ class HtmlEditorController extends ChangeNotifier {
   }
 }
 
+/// Whether the editor may follow a navigation to [url].
+///
+/// Only the document's own load, which arrives as about: or data:, and only
+/// before it has finished. Public so the rule can be tested without a
+/// WebView.
+bool editorAllowsNavigation(String url, {required bool loaded}) {
+  if (loaded) return false;
+  final scheme = Uri.tryParse(url)?.scheme;
+  return scheme == 'about' || scheme == 'data';
+}
+
 /// The editor document: the body is the editable surface, and a small script
 /// exposes the three things Dart needs.
-String _editorDocument(String bodyHtml, {required bool dark}) {
+///
+/// The Content-Security-Policy is the backstop behind the sanitiser: only the
+/// script carrying [nonce] runs, inline handlers do not, and nothing is
+/// fetched from the network (images come from `data:` only; signatures carry
+/// theirs inline and remote ones in a quote are already blocked).
+String editorDocument(String bodyHtml,
+    {required bool dark, required String nonce}) {
   return '''
 <!doctype html><html data-theme="${dark ? 'dark' : 'light'}"><head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-$nonce'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   /* Both palettes ship in the document and the theme attribute picks one, so
@@ -239,7 +272,7 @@ String _editorDocument(String bodyHtml, {required bool dark}) {
   }
 </style></head>
 <body contenteditable="true">$bodyHtml</body>
-<script>
+<script nonce="$nonce">
 (function () {
   function post(payload) {
     if (window.MyEmail) window.MyEmail.postMessage(JSON.stringify(payload));
