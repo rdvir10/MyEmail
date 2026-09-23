@@ -199,6 +199,9 @@ class GraphTransport implements ImapTransport {
   }
 
   @override
+  bool get deleteTakesSubfolders => true;
+
+  @override
   Future<void> deleteFolder(String path) async {
     await api.deleteFolder(await _folderId(path));
     _folderIds.remove(path);

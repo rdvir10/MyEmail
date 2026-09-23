@@ -184,6 +184,30 @@ void main() {
       expect(server.calls, contains('DELETE Work/Receipts'));
       expect(await cache.countMessages(a.id, 'Work/Receipts'), 0);
     });
+
+    test('deleting a folder deletes the folders under it, deepest first',
+        () async {
+      // IMAP's DELETE leaves them. The dialog said they would go, the app
+      // forgot their settings, and they came back at the top level.
+      seedGmail();
+      server
+        ..folder('Work/Invoices/2026')
+        ..folder('Workshop');
+      final a = await addAccount();
+      server.calls.clear();
+
+      await engine.deleteFolder('${a.id}:Work');
+
+      expect(server.calls.where((c) => c.startsWith('DELETE')), [
+        'DELETE Work/Invoices/2026',
+        'DELETE Work/Invoices',
+        'DELETE Work',
+      ]);
+      final left = (await engine.loadFolders(a.id)).map((f) => f.path);
+      expect(left, isNot(contains(startsWith('Work/'))));
+      expect(left, contains('Workshop'), reason: 'a name that only starts '
+          'the same is another folder');
+    });
   });
 
   group('messages', () {

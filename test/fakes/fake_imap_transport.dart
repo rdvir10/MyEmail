@@ -36,8 +36,15 @@ class FakeImapTransport implements ImapTransport {
     if (offline) throw const ConnectionFailed('fake server is offline');
   }
 
-  FakeFolder folder(String path, {FolderRole role = FolderRole.user}) =>
-      folders.putIfAbsent(path, () => FakeFolder(path, role: role));
+  FakeFolder folder(
+    String path, {
+    FolderRole role = FolderRole.user,
+    bool serverManaged = false,
+  }) =>
+      folders.putIfAbsent(
+        path,
+        () => FakeFolder(path, role: role, serverManaged: serverManaged),
+      );
 
   FakeFolder _require(String path) {
     final f = folders[path];
@@ -54,6 +61,7 @@ class FakeImapTransport implements ImapTransport {
         RemoteFolder(
           path: f.path,
           role: f.role,
+          isServerManaged: f.serverManaged,
           unread: f.messages.values.where((m) => !m.isRead).length,
           total: f.messages.length,
         ),
@@ -346,6 +354,9 @@ class FakeImapTransport implements ImapTransport {
   }
 
   @override
+  bool get deleteTakesSubfolders => false;
+
+  @override
   Future<void> deleteFolder(String path) async {
     calls.add('DELETE $path');
     folders.remove(path);
@@ -400,10 +411,13 @@ class FakeImapTransport implements ImapTransport {
 }
 
 class FakeFolder {
-  FakeFolder(this.path, {this.role = FolderRole.user});
+  FakeFolder(this.path, {this.role = FolderRole.user, this.serverManaged = false});
 
   String path;
   final FolderRole role;
+
+  /// Gmail's Starred and Important. See [RemoteFolder.isServerManaged].
+  final bool serverManaged;
   int uidValidity = 1000;
   int nextUid = 1;
   int highestModSeq = 1;

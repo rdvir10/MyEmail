@@ -299,7 +299,8 @@ class EnoughMailTransport implements ImapTransport {
       _run((c) async {
         if (uids.isEmpty) return null;
         await _ensureSelected(c, fromPath);
-        final target = toServerPath(toPath, _delimiter);
+        final target = imapCommandPath(toPath, _delimiter,
+            serverTakesUtf8: c.serverInfo.supportsUtf8);
         final sequence = em.MessageSequence.fromIds(uids, isUid: true);
 
         if (c.serverInfo.supportsMove) {
@@ -357,17 +358,25 @@ class EnoughMailTransport implements ImapTransport {
 
   @override
   Future<void> createFolder(String path) => _run((c) async {
-        await c.createMailbox(toServerPath(path, _delimiter));
+        await c.createMailbox(imapCommandPath(path, _delimiter,
+            serverTakesUtf8: c.serverInfo.supportsUtf8));
         _boxes = {};
       });
 
   @override
   Future<void> renameFolder(String oldPath, String newPath) => _run((c) async {
         final box = await _box(c, oldPath);
-        await c.renameMailbox(box, toServerPath(newPath, _delimiter));
+        await c.renameMailbox(
+          box,
+          imapCommandPath(newPath, _delimiter,
+              serverTakesUtf8: c.serverInfo.supportsUtf8),
+        );
         _boxes = {};
         if (_selectedPath == oldPath) _selectedPath = null;
       });
+
+  @override
+  bool get deleteTakesSubfolders => false;
 
   @override
   Future<void> deleteFolder(String path) => _run((c) async {

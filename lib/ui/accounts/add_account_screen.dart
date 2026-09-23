@@ -115,10 +115,9 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
   /// The one failure a Microsoft sign-in has that a person cannot diagnose
   /// from the server's wording.
   ///
-  /// Signing in as one mailbox while typing another's address produces a
-  /// refusal that reads like a bad password, because the XOAUTH2 handshake
-  /// sends the typed address next to the token and the server rejects the
-  /// pair. Nothing about the message says which half was wrong.
+  /// Signing in as one mailbox while typing another's address. A work or
+  /// school account's sign-in names itself and the error says which; a
+  /// personal account's does not, so the reminder stays.
   static const _signInHint =
       'If you signed in successfully, check that the address above is the '
       'same mailbox you signed in as.';

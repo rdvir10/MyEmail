@@ -292,13 +292,13 @@ void main() {
 
     test('with nothing to watch it waits rather than returning instantly',
         () async {
-      // Returning at once would turn the loop into a spin.
-      final started = DateTime.now();
-      final woken =
-          await engine.awaitNewMail([], timeout: const Duration(seconds: 5));
+      // Returning at once would turn the loop into a spin. This test used
+      // to insist on exactly that.
+      const timeout = Duration(milliseconds: 300);
+      final watch = Stopwatch()..start();
+      final woken = await engine.awaitNewMail([], timeout: timeout);
       expect(woken, isFalse);
-      expect(DateTime.now().difference(started).inSeconds, lessThan(1),
-          reason: 'an empty list is the one case that returns immediately');
+      expect(watch.elapsed, greaterThanOrEqualTo(timeout));
     });
 
     test('an account that cannot be reached does not take the wait down',

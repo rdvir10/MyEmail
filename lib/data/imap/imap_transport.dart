@@ -168,6 +168,11 @@ abstract class ImapTransport {
   Future<void> renameFolder(String oldPath, String newPath);
   Future<void> deleteFolder(String path);
 
+  /// Whether [deleteFolder] takes the folders under it along. Graph's does.
+  /// IMAP's leaves them where they are (RFC 3501 6.3.4), so the engine
+  /// deletes them itself first.
+  bool get deleteTakesSubfolders => false;
+
   /// Hold the connection open on [path] and return as soon as the server says
   /// something changed there, or [timeout] passes with nothing.
   ///

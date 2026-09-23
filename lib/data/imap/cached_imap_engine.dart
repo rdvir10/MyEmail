@@ -24,6 +24,8 @@ import '../cache/cache_store.dart';
 import '../cache/folder_sync.dart';
 import '../compose/graph_sender.dart';
 import '../compose/smtp_sender.dart';
+import '../compose/reply_draft.dart' show escapeHtml;
+import '../auth/token_identity.dart';
 import '../credential_store.dart';
 import '../folder_list_store.dart';
 import '../graph/graph_id_map.dart';
@@ -184,18 +186,43 @@ class CachedImapEngine implements MailEngine {
   @override
   /// Finish an OAuth sign-in by turning its token into an account.
   ///
-  /// [emailAddress] is what the person typed, and the probe below is what
-  /// checks it: the XOAUTH2 handshake sends the address alongside the token,
-  /// and the server refuses the pair if they belong to different mailboxes.
-  /// Signing in as one account while typing another's address therefore fails
-  /// here rather than becoming an account that can never connect.
+  /// [emailAddress] is what the person typed, and nothing on the way to
+  /// Graph checks it: every request goes to /me, which is whoever signed in.
+  /// (Over IMAP the XOAUTH2 handshake sent the address with the token and
+  /// the server refused a mismatch; that is gone.) So the token is read
+  /// instead: see [TokenIdentity]. Without it, picking the wrong account on
+  /// the sign-in page made an account that showed one mailbox under
+  /// another's address.
   Future<Account> addOAuthAccount({
     required String displayName,
     required String emailAddress,
     required MailProvider provider,
     required OAuthToken token,
-  }) =>
-      _add(
+  }) async {
+    final typed = emailAddress.trim();
+    final signedIn = TokenIdentity.of(token.accessToken);
+    final address = signedIn?.address;
+    if (address != null && address.toLowerCase() != typed.toLowerCase()) {
+      throw AuthenticationFailed(
+        'That sign-in is for $address, not $typed. Add the account as '
+        '$address, or sign in to Microsoft as $typed.',
+      );
+    }
+    if (signedIn != null) {
+      for (final a in accountStore.read()) {
+        if (a.authMethod != AuthMethod.oauth) continue;
+        final theirs = OAuthToken.fromStoredJson(
+          await credentialStore.readSecret(a.id),
+        );
+        if (theirs == null) continue;
+        if (TokenIdentity.of(theirs.accessToken)?.user == signedIn.user) {
+          throw AuthenticationFailed(
+            'That mailbox is already set up, as ${a.emailAddress}.',
+          );
+        }
+      }
+    }
+    return _add(
         displayName: displayName,
         emailAddress: emailAddress,
         provider: provider,
@@ -207,6 +234,7 @@ class CachedImapEngine implements MailEngine {
             OAuthCredentials(({bool force = false}) async => token.accessToken),
         storedSecret: token.toStoredJson(),
       );
+  }
 
   Future<Account> _add({
     required String displayName,
@@ -309,8 +337,25 @@ class CachedImapEngine implements MailEngine {
   Future<void> updateOAuthToken({
     required String accountId,
     required OAuthToken token,
-  }) =>
-      _replaceSecret(
+  }) async {
+    // The same person as before, as far as the tokens can tell. Signing in
+    // again as someone else was accepted, and the account went on showing
+    // the other mailbox under its own name, mixed into its own cache.
+    final stored =
+        OAuthToken.fromStoredJson(await credentialStore.readSecret(accountId));
+    if (stored != null &&
+        !TokenIdentity.sameUser(
+          TokenIdentity.of(stored.accessToken),
+          TokenIdentity.of(token.accessToken),
+        )) {
+      final account =
+          accountStore.read().where((a) => a.id == accountId).firstOrNull;
+      throw AuthenticationFailed(
+        'That sign-in is for a different Microsoft account. Sign in as '
+        '${account?.emailAddress ?? 'the account being repaired'}.',
+      );
+    }
+    return _replaceSecret(
         accountId: accountId,
         // As in addOAuthAccount: the probe runs before anything is stored, so
         // the token cannot come from the repository yet.
@@ -318,6 +363,7 @@ class CachedImapEngine implements MailEngine {
             OAuthCredentials(({bool force = false}) async => token.accessToken),
         storedSecret: token.toStoredJson(),
       );
+  }
 
   Future<void> _replaceSecret({
     required String accountId,
@@ -406,7 +452,13 @@ class CachedImapEngine implements MailEngine {
     required Duration timeout,
     Duration failureBackoff = const Duration(minutes: 1),
   }) async {
-    if (folderIds.isEmpty) return false;
+    if (folderIds.isEmpty) {
+      // Nothing to watch, with push still on: after the last account is
+      // removed, say. Returning at once had the live loop run pass after
+      // pass with nothing to do, for as long as the worker was allowed.
+      await Future<void>.delayed(timeout);
+      return false;
+    }
     final over = Completer<void>();
     final watches = <Future<bool>>[];
     for (final folderId in folderIds) {
@@ -556,6 +608,21 @@ class CachedImapEngine implements MailEngine {
   Future<void> deleteFolder(String folderId) async {
     final (accountId, path) = splitFolderId(folderId);
     final t = await _transport(accountId);
+    if (!t.deleteTakesSubfolders) {
+      // IMAP's DELETE leaves every folder under the one it names, while the
+      // dialog says they go too and the app forgets their settings and
+      // cache. They came back at the top level, stripped of both. So they
+      // go first, deepest first: some servers refuse to delete a folder
+      // that still has any.
+      final below = [
+        for (final f in await t.listFolders())
+          if (f.path.startsWith('$path/')) f.path,
+      ]..sort((a, b) =>
+          '/'.allMatches(b).length.compareTo('/'.allMatches(a).length));
+      for (final child in below) {
+        await t.deleteFolder(child);
+      }
+    }
     await t.deleteFolder(path);
     await cache.deleteFolder(accountId, path);
   }
@@ -691,8 +758,10 @@ class CachedImapEngine implements MailEngine {
       kind: ComposeKind.reply,
       to: [organizer],
       subject: inviteReplySubject(invite, response),
-      htmlBody: '<p>${account.displayName} has ${response.word.toLowerCase()} '
-          'this invitation.</p>',
+      // The name everyone else sees, as the calendar part has it; the
+      // account's own label ("Personal") is for the folder list.
+      htmlBody: '<p>${escapeHtml(account.senderName)} has '
+          '${response.word.toLowerCase()} this invitation.</p>',
       calendarReply: iMipReply(invite, attendee: me, response: response),
       originalMessageId: messageId,
     ));
@@ -857,14 +926,47 @@ class CachedImapEngine implements MailEngine {
     int limit = 100,
   }) async {
     if (query.trim().isEmpty) return const [];
-    final targets = await _searchTargets(scope);
+    final wide = scope.folderId == null;
+    final failures = <(Object, StackTrace)>[];
+    final targets = await _searchTargets(scope, failures);
+
+    // Across accounts, one that fails (a sign-in to renew, a folder deleted
+    // elsewhere) leaves the others' results standing. It used to throw them
+    // all away. Only when nothing at all could be searched is it an error.
     final results = await Future.wait([
-      for (final (accountId, path) in targets)
-        _searchOneFolder(accountId, path, query, limit),
+      for (final t in targets)
+        wide
+            ? _searchOneFolder(t.accountId, t.path, query, limit)
+                .catchError((Object e, StackTrace s) {
+                failures.add((e, s));
+                return const <MailMessage>[];
+              })
+            : _searchOneFolder(t.accountId, t.path, query, limit),
     ]);
-    final merged = [for (final r in results) ...r]
-      ..sort((a, b) => b.date.compareTo(a.date));
-    return merged.take(limit).toList();
+    if (failures.isNotEmpty && failures.length >= targets.length &&
+        results.every((r) => r.isEmpty)) {
+      final (error, stack) = failures.first;
+      Error.throwWithStackTrace(error, stack);
+    }
+
+    // On Gmail a label is the same message seen from another folder, so one
+    // message could come back once from the Inbox and again from each label
+    // on it, filling the list with copies. One per Message-ID per account,
+    // and the Inbox's copy where there is one.
+    final seen = <String>{};
+    final unique = <MailMessage>[];
+    for (final inboxFirst in [true, false]) {
+      for (final (i, found) in results.indexed) {
+        if ((targets[i].role == FolderRole.inbox) != inboxFirst) continue;
+        for (final m in found) {
+          final id = m.messageId;
+          if (id != null && !seen.add('${m.accountId}\u0000$id')) continue;
+          unique.add(m);
+        }
+      }
+    }
+    unique.sort((a, b) => b.date.compareTo(a.date));
+    return unique.take(limit).toList();
   }
 
   Future<List<MailMessage>> _searchOneFolder(
@@ -926,38 +1028,54 @@ class CachedImapEngine implements MailEngine {
   }
 
   /// The (account, folder path) pairs a scope covers.
-  Future<List<(String, String)>> _searchTargets(SearchScope scope) async {
+  /// The folders a search looks in. Failures to list an account's folders
+  /// go into [failures] rather than out, so the other accounts are still
+  /// searched.
+  Future<List<({String accountId, String path, FolderRole role})>>
+      _searchTargets(
+    SearchScope scope,
+    List<(Object, StackTrace)> failures,
+  ) async {
     if (scope.folderId != null) {
       final (accountId, path) = splitFolderId(scope.folderId!);
-      return [(accountId, path)];
+      return [(accountId: accountId, path: path, role: FolderRole.user)];
     }
-    final accountIds = scope.accountId != null
-        ? [scope.accountId!]
-        : [for (final a in accountStore.read()) a.id];
-    final targets = <(String, String)>[];
-    for (final accountId in accountIds) {
+    final accounts = [
+      for (final a in accountStore.read())
+        if (scope.accountId == null || a.id == scope.accountId) a,
+    ];
+    final targets = <({String accountId, String path, FolderRole role})>[];
+    for (final account in accounts) {
       List<RemoteFolder> remote;
-      final cached = folderLists.read(accountId);
+      final cached = folderLists.read(account.id);
       if (cached != null) {
         remote = cached;
       } else {
         try {
-          remote = await (await _transport(accountId)).listFolders();
+          remote = await (await _transport(account.id)).listFolders();
         } on ConnectionFailed {
           // One unreachable account contributes nothing rather than sinking
           // a search across the others.
           continue;
-        }
-      }
-      for (final f in remote) {
-        // All Mail holds a copy of everything, so including it would double
-        // every hit; Spam and Trash are not what "search my mail" means.
-        if (f.role == FolderRole.archive ||
-            f.role == FolderRole.junk ||
-            f.role == FolderRole.deleted) {
+        } catch (e, s) {
+          failures.add((e, s));
           continue;
         }
-        targets.add((accountId, f.path));
+      }
+      final gmail = account.provider == MailProvider.gmail;
+      for (final f in remote) {
+        // Spam and Trash are not what "search my mail" means.
+        if (f.role == FolderRole.junk || f.role == FolderRole.deleted) {
+          continue;
+        }
+        // Gmail's All Mail holds a copy of everything, and Starred and
+        // Important are copies too, so each would repeat every hit.
+        // Outlook's Archive is a folder like any other, holding mail found
+        // nowhere else, and was left out by the same rule.
+        if (gmail && (f.role == FolderRole.archive || f.isServerManaged)) {
+          continue;
+        }
+        targets.add((accountId: account.id, path: f.path, role: f.role));
       }
     }
     return targets;

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:enough_mail/enough_mail.dart' as em;
@@ -463,8 +464,43 @@ String buildSearchCriteria(String query) {
     for (final word in words)
       // OR takes exactly two arguments, so three fields nest as
       // OR OR <a> <b> <c>.
-      'OR OR SUBJECT ${_quote(word)} FROM ${_quote(word)} BODY ${_quote(word)}',
+      'OR OR ${_term('SUBJECT', word)} ${_term('FROM', word)} '
+          '${_term('BODY', word)}',
   ].join(' ');
+}
+
+/// One search key and its word.
+///
+/// A word with anything past ASCII in it goes as a literal, its length in
+/// bytes and then the bytes: IMAP allows only 7-bit text between quotes,
+/// and Gmail answered a Hebrew or accented word there with BAD. The line
+/// break is where enough_mail waits for the server's go-ahead before
+/// sending the word, which is how its own search builder does it.
+String _term(String key, String word) {
+  if (word.codeUnits.every((c) => c < 0x80)) return '$key ${_quote(word)}';
+  return '$key {${utf8.encode(word).length}}\n$word';
+}
+
+/// A folder path as a command that takes it as text should carry it.
+///
+/// enough_mail sends such a path as it stands, in quotes, to a server that
+/// advertises UTF-8 as Gmail does. But a server holds a client to UTF-8
+/// only after ENABLE UTF8=ACCEPT, which the app never sends, so a Hebrew or
+/// accented name went to Gmail as raw bytes, and moving mail into that
+/// folder, creating it or renaming to it was refused. Here it is put the way
+/// every server reads a name, as Modified UTF-7, one part at a time. For a
+/// server without UTF-8, enough_mail does that itself.
+String imapCommandPath(
+  String modelPath,
+  String delimiter, {
+  required bool serverTakesUtf8,
+}) {
+  final server = toServerPath(modelPath, delimiter);
+  if (!serverTakesUtf8) return server;
+  return [
+    for (final part in server.split(delimiter))
+      em.Mailbox.encode(part, delimiter),
+  ].join(delimiter);
 }
 
 String _quote(String value) =>
