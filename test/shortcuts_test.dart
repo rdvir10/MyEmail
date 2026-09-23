@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/message_sort.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/conversations.dart';
 import 'package:myemail/state/display_providers.dart';
@@ -252,9 +253,10 @@ void main() {
       await tester.pumpAndSettle();
       final folder = c.read(effectiveSelectedFolderIdProvider)!;
       List<String> rows() => visibleMessages(
-            c.read(messagesProvider(folder)).value!,
+            c.read(sortedMessagesProvider(folder)),
             conversations: true,
             expandedIds: c.read(expandedConversationsProvider),
+            sort: MessageSort.dateNewest,
           ).map((m) => m.id).toList();
 
       await press(tester, LogicalKeyboardKey.home);
@@ -294,7 +296,9 @@ void main() {
       await press(tester, LogicalKeyboardKey.arrowDown);
 
       final rows = visibleMessages(all,
-              conversations: true, expandedIds: const {})
+              conversations: true,
+              expandedIds: const {},
+              sort: MessageSort.dateNewest)
           .map((m) => m.id)
           .toList();
       expect(selected(c), rows[rows.indexOf(thread.newest.id) + 1],

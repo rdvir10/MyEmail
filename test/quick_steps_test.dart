@@ -171,6 +171,50 @@ void main() {
       expect(moved.folderId, 'acct-personal:Travel',
           reason: 'the delete after the move never ran');
     });
+
+    test('on a search hit from another folder, it reaches that message',
+        () async {
+      // The open list passed over a message it did not hold without a
+      // word, so the step did nothing and still said "applied".
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      await container.read(foldersProvider.future);
+      final hit = (await container
+              .read(messagesProvider('acct-personal:Travel').future))
+          .firstWhere((m) => !m.isFlagged);
+      await container.read(messagesProvider('acct-personal:INBOX').future);
+      final notifier =
+          container.read(messagesProvider('acct-personal:INBOX').notifier);
+      var readAgain = false;
+
+      await runQuickStep(
+        step: _step('Flag it', const [
+          QuickStepAction(QuickStepActionType.flag),
+        ]),
+        notifier: notifier,
+        message: hit,
+        engine: container.read(mailEngineProvider),
+        onElsewhere: () => readAgain = true,
+      );
+
+      container.invalidate(messagesProvider('acct-personal:Travel'));
+      final travel =
+          await container.read(messagesProvider('acct-personal:Travel').future);
+      expect(travel.firstWhere((m) => m.id == hit.id).isFlagged, isTrue);
+      expect(readAgain, isTrue);
+
+      await expectLater(
+        runQuickStep(
+          step: _step('Flag it', const [
+            QuickStepAction(QuickStepActionType.flag),
+          ]),
+          notifier: notifier,
+          message: hit,
+        ),
+        throwsStateError,
+        reason: 'with nowhere to send it, saying so rather than "applied"',
+      );
+    });
   });
 
   group('Quick Steps UI', () {

@@ -42,7 +42,9 @@ final multiWindowModeProvider =
 /// The message as a file: fetched as it arrived, written once.
 Future<File> emlFor(WidgetRef ref, MailMessage message) async {
   final raw = await ref.read(mailEngineProvider).rawMessage(message.id);
-  return ref.read(messageFilesProvider).writeEml(emlFileName(message), raw);
+  return ref
+      .read(messageFilesProvider)
+      .writeEml(emlFileName(message), raw, messageId: message.id);
 }
 
 /// Put the message on the clipboard as an `.eml`. Pasting it into a
@@ -71,16 +73,31 @@ Future<void> copyMessage(
   }
 }
 
+/// [name], or "name (2).eml" and on while [taken] already has it.
+String _distinct(String name, Set<String> taken) {
+  if (taken.add(name)) return name;
+  final dot = name.lastIndexOf('.');
+  final stem = dot < 0 ? name : name.substring(0, dot);
+  final ext = dot < 0 ? '' : name.substring(dot);
+  for (var n = 2;; n++) {
+    final candidate = '$stem ($n)$ext';
+    if (taken.add(candidate)) return candidate;
+  }
+}
+
 /// Start dragging messages out of the app as `.eml` files. True if the
 /// drag started.
 Future<bool> dragMessages(WidgetRef ref, List<MailMessage> messages) async {
   final files = <DragFile>[];
+  final names = <String>{};
   for (final m in messages) {
     final file = await emlFor(ref, m);
     files.add(DragFile(
       path: file.path,
       mimeType: emlMimeType,
-      name: emlFileName(m),
+      // Two messages can share a name; where they land, one would replace
+      // the other.
+      name: _distinct(emlFileName(m), names),
     ));
   }
   if (files.isEmpty) return false;

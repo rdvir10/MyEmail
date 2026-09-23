@@ -216,6 +216,83 @@ void main() {
       expect(other.read(), hasLength(2));
     });
 
+    test("and that mailbox's settings follow it to this device's id",
+        () async {
+      // The phone's favourites and signature came across under the phone's
+      // account id, which the tablet does not have: favourites emptied,
+      // hidden folders came back, and mail went out with no signature.
+      await seedSettings();
+      await uiState.writeString(
+        UiStateKeys.signatures,
+        '[{"accountId":"acct-aaa","html":"<p>Ron</p>","onReply":true}]',
+      );
+      final file = (await service.export()).toJsonString();
+      final tablet = MemoryUiStateStore();
+      await tablet.writeIds(UiStateKeys.favorites, {'acct-own:INBOX'});
+      await tablet.writeString(
+        UiStateKeys.signatures,
+        '[{"accountId":"acct-own","html":"<p>Own</p>","onReply":true}]',
+      );
+
+      await BackupService(
+        accountStore: MemoryAccountStore([
+          const Account(
+            id: 'acct-different',
+            displayName: 'Personal',
+            emailAddress: 'ME@example.com',
+            provider: MailProvider.gmail,
+            authMethod: AuthMethod.appPassword,
+            colorValue: 0xFF0F6CBD,
+          ),
+          const Account(
+            id: 'acct-own',
+            displayName: 'Only here',
+            emailAddress: 'only@here.example',
+            provider: MailProvider.gmail,
+            authMethod: AuthMethod.appPassword,
+            colorValue: 0xFF0F6CBD,
+          ),
+        ]),
+        uiState: tablet,
+      ).import(SettingsBackup.parse(file));
+
+      expect(tablet.readIds(UiStateKeys.favorites),
+          {'acct-different:INBOX', 'acct-own:INBOX'},
+          reason: "the phone's, under this device's id, and this device's own");
+      expect(tablet.readIds(UiStateKeys.hidden), {'acct-different:Spam'});
+      expect(tablet.readOrder(UiStateKeys.order), {'acct-different:Work': 2});
+      final signatures = tablet.readString(UiStateKeys.signatures)!;
+      expect(signatures, contains('"accountId":"acct-different"'));
+      expect(signatures, contains('"accountId":"acct-own"'));
+      expect(signatures, isNot(contains('acct-aaa')));
+    });
+
+    test('the name mail goes out under comes back too', () async {
+      // Without it a restored account sent as its folder-list label.
+      final named = MemoryAccountStore([
+        const Account(
+          id: 'acct-aaa',
+          displayName: 'Personal',
+          emailAddress: 'me@example.com',
+          provider: MailProvider.gmail,
+          authMethod: AuthMethod.appPassword,
+          colorValue: 0xFF0F6CBD,
+          chosenSenderName: 'Ron Dvir',
+        ),
+      ]);
+      final file = (await BackupService(
+        accountStore: named,
+        uiState: MemoryUiStateStore(),
+      ).export())
+          .toJsonString();
+      final fresh = MemoryAccountStore();
+
+      await BackupService(accountStore: fresh, uiState: MemoryUiStateStore())
+          .import(SettingsBackup.parse(file));
+
+      expect(fresh.read().single.senderName, 'Ron Dvir');
+    });
+
     test('a key this build does not know is skipped, not written blind',
         () async {
       // A file from a newer version. Writing an unknown key could put a value

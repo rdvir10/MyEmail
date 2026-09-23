@@ -198,6 +198,23 @@ abstract class ImapTransport {
 
 enum MessageFlag { seen, flagged, deleted, answered }
 
+/// A transport's move that stopped part way through a folder's messages:
+/// [moved] went, numbered [landed] where they went where that is known.
+class MovedInPart implements Exception {
+  const MovedInPart({
+    required this.moved,
+    required this.landed,
+    required this.cause,
+  });
+
+  final List<int> moved;
+  final List<int>? landed;
+  final Object cause;
+
+  @override
+  String toString() => '$cause';
+}
+
 @immutable
 class RemoteFolder {
   const RemoteFolder({

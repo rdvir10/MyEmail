@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/imap/imap_mapping.dart';
 import '../../domain/mail_message.dart';
 import '../../data/notifications/notification_action_isolate.dart';
+import '../../data/notifications/notification_actions.dart';
+import '../../state/compose_providers.dart' show signaturesProvider;
 import '../../data/sync/background_worker.dart'
     show runPendingNotificationActions;
 import '../../state/message_providers.dart';
@@ -137,6 +139,16 @@ class _AppShellState extends ConsumerState<AppShell>
   Future<void> _carryOutPressedButtons() async {
     try {
       final result = await drainPendingNotificationActions(
+        // The app's own engine and database, not a second connection to
+        // the same file.
+        open: () async => (
+          NotificationActions(
+            engine: ref.read(mailEngineProvider),
+            accounts: ref.read(accountsProvider).value ?? const [],
+            signatures: ref.read(signaturesProvider),
+          ),
+          () async {},
+        ),
         report: (outcome, action) =>
             reportOutcome(outcome, action, pluginReady: true),
       );

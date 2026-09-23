@@ -153,6 +153,9 @@ Map<String, Object?> accountToBackupJson(Account a) => {
       'provider': a.provider.name,
       'authMethod': a.authMethod.name,
       'colorValue': a.colorValue,
+      // The name mail goes out under. Left out, a restored account sent as
+      // its folder-list label ("Personal") with nothing to say so.
+      if (a.hasOwnSenderName) 'senderName': a.senderName,
     };
 
 /// Null for anything unreadable rather than throwing. See [SettingsBackup].
@@ -172,6 +175,7 @@ Account? accountFromBackupJson(Map<String, Object?> j) {
     authMethod:
         _byName(AuthMethod.values, j['authMethod'], AuthMethod.appPassword),
     colorValue: j['colorValue'] is int ? j['colorValue'] as int : 0xFF0F6CBD,
+    chosenSenderName: j['senderName'] is String ? j['senderName'] as String : null,
   );
 }
 

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/draft.dart';
 import '../../domain/display_settings.dart';
 import '../../domain/mail_message.dart';
+import '../../state/folder_tree.dart' show kUnifiedInboxId;
 import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/sync_now.dart';
@@ -256,8 +257,13 @@ class _QuickStepsButton extends ConsumerWidget {
         step: step,
         notifier: ref.read(messagesProvider(list).notifier),
         message: target,
+        engine: ref.read(mailEngineProvider),
         onMoved: (folderId) =>
             ref.read(recentMoveTargetsProvider.notifier).record(folderId),
+        onElsewhere: () {
+          ref.invalidate(messagesProvider(target.folderId));
+          ref.invalidate(messagesProvider(kUnifiedInboxId));
+        },
       );
       if (context.mounted) {
         ScaffoldMessenger.of(context)

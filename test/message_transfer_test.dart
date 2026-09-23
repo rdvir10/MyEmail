@@ -172,6 +172,19 @@ void main() {
       expect(bridge.draggedText, m.id);
     });
 
+    test('two messages with the same name get files of their own', () async {
+      // A Hebrew subject keeps none of its letters in the name, so replies
+      // on one day shared one path and a drag delivered copies of the last.
+      final files = FakeMessageFiles();
+      final a = await files.writeEml('message-2026-09-23.eml', 'A',
+          messageId: 'acct:INBOX#1');
+      final b = await files.writeEml('message-2026-09-23.eml', 'B',
+          messageId: 'acct:INBOX#2');
+
+      expect(a.path, isNot(b.path));
+      expect(emlFolderFor('acct:INBOX#1'), isNot(emlFolderFor('acct_INBOX_1')));
+    });
+
     testWidgets('full screen, the same pull stays inside the app',
         (tester) async {
       await pump(tester);

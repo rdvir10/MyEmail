@@ -231,7 +231,14 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
           return await engine.loadFolders(a.id);
         } catch (e) {
           errors[a.id] = AccountProblem(account: a, error: e);
-          return const <MailFolder>[];
+          // The folders as last seen, under the error. An expired sign-in
+          // used to empty the account a second after launch, taking its
+          // mail out of the unified Inbox and the open folder with it.
+          try {
+            return await engine.cachedFolders(a.id);
+          } catch (_) {
+            return const <MailFolder>[];
+          }
         }
       }),
     );
@@ -342,15 +349,21 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
   }
 
   Future<void> _reloadAccount(String accountId) async {
-    final current = state.value;
-    if (current == null) return;
+    if (state.value == null) return;
     _changes++;
     final fresh = await ref.read(mailEngineProvider).loadFolders(accountId);
     // The counts are refreshed without anything waiting for them, so the
     // tree may be gone by the time the server answers — a folder switched,
     // a window closed. Writing to a provider that has been disposed throws.
     if (!ref.mounted) return;
-    state = AsyncData({...current, accountId: fresh});
+    // Into the tree as it is now, not as it was before the wait: two
+    // accounts refreshing together each wrote back the other's old counts,
+    // and an account removed meanwhile came back.
+    final latest = state.value;
+    final stillThere = (ref.read(accountsProvider).value ?? const <Account>[])
+        .any((a) => a.id == accountId);
+    if (latest == null || !stillThere) return;
+    state = AsyncData({...latest, accountId: fresh});
   }
 }
 

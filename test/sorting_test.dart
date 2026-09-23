@@ -8,6 +8,7 @@ import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/message_sort.dart';
 import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/state/message_providers.dart';
+import 'package:myemail/state/conversations.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/settings/view_settings_screen.dart';
@@ -203,6 +204,32 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(c.read(selectedMessageIdProvider), order[1].id);
+    });
+
+    testWidgets('with conversations on, the keys walk the threads as drawn',
+        (tester) async {
+      // Threads were drawn in the chosen order and walked newest first, so
+      // with oldest first Home went to the bottom and Down went up.
+      final c = await pump(tester, const Size(1400, 900));
+      c.read(displayProvider.notifier)
+        ..setConversations(true)
+        ..setSort(MessageSort.dateOldest);
+      await tester.pumpAndSettle();
+
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+      final threads =
+          groupIntoConversations(c.read(messagesProvider(folder)).value!)
+            ..sort((a, b) => a.newest.date.compareTo(b.newest.date));
+      c.read(selectedMessageIdProvider.notifier).select(threads[1].newest.id);
+      await tester.pumpAndSettle();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.home);
+      await tester.pumpAndSettle();
+      expect(c.read(selectedMessageIdProvider), threads.first.newest.id);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      expect(c.read(selectedMessageIdProvider), threads[1].newest.id);
     });
 
     testWidgets('search results follow the same order', (tester) async {

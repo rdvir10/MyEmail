@@ -177,6 +177,10 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     }
   }
 
+  /// Whether this list has [messageId] in it right now.
+  bool holds(String messageId) =>
+      state.value?.any((m) => m.id == messageId) ?? false;
+
   Future<void> setRead(String messageId, bool isRead) =>
       _setFlags(messageId, isRead: isRead);
 
@@ -220,10 +224,55 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     final List<MessageMove> moves;
     try {
       moves = await op();
+    } on PartialMove catch (part) {
+      // Some went: those stay gone, and only the rest come back.
+      final went = part.moved.toSet();
+      _putBack([
+        for (final m in removed)
+          if (!went.contains(m.id)) m,
+      ], current);
+      _afterRemoval(
+        [
+          for (final m in removed)
+            if (went.contains(m.id)) m,
+        ],
+        touchedFolderIds,
+      );
+      rethrow;
     } catch (_) {
-      state = AsyncData(current);
+      _putBack(removed, current);
       rethrow;
     }
+    _afterRemoval(removed, touchedFolderIds);
+    return moves;
+  }
+
+  /// Put [rows] back where they were in [snapshot], into the list as it is
+  /// now.
+  ///
+  /// Not the snapshot itself. Restoring that undid whatever else changed
+  /// meanwhile: with two deletes on the way, the first failing brought the
+  /// second's rows back as ghosts already in Trash, and the second failing
+  /// took the first's back out, though it had never gone.
+  void _putBack(List<MailMessage> rows, List<MailMessage> snapshot) {
+    if (rows.isEmpty) return;
+    final now = state.value ?? const <MailMessage>[];
+    final back = {for (final m in rows) m.id};
+    final nowById = {for (final m in now) m.id: m};
+    final before = {for (final m in snapshot) m.id};
+    state = AsyncData([
+      for (final m in snapshot)
+        if (back.contains(m.id)) m else ?nowById[m.id],
+      for (final m in now)
+        if (!before.contains(m.id)) m,
+    ]);
+  }
+
+  void _afterRemoval(
+    List<MailMessage> removed,
+    List<String> touchedFolderIds,
+  ) {
+    if (removed.isEmpty) return;
 
     // The folder counts follow, but nothing on screen is waiting for them:
     // refreshing an account is another folder listing over the network, and
@@ -242,7 +291,6 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     }) {
       if (folderId != this.folderId) ref.invalidate(messagesProvider(folderId));
     }
-    return moves;
   }
 
   Future<void> _setFlags(
@@ -267,7 +315,17 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       if (isRead != null) await engine.setRead(messageId, isRead);
       if (isFlagged != null) await engine.setFlagged(messageId, isFlagged);
     } catch (_) {
-      state = AsyncData(current);
+      // This message back as it was, and nothing else: the rest of the list
+      // may have moved on meanwhile.
+      final now = state.value;
+      final at = now?.indexWhere((m) => m.id == messageId) ?? -1;
+      if (now != null && at >= 0) {
+        state = AsyncData([...now]
+          ..[at] = now[at].copyWith(
+            isRead: before.isRead,
+            isFlagged: before.isFlagged,
+          ));
+      }
       rethrow;
     }
 
@@ -315,12 +373,11 @@ int newestFirst(MailMessage a, MailMessage b) {
 final sortedMessagesProvider =
     Provider.family<List<MailMessage>, String>((ref, folderId) {
   final messages = ref.watch(messagesProvider(folderId)).value ?? const [];
-  final sort = ref.watch(displayProvider).sort;
-  if (sort == MessageSort.dateNewest) {
-    // What the engine already hands over, and what the paging appends to.
-    return messages;
-  }
-  return sortMessages(messages, sort);
+  // Newest first too, not left in the order the engine hands over. That is
+  // arrival order in one folder, so a message undone, moved in or delivered
+  // late sat at the top weeks old, under a day bar out of sequence, while
+  // the unified Inbox and search had it where its date put it.
+  return sortMessages(messages, ref.watch(displayProvider).sort);
 });
 
 /// How far down a folder's list has been paged.

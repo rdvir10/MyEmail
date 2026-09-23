@@ -92,9 +92,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       final folderId = ref.read(effectiveSelectedFolderIdProvider);
       if (folderId == null) return;
       final rows = visibleMessages(
-        ref.read(messagesProvider(folderId)).value ?? const [],
+        ref.read(sortedMessagesProvider(folderId)),
         conversations: ref.read(displayProvider).conversations,
         expandedIds: ref.read(expandedConversationsProvider),
+        sort: ref.read(displayProvider).sort,
       );
       final at = rows.indexWhere((m) => m.id == id);
       if (at < 0 || rows.length < 2) return;
@@ -364,7 +365,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             final display = ref.watch(displayProvider);
             final rows = display.conversations
                 ? _conversationRows(
-                    _inSortOrder(groupIntoConversations(messages), display),
+                    conversationsInOrder(messages, display.sort),
                     ref.watch(expandedConversationsProvider),
                   )
                 : [for (final m in messages) _Row.message(m)];
@@ -565,15 +566,6 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
 
   /// Threads in the list's order, judged by the message that stands for
   /// the row: the newest one, which is what the row shows.
-  static List<Conversation> _inSortOrder(
-    List<Conversation> conversations,
-    DisplaySettings display,
-  ) {
-    if (display.sort == MessageSort.dateNewest) return conversations;
-    return [...conversations]
-      ..sort((a, b) => compareMessages(a.newest, b.newest, display.sort));
-  }
-
   /// Conversations flattened into the rows a ListView draws.
   ///
   /// A conversation of one is a plain message row: a header with a "1" badge
@@ -792,8 +784,13 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           step: step,
           notifier: notifier,
           message: message,
+          engine: ref.read(mailEngineProvider),
           onMoved: (folderId) =>
               ref.read(recentMoveTargetsProvider.notifier).record(folderId),
+          onElsewhere: () {
+            ref.invalidate(messagesProvider(message.folderId));
+            ref.invalidate(messagesProvider(kUnifiedInboxId));
+          },
         );
         if (context.mounted) {
           ScaffoldMessenger.of(context)
@@ -864,10 +861,12 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         ref.read(selectedMessageIdsProvider.notifier).addAll([message.id]);
       case 'move':
         await actions.moveWithPrompt(context, [message]);
+      // Through the actions, which send a search hit from another folder
+      // to the engine: the open list passed over it without a word.
       case 'read':
-        await notifier.setRead(message.id, !message.isRead);
+        await actions.setRead([message], !message.isRead);
       case 'flag':
-        await notifier.setFlagged(message.id, !message.isFlagged);
+        await actions.setFlagged([message], !message.isFlagged);
       case 'delete':
         await actions.delete(context, [message]);
     }

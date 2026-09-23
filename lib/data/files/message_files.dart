@@ -11,17 +11,31 @@ import '../mail_engine.dart' show rawMessageBytes;
 /// The file is the message as it arrived (RFC 822 text, the `.eml` every
 /// mail client reads), written under the app's cache so the system may
 /// clear it later. A port so tests can hand back a path without a disk.
+///
+/// [messageId] says which message it is, and each message's file goes in a
+/// folder of its own. The name alone is not enough: a Hebrew subject keeps
+/// none of its letters, and two replies in one thread on one day share a
+/// date, so several messages dragged at once were written to one path in
+/// turn and arrived as that many copies of the last.
 abstract class MessageFiles {
-  Future<File> writeEml(String fileName, String raw);
+  Future<File> writeEml(String fileName, String raw, {required String messageId});
 }
 
 class DiskMessageFiles implements MessageFiles {
   const DiskMessageFiles();
 
   @override
-  Future<File> writeEml(String fileName, String raw) async {
+  Future<File> writeEml(
+    String fileName,
+    String raw, {
+    required String messageId,
+  }) async {
     final root = await getTemporaryDirectory();
-    final dir = Directory('${root.path}${Platform.pathSeparator}eml');
+    final dir = Directory([
+      root.path,
+      'eml',
+      emlFolderFor(messageId),
+    ].join(Platform.pathSeparator));
     await dir.create(recursive: true);
     final file = File('${dir.path}${Platform.pathSeparator}$fileName');
     await file.writeAsBytes(rawMessageBytes(raw), flush: true);
@@ -29,14 +43,31 @@ class DiskMessageFiles implements MessageFiles {
   }
 }
 
+/// A folder name for one message's file: readable, safe on every
+/// filesystem, and different for two messages whose ids differ only in the
+/// characters that had to be replaced.
+String emlFolderFor(String messageId) {
+  final readable = messageId.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+  // FNV-1a over the id: the same every run, unlike hashCode.
+  var hash = 0x811c9dc5;
+  for (final unit in messageId.codeUnits) {
+    hash = ((hash ^ unit) * 0x01000193) & 0xffffffff;
+  }
+  return '$readable-${hash.toRadixString(16)}';
+}
+
 /// Never touches a disk: hands back a path and remembers what it was for.
 class FakeMessageFiles implements MessageFiles {
   final Map<String, String> written = {};
 
   @override
-  Future<File> writeEml(String fileName, String raw) async {
+  Future<File> writeEml(
+    String fileName,
+    String raw, {
+    required String messageId,
+  }) async {
     written[fileName] = raw;
-    return File('/fake/eml/$fileName');
+    return File('/fake/eml/${emlFolderFor(messageId)}/$fileName');
   }
 }
 

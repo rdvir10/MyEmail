@@ -1,4 +1,5 @@
 import '../domain/mail_message.dart';
+import '../domain/message_sort.dart';
 
 /// Grouping a message list into conversations.
 ///
@@ -70,19 +71,36 @@ class Conversation {
 /// closed thread is one row, stood for by its newest message, and an open
 /// one is its messages newest first. The messages folded into a closed
 /// thread are not there: landing on one would select a row nobody can see.
+///
+/// [sort] orders the threads, as the rows are drawn. The keys used to walk
+/// them newest first whatever was chosen, so with oldest first Home went to
+/// the bottom of the screen and Down went up.
 List<MailMessage> visibleMessages(
   List<MailMessage> messages, {
   required bool conversations,
   required Set<String> expandedIds,
+  required MessageSort sort,
 }) {
   if (!conversations) return messages;
   return [
-    for (final c in groupIntoConversations(messages))
+    for (final c in conversationsInOrder(messages, sort))
       if (!c.isThread || !expandedIds.contains(c.id))
         c.newest
       else
         ...c.messages.reversed,
   ];
+}
+
+/// [messages] as conversations, in the order the list shows them: by each
+/// one's newest message, under [sort].
+List<Conversation> conversationsInOrder(
+  List<MailMessage> messages,
+  MessageSort sort,
+) {
+  final grouped = groupIntoConversations(messages);
+  if (sort == MessageSort.dateNewest) return grouped;
+  return [...grouped]
+    ..sort((a, b) => compareMessages(a.newest, b.newest, sort));
 }
 
 List<Conversation> groupIntoConversations(List<MailMessage> messages) {

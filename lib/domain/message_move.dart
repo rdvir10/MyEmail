@@ -1,3 +1,5 @@
+import 'error_report.dart';
+
 /// Where a batch of messages went, and where they were, which is everything
 /// needed to put them back.
 ///
@@ -59,3 +61,30 @@ bool canUndoAll(List<MessageMove> moves, int messageCount) =>
     moves.isNotEmpty &&
     moves.every((m) => m.canUndo) &&
     moves.fold(0, (n, m) => n + m.count) == messageCount;
+
+/// A batch move or delete that stopped part way.
+///
+/// [done] went, and can be put back; the messages in [moved] are no longer
+/// where they were. The rest did not go, because of [cause]. Reported as
+/// one failure, the rows that had gone came back on screen as if nothing
+/// had happened, with no Undo for the ones already in Trash.
+class PartialMove implements Exception, ReadableError {
+  const PartialMove({
+    required this.done,
+    required this.moved,
+    required this.cause,
+  });
+
+  final List<MessageMove> done;
+
+  /// The ids the moved messages had before they went.
+  final List<String> moved;
+  final Object cause;
+
+  @override
+  String get message =>
+      cause is ReadableError ? (cause as ReadableError).message : '$cause';
+
+  @override
+  String toString() => message;
+}

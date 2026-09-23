@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/mail_folder.dart';
@@ -77,6 +78,22 @@ void main() {
     expect(engine.messageLoads, greaterThan(before));
   });
 
+  testWidgets('one account failing does not stop the others being checked',
+      (tester) async {
+    // It stopped at the first account that failed: one expired sign-in, and
+    // no other account and not the list was ever refreshed by hand.
+    await pump(tester, const Size(400, 900));
+    engine.refused = 'acct-personal';
+    final before = engine.loadsOf['acct-side'] ?? 0;
+    final listBefore = engine.messageLoads;
+
+    await pullDown(tester);
+
+    expect(engine.loadsOf['acct-side'] ?? 0, greaterThan(before));
+    expect(engine.messageLoads, greaterThan(listBefore));
+    expect(find.textContaining('Could not sync'), findsOneWidget);
+  });
+
   testWidgets('the indicator is there on a tablet too', (tester) async {
     // A tablet has the ribbon's Sync button, but a finger on a list still
     // expects the pull to work.
@@ -90,6 +107,10 @@ void main() {
 class _CountingEngine extends SampleMailEngine {
   int messageLoads = 0;
   int folderLoads = 0;
+  final loadsOf = <String, int>{};
+
+  /// An account whose folders cannot be listed: a sign-in to renew.
+  String? refused;
 
   @override
   Future<List<MailMessage>> loadMessages(
@@ -102,8 +123,12 @@ class _CountingEngine extends SampleMailEngine {
   }
 
   @override
-  Future<List<MailFolder>> loadFolders(String accountId) {
+  Future<List<MailFolder>> loadFolders(String accountId) async {
     folderLoads++;
+    loadsOf[accountId] = (loadsOf[accountId] ?? 0) + 1;
+    if (accountId == refused) {
+      throw const AuthenticationFailed('Sign in again.');
+    }
     return super.loadFolders(accountId);
   }
 }

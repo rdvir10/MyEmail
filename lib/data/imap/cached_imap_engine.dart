@@ -839,6 +839,7 @@ class CachedImapEngine implements MailEngine {
     if (messageIds.isEmpty) return const [];
     final (toAccount, toPath) = splitFolderId(toFolderId);
     final moves = <MessageMove>[];
+    final went = <String>[];
     for (final group in _groupByFolder(messageIds).entries) {
       final (accountId, fromPath) = splitFolderId(group.key);
       if (accountId != toAccount) {
@@ -848,16 +849,14 @@ class CachedImapEngine implements MailEngine {
         );
       }
       if (fromPath == toPath) continue;
-      final t = await _transport(accountId);
-      // Read before the move, because afterwards there is nothing left in
-      // this folder to read it from.
-      final headers =
-          await cache.messageIdsFor(accountId, fromPath, group.value);
-      final landed = await t.moveMessages(fromPath, group.value, toPath);
-      await cache.deleteUids(accountId, fromPath, group.value.toSet());
-      // The destination picks the new messages up on its next sync; it may
-      // not be cached at all yet, and guessing UIDs would be worse.
-      await _syncIfCached(accountId, t, toPath);
+      final (:landed, :moved, :stopped) = await _moveGroup(
+        accountId,
+        fromPath,
+        group.value,
+        toPath,
+        done: moves,
+        went: went,
+      );
       moves.add(MessageMove(
         fromFolderId: group.key,
         toFolderId: toFolderId,
@@ -865,50 +864,118 @@ class CachedImapEngine implements MailEngine {
           for (final uid in landed ?? const <int>[])
             MailMessage.idFor(toFolderId, uid),
         ],
-        messageIds: headers,
+        messageIds: moved.headers,
       ));
+      went.addAll([for (final uid in moved.uids) MailMessage.idFor(group.key, uid)]);
+      if (stopped != null) {
+        throw PartialMove(done: moves, moved: went, cause: stopped);
+      }
     }
     return moves;
+  }
+
+  /// One folder's part of a batch move, into [toPath] in the same account.
+  ///
+  /// A failure before anything went is thrown as it is if nothing in the
+  /// batch has gone yet ([done] empty), and as a [PartialMove] naming what
+  /// has otherwise. A failure part way through this folder comes back as
+  /// [stopped], with what did go.
+  Future<
+      ({
+        List<int>? landed,
+        ({List<int> uids, List<String> headers}) moved,
+        Object? stopped,
+      })> _moveGroup(
+    String accountId,
+    String fromPath,
+    List<int> uids,
+    String toPath, {
+    required List<MessageMove> done,
+    required List<String> went,
+  }) async {
+    final t = await _transport(accountId);
+    List<int>? landed;
+    var moved = uids;
+    Object? stopped;
+    try {
+      landed = await t.moveMessages(fromPath, uids, toPath);
+    } on MovedInPart catch (part) {
+      landed = part.landed;
+      moved = part.moved;
+      stopped = part.cause;
+    } catch (e) {
+      if (done.isEmpty) rethrow;
+      throw PartialMove(done: done, moved: went, cause: e);
+    }
+    // Read before the cache forgets them, which is the last place they
+    // can be read from here.
+    final headers = await cache.messageIdsFor(accountId, fromPath, moved);
+    await cache.deleteUids(accountId, fromPath, moved.toSet());
+    // The destination picks the new messages up on its next sync; it may
+    // not be cached at all yet, and guessing UIDs would be worse.
+    await _syncIfCached(accountId, t, toPath);
+    return (
+      landed: landed,
+      moved: (uids: moved, headers: headers),
+      stopped: stopped,
+    );
   }
 
   @override
   Future<List<MessageMove>> deleteMessages(List<String> messageIds) async {
     if (messageIds.isEmpty) return const [];
     final moves = <MessageMove>[];
+    final went = <String>[];
     for (final group in _groupByFolder(messageIds).entries) {
       final (accountId, fromPath) = splitFolderId(group.key);
       final t = await _transport(accountId);
       final trash = await _trashPath(accountId, t);
-      final headers =
-          await cache.messageIdsFor(accountId, fromPath, group.value);
 
       if (trash == null || fromPath == trash) {
         // Already in Trash, or the account has none: delete for good. There
         // is nothing to put back, and the empty entry is how the caller
         // knows not to offer.
-        await t.storeFlag(fromPath,
-            uids: group.value, flag: MessageFlag.deleted, set: true);
-        await t.expunge(fromPath);
+        try {
+          await t.storeFlag(fromPath,
+              uids: group.value, flag: MessageFlag.deleted, set: true);
+          await t.expunge(fromPath);
+        } catch (e) {
+          if (moves.isEmpty) rethrow;
+          throw PartialMove(done: moves, moved: went, cause: e);
+        }
+        await cache.deleteUids(accountId, fromPath, group.value.toSet());
         moves.add(MessageMove(
           fromFolderId: group.key,
           toFolderId: group.key,
           movedIds: const [],
         ));
-      } else {
-        final landed = await t.moveMessages(fromPath, group.value, trash);
-        await _syncIfCached(accountId, t, trash);
-        final trashId = '$accountId:$trash';
-        moves.add(MessageMove(
-          fromFolderId: group.key,
-          toFolderId: trashId,
-          movedIds: [
-            for (final uid in landed ?? const <int>[])
-              MailMessage.idFor(trashId, uid),
-          ],
-          messageIds: headers,
-        ));
+        went.addAll(
+            [for (final uid in group.value) MailMessage.idFor(group.key, uid)]);
+        continue;
       }
-      await cache.deleteUids(accountId, fromPath, group.value.toSet());
+
+      final (:landed, :moved, :stopped) = await _moveGroup(
+        accountId,
+        fromPath,
+        group.value,
+        trash,
+        done: moves,
+        went: went,
+      );
+      final trashId = '$accountId:$trash';
+      moves.add(MessageMove(
+        fromFolderId: group.key,
+        toFolderId: trashId,
+        movedIds: [
+          for (final uid in landed ?? const <int>[])
+            MailMessage.idFor(trashId, uid),
+        ],
+        messageIds: moved.headers,
+      ));
+      went.addAll([for (final uid in moved.uids) MailMessage.idFor(group.key, uid)]);
+      if (stopped != null) {
+        throw PartialMove(done: moves, moved: went, cause: stopped);
+      }
     }
     return moves;
   }

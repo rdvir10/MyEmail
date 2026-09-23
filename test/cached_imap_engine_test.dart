@@ -210,6 +210,45 @@ void main() {
     });
   });
 
+  group('a batch delete that stops part way', () {
+    test('says which went, so those can stay gone and be put back',
+        () async {
+      // Two folders: the first went to Trash, the second failed, and the
+      // whole batch was reported as not done, with no Undo for the first.
+      seedGmail();
+      server.folder('INBOX').deliver(subject: 'In the Inbox');
+      server.folder('Work').deliver(subject: 'In Work');
+      final a = await addAccount();
+      await engine.loadMessages('${a.id}:INBOX');
+      await engine.loadMessages('${a.id}:Work');
+      server.refuseMovesFrom.add('Work');
+
+      await expectLater(
+        engine.deleteMessages(['${a.id}:INBOX#1', '${a.id}:Work#1']),
+        throwsA(isA<PartialMove>()
+            .having((p) => p.moved, 'moved', ['${a.id}:INBOX#1'])
+            .having((p) => p.done.single.toFolderId, 'went to',
+                '${a.id}:[Gmail]/Trash')),
+      );
+      expect(server.folder('INBOX').messages, isEmpty);
+      expect(server.folder('Work').messages, hasLength(1));
+    });
+
+    test('and one that fails before anything went is an ordinary failure',
+        () async {
+      seedGmail();
+      server.folder('Work').deliver(subject: 'In Work');
+      final a = await addAccount();
+      await engine.loadMessages('${a.id}:Work');
+      server.refuseMovesFrom.add('Work');
+
+      await expectLater(
+        engine.deleteMessages(['${a.id}:Work#1']),
+        throwsA(isA<StateError>()),
+      );
+    });
+  });
+
   group('messages', () {
     test('lists come from the cache after a sync, newest first', () async {
       seedGmail();

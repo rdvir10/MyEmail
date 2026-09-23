@@ -30,6 +30,9 @@ class FakeImapTransport implements ImapTransport {
   /// failure; this one can be an authentication failure or anything else.
   Object? failWith;
 
+  /// Folders the server will not move mail out of.
+  final Set<String> refuseMovesFrom = {};
+
   void _online() {
     final failure = failWith;
     if (failure != null) throw failure;
@@ -296,6 +299,9 @@ class FakeImapTransport implements ImapTransport {
     String toPath,
   ) async {
     _online();
+    if (refuseMovesFrom.contains(fromPath)) {
+      throw StateError('the server would not move mail out of $fromPath');
+    }
     calls.add('UID MOVE $fromPath ${uids.join(',')} $toPath');
     final from = _require(fromPath);
     final to = _require(toPath);

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../../domain/account.dart';
 import '../../domain/settings_backup.dart';
 import '../account_store.dart';
@@ -128,21 +130,39 @@ class BackupService {
     }
 
     final existing = accountStore.read();
-    final knownAddresses = {
-      for (final a in existing) a.emailAddress.toLowerCase(),
-    };
     final knownIds = {for (final a in existing) a.id};
 
     final added = <Account>[];
     final skipped = <Account>[];
+    // The file's account ids as this device knows the same mailboxes. The
+    // same mailbox added separately on two devices has two ids, and the
+    // settings came across under the other device's: favourites pointing
+    // at an account that is not here, and a signature for nobody.
+    final ids = <String, String>{};
     for (final account in backup.accounts) {
-      if (knownAddresses.contains(account.emailAddress.toLowerCase()) ||
-          knownIds.contains(account.id)) {
+      final here = existing
+          .where((a) =>
+              a.emailAddress.toLowerCase() ==
+              account.emailAddress.toLowerCase())
+          .firstOrNull;
+      if (here != null) {
+        ids[account.id] = here.id;
+        skipped.add(account);
+        continue;
+      }
+      if (knownIds.contains(account.id)) {
         skipped.add(account);
         continue;
       }
       added.add(account);
     }
+    // Settings of accounts in the file come from the file; those of this
+    // device's other accounts stay as they are.
+    final covered = {
+      for (final account in backup.accounts) ids[account.id] ?? account.id,
+    };
+    String remap(String value) => _remap(value, ids);
+    bool keep(String value) => !covered.contains(_accountOf(value));
 
     if (added.isNotEmpty) {
       await accountStore.write([...existing, ...added]);
@@ -174,19 +194,34 @@ class BackupService {
       switch (shape) {
         case _Shape.ids:
           if (value is! List) continue;
+          final here = uiState.readIds(key);
           await uiState.writeIds(key, {
+            // Addresses, not ids: both lists count.
+            if (key == UiStateKeys.trustedSenders)
+              ...here
+            else
+              for (final v in here)
+                if (keep(v)) v,
             for (final v in value)
-              if (v is String) v,
+              if (v is String) remap(v),
           });
         case _Shape.order:
           if (value is! Map) continue;
           await uiState.writeOrder(key, {
+            for (final MapEntry(key: k, value: v)
+                in uiState.readOrder(key).entries)
+              if (keep(k)) k: v,
             for (final MapEntry(key: k, value: v) in value.entries)
-              if (k is String && v is int) k: v,
+              if (k is String && v is int) remap(k): v,
           });
         case _Shape.text:
           if (value is! String) continue;
-          await uiState.writeString(key, value);
+          await uiState.writeString(
+            key,
+            key == UiStateKeys.signatures
+                ? _mergeSignatures(uiState.readString(key), value, ids, keep)
+                : _remapText(value, ids),
+          );
       }
       restored++;
     }
@@ -201,6 +236,71 @@ class BackupService {
 }
 
 enum _Shape { ids, order, text }
+
+/// Which account a stored id belongs to: the account id itself, or the
+/// part of a folder id before its colon.
+String _accountOf(String id) {
+  final colon = id.indexOf(':');
+  return colon < 0 ? id : id.substring(0, colon);
+}
+
+/// An account id, or a folder id under one, as this device knows it.
+String _remap(String value, Map<String, String> ids) {
+  final whole = ids[value];
+  if (whole != null) return whole;
+  final colon = value.indexOf(':');
+  if (colon <= 0) return value;
+  final account = ids[value.substring(0, colon)];
+  return account == null ? value : '$account${value.substring(colon)}';
+}
+
+Object? _remapJson(Object? json, Map<String, String> ids) => switch (json) {
+      final String s => _remap(s, ids),
+      final List<Object?> l => [for (final v in l) _remapJson(v, ids)],
+      final Map<Object?, Object?> m => {
+          for (final MapEntry(:key, :value) in m.entries)
+            (key is String ? _remap(key, ids) : key): _remapJson(value, ids),
+        },
+      _ => json,
+    };
+
+/// A setting kept as JSON text (Quick Steps, say), with every id in it as
+/// this device knows it. Text that is not JSON is left as it is.
+String _remapText(String text, Map<String, String> ids) {
+  if (ids.isEmpty) return text;
+  try {
+    return jsonEncode(_remapJson(jsonDecode(text), ids));
+  } on FormatException {
+    return text;
+  }
+}
+
+/// Signatures are one per account: the file's for its accounts, and this
+/// device's own for the rest.
+String _mergeSignatures(
+  String? here,
+  String fromFile,
+  Map<String, String> ids,
+  bool Function(String accountId) keep,
+) {
+  List<Object?> list(String? text) {
+    if (text == null || text.isEmpty) return const [];
+    try {
+      final json = jsonDecode(text);
+      return json is List ? json : const [];
+    } on FormatException {
+      return const [];
+    }
+  }
+
+  final remapped = _remapJson(list(fromFile), ids) as List<Object?>;
+  return jsonEncode([
+    for (final s in list(here))
+      if (s is Map && s['accountId'] is String && keep(s['accountId'] as String))
+        s,
+    ...remapped,
+  ]);
+}
 
 /// What a restore actually did, so the screen can say so rather than claiming
 /// success and leaving the person to work out what changed.

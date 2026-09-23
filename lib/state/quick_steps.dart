@@ -92,12 +92,28 @@ final quickStepsProvider =
 /// menus use, so the optimistic update, the rollback on failure and the
 /// invalidations are the same. A failure anywhere stops the chain and is
 /// rethrown, since carrying on would leave the message half-done.
+///
+/// A message the list does not hold — a search hit from another folder —
+/// goes to [engine] instead, and [onElsewhere] follows so the lists that
+/// show it can be read again. The notifier passes over a message it does
+/// not hold without a word, so the step did nothing and still said
+/// "applied"; without an engine that is now an error.
 Future<void> runQuickStep({
   required QuickStep step,
   required Messages notifier,
   required MailMessage message,
+  MailEngine? engine,
   void Function(String folderId)? onMoved,
+  void Function()? onElsewhere,
 }) async {
+  if (!notifier.holds(message.id)) {
+    if (engine == null) {
+      throw StateError('That message is not in this list any more.');
+    }
+    await _runOnEngine(step, engine, message, onMoved);
+    onElsewhere?.call();
+    return;
+  }
   for (final action in step.effectiveActions) {
     switch (action.type) {
       case QuickStepActionType.markRead:
@@ -114,6 +130,32 @@ Future<void> runQuickStep({
         onMoved?.call(target);
       case QuickStepActionType.delete:
         await notifier.delete([message.id]);
+    }
+  }
+}
+
+Future<void> _runOnEngine(
+  QuickStep step,
+  MailEngine engine,
+  MailMessage message,
+  void Function(String folderId)? onMoved,
+) async {
+  for (final action in step.effectiveActions) {
+    switch (action.type) {
+      case QuickStepActionType.markRead:
+        await engine.setRead(message.id, true);
+      case QuickStepActionType.markUnread:
+        await engine.setRead(message.id, false);
+      case QuickStepActionType.flag:
+        await engine.setFlagged(message.id, true);
+      case QuickStepActionType.unflag:
+        await engine.setFlagged(message.id, false);
+      case QuickStepActionType.moveTo:
+        final target = action.folderId!;
+        await engine.moveMessages([message.id], target);
+        onMoved?.call(target);
+      case QuickStepActionType.delete:
+        await engine.deleteMessages([message.id]);
     }
   }
 }

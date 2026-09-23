@@ -90,7 +90,7 @@ void main() {
       expect(read('lib/data/files/attachment_files.dart'),
           contains('/attachments/'));
       expect(read('lib/data/files/message_files.dart'),
-          contains("pathSeparator}eml'"));
+          contains("'eml',"));
       expect(bridge, contains('File(activity.cacheDir, "incoming")'));
     });
   });

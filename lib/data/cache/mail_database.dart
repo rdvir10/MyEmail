@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
+import 'package:sqlite3/common.dart' show CommonDatabase;
 
 import '../../domain/mail_message.dart';
 import 'cache_store.dart';
@@ -105,7 +106,26 @@ class MailDatabase extends _$MailDatabase {
   /// Still 'mailtree' after the rename to MyEmail: this is the filename on
   /// disk, and changing it orphans every cached message and body for a
   /// resync nobody asked for. Invisible either way.
-  MailDatabase.open() : super(driftDatabase(name: 'mailtree'));
+  MailDatabase.open()
+      : super(driftDatabase(
+          name: 'mailtree',
+          native: const DriftNativeOptions(setup: configureConnection),
+        ));
+
+  /// How every connection to the file is set up.
+  ///
+  /// Four things open it at once — the app, the sync worker, the job that
+  /// carries out notification buttons, and the app's own drain of those —
+  /// each in its own engine, so drift cannot share one connection between
+  /// them. With SQLite's defaults a write that met another failed at once
+  /// with "database is locked": a delete from a notification reported as
+  /// failed after it had moved the message, a sync pass that gave up. Now a
+  /// connection waits up to five seconds for the other, and the
+  /// write-ahead log lets reading go on while one writes.
+  static void configureConnection(CommonDatabase db) {
+    db.execute('PRAGMA busy_timeout = 5000;');
+    db.execute('PRAGMA journal_mode = WAL;');
+  }
 
   /// The lookup the transport does most: a Graph id in hand, wanting the
   /// number it was given. Without this it is a table scan per message, on

@@ -568,21 +568,40 @@ class GraphTransport implements ImapTransport {
     final remoteIds = await idMap.remoteIdsFor(accountId, fromPath, uids);
 
     final movedIds = <String>[];
-    for (final uid in uids) {
-      final id = remoteIds[uid];
-      if (id == null) continue;
-      // Graph reissues the id on a move, and the old one stops resolving at
-      // once. Taking the new one is what lets the destination folder be
-      // numbered without a resync.
-      final newId = await api.move(id, destination);
-      if (newId != null) movedIds.add(newId);
+    final moved = <int>[];
+    try {
+      for (final uid in uids) {
+        final id = remoteIds[uid];
+        if (id == null) continue;
+        // Graph reissues the id on a move, and the old one stops resolving at
+        // once. Taking the new one is what lets the destination folder be
+        // numbered without a resync.
+        final newId = await api.move(id, destination);
+        moved.add(uid);
+        if (newId != null) movedIds.add(newId);
+      }
+    } catch (e) {
+      // One at a time, so a failure part way leaves some moved. Their old
+      // numbers point at nothing now, and saying which went is what lets
+      // them stay gone from the list and be put back.
+      if (moved.isEmpty) rethrow;
+      await idMap.forgetMoved(accountId, fromPath, moved);
+      throw MovedInPart(
+        moved: moved,
+        landed: await _numbered(toPath, movedIds),
+        cause: e,
+      );
     }
 
     await idMap.forgetMoved(accountId, fromPath, uids);
-    if (movedIds.isEmpty) return null;
-    final assigned = await idMap.uidsFor(accountId, toPath, movedIds);
+    return _numbered(toPath, movedIds);
+  }
+
+  Future<List<int>?> _numbered(String path, List<String> remoteIds) async {
+    if (remoteIds.isEmpty) return null;
+    final assigned = await idMap.uidsFor(accountId, path, remoteIds);
     return [
-      for (final id in movedIds)
+      for (final id in remoteIds)
         if (assigned.containsKey(id)) assigned[id]!,
     ];
   }

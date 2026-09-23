@@ -64,6 +64,7 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
         _all,
         conversations: ref.read(displayProvider).conversations,
         expandedIds: ref.read(expandedConversationsProvider),
+        sort: ref.read(displayProvider).sort,
       );
 
   /// Where the selection is, as a row: itself, or the row of the thread

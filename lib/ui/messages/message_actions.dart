@@ -83,6 +83,12 @@ class MessageActions {
         undo: moves,
         of: messages.length,
       );
+    } on PartialMove catch (part) {
+      // Some went: say how many, and offer those back.
+      final done = [...moves, ...part.done];
+      final n = done.fold(0, (sum, m) => sum + m.count);
+      _say(to, 'Moved $n of ${messages.length}. ${part.message}',
+          undo: done, of: n);
     } catch (e) {
       _say(to, 'Could not move: $e');
     }
@@ -114,6 +120,12 @@ class MessageActions {
         undo: moves,
         of: messages.length,
       );
+    } on PartialMove catch (part) {
+      final done = [...moves, ...part.done];
+      final n = part.moved.length +
+          moves.fold<int>(0, (sum, m) => sum + m.count);
+      _say(to, 'Deleted $n of ${messages.length}. ${part.message}',
+          undo: done, of: n);
     } catch (e) {
       _say(to, 'Could not delete: $e');
     }

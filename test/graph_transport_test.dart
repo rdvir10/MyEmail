@@ -849,6 +849,27 @@ void main() {
       expect(existing, containsAll([for (var i = 20; i < 150; i++) uidOf['M$i']]));
     });
 
+    test('a move that fails part way says which went', () async {
+      // One request per message: the second failing left the first moved,
+      // and nothing said so.
+      server
+        ..folder(id: 'f-archive', name: 'Archive', wellKnown: 'archive')
+        ..message('f-inbox', id: 'm1', subject: 'A', minutesAgo: 30)
+        ..message('f-inbox', id: 'm2', subject: 'B', minutesAgo: 20)
+        ..refuseMoveOf.add('m1');
+      final byId = {
+        for (final h in await transport.fetchHeadersFromUid('Inbox', 1))
+          h.subject: h.uid,
+      };
+
+      await expectLater(
+        transport.moveMessages('Inbox', [byId['B']!, byId['A']!], 'Archive'),
+        throwsA(isA<MovedInPart>()
+            .having((p) => p.moved, 'moved', [byId['B']])
+            .having((p) => p.landed, 'landed', hasLength(1))),
+      );
+    });
+
     test('marking all read skips what is already read', () async {
       // A second "mark all read" over a large folder would otherwise be
       // thousands of pointless writes.
@@ -1020,6 +1041,9 @@ class _FakeGraph {
   /// how many there have been: the moment to change the folder under a
   /// scan that is part way through.
   void Function(int listings)? afterListing;
+
+  /// Messages the server will not move.
+  final Set<String> refuseMoveOf = {};
 
   /// Names whose lookup inside a batch is throttled, and how many times.
   final Map<String, int> throttledInBatch = {};
@@ -1434,6 +1458,10 @@ class _FakeGraph {
 
     if (request.method == 'POST' && path.endsWith('/move')) {
       final id = path.split('/me/messages/').last.replaceAll('/move', '');
+      if (refuseMoveOf.contains(id)) {
+        return http.Response('{"error":{"code":"ErrorInternalServerError"}}',
+            500);
+      }
       final message = messages.remove(id);
       if (message == null) return http.Response('{}', 404);
       final destination =
