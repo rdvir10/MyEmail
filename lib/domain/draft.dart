@@ -16,11 +16,18 @@ class DraftAttachment {
     required this.fileName,
     required this.mimeType,
     required this.bytes,
+    this.contentId,
   });
 
   final String fileName;
   final String mimeType;
   final Uint8List bytes;
+
+  /// Set for a picture the message's HTML shows in place, through a
+  /// `cid:` link: a logo in a forwarded signature, a pasted screenshot.
+  /// Sent inline under this id so the link keeps working. Without the angle
+  /// brackets.
+  final String? contentId;
 
   int get size => bytes.length;
 
@@ -127,6 +134,9 @@ class Draft {
     String? accountId,
     String? savedAs,
     String? calendarReply,
+    String? inReplyTo,
+    List<String>? references,
+    List<String>? lostAttachmentNames,
   }) {
     return Draft(
       accountId: accountId ?? this.accountId,
@@ -137,12 +147,12 @@ class Draft {
       subject: subject ?? this.subject,
       htmlBody: htmlBody ?? this.htmlBody,
       attachments: attachments ?? this.attachments,
-      inReplyTo: inReplyTo,
-      references: references,
+      inReplyTo: inReplyTo ?? this.inReplyTo,
+      references: references ?? this.references,
       originalMessageId: originalMessageId,
       savedAs: savedAs ?? this.savedAs,
       calendarReply: calendarReply ?? this.calendarReply,
-      lostAttachmentNames: lostAttachmentNames,
+      lostAttachmentNames: lostAttachmentNames ?? this.lostAttachmentNames,
     );
   }
 }

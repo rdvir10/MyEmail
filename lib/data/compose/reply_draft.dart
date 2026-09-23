@@ -51,17 +51,23 @@ List<MailAddress> _to(ComposeKind kind, MailMessage? original) {
   return [original.from];
 }
 
-/// Reply-all keeps the other recipients but never the account itself, or the
-/// sender ends up on their own reply.
+/// Reply-all keeps everyone else who had the message, from its To and its
+/// Cc, but never the account itself, or the sender ends up on their own
+/// reply, and never the original sender, who is already the To. Each address
+/// once.
+///
+/// Only To used to be read, so everyone who had been copied was left off the
+/// answer without a word, from the compose screen and from the notification.
 List<MailAddress> _cc(MailMessage? original, Set<String> mine) {
   if (original == null) return const [];
-  final self = {
+  final skip = {
     for (final e in mine)
-      if (e.trim().isNotEmpty) e.toLowerCase(),
+      if (e.trim().isNotEmpty) e.trim().toLowerCase(),
+    original.from.email.toLowerCase(),
   };
   return [
-    for (final a in original.to)
-      if (!self.contains(a.email.toLowerCase())) a,
+    for (final a in [...original.to, ...original.cc])
+      if (skip.add(a.email.toLowerCase())) a,
   ];
 }
 

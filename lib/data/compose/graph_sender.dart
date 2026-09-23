@@ -229,6 +229,10 @@ class GraphSender {
             'name': attachment.fileName,
             'contentType': attachment.mimeType,
             'contentBytes': base64Encode(attachment.bytes),
+            if (attachment.contentId != null) ...{
+              'isInline': true,
+              'contentId': attachment.contentId,
+            },
           }),
         ));
     if (response.statusCode == 201 || response.statusCode == 200) return;
@@ -258,6 +262,10 @@ class GraphSender {
               'name': attachment.fileName,
               'size': attachment.size,
               'contentType': attachment.mimeType,
+              if (attachment.contentId != null) ...{
+                'isInline': true,
+                'contentId': attachment.contentId,
+              },
             },
           }),
         ));

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/compose/mime_parts.dart';
 import '../data/compose/quote_builder.dart' show sanitiseForEditing;
 import '../data/compose/reply_draft.dart';
 import '../data/ui_state_store.dart';
@@ -72,7 +73,7 @@ Future<Draft> buildDraft({
 
   final accounts = ref.read(accountsProvider).value ?? const [];
 
-  return draftFor(
+  final draft = draftFor(
     kind: kind,
     accountId: accountId,
     original: original,
@@ -84,6 +85,22 @@ Future<Draft> buildDraft({
         .firstOrNull ??
         '',
   );
+
+  // A forward carries the files, and the pictures the quote shows through
+  // cid: links. It used to arrive with the text alone and nothing on the
+  // screen saying the files were gone.
+  final carriesFiles = original != null &&
+      (original.hasAttachments || (body?.html?.contains('cid:') ?? false));
+  if (kind != ComposeKind.forward || !carriesFiles) return draft;
+  try {
+    final raw = await ref.read(mailEngineProvider).rawMessage(original.id);
+    return draft.copyWith(attachments: attachmentsInMime(raw));
+  } catch (_) {
+    // Offline, or the message has gone: say so rather than send without.
+    return draft.copyWith(
+      lostAttachmentNames: const ["the forwarded message's attachments"],
+    );
+  }
 }
 
 /// Save a draft to the Drafts folder and refresh the tree so it shows there.
@@ -104,34 +121,54 @@ Future<Draft> saveDraft(WidgetRef ref, Draft draft) async {
 
 /// Reopen a message from the Drafts folder as something editable.
 ///
-/// Attachments do not come back: the cache holds the body, not the parts, and
-/// re-fetching them to rebuild bytes for something that may be discarded is
-/// not worth a round trip per attachment. The names are carried instead so
-/// the screen can say what is missing rather than losing it quietly.
+/// To and Cc come from the message list. Bcc, the thread it answers and the
+/// attachments are only in the saved message itself, so that is fetched
+/// once as it is stored. Without it a reopened draft went out without its
+/// Cc and Bcc, started a new thread, and dropped its files; saving it again
+/// replaced the server copy with the same losses. If the stored message
+/// cannot be fetched, the draft still opens, and says which files it could
+/// not bring back.
 Future<Draft> draftFromMessage({
   required WidgetRef ref,
   required MailMessage message,
 }) async {
+  final engine = ref.read(mailEngineProvider);
   MailBody? body;
   try {
-    body = await ref.read(mailEngineProvider).loadMessageBody(message.id);
+    body = await engine.loadMessageBody(message.id);
   } catch (_) {
     body = MailBody(text: message.preview);
   }
-  return Draft(
+  final draft = Draft(
     accountId: message.accountId,
     kind: ComposeKind.newMessage,
     to: message.to,
+    cc: message.cc,
     subject: message.subject == '(No subject)' ? '' : message.subject,
     // Cleaned like a quote: a Drafts folder can hold messages written by
     // other clients, and the editor runs JavaScript.
     htmlBody: body.html == null
         ? _asHtml(body.text)
         : sanitiseForEditing(body.html!, ownDraft: true),
+    inReplyTo: message.inReplyTo,
     savedAs: message.id,
-    lostAttachmentNames:
-        message.hasAttachments ? const ['the original attachment'] : const [],
   );
+
+  try {
+    final raw = await engine.rawMessage(message.id);
+    final headers = savedDraftHeaders(raw);
+    return draft.copyWith(
+      bcc: headers.bcc,
+      inReplyTo: headers.inReplyTo,
+      references: headers.references,
+      attachments: attachmentsInMime(raw),
+    );
+  } catch (_) {
+    return draft.copyWith(
+      lostAttachmentNames:
+          message.hasAttachments ? const ['the original attachment'] : const [],
+    );
+  }
 }
 
 String _asHtml(String text) => text.isEmpty

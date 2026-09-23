@@ -98,6 +98,9 @@ class MailMessage {
   final String? messageId;
   final String? inReplyTo;
 
+  /// Every field is carried across. Cc, the attachment size and the meeting
+  /// flag used to be left behind, so a message that had just been marked
+  /// read lost its Cc line, and Reply all from it left those people out.
   MailMessage copyWith({bool? isRead, bool? isFlagged}) {
     return MailMessage(
       id: id,
@@ -107,11 +110,14 @@ class MailMessage {
       subject: subject,
       from: from,
       to: to,
+      cc: cc,
       date: date,
       preview: preview,
       isRead: isRead ?? this.isRead,
       isFlagged: isFlagged ?? this.isFlagged,
       hasAttachments: hasAttachments,
+      attachmentBytes: attachmentBytes,
+      isMeeting: isMeeting,
       messageId: messageId,
       inReplyTo: inReplyTo,
     );

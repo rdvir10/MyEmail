@@ -55,11 +55,22 @@ em.MimeMessage buildMimeMessage({
   }
 
   for (final attachment in draft.attachments) {
-    builder.addBinary(
+    final cid = attachment.contentId;
+    final part = builder.addBinary(
       attachment.bytes,
       em.MediaType.guessFromFileName(attachment.fileName),
       filename: attachment.fileName,
+      // A picture the HTML shows in place goes inline under its Content-ID,
+      // or the cid: link in a forwarded quote finds nothing.
+      disposition: cid == null
+          ? null
+          : em.ContentDispositionHeader.from(
+              em.ContentDisposition.inline,
+              filename: attachment.fileName,
+              size: attachment.size,
+            ),
     );
+    if (cid != null) part.setHeader('Content-ID', '<$cid>');
   }
 
   return builder.buildMimeMessage();

@@ -516,8 +516,13 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen> {
             if (widget.draft.lostAttachmentNames.isNotEmpty &&
                 _attachments.isEmpty)
               _Notice(
-                'This draft had an attachment. Attach it again before '
-                'sending; reopening a draft does not bring files back.',
+                widget.draft.kind == ComposeKind.forward
+                    ? 'The files on the message being forwarded could not '
+                        'be fetched, so they are not attached. Attach them '
+                        'again before sending, or forward it again when '
+                        'online.'
+                    : 'This draft had an attachment that could not be '
+                        'brought back. Attach it again before sending.',
                 theme: theme,
               ),
             if (_invalid != null)
