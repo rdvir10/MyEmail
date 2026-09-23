@@ -33,7 +33,19 @@ abstract class ImapTransport {
 
   /// Headers for `UID fromUid:*`. Note IMAP returns at least the highest
   /// existing UID even when it is below [fromUid]; callers filter.
-  Future<List<RemoteHeader>> fetchHeadersFromUid(String path, int fromUid);
+  ///
+  /// [windowStart], here and on [fetchFlags], [existingUids] and
+  /// [refreshHeaders], is the date of the oldest message cached for the
+  /// folder: how far back the cached window reaches. IMAP has no use for it,
+  /// because its UIDs follow arrival order. Graph's numbers do not always —
+  /// a message moved in, or older mail paged in, is numbered when it is
+  /// first seen — so a scan there that stopped at a number missed messages,
+  /// and it stops at this date instead.
+  Future<List<RemoteHeader>> fetchHeadersFromUid(
+    String path,
+    int fromUid, {
+    DateTime? windowStart,
+  });
 
   /// Flags for `UID fromUid:toUid`, optionally only those changed since a
   /// MODSEQ (CONDSTORE). Without CONDSTORE the transport ignores
@@ -43,11 +55,17 @@ abstract class ImapTransport {
     int fromUid,
     int toUid, {
     int? changedSinceModSeq,
+    DateTime? windowStart,
   });
 
   /// Which UIDs in the range still exist, so deletions made elsewhere can be
   /// mirrored. `UID SEARCH UID fromUid:toUid`.
-  Future<Set<int>> existingUids(String path, int fromUid, int toUid);
+  Future<Set<int>> existingUids(
+    String path,
+    int fromUid,
+    int toUid, {
+    DateTime? windowStart,
+  });
 
   Future<MailBody> fetchBody(String path, int uid);
 
@@ -78,8 +96,9 @@ abstract class ImapTransport {
   Future<List<RemoteHeader>> refreshHeaders(
     String path,
     int fromUid,
-    int toUid,
-  ) async =>
+    int toUid, {
+    DateTime? windowStart,
+  }) async =>
       const [];
 
   /// Whether [refreshHeaders] is worth calling at all.

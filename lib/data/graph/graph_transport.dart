@@ -183,9 +183,19 @@ class GraphTransport implements ImapTransport {
     if (oldPath.substring(oldCut + 1) != newName) {
       await api.renameFolder(id, newName);
     }
-    _folderIds.remove(oldPath);
-    _folderIds[newPath] = id;
-    await idMap.forgetFolder(accountId, oldPath);
+    // The folder and everything under it now live at the new path. Graph
+    // keeps every id, so the ids and the numbering move with them; the
+    // engine moves the cached rows the same way.
+    _folderIds = {
+      for (final e in _folderIds.entries)
+        if (e.key == oldPath)
+          newPath: e.value
+        else if (e.key.startsWith('$oldPath/'))
+          '$newPath${e.key.substring(oldPath.length)}': e.value
+        else
+          e.key: e.value,
+    };
+    await idMap.renameFolder(accountId, oldPath, newPath);
   }
 
   @override
@@ -227,16 +237,29 @@ class GraphTransport implements ImapTransport {
   @override
   Future<List<RemoteHeader>> fetchHeadersFromUid(
     String path,
-    int fromUid,
-  ) async {
-    // Everything numbered at or above fromUid, which for messages seen in
-    // arrival order means everything newer than the last sync.
-    final fresh = await _scanBack(path, downToUid: fromUid);
+    int fromUid, {
+    DateTime? windowStart,
+  }) async {
+    // Everything numbered at or above fromUid: mail that arrived since the
+    // last sync, and mail moved in, which keeps its old date but gets a new
+    // number. The scan reaches back across the whole cached window to find
+    // the second kind, which can sit anywhere in date order.
+    final fresh = await _scanBack(
+      path,
+      downToUid: fromUid,
+      downToDate: windowStart,
+    );
     return _headers(
       path,
       [
         for (final m in fresh.reversed)
-          if ((fresh.uids[m.id] ?? 0) >= fromUid) m,
+          if ((fresh.uids[m.id] ?? 0) >= fromUid &&
+              // The last page of the scan reaches past the window, and mail
+              // down there, numbered on the way past, is older mail for
+              // paging to bring in, not new mail. Returned here it would
+              // stretch the window by a page on every sync.
+              (windowStart == null || !m.received.isBefore(windowStart)))
+            m,
       ],
     );
   }
@@ -247,10 +270,15 @@ class GraphTransport implements ImapTransport {
     int fromUid,
     int toUid, {
     int? changedSinceModSeq,
+    DateTime? windowStart,
   }) async {
     // changedSinceModSeq is ignored: Graph has no CONDSTORE, so this reports
     // the whole range and the caller compares.
-    final scan = await _scanBack(path, downToUid: fromUid);
+    final scan = await _scanBack(
+      path,
+      downToUid: fromUid,
+      downToDate: windowStart,
+    );
     return [
       for (final m in scan.messages)
         if (_inRange(scan.uids[m.id], fromUid, toUid))
@@ -269,9 +297,14 @@ class GraphTransport implements ImapTransport {
   Future<List<RemoteHeader>> refreshHeaders(
     String path,
     int fromUid,
-    int toUid,
-  ) async {
-    final scan = await _scanBack(path, downToUid: fromUid);
+    int toUid, {
+    DateTime? windowStart,
+  }) async {
+    final scan = await _scanBack(
+      path,
+      downToUid: fromUid,
+      downToDate: windowStart,
+    );
     return _headers(path, [
       for (final m in scan.messages)
         if (_inRange(scan.uids[m.id], fromUid, toUid)) m,
@@ -279,8 +312,17 @@ class GraphTransport implements ImapTransport {
   }
 
   @override
-  Future<Set<int>> existingUids(String path, int fromUid, int toUid) async {
-    final scan = await _scanBack(path, downToUid: fromUid);
+  Future<Set<int>> existingUids(
+    String path,
+    int fromUid,
+    int toUid, {
+    DateTime? windowStart,
+  }) async {
+    final scan = await _scanBack(
+      path,
+      downToUid: fromUid,
+      downToDate: windowStart,
+    );
     return {
       for (final m in scan.messages)
         if (_inRange(scan.uids[m.id], fromUid, toUid)) scan.uids[m.id]!,
@@ -581,12 +623,21 @@ class GraphTransport implements ImapTransport {
     return id;
   }
 
-  /// Page back through a folder, newest first, until every message down to
-  /// [downToUid] has been seen.
+  /// Page back through a folder, newest first, until the cached window has
+  /// been covered.
   ///
   /// Numbering happens here, oldest of each page first, so the numbers keep
-  /// rising with arrival order.
-  /// Page back through a folder until [downToUid] is reached.
+  /// rising with arrival order for mail arriving in the ordinary way.
+  ///
+  /// Where it stops. With [downToDate] — the oldest cached message's date —
+  /// once a page reaches back past it: every cached message has then been
+  /// seen, whatever its number. Without it, at the first page holding a
+  /// number at or below [downToUid]. That was the only rule once, and it
+  /// assumed numbers follow dates, which they do not for mail moved in (a
+  /// new number, an old date) or older mail paged in (numbered when first
+  /// seen, after the newer mail). A moved-in message below the first page
+  /// was never found, and paged-in mail was taken for deleted on the next
+  /// sync.
   ///
   /// One sync does this three or four times over — new mail, flags,
   /// deletions, previews — each a page of a hundred messages per request to
@@ -595,7 +646,11 @@ class GraphTransport implements ImapTransport {
   /// transport that reports a folder as it was a moment ago is a bug waiting
   /// for the moment it matters. Sharing has to come from asking once and
   /// passing the answer down, not from a cache with a timer on it.
-  Future<_Scan> _scanBack(String path, {required int downToUid}) async {
+  Future<_Scan> _scanBack(
+    String path, {
+    required int downToUid,
+    DateTime? downToDate,
+  }) async {
     final folderId = await _folderId(path);
     final messages = <GraphMessage>[];
     final uids = <String, int>{};
@@ -617,13 +672,18 @@ class GraphTransport implements ImapTransport {
       messages.addAll(batch);
       uids.addAll(assigned);
 
+      if (batch.length < _pageSize) break;
+      if (downToDate != null) {
+        // Newest first, so the last in the page is the oldest seen so far.
+        if (batch.last.received.isBefore(downToDate)) break;
+        continue;
+      }
       // Past the bottom of what was asked for, and no earlier page can hold
-      // anything newer.
+      // anything newer, as long as numbers follow dates.
       final lowest = batch
           .map((m) => assigned[m.id] ?? 0)
           .fold<int>(1 << 62, (a, b) => a < b ? a : b);
       if (lowest <= downToUid) break;
-      if (batch.length < _pageSize) break;
     }
 
     return _Scan(messages: messages, uids: uids);

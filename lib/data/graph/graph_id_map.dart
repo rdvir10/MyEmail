@@ -50,6 +50,15 @@ abstract class GraphIdMap {
   /// Drop a folder's numbering, for a folder that is gone.
   Future<void> forgetFolder(String accountId, String path);
 
+  /// Carry a folder's numbering, and every folder's under it, to a new path.
+  ///
+  /// For a rename or a move, which the cache follows by re-keying its rows
+  /// under their old numbers. The numbering has to follow too. It used to be
+  /// dropped, the folder was numbered from 1 again at its new path, and the
+  /// cached rows' numbers then belonged to other messages: the wrong body
+  /// under a subject, and a delete or a move landing on a different message.
+  Future<void> renameFolder(String accountId, String oldPath, String newPath);
+
   /// Forget particular numbers, for messages that have left this folder.
   ///
   /// Only the mapping goes. The counter does not move back, so the numbers
@@ -175,6 +184,39 @@ class DriftGraphIdMap implements GraphIdMap {
           .go();
 
   @override
+  Future<void> renameFolder(
+    String accountId,
+    String oldPath,
+    String newPath,
+  ) async {
+    if (oldPath == newPath) return;
+    const scope = "WHERE account_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')";
+    await db.transaction(() async {
+      // Anything left at the destination belongs to no folder that exists
+      // now, and would collide with the rows arriving.
+      await db.customStatement('DELETE FROM graph_ids $scope', [
+        accountId,
+        newPath,
+        '${_escapeLike(newPath)}/%',
+      ]);
+      // The same prefix swap the cache makes for its messages.
+      await db.customStatement(
+        'UPDATE graph_ids SET path = ? || substr(path, ?) $scope',
+        [
+          newPath,
+          oldPath.length + 1,
+          accountId,
+          oldPath,
+          '${_escapeLike(oldPath)}/%',
+        ],
+      );
+    });
+  }
+
+  static String _escapeLike(String s) =>
+      s.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
+
+  @override
   Future<void> forgetMoved(
     String accountId,
     String path,
@@ -275,6 +317,33 @@ class MemoryGraphIdMap implements GraphIdMap {
     _byFolder.remove((accountId, path));
     // The counter stays. Numbers are never reused, and a folder emptied and
     // refilled must not hand out numbers a stale cache row still points at.
+  }
+
+  @override
+  Future<void> renameFolder(
+    String accountId,
+    String oldPath,
+    String newPath,
+  ) async {
+    if (oldPath == newPath) return;
+    String? moved(String path) {
+      if (path == oldPath) return newPath;
+      if (path.startsWith('$oldPath/')) {
+        return '$newPath${path.substring(oldPath.length)}';
+      }
+      return null;
+    }
+
+    for (final key in {..._byFolder.keys, ..._next.keys}) {
+      if (key.$1 != accountId) continue;
+      final to = moved(key.$2);
+      if (to == null) continue;
+      final target = (accountId, to);
+      final numbers = _byFolder.remove(key);
+      if (numbers != null) _byFolder[target] = numbers;
+      final counter = _next.remove(key);
+      if (counter != null) _next[target] = counter;
+    }
   }
 
   @override

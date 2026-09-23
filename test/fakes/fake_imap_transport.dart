@@ -88,7 +88,11 @@ class FakeImapTransport implements ImapTransport {
   }
 
   @override
-  Future<List<RemoteHeader>> fetchHeadersFromUid(String path, int fromUid) async {
+  Future<List<RemoteHeader>> fetchHeadersFromUid(
+    String path,
+    int fromUid, {
+    DateTime? windowStart,
+  }) async {
     calls.add('UID FETCH $path $fromUid:*');
     final ordered = _require(path).ordered;
     if (ordered.isEmpty) return const [];
@@ -106,6 +110,7 @@ class FakeImapTransport implements ImapTransport {
     int fromUid,
     int toUid, {
     int? changedSinceModSeq,
+    DateTime? windowStart,
   }) async {
     calls.add('UID FETCH $path $fromUid:$toUid FLAGS'
         '${changedSinceModSeq == null ? '' : ' CHANGEDSINCE $changedSinceModSeq'}');
@@ -120,7 +125,12 @@ class FakeImapTransport implements ImapTransport {
   }
 
   @override
-  Future<Set<int>> existingUids(String path, int fromUid, int toUid) async {
+  Future<Set<int>> existingUids(
+    String path,
+    int fromUid,
+    int toUid, {
+    DateTime? windowStart,
+  }) async {
     calls.add('UID SEARCH $path $fromUid:$toUid');
     return {
       for (final uid in _require(path).messages.keys)
@@ -259,8 +269,9 @@ class FakeImapTransport implements ImapTransport {
   Future<List<RemoteHeader>> refreshHeaders(
     String path,
     int fromUid,
-    int toUid,
-  ) async {
+    int toUid, {
+    DateTime? windowStart,
+  }) async {
     _online();
     calls.add('REFRESH $path $fromUid:$toUid');
     if (!suppliesPreviews) return const [];

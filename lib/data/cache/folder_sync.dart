@@ -65,8 +65,28 @@ class FolderSync {
       return SyncResult(added: added, serverExists: status.exists);
     }
 
+    // What is cached now, before anything is added: the rows the deletion
+    // check runs over, and how far back the window reaches, which a
+    // transport whose numbers do not follow dates needs to know. See
+    // ImapTransport.fetchHeadersFromUid.
+    final cached = await store.readMessages(
+      accountId,
+      path,
+      offset: 0,
+      limit: 1 << 30,
+    );
+    final windowStart = cached.isEmpty
+        ? null
+        : cached
+            .map((m) => m.date)
+            .reduce((a, b) => a.isBefore(b) ? a : b);
+
     // New mail.
-    final fresh = await transport.fetchHeadersFromUid(path, range.max + 1);
+    final fresh = await transport.fetchHeadersFromUid(
+      path,
+      range.max + 1,
+      windowStart: windowStart,
+    );
     final newHeaders = [
       for (final h in fresh)
         if (h.uid > range.max) h,
@@ -81,18 +101,18 @@ class FolderSync {
       range.min,
       range.max,
       changedSinceModSeq: useCondStore ? previous.highestModSeq : null,
+      windowStart: windowStart,
     );
     await store.updateFlags(accountId, path, {
       for (final f in flags) f.uid: (isRead: f.isRead, isFlagged: f.isFlagged),
     });
 
     // Deletions.
-    final existing = await transport.existingUids(path, range.min, range.max);
-    final cached = await store.readMessages(
-      accountId,
+    final existing = await transport.existingUids(
       path,
-      offset: 0,
-      limit: 1 << 30,
+      range.min,
+      range.max,
+      windowStart: windowStart,
     );
     final gone = {
       for (final m in cached)
@@ -109,8 +129,12 @@ class FolderSync {
     // never runs and never costs a round trip that could not help.
     if (transport.canRefreshHeaders &&
         cached.any((m) => m.preview.isEmpty && !gone.contains(m.uid))) {
-      final refreshed =
-          await transport.refreshHeaders(path, range.min, range.max);
+      final refreshed = await transport.refreshHeaders(
+        path,
+        range.min,
+        range.max,
+        windowStart: windowStart,
+      );
       await store.upsertMessages(
         accountId,
         path,
@@ -145,10 +169,23 @@ class FolderSync {
     final start = max(1, end - (count - have) + 1);
     if (end < 1) return have;
     final headers = await transport.fetchHeadersBySequence(path, start, end);
-    final range = await store.uidRange(accountId, path);
+    // Everything not already cached. This used to keep only numbers below
+    // the window, which is how IMAP UIDs run and not how Graph's do: Graph
+    // numbers a message the first time it is seen, so older mail paged in
+    // after the newest is numbered above it, every header was dropped, and
+    // a Microsoft folder never showed more than its first two hundred.
+    final cachedUids = {
+      for (final m in await store.readMessages(
+        accountId,
+        path,
+        offset: 0,
+        limit: 1 << 30,
+      ))
+        m.uid,
+    };
     await store.upsertMessages(accountId, path, [
       for (final h in headers)
-        if (range == null || h.uid < range.min) _cached(h),
+        if (!cachedUids.contains(h.uid)) _cached(h),
     ]);
     have = await store.countMessages(accountId, path);
     return have;

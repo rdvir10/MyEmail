@@ -1,8 +1,12 @@
 import 'dart:convert';
 
+import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart' as http_testing;
+import 'package:myemail/data/cache/cache_store.dart';
+import 'package:myemail/data/cache/folder_sync.dart';
+import 'package:myemail/data/cache/mail_database.dart';
 import 'package:myemail/data/graph/graph_id_map.dart';
 import 'package:myemail/data/graph/graph_mail_api.dart';
 import 'package:myemail/data/graph/graph_transport.dart';
@@ -730,6 +734,129 @@ void main() {
 
     expect(changed, isFalse);
   });
+
+  // The folder sync over this transport, end to end. Graph numbers a message
+  // when it first sees it, not in date order, and each of these was a place
+  // the sync took the numbers for dates.
+  group('the sync over Graph', () {
+    late MemoryCacheStore cache;
+    late FolderSync sync;
+
+    setUp(() {
+      cache = MemoryCacheStore();
+      sync = FolderSync(transport: transport, store: cache, accountId: 'acct-1');
+    });
+
+    Future<List<CachedMessage>> cached(String path) =>
+        cache.readMessages('acct-1', path, offset: 0, limit: 1 << 30);
+
+    Future<Set<String>> subjects(String path) async =>
+        {for (final m in await cached(path)) m.subject};
+
+    test('older mail pages in past the first two hundred, and stays', () async {
+      server.folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox');
+      for (var i = 0; i < 350; i++) {
+        server.message('f-inbox', id: 'm$i', subject: 'M$i', minutesAgo: i);
+      }
+
+      await sync.sync('Inbox');
+      expect(await cache.countMessages('acct-1', 'Inbox'), 200);
+      // A sync with nothing new must not creep past the window either.
+      await sync.sync('Inbox');
+      expect(await cache.countMessages('acct-1', 'Inbox'), 200);
+
+      // It used to add nothing here: the older mail was numbered above the
+      // window and dropped as "not older".
+      expect(await sync.ensureCached('Inbox', 250), 250);
+      expect(await subjects('Inbox'), containsAll(['M200', 'M249']));
+      expect(await subjects('Inbox'), isNot(contains('M250')));
+
+      // And the next sync must not take it for deleted.
+      await sync.sync('Inbox');
+      expect(await cache.countMessages('acct-1', 'Inbox'), 250);
+      expect(await subjects('Inbox'), contains('M249'));
+    });
+
+    test('an older message moved in turns up in its new folder', () async {
+      server
+        ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+        ..folder(id: 'f-del', name: 'Deleted Items', wellKnown: 'deleteditems');
+      for (var i = 0; i < 150; i++) {
+        server.message('f-del', id: 'd$i', subject: 'D$i', minutesAgo: i * 2);
+      }
+      // Older than the hundred newest in Deleted Items, inside its window.
+      server.message('f-inbox', id: 'old', subject: 'Old one', minutesAgo: 251);
+      await sync.sync('Inbox');
+      await sync.sync('Deleted Items');
+
+      final uid = (await cached('Inbox')).single.uid;
+      await transport.moveMessages('Inbox', [uid], 'Deleted Items');
+      await sync.sync('Deleted Items');
+
+      // The scan used to stop at the first page, below which it lies.
+      expect(await subjects('Deleted Items'), contains('Old one'));
+    });
+
+    test('a renamed folder keeps every cached row on its own message',
+        () async {
+      // Against the database the app uses, where the numbering was dropped
+      // and the folder numbered from 1 again under its new name.
+      final db = MailDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final drift = DriftGraphIdMap(db);
+      final onDisk = GraphTransport(
+        accountId: 'acct-1',
+        idMap: drift,
+        api: GraphMailApi(
+          accessToken: ({bool force = false}) async => 'token',
+          httpClient: http_testing.MockClient(server.handle),
+        ),
+      );
+      final work = FolderSync(transport: onDisk, store: cache, accountId: 'acct-1');
+
+      server.folder(id: 'f-work', name: 'Work');
+      for (var i = 0; i < 150; i++) {
+        server.message('f-work', id: 'w$i', subject: 'W$i', minutesAgo: i);
+      }
+      await work.sync('Work');
+
+      await onDisk.renameFolder('Work', 'Clients');
+      await cache.renameFolder('acct-1', 'Work', 'Clients');
+      await work.sync('Clients');
+
+      final rows = await cached('Clients');
+      expect(rows, hasLength(150), reason: 'nothing taken for deleted');
+      final remote = await drift.remoteIdsFor(
+        'acct-1',
+        'Clients',
+        [for (final r in rows) r.uid],
+      );
+      for (final r in rows) {
+        expect(remote[r.uid], 'w${r.subject.substring(1)}', reason: r.subject);
+      }
+    });
+
+    test('the numbering of folders under a renamed one moves with them',
+        () async {
+      final db = MailDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final drift = DriftGraphIdMap(db);
+      await drift.uidsFor('acct-1', 'Work', ['a', 'b']);
+      await drift.uidsFor('acct-1', 'Work/2026', ['c']);
+      await drift.uidsFor('acct-1', 'Workshop', ['d']);
+
+      await drift.renameFolder('acct-1', 'Work', 'Clients');
+
+      expect(await drift.remoteIdsFor('acct-1', 'Clients', [1, 2]),
+          {1: 'a', 2: 'b'});
+      expect(await drift.remoteIdsFor('acct-1', 'Clients/2026', [1]),
+          {1: 'c'});
+      expect(await drift.remoteIdsFor('acct-1', 'Workshop', [1]), {1: 'd'},
+          reason: 'a folder that only starts with the same letters stays');
+      expect(await drift.highestUid('acct-1', 'Clients'), 2,
+          reason: 'the count carries on, not from 1');
+    });
+  });
 }
 
 /// A Graph mailbox in memory, answering the endpoints the transport uses.
@@ -1105,6 +1232,16 @@ class _FakeGraph {
         });
       }
       return json(message);
+    }
+
+    // Renaming a folder: a new display name, the same id.
+    if (request.method == 'PATCH' && path.contains('/me/mailFolders/')) {
+      final folder = folders[_folderIdIn(path)];
+      if (folder == null) return http.Response('{}', 404);
+      folder.addAll(
+        (jsonDecode(request.body) as Map).cast<String, Object?>(),
+      );
+      return json(folder);
     }
 
     if (request.method == 'PATCH') {

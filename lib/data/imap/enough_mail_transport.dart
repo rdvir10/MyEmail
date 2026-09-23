@@ -97,7 +97,11 @@ class EnoughMailTransport implements ImapTransport {
       });
 
   @override
-  Future<List<RemoteHeader>> fetchHeadersFromUid(String path, int fromUid) =>
+  Future<List<RemoteHeader>> fetchHeadersFromUid(
+    String path,
+    int fromUid, {
+    DateTime? windowStart,
+  }) =>
       _run((c) async {
         await _ensureSelected(c, path);
         final result = await c.uidFetchMessages(
@@ -113,6 +117,7 @@ class EnoughMailTransport implements ImapTransport {
     int fromUid,
     int toUid, {
     int? changedSinceModSeq,
+    DateTime? windowStart,
   }) =>
       _run((c) async {
         await _ensureSelected(c, path);
@@ -129,7 +134,12 @@ class EnoughMailTransport implements ImapTransport {
       });
 
   @override
-  Future<Set<int>> existingUids(String path, int fromUid, int toUid) =>
+  Future<Set<int>> existingUids(
+    String path,
+    int fromUid,
+    int toUid, {
+    DateTime? windowStart,
+  }) =>
       _run((c) async {
         await _ensureSelected(c, path);
         final result = await c.uidSearchMessages(
@@ -188,8 +198,9 @@ class EnoughMailTransport implements ImapTransport {
   Future<List<RemoteHeader>> refreshHeaders(
     String path,
     int fromUid,
-    int toUid,
-  ) async =>
+    int toUid, {
+    DateTime? windowStart,
+  }) async =>
       const [];
 
   @override
