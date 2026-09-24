@@ -1,3 +1,6 @@
+import 'dart:isolate';
+import 'dart:ui' show IsolateNameServer;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -82,12 +85,39 @@ class _AppShellState extends ConsumerState<AppShell>
     // and selecting a folder during a build is a provider modification while
     // the tree is being built.
     WidgetsBinding.instance.addPostFrameCallback((_) => _openLaunchMessage());
+    _listenForPressesDone();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    // Only if it is still ours: a later window may have taken the name.
+    if (IsolateNameServer.lookupPortByName(actionsDonePortName) ==
+        _pressesDone.sendPort) {
+      IsolateNameServer.removePortNameMapping(actionsDonePortName);
+    }
+    _pressesDone.close();
     super.dispose();
+  }
+
+  /// Where the worker says it has carried out a notification's button.
+  final _pressesDone = ReceivePort();
+
+  /// A press made while the app is open is carried out in the background
+  /// all the same, so nothing here knew a message had been deleted from
+  /// the shade and the list went on showing it. The worker says so when it
+  /// is done, and the lists are read again.
+  void _listenForPressesDone() {
+    IsolateNameServer.removePortNameMapping(actionsDonePortName);
+    IsolateNameServer.registerPortWithName(
+      _pressesDone.sendPort,
+      actionsDonePortName,
+    );
+    _pressesDone.listen((_) {
+      if (!mounted) return;
+      ref.invalidate(messagesProvider);
+      ref.invalidate(foldersProvider);
+    });
   }
 
   /// The app has come back to the front.

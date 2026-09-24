@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' show DartPluginRegistrant;
 
 import 'package:flutter/foundation.dart';
@@ -92,7 +93,16 @@ class FakeBackgroundScheduler implements BackgroundScheduler {
 ///
 /// Called at startup and again whenever the settings change, so a schedule
 /// left over from a previous run is always either updated or cancelled.
-Future<void> applyBackgroundSchedule(SyncPrefs prefs) async {
+///
+/// [restart] replaces a live worker that is already running, which a change
+/// of mode needs. Startup passes false: the settings have not changed, and
+/// replacing the worker there cut it off mid-pass every time the app was
+/// opened, after it had moved the notification mark and before it posted,
+/// so that mail was never announced.
+Future<void> applyBackgroundSchedule(
+  SyncPrefs prefs, {
+  bool restart = true,
+}) async {
   if (!_supported) return;
   await Workmanager().initialize(backgroundCallbackDispatcher);
 
@@ -107,7 +117,7 @@ Future<void> applyBackgroundSchedule(SyncPrefs prefs) async {
   if (!prefs.syncs) return;
 
   if (prefs.mode.needsForegroundService) {
-    await _startLiveWorker(prefs);
+    await _startLiveWorker(prefs, policy: liveWorkPolicy(restart: restart));
     return;
   }
 
@@ -136,21 +146,32 @@ Future<void> cancelBackgroundSchedule() async {
   await Workmanager().cancelByUniqueName(_liveUniqueName);
 }
 
+/// How to enqueue the live worker when one may already be there.
+///
+/// `replace` for a change, so changing from five-minute to push does not
+/// leave the previous worker running alongside the new one. `keep`
+/// otherwise, so one that is running is left to run.
+@visibleForTesting
+ExistingWorkPolicy liveWorkPolicy({required bool restart}) =>
+    restart ? ExistingWorkPolicy.replace : ExistingWorkPolicy.keep;
+
 /// Start (or replace) the long-running foreground worker.
 ///
 /// A one-off rather than a periodic task, because what is wanted is one
 /// process that stays alive and loops, not a job that runs and exits. It
 /// re-enqueues itself when its budget is spent; see [_runLive]. [after]
 /// holds the start back, for a worker handing over after it failed.
-Future<void> _startLiveWorker(SyncPrefs prefs, {Duration? after}) async {
+Future<void> _startLiveWorker(
+  SyncPrefs prefs, {
+  Duration? after,
+  ExistingWorkPolicy policy = ExistingWorkPolicy.replace,
+}) async {
   await Workmanager().registerOneOffTask(
     _liveUniqueName,
     _liveTaskName,
     inputData: {'mode': prefs.mode.name},
     initialDelay: after,
-    // `replace`, so changing from five-minute to push does not leave the
-    // previous worker running alongside the new one.
-    existingWorkPolicy: ExistingWorkPolicy.replace,
+    existingWorkPolicy: policy,
     constraints: Constraints(
       networkType: NetworkType.connected,
       requiresBatteryNotLow: true,
@@ -195,15 +216,61 @@ Future<void> runPendingNotificationActions() async {
 
 @pragma('vm:entry-point')
 void backgroundCallbackDispatcher() {
-  Workmanager().executeTask((task, inputData) async {
-    return switch (task) {
-      _taskName => _runOnePass(),
-      _liveTaskName => _runLive(inputData),
-      _actionsTaskName => _runPendingActions(),
-      _ => Future.value(true),
-    };
-  });
+  Workmanager().executeTask(
+    (task, inputData) async {
+      return switch (task) {
+        _taskName => _runOnePass(),
+        _liveTaskName => _runLive(inputData),
+        _actionsTaskName => _runPendingActions(),
+        _ => Future.value(true),
+      };
+    },
+    onTaskStopped: (task, _) async {
+      if (task == _liveTaskName) await _liveStop?.stop();
+    },
+  );
 }
+
+/// The running live worker's stop, while there is one.
+LiveWorkerStop? _liveStop;
+
+/// Android stopping the live worker: replaced by a change of mode, or out
+/// of its time.
+///
+/// The loop is told, finishes the pass it is on rather than being cut off
+/// mid-write, and ends. WorkManager tears the worker down as soon as its
+/// stop handler returns, so [stop] waits for the loop, but only for
+/// [grace]: a worker that will not stop is stopped anyway.
+class LiveWorkerStop {
+  LiveWorkerStop({this.grace = const Duration(seconds: 10)});
+
+  final Duration grace;
+  final _signal = Completer<void>();
+  Future<void> _finished = Future<void>.value();
+
+  /// For [LiveSyncLoop.stopSignal].
+  Future<void> get signal => _signal.future;
+
+  /// Run the loop under this stop, so [stop] can wait for it.
+  Future<T> guard<T>(Future<T> loop) {
+    _finished = loop.then<void>((_) {}, onError: (Object _) {});
+    return loop;
+  }
+
+  Future<void> stop() async {
+    if (!_signal.isCompleted) _signal.complete();
+    await _finished.timeout(grace, onTimeout: () {});
+  }
+}
+
+/// Whether a live worker whose loop has ended starts the next one.
+///
+/// Not after a stop. Android stopped it, either for a new worker already
+/// enqueued in its place or because it ran out of time, and starting one
+/// here would cancel the new one or fight the system.
+@visibleForTesting
+bool handsOver(LiveSyncOutcome outcome, SyncPrefs current) =>
+    !outcome.stoppedEarly && current.mode.needsForegroundService;
 
 /// Carry out the notification buttons that are waiting.
 ///
@@ -216,6 +283,7 @@ Future<bool> _runPendingActions() async {
     final result = await drainPendingNotificationActions();
     if (result.done > 0) {
       debugPrint('[myemail] carried out ${result.done} from the shade');
+      announceActionsDone();
     }
     return result.waiting == 0;
   } catch (e, stack) {
@@ -266,7 +334,8 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
       store: PrefsWidgetStateStore(),
     );
 
-    final outcome = await LiveSyncLoop(
+    final stop = _liveStop = LiveWorkerStop();
+    final outcome = await stop.guard(LiveSyncLoop(
       // The widgets are brought up to date after every pass rather than when
       // the worker finishes, because this worker runs for hours.
       onePass: () async {
@@ -282,15 +351,14 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
         return report;
       },
       waitForNext: () => _waitForNext(mode, liveEngine),
-    ).run();
+      stopSignal: stop.signal,
+    ).run());
     debugPrint('[myemail] live worker finished: $outcome');
 
     // Hand over to a fresh worker unless the settings changed underneath us,
-    // which is the one case where stopping is correct.
+    // or Android stopped this one.
     final current = await state.readPrefs();
-    if (current.mode.needsForegroundService) {
-      await _startLiveWorker(current);
-    }
+    if (handsOver(outcome, current)) await _startLiveWorker(current);
     return true;
   } catch (e, stack) {
     debugPrint('[myemail] live worker threw: $e');

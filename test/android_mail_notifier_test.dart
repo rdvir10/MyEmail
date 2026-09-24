@@ -2,6 +2,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/notifications/android_mail_notifier.dart';
 import 'package:myemail/data/notifications/notification_actions.dart';
+import 'package:myemail/data/notifications/pending_actions.dart';
 
 /// Taps and button presses through the real notifier, with only Android's
 /// plugin faked.
@@ -11,7 +12,7 @@ import 'package:myemail/data/notifications/notification_actions.dart';
 /// fake notifier instead, which has a read-and-clear of its own.
 void main() {
   late _Plugin plugin;
-  late List<NotificationResponse> actions;
+  late List<PendingAction> actions;
   late AndroidMailNotifier notifier;
 
   setUp(() {
@@ -19,7 +20,7 @@ void main() {
     actions = [];
     notifier = AndroidMailNotifier(
       plugin: plugin,
-      onAction: (response) async => actions.add(response),
+      queueAction: (action) async => actions.add(action),
     );
   });
 
@@ -40,7 +41,11 @@ void main() {
     expect(await notifier.takeLaunchPayload(), 'a:Travel#7');
   });
 
-  test('a button is carried out, and opens nothing', () async {
+  test('a button that ever arrives here is queued, and opens nothing',
+      () async {
+    // Android sends the buttons to a background isolate, app open or not,
+    // so this path is not normally taken. If it is, the press goes to the
+    // worker like any other rather than being lost.
     await notifier.ensureReady();
 
     plugin.tapped!(const NotificationResponse(
@@ -52,7 +57,7 @@ void main() {
     await pumpEventQueue();
 
     expect(actions.single.actionId, NotificationActions.deleteId);
-    expect(actions.single.payload, 'a:INBOX#1');
+    expect(actions.single.messageId, 'a:INBOX#1');
     expect(await notifier.takeLaunchPayload(), isNull,
         reason: 'Delete must not open the message it deleted');
   });

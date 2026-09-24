@@ -187,8 +187,10 @@ void main() {
     // Set up again with no tap handler, the plugin dropped the app's own:
     // until a restart, tapping new mail brought the app forward without
     // opening the message. No Dart test can run the plugin, so this reads
-    // the two places the app drains the queue.
-    for (final path in ['lib/main.dart', 'lib/ui/shell/app_shell.dart']) {
+    // the place the app drains the queue. (main.dart had a second, for
+    // presses delivered to the app itself, which Android never does for
+    // these buttons.)
+    for (final path in ['lib/ui/shell/app_shell.dart']) {
       final source = File(path).readAsStringSync();
       expect(source, contains('drainPendingNotificationActions('),
           reason: path);

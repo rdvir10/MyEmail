@@ -11,6 +11,7 @@ import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/settings_backup.dart';
 import 'package:myemail/state/backup_providers.dart';
+import 'package:myemail/state/compose_providers.dart' show signaturesProvider;
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/accounts/add_account_screen.dart';
 import 'package:myemail/ui/settings/backup_screen.dart';
@@ -312,6 +313,50 @@ void main() {
       final report = await service.import(backup);
 
       expect(report.settingsRestored, 0);
+    });
+
+    test('a setting kept as text that cannot be read is not restored',
+        () async {
+      // Written as it was, "{}" for the signatures broke compose on every
+      // account, and "{}" for Quick Steps the ribbon, until the app's data
+      // was cleared.
+      await uiState.writeString(UiStateKeys.signatures,
+          '[{"accountId":"acct-aaa","html":"<p>Mine</p>"}]');
+      final backup = SettingsBackup(
+        accounts: const [],
+        entries: const {
+          UiStateKeys.signatures: '{}',
+          UiStateKeys.quickSteps: '{"not":"a list"}',
+          UiStateKeys.display: '[1, 2]',
+          UiStateKeys.paneWidths: '{"tree":"wide"}',
+          UiStateKeys.folderPane: 'hidden',
+        },
+      );
+
+      final report = await service.import(backup);
+
+      expect(report.settingsRestored, 1, reason: 'only the folder pane');
+      expect(uiState.readString(UiStateKeys.signatures), contains('Mine'));
+      expect(uiState.readString(UiStateKeys.quickSteps), isNull);
+      expect(uiState.readString(UiStateKeys.display), isNull);
+    });
+
+    test('a damaged signature costs that one, not compose', () async {
+      await uiState.writeString(
+        UiStateKeys.signatures,
+        '[{"accountId":"acct-aaa","html":"<p>Mine</p>"},'
+        '{"accountId":5},"not a signature"]',
+      );
+      final c = ProviderContainer(
+        overrides: [uiStateStoreProvider.overrideWithValue(uiState)],
+      );
+      addTearDown(c.dispose);
+
+      expect(c.read(signaturesProvider).keys, ['acct-aaa']);
+
+      await uiState.writeString(UiStateKeys.signatures, '{}');
+      c.invalidate(signaturesProvider);
+      expect(c.read(signaturesProvider), isEmpty);
     });
 
     test('a value of the wrong shape is skipped rather than crashing',
@@ -814,8 +859,8 @@ void main() {
     });
 
     test('an account already here keeps its own secret', () async {
-      // The file's copy may be older than the device's, and a rotated OAuth
-      // refresh token in it would be dead — writing it would sign a working
+      // The file's copy may be older than the device's, and an older OAuth
+      // refresh token may have run out — writing it could sign a working
       // account out.
       final creds = MemoryCredentialStore();
       await creds.writeSecret('acct-aaa', 'from-the-file');
@@ -858,6 +903,67 @@ void main() {
       expect(report.accountsSignedIn, 0);
       expect(report.needsSignIn, isTrue);
       expect(await toCreds.readSecret('acct-aaa'), isNull);
+    });
+
+    test('a sign-in that will not store leaves nothing half-restored',
+        () async {
+      // Secrets used to go in after the account list. A Keystore write
+      // failing part way left the rest of the accounts saved with no
+      // sign-in, and Restore again called them already here and skipped
+      // their secrets, so each had to be signed in by hand.
+      final creds = MemoryCredentialStore();
+      await creds.writeSecret('acct-aaa', 'abcdabcdabcdabcd');
+      await creds.writeSecret('acct-bbb', '{"refresh_token":"r-1"}');
+      final file = (await serviceWith(
+        store: accounts,
+        creds: creds,
+        ui: uiState,
+      ).export(passphrase: passphrase))
+          .toJsonString();
+
+      final toAccounts = MemoryAccountStore();
+      final toCreds = _FailingCredentialStore(failOnWrite: 2);
+      final toUi = MemoryUiStateStore();
+      final to = serviceWith(store: toAccounts, creds: toCreds, ui: toUi);
+
+      await expectLater(
+        to.import(SettingsBackup.parse(file), passphrase: passphrase),
+        throwsA(isA<StateError>()),
+      );
+      expect(toAccounts.read(), isEmpty);
+      expect(await toCreds.readSecret('acct-aaa'), isNull,
+          reason: 'the one that did go in is taken out again');
+
+      // And trying again, with the Keystore working, restores it all.
+      toCreds.failOnWrite = null;
+      final report =
+          await to.import(SettingsBackup.parse(file), passphrase: passphrase);
+      expect(report.accountsSignedIn, 2);
+      expect(await toCreds.readSecret('acct-bbb'), '{"refresh_token":"r-1"}');
+    });
+
+    test('an account already here with no sign-in takes the one in the file',
+        () async {
+      // What an older build's failed restore left behind: the account,
+      // without its secret.
+      final creds = MemoryCredentialStore();
+      await creds.writeSecret('acct-aaa', 'abcdabcdabcdabcd');
+      final file = (await serviceWith(
+        store: accounts,
+        creds: creds,
+        ui: uiState,
+      ).export(passphrase: passphrase))
+          .toJsonString();
+
+      final liveCreds = MemoryCredentialStore();
+      final report = await serviceWith(
+        store: MemoryAccountStore([personal]),
+        creds: liveCreds,
+        ui: MemoryUiStateStore(),
+      ).import(SettingsBackup.parse(file), passphrase: passphrase);
+
+      expect(await liveCreds.readSecret('acct-aaa'), 'abcdabcdabcdabcd');
+      expect(report.accountsSignedInAgain, 1);
     });
 
     test('an older build reads a file with secrets, minus the secrets', () {
@@ -966,4 +1072,22 @@ class _FakeBackupFiles implements BackupFiles {
 
   @override
   Future<String?> pick() async => toPick;
+}
+
+/// A Keystore whose [failOnWrite]th write throws, as a full or locked one
+/// does.
+class _FailingCredentialStore extends MemoryCredentialStore {
+  _FailingCredentialStore({this.failOnWrite});
+
+  int? failOnWrite;
+  int _writes = 0;
+
+  @override
+  Future<void> writeSecret(String accountId, String secret) async {
+    _writes++;
+    if (failOnWrite != null && _writes >= failOnWrite!) {
+      throw StateError('Keystore write failed');
+    }
+    await super.writeSecret(accountId, secret);
+  }
 }

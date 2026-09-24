@@ -15,8 +15,9 @@ class MailNotification {
     required this.when,
   });
 
-  /// Stable for a given message, so a message that is still unread on the next
-  /// pass updates its notification instead of posting a second one.
+  /// Stable for a given message. Android knows a notification by this and
+  /// the message id together (see [MailNotifier.withdraw]), which is how one
+  /// message's notification is found again to be taken down.
   final int id;
 
   /// Who it is from. The sender's name where there is one, their address
@@ -78,6 +79,18 @@ abstract class MailNotifier {
 
   Future<void> cancelAll();
 
+  /// The messages that have a new-mail notification showing, by message id.
+  Future<Set<String>> shownMessageIds();
+
+  /// Take down the new-mail notifications of the messages [which] picks out:
+  /// read, moved or deleted since they were announced. Left up, their
+  /// buttons act on mail that is no longer there, and Delete says it failed.
+  /// An account's summary row goes too once nothing is left under it.
+  ///
+  /// Never throws. A notification that could not be taken down is not a
+  /// reason for the delete that prompted it to fail.
+  Future<void> withdraw(bool Function(String messageId) which);
+
   /// The message id a notification tap launched the app with, if any. Consumed
   /// once: asking twice returns null, so a rebuild does not reopen it.
   Future<String?> takeLaunchPayload();
@@ -118,7 +131,19 @@ class FakeMailNotifier implements MailNotifier {
     required List<MailNotification> notifications,
   }) async {
     batches.add((account: account, folder: folder, notifications: notifications));
+    withdrawn.removeAll([for (final n in notifications) n.payload]);
   }
+
+  /// The messages whose notifications have been taken down.
+  final Set<String> withdrawn = {};
+
+  @override
+  Future<Set<String>> shownMessageIds() async =>
+      {for (final n in posted) n.payload}.difference(withdrawn);
+
+  @override
+  Future<void> withdraw(bool Function(String messageId) which) async =>
+      withdrawn.addAll((await shownMessageIds()).where(which));
 
   /// How many times everything showing was taken down.
   int cancelAllCalls = 0;

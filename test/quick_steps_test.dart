@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -90,6 +92,41 @@ void main() {
     test('corrupt stored JSON yields no steps rather than crashing', () async {
       final store = MemoryUiStateStore();
       await store.writeString(UiStateKeys.quickSteps, 'not json');
+      expect(container(store).read(quickStepsProvider), isEmpty);
+    });
+
+    test('one step this build cannot read costs that step, not the rest',
+        () async {
+      // A backup from a newer build, restored here: its action type is one
+      // this build has never heard of.
+      final store = MemoryUiStateStore();
+      final stored = jsonEncode([
+        _step('Keep me', const [QuickStepAction(QuickStepActionType.flag)],
+                id: 'qs-keep')
+            .toJson(),
+        {
+          'id': 'qs-new',
+          'name': 'From a newer build',
+          'actions': [
+            {'type': 'snoozeUntilMonday'},
+          ],
+        },
+        {'id': 'qs-broken'},
+        'not a step',
+      ]);
+      await store.writeString(UiStateKeys.quickSteps, stored);
+
+      final c = container(store);
+      expect(c.read(quickStepsProvider).map((s) => s.name), ['Keep me']);
+      await Future<void>.delayed(Duration.zero);
+      expect(store.readString(UiStateKeys.quickSteps), stored,
+          reason: 'reading must not save over what it could not read');
+    });
+
+    test('a stored value of the wrong shape does not stop the ribbon',
+        () async {
+      final store = MemoryUiStateStore();
+      await store.writeString(UiStateKeys.quickSteps, '{}');
       expect(container(store).read(quickStepsProvider), isEmpty);
     });
 

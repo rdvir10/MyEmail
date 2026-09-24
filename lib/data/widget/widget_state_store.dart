@@ -155,6 +155,14 @@ abstract class WidgetStateStore {
 
   /// Forget the widgets that are no longer on the home screen.
   Future<void> keepOnly(Iterable<String> appWidgetIds);
+
+  /// Follow a folder renamed or moved: each widget's folder id through
+  /// [remap]. True when any widget changed.
+  ///
+  /// A folder id is its path, so a rename, a move or either done to a parent
+  /// changes it. A widget left holding the old id was written as unassigned
+  /// on the next refresh and stayed blank until it was set up again.
+  Future<bool> remapFolders(String Function(String folderId) remap);
 }
 
 abstract final class WidgetStateKeys {
@@ -215,6 +223,19 @@ class PrefsWidgetStateStore implements WidgetStateStore {
     await _write(next);
   }
 
+  @override
+  Future<bool> remapFolders(String Function(String folderId) remap) async {
+    final current = await readMailboxes();
+    final next = {
+      for (final e in current.entries)
+        e.key: e.value.copyWith(folderId: remap(e.value.folderId)),
+    };
+    final changed =
+        current.entries.any((e) => next[e.key]!.folderId != e.value.folderId);
+    if (changed) await _write(next);
+    return changed;
+  }
+
   Future<void> _write(Map<String, WidgetMailbox> mailboxes) => _prefs.setString(
         WidgetStateKeys.mailboxes,
         jsonEncode({
@@ -244,5 +265,17 @@ class MemoryWidgetStateStore implements WidgetStateStore {
   Future<void> keepOnly(Iterable<String> appWidgetIds) async {
     final live = appWidgetIds.toSet();
     mailboxes.removeWhere((id, _) => !live.contains(id));
+  }
+
+  @override
+  Future<bool> remapFolders(String Function(String folderId) remap) async {
+    var changed = false;
+    for (final e in mailboxes.entries.toList()) {
+      final folderId = remap(e.value.folderId);
+      if (folderId == e.value.folderId) continue;
+      mailboxes[e.key] = e.value.copyWith(folderId: folderId);
+      changed = true;
+    }
+    return changed;
   }
 }

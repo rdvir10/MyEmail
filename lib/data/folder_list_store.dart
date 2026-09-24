@@ -28,9 +28,14 @@ class PrefsFolderListStore implements FolderListStore {
   List<RemoteFolder>? read(String accountId) {
     final raw = _prefs.getString(_key(accountId));
     if (raw == null || raw.isEmpty) return null;
+    // Anything wrong with what is stored reads as nothing stored, which the
+    // engine already handles by asking the server. An unknown role name
+    // throws ArgumentError and a malformed entry TypeError, and letting
+    // either out made every delete on the account fail, since finding
+    // Trash reads this list first.
     try {
       return decodeFolderList(raw);
-    } on FormatException {
+    } catch (_) {
       return null;
     }
   }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/account_store.dart';
 import 'package:myemail/data/cache/cache_store.dart';
@@ -7,6 +9,7 @@ import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/notifications/mail_notifier.dart';
 import 'package:myemail/data/sync/background_sync.dart';
 import 'package:myemail/data/sync/background_worker.dart';
+import 'package:myemail/data/sync/live_sync.dart';
 import 'package:myemail/data/sync/sync_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/folder_role.dart';
@@ -15,6 +18,7 @@ import 'package:myemail/state/sync_providers.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
+import 'package:workmanager/workmanager.dart' show ExistingWorkPolicy;
 
 import 'fakes/fake_imap_transport.dart';
 
@@ -198,6 +202,67 @@ void main() {
       await engine.releaseRemovedAccounts();
 
       expect(server.calls, contains('LOGOUT'));
+    });
+  });
+
+  group('the push worker and the app starting', () {
+    test('opening the app leaves a running worker alone', () {
+      // Replacing it at every start cut it off mid-pass, after the mark had
+      // moved and before the notifications went out.
+      expect(liveWorkPolicy(restart: false), ExistingWorkPolicy.keep);
+      expect(liveWorkPolicy(restart: true), ExistingWorkPolicy.replace,
+          reason: 'a change of mode still replaces it');
+    });
+
+    test('a stop lets the pass in flight finish, then ends the loop',
+        () async {
+      final stop = LiveWorkerStop();
+      final gate = Completer<void>();
+      final passStarted = Completer<void>();
+      var passes = 0;
+      final loop = stop.guard(LiveSyncLoop(
+        onePass: () async {
+          passes++;
+          passStarted.complete();
+          await gate.future;
+          return const BackgroundSyncReport();
+        },
+        waitForNext: () async {},
+        sleep: (_) async {},
+        stopSignal: stop.signal,
+      ).run());
+      await passStarted.future;
+
+      var stopped = false;
+      final stopping = stop.stop().then((_) => stopped = true);
+      await pumpEventQueue();
+      expect(stopped, isFalse, reason: 'held until the pass is done');
+
+      gate.complete();
+      await stopping;
+      final outcome = await loop;
+      expect(passes, 1);
+      expect(outcome.stoppedEarly, isTrue);
+    });
+
+    test('a pass that will not finish is not waited on for ever', () async {
+      final stop = LiveWorkerStop(grace: const Duration(milliseconds: 10));
+      stop.guard(Completer<void>().future);
+
+      await stop.stop();
+    });
+
+    test('a stopped worker does not start the next one', () {
+      const push = SyncPrefs(mode: SyncMode.realtime);
+      const stopped =
+          LiveSyncOutcome(passes: 3, failures: 0, stoppedEarly: true);
+      const spent =
+          LiveSyncOutcome(passes: 3, failures: 0, stoppedEarly: false);
+
+      expect(handsOver(stopped, push), isFalse);
+      expect(handsOver(spent, push), isTrue);
+      expect(handsOver(spent, const SyncPrefs(mode: SyncMode.periodic)),
+          isFalse);
     });
   });
 }

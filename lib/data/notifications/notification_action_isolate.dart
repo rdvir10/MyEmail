@@ -1,5 +1,4 @@
-import 'dart:convert';
-import 'dart:ui' show DartPluginRegistrant;
+import 'dart:ui' show DartPluginRegistrant, IsolateNameServer;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -64,6 +63,23 @@ Future<void> queueNotificationAction(PendingAction action) async {
   } catch (e, stack) {
     debugPrint('[myemail] could not queue a notification action: $e');
     debugPrint('$stack');
+  }
+}
+
+/// The name the running app listens under to hear that presses were
+/// carried out somewhere else.
+///
+/// The worker that carries them out runs in its own isolate, and the app,
+/// open all the while, went on showing a message deleted from the shade
+/// until something else happened to refresh its lists.
+const actionsDonePortName = 'myemail.notification-actions.done';
+
+/// Tell the app, if it is running, to read its lists again.
+void announceActionsDone() {
+  try {
+    IsolateNameServer.lookupPortByName(actionsDonePortName)?.send(null);
+  } catch (e) {
+    debugPrint('[myemail] could not tell the app about a press: $e');
   }
 }
 
@@ -226,13 +242,5 @@ Future<void> reportOutcome(
 Map<String, Signature> readSignatures(UiStateStore store) {
   final raw = store.readString(UiStateKeys.signatures);
   if (raw == null || raw.isEmpty) return const {};
-  try {
-    final list = (jsonDecode(raw) as List<dynamic>).cast<Map<String, dynamic>>();
-    return {
-      for (final j in list)
-        if (Signature.fromJson(j) case final s) s.accountId: s,
-    };
-  } on FormatException {
-    return const {};
-  }
+  return Signature.mapFromJson(raw) ?? const {};
 }

@@ -1,7 +1,10 @@
 import 'dart:convert';
 
 import '../../domain/account.dart';
+import '../../domain/display_settings.dart';
+import '../../domain/quick_step.dart';
 import '../../domain/settings_backup.dart';
+import '../../domain/signature.dart';
 import '../account_store.dart';
 import '../credential_store.dart';
 import '../ui_state_store.dart';
@@ -164,23 +167,56 @@ class BackupService {
     String remap(String value) => _remap(value, ids);
     bool keep(String value) => !covered.contains(_accountOf(value));
 
-    if (added.isNotEmpty) {
-      await accountStore.write([...existing, ...added]);
+    // Secrets before the account list, and taken out again if one will not
+    // go in. The other way round, a Keystore write failing part way left
+    // the rest of the accounts saved with no sign-in and no settings, and
+    // Restore again counted them as already here and skipped their secrets.
+    //
+    // Only for accounts this restore adds, or ones already here with
+    // nothing stored. An account already here with a secret keeps it: the
+    // file's copy may be older than the one on the device, and an older
+    // OAuth token may have run out, so writing it could sign a working
+    // account out.
+    var signedIn = 0;
+    var signedInAgain = 0;
+    final store = credentialStore;
+    final written = <String>[];
+    try {
+      if (store != null) {
+        for (final account in added) {
+          final secret = secrets[account.id];
+          if (secret == null || secret.isEmpty) continue;
+          await store.writeSecret(account.id, secret);
+          written.add(account.id);
+        }
+        signedIn = written.length;
+      }
+      if (added.isNotEmpty) {
+        await accountStore.write([...existing, ...added]);
+      }
+    } catch (_) {
+      for (final id in written) {
+        try {
+          await store!.deleteSecret(id);
+        } catch (_) {
+          // Nothing more can be done; the account it belongs to was never
+          // saved, so nothing will use it.
+        }
+      }
+      rethrow;
     }
 
-    // Secrets only for accounts this restore actually added. An account
-    // already here has a secret that works, and the file's copy may be older
-    // than the one on the device — a rotated OAuth refresh token in
-    // particular would be dead, so writing it would sign a working account
-    // out.
-    var signedIn = 0;
-    final store = credentialStore;
+    // An account already here with no sign-in stored, such as one an earlier
+    // restore added before failing, takes the file's.
     if (store != null) {
-      for (final account in added) {
+      for (final account in skipped) {
         final secret = secrets[account.id];
         if (secret == null || secret.isEmpty) continue;
-        await store.writeSecret(account.id, secret);
-        signedIn++;
+        final hereId = ids[account.id] ?? account.id;
+        final current = await store.readSecret(hereId);
+        if (current != null && current.isNotEmpty) continue;
+        await store.writeSecret(hereId, secret);
+        signedInAgain++;
       }
     }
 
@@ -215,7 +251,11 @@ class BackupService {
               if (k is String && v is int) remap(k): v,
           });
         case _Shape.text:
-          if (value is! String) continue;
+          // Read the way the setting's own notifier will read it, and left
+          // out if that fails. A hand-edited or damaged file with, say, "{}"
+          // for the signatures was written as it was, and compose then
+          // failed on every account until the app's data was cleared.
+          if (value is! String || !_readable(key, value)) continue;
           await uiState.writeString(
             key,
             key == UiStateKeys.signatures
@@ -231,11 +271,35 @@ class BackupService {
       accountsAlreadyHere: skipped,
       settingsRestored: restored,
       accountsSignedIn: signedIn,
+      accountsSignedInAgain: signedInAgain,
     );
   }
 }
 
 enum _Shape { ids, order, text }
+
+/// Whether a setting kept as text is one this build can read.
+bool _readable(String key, String value) {
+  try {
+    switch (key) {
+      case UiStateKeys.quickSteps:
+        return QuickStep.listFromJson(value) != null;
+      case UiStateKeys.signatures:
+        return Signature.mapFromJson(value) != null;
+      case UiStateKeys.display:
+        DisplaySettings.fromJson(jsonDecode(value) as Map<String, dynamic>);
+        return true;
+      case UiStateKeys.paneWidths:
+        return (jsonDecode(value) as Map<String, dynamic>)
+            .values
+            .every((v) => v is int);
+      default:
+        return true;
+    }
+  } catch (_) {
+    return false;
+  }
+}
 
 /// Which account a stored id belongs to: the account id itself, or the
 /// part of a folder id before its colon.
@@ -310,6 +374,7 @@ class RestoreReport {
     required this.accountsAlreadyHere,
     required this.settingsRestored,
     this.accountsSignedIn = 0,
+    this.accountsSignedInAgain = 0,
   });
 
   /// Added by this restore.
@@ -320,6 +385,9 @@ class RestoreReport {
 
   /// Already on this device, left with their working sign-in.
   final List<Account> accountsAlreadyHere;
+
+  /// How many of those had no sign-in stored here and took the file's.
+  final int accountsSignedInAgain;
 
   final int settingsRestored;
 

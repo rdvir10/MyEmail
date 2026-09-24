@@ -18,6 +18,7 @@ import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
 import 'folder_tree.dart';
 import 'quick_steps.dart';
+import 'widget_providers.dart';
 
 /// Swapped for the real IMAP engine in milestone 3. Everything above this line
 /// stays unchanged when that happens, which is the point of the seam.
@@ -366,6 +367,21 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     ref.read(recentMoveTargetsProvider.notifier).remap(r);
     ref.read(quickStepsProvider.notifier).remapFolder(r);
     ref.read(selectedFolderIdProvider.notifier).remap(r);
+    unawaited(_remapWidgets(r));
+  }
+
+  /// Home-screen widgets follow the folder too, and are redrawn under its
+  /// new id. Not awaited: the tree has its answer, and a widget a moment
+  /// behind is no worse than a rename that waits on the home screen.
+  Future<void> _remapWidgets(FolderRename r) async {
+    final store = ref.read(widgetStateStoreProvider);
+    final widgets = ref.read(mailboxWidgetsProvider);
+    final engine = ref.read(mailEngineProvider);
+    try {
+      if (await store.remapFolders(r.remap)) await widgets.refresh(engine);
+    } catch (e) {
+      debugPrint('[myemail] could not move a widget to the renamed folder: $e');
+    }
   }
 
   Future<void> _reloadAccount(String accountId) async {

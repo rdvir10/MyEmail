@@ -4,6 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/data/widget/home_screen_surface.dart';
+import 'package:myemail/data/widget/widget_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/mail_folder.dart';
@@ -14,6 +16,7 @@ import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/state/folder_tree.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/widget_providers.dart';
 
 ProviderContainer _container({MailEngine? engine}) {
   final container = ProviderContainer(
@@ -315,6 +318,41 @@ void main() {
           .whereType<FolderRow>()
           .map((r) => r.folder.name);
       expect(names, contains('Receipts'));
+    });
+
+    test('a home-screen widget follows its folder when a parent is renamed',
+        () async {
+      // Left on the old id, the widget was written as unassigned on the
+      // next refresh and stayed blank until it was set up again.
+      final surface = FakeHomeScreenSurface();
+      final store = MemoryWidgetStateStore()
+        ..mailboxes['7'] = const WidgetMailbox(
+          folderId: 'acct-personal:Finance/Receipts',
+          label: 'Receipts',
+        )
+        ..mailboxes['8'] =
+            const WidgetMailbox(folderId: 'acct-personal:Travel');
+      final c = ProviderContainer(overrides: [
+        homeScreenSurfaceProvider.overrideWithValue(surface),
+        widgetStateStoreProvider.overrideWithValue(store),
+      ]);
+      addTearDown(c.dispose);
+      await c.read(foldersProvider.future);
+
+      await c.read(foldersProvider.notifier).rename(
+            'acct-personal:Finance',
+            'Money',
+          );
+      for (var i = 0; i < 100 && surface.redraws == 0; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+
+      expect(store.mailboxes['7']?.folderId, 'acct-personal:Money/Receipts');
+      expect(store.mailboxes['7']?.label, 'Receipts',
+          reason: 'only the folder changes');
+      expect(store.mailboxes['8']?.folderId, 'acct-personal:Travel');
+      expect(surface.values['widget.7.folder'], 'acct-personal:Money/Receipts',
+          reason: 'and it is redrawn under the new id, not left blank');
     });
 
     test('deleting the selected subtree falls back to the default', () async {

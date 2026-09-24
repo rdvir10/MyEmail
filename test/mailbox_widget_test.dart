@@ -5,6 +5,7 @@ import 'package:myemail/data/widget/mailbox_widgets.dart';
 import 'package:myemail/data/widget/widget_state_store.dart';
 import 'package:myemail/data/widget/widget_taps.dart';
 import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/mailbox_counts.dart';
 import 'package:myemail/state/folder_tree.dart' show kUnifiedInboxId;
@@ -145,6 +146,42 @@ void main() {
 
       expect(surface.values['count.$inbox.new'], 0);
       expect(store.openedAt!.isAfter(DateTime.utc(2001)), isTrue);
+    });
+
+    test('a mark moved while counting is what "new" is counted from',
+        () async {
+      // A background pass reads the mark, then spends seconds syncing. The
+      // app opened and closed in that time takes the widget to zero, and
+      // the pass then wrote back what it had counted against the old mark.
+      final inbox = await anInbox();
+      await widgets.setUp(
+          appWidgetId: '7', mailbox: WidgetMailbox(folderId: inbox), engine: engine);
+      store.openedAt = DateTime.utc(2000);
+      final slow = _MarkMovingEngine(store);
+
+      await widgets.refresh(slow);
+
+      expect(surface.values['count.$inbox.new'], 0,
+          reason: 'everything arrived before the mark the app just set');
+    });
+
+    test('from the cache, the counts come without a sync', () async {
+      // What the app does on its way out: the numbers it already holds.
+      final offline = _NoNetworkEngine();
+      final account = (await offline.loadAccounts()).first;
+      final inbox = (await offline.loadFolders(account.id))
+          .firstWhere((f) => f.role == FolderRole.inbox)
+          .id;
+      await offline.loadMessages(inbox);
+      await store.writeMailbox('7', WidgetMailbox(folderId: inbox));
+      store.openedAt = DateTime.utc(2000);
+      offline.offline = true;
+
+      await widgets.refresh(offline, fromCache: true);
+
+      expect(surface.values['widget.7.folder'], inbox);
+      expect(surface.values['count.$inbox.new'], greaterThan(0),
+          reason: 'counted, from what was already held');
     });
 
     test('the unified inbox adds the accounts up', () async {
@@ -499,4 +536,45 @@ class _BrokenSurface implements HomeScreenSurface {
 
   @override
   Future<void> redraw() async => throw StateError('no');
+}
+
+/// The app coming to the front while a pass is counting: the mark moves
+/// under it.
+class _MarkMovingEngine extends SampleMailEngine {
+  _MarkMovingEngine(this.store);
+
+  final MemoryWidgetStateStore store;
+
+  @override
+  Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    final messages =
+        await super.loadMessages(folderId, offset: offset, limit: limit);
+    store.openedAt = DateTime.now().toUtc();
+    return messages;
+  }
+}
+
+/// Once [offline], answers from what it holds and fails any trip to the
+/// server.
+class _NoNetworkEngine extends SampleMailEngine {
+  bool offline = false;
+
+  @override
+  Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) =>
+      offline
+          ? throw StateError('synced $folderId')
+          : super.loadMessages(folderId, offset: offset, limit: limit);
+
+  @override
+  Future<List<MailFolder>> loadFolders(String accountId) => offline
+      ? throw StateError('listed $accountId')
+      : super.loadFolders(accountId);
 }
