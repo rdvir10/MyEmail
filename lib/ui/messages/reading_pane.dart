@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/draft.dart';
-import '../../domain/calendar_invite.dart';
 import '../../state/trusted_senders.dart';
 import '../../domain/trusted_senders.dart';
 import '../../state/calendar_providers.dart';
@@ -281,9 +280,8 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
         ),
         // The invitation, when the message carries one, before the body:
         // the answer is the point of the message.
-        if (body.value?.calendar case final ics?)
-          if (CalendarInvite.parse(ics) case final invite?)
-            InviteCard(message: message, invite: invite),
+        if (ref.watch(messageInviteProvider(message.id)) case final invite?)
+          InviteCard(message: message, invite: invite),
         const Divider(height: 1),
         Expanded(
           child: body.when(

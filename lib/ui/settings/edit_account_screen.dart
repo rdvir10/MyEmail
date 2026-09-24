@@ -85,6 +85,9 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
       _password.clear();
       setState(() => _signInResult = 'Signed in. Nothing cached was lost.');
     } catch (e) {
+      // Left while the server was still being asked: there is no screen to
+      // say it on, and setState on a closed one throws.
+      if (!mounted) return;
       setState(() => _problem = ProblemReport(
             doing: 'Signing in again to ${widget.account.emailAddress}',
             error: e,
@@ -126,6 +129,7 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
           );
       if (mounted) Navigator.of(context).maybePop();
     } catch (e) {
+      if (!mounted) return;
       setState(() => _problem = ProblemReport(
             doing: 'Saving changes to ${widget.account.emailAddress}',
             error: e,

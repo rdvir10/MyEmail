@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../domain/calendar_invite.dart';
 import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
@@ -582,4 +583,13 @@ final isSelectingProvider =
 final messageBodyProvider =
     FutureProvider.family<MailBody, String>((ref, messageId) {
   return ref.watch(mailEngineProvider).loadMessageBody(messageId);
+});
+
+/// The invitation a message carries, read once when its body arrives rather
+/// than on every rebuild of the reading pane. Null when there is none, or
+/// when the part cannot be read as one.
+final messageInviteProvider =
+    Provider.family<CalendarInvite?, String>((ref, messageId) {
+  final ics = ref.watch(messageBodyProvider(messageId)).value?.calendar;
+  return ics == null ? null : CalendarInvite.parse(ics);
 });

@@ -39,9 +39,7 @@ String buildComposeHtml({
     typedHtml.isEmpty ? '<p>$caretMarker<br></p>' : typedHtml,
   );
 
-  final wantsSignature = signatureHtml.trim().isNotEmpty &&
-      (kind == ComposeKind.newMessage || signatureOnReply);
-  if (wantsSignature) {
+  if (carriesSignature(kind, signatureHtml, onReply: signatureOnReply)) {
     buffer.write('<div class="mailtree-signature">$signatureHtml</div>');
   }
 
@@ -57,6 +55,14 @@ String buildComposeHtml({
 
   return buffer.toString();
 }
+
+/// Whether a message of [kind] carries the signature [html]: a new message
+/// always does, a reply or a forward only when the signature says so.
+///
+/// One rule for the draft as it opens and for a change of From afterwards,
+/// which puts the new account's signature in place of the old one's.
+bool carriesSignature(ComposeKind kind, String html, {required bool onReply}) =>
+    html.trim().isNotEmpty && (kind == ComposeKind.newMessage || onReply);
 
 /// "On Mon 14 Sep 2026 at 09:41, Dana Levi wrote:"
 String _attributionLine(ComposeKind kind, MailMessage original) {

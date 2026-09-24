@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/domain/calendar_invite.dart';
 import 'package:myemail/domain/mail_message.dart';
@@ -85,7 +87,7 @@ void main() {
 
       expect(reply, contains('METHOD:REPLY'));
       expect(reply, contains('UID:040000008200E00074C5B7101A82E00800000000ABCDEF'));
-      expect(reply, contains('ATTENDEE;CN=Ron Dvir;PARTSTAT=ACCEPTED:mailto:ron@example.com'));
+      expect(reply, contains('ATTENDEE;CN="Ron Dvir";PARTSTAT=ACCEPTED:mailto:ron@example.com'));
       expect(reply, contains('ORGANIZER:mailto:dana@example.com'));
       expect(reply, contains('DTSTAMP:20260920T163000Z'));
       expect(reply, contains('SEQUENCE:2'));
@@ -93,6 +95,84 @@ void main() {
       expect(reply.split('\r\n').every((l) => l.length <= 75), isTrue,
           reason: 'folded to the RFC line length');
       expect(inviteReplySubject(i, InviteResponse.declined), 'Declined: Q3 review; planning');
+    });
+
+    test('a name with a colon or a comma in it keeps the address whole', () {
+      // Backslash-escaped, "Ron: Hadco" moved where the address began, so
+      // the organiser's calendar found no attendee and ignored the answer.
+      final reply = iMipReply(
+        CalendarInvite.parse(request)!,
+        attendee: const MailAddress(
+            email: 'ron@example.com', name: 'Ron: Hadco, "Dvir"'),
+        response: InviteResponse.accepted,
+      );
+
+      expect(reply, contains('ATTENDEE;CN="Ron: Hadco, Dvir";PARTSTAT=ACCEPTED'));
+      final back = CalendarInvite.parse(reply)!.attendees.single;
+      expect(back.email, 'ron@example.com');
+      expect(back.name, 'Ron: Hadco, Dvir');
+    });
+
+    test('folds by bytes, and never through a character', () {
+      // Hebrew is two bytes a letter, so a line folded every 75 letters
+      // was twice the length allowed; an emoji is two UTF-16 units, and a
+      // fold between them left half of one on each line.
+      final i = CalendarInvite.parse(request.replaceFirst(
+        'SUMMARY:Q3 review\\; planning',
+        'SUMMARY:${'פגישת צוות 😀 ' * 12}',
+      ))!;
+
+      final reply = iMipReply(
+        i,
+        attendee: const MailAddress(email: 'ron@example.com'),
+        response: InviteResponse.accepted,
+      );
+
+      for (final line in reply.split('\r\n')) {
+        expect(utf8.encode(line).length, lessThanOrEqualTo(75), reason: line);
+        expect(line.runes.any((r) => r >= 0xD800 && r <= 0xDFFF), isFalse,
+            reason: 'half an emoji: $line');
+      }
+      expect(CalendarInvite.parse(reply)!.summary, i.summary,
+          reason: 'unfolded, it is the same text');
+    });
+  });
+
+  group('dates that are not in the form', () {
+    String withDates({required String start, String end = ''}) =>
+        'BEGIN:VCALENDAR\nMETHOD:REQUEST\nBEGIN:VEVENT\nUID:z\n'
+        'SUMMARY:Odd\n$start\n$end\nEND:VEVENT\nEND:VCALENDAR';
+
+    test('a start that cannot be read is no invitation, not a crash', () {
+      // Thrown out of the parser, it blanked the whole message, Reply and
+      // Delete with it.
+      for (final start in [
+        'DTSTART:2026-09-22T10:00:00Z',
+        'DTSTART:20260922T10',
+        'DTSTART:',
+        'DTSTART;VALUE=DATE:2026',
+      ]) {
+        expect(CalendarInvite.parse(withDates(start: start)), isNull,
+            reason: start);
+      }
+    });
+
+    test('an end or a stamp that cannot be read is left out', () {
+      final i = CalendarInvite.parse(withDates(
+        start: 'DTSTART:20260922T100000Z',
+        end: 'DTEND:\nDTSTAMP:yesterday',
+      ))!;
+      expect(i.start, DateTime.utc(2026, 9, 22, 10));
+      expect(i.end, isNull);
+      expect(i.dtStamp, isNull);
+    });
+
+    test('an occurrence that cannot be read is echoed as written', () {
+      final i = CalendarInvite.parse(withDates(
+        start: 'DTSTART:20260922T100000Z',
+        end: 'RECURRENCE-ID:soon',
+      ))!;
+      expect(i.recurrenceId, 'RECURRENCE-ID:soon');
     });
   });
 

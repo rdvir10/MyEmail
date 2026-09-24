@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/compose/mime_parts.dart';
@@ -87,6 +88,10 @@ Future<Draft> buildDraft({
         .map((a) => a.emailAddress)
         .firstOrNull ??
         '',
+    // A message that reached more than one of your accounts: Reply all
+    // copied the others back in, so the answer landed in your own inbox and
+    // told everyone on the thread about your other address.
+    otherAccountEmails: [for (final a in accounts) a.emailAddress],
   );
 
   // A forward carries the files, and the pictures the quote shows through
@@ -112,7 +117,7 @@ Future<Draft> buildDraft({
 /// second save replaces this copy instead of leaving two.
 Future<Draft> saveDraft(WidgetRef ref, Draft draft) async {
   final savedAs = await ref.read(mailEngineProvider).saveDraft(draft);
-  await ref.read(foldersProvider.notifier).refreshAccount(draft.accountId);
+  await _refreshAfter(ref, draft.accountId, 'save');
   if (savedAs != null) {
     final folderId = savedAs.substring(0, savedAs.lastIndexOf('#'));
     ref.invalidate(messagesProvider(folderId));
@@ -120,6 +125,21 @@ Future<Draft> saveDraft(WidgetRef ref, Draft draft) async {
     // both the arrival and the removal.
   }
   return draft.copyWith(savedAs: savedAs);
+}
+
+/// The folder tree brought up to date after a send or a save that has
+/// already happened.
+///
+/// A failure here is not the send's or the save's. Reported as theirs, it
+/// turned Send back on for a message that had gone, and a second tap sent it
+/// twice; a second Save left two copies in Drafts. The next refresh puts the
+/// counts right, so it is only logged.
+Future<void> _refreshAfter(WidgetRef ref, String accountId, String what) async {
+  try {
+    await ref.read(foldersProvider.notifier).refreshAccount(accountId);
+  } catch (e) {
+    debugPrint('[myemail] folder refresh after a $what failed: $e');
+  }
 }
 
 /// Reopen a message from the Drafts folder as something editable.
@@ -207,7 +227,7 @@ String _escape(String s) => s
 /// Send a draft and, on success, refresh what the result touched.
 Future<void> sendDraft(WidgetRef ref, Draft draft) async {
   await ref.read(mailEngineProvider).sendDraft(draft);
-  await ref.read(foldersProvider.notifier).refreshAccount(draft.accountId);
+  await _refreshAfter(ref, draft.accountId, 'send');
   // The Sent folder has a new message, and the answered flag may have moved.
   final original = draft.originalMessageId;
   if (original != null) {

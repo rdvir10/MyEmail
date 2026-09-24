@@ -41,10 +41,19 @@ class _MicrosoftSignInSheetState extends ConsumerState<MicrosoftSignInSheet> {
   /// Without it the loop would keep asking Microsoft for a token on behalf of
   /// a screen nobody is looking at, until the code expired a quarter of an
   /// hour later.
-  final _stopped = Completer<void>();
+  ///
+  /// One per code, and a new code stops the old one's poll. They used to
+  /// share one, so Try again left the first poll running, and a quarter of
+  /// an hour later its "The sign-in code expired" replaced a second code
+  /// that was still good.
+  Completer<void> _stopped = Completer<void>();
 
   DeviceCodePrompt? _prompt;
   String? _error;
+
+  /// The browser would not open, said under the code rather than in its
+  /// place: the code is what is needed to sign in some other way.
+  String? _launchProblem;
   bool _copied = false;
 
   @override
@@ -60,23 +69,31 @@ class _MicrosoftSignInSheetState extends ConsumerState<MicrosoftSignInSheet> {
   }
 
   Future<void> _start() async {
+    if (!_stopped.isCompleted) _stopped.complete();
+    final stopped = _stopped = Completer<void>();
+    // Whether another code has taken over. An older one's answer, arriving
+    // late, is not this one's.
+    bool superseded() => !identical(stopped, _stopped);
+
     setState(() {
       _error = null;
+      _launchProblem = null;
       _prompt = null;
     });
     final oauth = ref.read(microsoftOAuthProvider);
     try {
       final prompt = await oauth.requestDeviceCode();
-      if (!mounted) return;
+      if (!mounted || superseded()) return;
       setState(() => _prompt = prompt);
 
-      final token = await oauth.awaitToken(prompt, stopSignal: _stopped.future);
-      if (!mounted) return;
+      final token = await oauth.awaitToken(prompt, stopSignal: stopped.future);
+      if (!mounted || superseded()) return;
       Navigator.of(context).pop(token);
     } on SignInCancelled {
-      // The sheet is already closing; there is nobody to tell.
+      // The sheet is closing, or a new code has taken over; there is nobody
+      // to tell.
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || superseded()) return;
       setState(() => _error = _messageFor(e));
     }
   }
@@ -103,9 +120,12 @@ class _MicrosoftSignInSheetState extends ConsumerState<MicrosoftSignInSheet> {
     final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!opened && mounted) {
       // No browser took it. The URL is on screen anyway, so say so rather
-      // than leaving a button that appears to do nothing.
-      setState(() => _error =
-          'Could not open a browser. Go to $uri and enter the code.');
+      // than leaving a button that appears to do nothing. Under the code,
+      // not in its place: it used to replace the code with a message
+      // telling you to enter it, and the wait carried on underneath.
+      setState(() => _launchProblem =
+          'Could not open a browser. Go to $uri on any device and enter '
+          'the code above.');
     }
   }
 
@@ -194,6 +214,15 @@ class _MicrosoftSignInSheetState extends ConsumerState<MicrosoftSignInSheet> {
           style: theme.textTheme.bodySmall
               ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
         ),
+        if (_launchProblem case final problem?) ...[
+          const SizedBox(height: 8),
+          Text(
+            problem,
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.error),
+          ),
+        ],
         const SizedBox(height: 24),
         Row(
           mainAxisAlignment: MainAxisAlignment.center,

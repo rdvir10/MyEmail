@@ -148,9 +148,13 @@ String? _accountForCurrentFolder(WidgetRef ref) {
   return ref.read(folderIndexProvider)[folderId]?.accountId;
 }
 
+/// [work]'s result, with a spinner over the screen if it takes long enough
+/// to notice. Null if the spinner was dismissed with Back before the work
+/// finished: that was the person giving up on waiting, and what they were
+/// waiting for is no longer wanted.
 Future<T?> _withSpinner<T>(BuildContext context, Future<T> work) async {
   var done = false;
-  var dialogShown = false;
+  DialogRoute<void>? spinner;
   final result = work.whenComplete(() => done = true);
   // Listened to at once, so a failure inside the first 150 ms is not
   // reported as unhandled before the await below gets to it.
@@ -158,23 +162,30 @@ Future<T?> _withSpinner<T>(BuildContext context, Future<T> work) async {
 
   await Future<void>.delayed(const Duration(milliseconds: 150));
   if (!done && context.mounted) {
-    dialogShown = true;
-    unawaitedShowDialog(context);
+    // A route kept hold of, rather than showDialog, so the one taken down
+    // afterwards is this one.
+    spinner = DialogRoute<void>(
+      context: context,
+      barrierDismissible: false,
+      barrierColor: Colors.black54,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    unawaited(Navigator.of(context, rootNavigator: true).push(spinner));
   }
 
+  final T value;
+  var dismissed = false;
   try {
-    return await result;
+    value = await result;
   } finally {
     // On a failure too, or the spinner stays up over a screen that has
-    // nothing left to wait for.
-    if (dialogShown && context.mounted) Navigator.of(context).pop();
+    // nothing left to wait for. That route and no other: popping whatever
+    // was on top closed the message being read when the spinner had
+    // already gone with Back, and compose then opened over the list.
+    if (spinner != null) {
+      dismissed = !spinner.isActive;
+      if (!dismissed) spinner.navigator?.removeRoute(spinner);
+    }
   }
-}
-
-void unawaitedShowDialog(BuildContext context) {
-  showDialog<void>(
-    context: context,
-    barrierDismissible: false,
-    builder: (_) => const Center(child: CircularProgressIndicator()),
-  );
+  return dismissed ? null : value;
 }

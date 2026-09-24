@@ -143,11 +143,15 @@ class CalendarInvite {
         case 'SEQUENCE':
           sequence = int.tryParse(value.trim()) ?? 0;
         case 'DTSTAMP':
-          stamp = _date(value, params, zones).$1;
+          stamp = _date(value, params, zones)?.$1;
       }
     }
     if (!seen || startLine == null) return null;
-    final (start, allDay) = _date(startLine.value, startLine.params, zones);
+    // An event with no time it can be placed at is not something to answer
+    // or put in a calendar, so the message shows as a message.
+    final startsAt = _date(startLine.value, startLine.params, zones);
+    if (startsAt == null) return null;
+    final (start, allDay) = startsAt;
     final tz = startLine.params['TZID'];
     final known = allDay || start.isUtc || tz == null;
     return CalendarInvite(
@@ -155,7 +159,9 @@ class CalendarInvite {
       uid: uid ?? '',
       summary: summary ?? '(No title)',
       start: start,
-      end: endLine == null ? null : _date(endLine.value, endLine.params, zones).$1,
+      end: endLine == null
+          ? null
+          : _date(endLine.value, endLine.params, zones)?.$1,
       isAllDay: allDay,
       timeZone: tz,
       location: location,
@@ -202,7 +208,9 @@ class _Line {
 /// A date-time line as a reply should carry it: in UTC where the zone was
 /// worked out, which needs no VTIMEZONE beside it; as written otherwise.
 String _asReplyLine(_Line line, Map<String, _Zone> zones) {
-  final (at, wholeDay) = _date(line.value, line.params, zones);
+  final read = _date(line.value, line.params, zones);
+  if (read == null) return line.raw;
+  final (at, wholeDay) = read;
   if (wholeDay) return '${line.name};VALUE=DATE:${_dateOnly(at)}';
   if (at.isUtc) return '${line.name}:${_stamp(at)}';
   return line.raw;
@@ -416,7 +424,12 @@ String iMipReply(
 }) {
   final stamp = _stamp((now ?? DateTime.now()).toUtc());
   final name = attendee.name?.trim();
-  final cn = name == null || name.isEmpty ? '' : ';CN=${_escape(name)}';
+  // Quoted, as RFC 5545 has parameter values that hold a colon, a comma or
+  // a semicolon. Backslash-escaped, a colon in the name moved where the
+  // address began, and the organiser's calendar threw the answer away. A
+  // quoted value cannot hold a quote, or a control character.
+  final quotable = name?.replaceAll(RegExp(r'["\x00-\x1f\x7f]'), '').trim();
+  final cn = quotable == null || quotable.isEmpty ? '' : ';CN="$quotable"';
   final organizer = invite.organizer;
   final lines = <String>[
     'BEGIN:VCALENDAR',
@@ -475,29 +488,36 @@ int _valueStart(String line) {
   return -1;
 }
 
-(DateTime, bool) _date(
+/// A DATE or DATE-TIME value, and whether it is a whole day; null for one
+/// that is not in the form RFC 5545 gives.
+///
+/// Read with no checks, a sender's `2026-09-22T10:00:00Z` or an empty DTEND
+/// threw out of the parser, and the reading pane showed a grey box where
+/// the message was, Reply and Delete with it.
+(DateTime, bool)? _date(
   String value,
   Map<String, String> params, [
   Map<String, _Zone> zones = const {},
 ]) {
   final v = value.trim();
   if (params['VALUE'] == 'DATE' || (v.length == 8 && !v.contains('T'))) {
+    final m = RegExp(r'^(\d{4})(\d{2})(\d{2})').firstMatch(v);
+    if (m == null) return null;
     return (
-      DateTime(
-        int.parse(v.substring(0, 4)),
-        int.parse(v.substring(4, 6)),
-        int.parse(v.substring(6, 8)),
-      ),
+      DateTime(int.parse(m[1]!), int.parse(m[2]!), int.parse(m[3]!)),
       true,
     );
   }
-  final y = int.parse(v.substring(0, 4));
-  final mo = int.parse(v.substring(4, 6));
-  final d = int.parse(v.substring(6, 8));
-  final h = int.parse(v.substring(9, 11));
-  final mi = int.parse(v.substring(11, 13));
-  final s = v.length >= 15 ? int.parse(v.substring(13, 15)) : 0;
-  if (v.endsWith('Z')) return (DateTime.utc(y, mo, d, h, mi, s), false);
+  final m = RegExp(r'^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?(Z?)$')
+      .firstMatch(v);
+  if (m == null) return null;
+  final y = int.parse(m[1]!);
+  final mo = int.parse(m[2]!);
+  final d = int.parse(m[3]!);
+  final h = int.parse(m[4]!);
+  final mi = int.parse(m[5]!);
+  final s = int.parse(m[6] ?? '0');
+  if (m[7] == 'Z') return (DateTime.utc(y, mo, d, h, mi, s), false);
   final local = DateTime(y, mo, d, h, mi, s);
   final zone = zones[params['TZID']];
   return (zone?.instantOf(local) ?? local, false);
@@ -533,14 +553,27 @@ String _dateOnly(DateTime d) => '${d.year}${_two(d.month)}${_two(d.day)}';
 
 /// Lines longer than 75 octets are folded, per the RFC; a server that
 /// refuses long lines is rarer than one that is strict, but it exists.
+///
+/// Octets of UTF-8, not characters: a line of Hebrew counted by characters
+/// came out twice as long as allowed. And never inside a character, which
+/// split an emoji into two halves that are neither.
 String _fold(String line) {
-  if (line.length <= 75) return line;
-  final out = StringBuffer(line.substring(0, 75));
-  var i = 75;
-  while (i < line.length) {
-    final next = (i + 74).clamp(0, line.length);
-    out.write('\r\n ${line.substring(i, next)}');
-    i = next;
+  final out = StringBuffer();
+  var octets = 0;
+  for (final rune in line.runes) {
+    final size = rune < 0x80
+        ? 1
+        : rune < 0x800
+            ? 2
+            : rune < 0x10000
+                ? 3
+                : 4;
+    if (octets + size > 75) {
+      out.write('\r\n ');
+      octets = 1; // The space that marks the fold counts too.
+    }
+    out.writeCharCode(rune);
+    octets += size;
   }
   return out.toString();
 }

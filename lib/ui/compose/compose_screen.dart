@@ -10,6 +10,7 @@ import '../../domain/account.dart';
 import '../../domain/error_report.dart';
 import '../common/problem_view.dart';
 
+import '../../data/compose/quote_builder.dart' show carriesSignature;
 import '../../data/files/file_bridge.dart';
 import '../../domain/draft.dart';
 import '../../domain/address_suggestions.dart';
@@ -280,6 +281,20 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// header, because the message in front of you is not always the one the
   /// answer should come from.
   late String _accountId = widget.draft.accountId;
+
+  /// Put [accountId]'s signature in the message in place of the one it
+  /// has. It used to keep the first account's, so a message sent from a
+  /// second account went out signed as the first, or unsigned.
+  void _useSignatureOf(String accountId) {
+    final signature =
+        ref.read(signaturesProvider.notifier).forAccount(accountId);
+    final carried = carriesSignature(
+      widget.draft.kind,
+      signature.html,
+      onReply: signature.onReply,
+    );
+    unawaited(_editor.setSignature(carried ? signature.html : ''));
+  }
 
   /// Ctrl+Enter sends and Esc leaves, from the header fields. The body is a
   /// WebView, whose keys never reach Flutter; the editor's page reports the
@@ -587,7 +602,9 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
                         onChanged: _sending
                             ? null
                             : (id) {
-                                if (id != null) setState(() => _accountId = id);
+                                if (id == null || id == _accountId) return;
+                                setState(() => _accountId = id);
+                                _useSignatureOf(id);
                               },
                       ),
                     ),

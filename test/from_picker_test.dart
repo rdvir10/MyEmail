@@ -4,6 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/signature.dart';
+import 'package:myemail/state/compose_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
 
@@ -11,7 +13,8 @@ import 'fakes/fake_webview.dart';
 
 /// Which account a message goes out from, chosen from the header.
 void main() {
-  setUpAll(FakeWebViewPlatform.install);
+  late FakeWebViewPlatform page;
+  setUp(() => page = FakeWebViewPlatform.install());
 
   Draft draft(String accountId, {List<MailAddress> to = const []}) => Draft(
         accountId: accountId,
@@ -85,6 +88,40 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(engine.sent.single.accountId, accounts[1].id);
+  });
+
+  testWidgets("choosing another account puts that account's signature in",
+      (tester) async {
+    // The signature was written once, for the account the message started
+    // from, so a message sent from the second account went out signed as
+    // the first.
+    page.finishLoads = true;
+    final engine = SampleMailEngine();
+    final accounts = (await tester.runAsync(engine.loadAccounts))!;
+    final c = await open(tester, engine, accounts.first.id);
+    c.read(signaturesProvider.notifier)
+      ..set(Signature(
+        accountId: accounts.first.id,
+        html: '<p>First</p>',
+        onReply: false,
+      ))
+      ..set(Signature(accountId: accounts[1].id, html: '<p>Second</p>'));
+
+    Future<void> choose(String email) async {
+      await tester.tap(picker);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(email).last);
+      await tester.pumpAndSettle();
+    }
+
+    await choose(accounts[1].emailAddress);
+    expect(page.ranJavaScript.last,
+        'window.mailtreeSetSignature("<p>Second</p>");');
+
+    // The first is set not to sign replies, and this is a reply: back on
+    // it, the signature comes out.
+    await choose(accounts.first.emailAddress);
+    expect(page.ranJavaScript.last, 'window.mailtreeSetSignature("");');
   });
 
   testWidgets('with one account there is nothing to choose', (tester) async {

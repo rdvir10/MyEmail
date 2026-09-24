@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -148,6 +149,29 @@ void main() {
 
       expect(find.text('Waiting for you to finish'), findsOneWidget);
       expect(find.text('HTSK-MNQP'), findsOneWidget);
+    });
+
+    testWidgets('a browser that will not open leaves the code on screen',
+        (tester) async {
+      // The code was replaced by a message saying to enter the code, and
+      // its Try again started a second code over a wait still running.
+      const launcher = MethodChannel('plugins.flutter.io/url_launcher');
+      tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(launcher, (_) async => false);
+      addTearDown(() => tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(launcher, null));
+      await tester.pumpWidget(
+        app(home: const MicrosoftSignInSheet(), oauth: waitingForever()),
+      );
+      await tester.pump();
+
+      await tester.tap(find.text('Open the sign-in page'));
+      await tester.pump();
+
+      expect(find.text('HTSK-MNQP'), findsOneWidget);
+      expect(find.text('Waiting for you to finish'), findsOneWidget);
+      expect(find.textContaining('Could not open a browser'), findsOneWidget);
+      expect(find.text('Try again'), findsNothing);
     });
 
     testWidgets('a failure explains itself and offers another go',

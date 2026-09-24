@@ -17,11 +17,11 @@ import '../../domain/error_report.dart';
 ///
 /// The document has JavaScript on, because the bridge needs it, so what a
 /// received message can do inside it is closed off three ways. Everything
-/// quoted has been through `sanitiseForEditing`, which rebuilds it from an
-/// allow-list. The document carries a Content-Security-Policy that lets only
-/// its own script run (by nonce) and fetches nothing from the network, so a
-/// handler that got past the sanitiser still could not execute or phone
-/// home. And once the document has loaded, nothing may navigate it: a
+/// quoted, and every draft reopened from the server, has been through
+/// `sanitiseForEditing`, which rebuilds it from an allow-list. The document
+/// carries a Content-Security-Policy that lets only its own script run (by
+/// nonce) and fetches nothing from the network, so a handler that got past
+/// the sanitiser still could not execute or phone home. And once the document has loaded, nothing may navigate it: a
 /// `<meta http-equiv=refresh>` or a tapped link cannot swap the editor for a
 /// page of the sender's that talks to the bridge.
 ///
@@ -189,6 +189,15 @@ class HtmlEditorController extends ChangeNotifier {
     await _web?.runJavaScript('window.mailtreeFocus();');
   }
 
+  /// Put [html] in place of the signature, or take the signature out when
+  /// it is empty. Waits for the page, so a From changed while the editor is
+  /// still loading is not lost.
+  Future<void> setSignature(String html) async {
+    await ready;
+    await _web?.runJavaScript(
+        'window.mailtreeSetSignature(${jsonEncode(html)});');
+  }
+
   /// Switch palettes in place. Safe before the page has loaded: the document
   /// starts in the right one, so a dropped call changes nothing.
   Future<void> _setTheme(String name) async {
@@ -315,6 +324,25 @@ String editorDocument(String bodyHtml,
   window.mailtreeInsert = function (html) {
     document.execCommand('insertHTML', false, html);
     reportFormats();
+  };
+
+  // The signature is the sending account's, so a change of From swaps it.
+  // Only the one written for this message, directly in the body: a quoted
+  // message sent from here carries a signature div of its own.
+  window.mailtreeSetSignature = function (html) {
+    var sig = document.querySelector('body > .mailtree-signature');
+    if (!html) {
+      if (sig) sig.remove();
+      return;
+    }
+    if (!sig) {
+      sig = document.createElement('div');
+      sig.className = 'mailtree-signature';
+      // Above the quote, where the builder puts it; at the end without one.
+      document.body.insertBefore(
+          sig, document.querySelector('body > .mailtree-quote'));
+    }
+    sig.innerHTML = html;
   };
 
   window.mailtreeFocus = function () {

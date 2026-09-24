@@ -103,6 +103,9 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
       await add();
       if (mounted) Navigator.of(context).maybePop();
     } catch (e) {
+      // Left while the server was still being asked: there is no screen to
+      // say it on, and setState on a closed one throws.
+      if (!mounted) return;
       setState(() => _problem = ProblemReport(
             doing: 'Adding $_emailText',
             error: e,

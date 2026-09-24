@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -479,6 +480,74 @@ void main() {
       expect(find.textContaining('could not be opened'), findsOneWidget);
     });
 
+    testWidgets(
+        'a spinner put away with Back cancels the reply, and closes nothing '
+        'else', (tester) async {
+      // Offline, the reply's original takes a while. Back took the spinner
+      // down, and when the wait ended the spinner's own pop closed the
+      // message being read instead, with compose opening over the list.
+      final body = Completer<MailBody>();
+      final original = MailMessage(
+        id: 'acct-personal:INBOX#1',
+        accountId: 'acct-personal',
+        folderId: 'acct-personal:INBOX',
+        uid: 1,
+        subject: 'Numbers',
+        from: const MailAddress(email: 'dana@example.com'),
+        to: const [MailAddress(email: 'personal@example.com')],
+        date: DateTime(2026, 9, 20),
+        preview: 'The figures',
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            mailEngineProvider.overrideWithValue(_SlowBodies(body.future)),
+          ],
+          child: MaterialApp(
+            home: Builder(
+              builder: (context) => ElevatedButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => Scaffold(
+                      body: Consumer(
+                        builder: (context, ref, _) => ElevatedButton(
+                          onPressed: () => openCompose(
+                            context,
+                            ref,
+                            kind: ComposeKind.reply,
+                            original: original,
+                          ),
+                          child: const Text('reply'),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                child: const Text('read'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('read'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('reply'));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+
+      body.complete(const MailBody(text: 'The figures'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('reply'), findsOneWidget,
+          reason: 'the message being read is still open');
+      expect(find.byType(ComposeScreen), findsNothing,
+          reason: 'Back said not to wait for it');
+    });
+
     testWidgets('a Bcc that is not an address stops the send',
         (tester) async {
       // To and Cc were checked and Bcc was not, so a mistyped blind copy went
@@ -510,6 +579,16 @@ class _OfflineBodies extends SampleMailEngine {
   @override
   Future<MailBody> loadMessageBody(String messageId) async =>
       throw const ConnectionFailed('Could not reach the server.');
+}
+
+/// Has the folders and lists, and a body that arrives when the test says.
+class _SlowBodies extends SampleMailEngine {
+  _SlowBodies(this.body);
+
+  final Future<MailBody> body;
+
+  @override
+  Future<MailBody> loadMessageBody(String messageId) => body;
 }
 
 /// Accepts every message and sends nothing.

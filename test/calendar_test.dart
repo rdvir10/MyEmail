@@ -234,5 +234,40 @@ void main() {
       expect(calendar.inserted.single.description, contains('From: '));
       expect(find.byType(MessageTile), findsWidgets);
     });
+
+    testWidgets('an invitation whose time cannot be read is just a message',
+        (tester) async {
+      // The parser threw from inside the reading pane's build, and a grey
+      // box stood where the message was, Reply and Delete with it.
+      engine = _UnreadableInvites();
+      final c = await pump(tester);
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+      final invite = c
+          .read(messagesProvider(folder))
+          .value!
+          .firstWhere((m) => m.subject.startsWith('Invitation:'));
+      c.read(selectedMessageIdProvider.notifier).select(invite.id);
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.byType(InviteCard), findsNothing);
+      final pane = find.byType(ReadingPane);
+      expect(find.descendant(of: pane, matching: find.byTooltip('Reply')),
+          findsOneWidget);
+      expect(find.descendant(of: pane, matching: find.byTooltip('Delete')),
+          findsOneWidget);
+    });
   });
+}
+
+/// Every message carries an invitation with a start written the ISO way,
+/// which is not how iCalendar writes one.
+class _UnreadableInvites extends SampleMailEngine {
+  @override
+  Future<MailBody> loadMessageBody(String messageId) async => const MailBody(
+        text: 'Please come.',
+        calendar: 'BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n'
+            'UID:1\r\nSUMMARY:Q3 review\r\n'
+            'DTSTART:2026-09-22T10:00:00Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n',
+      );
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -29,6 +30,9 @@ class _EmptyEngine implements MailEngine {
   /// Every secret it was handed, as it arrived.
   final secrets = <String>[];
 
+  /// When set, a sign-in waits for it before answering.
+  Future<void>? answerWhen;
+
   @override
   Future<List<Account>> loadAccounts() async => List.of(_accounts);
 
@@ -40,6 +44,7 @@ class _EmptyEngine implements MailEngine {
     required String secret,
   }) async {
     secrets.add(secret);
+    await answerWhen;
     if (refuse) {
       throw const AuthenticationFailed(
         'Gmail did not accept that app password.',
@@ -353,6 +358,49 @@ void main() {
       expect(find.textContaining('did not accept that app password'),
           findsWidgets);
       expect(await engine.loadAccounts(), isEmpty);
+    });
+
+    testWidgets('leaving before a refused sign-in comes back is quiet',
+        (tester) async {
+      // The refusal was put on a screen already closed, and setState there
+      // threw an uncaught error.
+      final answer = Completer<void>();
+      final engine = _EmptyEngine()
+        ..refuse = true
+        ..answerWhen = answer.future;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [mailEngineProvider.overrideWithValue(engine)],
+          child: MaterialApp(
+            home: Builder(
+              builder: (context) => TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const AddAccountScreen(),
+                  ),
+                ),
+                child: const Text('add'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('add'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'Gmail address'), 'me@example.com');
+      await tester.enterText(find.widgetWithText(TextFormField, 'App password'),
+          'abcd efgh ijkl mnop');
+      await tester.tap(find.text('Sign in'));
+      await tester.pump();
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      answer.complete();
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('add'), findsOneWidget);
     });
 
     testWidgets('signing in adds the account and lands in the tree',

@@ -54,5 +54,12 @@ void main() {
       expect(doc, contains('<script nonce="n0nce">'));
       expect(RegExp(r'<script(?! nonce="n0nce")').hasMatch(doc), isFalse);
     });
+
+    test("a change of From replaces this message's signature only", () {
+      // A quoted message sent from here has a signature div of its own,
+      // which is the sender's and stays.
+      expect(doc, contains('window.mailtreeSetSignature = function'));
+      expect(doc, contains("querySelector('body > .mailtree-signature')"));
+    });
   });
 }

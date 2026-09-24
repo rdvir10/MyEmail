@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -5,9 +7,12 @@ import 'package:myemail/data/account_store.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/imap/cached_imap_engine.dart';
+import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:myemail/ui/settings/edit_account_screen.dart';
 
@@ -274,6 +279,74 @@ void main() {
       );
       expect(button.onPressed, isNotNull);
     });
+
+    group('leaving before the server answers', () {
+      // The failure was put on a screen already closed: setState there
+      // threw, and the message was never seen anyway.
+      late Completer<void> answer;
+      setUp(() => answer = Completer<void>());
+
+      Future<void> openOverAHome(WidgetTester tester) async {
+        useTallView(tester);
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              mailEngineProvider
+                  .overrideWithValue(_RefusesLater(answer.future)),
+            ],
+            child: MaterialApp(
+              home: Builder(
+                builder: (context) => TextButton(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const EditAccountScreen(account: account),
+                    ),
+                  ),
+                  child: const Text('edit'),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.text('edit'));
+        await tester.pumpAndSettle();
+      }
+
+      Future<void> leave(WidgetTester tester) async {
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+        answer.complete();
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(find.text('edit'), findsOneWidget);
+      }
+
+      testWidgets('from Check and save', (tester) async {
+        await openOverAHome(tester);
+        await tester.enterText(
+          find.ancestor(
+            of: find.text('New app password'),
+            matching: find.byType(TextField),
+          ),
+          'newnewnewnewnew1',
+        );
+        await tester.pump();
+        await tester.tap(find.widgetWithText(OutlinedButton, 'Check and save'));
+        await tester.pump();
+
+        await leave(tester);
+      });
+
+      testWidgets('from Save', (tester) async {
+        await openOverAHome(tester);
+        await tester.enterText(nameField(), 'Home');
+        await tester.pump();
+        await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+        await tester.pump();
+
+        await leave(tester);
+      });
+    });
   });
 
   group('popping a message out', () {
@@ -349,3 +422,30 @@ final _message = MailMessage(
   date: DateTime(2026, 9, 14, 9, 41),
   preview: 'The preview line',
 );
+
+/// Refuses a new password or a rename, once [answer] says it is time.
+class _RefusesLater extends SampleMailEngine {
+  _RefusesLater(this.answer);
+
+  final Future<void> answer;
+
+  @override
+  Future<void> updateAppPassword({
+    required String accountId,
+    required String secret,
+  }) async {
+    await answer;
+    throw const AuthenticationFailed('The server refused the password.');
+  }
+
+  @override
+  Future<Account> updateAccount({
+    required String accountId,
+    String? displayName,
+    int? colorValue,
+    String? senderName,
+  }) async {
+    await answer;
+    throw StateError('The account could not be saved.');
+  }
+}
