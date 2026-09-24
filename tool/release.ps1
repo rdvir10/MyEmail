@@ -15,6 +15,11 @@
 #   6. Commits the bump, tags it, pushes, and publishes the GitHub release.
 #   7. Checks the published manifest is actually reachable before saying so.
 #
+#   pwsh tool/release.ps1 -Version 1.1.0 -PublishOnly
+#
+# does 6's publishing and 7 alone, for a version already built with
+# -StageOnly, committed, tagged and pushed.
+#
 # The manifest is uploaded after the APK on purpose. A manifest announcing a
 # build that is not there yet points every phone at a 404.
 #
@@ -46,7 +51,11 @@ param(
 
     # Build and stage everything, but stop short of publishing. For checking
     # what a release would contain without putting it in front of a device.
-    [switch]$StageOnly
+    [switch]$StageOnly,
+
+    # Publish what is already staged, for a version already committed, tagged
+    # and pushed: the half of a release that could not be done at the time.
+    [switch]$PublishOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,6 +64,65 @@ $ErrorActionPreference = 'Stop'
 # filesystem path where it wants owner/name.
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
+
+$apkName = 'myemail-arm64.apk'
+$apkPath = Join-Path $OutDir $apkName
+$manifestPath = Join-Path $OutDir 'latest.json'
+
+# Steps 6's publishing and 7: the GitHub release, then proof it is live.
+function Publish-Release([int]$Build, [string]$Notes) {
+    # The credential git already holds, read at the moment it is needed. gh's own
+    # login refuses this token for want of a scope it does not need here, so it is
+    # handed over directly instead and never stored.
+    $cred = "protocol=https`nhost=github.com`n`n" | & git credential fill
+    $line = $cred | Select-String '^password='
+    if (-not $line) {
+        throw "No stored GitHub credential. Run 'git push' once to create one, then rerun."
+    }
+    $token = $line.ToString() -replace '^password=', ''
+
+    $gh = Join-Path $env:USERPROFILE 'tools\gh\bin\gh.exe'
+    if (-not (Test-Path $gh)) { throw "The GitHub CLI is not at $gh." }
+
+    $env:GH_TOKEN = $token
+    try {
+        # The APK is listed first so it uploads first: a manifest naming a build
+        # that is not there yet points every phone at a 404.
+        & $gh release create "v$Version" $apkPath $manifestPath --repo $Repo --title $Version --notes $Notes
+        if ($LASTEXITCODE -ne 0) {
+            throw "The release was not published. The tag is already pushed, so rerun the gh command alone rather than the whole script."
+        }
+    } finally {
+        $env:GH_TOKEN = $null
+    }
+
+    # --- 7. prove it is reachable --------------------------------------------
+    # Not a formality. A release can exist while its assets are still processing,
+    # and a phone checking in that window is told there is nothing new.
+    $manifestUrl = "$($BaseUrl.TrimEnd('/'))/latest.json"
+    $live = Invoke-RestMethod $manifestUrl
+    if ($live.build -ne $build) {
+        throw "Published, but $manifestUrl still reports build $($live.build). Check the release assets."
+    }
+}
+
+if ($PublishOnly) {
+    if (-not (Test-Path $apkPath) -or -not (Test-Path $manifestPath)) {
+        throw "Nothing is staged in $OutDir. Build it with -StageOnly first."
+    }
+    $staged = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    if ($staged.version -ne $Version) {
+        throw "What is staged is $($staged.version), not $Version."
+    }
+    if (-not (& git tag --list "v$Version")) {
+        throw "There is no tag v$Version. Commit, tag and push the release first."
+    }
+    Publish-Release -Build $staged.build -Notes ($(if ($Notes) { $Notes } else { $staged.notes }))
+    Write-Host ""
+    Write-Host "Published $Version (build $($staged.build)), and verified live." -ForegroundColor Green
+    Write-Host "  https://github.com/$Repo/releases/tag/v$Version"
+    return
+}
 
 # --- 1. refuse to build something unreproducible --------------------------
 if (-not (Test-Path "$repoRoot\android\key.properties")) {
@@ -93,9 +161,8 @@ if (-not (Test-Path $built)) { throw "The build reported success but produced no
 
 # --- 4. publish under a fixed name ---------------------------------------
 New-Item -ItemType Directory -Force $OutDir | Out-Null
-# Fixed, because the manifest URL above is built from it and must not move.
-$apkName = 'myemail-arm64.apk'
-$apkPath = Join-Path $OutDir $apkName
+# Fixed ($apkName, above), because the manifest URL is built from it and
+# must not move.
 Copy-Item $built $apkPath -Force
 
 # --- 5. the manifest, with the size read from the file ------------------
@@ -111,7 +178,6 @@ $manifest = [ordered]@{
 }
 if ($Notes) { $manifest.notes = $Notes }
 
-$manifestPath = Join-Path $OutDir 'latest.json'
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $manifestPath -Encoding utf8
 
 Write-Host ""
@@ -136,39 +202,7 @@ if ($LASTEXITCODE -ne 0) { throw "Could not tag v$Version. Does that tag already
 & git push -q origin main --tags
 if ($LASTEXITCODE -ne 0) { throw "Could not push. Nothing was published, so nothing is half-done on GitHub." }
 
-# The credential git already holds, read at the moment it is needed. gh's own
-# login refuses this token for want of a scope it does not need here, so it is
-# handed over directly instead and never stored.
-$cred = "protocol=https`nhost=github.com`n`n" | & git credential fill
-$line = $cred | Select-String '^password='
-if (-not $line) {
-    throw "No stored GitHub credential. Run 'git push' once to create one, then rerun."
-}
-$token = $line.ToString() -replace '^password=', ''
-
-$gh = Join-Path $env:USERPROFILE 'tools\gh\bin\gh.exe'
-if (-not (Test-Path $gh)) { throw "The GitHub CLI is not at $gh." }
-
-$env:GH_TOKEN = $token
-try {
-    # The APK is listed first so it uploads first: a manifest naming a build
-    # that is not there yet points every phone at a 404.
-    & $gh release create "v$Version" $apkPath $manifestPath --repo $Repo --title $Version --notes $Notes
-    if ($LASTEXITCODE -ne 0) {
-        throw "The release was not published. The tag is already pushed, so rerun the gh command alone rather than the whole script."
-    }
-} finally {
-    $env:GH_TOKEN = $null
-}
-
-# --- 7. prove it is reachable --------------------------------------------
-# Not a formality. A release can exist while its assets are still processing,
-# and a phone checking in that window is told there is nothing new.
-$manifestUrl = "$($BaseUrl.TrimEnd('/'))/latest.json"
-$live = Invoke-RestMethod $manifestUrl
-if ($live.build -ne $build) {
-    throw "Published, but $manifestUrl still reports build $($live.build). Check the release assets."
-}
+Publish-Release -Build $build -Notes $Notes
 
 Write-Host ""
 Write-Host "Published $Version (build $build), and verified live." -ForegroundColor Green
