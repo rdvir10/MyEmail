@@ -221,8 +221,9 @@ abstract class MailEngine {
     int limit = 100,
   });
 
-  /// Send the draft over SMTP, copy it into Sent, and mark the message it
-  /// answers as \Answered when there is one.
+  /// Send the draft (over SMTP for Gmail, through Graph for Microsoft), see
+  /// that Sent has a copy, and mark the message it answers as \Answered when
+  /// there is one.
   ///
   /// Throws [SendFailed] when the server refuses, [AuthenticationFailed] when
   /// it refuses the login, and [ConnectionFailed] when it cannot be reached.
@@ -233,7 +234,8 @@ abstract class MailEngine {
   /// Server-side rather than local, so the half-written message is on the
   /// phone, on the web and in every other client, which is the only version
   /// of this feature worth having. Returns the new message id, or null where
-  /// the account has no Drafts folder to put it in.
+  /// the draft was saved but where it landed is not known. Throws
+  /// [SendFailed] where the account has no Drafts folder to put it in.
   Future<String?> saveDraft(Draft draft);
 
   /// Remove a copy [saveDraft] put in Drafts, for good rather than into

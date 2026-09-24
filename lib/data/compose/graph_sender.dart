@@ -142,7 +142,9 @@ class GraphSender {
   /// A failure part way through leaves the draft on the server, in Drafts,
   /// with whatever went up before it stopped. That is deliberate: it is the
   /// person's message, and deleting it to keep the mailbox tidy would throw
-  /// away what they wrote. The error says where it is.
+  /// away what they wrote. The error says where it is, whatever stopped it;
+  /// only one case used to, and each try again left another copy there
+  /// without a word.
   Future<void> _sendInPieces(
     http.Client client, {
     required Draft draft,
@@ -175,15 +177,42 @@ class GraphSender {
     }
 
     final messageId = await _createDraft(client, words);
-    for (final attachment in draft.attachments) {
-      if (attachment.size <= maxMimeBytes) {
-        await _attachSmall(client, messageId, attachment);
-      } else {
-        await _attachLarge(client, messageId, attachment);
+    try {
+      for (final attachment in draft.attachments) {
+        if (attachment.size <= maxMimeBytes) {
+          await _attachSmall(client, messageId, attachment);
+        } else {
+          await _attachLarge(client, messageId, attachment);
+        }
       }
+    } catch (e) {
+      throw _withNote(e, _inDrafts);
     }
-    await _sendDraftOnServer(client, messageId);
+    try {
+      await _sendDraftOnServer(client, messageId);
+    } on ConnectionFailed catch (e) {
+      // Lost with the send asked for and no answer: it may have gone.
+      throw _withNote(
+        e,
+        'It may or may not have gone. If it has not, it is in Drafts; check '
+        'Sent Items before sending it again.',
+      );
+    } catch (e) {
+      throw _withNote(e, _inDrafts);
+    }
   }
+
+  static const _inDrafts = 'The message is in Drafts; nothing has gone out.';
+
+  /// [error] with [note] after its own words, and still the type it was, so
+  /// what the app offers for it (sign in again, try again) is unchanged.
+  static Object _withNote(Object error, String note) => switch (error) {
+        AuthenticationFailed(:final message) =>
+          AuthenticationFailed('$message $note'),
+        ConnectionFailed(:final message) => ConnectionFailed('$message $note'),
+        SendFailed(:final message) => SendFailed('$message $note'),
+        _ => error,
+      };
 
   Future<String> _createDraft(http.Client client, List<int> mime) async {
     final response = await _authorised((token) => client.post(
@@ -271,9 +300,9 @@ class GraphSender {
     final body = jsonDecode(opened.body);
     final url = body is Map ? body['uploadUrl'] : null;
     if (url is! String || url.isEmpty) {
+      // _sendInPieces adds where the message is.
       throw SendFailed(
-        'Microsoft would not open an upload for ${attachment.fileName}. '
-        'The message is in Drafts; nothing has gone out.',
+        'Microsoft would not open an upload for ${attachment.fileName}.',
       );
     }
 

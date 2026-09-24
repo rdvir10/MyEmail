@@ -474,12 +474,12 @@ class GraphMailApi {
 
   /// A POST whose success is a 202 with nothing in it.
   Future<void> _postNoContent(Uri uri, Map<String, Object?> body) async {
-    final response = await _authorised(() => http.Request('POST', uri)
+    final response = await _exchange(http.Request('POST', uri)
       ..headers['Content-Type'] = 'application/json'
       ..body = jsonEncode(body));
     if (response.statusCode == 404) throw const GraphNotFound();
     if (response.statusCode >= 400) {
-      throw _failureFor(response.statusCode, const {});
+      throw _failureFor(response.statusCode, _errorOf(response));
     }
   }
 
@@ -590,12 +590,10 @@ class GraphMailApi {
   /// is bytes: decoding a PDF as UTF-8 and re-encoding it produces something
   /// that is the right length and opens in nothing.
   Future<Uint8List> _bytes(Uri uri) async {
-    final response = await _authorised(
-      () => http.Request('GET', uri)..followRedirects = true,
-    );
+    final response = await _exchange(http.Request('GET', uri));
     if (response.statusCode == 404) throw const GraphNotFound();
     if (response.statusCode >= 400) {
-      throw _failureFor(response.statusCode, const {});
+      throw _failureFor(response.statusCode, _errorOf(response));
     }
     return response.bodyBytes;
   }
@@ -652,11 +650,14 @@ class GraphMailApi {
     }
   }
 
-  Future<Map<String, Object?>> _send(
-    http.Request request, {
-    int attempt = 0,
-  }) async {
-    {
+  /// Send [request], waiting out any throttling Graph asks for.
+  ///
+  /// Every request goes through here, whatever it answers with: JSON for
+  /// most, a file for an attachment or an `.eml`, nothing at all for an
+  /// invitation answer. The last two used to go round it, so a throttled
+  /// download or answer failed at once where everything else waited.
+  Future<http.Response> _exchange(http.Request request) async {
+    for (var attempt = 0;; attempt++) {
       // Copies, so the one given is never sent and can be copied again.
       final response = await _authorised(() => _copyOf(request));
 
@@ -664,33 +665,47 @@ class GraphMailApi {
       // whole remedy, and doing it here means nothing above this ever has to
       // know it happened.
       final wait = _retryAfter(response);
-      if (wait != null && attempt < maxThrottleRetries) {
-        await (sleep ?? _realSleep)(wait);
-        return _send(request, attempt: attempt + 1);
-      }
-
-      if (response.statusCode == 404) throw const GraphNotFound();
-      if (response.statusCode == 204 || response.body.isEmpty) {
-        return const {};
-      }
-
-      final Object? decoded;
-      try {
-        decoded = jsonDecode(response.body);
-      } on FormatException {
-        throw ConnectionFailed(
-          'Microsoft answered with something that was not JSON '
-          '(HTTP ${response.statusCode}).',
-        );
-      }
-      final json =
-          decoded is Map ? decoded.cast<String, Object?>() : <String, Object?>{};
-
-      if (response.statusCode >= 400) {
-        throw _failureFor(response.statusCode, json);
-      }
-      return json;
+      if (wait == null || attempt >= maxThrottleRetries) return response;
+      await (sleep ?? _realSleep)(wait);
     }
+  }
+
+  Future<Map<String, Object?>> _send(http.Request request) async {
+    final response = await _exchange(request);
+
+    if (response.statusCode == 404) throw const GraphNotFound();
+    if (response.statusCode == 204 || response.body.isEmpty) {
+      return const {};
+    }
+
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(response.body);
+    } on FormatException {
+      throw ConnectionFailed(
+        'Microsoft answered with something that was not JSON '
+        '(HTTP ${response.statusCode}).',
+      );
+    }
+    final json =
+        decoded is Map ? decoded.cast<String, Object?>() : <String, Object?>{};
+
+    if (response.statusCode >= 400) {
+      throw _failureFor(response.statusCode, json);
+    }
+    return json;
+  }
+
+  /// Graph's error envelope from a response that is not otherwise JSON, or
+  /// nothing if it has none.
+  static Map<String, Object?> _errorOf(http.Response response) {
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map) return decoded.cast<String, Object?>();
+    } on FormatException {
+      // Not JSON. The status is all there is.
+    }
+    return const {};
   }
 
   static Future<void> _realSleep(Duration d) => Future<void>.delayed(d);

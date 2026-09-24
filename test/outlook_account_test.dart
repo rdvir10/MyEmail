@@ -11,6 +11,7 @@ import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/folder_capabilities.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_credentials.dart';
+import 'package:myemail/state/folder_drag.dart';
 
 import 'fakes/fake_imap_transport.dart';
 
@@ -279,6 +280,45 @@ void main() {
         expect(c.canDelete, isFalse, reason: '$role');
         expect(c.canMove, isFalse, reason: '$role');
       }
+    });
+
+    test('Inbox and Archive take subfolders on Outlook, as Graph allows',
+        () async {
+      // Neither offered "New subfolder" nor took a folder dropped on it,
+      // though a drop beside an existing Inbox subfolder moved it in anyway.
+      server.folder('Projects');
+      final account = await addOutlook();
+      final folders = await engine.loadFolders(account.id);
+      final inbox = folders.firstWhere((f) => f.role == FolderRole.inbox);
+      final archive = folders.firstWhere((f) => f.role == FolderRole.archive);
+      final projects = folders.firstWhere((f) => f.path == 'Projects');
+
+      expect(inbox.capabilities.canCreateChild, isTrue);
+      expect(archive.capabilities.canCreateChild, isTrue);
+      expect(
+        resolveDropZone(dragged: projects, target: inbox, fraction: 0.5),
+        DropZone.into,
+      );
+      expect(
+        FolderCapabilities.forGmail(FolderRole.inbox).canCreateChild,
+        isFalse,
+        reason: 'Gmail keeps its Inbox closed',
+      );
+    });
+
+    test('a new folder named with a slash is one folder, not two', () async {
+      // The slash stands in as a look-alike in the path, as the listing
+      // has it; the Graph transport turns it back into the name.
+      final account = await addOutlook();
+
+      final created = await engine.createFolder(
+        accountId: account.id,
+        name: 'AP/AR',
+        parentId: '${account.id}:INBOX',
+      );
+
+      expect(created.path, 'INBOX/AP∕AR');
+      expect(server.calls, contains('CREATE INBOX/AP∕AR'));
     });
 
     test('ordinary folders are fully editable', () {

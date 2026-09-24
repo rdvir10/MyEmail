@@ -327,7 +327,8 @@ class _Failing extends SampleMailEngine {
   @override
   Future<String?> saveDraft(Draft draft) async {
     _check();
-    if (noDraftsFolder) return null;
+    // As the engines say it: an account with no Drafts folder throws.
+    if (noDraftsFolder) throw const SendFailed('No Drafts folder.');
     return super.saveDraft(draft);
   }
 }

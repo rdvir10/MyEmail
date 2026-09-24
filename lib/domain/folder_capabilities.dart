@@ -43,13 +43,16 @@ class FolderCapabilities {
 
   /// A server-defined special folder. Gmail refuses structural changes to
   /// these, and the Inbox cannot be removed on any provider.
+  ///
+  /// [canCreateChild] is the one edit that can be open: it changes what is
+  /// under the folder, not the folder itself.
   const FolderCapabilities.systemFolder({
     this.canEmpty = false,
     this.canAcceptMessages = true,
+    this.canCreateChild = false,
   })  : canRename = false,
         canMove = false,
         canDelete = false,
-        canCreateChild = false,
         canMarkAllRead = true,
         canFavorite = true;
 
@@ -109,6 +112,11 @@ class FolderCapabilities {
   /// renamed on Exchange, but doing so from here would move them out from
   /// under their special-use flag and leave the account with a Sent folder
   /// the app no longer recognises.
+  ///
+  /// Folders inside them are another matter. Inbox and Archive take
+  /// subfolders on Outlook, and people use them: offering neither "New
+  /// subfolder" nor a drop onto them, while a drop beside an existing Inbox
+  /// subfolder moved the folder into the Inbox anyway, was only confusing.
   factory FolderCapabilities.forOutlook(FolderRole role) => switch (role) {
         FolderRole.unifiedInbox => const FolderCapabilities.synthetic(),
         FolderRole.user => const FolderCapabilities.userFolder(),
@@ -116,10 +124,12 @@ class FolderCapabilities {
           const FolderCapabilities.systemFolder(canEmpty: true),
         FolderRole.junk =>
           const FolderCapabilities.systemFolder(canEmpty: true),
-        FolderRole.archive => const FolderCapabilities.systemFolder(),
+        FolderRole.archive =>
+          const FolderCapabilities.systemFolder(canCreateChild: true),
         FolderRole.drafts => const FolderCapabilities.systemFolder(),
         FolderRole.sent => const FolderCapabilities.systemFolder(),
-        FolderRole.inbox => const FolderCapabilities.systemFolder(),
+        FolderRole.inbox =>
+          const FolderCapabilities.systemFolder(canCreateChild: true),
         // Nothing on the server backs an Outbox; it is the app's own queue.
         FolderRole.outbox =>
           const FolderCapabilities.systemFolder(canAcceptMessages: false),

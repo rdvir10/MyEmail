@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:enough_mail/enough_mail.dart' as em;
 // SmtpCommand is how SmtpClient lets a caller drive a conversation of its
@@ -21,7 +23,8 @@ import 'quote_builder.dart';
 /// a connection.
 
 /// The MIME message a draft becomes: multipart/alternative with the editor's
-/// HTML and a text rendering of it, plus any attachments.
+/// HTML and a text rendering of it, in a multipart/related with the pictures
+/// the HTML shows when there are any, plus any attachments.
 em.MimeMessage buildMimeMessage({
   required Draft draft,
   required Account account,
@@ -50,11 +53,23 @@ em.MimeMessage buildMimeMessage({
     builder.setHeader('References', references.join(' '));
   }
 
+  // A picture the HTML shows in place goes beside it, in a
+  // multipart/related, under its Content-ID; the cid: link finds it there.
+  final pictures = [
+    for (final a in draft.attachments)
+      if (a.contentId != null) a,
+  ];
+  final body = pictures.isEmpty
+      ? builder
+      : builder.addPart(mediaSubtype: em.MediaSubtype.multipartRelated);
   final html = restoreBlockedImages(draft.htmlBody);
-  builder.addMultipartAlternative(
+  body.addMultipartAlternative(
     plainText: plainTextFromHtml(html),
     htmlText: html,
   );
+  for (final picture in pictures) {
+    _addFile(body, picture);
+  }
 
   // An answer to an invitation: the calendar part goes beside the text,
   // typed so a calendar server knows it for a reply.
@@ -68,26 +83,169 @@ em.MimeMessage buildMimeMessage({
   }
 
   for (final attachment in draft.attachments) {
-    final cid = attachment.contentId;
-    final part = builder.addBinary(
-      attachment.bytes,
-      em.MediaType.guessFromFileName(attachment.fileName),
-      filename: attachment.fileName,
-      // A picture the HTML shows in place goes inline under its Content-ID,
-      // or the cid: link in a forwarded quote finds nothing.
-      disposition: cid == null
-          ? null
-          : em.ContentDispositionHeader.from(
-              em.ContentDisposition.inline,
-              filename: attachment.fileName,
-              size: attachment.size,
-            ),
-    );
-    if (cid != null) part.setHeader('Content-ID', '<$cid>');
+    if (attachment.contentId == null) _addFile(builder, attachment);
   }
 
-  return builder.buildMimeMessage();
+  final message = builder.buildMimeMessage();
+  // RFC 2045 allows a multipart no transfer encoding but 7bit, 8bit or
+  // binary, and enough_mail gives the top of every message base64. Its parts
+  // carry their own.
+  if (message.mediaType.isMultipart) {
+    message.removeHeader('Content-Transfer-Encoding');
+  }
+  return message;
 }
+
+/// One file as a part of [parent]: inline under its Content-ID if the HTML
+/// shows it, attached otherwise.
+///
+/// The name is written here rather than by enough_mail, which puts it in the
+/// header as it is. A Hebrew name went out as raw UTF-8 in a 7-bit session,
+/// which strict and older clients show as rubbish, and a quote in a name
+/// ended it early for any reader that follows the rules.
+void _addFile(em.PartBuilder parent, DraftAttachment file) {
+  final cid = file.contentId;
+  final disposition = em.ContentDispositionHeader.from(
+    cid == null ? em.ContentDisposition.attachment : em.ContentDisposition.inline,
+    size: file.size,
+  );
+  final part = parent.addBinary(
+    file.bytes,
+    em.MediaType.guessFromFileName(file.fileName),
+    disposition: disposition,
+  );
+  final name = file.fileName;
+  if (_isPlainName(name)) {
+    disposition.filename = name;
+    part.contentType?.parameters['name'] = '"$name"';
+  } else {
+    // RFC 2231 is what readers look for first. The name in Content-Type is
+    // for the ones that do not: encoded words, as Outlook and Thunderbird
+    // write it, which nearly everything reads.
+    disposition.parameters.addAll(_rfc2231('filename', name));
+    part.contentType?.parameters['name'] = '"${_encodedWords(name)}"';
+  }
+  if (cid != null) part.setHeader('Content-ID', '<$cid>');
+}
+
+/// A name that can go in a header between quotes as it is: printable ASCII,
+/// nothing that would end the quotes or split the header, and short enough
+/// not to be folded.
+bool _isPlainName(String name) =>
+    name.length <= 60 &&
+    name.runes.every((c) =>
+        c >= 0x20 && c < 0x7f && c != 0x22 && c != 0x5c && c != 0x3b);
+
+/// [name]=[value] as RFC 2231 has it: UTF-8, percent-encoded, and in
+/// numbered pieces when it is long.
+///
+/// The pieces are short on purpose. enough_mail folds a header only at a
+/// semicolon or a space, and a stretch with neither that is too long for
+/// the line it cuts wherever it reaches the limit, through the middle of a
+/// value.
+Map<String, String> _rfc2231(String name, String value) {
+  final pieces = <String>[];
+  final piece = StringBuffer();
+  for (final byte in utf8.encode(value)) {
+    final token = _attributeChar(byte)
+        ? String.fromCharCode(byte)
+        : '%${byte.toRadixString(16).toUpperCase().padLeft(2, '0')}';
+    if (piece.length + token.length > 40) {
+      pieces.add(piece.toString());
+      piece.clear();
+    }
+    piece.write(token);
+  }
+  pieces.add(piece.toString());
+  if (pieces.length == 1) return {'$name*': "UTF-8''${pieces.single}"};
+  return {
+    for (final (i, p) in pieces.indexed) '$name*$i*': i == 0 ? "UTF-8''$p" : p,
+  };
+}
+
+/// What RFC 2231 lets stand for itself in an encoded value.
+bool _attributeChar(int byte) =>
+    (byte >= 0x30 && byte <= 0x39) ||
+    (byte >= 0x41 && byte <= 0x5a) ||
+    (byte >= 0x61 && byte <= 0x7a) ||
+    '!#\$&+-.^_`|~'.codeUnits.contains(byte);
+
+/// [value] as RFC 2047 encoded words, none splitting a character, and each
+/// short enough to have a line to itself for the reason [_rfc2231] gives.
+String _encodedWords(String value) {
+  final words = <String>[];
+  var bytes = <int>[];
+  for (final rune in value.runes) {
+    final encoded = utf8.encode(String.fromCharCode(rune));
+    if (bytes.length + encoded.length > 30) {
+      words.add('=?UTF-8?B?${base64Encode(bytes)}?=');
+      bytes = [];
+    }
+    bytes.addAll(encoded);
+  }
+  words.add('=?UTF-8?B?${base64Encode(bytes)}?=');
+  return words.join(' ');
+}
+
+/// [draft] with each picture its HTML carries as a `data:` URI taken out
+/// into a part of its own, which the HTML then names by Content-ID.
+///
+/// A signature keeps its logo as data (see inlineRemoteImages), and a pasted
+/// picture arrives as data too. Gmail strips a data: picture from mail it
+/// receives and Outlook for Windows does not show one, so those recipients
+/// saw a broken logo in every signature. A part beside the HTML is what
+/// every client shows, Graph's MIME send included.
+///
+/// For sending only. A saved draft keeps its pictures as data, which the
+/// editor can show when it is reopened and a cid: link it cannot.
+Draft withPicturesAsParts(Draft draft) {
+  final pattern = RegExp(
+    r'''(<img\b[^>]*?\bsrc\s*=\s*)(["'])data:(image/[\w.+-]+);base64,([^"']*)\2''',
+    caseSensitive: false,
+  );
+  if (!pattern.hasMatch(draft.htmlBody)) return draft;
+
+  // One part for one picture, however often the HTML shows it.
+  final idFor = <String, String>{};
+  final pictures = <DraftAttachment>[];
+  final html = draft.htmlBody.replaceAllMapped(pattern, (m) {
+    final type = m[3]!.toLowerCase();
+    final data = m[4]!.replaceAll(RegExp(r'\s'), '');
+    var id = idFor['$type,$data'];
+    if (id == null) {
+      final Uint8List bytes;
+      try {
+        bytes = base64Decode(data);
+      } on FormatException {
+        return m[0]!;
+      }
+      id = '${em.MessageBuilder.createRandomId()}@myemail';
+      idFor['$type,$data'] = id;
+      pictures.add(DraftAttachment(
+        fileName: 'picture${pictures.length + 1}.${_extensionFor(type)}',
+        mimeType: type,
+        bytes: bytes,
+        contentId: id,
+      ));
+    }
+    return '${m[1]}${m[2]}cid:$id${m[2]}';
+  });
+  if (pictures.isEmpty) return draft;
+  return draft.copyWith(
+    htmlBody: html,
+    attachments: [...draft.attachments, ...pictures],
+  );
+}
+
+/// A file extension for an image type, which is what buildMimeMessage reads
+/// the part's type from.
+String _extensionFor(String imageType) =>
+    switch (imageType.split('/').last) {
+      'jpeg' || 'pjpeg' => 'jpg',
+      'svg+xml' => 'svg',
+      'x-icon' || 'vnd.microsoft.icon' => 'ico',
+      final other => other,
+    };
 
 em.MailAddress _addr(domain.MailAddress a) =>
     em.MailAddress(a.name, a.email);

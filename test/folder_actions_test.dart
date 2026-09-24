@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/domain/account.dart';
+import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/folder_tree/folder_tree_panel.dart';
 
 Widget _harness() {
@@ -150,6 +154,41 @@ void main() {
           reason: 'the tree behind the dialog is untouched');
     });
 
+    testWidgets('a Microsoft folder name may have a slash, and keeps it',
+        (tester) async {
+      // Graph names a folder by id, so "AP/AR" is an ordinary name there.
+      // The dialog refused the slash, and renaming such a folder saved the
+      // look-alike the path holds in its place, which matched nothing on the
+      // web and could not be typed back.
+      final engine = _MicrosoftSample();
+      await tester.pumpWidget(ProviderScope(
+        overrides: [mailEngineProvider.overrideWithValue(engine)],
+        child: const MaterialApp(home: Scaffold(body: FolderTreePanel())),
+      ));
+      await tester.pumpAndSettle();
+
+      await _openMenuFor(tester, find.text('Travel'));
+      await tester.tap(find.text('Rename'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField).last, 'AP/AR');
+      await tester.tap(find.widgetWithText(FilledButton, 'Rename'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Rename folder'), findsNothing, reason: 'accepted');
+      expect(engine.renamedTo, ['AP/AR']);
+      expect(find.text('AP∕AR'), findsOneWidget,
+          reason: 'one folder, not AR inside AP');
+
+      await _openMenuFor(tester, find.text('AP∕AR'));
+      await tester.tap(find.text('Rename'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(find.byType(TextField).last).controller!.text,
+        'AP/AR',
+        reason: 'offered back as the name, not the look-alike',
+      );
+    });
+
     testWidgets('new subfolder lands under an auto-expanded parent',
         (tester) async {
       await _pumpTree(tester);
@@ -268,4 +307,29 @@ void main() {
           reason: 'the total stays; only the unread went');
     });
   });
+}
+
+/// The sample mailbox as a Microsoft account, which is what lets a folder
+/// name carry a slash.
+class _MicrosoftSample extends SampleMailEngine {
+  final renamedTo = <String>[];
+
+  @override
+  Future<List<Account>> loadAccounts() async => [
+        for (final a in await super.loadAccounts())
+          Account(
+            id: a.id,
+            displayName: a.displayName,
+            emailAddress: a.emailAddress,
+            provider: MailProvider.outlook,
+            authMethod: AuthMethod.oauth,
+            colorValue: a.colorValue,
+          ),
+      ];
+
+  @override
+  Future<FolderRename> renameFolder(String folderId, String newName) {
+    renamedTo.add(newName);
+    return super.renameFolder(folderId, newName);
+  }
 }

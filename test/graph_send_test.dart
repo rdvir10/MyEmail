@@ -169,6 +169,22 @@ void main() {
           sender.send(message()), throwsA(isA<ConnectionFailed>()));
     });
 
+    test('a sign-in that has expired is not blamed on the network', () async {
+      // The token used to be fetched inside the guard for network failures,
+      // so an expired sign-in read "Could not reach Microsoft to send" and
+      // was filed as a connection problem.
+      final sender = senderWith(
+        (_) async => fail('nothing is sent without a token'),
+        token: ({bool force = false}) async =>
+            throw const AuthenticationFailed('Sign in again.'),
+      );
+
+      await expectLater(
+        sender.send(message()),
+        throwsA(isA<AuthenticationFailed>()),
+      );
+    });
+
     test('throttling says to wait rather than looking permanent', () async {
       await expectMessage(429, 'TooManyRequests', contains('Wait a minute'));
     });
@@ -393,10 +409,14 @@ void main() {
 
     test('a failure part way leaves the message in Drafts and says so',
         () async {
+      // Each try leaves another copy in Drafts, so the error has to say
+      // where it is, or a second attempt leaves two.
+      final calls = <String>[];
       final sender = GraphSender(
         accessToken: ({bool force = false}) async => 'graph-token',
         maxMimeBytes: 4000,
         httpClient: http_testing.MockClient((request) async {
+          calls.add(request.url.path.split('/').last);
           if (request.url.path.endsWith('/me/messages')) {
             return http.Response(jsonEncode({'id': 'draft-1'}), 201);
           }
@@ -417,7 +437,45 @@ void main() {
           draft: draftWith([file('huge.pdf', GraphSender.uploadChunkBytes + 1)]),
           account: account(),
         ),
-        throwsA(isA<AuthenticationFailed>()),
+        throwsA(isA<AuthenticationFailed>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('administrator'), contains('in Drafts')),
+        )),
+      );
+      expect(calls, isNot(contains('send')));
+    });
+
+    test('a connection lost part way also says the message is in Drafts',
+        () async {
+      final sender = GraphSender(
+        accessToken: ({bool force = false}) async => 'graph-token',
+        maxMimeBytes: 4000,
+        httpClient: http_testing.MockClient((request) async {
+          if (request.url.host == 'upload.example') throw const SocketLike();
+          if (request.url.path.endsWith('/createUploadSession')) {
+            return http.Response(
+              jsonEncode({'uploadUrl': 'https://upload.example/put'}),
+              200,
+            );
+          }
+          if (request.url.path.endsWith('/me/messages')) {
+            return http.Response(jsonEncode({'id': 'draft-1'}), 201);
+          }
+          return http.Response('', 202);
+        }),
+      );
+
+      await expectLater(
+        sender.sendDraft(
+          draft: draftWith([file('huge.pdf', GraphSender.uploadChunkBytes + 1)]),
+          account: account(),
+        ),
+        throwsA(isA<ConnectionFailed>().having(
+          (e) => e.message,
+          'message',
+          contains('in Drafts'),
+        )),
       );
     });
   });

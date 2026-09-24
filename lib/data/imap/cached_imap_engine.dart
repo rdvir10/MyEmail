@@ -103,6 +103,9 @@ class CachedImapEngine implements MailEngine {
       );
 
   final Map<String, ImapTransport> _transports = {};
+
+  /// Connections being made, for [_transport] to hand to a second caller.
+  final Map<String, Future<ImapTransport>> _opening = {};
   final Map<String, FolderSync> _syncs = {};
 
   static const _palette = [0xFF0F6CBD, 0xFF107C41, 0xFFB4009E, 0xFFCA5010];
@@ -584,7 +587,10 @@ class CachedImapEngine implements MailEngine {
   Future<FolderRename> renameFolder(String folderId, String newName) {
     final (accountId, path) = splitFolderId(folderId);
     final cut = path.lastIndexOf('/');
-    final newPath = cut < 0 ? newName : '${path.substring(0, cut)}/$newName';
+    // A slash reaches here only from a Microsoft account, whose names may
+    // have one; in the path it becomes a stand-in, as the listing does.
+    final segment = safePathSegment(newName);
+    final newPath = cut < 0 ? segment : '${path.substring(0, cut)}/$segment';
     return _relocate(accountId, path, newPath);
   }
 
@@ -609,7 +615,10 @@ class CachedImapEngine implements MailEngine {
     }
     final t = await _transport(accountId);
     final before = await t.listFolders();
-    if (before.any((r) => r.path.toLowerCase() == newPath.toLowerCase())) {
+    // The folder itself is left out: a change of capitals alone would find
+    // it, and "receipts" could never become "Receipts".
+    if (before.any((r) =>
+        r.path != path && r.path.toLowerCase() == newPath.toLowerCase())) {
       throw FolderNameConflict(accountId, newPath);
     }
     await t.renameFolder(path, newPath);
@@ -655,7 +664,10 @@ class CachedImapEngine implements MailEngine {
     required String name,
     String? parentId,
   }) async {
-    final path = parentId == null ? name : '${splitFolderId(parentId).$2}/$name';
+    // See renameFolder for the slash.
+    final segment = safePathSegment(name);
+    final path =
+        parentId == null ? segment : '${splitFolderId(parentId).$2}/$segment';
     final t = await _transport(accountId);
     final before = await t.listFolders();
     if (before.any((r) => r.path.toLowerCase() == path.toLowerCase())) {
@@ -913,7 +925,15 @@ class CachedImapEngine implements MailEngine {
     await cache.deleteUids(accountId, fromPath, moved.toSet());
     // The destination picks the new messages up on its next sync; it may
     // not be cached at all yet, and guessing UIDs would be worse.
-    await _syncIfCached(accountId, t, toPath);
+    //
+    // Best-effort. The move has happened by now, and on a weak connection
+    // this is what failed: the app then said the message was where it was
+    // and put its row back, although it was already in Trash.
+    try {
+      await _syncIfCached(accountId, t, toPath);
+    } catch (_) {
+      // The destination catches up on its next sync.
+    }
     return (
       landed: landed,
       moved: (uids: moved, headers: headers),
@@ -1230,7 +1250,15 @@ class CachedImapEngine implements MailEngine {
           orElse: () => throw StateError('Unknown account ${draft.accountId}'),
         );
     final draftsPath = await _folderPathForRole(account.id, FolderRole.drafts);
-    if (draftsPath == null) return null;
+    if (draftsPath == null) {
+      // Said rather than returned quietly. Compose closed on "Saved to
+      // Drafts" when nothing had been saved anywhere, and the half-written
+      // message was gone.
+      throw SendFailed(
+        'The app cannot find a Drafts folder for ${account.emailAddress}, so '
+        'the message was not saved.',
+      );
+    }
 
     final message = buildMimeMessage(draft: draft, account: account);
     final t = await _transport(account.id);
@@ -1282,14 +1310,19 @@ class CachedImapEngine implements MailEngine {
         );
     final credentials = await _credentialsFor(account);
 
-    final message = buildMimeMessage(draft: draft, account: account);
-    await _send(account, credentials, message, draft: draft);
+    // Pictures kept in the HTML as data, a signature's logo above all, go
+    // out as parts of their own, which Gmail and Outlook show and a data:
+    // picture they do not. Here, so both routes below have it.
+    final outgoing = withPicturesAsParts(draft);
+    final message = buildMimeMessage(draft: outgoing, account: account);
+    await _send(account, credentials, message, draft: outgoing);
 
     // It is away, so the copy in Drafts is now a duplicate of sent mail.
     await _dropPreviousDraft(draft.savedAs);
 
-    // Gmail files sent mail into Sent itself, so appending would leave two
-    // copies. Other providers do not, hence the per-provider check.
+    // Gmail and Graph file sent mail into Sent themselves, so appending
+    // would leave two copies. The check is per provider for one that does
+    // not.
     if (_needsSentCopy(account.provider)) {
       final sentPath = await _folderPathForRole(account.id, FolderRole.sent);
       if (sentPath != null) {
@@ -1322,9 +1355,9 @@ class CachedImapEngine implements MailEngine {
   /// Whether the app must file its own copy of a sent message.
   ///
   /// Both providers we support file it themselves, so appending would leave
-  /// two copies of everything in Sent. Gmail has always done this. Microsoft
-  /// does it for mail submitted over SMTP AUTH, which is the path this app
-  /// uses.
+  /// two copies of everything in Sent. Gmail has always done this for mail
+  /// submitted over SMTP. Microsoft does it for mail sent through Graph,
+  /// which is the path this app uses for it.
   ///
   /// If a sent message ever fails to appear in Sent for some provider, this
   /// is the switch: return true for it and the engine appends the copy
@@ -1387,9 +1420,24 @@ class CachedImapEngine implements MailEngine {
 
   // --- plumbing --------------------------------------------------------------
 
+  /// The account's connection, made once however many ask at the same time.
+  ///
+  /// At start-up the folder tree and the message list ask for the same
+  /// account together. Each used to find none, build its own and log in,
+  /// and the second replaced the first in [_transports], so the first stayed
+  /// open where [close] could never reach it. Everyone asking while one is
+  /// being made now waits for that one.
   Future<ImapTransport> _transport(String accountId) async {
     final existing = _transports[accountId];
     if (existing != null) return existing;
+    // A block, not an arrow: remove() hands back this very future, and
+    // whenComplete would then wait on itself for ever.
+    return _opening[accountId] ??= _open(accountId).whenComplete(() {
+      _opening.remove(accountId);
+    });
+  }
+
+  Future<ImapTransport> _open(String accountId) async {
     final account = accountStore.read().firstWhere(
           (a) => a.id == accountId,
           orElse: () => throw StateError('Unknown account $accountId'),

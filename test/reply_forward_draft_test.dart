@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:enough_mail/enough_mail.dart' as em;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/compose/mime_parts.dart';
 import 'package:myemail/data/compose/reply_draft.dart';
@@ -288,23 +289,52 @@ void main() {
       ],
     );
 
+    // By name, not by place: the picture now goes out beside the HTML, in
+    // the multipart/related, and so comes back before the file.
+    DraftAttachment named(List<DraftAttachment> found, String name) =>
+        found.singleWhere((a) => a.fileName == name);
+
     test('every file comes back, bytes and all, and the text does not', () {
       final found = attachmentsInMime(mimeOf(withFiles));
-      expect(found.map((a) => a.fileName), ['invoice.pdf', 'logo.png']);
-      expect(found.first.bytes, pdf);
-      expect(found.last.bytes, png);
+      expect(found.map((a) => a.fileName),
+          unorderedEquals(['invoice.pdf', 'logo.png']));
+      expect(named(found, 'invoice.pdf').bytes, pdf);
+      expect(named(found, 'logo.png').bytes, png);
     });
 
     test('a picture the HTML shows keeps its Content-ID; a file does not', () {
       final found = attachmentsInMime(mimeOf(withFiles));
-      expect(found.first.contentId, isNull);
-      expect(found.last.contentId, 'logo@example.com');
+      expect(named(found, 'invoice.pdf').contentId, isNull);
+      expect(named(found, 'logo.png').contentId, 'logo@example.com');
     });
 
     test('and is sent inline under it, so the cid: link still works', () {
       final text = mimeOf(withFiles);
       expect(text, contains('Content-ID: <logo@example.com>'));
       expect(text.toLowerCase(), contains('content-disposition: inline'));
+    });
+
+    test('beside the HTML, in a multipart/related, as RFC 2387 has it', () {
+      // In multipart/mixed, a reader that follows the rules shows the
+      // picture a second time, as an attachment.
+      final message = em.MimeMessage.parseFromText(mimeOf(withFiles));
+      final related = message.allPartsFlat.singleWhere(
+        (p) => p.mediaType.sub == em.MediaSubtype.multipartRelated,
+      );
+      List<em.MimePart> flat(em.MimePart p) =>
+          [p, for (final c in p.parts ?? const <em.MimePart>[]) ...flat(c)];
+      final inside = flat(related);
+      expect(inside.any((p) => p.mediaType.sub == em.MediaSubtype.textHtml),
+          isTrue);
+      expect(
+        inside.map((p) => p.getHeaderValue('content-id')),
+        contains('<logo@example.com>'),
+      );
+      expect(
+        inside.map((p) => p.decodeFileName()),
+        isNot(contains('invoice.pdf')),
+        reason: 'a file stays an attachment',
+      );
     });
 
     test('a saved draft gives back its Bcc and the thread it answers', () {
