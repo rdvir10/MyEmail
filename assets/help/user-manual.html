@@ -170,13 +170,13 @@
     <p class="eyebrow">MyEmail · manual</p>
     <h1>User manual</h1>
     <p class="lede">How to use MyEmail on the phone and on the tablet. Where the two differ, it says so; everything else works the same on both.</p>
-    <div class="badges"><span class="badge">Version 2.42.0</span><a class="badge" href="Features.html">See the feature list →</a></div>
+    <div class="badges"><span class="badge">Version 2.43.0</span><a class="badge" href="Features.html">See the feature list →</a></div>
   </div>
 </header>
 <div class="layout sidebar">
 <nav class="contents"><h2>Contents</h2><ol><li><a href="#1-getting-started">Getting started</a></li><li><a href="#2-what-is-on-screen">What is on screen</a></li><li><a href="#3-reading-mail">Reading mail</a></li><li><a href="#4-writing-mail">Writing mail</a></li><li><a href="#5-sorting-and-finding">Sorting and finding</a></li><li><a href="#6-tidying-up">Tidying up</a></li><li><a href="#7-folders">Folders</a></li><li><a href="#8-being-told-about-new-mail">Being told about new mail</a></li><li><a href="#9-home-screen-widgets">Home screen widgets</a></li><li><a href="#10-windows-and-split-screen">Windows and split screen</a></li><li><a href="#11-the-keyboard">The keyboard</a></li><li><a href="#12-settings-screen-by-screen">Settings, screen by screen</a></li><li><a href="#13-backup-and-updates">Backup and updates</a></li><li><a href="#14-when-something-looks-wrong">When something looks wrong</a></li></ol></nav>
 <article>
-<p>For the phone and the tablet. Version 2.42.0.</p>
+<p>For the phone and the tablet. Version 2.43.0.</p>
 <p>Where the two differ, it says so. Everything else works the same on both.</p>
 <hr>
 <hr>
@@ -211,6 +211,7 @@
 <h3 id="pictures">Pictures</h3>
 <p>Pictures are not fetched until you say so, because fetching one tells the sender you read the message, when, and roughly where you are.</p>
 <ul><li><strong>Show images</strong> loads them this once.</li><li>The <strong>⋮</strong> beside it offers <strong>Always show from <em>sender</em></strong> or <strong>Always show from everyone at <em>domain</em></strong> — the second is the one for shops, which send from a different address every time.</li><li><strong>Settings → View → Senders you trust</strong> lists what you have allowed, with a way to take any of it back.</li><li><strong>Settings → View → Load pictures automatically</strong> turns blocking off entirely.</li></ul>
+<p>Pictures that came inside the message itself — a screenshot pasted into it, the logo in a signature — are always shown. They are part of what arrived, so showing them tells the sender nothing.</p>
 <h3 id="attachments">Attachments</h3>
 <p>Chips under the header. Tap one to open it. Long-press picks it up so you can drag it into another app in split screen. Its menu has save, share and copy.</p>
 <p>Opening one offers the apps that handle that kind of file, and goes straight to your usual one where you have set a default. The file's name decides that, not what the sender called it: plenty of systems label every attachment as an anonymous lump of data, and a PDF marked that way used to be offered to anything at all.</p>
@@ -248,7 +249,8 @@
 <p>If a reply cannot be sent, it is saved in Drafts and a notification says so. With no signal at all it waits, and goes once there is one. What you typed is never thrown away: if it can be neither sent nor saved after several tries, the notification that says so shows what you wrote.</p>
 <h3 id="undo">Undo</h3>
 <p>Anything moved or deleted says so along the bottom, with <strong>Undo</strong> beside it. Tap it and the messages go back where they were. It works however they left — a swipe, the menu, the ribbon, the keyboard, or dragged onto a folder — and for a whole conversation at once.</p>
-<p>Undo is offered whenever it can be honoured. It is not offered for a message deleted out of Trash, because there is nowhere left to put that one back from.</p>
+<p>Undo is offered whenever it can be honoured. It is not offered for a message deleted out of Trash, because there is nowhere left to put that one back from. The bar goes after a few seconds whether you use it or not; it still works if the message it came from has closed.</p>
+<p>Marking several read or flagged goes on past one that fails, and the bar says how many could not be changed.</p>
 <h3 id="swipe">Swipe</h3>
 <p>Swipe a row left or right. What each direction does is yours to set (<strong>Settings → View → Swipe actions</strong>): nothing, delete, move, read/unread, flag or archive. The colour and the word appear as you drag, and on a conversation the word carries the count — "Delete 5" — so you know how much is going before you let go.</p>
 <h3 id="selecting-several">Selecting several</h3>
@@ -258,6 +260,7 @@
 <p><strong>Right-click → Copy</strong>, or <strong>Ctrl+C</strong>, puts the message on the clipboard as an <code>.eml</code> file. Paste it into a message you are writing to attach it, or into a file manager to keep it.</p>
 <h3 id="quick-steps">Quick Steps</h3>
 <p><strong>Settings → Quick Steps</strong> builds named chains — say <em>Mark read, then move to Receipts</em> — and they then appear in the ribbon, in a message's right-click menu, and can be applied in one tap.</p>
+<p>A step that moves mail files into one account's folder, and mail cannot move between accounts, so that step is only offered on that account's messages. With more than one account, the folder list says whose each folder is.</p>
 <hr>
 <h2 id="7-folders"><span>7. Folders</span></h2>
 <ul><li><strong>Long-press</strong> a folder for its menu: new subfolder, rename, move, add to Favourites, hide, mark all as read, empty (Trash and Junk only), delete. Each entry only appears where the account allows it.</li><li><strong>Drag</strong> a folder onto another to nest it, onto a folder's edge to reorder it, or onto the account heading to bring it to the top level. Order is kept on this device — IMAP has no such thing.</li><li><strong>Favourites</strong> sit at the top. <strong>Hidden</strong> folders disappear until you reveal them from the row at the bottom of the tree.</li><li>The search box at the top of the tree filters the folders themselves.</li><li><strong>All Inboxes</strong> merges every account's Inbox.</li></ul>
