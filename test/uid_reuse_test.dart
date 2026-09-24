@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart' show InsertMode;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/cache/cache_store.dart';
@@ -90,6 +91,67 @@ void main() {
 
       expect((await ids.uidsFor('a', 'Archive', ['g-2']))['g-2'], 1);
       expect((await ids.uidsFor('a', 'INBOX', ['g-3']))['g-3'], 2);
+    });
+
+    test('two syncs meeting one new message give it one number', () async {
+      // A refresh and a load-more, or the app and the worker, both finding
+      // it unnumbered. Each used to number it, and it showed twice.
+      await ids.uidsFor('a', 'INBOX', ['g-1']);
+
+      final both = await Future.wait([
+        ids.uidsFor('a', 'INBOX', ['g-2']),
+        ids.uidsFor('a', 'INBOX', ['g-2']),
+      ]);
+
+      expect(both[0]['g-2'], both[1]['g-2']);
+      final rows = await (db.select(db.graphIds)
+            ..where((t) => t.remoteId.equals('g-2')))
+          .get();
+      expect(rows, hasLength(1));
+    });
+
+    test('the database will not hold one message under two numbers',
+        () async {
+      // What a second connection writing at the same moment runs into.
+      await ids.uidsFor('a', 'INBOX', ['g-1']);
+
+      await db.into(db.graphIds).insert(
+            GraphIdsCompanion.insert(
+              accountId: 'a',
+              path: 'INBOX',
+              uid: 9,
+              remoteId: 'g-1',
+            ),
+            mode: InsertMode.insertOrIgnore,
+          );
+
+      expect(await ids.remoteIdsFor('a', 'INBOX', [9]), isEmpty);
+    });
+
+    test('while spent numbers, all blank, may be several at once', () async {
+      await ids.uidsFor('a', 'INBOX', ['g-1', 'g-2', 'g-3']);
+
+      await ids.forgetMoved('a', 'INBOX', [2, 3]);
+
+      expect(await ids.highestUid('a', 'INBOX'), 3);
+    });
+
+    test('a rename carries the numbering of an emoji-named folder', () async {
+      // Cut by Dart's count of the name, which is one more than SQLite's.
+      await ids.uidsFor('a', '\u{1F4C1}Bills/2024', ['g-1']);
+
+      await ids.renameFolder('a', '\u{1F4C1}Bills', 'New');
+
+      expect(await ids.remoteIdsFor('a', 'New/2024', [1]), {1: 'g-1'});
+    });
+
+    test('and leaves a folder differing only in case alone', () async {
+      await ids.uidsFor('a', 'Work', ['g-1']);
+      await ids.uidsFor('a', 'work/Notes', ['g-2']);
+
+      await ids.renameFolder('a', 'Work', 'Office');
+
+      expect(await ids.remoteIdsFor('a', 'work/Notes', [1]), {1: 'g-2'});
     });
   });
 

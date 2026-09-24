@@ -69,12 +69,7 @@ class FolderSync {
     // check runs over, and how far back the window reaches, which a
     // transport whose numbers do not follow dates needs to know. See
     // ImapTransport.fetchHeadersFromUid.
-    final cached = await store.readMessages(
-      accountId,
-      path,
-      offset: 0,
-      limit: 1 << 30,
-    );
+    final cached = await store.readSyncRows(accountId, path);
     final windowStart = cached.isEmpty
         ? null
         : cached
@@ -114,21 +109,32 @@ class FolderSync {
       range.max,
       windowStart: windowStart,
     );
+    // Only rows inside the range the server was asked about. A page of older
+    // mail loaded while this ran lands below it (IMAP numbers them lower),
+    // and counting those as gone deleted what had just been scrolled in.
     final gone = {
       for (final m in cached)
-        if (m.uid <= range.max && !existing.contains(m.uid)) m.uid,
+        if (m.uid >= range.min &&
+            m.uid <= range.max &&
+            !existing.contains(m.uid))
+          m.uid,
     };
     await store.deleteUids(accountId, path, gone);
 
     // Rows that have no preview line.
     //
-    // Two reasons a row has none. It was cached by a version that dropped
+    // Three reasons a row has none. It was cached by a version that dropped
     // the server's preview on the floor, which is most of a work mailbox
     // and is what this is for. Or the server has no preview to give, which
     // is every IMAP server, and there [canRefreshHeaders] is false so this
-    // never runs and never costs a round trip that could not help.
+    // never runs and never costs a round trip that could not help. Or the
+    // message has no text at all, a meeting reply say, and asking again
+    // would get nothing again: once a folder's rows have all been asked
+    // about, they are not asked about again. A pass over the whole folder
+    // every sync, forever, for one empty message.
     if (transport.canRefreshHeaders &&
-        cached.any((m) => m.preview.isEmpty && !gone.contains(m.uid))) {
+        !previous.previewsChecked &&
+        cached.any((m) => !m.hasPreview && !gone.contains(m.uid))) {
       final refreshed = await transport.refreshHeaders(
         path,
         range.min,
@@ -156,6 +162,9 @@ class FolderSync {
 
   /// Make sure at least [count] messages are cached, fetching older ones by
   /// sequence number if the server has more. Returns how many are cached.
+  ///
+  /// Leaves the folder's state alone: a page read now brings the server's
+  /// previews with it, so it changes nothing [FolderSyncState] records.
   Future<int> ensureCached(String path, int count) async {
     var have = await store.countMessages(accountId, path);
     if (have >= count) return have;
@@ -175,13 +184,7 @@ class FolderSync {
     // after the newest is numbered above it, every header was dropped, and
     // a Microsoft folder never showed more than its first two hundred.
     final cachedUids = {
-      for (final m in await store.readMessages(
-        accountId,
-        path,
-        offset: 0,
-        limit: 1 << 30,
-      ))
-        m.uid,
+      for (final m in await store.readSyncRows(accountId, path)) m.uid,
     };
     await store.upsertMessages(accountId, path, [
       for (final h in headers)
@@ -224,6 +227,9 @@ class FolderSync {
     return headers.length;
   }
 
+  /// Every sync that gets this far has seen to the previews, where the
+  /// server has them to give: rows it fetched came with the server's, and
+  /// rows that lacked one were asked.
   Future<void> _writeState(String path, FolderStatus status) =>
       store.writeFolderState(
         accountId,
@@ -233,6 +239,7 @@ class FolderSync {
           uidNext: status.uidNext,
           highestModSeq: status.highestModSeq,
           lastSync: _clock(),
+          previewsChecked: transport.canRefreshHeaders,
         ),
       );
 
@@ -242,6 +249,7 @@ class FolderSync {
         from: h.from,
         to: h.to,
         date: h.date,
+        arrived: h.arrived,
         isRead: h.isRead,
         isFlagged: h.isFlagged,
         hasAttachments: h.hasAttachments,

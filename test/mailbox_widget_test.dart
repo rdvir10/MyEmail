@@ -49,6 +49,34 @@ void main() {
     test('an empty mailbox is zero, not nothing', () {
       expect(arrivedSince(const [], mark), 0);
     });
+
+    test('by when it arrived, not by what its Date header says', () {
+      // Sent offline an hour before the mark and delivered after it, and a
+      // sender's clock a day fast. Gmail gives both the day they arrived.
+      MailMessage arrived(DateTime date, DateTime at) => MailMessage(
+            id: 'm${date.microsecondsSinceEpoch}',
+            accountId: 'a',
+            folderId: 'a:INBOX',
+            uid: 1,
+            subject: 'Subject',
+            preview: '',
+            from: const MailAddress(email: 'someone@example.com'),
+            to: const [],
+            date: date,
+            arrived: at,
+          );
+      final late = arrived(
+        mark.subtract(const Duration(hours: 1)),
+        mark.add(const Duration(minutes: 3)),
+      );
+      final fast = arrived(
+        mark.add(const Duration(days: 1)),
+        mark.subtract(const Duration(minutes: 3)),
+      );
+
+      expect(arrivedSince([late], mark), 1);
+      expect(arrivedSince([fast], mark), 0);
+    });
   });
 
   group('what the widget is told', () {

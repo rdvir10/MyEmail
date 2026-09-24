@@ -1,11 +1,13 @@
 import 'dart:io';
 
+import 'package:drift/drift.dart' show driftRuntimeOptions;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/cache/mail_database.dart';
 import 'package:myemail/data/graph/graph_id_map.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:sqlite3/sqlite3.dart' show sqlite3;
 
 /// Upgrading the database that is already on someone's device.
 ///
@@ -25,7 +27,10 @@ void main() {
   });
 
   tearDown(() {
-    if (file.existsSync()) file.deleteSync();
+    for (final suffix in ['', '-wal', '-shm', '-journal']) {
+      final f = File('${file.path}$suffix');
+      if (f.existsSync()) f.deleteSync();
+    }
   });
 
   CachedMessage message(int uid) => CachedMessage(
@@ -46,8 +51,21 @@ void main() {
   // and every test here would still have passed, while every device
   // upgrading from 2.35 or earlier failed on every cache read.
 
-  /// What schema 7 added: Reply-To.
+  /// What schema 8 added: when a message arrived, whether a folder's
+  /// previews were asked for, and one number per Graph message. And the
+  /// lookup index, which a database created at schema 3 or later never had.
+  Future<void> dropSchema8(MailDatabase db) async {
+    await db.customStatement('ALTER TABLE messages DROP COLUMN arrived');
+    await db.customStatement(
+      'ALTER TABLE folder_states DROP COLUMN previews_checked',
+    );
+    await db.customStatement('DROP INDEX IF EXISTS graph_ids_one_per_remote');
+    await db.customStatement('DROP INDEX IF EXISTS graph_ids_by_remote');
+  }
+
+  /// What schema 7 added: Reply-To. And everything after it.
   Future<void> dropSchema7(MailDatabase db) async {
+    await dropSchema8(db);
     await db.customStatement('ALTER TABLE messages DROP COLUMN reply_to_json');
   }
 
@@ -118,7 +136,33 @@ void main() {
     await db.close();
   }
 
-  /// A database as it stood at schema 6, the one every device upgrades from.
+  /// A database as it stood at schema 7, the one every device upgrades from:
+  /// created at 3 or later, so without the Graph lookup index, and with a
+  /// message two syncs numbered twice.
+  Future<void> buildVersion7() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await DriftCacheStore(db).writeFolderState('acct-1', 'INBOX',
+        FolderSyncState(uidValidity: 1, lastSync: DateTime.utc(2026, 9, 1)));
+    await dropSchema8(db);
+    for (final (uid, remoteId) in [
+      (1, 'g-1'),
+      (2, 'g-2'),
+      (3, 'g-2'), // the same message, numbered again
+      (4, ''), // spent
+      (5, ''),
+    ]) {
+      await db.customStatement(
+        'INSERT INTO graph_ids (account_id, path, uid, remote_id) '
+        "VALUES ('acct-1', 'Work', ?, ?)",
+        [uid, remoteId],
+      );
+    }
+    await db.customStatement('PRAGMA user_version = 7');
+    await db.close();
+  }
+
+  /// A database as it stood at schema 6.
   Future<void> buildVersion6() async {
     final db = MailDatabase(NativeDatabase(file));
     await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
@@ -126,6 +170,113 @@ void main() {
     await db.customStatement('PRAGMA user_version = 6');
     await db.close();
   }
+
+  Future<Set<String>> indexes(MailDatabase db) async => {
+        for (final row in await db
+            .customSelect("SELECT name FROM sqlite_master WHERE type = 'index'")
+            .get())
+          row.read<String>('name'),
+      };
+
+  test('a version 7 database gains the schema 8 columns and keeps its rows',
+      () async {
+    await buildVersion7();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    final cached = await store.readMessages('acct-1', 'INBOX');
+
+    expect(cached.single.bodyHtml, '<p>A body worth keeping</p>');
+    expect(cached.single.arrived, isNull, reason: 'cached before it was read');
+    final state = await store.readFolderState('acct-1', 'INBOX');
+    expect(state!.previewsChecked, isFalse,
+        reason: 'asked about once more after the update');
+
+    final arrived = DateTime.utc(2026, 9, 2, 9).toLocal();
+    await store.upsertMessages('acct-1', 'INBOX', [
+      CachedMessage(
+        uid: 12,
+        subject: 'Arrived late',
+        from: const MailAddress(email: 'dana@example.com'),
+        to: const [],
+        date: DateTime.utc(2026, 9, 1),
+        arrived: arrived,
+        isRead: false,
+        isFlagged: false,
+        hasAttachments: false,
+      ),
+    ]);
+    expect((await store.readMessage('acct-1', 'INBOX', 12))!.arrived, arrived);
+  });
+
+  test('a version 7 database gains the Graph lookup index', () async {
+    // Made only by the step up from schema 2, so a database created at 3 or
+    // later, which is any reinstall, scanned the table on every lookup.
+    await buildVersion7();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+
+    expect(await indexes(db),
+        containsAll(['graph_ids_by_remote', 'graph_ids_one_per_remote']));
+  });
+
+  test('a message numbered twice keeps its first number', () async {
+    await buildVersion7();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final ids = DriftGraphIdMap(db);
+
+    expect(await ids.remoteIdsFor('acct-1', 'Work', [1, 2, 3]),
+        {1: 'g-1', 2: 'g-2'});
+    expect((await ids.uidsFor('acct-1', 'Work', ['g-2']))['g-2'], 2);
+    expect(await ids.highestUid('acct-1', 'Work'), 5,
+        reason: 'the second number is spent, not handed back');
+    expect((await ids.uidsFor('acct-1', 'Work', ['g-3']))['g-3'], 6);
+  });
+
+  test('two connections opening an old database at once both come up',
+      () async {
+    // The app and a background job, on the first launch after an update.
+    // Both ran the upgrade; the second failed on a column the first had
+    // just added, and drift kept the error, so every cache read on that
+    // connection failed until the process was killed. A few rounds, since
+    // it is a race.
+    driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+    addTearDown(
+        () => driftRuntimeOptions.dontWarnAboutMultipleDatabases = false);
+    for (var round = 0; round < 5; round++) {
+      for (final suffix in ['', '-wal', '-shm']) {
+        final f = File('${file.path}$suffix');
+        if (f.existsSync()) f.deleteSync();
+      }
+      await buildVersion1();
+      // As the file is on a device since 2.43.0.
+      sqlite3.open(file.path)
+        ..execute('PRAGMA journal_mode = WAL')
+        ..close();
+
+      MailDatabase open() => MailDatabase(NativeDatabase.createInBackground(
+            file,
+            setup: MailDatabase.configureConnection,
+          ));
+      final app = open();
+      final worker = open();
+      try {
+        final both = await Future.wait([
+          DriftCacheStore(app).readMessages('acct-1', 'INBOX'),
+          DriftCacheStore(worker).readMessages('acct-1', 'INBOX'),
+        ]);
+        expect(both[0].single.bodyHtml, '<p>A body worth keeping</p>');
+        expect(both[1].single.bodyHtml, '<p>A body worth keeping</p>');
+      } finally {
+        await app.close();
+        await worker.close();
+      }
+    }
+  });
 
   test('a version 6 database gains Reply-To and keeps its rows', () async {
     await buildVersion6();
@@ -311,6 +462,14 @@ void main() {
     final assigned = await DriftGraphIdMap(db).uidsFor('a', 'INBOX', ['g-1']);
 
     expect(assigned['g-1'], 1);
+  });
+
+  test('and its indexes, which createAll does not know about', () async {
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+
+    expect(await indexes(db),
+        containsAll(['graph_ids_by_remote', 'graph_ids_one_per_remote']));
   });
 
   test('a Gmail account still reads its cache after the upgrade', () async {

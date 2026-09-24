@@ -1,3 +1,5 @@
+import 'package:drift/drift.dart'
+    show ApplyInterceptor, QueryExecutor, QueryInterceptor;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/cache/cache_store.dart';
@@ -39,11 +41,97 @@ Future<void> _previewsMerge(CacheStore store) async {
   expect(await preview(), 'Y', reason: 'a new one replaces it');
 }
 
+/// A folder deleted or renamed on another device leaves its cache here. A
+/// rename to its old name then collided with it, after the server had
+/// already made the rename, and was reported as failed.
+Future<void> _renameOntoLeftovers(CacheStore store) async {
+  await store.upsertMessages('a', 'Old', [_msg(1), _msg(2)]);
+  await store.upsertMessages('a', 'Old/Sub', [_msg(3)]);
+  await store.writeFolderState(
+      'a', 'Old', FolderSyncState(uidValidity: 1, lastSync: DateTime(2026)));
+  await store.upsertMessages('a', 'Now', [_msg(1, subject: 'Mine')]);
+  await store.writeFolderState(
+      'a', 'Now', FolderSyncState(uidValidity: 2, lastSync: DateTime(2026)));
+
+  await store.renameFolder('a', 'Now', 'Old');
+
+  final rows = await store.readMessages('a', 'Old');
+  expect(rows.single.subject, 'Mine 1');
+  expect((await store.readFolderState('a', 'Old'))!.uidValidity, 2);
+  expect(await store.countMessages('a', 'Old/Sub'), 0,
+      reason: 'the old folder had no subfolder by that name any more');
+  expect(await store.countMessages('a', 'Now'), 0);
+}
+
+/// Only what the server still lists stays cached.
+Future<void> _pruneToListing(CacheStore store) async {
+  await store.upsertMessages('a', 'INBOX', [_msg(1)]);
+  await store.upsertMessages('a', 'Gone', [_msg(1)]);
+  await store.writeFolderState(
+      'a', 'Gone', FolderSyncState(uidValidity: 1, lastSync: DateTime(2026)));
+  await store.upsertMessages('b', 'Gone', [_msg(1)]);
+
+  await store.pruneFolders('a', {'INBOX', 'Sent'});
+
+  expect(await store.countMessages('a', 'INBOX'), 1);
+  expect(await store.countMessages('a', 'Gone'), 0);
+  expect(await store.readFolderState('a', 'Gone'), isNull);
+  expect(await store.countMessages('b', 'Gone'), 1,
+      reason: 'another account has folders of its own');
+}
+
+/// Someone only ever copied is someone you write to.
+Future<void> _copiedAreSuggested(CacheStore store) async {
+  await store.upsertMessages('a', 'INBOX', [
+    CachedMessage(
+      uid: 1,
+      subject: 'Plans',
+      from: const MailAddress(email: 'dana@example.com'),
+      to: const [MailAddress(email: 'me@example.com')],
+      cc: const [MailAddress(email: 'omer@example.com', name: 'Omer')],
+      date: DateTime(2026, 9, 1),
+      isRead: false,
+      isFlagged: false,
+      hasAttachments: false,
+    ),
+  ]);
+
+  final addresses = await store.recentAddresses();
+
+  expect(addresses.map((a) => a.email),
+      ['dana@example.com', 'me@example.com', 'omer@example.com']);
+  expect(addresses.last.name, 'Omer');
+}
+
+/// Every query a database runs, to see what it reads.
+class _Selects extends QueryInterceptor {
+  final statements = <String>[];
+
+  @override
+  Future<List<Map<String, Object?>>> runSelect(
+    QueryExecutor executor,
+    String statement,
+    List<Object?> args,
+  ) {
+    statements.add(statement);
+    return super.runSelect(executor, statement, args);
+  }
+}
+
 void main() {
   final available = ensureSqlite3();
 
   test('MemoryCacheStore merges previews as the database does',
       () => _previewsMerge(MemoryCacheStore()));
+
+  test('MemoryCacheStore renames over leftovers as the database does',
+      () => _renameOntoLeftovers(MemoryCacheStore()));
+
+  test('MemoryCacheStore prunes as the database does',
+      () => _pruneToListing(MemoryCacheStore()));
+
+  test('MemoryCacheStore suggests the copied as the database does',
+      () => _copiedAreSuggested(MemoryCacheStore()));
 
   group(
     'DriftCacheStore',
@@ -82,6 +170,122 @@ void main() {
           FolderSyncState(uidValidity: 8, lastSync: DateTime(2026, 9, 15)),
         );
         expect((await store.readFolderState('a', 'INBOX'))!.uidValidity, 8);
+      });
+
+      test('whether previews were asked for is kept with the state', () async {
+        await store.writeFolderState(
+          'a',
+          'INBOX',
+          FolderSyncState(
+            uidValidity: 7,
+            lastSync: DateTime(2026, 9, 14),
+            previewsChecked: true,
+          ),
+        );
+        final state = await store.readFolderState('a', 'INBOX');
+        expect(state!.previewsChecked, isTrue);
+      });
+
+      test('when a message arrived is kept, and not lost to a header without',
+          () async {
+        final arrived = DateTime(2026, 9, 2, 8, 30);
+        await store.upsertMessages('a', 'INBOX', [
+          CachedMessage(
+            uid: 1,
+            subject: 'Late',
+            from: const MailAddress(email: 'x@example.com'),
+            to: const [],
+            date: DateTime(2026, 9, 1),
+            arrived: arrived,
+            isRead: false,
+            isFlagged: false,
+            hasAttachments: false,
+          ),
+        ]);
+        expect((await store.readMessage('a', 'INBOX', 1))!.arrived, arrived);
+
+        await store.upsertMessages('a', 'INBOX', [_msg(1)]);
+        final row = await store.readMessage('a', 'INBOX', 1);
+        expect(row!.arrived, arrived);
+        expect(
+          row.toMailMessage(accountId: 'a', folderId: 'a:INBOX').arrived,
+          arrived,
+        );
+      });
+
+      test('the sync reads numbers, dates and whether there is a preview',
+          () async {
+        await store.upsertMessages('a', 'INBOX', [
+          _msg(1),
+          _msg(2).copyWith(preview: 'Hello'),
+        ]);
+        await store.upsertMessages('a', 'Other', [_msg(3)]);
+
+        final rows = await store.readSyncRows('a', 'INBOX');
+
+        expect(rows, [
+          (uid: 2, date: _msg(2).date, hasPreview: true),
+          (uid: 1, date: _msg(1).date, hasPreview: false),
+        ]);
+      });
+
+      test('and not bodies, for that or for address suggestions', () async {
+        // Both used to read whole rows, and a whole row is mostly its body.
+        final seen = _Selects();
+        final watched =
+            MailDatabase(NativeDatabase.memory().interceptWith(seen));
+        addTearDown(watched.close);
+        final watchedStore = DriftCacheStore(watched);
+        await watchedStore.upsertMessages('a', 'INBOX', [_msg(1)]);
+        seen.statements.clear();
+
+        await watchedStore.readSyncRows('a', 'INBOX');
+        await watchedStore.recentAddresses();
+
+        expect(seen.statements, hasLength(2));
+        for (final sql in seen.statements) {
+          expect(sql, isNot(contains('body_html')));
+          expect(sql, isNot(contains('body_text')));
+          expect(sql, isNot(contains('*')));
+        }
+      });
+
+      test('address suggestions include the copied',
+          () => _copiedAreSuggested(store));
+
+      test('a rename lands over what a vanished folder left',
+          () => _renameOntoLeftovers(store));
+
+      test('a fresh listing prunes folders the server no longer has',
+          () => _pruneToListing(store));
+
+      test('an emoji in the name does not cut its subfolders short', () async {
+        // SQLite counts an emoji as one character and Dart as two, and the
+        // children's paths were cut by Dart's count.
+        await store.upsertMessages('a', '\u{1F4C1}Bills', [_msg(1)]);
+        await store.upsertMessages('a', '\u{1F4C1}Bills/2024', [_msg(2)]);
+        await store.writeFolderState('a', '\u{1F4C1}Bills/2024',
+            FolderSyncState(uidValidity: 1, lastSync: DateTime(2026)));
+
+        await store.renameFolder('a', '\u{1F4C1}Bills', 'New');
+
+        expect(await store.countMessages('a', 'New'), 1);
+        expect(await store.countMessages('a', 'New/2024'), 1);
+        expect(await store.readFolderState('a', 'New/2024'), isNotNull);
+      });
+
+      test('a folder differing only in case is left alone', () async {
+        // LIKE ignores case: renaming 'Work' moved 'work/...' too, and
+        // deleting it took that folder's cache.
+        await store.upsertMessages('a', 'Work', [_msg(1)]);
+        await store.upsertMessages('a', 'work/Notes', [_msg(2)]);
+
+        await store.renameFolder('a', 'Work', 'Office');
+        expect(await store.countMessages('a', 'work/Notes'), 1);
+
+        await store.upsertMessages('a', 'Work', [_msg(1)]);
+        await store.deleteFolder('a', 'Work');
+        expect(await store.countMessages('a', 'work/Notes'), 1);
       });
 
       test('a preview arriving later is written over an empty one',

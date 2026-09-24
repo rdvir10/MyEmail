@@ -194,6 +194,39 @@ void main() {
       expect(remoteHeaderFromMime(mime).replyTo, isEmpty);
     });
 
+    test('with no Date header, the time the server took it in', () {
+      // Not the time of the sync, which sorted an old message as new and
+      // moved its date at every refill of the cache.
+      final mime = build()
+        ..removeHeader('date')
+        ..internalDate = '25-Oct-2019 16:35:31 +0200';
+
+      final h = remoteHeaderFromMime(mime);
+
+      expect(h.date.toUtc(), DateTime.utc(2019, 10, 25, 14, 35, 31));
+    });
+
+    test('when it arrived is kept beside the Date header', () {
+      final mime = build()
+        ..setHeader('date', 'Fri, 25 Oct 2019 09:00:00 +0000')
+        ..internalDate = '25-Oct-2019 16:35:31 +0200';
+
+      final h = remoteHeaderFromMime(mime);
+
+      expect(h.date.toUtc(), DateTime.utc(2019, 10, 25, 9));
+      expect(h.arrived!.toUtc(), DateTime.utc(2019, 10, 25, 14, 35, 31));
+    });
+
+    test('INTERNALDATE is read in its own format', () {
+      expect(parseInternalDate(' 5-Jan-2026 01:02:03 -0500')!.toUtc(),
+          DateTime.utc(2026, 1, 5, 6, 2, 3));
+      expect(parseInternalDate('"17-Jul-1996 02:44:25 -0700"')!.toUtc(),
+          DateTime.utc(1996, 7, 17, 9, 44, 25));
+      expect(parseInternalDate(null), isNull);
+      expect(parseInternalDate('yesterday'), isNull);
+      expect(parseInternalDate('17-Foo-1996 02:44:25 -0700'), isNull);
+    });
+
     test('a missing subject is labelled', () {
       final mime = build()..setHeader('subject', '');
       expect(remoteHeaderFromMime(mime).subject, '(No subject)');

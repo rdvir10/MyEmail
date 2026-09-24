@@ -106,11 +106,16 @@ class MailboxCounts {
 /// Counted by arrival, not by whether anyone has read them. "New since you
 /// last opened" is a question about the mail, and reading it on the laptop
 /// does not make it not have arrived.
+///
+/// And by arrival, not by the sender's Date header. On Gmail that header
+/// is all the date a message had: one sent offline arrived after the mark
+/// dated before it and was never counted, and one dated in the future
+/// counted as new on every refresh until that date came.
 int arrivedSince(Iterable<MailMessage> messages, DateTime? mark) {
   if (mark == null) return 0;
   var count = 0;
   for (final m in messages) {
-    if (m.date.isAfter(mark)) count++;
+    if ((m.arrived ?? m.date).isAfter(mark)) count++;
   }
   return count;
 }

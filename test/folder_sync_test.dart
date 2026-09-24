@@ -215,6 +215,100 @@ void main() {
     });
   });
 
+  group('previews', () {
+    test('a message with no preview at all is asked about once', () async {
+      // A meeting reply with no text: the server's preview is empty too.
+      // Asking again at every sync cost a pass over the whole folder, on
+      // every poll and background run, for as long as it was cached.
+      server.suppliesPreviews = true;
+      final inbox = server.folder('INBOX');
+      inbox.deliver(subject: 'Accepted: Standup');
+      inbox.deliver(subject: 'Notes').preview = 'The notes from today.';
+      await sync.sync('INBOX');
+      server.calls.clear();
+
+      await sync.sync('INBOX');
+      await sync.sync('INBOX');
+
+      expect(server.calls.where((c) => c.startsWith('REFRESH')), isEmpty);
+    });
+
+    test('rows cached before previews were kept are asked about once',
+        () async {
+      // As a folder stands after the update: rows with no preview, and a
+      // state from before anything was recorded about asking.
+      final inbox = server.folder('INBOX');
+      inbox.deliver(subject: 'One');
+      inbox.deliver(subject: 'Two');
+      await sync.sync('INBOX');
+      final state = await store.readFolderState('a', 'INBOX');
+      expect(state!.previewsChecked, isFalse,
+          reason: 'a server with no previews has not been asked');
+
+      server.suppliesPreviews = true;
+      for (final m in inbox.messages.values) {
+        m.preview = 'The first line of ${m.subject}.';
+      }
+      server.calls.clear();
+      await sync.sync('INBOX');
+      await sync.sync('INBOX');
+
+      expect(server.calls.where((c) => c.startsWith('REFRESH')), hasLength(1));
+      final rows = await store.readMessages('a', 'INBOX');
+      expect(rows.map((m) => m.preview),
+          everyElement(startsWith('The first line of')));
+    });
+  });
+
+  group('what the sync reads of the cache', () {
+    test('not whole rows, bodies and all', () async {
+      // Only numbers, dates and whether there is a preview are needed. A
+      // whole row carries its body, and every sync read every row.
+      final counting = _CountingStore();
+      sync = FolderSync(transport: server, store: counting, accountId: 'a');
+      final inbox = server.folder('INBOX');
+      for (var i = 0; i < 3; i++) {
+        inbox.deliver();
+      }
+      await sync.sync('INBOX');
+      inbox.deliver();
+      counting.wholeReads = 0;
+
+      await sync.sync('INBOX');
+      await sync.ensureCached('INBOX', 10);
+
+      expect(counting.wholeReads, 0);
+    });
+
+    test('older mail paged in during a sync is not taken for deleted',
+        () async {
+      // The worker syncs while the app pages in older mail. The page lands
+      // below the range the server is asked about, so it was never in the
+      // answer, and the sync deleted what had just been scrolled in.
+      final inbox = server.folder('INBOX');
+      for (var i = 0; i < 12; i++) {
+        inbox.deliver();
+      }
+      final meanwhile = _LoadMoreMeanwhile();
+      sync = FolderSync(
+        transport: server,
+        store: meanwhile,
+        accountId: 'a',
+        windowSize: 5,
+      );
+      await sync.sync('INBOX');
+      expect((await meanwhile.uidRange('a', 'INBOX'))!.min, 8);
+
+      meanwhile.page = [
+        for (final uid in [6, 7]) _row(inbox.messages[uid]!.header),
+      ];
+      final result = await sync.sync('INBOX');
+
+      expect(result.removed, 0);
+      expect(await meanwhile.countMessages('a', 'INBOX'), 7);
+    });
+  });
+
   group('cache store housekeeping', () {
     test('renaming a folder carries its cache and subtree along', () async {
       server.folder('Work').deliver();
@@ -237,4 +331,46 @@ void main() {
       expect(await store.readFolderState('a', 'INBOX'), isNull);
     });
   });
+}
+
+CachedMessage _row(RemoteHeader h) => CachedMessage(
+      uid: h.uid,
+      subject: h.subject,
+      from: h.from,
+      to: h.to,
+      date: h.date,
+      isRead: h.isRead,
+      isFlagged: h.isFlagged,
+      hasAttachments: h.hasAttachments,
+    );
+
+/// Counts reads of whole rows.
+class _CountingStore extends MemoryCacheStore {
+  int wholeReads = 0;
+
+  @override
+  Future<List<CachedMessage>> readMessages(
+    String accountId,
+    String path, {
+    int offset = 0,
+    int limit = 50,
+  }) {
+    wholeReads++;
+    return super.readMessages(accountId, path, offset: offset, limit: limit);
+  }
+}
+
+/// Lands [page] in the cache just as the sync starts reading it, as the
+/// app's load-more does when it runs alongside the worker's sync.
+class _LoadMoreMeanwhile extends MemoryCacheStore {
+  List<CachedMessage> page = const [];
+
+  @override
+  Future<List<SyncRow>> readSyncRows(String accountId, String path) async {
+    if (page.isNotEmpty) {
+      await upsertMessages(accountId, path, page);
+      page = const [];
+    }
+    return super.readSyncRows(accountId, path);
+  }
 }

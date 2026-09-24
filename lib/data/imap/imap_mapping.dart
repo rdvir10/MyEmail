@@ -61,13 +61,14 @@ MailFolder folderFromRemote({
   );
 }
 
-/// The transport's view of a fetched header. Needs UID, FLAGS, ENVELOPE and
-/// BODYSTRUCTURE in the fetch.
+/// The transport's view of a fetched header. Needs UID, FLAGS, ENVELOPE,
+/// BODYSTRUCTURE and INTERNALDATE in the fetch.
 RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
   final uid = m.uid;
   if (uid == null) {
     throw ArgumentError('Message has no UID; fetch with UID in the criteria');
   }
+  final arrived = parseInternalDate(m.internalDate);
   final subject = m.decodeSubject()?.trim();
   final from = m.from?.firstOrNull ?? m.sender;
   final sender =
@@ -79,7 +80,11 @@ RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
     to: [for (final a in m.to ?? const <em.MailAddress>[]) addressFromMime(a)],
     cc: [for (final a in m.cc ?? const <em.MailAddress>[]) addressFromMime(a)],
     replyTo: _replyToOf(m, sender),
-    date: m.decodeDate() ?? fallbackDate ?? DateTime.now(),
+    // With no Date header it could read, the time the server took it in,
+    // which is close and never changes. The time of the sync was neither:
+    // an old message sorted as new, and its date moved at every refill.
+    date: m.decodeDate() ?? arrived ?? fallbackDate ?? DateTime.now(),
+    arrived: arrived,
     isRead: m.isSeen,
     isFlagged: m.isFlagged,
     hasAttachments: m.hasAttachments(),
@@ -92,6 +97,33 @@ RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
       m.envelope?.inReplyTo ?? m.getHeaderValue('in-reply-to'),
     ),
   );
+}
+
+/// IMAP's INTERNALDATE, `17-Jul-1996 02:44:25 -0700`, or null where it is
+/// missing or not in that form.
+///
+/// Not the Date header's format, so not something enough_mail's date
+/// decoder reads: the parts are joined by hyphens, and the day may be
+/// padded with a space.
+DateTime? parseInternalDate(String? raw) {
+  if (raw == null) return null;
+  final match = RegExp(
+    r'^\s*(\d{1,2})-([A-Za-z]{3})-(\d{4}) (\d{2}):(\d{2}):(\d{2}) ([+-])(\d{2})(\d{2})\s*$',
+  ).firstMatch(raw.replaceAll('"', ''));
+  if (match == null) return null;
+  const months = [
+    'jan', 'feb', 'mar', 'apr', 'may', 'jun',
+    'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
+  ];
+  final month = months.indexOf(match.group(2)!.toLowerCase()) + 1;
+  if (month == 0) return null;
+  int at(int group) => int.parse(match.group(group)!);
+  final offset = Duration(hours: at(8), minutes: at(9));
+  final utc = DateTime.utc(at(3), month, at(1), at(4), at(5), at(6));
+  // The time given is local to the zone after it: back to UTC, then to this
+  // device's time, as the Date header's decoder gives it.
+  return (match.group(7) == '+' ? utc.subtract(offset) : utc.add(offset))
+      .toLocal();
 }
 
 /// Reply-To from the ENVELOPE the header fetch already asks for, or from

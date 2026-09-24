@@ -10,6 +10,7 @@ class FolderSyncState {
     required this.lastSync,
     this.uidNext,
     this.highestModSeq,
+    this.previewsChecked = false,
   });
 
   final int uidValidity;
@@ -17,15 +18,26 @@ class FolderSyncState {
   final int? uidNext;
   final int? highestModSeq;
 
+  /// Whether the server has been asked for the preview of every row cached
+  /// here. Once it has, a row with none really has none (a meeting reply
+  /// with no text), and asking again every sync would only cost a full
+  /// pass over the folder. Rows cached later come with the server's preview.
+  final bool previewsChecked;
+
   FolderSyncState copyWith({int? uidNext, int? highestModSeq, DateTime? lastSync}) {
     return FolderSyncState(
       uidValidity: uidValidity,
       lastSync: lastSync ?? this.lastSync,
       uidNext: uidNext ?? this.uidNext,
       highestModSeq: highestModSeq ?? this.highestModSeq,
+      previewsChecked: previewsChecked,
     );
   }
 }
+
+/// What the sync needs of each cached row: no more. Reading whole rows for
+/// it pulled every cached body out of the database on every sync.
+typedef SyncRow = ({int uid, DateTime date, bool hasPreview});
 
 /// A message as cached: the list row plus, once fetched, the body.
 @immutable
@@ -39,6 +51,7 @@ class CachedMessage {
     required this.isRead,
     required this.isFlagged,
     required this.hasAttachments,
+    this.arrived,
     this.cc = const [],
     this.replyTo = const [],
     this.attachmentBytes = 0,
@@ -60,6 +73,9 @@ class CachedMessage {
   /// See [MailMessage.replyTo].
   final List<MailAddress> replyTo;
   final DateTime date;
+
+  /// See [MailMessage.arrived].
+  final DateTime? arrived;
   final bool isRead;
   final bool isFlagged;
   final bool hasAttachments;
@@ -99,6 +115,7 @@ class CachedMessage {
       cc: cc,
       replyTo: replyTo,
       date: date,
+      arrived: arrived,
       isRead: isRead ?? this.isRead,
       isFlagged: isFlagged ?? this.isFlagged,
       hasAttachments: hasAttachments,
@@ -125,6 +142,7 @@ class CachedMessage {
       cc: cc,
       replyTo: replyTo,
       date: date,
+      arrived: arrived,
       preview: preview,
       isRead: isRead,
       isFlagged: isFlagged,
@@ -160,11 +178,15 @@ abstract class CacheStore {
     int limit = 50,
   });
 
+  /// Every cached row of the folder, as little of each as the sync needs.
+  Future<List<SyncRow>> readSyncRows(String accountId, String path);
+
   Future<int> countMessages(String accountId, String path);
 
-  /// Every sender and recipient on the newest [limit] cached messages, in
-  /// message order, newest first. Duplicates included: the caller counts
-  /// them, which is how "the person you write to most" is known.
+  /// Every sender, recipient and copied address on the newest [limit]
+  /// cached messages, in message order, newest first. Duplicates included:
+  /// the caller counts them, which is how "the person you write to most"
+  /// is known.
   Future<List<MailAddress>> recentAddresses({int limit = 2000});
   Future<({int min, int max})?> uidRange(String accountId, String path);
   Future<CachedMessage?> readMessage(String accountId, String path, int uid);
@@ -214,9 +236,18 @@ abstract class CacheStore {
 
   /// A folder rename moves its cache (and its subtree's) rather than losing
   /// it; UIDs stay valid across RENAME on every server we care about.
+  ///
+  /// Whatever is cached at [newPath] already is thrown away first. The
+  /// server has just accepted the name, so it belongs to no folder there
+  /// now: one deleted or renamed away on another device.
   Future<void> renameFolder(String accountId, String oldPath, String newPath);
 
   Future<void> deleteFolder(String accountId, String path);
+
+  /// Drop the cache of every folder of the account not in [paths], the
+  /// server's full listing. A folder deleted or renamed on another device
+  /// otherwise kept its messages and bodies here for good.
+  Future<void> pruneFolders(String accountId, Set<String> paths);
   Future<void> deleteAccount(String accountId);
 }
 
@@ -273,12 +304,18 @@ class MemoryCacheStore implements CacheStore {
   }
 
   @override
+  Future<List<SyncRow>> readSyncRows(String accountId, String path) async => [
+        for (final m in _folder(accountId, path).values)
+          (uid: m.uid, date: m.date, hasPreview: m.preview.isNotEmpty),
+      ]..sort((a, b) => b.uid.compareTo(a.uid));
+
+  @override
   Future<List<MailAddress>> recentAddresses({int limit = 2000}) async {
     final all = <CachedMessage>[
       for (final folder in _messages.values) ...folder.values,
     ]..sort((a, b) => b.date.compareTo(a.date));
     return [
-      for (final m in all.take(limit)) ...[m.from, ...m.to],
+      for (final m in all.take(limit)) ...[m.from, ...m.to, ...m.cc],
     ];
   }
 
@@ -403,8 +440,15 @@ class MemoryCacheStore implements CacheStore {
     String oldPath,
     String newPath,
   ) async {
+    if (oldPath == newPath) return;
     final prefix = _k(accountId, '$oldPath/');
     final exact = _k(accountId, oldPath);
+    final target = _k(accountId, newPath);
+    bool stale(String k) =>
+        (k == target || k.startsWith('$target/')) &&
+        !(k == exact || k.startsWith(prefix));
+    _messages.removeWhere((k, _) => stale(k));
+    _states.removeWhere((k, _) => stale(k));
     final moves = <String, String>{};
     for (final key in [..._messages.keys, ..._states.keys]) {
       if (key == exact) {
@@ -427,6 +471,15 @@ class MemoryCacheStore implements CacheStore {
     final exact = _k(accountId, path);
     _messages.removeWhere((k, _) => k == exact || k.startsWith(prefix));
     _states.removeWhere((k, _) => k == exact || k.startsWith(prefix));
+  }
+
+  @override
+  Future<void> pruneFolders(String accountId, Set<String> paths) async {
+    final prefix = '$accountId$_separator';
+    bool gone(String k) =>
+        k.startsWith(prefix) && !paths.contains(k.substring(prefix.length));
+    _messages.removeWhere((k, _) => gone(k));
+    _states.removeWhere((k, _) => gone(k));
   }
 
   @override

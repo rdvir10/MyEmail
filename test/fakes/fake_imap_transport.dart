@@ -355,8 +355,12 @@ class FakeImapTransport implements ImapTransport {
   @override
   Future<void> renameFolder(String oldPath, String newPath) async {
     calls.add('RENAME $oldPath $newPath');
-    final f = folders.remove(oldPath)!;
-    folders[newPath] = f..path = newPath;
+    // Its subfolders go with it, as RFC 3501 has a server do.
+    for (final path in [...folders.keys]) {
+      if (path != oldPath && !path.startsWith('$oldPath/')) continue;
+      final moved = newPath + path.substring(oldPath.length);
+      folders[moved] = folders.remove(path)!..path = moved;
+    }
   }
 
   @override

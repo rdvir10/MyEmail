@@ -159,6 +159,34 @@ void main() {
       expect(server.calls, contains('RENAME Work Office'));
     });
 
+    test('a folder deleted elsewhere loses its cache at the next listing',
+        () async {
+      // Kept for good before, and in the way of a later rename to its name.
+      seedGmail();
+      server.folder('Work/Invoices').deliver();
+      final a = await addAccount();
+      await engine.loadMessages('${a.id}:Work/Invoices');
+      expect(await cache.countMessages(a.id, 'Work/Invoices'), 1);
+
+      server.folders.remove('Work/Invoices');
+      await engine.loadFolders(a.id);
+
+      expect(await cache.countMessages(a.id, 'Work/Invoices'), 0);
+      expect(await cache.readFolderState(a.id, 'Work/Invoices'), isNull);
+    });
+
+    test('but not when the listing could not be had', () async {
+      seedGmail();
+      server.folder('Work/Invoices').deliver();
+      final a = await addAccount();
+      await engine.loadMessages('${a.id}:Work/Invoices');
+
+      server.offline = true;
+      await engine.loadFolders(a.id);
+
+      expect(await cache.countMessages(a.id, 'Work/Invoices'), 1);
+    });
+
     test('rename onto an existing name is a conflict', () async {
       seedGmail();
       server.folder('Office');

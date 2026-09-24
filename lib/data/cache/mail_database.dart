@@ -19,6 +19,12 @@ class FolderStates extends Table {
   IntColumn get highestModSeq => integer().nullable()();
   DateTimeColumn get lastSync => dateTime()();
 
+  /// Whether the cached rows' previews have been asked of the server. See
+  /// [FolderSyncState.previewsChecked]. Added in schema 8; false on folders
+  /// synced before, which asks once more and then never again.
+  BoolColumn get previewsChecked =>
+      boolean().withDefault(const Constant(false))();
+
   @override
   Set<Column> get primaryKey => {accountId, path};
 }
@@ -44,6 +50,11 @@ class Messages extends Table {
   /// Added in schema 7; null on rows cached before, and on most messages.
   TextColumn get replyToJson => text().nullable()();
   DateTimeColumn get date => dateTime()();
+
+  /// When the server took the message in. See [CachedMessage.arrived].
+  /// Added in schema 8; null on rows cached before, and on Microsoft rows,
+  /// whose [date] is already the arrival.
+  DateTimeColumn get arrived => dateTime().nullable()();
   BoolColumn get isRead => boolean()();
   BoolColumn get isFlagged => boolean()();
   BoolColumn get hasAttachments => boolean()();
@@ -130,107 +141,166 @@ class MailDatabase extends _$MailDatabase {
   /// The lookup the transport does most: a Graph id in hand, wanting the
   /// number it was given. Without this it is a table scan per message, on
   /// every page of every folder.
+  ///
+  /// Not something drift's createAll knows about, so [migration] creates it
+  /// by name. It used to be made only by the step up from schema 2, and a
+  /// database created at 3 or later, which is any reinstall, never had it.
   Index get graphIdByRemote => Index(
         'graph_ids_by_remote',
         'CREATE INDEX IF NOT EXISTS graph_ids_by_remote ON graph_ids '
             '(account_id, path, remote_id)',
       );
 
+  /// One number per Graph message in a folder.
+  ///
+  /// Two syncs of one folder at once, the app's and the worker's, could
+  /// each find a new message unnumbered and each give it a number, and the
+  /// message then showed twice. With this the second insert is ignored and
+  /// both read back the first number. Spent numbers are left out: several
+  /// read as the blank marker for a moment while they are swept up.
+  Index get graphIdOnePerRemote => Index(
+        'graph_ids_one_per_remote',
+        'CREATE UNIQUE INDEX IF NOT EXISTS graph_ids_one_per_remote '
+            "ON graph_ids (account_id, path, remote_id) WHERE remote_id <> ''",
+      );
+
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 8;
 
   /// Adding a column must not cost the user their cache.
   ///
   /// Drift's default for a version bump with no strategy is to do nothing,
   /// and the app then queries columns the table does not have. Adding them in
-  /// place keeps every cached message and body; the two new columns stay null
+  /// place keeps every cached message and body; the new columns stay null
   /// on old rows until that folder is next synced, which is exactly what the
-  /// nullable declaration above is for.
+  /// nullable declarations above are for.
   @override
   MigrationStrategy get migration => MigrationStrategy(
-        onCreate: (m) => m.createAll(),
+        onCreate: (m) async {
+          await m.createAll();
+          await m.createIndex(graphIdByRemote);
+          await m.createIndex(graphIdOnePerRemote);
+        },
         onUpgrade: (m, from, to) async {
-          if (from < 2) {
-            await m.addColumn(messages, messages.messageId);
-            await m.addColumn(messages, messages.inReplyTo);
-          }
-          if (from < 3) {
-            // New in schema 3, for Microsoft accounts. Creating it empty
-            // costs nothing: a Gmail account never writes to it, and a
-            // Microsoft one fills it as it syncs.
-            await m.createTable(graphIds);
-            await m.createIndex(graphIdByRemote);
-          }
-          if (from < 4) {
-            // Invitations. A body cached before this has no calendar
-            // column; opening such a message shows it without the card
-            // until the body is fetched again. Checked first: a database
-            // that already has the column (an upgrade that was cut short
-            // after this step, a test rolling the version back) must not
-            // fail on it and take the whole cache down with it.
-            final columns = await customSelect(
-              'PRAGMA table_info(messages)',
-            ).get();
-            final has = columns.any((c) => c.read<String>('name') == 'calendar');
-            if (!has) await m.addColumn(messages, messages.calendar);
-          }
-          if (from < 6) {
-            // Who else a message went to, and what its files weigh. Both
-            // are read with the header, so every folder fills them in on
-            // its next sync; until then a message reads as copied to
-            // nobody and its files as weighing nothing, which is what the
-            // nullable and the default are for.
-            final columns = await customSelect(
-              'PRAGMA table_info(messages)',
-            ).get();
-            final names = {
-              for (final c in columns) c.read<String>('name'),
-            };
-            if (!names.contains('copied_json')) {
-              await m.addColumn(messages, messages.copiedJson);
+          // All of it or none, and one connection at a time.
+          //
+          // The app and a background job can open the file together on the
+          // first launch after an update, and both used to run the upgrade.
+          // The second failed on a column the first had just added, and
+          // drift keeps that error: every cache read on that connection
+          // failed until the process died. IMMEDIATE takes the write lock
+          // before anything is read, so the second waits for the first to
+          // finish, then finds the version already moved on and does
+          // nothing. It also means an upgrade cut short leaves the database
+          // as it was, not half way.
+          await customStatement('BEGIN IMMEDIATE');
+          try {
+            final row = await customSelect('PRAGMA user_version').getSingle();
+            final current = row.read<int>('user_version');
+            if (current < to) {
+              await _upgrade(m, current);
+              // Inside the transaction, so the version and the work behind
+              // it land together. Drift writes it again afterwards.
+              await customStatement('PRAGMA user_version = $to');
             }
-            if (!names.contains('attachment_bytes')) {
-              await m.addColumn(messages, messages.attachmentBytes);
-            }
-            if (!names.contains('is_meeting')) {
-              await m.addColumn(messages, messages.isMeeting);
-            }
-          }
-          if (from < 7) {
-            // Reply-To, read with the header like the rest. A message
-            // cached before answers its From until its folder syncs again.
-            final columns = await customSelect(
-              'PRAGMA table_info(messages)',
-            ).get();
-            if (!columns.any((c) => c.read<String>('name') == 'reply_to_json')) {
-              await m.addColumn(messages, messages.replyToJson);
-            }
-          }
-          if (from < 5) {
-            // Throwing away every cached body on a Microsoft account, once.
-            //
-            // Until now a deleted message's number could be handed out again
-            // to the next message to arrive, and the cache row keyed on that
-            // number kept the old body under the new header. There is no way
-            // to tell afterwards which rows those are: the header that
-            // overwrote the old one also overwrote the Message-ID that would
-            // have given it away. So the bodies go, and each comes back the
-            // next time that message is opened. Headers, flags and previews
-            // stay, so nothing visible in a list changes.
-            //
-            // Only folders with Graph numbering, which is what
-            // [GraphIds] holds. IMAP hands out its own UIDs and never reuses
-            // one inside a UIDVALIDITY, so a Gmail account was never at risk
-            // and keeps every body it has cached.
-            await customStatement(
-              'UPDATE messages SET body_text = NULL, body_html = NULL, '
-              'calendar = NULL WHERE EXISTS ('
-              'SELECT 1 FROM graph_ids g WHERE g.account_id = '
-              'messages.account_id AND g.path = messages.path)',
-            );
+            await customStatement('COMMIT');
+          } catch (_) {
+            await customStatement('ROLLBACK');
+            rethrow;
           }
         },
       );
+
+  Future<void> _upgrade(Migrator m, int from) async {
+    if (from < 2) {
+      await _addColumnIfMissing(m, messages, messages.messageId);
+      await _addColumnIfMissing(m, messages, messages.inReplyTo);
+    }
+    if (from < 3) {
+      // New in schema 3, for Microsoft accounts. Creating it empty
+      // costs nothing: a Gmail account never writes to it, and a
+      // Microsoft one fills it as it syncs.
+      await m.createTable(graphIds);
+    }
+    if (from < 4) {
+      // Invitations. A body cached before this has no calendar
+      // column; opening such a message shows it without the card
+      // until the body is fetched again.
+      await _addColumnIfMissing(m, messages, messages.calendar);
+    }
+    if (from < 6) {
+      // Who else a message went to, and what its files weigh. Both
+      // are read with the header, so every folder fills them in on
+      // its next sync; until then a message reads as copied to
+      // nobody and its files as weighing nothing, which is what the
+      // nullable and the default are for.
+      await _addColumnIfMissing(m, messages, messages.copiedJson);
+      await _addColumnIfMissing(m, messages, messages.attachmentBytes);
+      await _addColumnIfMissing(m, messages, messages.isMeeting);
+    }
+    if (from < 7) {
+      // Reply-To, read with the header like the rest. A message
+      // cached before answers its From until its folder syncs again.
+      await _addColumnIfMissing(m, messages, messages.replyToJson);
+    }
+    if (from < 8) {
+      // When a Gmail message arrived, and whether a folder's previews
+      // have been asked for. Both fill in as folders sync.
+      await _addColumnIfMissing(m, messages, messages.arrived);
+      await _addColumnIfMissing(m, folderStates, folderStates.previewsChecked);
+      // The lookup index, for every database created at schema 3 or
+      // later, which never had it.
+      await m.createIndex(graphIdByRemote);
+      // A message two syncs numbered twice keeps its first number. The
+      // later one is spent rather than deleted, so the count never
+      // moves back; its cache row goes at the next sync, as gone.
+      await customStatement(
+        "UPDATE graph_ids SET remote_id = '' WHERE remote_id <> '' "
+        'AND EXISTS (SELECT 1 FROM graph_ids g WHERE '
+        'g.account_id = graph_ids.account_id AND g.path = graph_ids.path '
+        'AND g.remote_id = graph_ids.remote_id AND g.uid < graph_ids.uid)',
+      );
+      await m.createIndex(graphIdOnePerRemote);
+    }
+    if (from < 5) {
+      // Throwing away every cached body on a Microsoft account, once.
+      //
+      // Until now a deleted message's number could be handed out again
+      // to the next message to arrive, and the cache row keyed on that
+      // number kept the old body under the new header. There is no way
+      // to tell afterwards which rows those are: the header that
+      // overwrote the old one also overwrote the Message-ID that would
+      // have given it away. So the bodies go, and each comes back the
+      // next time that message is opened. Headers, flags and previews
+      // stay, so nothing visible in a list changes.
+      //
+      // Only folders with Graph numbering, which is what
+      // [GraphIds] holds. IMAP hands out its own UIDs and never reuses
+      // one inside a UIDVALIDITY, so a Gmail account was never at risk
+      // and keeps every body it has cached.
+      await customStatement(
+        'UPDATE messages SET body_text = NULL, body_html = NULL, '
+        'calendar = NULL WHERE EXISTS ('
+        'SELECT 1 FROM graph_ids g WHERE g.account_id = '
+        'messages.account_id AND g.path = messages.path)',
+      );
+    }
+  }
+
+  /// Checked first: a database that already has the column (an upgrade
+  /// from before the steps ran in one transaction that was cut short, a
+  /// test rolling the version back) must not fail on it and take the whole
+  /// cache down with it.
+  Future<void> _addColumnIfMissing(
+    Migrator m,
+    TableInfo table,
+    GeneratedColumn column,
+  ) async {
+    final columns =
+        await customSelect('PRAGMA table_info(${table.actualTableName})').get();
+    if (columns.any((c) => c.read<String>('name') == column.name)) return;
+    await m.addColumn(table, column);
+  }
 }
 
 /// [CacheStore] on SQLite via Drift. The real store on Android.
@@ -253,6 +323,7 @@ class DriftCacheStore implements CacheStore {
       uidNext: row.uidNext,
       highestModSeq: row.highestModSeq,
       lastSync: row.lastSync,
+      previewsChecked: row.previewsChecked,
     );
   }
 
@@ -270,6 +341,7 @@ class DriftCacheStore implements CacheStore {
             uidNext: Value(state.uidNext),
             highestModSeq: Value(state.highestModSeq),
             lastSync: state.lastSync,
+            previewsChecked: Value(state.previewsChecked),
           ),
         );
   }
@@ -334,18 +406,43 @@ class DriftCacheStore implements CacheStore {
   }
 
   @override
+  Future<List<SyncRow>> readSyncRows(String accountId, String path) async {
+    // Whether there is a preview, not the preview: the sync only asks.
+    final m = db.messages;
+    final hasPreview = m.preview.equals('').not();
+    final rows = await (db.selectOnly(m)
+          ..addColumns([m.uid, m.date, hasPreview])
+          ..where(_folder(m, accountId, path))
+          ..orderBy([OrderingTerm.desc(m.uid)]))
+        .get();
+    return [
+      for (final r in rows)
+        (
+          uid: r.read(m.uid)!,
+          date: r.read(m.date)!,
+          hasPreview: r.read(hasPreview)!,
+        ),
+    ];
+  }
+
+  @override
   Future<List<MailAddress>> recentAddresses({int limit = 2000}) async {
     // Across every account and folder: the person you write to from one
     // account is a person you might write to from another. Newest first,
     // so the name most recently used for an address is the one met first.
-    final rows = await (db.select(db.messages)
-          ..orderBy([(m) => OrderingTerm.desc(m.date)])
+    // Only the address columns: the rest of a row is mostly its body.
+    final m = db.messages;
+    final rows = await (db.selectOnly(m)
+          ..addColumns([m.fromEmail, m.fromName, m.recipientsJson, m.copiedJson])
+          ..orderBy([OrderingTerm.desc(m.date)])
           ..limit(limit))
         .get();
     return [
       for (final r in rows) ...[
-        MailAddress(email: r.fromEmail, name: r.fromName),
-        ..._decodeAddresses(r.recipientsJson),
+        MailAddress(email: r.read(m.fromEmail)!, name: r.read(m.fromName)),
+        ..._decodeAddresses(r.read(m.recipientsJson)!),
+        if (r.read(m.copiedJson) case final copied?)
+          ..._decodeAddresses(copied),
       ],
     ];
   }
@@ -411,6 +508,7 @@ class DriftCacheStore implements CacheStore {
               m.replyTo.isEmpty ? null : _encodeAddresses(m.replyTo),
             ),
             date: m.date,
+            arrived: Value(m.arrived),
             isRead: m.isRead,
             isFlagged: m.isFlagged,
             hasAttachments: m.hasAttachments,
@@ -438,6 +536,9 @@ class DriftCacheStore implements CacheStore {
                 m.replyTo.isEmpty ? null : _encodeAddresses(m.replyTo),
               ),
               date: Value(m.date),
+              // A header read without it (a Microsoft one) leaves it be.
+              arrived:
+                  m.arrived == null ? const Value.absent() : Value(m.arrived),
               messageId: Value(m.messageId),
               inReplyTo: Value(m.inReplyTo),
               isRead: Value(m.isRead),
@@ -563,19 +664,32 @@ class DriftCacheStore implements CacheStore {
     String oldPath,
     String newPath,
   ) async {
-    // The folder itself and everything under it: replace the prefix.
+    if (oldPath == newPath) return;
+    final from = folderSubtree(oldPath);
+    final to = folderSubtree(newPath);
     await db.transaction(() async {
       for (final table in ['messages', 'folder_states']) {
+        // Left behind by a folder deleted or renamed on another device.
+        // The rows arriving collided with it, and a rename the server had
+        // already made was reported as failed. Never the folder being
+        // moved, should the one name sit under the other.
+        await db.customUpdate(
+          'DELETE FROM $table WHERE account_id = ? AND ${to.sql} '
+          'AND NOT ${from.sql}',
+          variables: _variables([accountId, ...to.args, ...from.args]),
+          updates: {db.messages, db.folderStates},
+          updateKind: UpdateKind.delete,
+        );
+        // The folder itself and everything under it: replace the prefix.
         await db.customUpdate(
           'UPDATE $table SET path = ? || substr(path, ?) '
-          "WHERE account_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')",
-          variables: [
-            Variable.withString(newPath),
-            Variable.withInt(oldPath.length + 1),
-            Variable.withString(accountId),
-            Variable.withString(oldPath),
-            Variable.withString('${_escapeLike(oldPath)}/%'),
-          ],
+          'WHERE account_id = ? AND ${from.sql}',
+          variables: _variables([
+            newPath,
+            sqlLength(oldPath) + 1,
+            accountId,
+            ...from.args,
+          ]),
           updates: {db.messages, db.folderStates},
         );
       }
@@ -584,21 +698,30 @@ class DriftCacheStore implements CacheStore {
 
   @override
   Future<void> deleteFolder(String accountId, String path) async {
-    final like = '${_escapeLike(path)}/%';
+    final subtree = folderSubtree(path);
     await db.transaction(() async {
       for (final table in ['messages', 'folder_states']) {
         await db.customUpdate(
-          'DELETE FROM $table '
-          "WHERE account_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')",
-          variables: [
-            Variable.withString(accountId),
-            Variable.withString(path),
-            Variable.withString(like),
-          ],
+          'DELETE FROM $table WHERE account_id = ? AND ${subtree.sql}',
+          variables: _variables([accountId, ...subtree.args]),
           updates: {db.messages, db.folderStates},
           updateKind: UpdateKind.delete,
         );
       }
+    });
+  }
+
+  @override
+  Future<void> pruneFolders(String accountId, Set<String> paths) async {
+    await db.transaction(() async {
+      await (db.delete(db.messages)
+            ..where((m) =>
+                m.accountId.equals(accountId) & m.path.isNotIn(paths)))
+          .go();
+      await (db.delete(db.folderStates)
+            ..where((t) =>
+                t.accountId.equals(accountId) & t.path.isNotIn(paths)))
+          .go();
     });
   }
 
@@ -627,6 +750,7 @@ class DriftCacheStore implements CacheStore {
             ? const []
             : _decodeAddresses(r.replyToJson!),
         date: r.date,
+        arrived: r.arrived,
         isRead: r.isRead,
         isFlagged: r.isFlagged,
         hasAttachments: r.hasAttachments,
@@ -652,7 +776,24 @@ class DriftCacheStore implements CacheStore {
     ];
   }
 
-  /// `_` and `%` are wildcards in LIKE; folder names can contain them.
-  static String _escapeLike(String s) =>
-      s.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
+  static List<Variable> _variables(List<Object> values) => [
+        for (final v in values)
+          v is int ? Variable.withInt(v) : Variable.withString(v as String),
+      ];
 }
+
+/// A folder and everything under it, as a condition on a `path` column, and
+/// the arguments it takes.
+///
+/// Compared exactly. LIKE ignores case, so renaming 'Work' also moved a
+/// separate 'work/…', and deleting it took that folder's cache too.
+({String sql, List<Object> args}) folderSubtree(String path) => (
+      sql: '(path = ? OR substr(path, 1, ?) = ?)',
+      args: [path, sqlLength('$path/'), '$path/'],
+    );
+
+/// How long SQLite's substr takes [s] to be: in characters, where Dart's
+/// length counts UTF-16 units. An emoji is one to SQLite and two to Dart,
+/// and cutting a child's path at the Dart length turned '📁Bills/2024'
+/// into 'Bills2024'.
+int sqlLength(String s) => s.runes.length;
