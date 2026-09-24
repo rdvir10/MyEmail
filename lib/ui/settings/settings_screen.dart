@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/account.dart';
 import '../../domain/sync_prefs.dart';
 import '../../state/providers.dart';
 import '../../state/sync_providers.dart';
@@ -58,9 +59,11 @@ class SettingsScreen extends ConsumerWidget {
               null => 'Loading',
               final s when !s.notify => 'Off',
               final s when !s.syncs => 'On, but nothing is syncing',
-              final s when s.mutedAccountIds.isNotEmpty =>
-                'On, ${s.mutedAccountIds.length} account muted',
-              _ => 'On',
+              final s => switch (_mutedCount(s, accounts)) {
+                  0 => 'On',
+                  1 => 'On, 1 account muted',
+                  final n => 'On, $n accounts muted',
+                },
             },
             onTap: () => _open(context, const NotificationsScreen()),
           ),
@@ -121,6 +124,12 @@ class SettingsScreen extends ConsumerWidget {
       ),
     );
   }
+
+  /// Muted accounts that are still here. A mute outlives the account it
+  /// was for, so counting every id kept saying "1 account muted" after that
+  /// account was removed.
+  static int _mutedCount(SyncPrefs sync, List<Account> accounts) =>
+      accounts.where((a) => sync.mutedAccountIds.contains(a.id)).length;
 
   static String _minutes(int minutes) => switch (minutes) {
         < 60 => '$minutes minutes',

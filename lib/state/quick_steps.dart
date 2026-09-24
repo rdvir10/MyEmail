@@ -19,23 +19,19 @@ class QuickSteps extends Notifier<List<QuickStep>> {
   @override
   List<QuickStep> build() {
     final store = ref.watch(uiStateStoreProvider);
-    listenSelf((_, next) => store.writeString(
-          UiStateKeys.quickSteps,
-          jsonEncode([for (final s in next) s.toJson()]),
-        ));
+    listenSelf((previous, next) {
+      // Not on the first build, which is only what was just read. Writing
+      // that straight back saved over steps this build could not read, and
+      // they were gone for good even for the newer build that made them.
+      if (previous == null) return;
+      store.writeString(
+        UiStateKeys.quickSteps,
+        jsonEncode([for (final s in next) s.toJson()]),
+      );
+    });
     final raw = store.readString(UiStateKeys.quickSteps);
     if (raw == null || raw.isEmpty) return const [];
-    try {
-      return [
-        for (final j in (jsonDecode(raw) as List<dynamic>).cast<Map<String, dynamic>>())
-          QuickStep.fromJson(j),
-      ];
-    } on FormatException {
-      return const [];
-    } on ArgumentError {
-      // An action type from a newer version of the app.
-      return const [];
-    }
+    return QuickStep.listFromJson(raw) ?? const [];
   }
 
   void add(QuickStep step) => state = [...state, step];

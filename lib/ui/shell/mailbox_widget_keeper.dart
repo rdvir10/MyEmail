@@ -65,23 +65,30 @@ class _MailboxWidgetKeeperState extends ConsumerState<MailboxWidgetKeeper>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed ||
-        state == AppLifecycleState.paused) {
-      _caughtUp();
-    }
+    if (state == AppLifecycleState.resumed) _caughtUp();
+    // Going away, the counts are redrawn from what the app already holds.
+    // Syncing every widget's folder on the way out cost battery and data
+    // for numbers that were current a moment ago.
+    if (state == AppLifecycleState.paused) _caughtUp(fromCache: true);
   }
 
-  Future<void> _caughtUp() async {
+  Future<void> _caughtUp({bool fromCache = false}) async {
     // Not awaited by the caller: nothing on screen is waiting for it, and a
     // widget that updates a moment after the app opens is no worse than one
     // that holds the first frame back.
     final widgets = ref.read(mailboxWidgetsProvider);
     final engine = ref.read(mailEngineProvider);
-    await widgets.markCaughtUp(DateTime.now().toUtc(), engine);
     // Only the app can ask Android what is still on the home screen, so this
     // is where a widget that was dragged to the bin stops being counted.
-    final placed = await placedWidgetIds();
-    if (placed != null) await widgets.refresh(engine, placed: placed);
+    // Handed to the one refresh rather than followed by a second: each
+    // lists every widget account's folders and syncs each widget folder,
+    // alongside the app's own sync of the Inbox.
+    await widgets.markCaughtUp(
+      DateTime.now().toUtc(),
+      engine,
+      placed: placedWidgetIds(),
+      fromCache: fromCache,
+    );
   }
 
   @override

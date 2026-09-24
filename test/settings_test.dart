@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:myemail/data/sync/sync_state_store.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/display_settings.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/sync_prefs.dart';
 import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/sync_providers.dart';
 import 'package:myemail/ui/folder_tree/folder_tree_panel.dart';
 import 'package:myemail/ui/messages/conversation_tile.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
@@ -341,6 +344,39 @@ void main() {
       expect(find.text('Only when I open MyEmail'), findsOneWidget);
       expect(find.text('On, but nothing is syncing'), findsOneWidget,
           reason: 'a notification setting that cannot fire says so here too');
+    });
+
+    testWidgets('only accounts still here count as muted, in plural words',
+        (tester) async {
+      // A mute outlives its account. Counting every id said "1 account
+      // muted" after the only muted account was removed.
+      _useSize(tester, const Size(900, 1400));
+      Future<void> pumpWith(Set<String> muted) async {
+        final c = ProviderContainer(overrides: [
+          uiStateStoreProvider.overrideWithValue(store),
+          syncStateStoreProvider.overrideWithValue(MemorySyncStateStore(
+            prefs: SyncPrefs(
+              mode: SyncMode.periodic,
+              mutedAccountIds: muted,
+            ),
+          )),
+        ]);
+        addTearDown(c.dispose);
+        await tester.pumpWidget(UncontrolledProviderScope(
+          container: c,
+          child: const MaterialApp(home: SettingsScreen()),
+        ));
+        await tester.pumpAndSettle();
+      }
+
+      await pumpWith({'acct-removed-long-ago'});
+      expect(find.text('On'), findsOneWidget);
+
+      await pumpWith({'acct-personal', 'acct-removed-long-ago'});
+      expect(find.text('On, 1 account muted'), findsOneWidget);
+
+      await pumpWith({'acct-personal', 'acct-side'});
+      expect(find.text('On, 2 accounts muted'), findsOneWidget);
     });
 
     testWidgets('View opens from the hub and changes take effect',

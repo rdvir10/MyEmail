@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 
 /// One step in a Quick Step chain.
@@ -114,6 +116,38 @@ class QuickStep {
             QuickStepAction.fromJson(a),
         ],
       );
+
+  /// Every step in [raw] that this build can read, in order, or null when
+  /// [raw] is not a list of steps at all.
+  ///
+  /// One at a time, so a step this build cannot read costs that step and
+  /// not the rest. The usual cause is an action type from a newer version,
+  /// arriving in a backup restored onto an older one: the whole list used to
+  /// be dropped, and an empty one saved over it.
+  ///
+  /// A step is kept whole or not at all. Leaving out only the action it did
+  /// not know would make it do something other than what it says.
+  static List<QuickStep>? listFromJson(String raw) {
+    final Object? json;
+    try {
+      json = jsonDecode(raw);
+    } on FormatException {
+      return null;
+    }
+    if (json is! List) return null;
+    return [for (final j in json) ?_tryFromJson(j)];
+  }
+
+  static QuickStep? _tryFromJson(Object? j) {
+    if (j is! Map<String, dynamic>) return null;
+    try {
+      return fromJson(j);
+    } on ArgumentError {
+      return null; // An action type this build does not have.
+    } on TypeError {
+      return null; // A field missing, or of the wrong kind.
+    }
+  }
 
   @override
   bool operator ==(Object other) => other is QuickStep && other.id == id;

@@ -49,7 +49,7 @@ class _ExportDialogState extends State<_ExportDialog> {
   bool get _matches => _text == _confirm.text;
 
   bool get _ready =>
-      !_include || (_strength != VaultStrength.tooShort && _matches);
+      !_include || (!_strength.refused && _matches);
 
   @override
   Widget build(BuildContext context) {
@@ -110,7 +110,7 @@ class _ExportDialogState extends State<_ExportDialog> {
               Text(
                 '${_strength.label}. ${_strength.advice}',
                 style: theme.textTheme.labelSmall?.copyWith(
-                  color: _strength == VaultStrength.tooShort
+                  color: _strength.refused
                       ? theme.colorScheme.error
                       : theme.colorScheme.onSurfaceVariant,
                 ),

@@ -54,6 +54,7 @@ class CachedImapEngine implements MailEngine {
         transportFactory,
     this.senderFactory,
     this.graphSenderFactory,
+    this.onMessagesHandled,
   })  : folderLists = folderLists ?? MemoryFolderListStore(),
         _injectedOAuthTokens = oauthTokens,
         _injectedTransportFactory = transportFactory;
@@ -87,6 +88,36 @@ class CachedImapEngine implements MailEngine {
       graphSenderFactory;
 
   final OAuthTokenRepository? _injectedOAuthTokens;
+
+  /// Told when messages are read, moved or deleted through this engine, so
+  /// the app can take their new-mail notifications down. A notification
+  /// left up for mail already dealt with has buttons that no longer work:
+  /// Delete says it failed, and a tap opens a message that has gone.
+  ///
+  /// Given a test rather than a list, because marking a folder read or
+  /// emptying it names no messages.
+  final void Function(bool Function(String messageId) handled)?
+      onMessagesHandled;
+
+  void _handled(bool Function(String messageId) which) {
+    try {
+      onMessagesHandled?.call(which);
+    } catch (e) {
+      debugPrint('[myemail] could not take notifications down: $e');
+    }
+  }
+
+  static bool Function(String messageId) _inFolder(String folderId) =>
+      (messageId) => messageId.startsWith('$folderId#') &&
+          !messageId.substring(folderId.length + 1).contains('#');
+
+  static bool Function(String messageId) _uidsIn(
+    String folderId,
+    Iterable<int> uids,
+  ) {
+    final ids = {for (final uid in uids) MailMessage.idFor(folderId, uid)};
+    return ids.contains;
+  }
 
   /// Where Graph message numbering is remembered. Null on a build with no
   /// database behind it — the browser preview, and the tests that do not
@@ -695,6 +726,7 @@ class CachedImapEngine implements MailEngine {
     await t.storeFlagOnAll(path, flag: MessageFlag.seen, set: true);
     // The flag sweep on the next sync brings the cache in line.
     await _sync(accountId, t).sync(path);
+    _handled(_inFolder(folderId));
   }
 
   @override
@@ -704,6 +736,7 @@ class CachedImapEngine implements MailEngine {
     await t.storeFlagOnAll(path, flag: MessageFlag.deleted, set: true);
     await t.expunge(path);
     await cache.clearFolder(accountId, path);
+    _handled(_inFolder(folderId));
   }
 
   // --- messages --------------------------------------------------------------
@@ -843,8 +876,10 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
-  Future<void> setRead(String messageId, bool isRead) =>
-      _setFlag(messageId, MessageFlag.seen, isRead);
+  Future<void> setRead(String messageId, bool isRead) async {
+    await _setFlag(messageId, MessageFlag.seen, isRead);
+    if (isRead) _handled((id) => id == messageId);
+  }
 
   @override
   Future<void> setFlagged(String messageId, bool isFlagged) =>
@@ -930,6 +965,7 @@ class CachedImapEngine implements MailEngine {
     // can be read from here.
     final headers = await cache.messageIdsFor(accountId, fromPath, moved);
     await cache.deleteUids(accountId, fromPath, moved.toSet());
+    _handled(_uidsIn('$accountId:$fromPath', moved));
     // The destination picks the new messages up on its next sync; it may
     // not be cached at all yet, and guessing UIDs would be worse.
     //
@@ -971,6 +1007,7 @@ class CachedImapEngine implements MailEngine {
           throw PartialMove(done: moves, moved: went, cause: e);
         }
         await cache.deleteUids(accountId, fromPath, group.value.toSet());
+        _handled(_uidsIn(group.key, group.value));
         moves.add(MessageMove(
           fromFolderId: group.key,
           toFolderId: group.key,

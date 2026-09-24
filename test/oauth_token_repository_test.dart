@@ -11,11 +11,10 @@ import 'package:myemail/data/credential_store.dart';
 
 /// Keeping an OAuth account in usable access tokens.
 ///
-/// The case worth the most here is the concurrent one. Microsoft rotates
-/// refresh tokens — spending one retires it and issues another — so two
-/// refreshes racing means one of them stores a token built on a refresh token
-/// the server has already thrown away, and the account is signed out without
-/// anyone touching it.
+/// The cases worth the most here are the concurrent ones: two callers
+/// wanting a token at once, which should cost one refresh, and an account
+/// removed while its refresh is out, which must not get its sign-in written
+/// back to the device.
 void main() {
   late DateTime now;
   late MemoryCredentialStore secrets;
@@ -98,8 +97,8 @@ void main() {
     );
     expect(stored!.accessToken, 'access-1');
     expect(stored.refreshToken, 'refresh-1',
-        reason: 'the rotated refresh token must replace the spent one, or the '
-            'next refresh presents one the server has retired');
+        reason: 'the newest refresh token must replace the spent one, which '
+            'keeps only its own, earlier expiry');
   });
 
   test('force refreshes even a token that still looks fresh', () async {
@@ -317,9 +316,12 @@ void main() {
       final again = await repository.accessToken('acct-1', force: true);
 
       expect(again, 'access-fresh');
-      expect(counted.reads, 2, reason: 'force looks at what is stored');
+      // Three: the first call, the forced one, and the refresh checking the
+      // account still has a secret before writing its answer over it.
+      expect(counted.reads, 3, reason: 'force looks at what is stored');
       expect(await repository.accessToken('acct-1'), 'access-fresh',
           reason: 'and what it found replaces what was held');
+      expect(counted.reads, 3, reason: 'and nothing more after that');
     });
 
     test('a forgotten account leaves nothing behind', () async {
@@ -334,6 +336,98 @@ void main() {
         repository.accessToken('acct-1'),
         throwsA(isA<SignInExpired>()),
       );
+    });
+
+    test('a refresh that finishes after the account was removed writes '
+        'nothing back', () async {
+      // The account is removed while Microsoft is still answering. Writing
+      // the answer would leave a working refresh token on the device for an
+      // account that looks gone, with nothing ever to clean it up.
+      await storeToken(access: 'access-0', expiresIn: const Duration(minutes: 4));
+      final gate = Completer<void>();
+      final repository = repositoryWith(handler: (_) async {
+        await gate.future;
+        return http.Response(
+          jsonEncode({
+            'access_token': 'access-1',
+            'refresh_token': 'refresh-1',
+            'expires_in': 3599,
+          }),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      });
+
+      final pending = repository.accessToken('acct-1');
+      await pumpEventQueue();
+      // What removeAccount does: forget, then delete the secret.
+      repository.forget('acct-1');
+      await secrets.deleteSecret('acct-1');
+      gate.complete();
+      await pending;
+
+      expect(await secrets.readSecret('acct-1'), isNull);
+    });
+
+    test('nor when the account was removed from the other isolate', () async {
+      // The live worker refreshes with its own repository, which nobody
+      // tells about a removal in the app. The secret being gone is the sign.
+      await storeToken(access: 'access-0', expiresIn: const Duration(minutes: 4));
+      final gate = Completer<void>();
+      final worker = repositoryWith(handler: (_) async {
+        await gate.future;
+        return http.Response(
+          jsonEncode({
+            'access_token': 'access-1',
+            'refresh_token': 'refresh-1',
+            'expires_in': 3599,
+          }),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      });
+
+      final pending = worker.accessToken('acct-1');
+      await pumpEventQueue();
+      await secrets.deleteSecret('acct-1');
+      gate.complete();
+      await pending;
+
+      expect(await secrets.readSecret('acct-1'), isNull);
+    });
+
+    test('a forget with the secret still there stops the write too', () async {
+      // "Sign in again" writes the new sign-in and then forgets what was
+      // held. A refresh of the old one that lands afterwards must not write
+      // over the new sign-in.
+      await storeToken(access: 'access-0', expiresIn: const Duration(minutes: 4));
+      final gate = Completer<void>();
+      final repository = repositoryWith(handler: (_) async {
+        await gate.future;
+        return http.Response(
+          jsonEncode({
+            'access_token': 'access-old-sign-in',
+            'refresh_token': 'refresh-old-sign-in',
+            'expires_in': 3599,
+          }),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      });
+
+      final pending = repository.accessToken('acct-1');
+      await pumpEventQueue();
+      final newSignIn = OAuthToken(
+        accessToken: 'access-new',
+        refreshToken: 'refresh-new',
+        expiresAt: now.add(const Duration(hours: 1)),
+      ).toStoredJson();
+      await secrets.writeSecret('acct-1', newSignIn);
+      repository.forget('acct-1');
+      gate.complete();
+      await pending;
+
+      expect(await secrets.readSecret('acct-1'), newSignIn);
     });
 
     test('a sign-in redone elsewhere is found when the old one is refused',

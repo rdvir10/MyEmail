@@ -543,10 +543,11 @@ void main() {
 
     test('the rotated refresh token is stored even though the access token '
         'was for something else', () async {
-      // The trap. Microsoft rotates the refresh token on every exchange and
-      // retires the one just spent, whatever resource was asked for. Keeping
-      // the old one would sign the account out at its next ordinary refresh,
-      // with nothing to connect that to a send an hour earlier.
+      // The trap. Microsoft hands back a new refresh token on every
+      // exchange, whatever resource was asked for, and the newest is the one
+      // to keep. The old one keeps its own expiry, so holding on to it would
+      // sign the account out when that runs out, with nothing to connect the
+      // failure to a send long before.
       await storeToken();
       final repository = repositoryWith(
         (_) async => http.Response(

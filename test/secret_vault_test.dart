@@ -89,6 +89,21 @@ void main() {
     );
   });
 
+  test('a passphrase that is only spaces is refused', () async {
+    // Twelve spaces passed a length check that counted them.
+    await expectLater(
+      vault.seal(secrets: secrets, passphrase: ' ' * 12),
+      throwsA(isA<VaultPassphraseTooShort>()),
+    );
+  });
+
+  test('one character repeated is refused', () async {
+    await expectLater(
+      vault.seal(secrets: secrets, passphrase: 'x' * 30),
+      throwsA(isA<VaultPassphraseTooSimple>()),
+    );
+  });
+
   test('the iteration count travels with the file', () async {
     // So raising it later does not strand files written today.
     final sealed = await vault.seal(secrets: secrets, passphrase: passphrase);
@@ -165,7 +180,24 @@ void main() {
     test('length and word count both count towards strong', () {
       expect(VaultStrength.of('correct horse battery staple'),
           VaultStrength.strong);
-      expect(VaultStrength.of('a' * 24), VaultStrength.strong);
+      expect(VaultStrength.of('abcdefghijklmnopqrstuvwx'), VaultStrength.strong);
+    });
+
+    test('single letters are not words', () {
+      // Seven "words" of one letter each. Counting them as words called this
+      // Strong, on a file holding a mailbox's sign-in.
+      expect(VaultStrength.of('a b c d e f g'), VaultStrength.weak);
+    });
+
+    test('spaces at either end do not count towards the length', () {
+      expect(VaultStrength.of(' ' * 12), VaultStrength.tooShort);
+      expect(VaultStrength.of('   abcdefgh   '), VaultStrength.tooShort);
+    });
+
+    test('one character over and over is refused however long', () {
+      expect(VaultStrength.of('a' * 24), VaultStrength.tooSimple);
+      expect(VaultStrength.of('aaaa aaaa aaaa'), VaultStrength.tooSimple);
+      expect(VaultStrength.tooSimple.refused, isTrue);
     });
 
     test('a bare minimum passphrase is called weak rather than accepted',

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'dart:ui' show Color;
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../../domain/account.dart';
@@ -24,19 +25,17 @@ import 'sender_badge.dart';
 class AndroidMailNotifier implements MailNotifier {
   AndroidMailNotifier({
     FlutterLocalNotificationsPlugin? plugin,
-    this.onAction,
-  }) : _plugin = plugin ?? FlutterLocalNotificationsPlugin();
+    Future<void> Function(PendingAction action)? queueAction,
+    Future<Uint8List?> Function(String initial, int colorValue)? drawBadge,
+  })  : _plugin = plugin ?? FlutterLocalNotificationsPlugin(),
+        _queue = queueAction ?? queueNotificationAction,
+        _draw = drawBadge ?? drawSenderBadge;
 
   final FlutterLocalNotificationsPlugin _plugin;
 
-  /// Carries out a button press while the app is running.
-  ///
-  /// Android delivers to the app's own isolate when there is one, and to a
-  /// fresh isolate when there is not. The app passes this so the press goes
-  /// through the engine that is already open rather than a second one over
-  /// the same database; without it the isolate route is used for both, which
-  /// works but does the same job twice over.
-  final Future<void> Function(NotificationResponse response)? onAction;
+  /// Writes a button press down for the worker to carry out. Replaced only
+  /// by tests.
+  final Future<void> Function(PendingAction action) _queue;
   bool _ready = false;
   String? _launchPayload;
 
@@ -44,20 +43,31 @@ class AndroidMailNotifier implements MailNotifier {
   /// messages from three people draws three.
   final _badges = <String, Future<Uint8List?>>{};
 
-  /// Set once a badge has failed to draw. The likeliest cause is an isolate
-  /// with no screen, where every badge would fail the same way, and each
-  /// failure can cost the full wait before its notification goes out.
+  /// Set once a badge has failed to draw, for the rest of one batch. The
+  /// likeliest cause is an isolate with no screen, where every badge would
+  /// fail the same way, and each failure can cost the full wait before its
+  /// notification goes out.
+  ///
+  /// Only for the batch: [showNewMail] clears it. Held for good, one slow
+  /// draw in a worker that had just started took the badges off every
+  /// notification that worker posted, which in push mode is most of an hour.
   bool _badgesFailed = false;
+
+  /// Draws a badge, and for tests, one that fails.
+  final Future<Uint8List?> Function(String initial, int colorValue) _draw;
 
   Future<AndroidBitmap<Object>?> _badgeFor(String sender, int colorValue) async {
     if (_badgesFailed) return null;
     final initial = senderInitial(sender);
-    final png = await _badges.putIfAbsent(
-      '$initial:$colorValue',
-      () => drawSenderBadge(initial, colorValue),
-    );
-    if (png == null) _badgesFailed = true;
-    return png == null ? null : ByteArrayAndroidBitmap(png);
+    final key = '$initial:$colorValue';
+    final png = await _badges.putIfAbsent(key, () => _draw(initial, colorValue));
+    if (png == null) {
+      _badgesFailed = true;
+      // Not kept, so the next batch tries this one again.
+      _badges.remove(key);
+      return null;
+    }
+    return ByteArrayAndroidBitmap(png);
   }
 
   /// One channel, so the user gets one row in Android's notification settings
@@ -91,17 +101,16 @@ class AndroidMailNotifier implements MailNotifier {
           _launchPayload = response.payload;
           return;
         }
-        final handler = onAction;
-        unawaited(handler == null
-            // No app-side handler: write the press down and let the worker
-            // carry it out, the same way a press with no app at all is
-            // handled.
-            ? queueNotificationAction(PendingAction(
-                actionId: response.actionId!,
-                messageId: response.payload ?? '',
-                typed: response.input,
-              ))
-            : handler(response));
+        // Not where the buttons arrive. A button that does not bring the
+        // app forward (all three, see showNewMail) is delivered by Android
+        // to a background isolate through notificationActionEntryPoint, app
+        // open or not. Should one ever arrive here, it goes the same way:
+        // written down for the worker.
+        unawaited(_queue(PendingAction(
+          actionId: response.actionId!,
+          messageId: response.payload ?? '',
+          typed: response.input,
+        )));
       },
       onDidReceiveBackgroundNotificationResponse: notificationActionEntryPoint,
     );
@@ -149,8 +158,9 @@ class AndroidMailNotifier implements MailNotifier {
   }) async {
     if (notifications.isEmpty) return;
     await ensureReady();
+    _badgesFailed = false;
 
-    final groupKey = 'mailtree.account.${account.id}';
+    final groupKey = '$_groupPrefix${account.id}';
 
     // Three, because Android shows three and hides the rest behind nothing.
     //
@@ -202,6 +212,10 @@ class AndroidMailNotifier implements MailNotifier {
             channelId,
             channelName,
             groupKey: groupKey,
+            // The message id, which Android hands back in the list of what
+            // is showing and which nothing else there carries: how a
+            // message's notification is found again to be taken down.
+            tag: n.payload,
             importance: Importance.high,
             priority: Priority.high,
             category: AndroidNotificationCategory.email,
@@ -259,6 +273,59 @@ class AndroidMailNotifier implements MailNotifier {
   Future<void> cancelAll() async {
     await ensureReady();
     await _plugin.cancelAll();
+  }
+
+  static const _groupPrefix = 'mailtree.account.';
+
+  /// What is showing, or nothing if Android will not say. Only Android 6 and
+  /// later can list it.
+  Future<List<ActiveNotification>> _active() async {
+    try {
+      return await _plugin.getActiveNotifications();
+    } catch (e) {
+      debugPrint('[myemail] could not list notifications: $e');
+      return const [];
+    }
+  }
+
+  /// A message's notification: tagged with its id, in an account's group.
+  static bool _isMessage(ActiveNotification n) =>
+      n.tag != null &&
+      n.id != null &&
+      (n.groupKey?.startsWith(_groupPrefix) ?? false);
+
+  @override
+  Future<Set<String>> shownMessageIds() async {
+    await ensureReady();
+    return {
+      for (final n in await _active())
+        if (_isMessage(n)) n.tag!,
+    };
+  }
+
+  @override
+  Future<void> withdraw(bool Function(String messageId) which) async {
+    try {
+      await ensureReady();
+      final active = await _active();
+      final emptied = <String>{};
+      for (final n in active) {
+        if (!_isMessage(n) || !which(n.tag!)) continue;
+        await _plugin.cancel(id: n.id!, tag: n.tag);
+        emptied.add(n.groupKey!);
+      }
+      // Android leaves a summary up when the last thing under it goes,
+      // saying "2 new messages" over nothing.
+      for (final group in emptied) {
+        final left = active.any(
+            (n) => _isMessage(n) && n.groupKey == group && !which(n.tag!));
+        if (left) continue;
+        await _plugin.cancel(
+            id: _summaryId(group.substring(_groupPrefix.length)));
+      }
+    } catch (e) {
+      debugPrint('[myemail] could not take notifications down: $e');
+    }
   }
 
   @override

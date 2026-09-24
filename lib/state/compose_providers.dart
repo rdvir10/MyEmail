@@ -27,15 +27,7 @@ class Signatures extends Notifier<Map<String, Signature>> {
         ));
     final raw = store.readString(UiStateKeys.signatures);
     if (raw == null || raw.isEmpty) return const {};
-    try {
-      final list = (jsonDecode(raw) as List<dynamic>).cast<Map<String, dynamic>>();
-      return {
-        for (final j in list)
-          if (Signature.fromJson(j) case final s) s.accountId: s,
-      };
-    } on FormatException {
-      return const {};
-    }
+    return Signature.mapFromJson(raw) ?? const {};
   }
 
   void set(Signature signature) =>

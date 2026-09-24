@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/data/widget/home_screen_surface.dart';
 import 'package:myemail/data/widget/widget_state_store.dart';
+import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/mailbox_counts.dart';
 import 'package:myemail/state/folder_tree.dart' show kUnifiedInboxId;
 import 'package:myemail/state/providers.dart';
@@ -340,6 +343,56 @@ void main() {
       expect(store.openedAt, isNotNull);
     });
 
+    testWidgets('coming back counts once, and leaving syncs nothing',
+        (tester) async {
+      // Each resume and pause ran the refresh twice, and each run synced
+      // every widget folder over the network alongside the app's own sync.
+      final engine = _CountingEngine();
+      final inbox = (await tester.runAsync(
+        () => engine.loadFolders('acct-personal'),
+      ))!
+          .firstWhere((f) => f.role == FolderRole.inbox)
+          .id;
+      store.mailboxes['7'] = WidgetMailbox(folderId: inbox);
+      const channel = MethodChannel('mailtree/widget');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (_) async => <String>['7']);
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+      final c = ProviderContainer(
+        overrides: [
+          uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+          homeScreenSurfaceProvider.overrideWithValue(surface),
+          widgetStateStoreProvider.overrideWithValue(store),
+          mailEngineProvider.overrideWithValue(engine),
+        ],
+      );
+      addTearDown(c.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: const MaterialApp(
+            home: MailboxWidgetKeeper(child: SizedBox.shrink()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      engine.synced.clear();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(engine.synced, [inbox], reason: 'one refresh, not two');
+
+      engine.synced.clear();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pumpAndSettle();
+      expect(engine.synced, isEmpty,
+          reason: 'on the way out the counts come from the cache');
+      expect(surface.values['widget.7.folder'], inbox);
+    });
+
     testWidgets('and so does leaving', (tester) async {
       // Otherwise "new since you last looked" would count the mail you read
       // just before putting the phone down.
@@ -353,4 +406,19 @@ void main() {
       expect(store.openedAt, isNotNull);
     });
   });
+}
+
+/// Sample mail that notes each folder it is asked to sync.
+class _CountingEngine extends SampleMailEngine {
+  final List<String> synced = [];
+
+  @override
+  Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) {
+    synced.add(folderId);
+    return super.loadMessages(folderId, offset: offset, limit: limit);
+  }
 }

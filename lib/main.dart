@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart'
     show debugPrint, defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
@@ -12,9 +14,6 @@ import 'data/imap/cached_imap_engine.dart';
 import 'data/mail_engine.dart';
 import 'data/sample/sample_mail_engine.dart';
 import 'data/notifications/android_mail_notifier.dart';
-import 'data/notifications/notification_action_isolate.dart';
-import 'data/notifications/pending_actions.dart';
-import 'data/notifications/notification_actions.dart';
 import 'data/notifications/mail_notifier.dart';
 import 'data/secure_credential_store.dart';
 import 'data/sync/background_worker.dart';
@@ -71,6 +70,18 @@ Future<void> main() async {
   final accountStore = PrefsAccountStore(prefs);
   final credentialStore = SecureCredentialStore();
 
+  // The browser preview has no WorkManager and no notification channel, so it
+  // keeps the recording fake and never schedules anything.
+  final onAndroid =
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+  // A notification's buttons never come through here. None of them brings
+  // the app forward, and Android delivers such a press to a background
+  // isolate whether the app is open or not (see
+  // notificationActionEntryPoint); the worker that carries it out tells
+  // [AppShell], which re-reads the lists.
+  final MailNotifier notifier =
+      onAndroid ? AndroidMailNotifier() : FakeMailNotifier(permitted: false);
+
   final MailEngine engine = (kIsWeb || _forceSample)
       ? SampleMailEngine()
       : CachedImapEngine(
@@ -82,55 +93,10 @@ Future<void> main() async {
           // two views of the same rows.
           graphIdMap: DriftGraphIdMap(database),
           folderLists: PrefsFolderListStore(prefs),
+          // Mail read, filed or deleted here takes its notification with it.
+          onMessagesHandled: (handled) => unawaited(notifier.withdraw(handled)),
         );
 
-  // The browser preview has no WorkManager and no notification channel, so it
-  // keeps the recording fake and never schedules anything.
-  final onAndroid =
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
-  // A notification's buttons, pressed while the app is running, go through
-  // the engine that is already open rather than one built from scratch in
-  // another isolate over the same database. The accounts and signatures are
-  // read at the moment of the press, not now: either may have changed since
-  // the app started, and a reply signed with last week's signature is the
-  // sort of thing nobody thinks to report.
-  //
-  // Nothing refreshes the lists afterwards on purpose. Closing the shade
-  // brings the app back to the front, and [AppShell] re-reads everything
-  // when that happens.
-  final MailNotifier notifier = onAndroid
-      ? AndroidMailNotifier(
-          onAction: (response) async {
-            final actionId = response.actionId;
-            final messageId = response.payload;
-            if (!NotificationActions.isKnown(actionId) ||
-                messageId == null ||
-                messageId.isEmpty) {
-              return;
-            }
-            // Through the queue, as when the app is closed, so a press that
-            // cannot be carried out now is kept and tried again, not lost.
-            await PendingActions().add(PendingAction(
-              actionId: actionId!,
-              messageId: messageId,
-              typed: response.input,
-            ));
-            final result = await drainPendingNotificationActions(
-              open: () async => (
-                NotificationActions(
-                  engine: engine,
-                  accounts: accountStore.read(),
-                  signatures: readSignatures(PrefsUiStateStore(prefs)),
-                ),
-                () async {},
-              ),
-              report: (outcome, action) =>
-                  reportOutcome(outcome, action, pluginReady: true),
-            );
-            if (result.waiting > 0) await runPendingNotificationActions();
-          },
-        )
-      : FakeMailNotifier(permitted: false);
   final syncState = PrefsSyncStateStore();
 
   // A second window: this copy of the app was opened to show one thing.
@@ -154,7 +120,11 @@ Future<void> main() async {
     // screen is where the second is noticed and retried.
     try {
       await notifier.ensureReady();
-      await applyBackgroundSchedule(await syncState.readPrefs());
+      // Without restarting a live worker already running: see [restart].
+      await applyBackgroundSchedule(
+        await syncState.readPrefs(),
+        restart: false,
+      );
     } catch (e, stack) {
       debugPrint('[myemail] notification setup failed at startup: $e');
       debugPrint('$stack');

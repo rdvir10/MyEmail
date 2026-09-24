@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/notifications/mail_notifier.dart';
+import 'package:myemail/data/notifications/notification_action_isolate.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/mail_folder.dart';
@@ -117,6 +118,25 @@ void main() {
 
     expect(c.read(selectedFolderIdProvider), next.folderId);
     expect(c.read(selectedMessageIdProvider), next.id);
+  });
+
+  testWidgets('a button pressed in the shade while open refreshes the lists',
+      (tester) async {
+    // Delete on a notification is carried out in the background even with
+    // the app in front, and the list went on showing the deleted message.
+    await pump(tester);
+    final messages = engine.messageLoads;
+    final folders = engine.folderLoads;
+
+    // What the worker does once it has carried the press out.
+    await tester.runAsync(() async {
+      announceActionsDone();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+    await tester.pumpAndSettle();
+
+    expect(engine.messageLoads, greaterThan(messages));
+    expect(engine.folderLoads, greaterThan(folders));
   });
 
   testWidgets('coming back with nothing tapped changes nothing', (tester) async {

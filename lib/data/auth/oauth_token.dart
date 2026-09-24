@@ -119,11 +119,12 @@ class OAuthToken {
 
   /// Keep everything but take the newer refresh token.
   ///
-  /// For a refresh made for some other resource: Microsoft rotates the refresh
-  /// token on every exchange, whatever was asked for, so the one that comes
-  /// back has to replace the stored one even though its access token is for
-  /// something else. Dropping it would leave the stored refresh token retired,
-  /// and the account would sign itself out at its next ordinary refresh.
+  /// For a refresh made for some other resource: Microsoft hands back a new
+  /// refresh token on every exchange, whatever was asked for, and the newest
+  /// is the one to keep even though its access token is for something else.
+  /// The old one is not withdrawn, but it keeps its own expiry, so holding on
+  /// to it would sign the account out when that runs out however often the
+  /// account had been used meanwhile.
   OAuthToken withRefreshToken(String refreshToken) => OAuthToken(
         accessToken: accessToken,
         refreshToken: refreshToken,

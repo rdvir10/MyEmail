@@ -54,8 +54,14 @@ class SecretVault {
     required Map<String, String> secrets,
     required String passphrase,
   }) async {
-    if (passphrase.length < minimumPassphraseLength) {
+    // The same rule the dialog shows, so a passphrase it would not accept
+    // cannot get in by another route.
+    final strength = VaultStrength.of(passphrase);
+    if (strength == VaultStrength.tooShort) {
       throw const VaultPassphraseTooShort();
+    }
+    if (strength == VaultStrength.tooSimple) {
+      throw const VaultPassphraseTooSimple();
     }
 
     final salt = _randomBytes(16);
@@ -172,6 +178,7 @@ class SecretVault {
 /// guess, and for that, length beats character classes.
 enum VaultStrength {
   tooShort('Too short', 'At least 12 characters.'),
+  tooSimple('Too simple', 'One character over and over is guessed at once.'),
   weak('Weak', 'Longer would be much harder to guess.'),
   fair('Fair', 'Reasonable. A few more words would be better.'),
   strong('Strong', 'Good. Keep it somewhere you will not lose it.');
@@ -181,28 +188,56 @@ enum VaultStrength {
   final String label;
   final String advice;
 
+  /// Whether a backup may be sealed with this passphrase at all.
+  bool get refused => this == tooShort || this == tooSimple;
+
   static VaultStrength of(String passphrase) {
-    if (passphrase.length < SecretVault.minimumPassphraseLength) {
+    // Measured without the spaces at either end, which add nothing a guesser
+    // has to find. Counting them let twelve spaces through.
+    final trimmed = passphrase.trim();
+    if (trimmed.length < SecretVault.minimumPassphraseLength) {
       return VaultStrength.tooShort;
+    }
+    if (trimmed.replaceAll(RegExp(r'\s'), '').runes.toSet().length < 2) {
+      return VaultStrength.tooSimple;
     }
     // Word count matters more than symbols: four ordinary words beat one word
     // with a digit and a punctuation mark stuck on the end, and people can
-    // actually remember them.
-    final words = passphrase.trim().split(RegExp(r'\s+')).length;
-    if (passphrase.length >= 24 || words >= 4) return VaultStrength.strong;
-    if (passphrase.length >= 16 || words >= 3) return VaultStrength.fair;
+    // actually remember them. Only words of three letters or more count, or
+    // 'a b c d e f g' would be four words and more.
+    final words = trimmed
+        .split(RegExp(r'\s+'))
+        .where((w) => w.length >= 3)
+        .length;
+    if (trimmed.length >= 24 || words >= 4) return VaultStrength.strong;
+    if (trimmed.length >= 16 || words >= 3) return VaultStrength.fair;
     return VaultStrength.weak;
   }
 }
 
+/// A passphrase [SecretVault.seal] will not use.
 @immutable
-class VaultPassphraseTooShort implements Exception {
+sealed class VaultPassphraseRefused implements Exception {
+  const VaultPassphraseRefused();
+  String get message;
+  @override
+  String toString() => message;
+}
+
+class VaultPassphraseTooShort extends VaultPassphraseRefused {
   const VaultPassphraseTooShort();
+  @override
   String get message =>
       'Use at least ${SecretVault.minimumPassphraseLength} characters. A '
       'backup file can be guessed at forever, so length is what protects it.';
+}
+
+class VaultPassphraseTooSimple extends VaultPassphraseRefused {
+  const VaultPassphraseTooSimple();
   @override
-  String toString() => message;
+  String get message =>
+      'One character over and over is among the first things tried, and a '
+      'backup file can be guessed at forever. Use words, not a pattern.';
 }
 
 @immutable

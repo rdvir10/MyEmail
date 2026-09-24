@@ -60,7 +60,7 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
       setState(() => _done = saved
           ? 'Saved ${backup.summary}.${choice.includesSignIns ? ' Keep the passphrase safe: without it the sign-in details cannot be recovered.' : ' Sign-in details are not in the file.'}'
           : null);
-    } on VaultPassphraseTooShort catch (e) {
+    } on VaultPassphraseRefused catch (e) {
       if (mounted) setState(() => _error = e.message);
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not save the file: $e');
@@ -197,6 +197,9 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
     }
     if (report.accountsSignedIn > 0) {
       parts.add('${report.accountsSignedIn} signed in');
+    }
+    if (report.accountsSignedInAgain > 0) {
+      parts.add('${report.accountsSignedInAgain} signed in again');
     }
     final summary = '${parts.join(', ')}.';
     if (!report.needsSignIn) return summary;

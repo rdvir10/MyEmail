@@ -12,13 +12,14 @@ import 'oauth_token.dart';
 ///
 /// Two things here are not obvious and both are the point of the class:
 ///
-/// One, refreshes are single-flighted per account. Opening the reading pane
-/// starts an IMAP connection while a send may be opening SMTP, and both ask
-/// for a token at once. Microsoft rotates refresh tokens — spending one
-/// returns a new one and retires the old — so two concurrent refreshes race
-/// to store different tokens and one of them loses, taking the account's
-/// sign-in with it. The in-flight map makes the second caller await the
-/// first's answer instead.
+/// One, refreshes are single-flighted per account. Opening a folder fires a
+/// dozen Graph requests while a send may be under way, and all of them ask
+/// for a token at once. Each refresh hands back a new refresh token, and the
+/// newest one is the one to keep: Microsoft leaves the one just spent valid
+/// until it expires, so a race is not a sign-out, but concurrent refreshes
+/// still cost a round trip each and leave it to chance which token ends up
+/// stored. The in-flight map makes the second caller await the first's
+/// answer instead.
 ///
 /// Two, a failed refresh does not sign the account out unless Microsoft
 /// actually rejected the refresh token. A tunnel, a captive portal or a 503
@@ -43,7 +44,8 @@ class OAuthTokenRepository {
   /// only.
   ///
   /// The Keystore record has room for one access token, and it holds the one
-  /// for IMAP. A Graph token lives about an hour and is cheap to fetch again
+  /// for the default scopes, [MicrosoftOAuth.scopes]. Any other access token
+  /// lives about an hour and is cheap to fetch again
   /// from the refresh token, so keeping it here costs nothing on a restart
   /// and keeps the stored format unchanged — and keeps a second long-lived
   /// credential out of storage, which is worth something on its own.
@@ -147,8 +149,14 @@ class OAuthTokenRepository {
     _stored[accountId] = token;
   }
 
+  /// How many times each account has been forgotten. A refresh notes the
+  /// count as it starts, and a refresh that finds it moved on by the time
+  /// Microsoft answers writes nothing.
+  final Map<String, int> _forgotten = {};
+
   /// Drop everything held for an account, on the way out.
   void forget(String accountId) {
+    _forgotten[accountId] = (_forgotten[accountId] ?? 0) + 1;
     _stored.remove(accountId);
     _byResource.removeWhere((key, _) => key.startsWith('$accountId|'));
   }
@@ -166,7 +174,7 @@ class OAuthTokenRepository {
   ) {
     // Keyed by resource as well as account. Two resources are two different
     // exchanges and must not share one in-flight slot, or a caller waiting
-    // for a Graph token would be handed an IMAP one.
+    // for a token for one set of scopes would be handed one for another.
     final key = scopes == null ? accountId : _key(accountId, scopes);
     final existing = _inFlight[key];
     if (existing != null) return existing;
@@ -183,19 +191,33 @@ class OAuthTokenRepository {
     OAuthToken stored,
     List<String>? scopes,
   ) async {
+    final generation = _forgotten[accountId] ?? 0;
     final client = oauthClient();
     try {
       final refreshed = await client.refresh(stored, scopes: scopes);
+
+      // The account may have been removed while Microsoft was answering.
+      // Writing now would put a working refresh token back on the device,
+      // good for up to ninety days, for an account that looks gone and that
+      // nothing will ever clean up. Removed here, forget has been called;
+      // removed from the other isolate, the stored secret is gone. The
+      // generation check comes after the read and straight before the
+      // write, with no wait in between, so a removal that lands later has
+      // its delete queued behind this write rather than ahead of it.
+      if (await credentialStore.readSecret(accountId) == null ||
+          (_forgotten[accountId] ?? 0) != generation) {
+        return refreshed;
+      }
 
       if (scopes == null) {
         await store(accountId, refreshed);
       } else {
         _byResource[_key(accountId, scopes)] = refreshed;
         // The access token belongs to another resource, but the refresh token
-        // does not: Microsoft rotates it on every exchange and retires the one
-        // just spent. Keeping the old one in storage would sign the account
-        // out at its next ordinary refresh, with nothing to connect that
-        // failure to a send that happened an hour earlier.
+        // does not: every exchange hands back a new one, and the newest is
+        // the one to keep. The spent one stays valid, but only until its own
+        // expiry, so keeping it would sign the account out in the end
+        // however often the account was used in between.
         await store(accountId, stored.withRefreshToken(refreshed.refreshToken));
       }
       return refreshed;

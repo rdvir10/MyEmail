@@ -299,9 +299,10 @@ class MicrosoftOAuth {
   /// has to sign in again. Everything else — no network, a 5xx — comes back
   /// as [SignInFailed] so the caller retries rather than signing the account
   /// out over a flaky connection.
-  /// [scopes] names which resource the access token is for. Defaults to the
-  /// IMAP and SMTP set; pass [graphScopes] for a Graph token. Either works
-  /// from the same refresh token once both have been consented to.
+  ///
+  /// [scopes] names which resource the access token is for, and defaults to
+  /// [MicrosoftOAuth.scopes]. Any set the account has consented to works from
+  /// the same refresh token.
   Future<OAuthToken> refresh(
     OAuthToken token, {
     List<String>? scopes,

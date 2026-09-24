@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import '../../domain/account.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
+import '../../domain/mail_message.dart';
 import '../notifications/mail_notifier.dart';
 import '../mail_engine.dart';
 import 'new_mail_scan.dart';
@@ -116,6 +117,7 @@ class BackgroundSync {
     required bool announce,
   }) async {
     final messages = await engine.loadMessages(folder.id, limit: scanWindow);
+    await _withdrawDealtWith(folder, messages);
     final watermark = await state.readWatermark(folder.id);
 
     final fresh = selectNotifiable(
@@ -156,6 +158,35 @@ class BackgroundSync {
       notifications: batch,
     );
     return batch.length;
+  }
+
+  /// Take down the notifications of mail in [folder] that has been read, or
+  /// has gone, since it was announced: dealt with on another device, say,
+  /// or in the app while this worker was not the one doing it. Left up,
+  /// their buttons act on mail that is no longer there.
+  ///
+  /// [window] is the folder as just synced. A notified message outside it
+  /// is looked up in the cache, where a sync has already dropped anything
+  /// deleted or moved away.
+  Future<void> _withdrawDealtWith(
+    MailFolder folder,
+    List<MailMessage> window,
+  ) async {
+    try {
+      final byId = {for (final m in window) m.id: m};
+      final dealtWith = <String>{};
+      for (final id in await notifier.shownMessageIds()) {
+        if (id.lastIndexOf('#') < 0 ||
+            id.substring(0, id.lastIndexOf('#')) != folder.id) {
+          continue;
+        }
+        final message = byId[id] ?? await engine.cachedMessage(id);
+        if (message == null || message.isRead) dealtWith.add(id);
+      }
+      if (dealtWith.isNotEmpty) await notifier.withdraw(dealtWith.contains);
+    } catch (e) {
+      debugPrint('[myemail] could not tidy notifications: $e');
+    }
   }
 }
 
