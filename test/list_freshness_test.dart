@@ -9,6 +9,7 @@ import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/message_move.dart';
+import 'package:myemail/state/folder_tree.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 
@@ -83,6 +84,36 @@ void main() {
       expect(after.map((m) => m.subject).last, 'Message c');
     });
 
+    test('corrects a subject changed elsewhere', () async {
+      // Same ids, same flags, new subject and preview: a draft edited in
+      // Outlook on another device. The refresh took that for "no change".
+      MailMessage edited(String id) => MailMessage(
+            id: '$folder#$id',
+            accountId: 'acct-1',
+            folderId: folder,
+            uid: id.codeUnitAt(0),
+            subject: 'Revised $id',
+            preview: 'New first line',
+            from: const MailAddress(email: 'dana@example.com', name: 'Dana'),
+            to: const [],
+            date: DateTime(2026, 9, 21, 9),
+            isRead: true,
+          );
+      final engine = _GatedEngine()
+        ..stored[folder] = [message('a'), message('b')]
+        ..fromServer[folder] = [edited('a'), message('b')]
+        ..hold(folder);
+
+      final c = containerFor(engine);
+      await c.read(messagesProvider(folder).future);
+      engine.release(folder);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      final shown = c.read(messagesProvider(folder)).value!;
+      expect(shown.map((m) => m.subject), ['Revised a', 'Message b']);
+      expect(shown.first.preview, 'New first line');
+    });
+
     test('a folder with nothing stored waits rather than showing empty',
         () async {
       // The first visit to a folder has nothing to show early, so there is
@@ -141,6 +172,97 @@ void main() {
       expect(shown, hasLength(2));
       expect(c.read(messagesProvider(folder)).value, hasLength(2),
           reason: 'offline is not a reason to empty the screen');
+    });
+  });
+
+  group('the unified Inbox with one account failing', () {
+    // Every account's Inbox was loaded with one Future.wait, so one account
+    // whose sign-in had expired took the others down with it.
+    const good = 'acct-personal:INBOX';
+    const bad = 'acct-side:INBOX';
+
+    MailMessage inboxMessage(String folderId, int uid) => MailMessage(
+          id: MailMessage.idFor(folderId, uid),
+          accountId: folderId.split(':').first,
+          folderId: folderId,
+          uid: uid,
+          subject: 'Message $uid',
+          preview: '',
+          from: const MailAddress(email: 'dana@example.com'),
+          to: const [],
+          date: DateTime(2026, 9, 21, uid),
+        );
+
+    Future<ProviderContainer> unified(_GatedEngine engine) async {
+      final c = containerFor(engine);
+      await c.read(foldersProvider.future);
+      c.listen(messagesProvider(kUnifiedInboxId), (_, _) {});
+      return c;
+    }
+
+    test('a refresh still brings the others their new mail', () async {
+      final engine = _GatedEngine()
+        ..stored[good] = [inboxMessage(good, 1)]
+        ..stored[bad] = [inboxMessage(bad, 2)]
+        ..fromServer[good] = [inboxMessage(good, 3), inboxMessage(good, 1)]
+        ..broken.add(bad);
+      final c = await unified(engine);
+
+      await c.read(messagesProvider(kUnifiedInboxId).future);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      final shown = c.read(messagesProvider(kUnifiedInboxId)).value!;
+      expect(shown.map((m) => m.id), [
+        MailMessage.idFor(good, 3),
+        MailMessage.idFor(bad, 2),
+        MailMessage.idFor(good, 1),
+      ], reason: 'the failing account keeps what it had stored');
+    });
+
+    test('a first open shows the accounts that answered', () async {
+      final engine = _GatedEngine()
+        ..fromServer[good] = [inboxMessage(good, 1)]
+        ..broken.add(bad);
+      final c = await unified(engine);
+
+      final shown = await c.read(messagesProvider(kUnifiedInboxId).future);
+
+      expect(shown.map((m) => m.id), [MailMessage.idFor(good, 1)]);
+    });
+
+    test('with every account failing, it is still an error', () async {
+      final engine = _GatedEngine()..broken.addAll([good, bad]);
+      final c = await unified(engine);
+
+      await expectLater(
+        c.read(messagesProvider(kUnifiedInboxId).future),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('paging goes on for the others and does not call it the end',
+        () async {
+      final engine = _GatedEngine()
+        ..stored[good] = [inboxMessage(good, 1)]
+        ..stored[bad] = [inboxMessage(bad, 2)];
+      final c = await unified(engine);
+      await c.read(messagesProvider(kUnifiedInboxId).future);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      engine
+        ..fromServer[good] = [inboxMessage(good, 1), inboxMessage(good, 0)]
+        ..broken.add(bad);
+
+      await c.read(messagesProvider(kUnifiedInboxId).notifier).loadMore();
+
+      expect(
+        c.read(messagesProvider(kUnifiedInboxId)).value!.map((m) => m.id),
+        contains(MailMessage.idFor(good, 0)),
+      );
+
+      engine.fromServer[good] = [inboxMessage(good, 1), inboxMessage(good, 0)];
+      await c.read(messagesProvider(kUnifiedInboxId).notifier).loadMore();
+      expect(c.read(listDepthProvider(kUnifiedInboxId)).exhausted, isFalse,
+          reason: 'the failing account may well have more');
     });
   });
 
@@ -229,6 +351,28 @@ void main() {
   });
 
   group('deleting a message', () {
+    test('shows it in a Trash list opened earlier', () async {
+      // Only the engine knows where a delete sends a message. The list of
+      // Deleted Items opened before it lacked the message until pulled,
+      // while the folder's count had already gone up.
+      final c = containerFor(SampleMailEngine());
+      final accounts = await c.read(accountsProvider.future);
+      final folders = (await c.read(foldersProvider.future))[accounts.first.id]!;
+      final inbox = folders.firstWhere((f) => f.role == FolderRole.inbox).id;
+      final trash = folders.firstWhere((f) => f.role == FolderRole.deleted).id;
+      c.listen(messagesProvider(trash), (_, _) {});
+      await c.read(messagesProvider(trash).future);
+      final shown = await c.read(messagesProvider(inbox).future);
+
+      final moves = await c
+          .read(messagesProvider(inbox).notifier)
+          .delete([shown.first.id]);
+
+      final landed = moves.single.movedIds.single;
+      final inTrash = await c.read(messagesProvider(trash).future);
+      expect(inTrash.map((m) => m.id), contains(landed));
+    });
+
     test('does not wait on the folder counts', () async {
       // Refreshing an account is another folder listing over the network.
       // Awaiting it here is what made a delete take seconds to finish.
@@ -268,6 +412,10 @@ class _GatedEngine extends SampleMailEngine {
   /// Folders whose sync fails, as it does with no network.
   final Set<String> refuse = {};
 
+  /// Folders whose account fails outright, as one whose sign-in has
+  /// expired does. The engine passes that on rather than falling back.
+  final Set<String> broken = {};
+
   void hold(String folderId) => _gates[folderId] = Completer<void>();
 
   bool waiting(String folderId) => _gates[folderId]?.isCompleted == false;
@@ -305,6 +453,7 @@ class _GatedEngine extends SampleMailEngine {
     if (refuse.contains(folderId)) {
       throw const ConnectionFailed('No network.');
     }
+    if (broken.contains(folderId)) throw StateError('Sign in again.');
     return fromServer[folderId] ?? stored[folderId] ?? const [];
   }
 }

@@ -1,16 +1,25 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/imap/imap_mapping.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/conversations.dart';
+import 'package:myemail/state/display_providers.dart';
+import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/messages/date_format.dart';
+import 'package:myemail/ui/shell/app_shell.dart';
 import 'package:enough_mail/enough_mail.dart' as em;
 
 import 'fakes/fake_imap_transport.dart';
+import 'fakes/fake_webview.dart';
 
 /// What a list row knows before anything is opened.
 ///
@@ -33,6 +42,25 @@ void main() {
       expect(formatDateBar(DateTime(2025, 12, 1), now: now), 'Mon 1 Dec 2025');
     });
 
+    test('yesterday is yesterday the day after the clocks change', () {
+      // Counted in hours between local midnights, the night the clocks go
+      // forward is 23 hours long, so yesterday's mail got a second "Today"
+      // bar and the day before said "Yesterday". Every day of a year, so
+      // the change falls in it wherever the test runs; in a zone with no
+      // daylight saving this passes either way.
+      for (var day = DateTime(2026, 1, 3);
+          day.year == 2026;
+          day = DateTime(day.year, day.month, day.day + 1)) {
+        final now = DateTime(day.year, day.month, day.day, 9);
+        final yesterday = DateTime(day.year, day.month, day.day - 1, 12);
+        final before = DateTime(day.year, day.month, day.day - 2, 12);
+        expect(formatDateBar(yesterday, now: now), startsWith('Yesterday'),
+            reason: 'on $day');
+        expect(formatDateBar(before, now: now), isNot(contains('Yesterday')),
+            reason: 'on $day');
+      }
+    });
+
     test('a new day is a new day in the reader\'s own zone', () {
       expect(
         startsNewDay(DateTime(2026, 9, 22, 23, 59), DateTime(2026, 9, 23, 0, 1)),
@@ -42,6 +70,42 @@ void main() {
         startsNewDay(DateTime(2026, 9, 22, 0, 1), DateTime(2026, 9, 22, 23, 59)),
         isFalse,
       );
+    });
+  });
+
+  group('the date bars on the list', () {
+    setUpAll(FakeWebViewPlatform.install);
+
+    testWidgets('an open thread from yesterday does not start today again',
+        (tester) async {
+      // The bar was decided against the row just above, which under an
+      // open thread is its oldest message. Yesterday's, it put a second
+      // "Today" over the next conversation, in the middle of today's mail.
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        mailEngineProvider.overrideWithValue(_OneInboxEngine()),
+      ]);
+      addTearDown(c.dispose);
+      c.read(displayProvider.notifier).setConversations(true);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: const MaterialApp(home: AppShell()),
+      ));
+      await tester.pumpAndSettle();
+      c.read(selectedFolderIdProvider.notifier).select(_OneInboxEngine.inbox);
+      await tester.pumpAndSettle();
+      final thread = groupIntoConversations(
+        await tester.runAsync(() => _OneInboxEngine()
+            .loadMessages(_OneInboxEngine.inbox)) as List<MailMessage>,
+      ).firstWhere((t) => t.isThread);
+      c.read(expandedConversationsProvider.notifier).toggle(thread.id);
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Today'), findsOneWidget);
     });
   });
 
@@ -190,3 +254,49 @@ void main() {
 
 /// enough_mail wants bytes; these tests would rather write text.
 Uint8List _bytes(String s) => Uint8List.fromList(utf8.encode(s));
+
+/// An Inbox holding one thread that began yesterday and carried on this
+/// morning, and one message of today's that is older than the thread's last.
+class _OneInboxEngine extends SampleMailEngine {
+  static const inbox = 'acct-personal:INBOX';
+
+  static List<MailMessage> _mail() {
+    final now = DateTime.now();
+    DateTime at(int daysAgo, int hour) =>
+        DateTime(now.year, now.month, now.day - daysAgo, hour);
+    MailMessage m(int uid, String subject, DateTime date) => MailMessage(
+          id: MailMessage.idFor(inbox, uid),
+          accountId: 'acct-personal',
+          folderId: inbox,
+          uid: uid,
+          subject: subject,
+          preview: '',
+          from: const MailAddress(email: 'dana@example.com'),
+          to: const [],
+          date: date,
+          isRead: true,
+        );
+    return [
+      m(4, 'Re: Plans', at(0, 0).add(const Duration(minutes: 3))),
+      m(3, 'Lunch', at(0, 0).add(const Duration(minutes: 1))),
+      m(2, 'Re: Plans', at(1, 12)),
+      m(1, 'Plans', at(1, 9)),
+    ];
+  }
+
+  @override
+  Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) async =>
+      folderId == inbox && offset == 0 ? _mail() : const [];
+
+  @override
+  Future<List<MailMessage>> cachedMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) =>
+      loadMessages(folderId, offset: offset, limit: limit);
+}

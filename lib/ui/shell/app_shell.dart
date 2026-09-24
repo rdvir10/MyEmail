@@ -342,11 +342,13 @@ class _MediumPanes extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final panes = ref
-            .watch(paneWidthsProvider)
-            .fitted(constraints.maxWidth, hasReadingPane: false);
-        final notifier = ref.read(paneWidthsProvider.notifier);
         final showTree = ref.watch(folderPaneVisibleProvider);
+        final panes = ref.watch(paneWidthsProvider).fitted(
+              constraints.maxWidth,
+              hasReadingPane: false,
+              hasTree: showTree,
+            );
+        final notifier = ref.read(paneWidthsProvider.notifier);
         return Row(
           children: [
             if (showTree) ...[
@@ -437,11 +439,13 @@ class _WidePanes extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final panes = ref
-            .watch(paneWidthsProvider)
-            .fitted(constraints.maxWidth, hasReadingPane: true);
-        final notifier = ref.read(paneWidthsProvider.notifier);
         final showTree = ref.watch(folderPaneVisibleProvider);
+        final panes = ref.watch(paneWidthsProvider).fitted(
+              constraints.maxWidth,
+              hasReadingPane: true,
+              hasTree: showTree,
+            );
+        final notifier = ref.read(paneWidthsProvider.notifier);
         return Row(
           children: [
             if (showTree) ...[
@@ -531,7 +535,7 @@ class PaneDivider extends StatefulWidget {
   final VoidCallback onReset;
   final String label;
 
-  static const double hitWidth = 12;
+  static const double hitWidth = PaneLayout.divider;
 
   @override
   State<PaneDivider> createState() => _PaneDividerState();

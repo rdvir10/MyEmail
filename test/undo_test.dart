@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/folder_role.dart';
@@ -145,10 +146,12 @@ void main() {
 
   group('on screen', () {
     Future<(ProviderContainer, String, String)> setUpFolders(
-      WidgetTester tester,
-    ) async {
+      WidgetTester tester, {
+      MailEngine? engine,
+    }) async {
       final c = ProviderContainer(overrides: [
         uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        if (engine != null) mailEngineProvider.overrideWithValue(engine),
       ]);
       addTearDown(c.dispose);
       // The sample engine's latency is a real delay, which the fake clock in
@@ -194,6 +197,25 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Message put back'), findsOneWidget);
+      expect(find.text('top $subject'), findsOneWidget);
+    });
+
+    testWidgets('an undo that fails part way still shows what came back',
+        (tester) async {
+      // Across two accounts the first can be put back and the second fail.
+      // The lists were only refreshed on success, so the message restored
+      // stayed missing until a pull.
+      final (c, inbox, _) =
+          await setUpFolders(tester, engine: _UndoThenFail());
+      await show(tester, c, inbox);
+      final subject = c.read(messagesProvider(inbox)).value!.first.subject;
+
+      await tester.tap(find.text('Delete the first'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Undo'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Could not undo'), findsOneWidget);
       expect(find.text('top $subject'), findsOneWidget);
     });
 
@@ -245,5 +267,15 @@ class _DeleteHarness extends ConsumerWidget {
         ),
       ),
     );
+  }
+}
+
+/// Puts everything back, then fails, as an undo does whose second account
+/// stopped answering after the first had been restored.
+class _UndoThenFail extends SampleMailEngine {
+  @override
+  Future<void> undoMoves(List<MessageMove> moves) async {
+    await super.undoMoves(moves);
+    throw const ConnectionFailed('The other account did not answer.');
   }
 }

@@ -22,12 +22,14 @@ String? messageToLandOn({
   return messages.first.id;
 }
 
-/// The message [delta] rows away, for the arrow keys.
+/// The message [delta] rows away, for the arrow keys and Page Up and Down.
 ///
 /// Stops at the ends rather than wrapping. Wrapping from the last message to
 /// the first is the kind of cleverness that loses someone's place in a list
 /// of four hundred, and holding an arrow key to the bottom should come to
-/// rest there rather than start again.
+/// rest there rather than start again. A move that would go past an end
+/// goes to it: Page Down with fewer than a page left used not to move at
+/// all, which looked like the key had stopped working.
 String? neighbourOf(List<MailMessage> messages, String? current, int delta) {
   if (messages.isEmpty) return null;
   if (current == null) {
@@ -37,7 +39,5 @@ String? neighbourOf(List<MailMessage> messages, String? current, int delta) {
   // Selected something that is no longer in the list — deleted elsewhere, or
   // filtered out. The top is a better answer than nothing.
   if (at < 0) return messages.first.id;
-  final next = at + delta;
-  if (next < 0 || next >= messages.length) return current;
-  return messages[next].id;
+  return messages[(at + delta).clamp(0, messages.length - 1)].id;
 }

@@ -431,9 +431,18 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                   // indices are load-bearing — paging, the keyboard's
                   // cursor, scrolling a selection into view — and slipping
                   // extra items between them would move every one of them.
+                  // Compared with the row above it at its own level: under
+                  // an open thread that is the thread, not its oldest
+                  // message, which could be from days before and put a
+                  // second "Today" in the middle of today's mail.
+                  var above = i - 1;
+                  while (above >= 0 && rows[above].indented) {
+                    above--;
+                  }
                   final bar = byDate &&
                           !row.indented &&
-                          (i == 0 || startsNewDay(rows[i - 1].date, row.date))
+                          (above < 0 ||
+                              startsNewDay(rows[above].date, row.date))
                       ? _DateBar(date: row.date)
                       : null;
                   final conversation = row.conversation;

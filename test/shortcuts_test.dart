@@ -170,6 +170,31 @@ void main() {
       expect(focusIsInTextField(), isTrue);
     });
 
+    testWidgets('text that can only be selected is not typing',
+        (tester) async {
+      // A plain-text body is read-only selectable text. Clicking into it
+      // counted as typing, and every shortcut stopped until the list was
+      // clicked again.
+      await tester.pumpWidget(const MaterialApp(
+        home: Scaffold(
+          body: Column(children: [
+            SelectableText('A plain-text message body'),
+            TextField(),
+          ]),
+        ),
+      ));
+      await tester.showKeyboard(find.byType(TextField));
+      await tester.pump();
+      expect(focusIsInTextField(), isTrue);
+
+      await tester.tap(find.byType(SelectableText));
+      await tester.pump();
+      expect(FocusManager.instance.primaryFocus?.context
+          ?.findAncestorWidgetOfExactType<SelectableText>(), isNotNull,
+          reason: 'the body has the focus now');
+      expect(focusIsInTextField(), isFalse);
+    });
+
     testWidgets('nothing fires while typing', (tester) async {
       // Insert in the search box must not flag the message underneath it.
       final c = await pump(tester);
@@ -289,6 +314,22 @@ void main() {
       expect(selected(c), ids[10]);
       await press(tester, LogicalKeyboardKey.pageUp);
       expect(selected(c), ids[0]);
+
+      // Fewer than ten left: it goes to the last rather than nowhere. End
+      // until the list has nothing more to load behind it, so the last row
+      // stays the last.
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+      for (var i = 0; i < 10 && c.read(listHasMoreProvider(folder)); i++) {
+        await press(tester, LogicalKeyboardKey.end);
+      }
+      await press(tester, LogicalKeyboardKey.end);
+      final last = selected(c);
+      for (var i = 0; i < 3; i++) {
+        await press(tester, LogicalKeyboardKey.arrowUp);
+      }
+      expect(selected(c), isNot(last));
+      await press(tester, LogicalKeyboardKey.pageDown);
+      expect(selected(c), last);
     });
 
     testWidgets('the selected row stays on screen as the keys move it',
@@ -519,6 +560,29 @@ void main() {
       expect(p.list.hasFocus, isTrue);
       await press(tester, LogicalKeyboardKey.f6, shift: true);
       expect(p.tree.hasFocus, isTrue);
+    });
+
+    testWidgets('F6 passes over a pane that has been hidden',
+        (tester) async {
+      // A node keeps its last context after its pane goes, so the hidden
+      // tree still counted: F6 sent the focus to it and nothing moved, and
+      // the tree took the focus by itself when it was shown again.
+      final c = await pump(tester);
+      final p = panes(c);
+      c.read(folderPaneVisibleProvider.notifier).set(false);
+      await tester.pumpAndSettle();
+      p.list.requestFocus();
+      await tester.pumpAndSettle();
+
+      await press(tester, LogicalKeyboardKey.f6, shift: true);
+      expect(p.reading.hasFocus, isTrue, reason: 'round past the tree');
+      await press(tester, LogicalKeyboardKey.f6);
+      expect(p.list.hasFocus, isTrue);
+
+      c.read(folderPaneVisibleProvider.notifier).set(true);
+      await tester.pumpAndSettle();
+      expect(p.tree.hasFocus, isFalse, reason: 'nobody asked for it');
+      expect(p.list.hasFocus, isTrue);
     });
 
     testWidgets('the pane with the keyboard shows a line, once a key is used',

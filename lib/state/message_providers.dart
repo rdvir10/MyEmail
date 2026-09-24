@@ -43,6 +43,11 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
   /// dropped instead.
   int _changes = 0;
 
+  /// Messages taken off the list whose move or delete has not finished.
+  /// The server still has them until it does, so a page loaded meanwhile
+  /// must not put them back.
+  final Set<String> _removing = {};
+
   @override
   Future<List<MailMessage>> build() async {
     final engine = ref.watch(mailEngineProvider);
@@ -68,9 +73,8 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     if (known.isEmpty) {
       // A folder opened for the first time, or an empty one: there is
       // nothing to show early, so the server is worth waiting for.
-      return _merged(await Future.wait([
-        for (final id in ids) engine.loadMessages(id, limit: limit),
-      ]));
+      final (lists, _) = await _loadEach({for (final id in ids) id: limit});
+      return _merged(lists);
     }
     _refresh(ids, limit, _changes, () => current);
     return known;
@@ -87,19 +91,56 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     int changes,
     bool Function() current,
   ) {
-    final engine = ref.read(mailEngineProvider);
     unawaited(() async {
       final List<MailMessage> fresh;
       try {
-        fresh = _merged(await Future.wait([
-          for (final id in ids) engine.loadMessages(id, limit: limit),
-        ]));
+        final (lists, _) = await _loadEach({for (final id in ids) id: limit});
+        fresh = _merged(lists);
       } catch (_) {
         return;
       }
       if (!current() || changes != _changes) return;
       if (!_sameList(state.value, fresh)) state = AsyncData(fresh);
     }());
+  }
+
+  /// Each folder's messages from the server, down to its limit, or what
+  /// is stored for a folder whose account did not answer. The second half
+  /// says whether any fell back like that.
+  ///
+  /// Not one Future.wait over the lot, which fails as a whole: a unified
+  /// Inbox with one account whose sign-in had expired refreshed none of
+  /// them, and opened with nothing stored it showed only that account's
+  /// error. Throws only when every folder failed, which for a list of one
+  /// folder is that folder's own error, as before.
+  Future<(List<List<MailMessage>>, bool)> _loadEach(
+    Map<String, int> limits,
+  ) async {
+    final engine = ref.read(mailEngineProvider);
+    Object? error;
+    StackTrace? trace;
+    var failed = 0;
+    final lists = await Future.wait([
+      for (final MapEntry(key: id, value: limit) in limits.entries)
+        () async {
+          try {
+            return await engine.loadMessages(id, limit: limit);
+          } catch (e, st) {
+            failed++;
+            error ??= e;
+            trace ??= st;
+            try {
+              return await engine.cachedMessages(id, limit: limit);
+            } catch (_) {
+              return const <MailMessage>[];
+            }
+          }
+        }(),
+    ]);
+    if (failed > 0 && failed == limits.length) {
+      Error.throwWithStackTrace(error!, trace!);
+    }
+    return (lists, failed > 0);
   }
 
   static List<MailMessage> _merged(List<List<MailMessage>> lists) {
@@ -135,40 +176,40 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
 
   /// The next page of older messages, added under the ones shown.
   ///
-  /// Each folder behind the list is asked for what follows the messages
-  /// of its own already here, so a unified Inbox pages every account at
-  /// once. Anything already shown is skipped: a sync between two pages can
-  /// push new mail in at the top and shift what an offset means. A page
-  /// with nothing new in it marks the list exhausted, which is how a stale
-  /// folder total stops the list asking for ever.
+  /// Each folder behind the list is asked for everything down to a page
+  /// past the messages of its own already here, so a unified Inbox pages
+  /// every account at once. From the top, not from an offset: the sync
+  /// behind the page brings in whatever arrived since the list was loaded,
+  /// which shifts every offset down. Asked from where the list ended, the
+  /// page was mostly that new mail, and the newest of it never showed at
+  /// all. Anything already shown is skipped, and so is anything on its way
+  /// out, which the server still has. A page with nothing new in it marks
+  /// the list exhausted, which is how a stale folder total stops the list
+  /// asking for ever.
   Future<void> loadMore() async {
     final depth = ref.read(listDepthProvider(folderId).notifier);
     if (state.value == null || !depth.begin()) return;
     try {
-      final engine = ref.read(mailEngineProvider);
       final shown = state.value!;
-      final pages = await Future.wait([
+      final (pages, fellBack) = await _loadEach({
         for (final id in await _folderIds())
-          engine.loadMessages(
-            id,
-            offset: shown.where((m) => m.folderId == id).length,
-            limit: pageSize,
-          ),
-      ]);
+          id: shown.where((m) => m.folderId == id).length + pageSize,
+      });
       // The list may have been refreshed while the page was on its way.
       final current = state.value ?? shown;
-      final have = {for (final m in current) m.id};
+      final have = {for (final m in current) m.id, ..._removing};
       final fresh = [
         for (final page in pages)
           for (final m in page)
             if (have.add(m.id)) m,
       ];
       if (fresh.isEmpty) {
-        depth.end(exhausted: true);
+        // Nothing more is only the end when every account said so.
+        depth.end(exhausted: !fellBack);
         return;
       }
-      final merged = [...current, ...fresh];
-      if (folderId == kUnifiedInboxId) merged.sort(newestFirst);
+      // New mail can be among it, and belongs at the top.
+      final merged = [...current, ...fresh]..sort(newestFirst);
       _changes++;
       state = AsyncData(merged);
       depth.end(grew: true);
@@ -222,6 +263,8 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       for (final m in current)
         if (!ids.contains(m.id)) m,
     ]);
+    final removing = [for (final m in removed) m.id];
+    _removing.addAll(removing);
     final List<MessageMove> moves;
     try {
       moves = await op();
@@ -237,14 +280,22 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
           for (final m in removed)
             if (went.contains(m.id)) m,
         ],
-        touchedFolderIds,
+        [...touchedFolderIds, for (final m in part.done) m.toFolderId],
       );
       rethrow;
     } catch (_) {
       _putBack(removed, current);
       rethrow;
+    } finally {
+      _removing.removeAll(removing);
     }
-    _afterRemoval(removed, touchedFolderIds);
+    // Where they went too, which for a delete only the engine knows: a
+    // Trash list opened earlier otherwise lacked them until pulled, while
+    // its count in the tree had already gone up.
+    _afterRemoval(
+      removed,
+      [...touchedFolderIds, for (final m in moves) m.toFolderId],
+    );
     return moves;
   }
 
@@ -545,8 +596,15 @@ final lastOpenedInFolderProvider =
 /// fall out of step with what is ticked. Leaving the last one therefore ends
 /// selection, which is what unticking everything already looks like.
 class SelectedMessageIds extends Notifier<Set<String>> {
+  /// Emptied when another folder opens. The ticks are on rows of the list
+  /// that was showing: carried over, the bar counted messages nobody could
+  /// see, Delete found none of them in the new list, and ticking two more
+  /// there made the bar say five and the delete say two.
   @override
-  Set<String> build() => const {};
+  Set<String> build() {
+    ref.watch(effectiveSelectedFolderIdProvider);
+    return const {};
+  }
 
   void toggle(String id) {
     final next = Set<String>.from(state);

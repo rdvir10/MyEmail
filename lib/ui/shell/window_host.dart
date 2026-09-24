@@ -40,7 +40,8 @@ class _WindowHostState extends ConsumerState<WindowHost> {
       case MessageWindow(:final message):
         // The message's own folder is the list its actions go through:
         // marking read, flagging, deleting all look the message up there.
-        ref.read(selectedFolderIdProvider.notifier).select(message.folderId);
+        // Shown, not chosen: the app's own choice of folder stays its own.
+        ref.read(selectedFolderIdProvider.notifier).showOnly(message.folderId);
         screen = MessageScreen(message: message);
     }
     await Navigator.of(context).push(

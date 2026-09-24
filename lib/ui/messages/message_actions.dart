@@ -34,16 +34,19 @@ class MessageActions {
   /// inbox. Not necessarily the folder the message lives in.
   final String listId;
 
-  Future<void> moveWithPrompt(
+  /// True when anything moved. The sheet closed without a choice, or a
+  /// move that failed outright, is false, so a selection can stay ticked
+  /// for another try rather than be lost with nothing done to it.
+  Future<bool> moveWithPrompt(
     BuildContext context,
     List<MailMessage> messages,
   ) async {
-    if (messages.isEmpty) return;
+    if (messages.isEmpty) return false;
     final to = _reporterFor(context);
     final accountId = messages.first.accountId;
     if (messages.any((m) => m.accountId != accountId)) {
       _say(to, 'Those messages are in different accounts.');
-      return;
+      return false;
     }
     final target = await showMoveToSheet(
       context,
@@ -51,16 +54,17 @@ class MessageActions {
       fromFolderId: messages.first.folderId,
       messageCount: messages.length,
     );
-    if (target == null || !context.mounted) return;
-    await moveTo(context, messages, target);
+    if (target == null || !context.mounted) return false;
+    return moveTo(context, messages, target);
   }
 
-  Future<void> moveTo(
+  /// True when anything moved, as for [moveWithPrompt].
+  Future<bool> moveTo(
     BuildContext context,
     List<MailMessage> messages,
     String toFolderId,
   ) async {
-    if (messages.isEmpty) return;
+    if (messages.isEmpty) return false;
     final to = _reporterFor(context);
     final name = ref.read(folderIndexProvider)[toFolderId]?.displayName ?? '';
     final (held, elsewhere) = _split(messages);
@@ -85,14 +89,17 @@ class MessageActions {
         undo: moves,
         of: messages.length,
       );
+      return true;
     } on PartialMove catch (part) {
       // Some went: say how many, and offer those back.
       final done = [...moves, ...part.done];
       final n = done.fold(0, (sum, m) => sum + m.count);
       _say(to, 'Moved $n of ${messages.length}. ${part.message}',
           undo: done, of: n);
+      return true;
     } catch (e) {
       _say(to, 'Could not move: $e');
+      return moves.isNotEmpty;
     }
   }
 
@@ -112,10 +119,14 @@ class MessageActions {
         _refreshSearch();
       }
       if (elsewhere.isNotEmpty) {
-        moves.addAll(await ref
+        final gone = await ref
             .read(mailEngineProvider)
-            .deleteMessages([for (final m in elsewhere) m.id]));
-        await _afterEngineChange(elsewhere);
+            .deleteMessages([for (final m in elsewhere) m.id]);
+        moves.addAll(gone);
+        await _afterEngineChange(
+          elsewhere,
+          touched: [for (final m in gone) m.toFolderId],
+        );
       }
       _say(
         to,
@@ -316,20 +327,30 @@ Future<void> undoMoves(
   String listId,
 ) async {
   try {
-    await container.read(mailEngineProvider).undoMoves(moves);
-    final index = container.read(folderIndexProvider);
-    for (final folderId in {
-      listId,
-      kUnifiedInboxId,
-      for (final m in moves) ...[m.fromFolderId, m.toFolderId],
-    }) {
-      container.invalidate(messagesProvider(folderId));
-    }
-    container.invalidate(searchResultsProvider);
-    for (final accountId in {
-      for (final m in moves) ?index[m.fromFolderId]?.accountId,
-    }) {
-      await container.read(foldersProvider.notifier).refreshAccount(accountId);
+    try {
+      await container.read(mailEngineProvider).undoMoves(moves);
+    } finally {
+      // Whether or not all of it went. An undo across two accounts can put
+      // the first back and then fail on the second, and the lists, left
+      // alone, showed neither the messages restored nor Trash without them.
+      final index = container.read(folderIndexProvider);
+      for (final folderId in {
+        listId,
+        kUnifiedInboxId,
+        for (final m in moves) ...[m.fromFolderId, m.toFolderId],
+      }) {
+        container.invalidate(messagesProvider(folderId));
+      }
+      container.invalidate(searchResultsProvider);
+      for (final accountId in {
+        for (final m in moves) ?index[m.fromFolderId]?.accountId,
+      }) {
+        // Not allowed to hide why the undo itself failed.
+        await container
+            .read(foldersProvider.notifier)
+            .refreshAccount(accountId)
+            .catchError((Object _) {});
+      }
     }
     final total = moves.fold(0, (int n, m) => n + m.count);
     messenger

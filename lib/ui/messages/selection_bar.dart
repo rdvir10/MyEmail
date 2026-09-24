@@ -139,9 +139,13 @@ class SelectionBar extends ConsumerWidget {
                     IconButton(
                       tooltip: 'Move to…',
                       icon: const Icon(Icons.drive_file_move_outline),
+                      // Cleared only when something moved: the sheet swiped
+                      // away, or Could not move, took twenty-five ticks with
+                      // it and left nothing to try again with.
                       onPressed: () async {
-                        await actions.moveWithPrompt(context, chosen);
-                        ref.read(selectedMessageIdsProvider.notifier).clear();
+                        if (await actions.moveWithPrompt(context, chosen)) {
+                          ref.read(selectedMessageIdsProvider.notifier).clear();
+                        }
                       },
                     ),
                     IconButton(

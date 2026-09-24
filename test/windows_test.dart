@@ -7,6 +7,7 @@ import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/data/windows/window_opener.dart';
 import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/window_handoff.dart';
+import 'package:myemail/state/folder_tree.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/window_providers.dart';
@@ -185,6 +186,50 @@ void main() {
       expect(find.byType(MessageScreen), findsOneWidget);
       expect(find.byType(AppShell), findsNothing);
       expect(find.text(message.subject), findsWidgets);
+    });
+
+    testWidgets('does not change the folder the app opens on',
+        (tester) async {
+      // Opening a message in a window saved its folder as the selection,
+      // so the next cold start opened on that account's Inbox instead of
+      // the unified one.
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final store = MemoryUiStateStore();
+      ProviderContainer containerOn(UiStateStore store) {
+        final c = ProviderContainer(overrides: [
+          uiStateStoreProvider.overrideWithValue(store),
+          windowOpenerProvider.overrideWithValue(windows),
+        ]);
+        addTearDown(c.dispose);
+        return c;
+      }
+
+      final app = containerOn(store);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: app,
+        child: const MaterialApp(home: AppShell()),
+      ));
+      await tester.pumpAndSettle();
+      final message = app.read(selectedMessageProvider)!;
+      app.read(selectedFolderIdProvider.notifier).select(kUnifiedInboxId);
+      await tester.pumpAndSettle();
+      expect(store.readString(UiStateKeys.selected), kUnifiedInboxId);
+      expect(message.folderId, isNot(kUnifiedInboxId));
+
+      final window = containerOn(store);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: window,
+        child: MaterialApp(home: WindowHost(request: MessageWindow(message))),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(MessageScreen), findsOneWidget);
+      expect(window.read(effectiveSelectedFolderIdProvider), message.folderId,
+          reason: 'the window still acts through the message folder');
+      expect(store.readString(UiStateKeys.selected), kUnifiedInboxId);
     });
 
     testWidgets('shows the message being written', (tester) async {
