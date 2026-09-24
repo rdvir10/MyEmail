@@ -1,6 +1,8 @@
+import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/account_store.dart';
 import 'package:myemail/data/cache/cache_store.dart';
+import 'package:myemail/data/cache/mail_database.dart';
 import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/imap/cached_imap_engine.dart';
 import 'package:myemail/data/mail_engine.dart';
@@ -331,68 +333,108 @@ void main() {
     });
   });
 
-  group('preview lines', () {
-    test('a server that sends them fills in rows cached without one',
-        () async {
-      // What a work mailbox looks like after an update that started keeping
-      // the preview: the newest mail has a second line and everything below
-      // it, cached by the version before, does not. Asking again for the
-      // window costs Graph nothing it was not already spending.
-      seedGmail();
-      final inbox = server.folder('INBOX');
-      inbox.deliver(subject: 'One');
-      inbox.deliver(subject: 'Two');
-      final a = await addAccount();
-      await engine.loadMessages('${a.id}:INBOX');
-      expect(
-        (await cache.readMessages(a.id, 'INBOX')).every((m) => m.preview.isEmpty),
-        isTrue,
-        reason: 'nothing was sent with the headers',
-      );
+  // On both stores. The 2.29.0 bug was the database's alone: its upsert
+  // never wrote the preview. Run on the in-memory store only, which never
+  // had it, the test that guards it could not fail.
+  for (final onDisk in [false, true]) {
+    group('preview lines, ${onDisk ? 'in the database' : 'in memory'}', () {
+      late CacheStore store;
+      MailDatabase? db;
 
-      // The server starts sending them, and the app syncs again.
-      server.suppliesPreviews = true;
-      for (final m in inbox.messages.values) {
-        m.preview = 'The first line of ${m.subject}.';
-      }
-      await engine.loadMessages('${a.id}:INBOX');
+      setUp(() {
+        db = onDisk ? MailDatabase(NativeDatabase.memory()) : null;
+        store = onDisk ? DriftCacheStore(db!) : MemoryCacheStore();
+        engine = CachedImapEngine(
+          accountStore: accounts,
+          credentialStore: secrets,
+          cache: store,
+          transportFactory: (_, _) => server,
+        );
+      });
 
-      final rows = await cache.readMessages(a.id, 'INBOX');
-      expect(rows.map((m) => m.preview),
-          everyElement(startsWith('The first line of')));
+      tearDown(() async => db?.close());
+
+      test('a server that sends them fills in rows cached without one',
+          () async {
+        // What a work mailbox looks like after an update that started
+        // keeping the preview: the newest mail has a second line and
+        // everything below it, cached by the version before, does not.
+        // Asking again for the window costs Graph nothing it was not
+        // already spending.
+        seedGmail();
+        final inbox = server.folder('INBOX');
+        inbox.deliver(subject: 'One');
+        inbox.deliver(subject: 'Two');
+        final a = await addAccount();
+        await engine.loadMessages('${a.id}:INBOX');
+        expect(
+          (await store.readMessages(a.id, 'INBOX'))
+              .every((m) => m.preview.isEmpty),
+          isTrue,
+          reason: 'nothing was sent with the headers',
+        );
+
+        // The server starts sending them, and the app syncs again.
+        server.suppliesPreviews = true;
+        for (final m in inbox.messages.values) {
+          m.preview = 'The first line of ${m.subject}.';
+        }
+        await engine.loadMessages('${a.id}:INBOX');
+
+        final rows = await store.readMessages(a.id, 'INBOX');
+        expect(rows.map((m) => m.preview),
+            everyElement(startsWith('The first line of')));
+      });
+
+      test('a server that sends none is never asked', () async {
+        // An IMAP server has no preview at any price, and a round trip that
+        // cannot help is a round trip not worth making.
+        seedGmail();
+        server.folder('INBOX').deliver(subject: 'One');
+        final a = await addAccount();
+        await engine.loadMessages('${a.id}:INBOX');
+        server.calls.clear();
+
+        await engine.loadMessages('${a.id}:INBOX');
+
+        expect(server.calls.where((c) => c.startsWith('REFRESH')), isEmpty);
+      });
+
+      test('a preview already found in a body is not wiped by an empty one',
+          () async {
+        // With a second message still lacking one, so the headers really
+        // are asked for again: alone, the first never was, and the test
+        // checked nothing.
+        seedGmail();
+        final inbox = server.folder('INBOX');
+        inbox.deliver(subject: 'One', body: 'Hello there.');
+        final two = inbox.deliver(subject: 'Two');
+        final a = await addAccount();
+        final shown = await engine.loadMessages('${a.id}:INBOX');
+        await engine.loadMessageBody(
+          shown.firstWhere((m) => m.subject == 'One').id,
+        );
+        expect(
+          (await store.readMessages(a.id, 'INBOX'))
+              .firstWhere((m) => m.subject == 'One')
+              .preview,
+          isNotEmpty,
+        );
+
+        server.suppliesPreviews = true;
+        two.preview = 'The second one.';
+        server.calls.clear();
+        await engine.loadMessages('${a.id}:INBOX');
+
+        expect(server.calls.where((c) => c.startsWith('REFRESH')), isNotEmpty);
+        final rows = await store.readMessages(a.id, 'INBOX');
+        expect(rows.firstWhere((m) => m.subject == 'One').preview,
+            contains('Hello there'));
+        expect(rows.firstWhere((m) => m.subject == 'Two').preview,
+            'The second one.');
+      });
     });
-
-    test('a server that sends none is never asked', () async {
-      // An IMAP server has no preview at any price, and a round trip that
-      // cannot help is a round trip not worth making.
-      seedGmail();
-      server.folder('INBOX').deliver(subject: 'One');
-      final a = await addAccount();
-      await engine.loadMessages('${a.id}:INBOX');
-      server.calls.clear();
-
-      await engine.loadMessages('${a.id}:INBOX');
-
-      expect(server.calls.where((c) => c.startsWith('REFRESH')), isEmpty);
-    });
-
-    test('a preview already found in a body is not wiped by an empty one',
-        () async {
-      seedGmail();
-      server.folder('INBOX').deliver(subject: 'One', body: 'Hello there.');
-      final a = await addAccount();
-      final shown = await engine.loadMessages('${a.id}:INBOX');
-      await engine.loadMessageBody(shown.single.id);
-      expect((await cache.readMessages(a.id, 'INBOX')).single.preview,
-          isNotEmpty);
-
-      server.suppliesPreviews = true;
-      await engine.loadMessages('${a.id}:INBOX');
-
-      expect((await cache.readMessages(a.id, 'INBOX')).single.preview,
-          contains('Hello there'));
-    });
-  });
+  }
 
   group('putting a delete back', () {
     Future<Account> seeded() async {

@@ -5,6 +5,8 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../../domain/error_report.dart';
+
 /// A rich-text editor backed by a `contenteditable` WebView.
 ///
 /// This is a WebView and not a Flutter editor because the quoted original has
@@ -162,6 +164,12 @@ class HtmlEditorController extends ChangeNotifier {
     if (web == null) return initialHtml;
     final result =
         await web.runJavaScriptReturningResult('window.mailtreeGetHtml();');
+    // A page whose script failed answers JavaScript's null, which Android
+    // hands back as the word. Taken as the message, it went out reading
+    // "null", and what was typed was lost with it. Real HTML is never that.
+    if (result.toString() == 'null') {
+      throw const EditorUnreadable();
+    }
     return _decodeJsString(result);
   }
 
@@ -200,6 +208,18 @@ class HtmlEditorController extends ChangeNotifier {
     }
     return s;
   }
+}
+
+/// The editor's page did not hand the message over.
+class EditorUnreadable implements Exception, ReadableError {
+  const EditorUnreadable();
+
+  @override
+  String get message => 'The message could not be read from the editor, so '
+      'nothing was sent or saved. What you wrote is still on screen.';
+
+  @override
+  String toString() => message;
 }
 
 /// Whether the editor may follow a navigation to [url].

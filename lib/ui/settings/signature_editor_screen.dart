@@ -80,9 +80,15 @@ class _SignatureEditorScreenState extends ConsumerState<SignatureEditorScreen> {
   /// Back with a change asks; back with none just goes.
   Future<void> _leave() async {
     final navigator = Navigator.of(context);
-    final now = await _editor.getHtml();
+    String? now;
+    try {
+      now = await _editor.getHtml();
+    } on EditorUnreadable {
+      // Cannot tell whether it changed, so it asks rather than guess.
+    }
     if (!mounted) return;
-    if (now == _initial.html || (_isBlank(now) && _isBlank(_initial.html))) {
+    if (now != null &&
+        (now == _initial.html || (_isBlank(now) && _isBlank(_initial.html)))) {
       navigator.pop(false);
       return;
     }

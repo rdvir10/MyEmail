@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
@@ -10,10 +12,11 @@ import 'package:webview_flutter_platform_interface/webview_flutter_platform_inte
 ///
 /// This implements the minimum the platform interface asks for and records
 /// what was loaded, so the Flutter half of those screens can be tested. It
-/// deliberately does not pretend to run JavaScript: the editor's bridge and
-/// the sanitiser are proved by their own unit tests and on a device, and a
-/// fake that pretended otherwise would prove nothing while looking like it
-/// did.
+/// runs no JavaScript. A test that needs the page's side of a conversation
+/// plays it: [finishLoads] lets pages finish, [answer] says what a script
+/// returns, and [sendFromPage] posts what the page would. That is how the
+/// compose editor's read of what was typed is tested, which a page that
+/// never finished loading left untouched.
 class FakeWebViewPlatform extends WebViewPlatform {
   /// Install for one test. Restores nothing afterwards, because the platform
   /// instance is a global the real implementation never sets under test.
@@ -39,6 +42,22 @@ class FakeWebViewPlatform extends WebViewPlatform {
   /// The newest page's navigation handler, so a test can play the browser
   /// being sent somewhere (a sign-in redirect, say).
   NavigationRequestCallback? navigationHandler;
+
+  /// Pages finish loading, as on a device, rather than staying blank. Off
+  /// by default: a page that finished would attach the compose editor, and
+  /// every compose test would then need [answer] to say what it holds.
+  bool finishLoads = false;
+
+  /// What a page's script answers, for a test playing the page. Unset, every
+  /// script answers the empty string.
+  Object? Function(String script)? answer;
+
+  /// The newest page's channels to Dart, by name.
+  final Map<String, JavaScriptChannelParams> channels = {};
+
+  /// A message from the page, as its script would post it.
+  void sendFromPage(String channel, String message) => channels[channel]!
+      .onMessageReceived(JavaScriptMessage(message: message));
 
   @override
   PlatformWebViewController createPlatformWebViewController(
@@ -70,9 +89,15 @@ class _FakeController extends PlatformWebViewController {
 
   final FakeWebViewPlatform _platform;
 
+  _FakeNavigationDelegate? _delegate;
+
   @override
-  Future<void> loadHtmlString(String html, {String? baseUrl}) async =>
-      _platform.loadedHtml.add(html);
+  Future<void> loadHtmlString(String html, {String? baseUrl}) async {
+    _platform.loadedHtml.add(html);
+    if (_platform.finishLoads) {
+      scheduleMicrotask(() => _delegate?._pageFinished?.call('about:blank'));
+    }
+  }
 
   @override
   Future<void> loadRequest(LoadRequestParams params) async =>
@@ -90,12 +115,15 @@ class _FakeController extends PlatformWebViewController {
   @override
   Future<void> setPlatformNavigationDelegate(
     PlatformNavigationDelegate handler,
-  ) async {}
+  ) async {
+    if (handler is _FakeNavigationDelegate) _delegate = handler;
+  }
 
   @override
   Future<void> addJavaScriptChannel(
     JavaScriptChannelParams params,
-  ) async {}
+  ) async =>
+      _platform.channels[params.name] = params;
 
   @override
   Future<void> runJavaScript(String javaScript) async =>
@@ -112,7 +140,7 @@ class _FakeController extends PlatformWebViewController {
   @override
   Future<Object> runJavaScriptReturningResult(String javaScript) async {
     _platform.ranJavaScript.add(javaScript);
-    return '';
+    return _platform.answer?.call(javaScript) ?? '';
   }
 }
 
@@ -138,8 +166,11 @@ class _FakeNavigationDelegate extends PlatformNavigationDelegate {
   ) async =>
       _platform.navigationHandler = onNavigationRequest;
 
+  PageEventCallback? _pageFinished;
+
   @override
-  Future<void> setOnPageFinished(PageEventCallback onPageFinished) async {}
+  Future<void> setOnPageFinished(PageEventCallback onPageFinished) async =>
+      _pageFinished = onPageFinished;
 
   @override
   Future<void> setOnPageStarted(PageEventCallback onPageStarted) async {}

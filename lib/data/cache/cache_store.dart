@@ -344,7 +344,10 @@ class MemoryCacheStore implements CacheStore {
       folder[m.uid] = existing == null
           ? m
           : m.copyWith(
-              preview: existing.preview.isEmpty ? m.preview : existing.preview,
+              // As the database does it: a new line replaces the old, and
+              // only an empty one leaves it. The two used to differ, so the
+              // tests on this store passed over the database's own bug.
+              preview: m.preview.isEmpty ? existing.preview : m.preview,
               bodyText: existing.bodyText,
               bodyHtml: existing.bodyHtml,
             );

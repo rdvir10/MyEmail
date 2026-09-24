@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,7 +16,8 @@ import 'fakes/fake_webview.dart';
 /// way that works had a test, so a change that closed the window on a
 /// failure, and lost what was written in it, would have gone unnoticed.
 void main() {
-  setUp(FakeWebViewPlatform.install);
+  late FakeWebViewPlatform page;
+  setUp(() => page = FakeWebViewPlatform.install());
 
   const dana = MailAddress(email: 'dana@example.com');
 
@@ -137,6 +140,66 @@ void main() {
     expect(find.text('Message sent'), findsNothing);
     expect(find.textContaining('dana@example.com'), findsWidgets);
     expect(find.text('Numbers'), findsOneWidget);
+  });
+
+  // What is typed lives in the editor's page. The fake page never finished
+  // loading, so every test sent what the window opened with, and the read
+  // that really happens on a phone went untested.
+  group('what the editor holds', () {
+    setUp(() => page.finishLoads = true);
+
+    testWidgets('what was typed on the page is what is sent',
+        (tester) async {
+      page.answer = (script) => script.contains('mailtreeGetHtml')
+          ? jsonEncode('<p>Typed on the page.</p>')
+          : '';
+      final engine = _Engine();
+      await open(tester, draft(to: [dana]), engine);
+
+      await send(tester);
+
+      expect(engine.sent.single.htmlBody, '<p>Typed on the page.</p>');
+    });
+
+    testWidgets('a page that answers null sends nothing', (tester) async {
+      // Its script failed. Sent as it stood, the message read "null".
+      page.answer = (_) => 'null';
+      final engine = _Engine();
+      await open(tester, draft(to: [dana]), engine);
+
+      await send(tester);
+
+      expect(engine.sent, isEmpty);
+      expect(find.byType(ComposeScreen), findsOneWidget);
+      expect(find.byType(ProblemView), findsOneWidget);
+    });
+
+    testWidgets('Ctrl+Enter pressed in the page sends', (tester) async {
+      page.answer = (script) => script.contains('mailtreeGetHtml')
+          ? jsonEncode('<p>Sent from the keyboard.</p>')
+          : '';
+      final engine = _Engine();
+      await open(tester, draft(to: [dana]), engine);
+
+      page.sendFromPage('MyEmail', '{"type":"key","value":"send"}');
+      await tester.pumpAndSettle();
+
+      expect(engine.sent.single.htmlBody, '<p>Sent from the keyboard.</p>');
+    });
+
+    testWidgets('an unreadable page still lets the window be left',
+        (tester) async {
+      // It cannot be judged unchanged, so it asks; Discard is the way out.
+      page.answer = (_) => 'null';
+      await open(tester, draft(to: [dana]), _Engine());
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Discard'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ComposeScreen), findsNothing);
+    });
   });
 
   testWidgets('a draft that cannot be saved keeps the window open',

@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:enough_mail/enough_mail.dart' as em;
 
@@ -27,8 +26,11 @@ import 'imap_transport.dart';
 }
 
 /// A transport-level folder into the domain, with nesting resolved against
-/// the set of paths that exist. Mirrors [folderFromMailbox] for callers that
-/// have already left enough_mail types behind.
+/// the set of paths that exist.
+///
+/// System folders stay at the root wherever the server puts them, so
+/// `[Gmail]/Sent Mail` sits beside the Inbox. A user folder keeps its
+/// nesting when its parent is itself a folder.
 MailFolder folderFromRemote({
   required String accountId,
   required MailProvider provider,
@@ -174,110 +176,13 @@ FolderRole roleForMailbox(em.Mailbox box) {
 bool isServerManagedLabel(em.Mailbox box) =>
     box.flags.any((f) => f.name == 'flagged' || f.name == 'important');
 
-/// Map one server mailbox to a domain folder, or null when it is not a real
-/// folder (Gmail's `[Gmail]` container is \Noselect).
-///
-/// System folders are flattened to the root regardless of where the server
-/// puts them, so `[Gmail]/Sent Mail` sits beside the Inbox in the tree. User
-/// folders keep their nesting when the parent path is itself a folder.
-MailFolder? folderFromMailbox({
-  required String accountId,
-  required MailProvider provider,
-  required em.Mailbox box,
-  required Set<String> selectableModelPaths,
-  int sortIndex = 0,
-}) {
-  if (box.isNotSelectable) return null;
-
-  final delimiter = box.pathSeparator;
-  final path = toModelPath(box.path, delimiter);
-  final role = roleForMailbox(box);
-
-  final capabilities = isServerManagedLabel(box)
-      ? const FolderCapabilities.systemFolder(canAcceptMessages: true)
-      : FolderCapabilities.forProvider(provider, role);
-
-  String? parentId;
-  if (role == FolderRole.user) {
-    final cut = path.lastIndexOf('/');
-    if (cut > 0) {
-      final parentPath = path.substring(0, cut);
-      if (selectableModelPaths.contains(parentPath)) {
-        parentId = MailFolder.idFor(accountId, parentPath);
-      }
-    }
-  }
-
-  return MailFolder.at(
-    accountId: accountId,
-    path: path,
-    role: role,
-    capabilities: capabilities,
-    parentId: parentId,
-    unreadCount: box.messagesUnseen,
-    totalCount: box.messagesExists,
-    sortIndex: sortIndex,
-  );
-}
-
-/// The sequence-number window for one page of a folder, newest first.
-///
-/// IMAP sequence numbers run 1..EXISTS oldest to newest, so page 0 is the
-/// top of that range. Returns null when [offset] is past the end.
-({int start, int end})? pageSequence({
-  required int exists,
-  required int offset,
-  required int limit,
-}) {
-  final end = exists - offset;
-  if (end < 1 || limit < 1) return null;
-  final start = max(1, end - limit + 1);
-  return (start: start, end: end);
-}
+/// The mailboxes that are folders. Gmail's `[Gmail]` is a container marked
+/// \Noselect: it holds folders and cannot be opened itself.
+List<em.Mailbox> selectableMailboxes(Iterable<em.Mailbox> boxes) =>
+    [for (final b in boxes) if (!b.isNotSelectable) b];
 
 MailAddress addressFromMime(em.MailAddress a) =>
     MailAddress(email: a.email, name: a.personalName);
-
-/// Headers and flags from a fetched message. Needs UID, FLAGS, ENVELOPE and
-/// BODYSTRUCTURE to have been fetched; the preview is filled in later from
-/// the cached body, since Gmail offers no server-side preview.
-MailMessage messageFromMime({
-  required String accountId,
-  required String folderId,
-  required em.MimeMessage m,
-  DateTime? fallbackDate,
-}) {
-  final uid = m.uid;
-  if (uid == null) {
-    throw ArgumentError('Message has no UID; fetch with UID in the criteria');
-  }
-  final subject = m.decodeSubject()?.trim();
-  final from = m.from?.firstOrNull ?? m.sender;
-  final sender =
-      from == null ? const MailAddress(email: '') : addressFromMime(from);
-  return MailMessage(
-    id: MailMessage.idFor(folderId, uid),
-    accountId: accountId,
-    folderId: folderId,
-    uid: uid,
-    subject: (subject == null || subject.isEmpty) ? '(No subject)' : subject,
-    from: sender,
-    to: [for (final a in m.to ?? const <em.MailAddress>[]) addressFromMime(a)],
-    cc: [for (final a in m.cc ?? const <em.MailAddress>[]) addressFromMime(a)],
-    replyTo: _replyToOf(m, sender),
-    date: m.decodeDate() ?? fallbackDate ?? DateTime.now(),
-    preview: '',
-    isRead: m.isSeen,
-    isFlagged: m.isFlagged,
-    hasAttachments: m.hasAttachments(),
-    messageId: normaliseMessageId(
-      m.envelope?.messageId ?? m.getHeaderValue('message-id'),
-    ),
-    inReplyTo: normaliseMessageId(
-      m.envelope?.inReplyTo ?? m.getHeaderValue('in-reply-to'),
-    ),
-  );
-}
 
 /// The readable body: the plain-text part if the sender supplied one, else a
 /// text rendering of the HTML so the browser preview and any text-only view

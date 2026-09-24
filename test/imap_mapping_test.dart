@@ -7,6 +7,7 @@ import 'package:myemail/data/imap/imap_mapping.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/calendar_invite.dart';
 import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_folder.dart';
 
 em.Mailbox _box(
   String path, {
@@ -53,7 +54,10 @@ void main() {
     });
   });
 
-  group('folderFromMailbox', () {
+  // What the app runs: the transport maps each mailbox with
+  // remoteFolderFromMailbox and the engine places it with folderFromRemote.
+  // These tests used to go through folderFromMailbox, a copy nothing called.
+  group('folders', () {
     final selectable = {
       'INBOX',
       '[Gmail]/Sent Mail',
@@ -63,25 +67,23 @@ void main() {
       'Orphan/Child',
     };
 
+    MailFolder folder(em.Mailbox box, {Set<String>? paths}) => folderFromRemote(
+          accountId: 'a',
+          provider: MailProvider.gmail,
+          remote: remoteFolderFromMailbox(box),
+          allPaths: paths ?? selectable,
+        );
+
     test('the [Gmail] container is not a folder', () {
-      final f = folderFromMailbox(
-        accountId: 'a',
-        provider: MailProvider.gmail,
-        box: _box('[Gmail]',
-            flags: [em.MailboxFlag.noSelect, em.MailboxFlag.hasChildren]),
-        selectableModelPaths: selectable,
-      );
-      expect(f, isNull);
+      final container = _box('[Gmail]',
+          flags: [em.MailboxFlag.noSelect, em.MailboxFlag.hasChildren]);
+      final inbox = _box('INBOX', flags: [em.MailboxFlag.inbox]);
+      expect(selectableMailboxes([container, inbox]), [inbox]);
     });
 
     test('system folders are flattened to the root with counts', () {
-      final f = folderFromMailbox(
-        accountId: 'a',
-        provider: MailProvider.gmail,
-        box: _box('[Gmail]/Sent Mail',
-            flags: [em.MailboxFlag.sent], exists: 120, unseen: 0),
-        selectableModelPaths: selectable,
-      )!;
+      final f = folder(_box('[Gmail]/Sent Mail',
+          flags: [em.MailboxFlag.sent], exists: 120, unseen: 0));
       expect(f.id, 'a:[Gmail]/Sent Mail');
       expect(f.role, FolderRole.sent);
       expect(f.parentId, isNull, reason: 'not nested under [Gmail]');
@@ -91,35 +93,20 @@ void main() {
     });
 
     test('user folders keep their nesting when the parent is real', () {
-      final f = folderFromMailbox(
-        accountId: 'a',
-        provider: MailProvider.gmail,
-        box: _box('Work/Invoices', exists: 5, unseen: 2),
-        selectableModelPaths: selectable,
-      )!;
+      final f = folder(_box('Work/Invoices', exists: 5, unseen: 2));
       expect(f.parentId, 'a:Work');
       expect(f.name, 'Invoices');
       expect(f.unreadCount, 2);
+      expect(f.totalCount, 5);
       expect(f.capabilities.canRename, isTrue);
     });
 
     test('a child whose parent is not selectable sits at the root', () {
-      final f = folderFromMailbox(
-        accountId: 'a',
-        provider: MailProvider.gmail,
-        box: _box('Orphan/Child'),
-        selectableModelPaths: selectable,
-      )!;
-      expect(f.parentId, isNull);
+      expect(folder(_box('Orphan/Child')).parentId, isNull);
     });
 
     test('Gmail Starred is browsable and droppable but locked', () {
-      final f = folderFromMailbox(
-        accountId: 'a',
-        provider: MailProvider.gmail,
-        box: _box('[Gmail]/Starred', flags: [em.MailboxFlag.flagged]),
-        selectableModelPaths: selectable,
-      )!;
+      final f = folder(_box('[Gmail]/Starred', flags: [em.MailboxFlag.flagged]));
       expect(f.role, FolderRole.user);
       expect(f.capabilities.canRename, isFalse);
       expect(f.capabilities.canDelete, isFalse);
@@ -127,37 +114,18 @@ void main() {
     });
 
     test('a dotted delimiter yields slash paths', () {
-      final f = folderFromMailbox(
-        accountId: 'a',
-        provider: MailProvider.gmail,
-        box: _box('Work.Invoices', sep: '.'),
-        selectableModelPaths: {'Work', 'Work/Invoices'},
-      )!;
+      final f = folder(
+        _box('Work.Invoices', sep: '.'),
+        paths: {'Work', 'Work/Invoices'},
+      );
       expect(f.path, 'Work/Invoices');
       expect(f.parentId, 'a:Work');
     });
   });
 
-  group('pageSequence', () {
-    test('first page is the newest window', () {
-      expect(pageSequence(exists: 100, offset: 0, limit: 50),
-          (start: 51, end: 100));
-    });
-
-    test('later pages walk down and clamp at 1', () {
-      expect(pageSequence(exists: 100, offset: 50, limit: 50),
-          (start: 1, end: 50));
-      expect(pageSequence(exists: 30, offset: 0, limit: 50),
-          (start: 1, end: 30));
-    });
-
-    test('past the end is null, as is an empty folder', () {
-      expect(pageSequence(exists: 100, offset: 100, limit: 50), isNull);
-      expect(pageSequence(exists: 0, offset: 0, limit: 50), isNull);
-    });
-  });
-
-  group('messageFromMime', () {
+  // remoteHeaderFromMime is what every Gmail list row comes from. The tests
+  // went through messageFromMime, a copy nothing called.
+  group('remoteHeaderFromMime', () {
     em.MimeMessage build() {
       final builder = em.MessageBuilder.prepareMultipartAlternativeMessage(
         plainText: 'Hello there.\n\nSecond paragraph.',
@@ -165,6 +133,7 @@ void main() {
       )
         ..from = [em.MailAddress('Dana Levi', 'dana@example.com')]
         ..to = [em.MailAddress(null, 'me@example.com')]
+        ..cc = [em.MailAddress('Omer', 'omer@example.com')]
         ..subject = 'Invoice ready';
       return builder.buildMimeMessage()
         ..uid = 42
@@ -172,31 +141,44 @@ void main() {
     }
 
     test('headers and flags come through', () {
-      final m = messageFromMime(
-        accountId: 'a',
-        folderId: 'a:INBOX',
-        m: build(),
-        fallbackDate: DateTime(2026, 9, 14),
-      );
-      expect(m.id, 'a:INBOX#42');
-      expect(m.uid, 42);
-      expect(m.subject, 'Invoice ready');
-      expect(m.from.email, 'dana@example.com');
-      expect(m.from.name, 'Dana Levi');
-      expect(m.to.single.email, 'me@example.com');
-      expect(m.isRead, isTrue);
-      expect(m.isFlagged, isTrue);
-      expect(m.hasAttachments, isFalse);
-      expect(m.preview, isEmpty, reason: 'filled from the cached body later');
+      final h = remoteHeaderFromMime(build(), fallbackDate: DateTime(2026, 9, 14));
+      expect(h.uid, 42);
+      expect(h.subject, 'Invoice ready');
+      expect(h.from.email, 'dana@example.com');
+      expect(h.from.name, 'Dana Levi');
+      expect(h.to.single.email, 'me@example.com');
+      expect(h.cc.single.email, 'omer@example.com');
+      expect(h.cc.single.name, 'Omer');
+      expect(h.isRead, isTrue);
+      expect(h.isFlagged, isTrue);
+      expect(h.hasAttachments, isFalse);
+      expect(h.preview, isEmpty, reason: 'IMAP has none to send');
+    });
+
+    test('read and flagged are each their own flag', () {
+      final mime = build()..flags = [em.MessageFlags.flagged];
+      final h = remoteHeaderFromMime(mime);
+      expect(h.isRead, isFalse);
+      expect(h.isFlagged, isTrue);
+    });
+
+    test("the ENVELOPE's Message-ID and In-Reply-To, without brackets", () {
+      final mime = build()
+        ..envelope = em.Envelope(
+          from: [em.MailAddress('Dana Levi', 'dana@example.com')],
+          messageId: '<m-1@example.com>',
+          inReplyTo: '<m-0@example.com>',
+        );
+      final h = remoteHeaderFromMime(mime);
+      expect(h.messageId, 'm-1@example.com');
+      expect(h.inReplyTo, 'm-0@example.com');
     });
 
     test('Reply-To comes through when it names someone else', () {
       final mime = build()
         ..setHeader('reply-to', 'Support <ticket-4411@vendor.example>');
-      final m = messageFromMime(accountId: 'a', folderId: 'a:INBOX', m: mime);
       final h = remoteHeaderFromMime(mime);
 
-      expect(m.replyTo.single.email, 'ticket-4411@vendor.example');
       expect(h.replyTo.single.email, 'ticket-4411@vendor.example');
       expect(h.replyTo.single.name, 'Support');
     });
@@ -214,16 +196,12 @@ void main() {
 
     test('a missing subject is labelled', () {
       final mime = build()..setHeader('subject', '');
-      final m = messageFromMime(accountId: 'a', folderId: 'a:INBOX', m: mime);
-      expect(m.subject, '(No subject)');
+      expect(remoteHeaderFromMime(mime).subject, '(No subject)');
     });
 
     test('a message without a UID is a programming error', () {
       final mime = build()..uid = null;
-      expect(
-        () => messageFromMime(accountId: 'a', folderId: 'a:INBOX', m: mime),
-        throwsArgumentError,
-      );
+      expect(() => remoteHeaderFromMime(mime), throwsArgumentError);
     });
   });
 

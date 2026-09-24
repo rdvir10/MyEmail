@@ -124,7 +124,11 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   void _onEditorState() => setState(() {});
 
   Future<void> _noteOpened() async {
-    _openedHtml ??= await _editor.getHtml();
+    try {
+      _openedHtml ??= await _editor.getHtml();
+    } on EditorUnreadable {
+      // Then nothing counts as unchanged, and leaving asks.
+    }
   }
 
   /// Whether leaving loses nothing: the window is as it opened, and what it
@@ -358,8 +362,17 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// changing your mind should not produce a dialog, still less a blank draft
   /// on the server.
   Future<_LeaveChoice> _askOnLeave() async {
-    final now = await _currentDraft();
-    if (!now.isWorthSaving || _unchanged(now)) return _LeaveChoice.discard;
+    // Unreadable, it cannot be judged unchanged, so the question is asked:
+    // Discard still works, where not asking would leave no way out.
+    Draft? now;
+    try {
+      now = await _currentDraft();
+    } on EditorUnreadable {
+      now = null;
+    }
+    if (now != null && (!now.isWorthSaving || _unchanged(now))) {
+      return _LeaveChoice.discard;
+    }
     if (!mounted) return _LeaveChoice.keepWriting;
     final choice = await showDialog<_LeaveChoice>(
       context: context,
@@ -409,7 +422,19 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// across as it stands, and this copy closes without asking: the
   /// message has not been lost, it has moved.
   Future<void> _moveToWindow() async {
-    final draft = await _currentDraft();
+    final Draft draft;
+    try {
+      draft = await _currentDraft();
+    } on EditorUnreadable catch (e) {
+      if (mounted) {
+        setState(() => _problem = ProblemReport(
+              doing: 'Moving the message to a window',
+              error: e,
+              account: _accountOrNull(),
+            ));
+      }
+      return;
+    }
     if (!mounted) return;
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);

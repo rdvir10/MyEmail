@@ -654,7 +654,7 @@ class EnoughMailTransport implements ImapTransport {
         }
       }
     }
-    final selectable = [for (final b in boxes) if (!b.isNotSelectable) b];
+    final selectable = selectableMailboxes(boxes);
     _boxes = {
       for (final b in selectable) toModelPath(b.path, b.pathSeparator): b,
     };

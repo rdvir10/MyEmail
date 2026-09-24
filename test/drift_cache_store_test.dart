@@ -20,8 +20,30 @@ CachedMessage _msg(int uid, {bool read = false, String subject = 'S'}) =>
       hasAttachments: false,
     );
 
+/// The one rule for a preview, on either store. The 2.29.0 bug: the
+/// database's upsert left the preview out, so a row cached without one
+/// never got one; the in-memory store, which the engine tests use, kept the
+/// old one instead. Neither is what the other did.
+Future<void> _previewsMerge(CacheStore store) async {
+  await store.upsertMessages('a', 'INBOX', [_msg(1)]);
+  Future<String> preview() async =>
+      (await store.readMessages('a', 'INBOX')).single.preview;
+
+  await store.upsertMessages('a', 'INBOX', [_msg(1).copyWith(preview: 'X')]);
+  expect(await preview(), 'X');
+
+  await store.upsertMessages('a', 'INBOX', [_msg(1)]);
+  expect(await preview(), 'X', reason: 'an empty one leaves it');
+
+  await store.upsertMessages('a', 'INBOX', [_msg(1).copyWith(preview: 'Y')]);
+  expect(await preview(), 'Y', reason: 'a new one replaces it');
+}
+
 void main() {
   final available = ensureSqlite3();
+
+  test('MemoryCacheStore merges previews as the database does',
+      () => _previewsMerge(MemoryCacheStore()));
 
   group(
     'DriftCacheStore',
@@ -61,6 +83,9 @@ void main() {
         );
         expect((await store.readFolderState('a', 'INBOX'))!.uidValidity, 8);
       });
+
+      test('a preview arriving later is written over an empty one',
+          () => _previewsMerge(store));
 
       test('messages page newest first and report their uid range', () async {
         await store.upsertMessages('a', 'INBOX', [_msg(1), _msg(5), _msg(3)]);

@@ -107,6 +107,16 @@ void main() {
 
     expect(c.read(selectedFolderIdProvider), elsewhere.folderId);
     expect(c.read(selectedMessageIdProvider), elsewhere.id);
+
+    // And the next one, which is the tap that used to do nothing.
+    final next = (await tester.runAsync(
+      () => _aMessageIn(engine, 'Finance'),
+    ))!;
+    notifier.launchPayload = next.id;
+    await comeBack(tester);
+
+    expect(c.read(selectedFolderIdProvider), next.folderId);
+    expect(c.read(selectedMessageIdProvider), next.id);
   });
 
   testWidgets('coming back with nothing tapped changes nothing', (tester) async {
@@ -120,14 +130,17 @@ void main() {
 }
 
 /// A message in some folder other than the one the app opens on.
-Future<MailMessage> _aMessageOutsideTheInbox(SampleMailEngine engine) async {
+Future<MailMessage> _aMessageOutsideTheInbox(SampleMailEngine engine) =>
+    _aMessageIn(engine, 'Travel');
+
+Future<MailMessage> _aMessageIn(SampleMailEngine engine, String name) async {
   final account = (await engine.loadAccounts()).first;
   for (final folder in await engine.loadFolders(account.id)) {
-    if (folder.displayName == 'Travel') {
+    if (folder.displayName == name) {
       return (await engine.loadMessages(folder.id)).first;
     }
   }
-  throw StateError('the sample data has a Travel folder');
+  throw StateError('the sample data has a $name folder');
 }
 
 /// The sample engine, counting what the app asks it for.
