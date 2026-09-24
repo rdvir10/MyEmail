@@ -191,6 +191,7 @@ class MailMessage {
       listEquals(other.cc, cc) &&
       listEquals(other.replyTo, replyTo) &&
       other.date == date &&
+      other.arrived == arrived &&
       other.preview == preview &&
       other.hasAttachments == hasAttachments &&
       other.attachmentBytes == attachmentBytes &&

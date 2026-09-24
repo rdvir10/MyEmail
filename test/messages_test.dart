@@ -50,7 +50,11 @@ void main() {
       // A draft edited on another device keeps its Microsoft id and comes
       // back with a new subject and preview. Equal to the old copy, it was
       // dropped by the list refresh as "no change".
-      MailMessage edited({String subject = 'Subject', String preview = ''}) =>
+      MailMessage edited({
+        String subject = 'Subject',
+        String preview = '',
+        DateTime? arrived,
+      }) =>
           MailMessage(
             id: base.id,
             accountId: base.accountId,
@@ -61,10 +65,14 @@ void main() {
             to: base.to,
             date: base.date,
             preview: preview,
+            arrived: arrived,
           );
       expect(edited(), base);
       expect(edited(subject: 'Revised'), isNot(base));
       expect(edited(preview: 'New first line'), isNot(base));
+      // Filled in on a row cached before arrival times were kept; the
+      // widget counts new mail by it.
+      expect(edited(arrived: DateTime(2026, 9, 24, 9)), isNot(base));
     });
 
     test('the same message in the same state is equal', () {
