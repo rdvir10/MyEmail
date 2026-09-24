@@ -23,9 +23,9 @@
 # The manifest is uploaded after the APK on purpose. A manifest announcing a
 # build that is not there yet points every phone at a 404.
 #
-# Authentication reuses the GitHub credential git already has on this machine,
-# so there is no second login and no token stored anywhere new. It is read at
-# the moment it is needed and never written down.
+# Publishing uses the GitHub CLI's own login (`gh auth login`, once, as the
+# account that owns the repository). Git's credentials are not touched, so
+# which account git pushes with has no bearing on where this publishes.
 
 [CmdletBinding()]
 param(
@@ -71,29 +71,21 @@ $manifestPath = Join-Path $OutDir 'latest.json'
 
 # Steps 6's publishing and 7: the GitHub release, then proof it is live.
 function Publish-Release([int]$Build, [string]$Notes) {
-    # The credential git already holds, read at the moment it is needed. gh's own
-    # login refuses this token for want of a scope it does not need here, so it is
-    # handed over directly instead and never stored.
-    $cred = "protocol=https`nhost=github.com`n`n" | & git credential fill
-    $line = $cred | Select-String '^password='
-    if (-not $line) {
-        throw "No stored GitHub credential. Run 'git push' once to create one, then rerun."
-    }
-    $token = $line.ToString() -replace '^password=', ''
-
     $gh = Join-Path $env:USERPROFILE 'tools\gh\bin\gh.exe'
     if (-not (Test-Path $gh)) { throw "The GitHub CLI is not at $gh." }
 
-    $env:GH_TOKEN = $token
-    try {
-        # The APK is listed first so it uploads first: a manifest naming a build
-        # that is not there yet points every phone at a 404.
-        & $gh release create "v$Version" $apkPath $manifestPath --repo $Repo --title $Version --notes $Notes
-        if ($LASTEXITCODE -ne 0) {
-            throw "The release was not published. The tag is already pushed, so rerun the gh command alone rather than the whole script."
-        }
-    } finally {
-        $env:GH_TOKEN = $null
+    # Checked up front so a missing login fails here, with the fix named, rather
+    # than halfway through an upload.
+    & $gh auth status --hostname github.com *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "The GitHub CLI is not logged in. Run '$gh auth login' once, as the owner of $Repo, then rerun."
+    }
+
+    # The APK is listed first so it uploads first: a manifest naming a build
+    # that is not there yet points every phone at a 404.
+    & $gh release create "v$Version" $apkPath $manifestPath --repo $Repo --title $Version --notes $Notes
+    if ($LASTEXITCODE -ne 0) {
+        throw "The release was not published. The tag is already pushed, so rerun the gh command alone rather than the whole script."
     }
 
     # --- 7. prove it is reachable --------------------------------------------
