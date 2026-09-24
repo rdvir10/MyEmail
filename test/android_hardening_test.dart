@@ -93,5 +93,82 @@ void main() {
           contains("'eml',"));
       expect(bridge, contains('File(activity.cacheDir, "incoming")'));
     });
+
+    // Named by its display name alone, the second of two files called
+    // Scan.pdf overwrote the first, and both attachments held it.
+    test('each is copied into a folder of its own', () {
+      final copyIn = RegExp(
+        r'private fun copyIn\(uris: List<Uri>\)[\s\S]*?openInputStream',
+      ).firstMatch(bridge)!.group(0)!;
+      expect(copyIn,
+          contains('File(incoming, UUID.randomUUID().toString())'));
+      expect(copyIn, contains('File(folder, fileNameFor(name))'));
+    });
+
+    // Over 255 bytes, which is 128 Hebrew letters, the copy failed and the
+    // file was left out without a word.
+    test('under a name the disk will take', () {
+      final name = RegExp(r'private fun fileNameFor\([\s\S]*?\n    }')
+          .firstMatch(bridge)!
+          .group(0)!;
+      expect(name, contains('toByteArray().size <= 255'));
+      expect(name, contains("trimStart('.')"));
+      expect(name, contains('Character.toChars'),
+          reason: 'cut between characters, not through one');
+    });
+
+    // A long video, or a photo that lives only in the cloud, copied on the
+    // main thread froze the app until Android offered to close it.
+    test('off the main thread', () {
+      final calls = RegExp(r'(?<!fun )\bcopyIn\(').allMatches(bridge).toList();
+      expect(calls, hasLength(1), reason: 'only copyInBackground copies');
+      final background = RegExp(
+        r'private fun copyInBackground\([\s\S]*?\n    }',
+      ).firstMatch(bridge)!.group(0)!;
+      expect(background, contains('copier.execute {'));
+      expect(background, contains('copyIn(uris)'));
+      expect(background, contains('main.post { done(incoming) }'));
+      expect(bridge, contains('Executors.newSingleThreadExecutor()'));
+      // A drop's read permission is held until the copy is done.
+      final drop = RegExp(r'private fun handleDrop\([\s\S]*?\n    }')
+          .firstMatch(bridge)!
+          .group(0)!;
+      expect(
+        drop.indexOf('permissions?.release()'),
+        greaterThan(drop.indexOf('copyInBackground(uris) {')),
+      );
+    });
+
+    // Android restarts a stopped app with the intent it was first started
+    // with. A share sent an hour ago opened a new message with the same
+    // files again.
+    test('a share is taken once, not again when Android restarts the app',
+        () {
+      final activity = read('$main/kotlin/com/rdvir/mailtree/MainActivity.kt');
+      final onCreate = RegExp(r'override fun onCreate\([\s\S]*?\n    }')
+          .firstMatch(activity)!
+          .group(0)!;
+      expect(onCreate, contains('savedInstanceState != null'));
+      expect(onCreate, contains('Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY'));
+      expect(onCreate.indexOf('restarted ='),
+          lessThan(onCreate.indexOf('super.onCreate')),
+          reason: 'configureFlutterEngine runs inside super.onCreate');
+      expect(activity,
+          contains('if (!restarted) it.takeShare(intent, pushNow = false)'));
+    });
+  });
+
+  group('printing', () {
+    // A meta refresh in a message sent the print WebView to the sender's
+    // page, which then printed as well.
+    test('the page being printed cannot go anywhere, and prints once', () {
+      final print = read('$main/kotlin/com/rdvir/mailtree/PrintBridge.kt');
+      expect(
+        RegExp(r'override fun shouldOverrideUrlLoading\([^)]*\) = true')
+            .allMatches(print),
+        hasLength(2),
+      );
+      expect(print, contains('if (printed) return'));
+    });
   });
 }

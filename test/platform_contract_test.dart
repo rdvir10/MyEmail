@@ -46,8 +46,9 @@ void main() {
     ]));
     expect(kotlin.handled['mailtree/files']!['open'], contains('path'));
     expect(kotlin.fileKeys, containsAll(['path', 'name', 'mime', 'size']));
-    expect(kotlin.droppedKeys, containsAll(['files', 'label', 'text', 'x', 'y']));
-    expect(kotlin.sharedKeys, containsAll(['files', 'text', 'subject']));
+    expect(kotlin.droppedKeys,
+        containsAll(['files', 'skipped', 'label', 'text', 'x', 'y']));
+    expect(kotlin.sharedKeys, containsAll(['files', 'skipped', 'text', 'subject']));
   });
 
   group('what Dart asks of Android', () {
@@ -214,11 +215,13 @@ void main() {
           key: switch (key) {
             'files' => [file()],
             'x' || 'y' => 12.5,
+            'skipped' => 1,
             _ => 'from $key',
           },
       });
 
       expect(dropped!.files.single.path, '/f/report.pdf');
+      expect(dropped!.skipped, 1);
       expect(dropped!.files.single.sizeBytes, 2048);
       expect(dropped!.files.single.mimeType, 'application/pdf');
       expect(dropped!.label, 'from label');
@@ -233,10 +236,15 @@ void main() {
 
       await fromAndroid('mailtree/files', 'shared', {
         for (final key in kotlin.sharedKeys)
-          key: key == 'files' ? [file()] : 'from $key',
+          key: switch (key) {
+            'files' => [file()],
+            'skipped' => 1,
+            _ => 'from $key',
+          },
       });
 
       expect(shared!.files.single.path, '/f/report.pdf');
+      expect(shared!.skipped, 1);
       expect(shared!.text, 'from text');
       expect(shared!.subject, 'from subject');
     });

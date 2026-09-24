@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'file_types.dart';
 
 /// A file that came with a message.
@@ -79,14 +81,49 @@ String safeFileName(String name, {String fallback = 'attachment'}) {
   cleaned = cleaned.replaceAll(RegExp(r'^\.+'), '');
   cleaned = cleaned.trim();
   if (cleaned.isEmpty) return fallback;
-  if (cleaned.length <= 120) return cleaned;
+  if (cleaned.length <= _maxNameChars &&
+      utf8.encode(cleaned).length <= _maxNameBytes) {
+    return cleaned;
+  }
 
   // Long names are cut in the middle, keeping the extension: the end of a
   // file name is where the meaning usually is.
   final dot = cleaned.lastIndexOf('.');
-  if (dot <= 0 || cleaned.length - dot > 12) return cleaned.substring(0, 120);
-  final extension = cleaned.substring(dot);
-  return cleaned.substring(0, 120 - extension.length) + extension;
+  final extension =
+      dot <= 0 || cleaned.length - dot > 12 ? '' : cleaned.substring(dot);
+  final stem = cleaned.substring(0, cleaned.length - extension.length);
+  return _cut(
+        stem,
+        chars: _maxNameChars - extension.length,
+        bytes: _maxNameBytes - utf8.encode(extension).length,
+      ) +
+      extension;
+}
+
+/// Long enough to still say what the file is.
+const _maxNameChars = 120;
+
+/// What the disk counts is bytes, and its limit is 255 of them. A Chinese or
+/// Thai character is three, so 120 characters of one was a name no download
+/// could be written under, and the attachment said "Could not download"
+/// every time. 200 leaves room for the `.part` a download is written to
+/// first.
+const _maxNameBytes = 200;
+
+/// The start of [text], no longer than either limit, cut between characters
+/// rather than through one: half an emoji is not a name the disk will take.
+String _cut(String text, {required int chars, required int bytes}) {
+  final kept = StringBuffer();
+  var usedChars = 0;
+  var usedBytes = 0;
+  for (final rune in text.runes) {
+    final char = String.fromCharCode(rune);
+    usedChars += char.length;
+    usedBytes += utf8.encode(char).length;
+    if (usedChars > chars || usedBytes > bytes) break;
+    kept.write(char);
+  }
+  return kept.toString();
 }
 
 /// A size in the units a person reads.

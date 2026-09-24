@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/services.dart';
 
 import '../../domain/html_safety.dart';
@@ -76,20 +78,22 @@ String printableMessage(
       ? removeDocumentDirectives(bodyHtml)
       : '<pre style="white-space:pre-wrap;font-family:inherit">${esc(body.text)}</pre>';
 
+  // The message is shut in an element only this page knows the name of.
+  // A stray </div> in it closed the last div open, and whatever followed
+  // was out in the page, free to be laid over the header. The parser only
+  // closes an element on an end tag with its own name, and this one is
+  // made up afresh for every print.
+  final shut = 'mailtree-message-${_unguessable()}';
+
   return '''<!doctype html>
-<html><head><meta charset="utf-8">
+<html style=""><head><meta charset="utf-8">
 ${contentPolicyTag(remoteAllowed: remoteAllowed)}
 <meta name="viewport" content="width=device-width">
 <style>
-  body { font-family: sans-serif; font-size: 12pt; color: #111; margin: 0; }
-  .head { border-bottom: 1px solid #999; padding-bottom: 8pt; margin-bottom: 12pt; }
-  .head h1 { font-size: 16pt; margin: 0 0 8pt; }
-  .head table { border-collapse: collapse; font-size: 10.5pt; }
-  .head th { text-align: left; padding: 1pt 12pt 1pt 0; font-weight: 600; color: #444; vertical-align: top; }
-  .head td { padding: 1pt 0; }
+${_headerRules(shut)}
   img { max-width: 100%; }
 </style></head>
-<body>
+<body style="">
 <div class="head">
   <h1>${esc(message.subject)}</h1>
   <table>
@@ -98,6 +102,68 @@ ${contentPolicyTag(remoteAllowed: remoteAllowed)}
     <tr><th>Date</th><td>$date</td></tr>
   </table>
 </div>
+<$shut>
 $content
+</$shut>
 </body></html>''';
+}
+
+/// The page's own rules, which the message's CSS cannot touch.
+///
+/// The message's styles share the page with the header, and it used to
+/// take one rule, `.head{display:none}`, to print a message without its
+/// real From and Date, and a little more to draw a fake pair in their
+/// place. So:
+///
+/// - These rules are in a cascade layer, and the first one on the page.
+///   Among `!important` rules the first layer beats every later layer and
+///   everything outside one, whatever the selector. It has no name, so the
+///   message cannot add rules to it.
+/// - Everything on the header, the page and its body is put back to the
+///   browser's defaults (`all: revert`) before these rules set it, so no
+///   property is left for the message to set: not display, not colour, not
+///   a transform that slides the header off the paper. `direction` and
+///   `unicode-bidi` are not part of `all` and are set by name.
+/// - Nothing drawn around them either: no `::before` or `::after` on the
+///   header or the page, and no text in the page margins.
+/// - The message is a stacking context below the header, and the header is
+///   opaque, so nothing the message positions can be laid over it.
+///
+/// The `style` attribute on `<html>` and `<body>` is there for the same
+/// reason. A `<body style="...">` in the message is merged into the page's
+/// own body by the parser, but only where the page's body has no such
+/// attribute, and an inline `!important` would outrank any layer.
+String _headerRules(String shut) {
+  const head = 'body > .head';
+  String each(List<String> selectors, String pseudo) =>
+      [for (final s in selectors) '$s$pseudo'].join(', ');
+  const page = ['html', 'body', head, '$head *'];
+  const margins = [
+    'top-left-corner', 'top-left', 'top-center', 'top-right',
+    'top-right-corner', 'bottom-left-corner', 'bottom-left',
+    'bottom-center', 'bottom-right', 'bottom-right-corner', 'left-top',
+    'left-middle', 'left-bottom', 'right-top', 'right-middle', 'right-bottom',
+  ];
+  return '''@layer {
+  ${page.join(', ')} { all: revert !important; }
+  ${each(page, '::before')}, ${each(page, '::after')} { content: none !important; }
+  ${each(page, '::first-line')}, ${each(page, '::first-letter')} { all: revert !important; }
+  body { margin: 0 !important; font-family: sans-serif !important; font-size: 12pt !important; color: #111 !important; }
+  $head { position: relative !important; z-index: 2147483647 !important; background: #fff !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; border-bottom: 1px solid #999 !important; padding-bottom: 8pt !important; margin-bottom: 12pt !important; }
+  $head, $head * { direction: ltr !important; unicode-bidi: normal !important; }
+  $head h1 { font-size: 16pt !important; margin: 0 0 8pt !important; }
+  $head table { border-collapse: collapse !important; font-size: 10.5pt !important; }
+  $head th { text-align: left !important; padding: 1pt 12pt 1pt 0 !important; font-weight: 600 !important; color: #444 !important; vertical-align: top !important; }
+  $head td { padding: 1pt 0 !important; }
+  body > $shut { display: block !important; position: relative !important; z-index: 0 !important; isolation: isolate !important; }
+  @page { ${[for (final m in margins) '@$m { content: none !important; }'].join(' ')} }
+}''';
+}
+
+/// Twelve random hex digits.
+String _unguessable() {
+  final random = Random.secure();
+  return [
+    for (var i = 0; i < 6; i++) random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ].join();
 }

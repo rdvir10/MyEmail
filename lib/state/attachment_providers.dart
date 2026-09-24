@@ -91,14 +91,18 @@ class AttachmentDownloads extends Notifier<Map<String, AttachmentState>> {
   /// for. Returns null if it could not be fetched.
   Future<File?> file(String messageId, MailAttachment attachment) async {
     final key = keyFor(messageId, attachment);
-    final already = state[key];
-    if (already?.file != null) return already!.file;
-    if (already?.isWorking ?? false) return null;
+    if (state[key]?.isWorking ?? false) return null;
 
+    // Asked of the disk every time, not only the first. The copy is in the
+    // cache, which Android clears when it wants the space, so a file
+    // remembered from an hour ago may be gone, and Save as then failed on
+    // it without a word.
     final files = ref.read(attachmentFilesProvider);
     final cached = await files.cached(messageId, attachment);
     if (cached != null) {
-      state = {...state, key: AttachmentState.ready(cached)};
+      if (state[key]?.file?.path != cached.path) {
+        state = {...state, key: AttachmentState.ready(cached)};
+      }
       return cached;
     }
 

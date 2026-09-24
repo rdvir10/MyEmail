@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -35,6 +36,23 @@ open class MainActivity : FlutterActivity() {
 
     private var files: FilesBridge? = null
     private var contacts: ContactsBridge? = null
+
+    /**
+     * Whether this start is Android bringing the app back rather than
+     * someone sharing to it: the activity rebuilt from saved state after
+     * Android stopped the app in the background, or reopened from Recents.
+     * Either way it comes with the intent it was first started with, a
+     * share that was sent long ago among them, and taking that again
+     * opened a new message with the same files attached.
+     */
+    private var restarted = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        // Before super, which is where configureFlutterEngine runs.
+        restarted = savedInstanceState != null ||
+            (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
+        super.onCreate(savedInstanceState)
+    }
 
     /**
      * A route only for a window the app itself opened.
@@ -69,7 +87,7 @@ open class MainActivity : FlutterActivity() {
                 it.listenForDrops()
                 // Opened from a share sheet: the files and text are on the
                 // intent that started us, and Dart will ask for them.
-                it.takeShare(intent, pushNow = false)
+                if (!restarted) it.takeShare(intent, pushNow = false)
             }
 
         widgetChannel = MethodChannel(

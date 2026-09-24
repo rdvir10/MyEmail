@@ -122,6 +122,45 @@ void main() {
     });
   });
 
+  // Android copies each file in before handing it over, and one it cannot
+  // read (refused, gone, a name the disk will not take) used to be left out
+  // without a word: the message opened with one file of two, or nothing
+  // opened at all.
+  group('files Android could not read', () {
+    testWidgets('are said to be left out of the message', (tester) async {
+      bridge.openedWith =
+          SharedContent(files: [aFile('site-plan.pdf')], skipped: 1);
+
+      await pumpApp(tester, realTime: true);
+      await settleForReal(tester);
+
+      expect(find.byType(ComposeScreen), findsOneWidget);
+      expect(find.text('One file could not be read, and was left out.'),
+          findsOneWidget);
+    });
+
+    testWidgets('and said when that was all there was', (tester) async {
+      bridge.openedWith = SharedContent.fromMap({'files': [], 'skipped': 2});
+
+      await pumpApp(tester);
+      await settleForReal(tester);
+
+      expect(find.byType(ComposeScreen), findsNothing);
+      expect(find.text('2 files could not be read, and were left out.'),
+          findsOneWidget);
+    });
+
+    testWidgets('a drop says so too', (tester) async {
+      await pumpApp(tester);
+
+      bridge.drop(const [], skipped: 1);
+      await tester.pump();
+
+      expect(find.text('One file could not be read, and was left out.'),
+          findsOneWidget);
+    });
+  });
+
   group('shared while already running', () {
     testWidgets('the same message appears', (tester) async {
       await pumpApp(tester);

@@ -10,6 +10,10 @@ import '../../domain/mail_attachment.dart';
 /// it wants the space. This puts it where the person chooses, through the
 /// system file picker, which is also the only way to write outside the app
 /// without asking for storage permission.
+///
+/// True once it is written, false if the person backed out of the picker.
+/// Throws if the copy cannot be read or the place chosen will not take it;
+/// the caller says so.
 Future<bool> saveAttachmentAs(MailAttachment attachment, File file) async {
   final uri = await FilePicker.saveFile(
     fileName: safeFileName(attachment.name),

@@ -232,7 +232,16 @@ class AttachmentActions {
   Future<void> save(BuildContext context) async {
     final file = await _file(context);
     if (file == null || !context.mounted) return;
-    final saved = await saveAttachmentAs(attachment, file);
+    bool saved;
+    try {
+      saved = await saveAttachmentAs(attachment, file);
+    } catch (e) {
+      // A full disk, a cloud folder that refuses the write, a copy that
+      // could not be read: each used to end with nothing on screen at all,
+      // not even "Not saved.", as if the tap had missed.
+      if (context.mounted) _say(context, 'Could not save the attachment.');
+      return;
+    }
     if (!context.mounted) return;
     _say(context, saved ? 'Saved.' : 'Not saved.');
   }

@@ -37,11 +37,15 @@ class SharedContent {
     this.files = const [],
     this.text,
     this.subject,
+    this.skipped = 0,
   });
 
   final List<IncomingFile> files;
   final String? text;
   final String? subject;
+
+  /// Files that were shared and could not be read: see [skippedFiles].
+  final int skipped;
 
   bool get isEmpty =>
       files.isEmpty && (text == null || text!.trim().isEmpty);
@@ -58,9 +62,21 @@ class SharedContent {
       files: files,
       text: text is String && text.trim().isNotEmpty ? text : null,
       subject: subject is String && subject.trim().isNotEmpty ? subject : null,
+      skipped: skippedFiles(value),
     );
-    return content.isEmpty ? null : content;
+    // A share of nothing but files that could not be read is still worth
+    // hearing about: it is the only way to say so.
+    return content.isEmpty && content.skipped == 0 ? null : content;
   }
+}
+
+/// How many files Android was handed and could not copy in: refused, too
+/// big for the disk, or gone before they could be read. Said out loud,
+/// because a share or a drop that quietly left one out looks as if it
+/// worked.
+int skippedFiles(Map<Object?, Object?> payload) {
+  final skipped = payload['skipped'];
+  return skipped is int && skipped > 0 ? skipped : 0;
 }
 
 /// Files leaving and entering the app.
@@ -83,9 +99,18 @@ class DragFile {
 
 /// What landed on the app: the files, and where they came from.
 class DroppedFiles {
-  const DroppedFiles(this.files, {this.label, this.text, this.at = Offset.zero});
+  const DroppedFiles(
+    this.files, {
+    this.label,
+    this.text,
+    this.at = Offset.zero,
+    this.skipped = 0,
+  });
 
   final List<IncomingFile> files;
+
+  /// Files in the drop that could not be read: see [skippedFiles].
+  final int skipped;
 
   /// The drag's label, which this app sets on its own drags so a copy of
   /// it can tell a message of its own from a file from outside.
@@ -162,8 +187,9 @@ class AndroidFileBridge implements FileBridge {
                     (args['y'] as num?)?.toDouble() ?? 0,
                   )
                 : Offset.zero,
+            skipped: args is Map ? skippedFiles(args) : 0,
           );
-          if (files.isNotEmpty || dropped.text != null) {
+          if (files.isNotEmpty || dropped.text != null || dropped.skipped > 0) {
             _onDropped?.call(dropped);
           }
         case 'shared':
@@ -307,8 +333,15 @@ class FakeFileBridge implements FileBridge {
     String? label,
     String? text,
     Offset at = Offset.zero,
+    int skipped = 0,
   }) =>
-      handler?.call(DroppedFiles(files, label: label, text: text, at: at));
+      handler?.call(DroppedFiles(
+        files,
+        label: label,
+        text: text,
+        at: at,
+        skipped: skipped,
+      ));
 
   /// What the app was "opened with", for a test of a cold-start share.
   SharedContent? openedWith;
