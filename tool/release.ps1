@@ -7,10 +7,10 @@
 #      you cannot reproduce from a commit is not a release.
 #   2. Bumps the version and build number in pubspec.yaml.
 #   3. Builds a signed arm64 APK.
-#   4. Copies it to the release folder under a FIXED name, so the download URL
-#      in the manifest never changes.
+#   4. Copies it to the release folder as myemail-arm64.apk.
 #   5. Writes latest.json beside it with the real size of the file it just
-#      built, read from disk rather than guessed.
+#      built, read from disk rather than guessed, and a link to the APK in
+#      this release by its tag.
 #
 #   6. Commits the bump, tags it, pushes, and publishes the GitHub release.
 #   7. Checks the published manifest is actually reachable before saying so.
@@ -20,8 +20,16 @@
 # does 6's publishing and 7 alone, for a version already built with
 # -StageOnly, committed, tagged and pushed.
 #
-# The manifest is uploaded after the APK on purpose. A manifest announcing a
-# build that is not there yet points every phone at a 404.
+# The manifest and the APK go up in one gh command, which uploads them side
+# by side and keeps the release a draft until both are there. A draft is not
+# what releases/latest points at, so no phone sees a manifest announcing a
+# build that is not there yet.
+#
+# The phone reads the manifest from releases/latest, and the APK from the
+# release the manifest belongs to (releases/download/v<version>). A "latest"
+# link for the APK meant a release published between the check and the tap
+# on Download got installed instead: a build the screen did not name, whose
+# minBuild nobody had checked.
 #
 # Publishing uses the GitHub CLI's own login (`gh auth login`, once, as the
 # account that owns the repository). Git's credentials are not touched, so
@@ -42,8 +50,9 @@ param(
     # Where the APK and latest.json are staged before being published.
     [string]$OutDir = "$env:USERPROFILE\OneDrive\AI Projects\Email client\builds\release",
 
-    # Where the phone downloads from. GitHub resolves this to the newest
-    # published release, so it stays correct as versions come and go.
+    # Where the phone looks for latest.json. GitHub resolves this to the
+    # newest published release, so it stays correct as versions come and go.
+    # The APK is not fetched from here: see the top of this file.
     [string]$BaseUrl = 'https://github.com/rdvir10/MyEmail/releases/latest/download',
 
     # owner/name of the repository the release is published to.
@@ -81,11 +90,14 @@ function Publish-Release([int]$Build, [string]$Notes) {
         throw "The GitHub CLI is not logged in. Run '$gh auth login' once, as the owner of $Repo, then rerun."
     }
 
-    # The APK is listed first so it uploads first: a manifest naming a build
-    # that is not there yet points every phone at a 404.
+    # One command for both files: gh uploads them together and publishes the
+    # release only once both are up, so the manifest never goes live ahead
+    # of the APK it names.
     & $gh release create "v$Version" $apkPath $manifestPath --repo $Repo --title $Version --notes $Notes
     if ($LASTEXITCODE -ne 0) {
-        throw "The release was not published. The tag is already pushed, so rerun the gh command alone rather than the whole script."
+        throw ("The release was not published. The tag is already pushed, so do not rerun the whole script. " +
+            "If gh left a draft release v$Version behind, delete it with '$gh release delete v$Version --repo $Repo --yes' " +
+            "(the tag stays), then run: pwsh tool/release.ps1 -Version $Version -PublishOnly")
     }
 
     # --- 7. prove it is reachable --------------------------------------------
@@ -141,25 +153,27 @@ Write-Host "Version $Version, build $build" -ForegroundColor Cyan
 # older build than the one it is in. They went ten releases out of date
 # because this was a step somebody had to remember.
 & python "$repoRoot\tool\docs_to_html.py"
-if ($LASTEXITCODE -ne 0) { throw "Could not regenerate the documents." }
+if ($LASTEXITCODE -ne 0) { throw "Could not regenerate the documents. pubspec.yaml has been bumped; run 'git checkout -- pubspec.yaml assets/help' before running this again." }
 
 # --- 3. build -------------------------------------------------------------
 $env:PATH = "$env:USERPROFILE\tools\flutter\bin;$env:PATH"
 & flutter build apk --release --target-platform android-arm64
-if ($LASTEXITCODE -ne 0) { throw "The build failed. pubspec.yaml has been bumped; revert it or fix and rerun." }
+# A rerun refuses the tree this leaves (the bump and the regenerated
+# documents), so the way back is said in full.
+if ($LASTEXITCODE -ne 0) { throw "The build failed. pubspec.yaml and the documents have been changed; run 'git checkout -- pubspec.yaml assets/help', fix the problem, then run this again." }
 
 $built = "$repoRoot\build\app\outputs\flutter-apk\app-release.apk"
 if (-not (Test-Path $built)) { throw "The build reported success but produced no APK." }
 
-# --- 4. publish under a fixed name ---------------------------------------
+# --- 4. stage it ----------------------------------------------------------
 New-Item -ItemType Directory -Force $OutDir | Out-Null
-# Fixed ($apkName, above), because the manifest URL is built from it and
-# must not move.
 Copy-Item $built $apkPath -Force
 
 # --- 5. the manifest, with the size read from the file ------------------
 $size = (Get-Item $apkPath).Length
-$url = if ($BaseUrl) { "$($BaseUrl.TrimEnd('/'))/$apkName" } else { "REPLACE_WITH_PUBLIC_URL/$apkName" }
+# This release's own copy, by its tag, never releases/latest: see the top of
+# this file.
+$url = "https://github.com/$Repo/releases/download/v$Version/$apkName"
 
 $manifest = [ordered]@{
     version   = $Version
@@ -176,10 +190,6 @@ Write-Host ""
 Write-Host "Built and staged:" -ForegroundColor Green
 Write-Host "  $apkPath  ($([math]::Round($size / 1MB, 1)) MB)"
 Write-Host "  $manifestPath"
-if (-not $BaseUrl) {
-    Write-Host ""
-    Write-Host "latest.json has a placeholder URL. Pass -BaseUrl once the release host exists." -ForegroundColor Yellow
-}
 if ($StageOnly) {
     Write-Host ""
     Write-Host "Staged only. Nothing committed, tagged or published." -ForegroundColor Yellow
@@ -192,7 +202,7 @@ if ($LASTEXITCODE -ne 0) { throw "Could not commit the version bump." }
 & git tag "v$Version"
 if ($LASTEXITCODE -ne 0) { throw "Could not tag v$Version. Does that tag already exist?" }
 & git push -q origin main --tags
-if ($LASTEXITCODE -ne 0) { throw "Could not push. Nothing was published, so nothing is half-done on GitHub." }
+if ($LASTEXITCODE -ne 0) { throw "Could not push. Nothing was published, so nothing is half-done on GitHub. The release is committed and tagged here: push with 'git push origin main --tags', then run: pwsh tool/release.ps1 -Version $Version -PublishOnly" }
 
 Publish-Release -Build $build -Notes $Notes
 

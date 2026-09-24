@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 import 'package:myemail/data/updates/apk_installer.dart';
 import 'package:myemail/data/updates/update_service.dart';
 import 'package:myemail/domain/app_release.dart';
@@ -229,6 +231,39 @@ void main() {
       await c.read(updateFlowProvider.notifier).downloadAndInstall(release);
 
       expect(c.read(updateFlowProvider), isA<UpdateFailed>());
+    });
+
+    test('a failure reads as a sentence, not as the exception', () async {
+      // About showed "ClientException: The download answered 404." and
+      // "PlatformException(install-failed, null, null, null)" before
+      // "Tap to start again."
+      final c = container();
+      final release = AppRelease.fromJson(_manifest(build: 5))!;
+      String reason() => (c.read(updateFlowProvider) as UpdateFailed).reason;
+
+      installer.downloadError =
+          http.ClientException('The download answered 404.');
+      await c.read(updateFlowProvider.notifier).downloadAndInstall(release);
+      expect(reason(), 'The download answered 404.');
+
+      installer.downloadError = Exception('socket closed');
+      await c.read(updateFlowProvider.notifier).downloadAndInstall(release);
+      expect(reason(), 'The update could not be downloaded.');
+
+      installer
+        ..downloadError = null
+        ..installError = PlatformException(code: 'install-failed');
+      await c.read(updateFlowProvider.notifier).downloadAndInstall(release);
+      expect(reason(), 'The update could not be installed.');
+
+      installer.installError = PlatformException(
+        code: 'install-failed',
+        message: 'The package could not be opened',
+      );
+      await c
+          .read(updateFlowProvider.notifier)
+          .retryInstall(release, '/fake/mailtree-update.apk');
+      expect(reason(), 'The package could not be opened.');
     });
   });
 

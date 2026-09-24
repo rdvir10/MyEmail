@@ -14,6 +14,10 @@ import '../../domain/app_release.dart';
 /// repository: a 22 MB APK committed per version would live in the git
 /// history forever, and every clone would pay for it.
 ///
+/// The APK the manifest names is not on that path: it is linked by its own
+/// release's tag, so a release published after a check is not what that
+/// check's Download fetches.
+///
 /// It 404s until the first release is published, which the About screen
 /// reports as "could not check" rather than pretending to be up to date.
 ///
@@ -51,7 +55,10 @@ class HttpReleaseFeed implements ReleaseFeed {
     if (response.statusCode != 200) {
       throw http.ClientException('The server answered ${response.statusCode}.');
     }
-    final decoded = jsonDecode(response.body);
+    // Decoded as UTF-8 whatever the server calls it. GitHub serves the file
+    // as application/octet-stream, which `body` reads as Latin-1, and a
+    // note with a dash in it came out as "â" and control characters.
+    final decoded = jsonDecode(utf8.decode(response.bodyBytes));
     if (decoded is! Map<String, dynamic>) {
       throw const FormatException('The update file is not in the right shape.');
     }

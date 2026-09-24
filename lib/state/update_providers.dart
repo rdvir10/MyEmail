@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/updates/apk_installer.dart';
@@ -96,11 +97,13 @@ class UpdateFlow extends Notifier<UpdateState> {
   Future<void> downloadAndInstall(AppRelease release) async {
     final installer = ref.read(apkInstallerProvider);
     state = UpdateDownloading(release, 0);
+    var downloaded = false;
     try {
       final path = await installer.download(
         release,
         onProgress: (p) => state = UpdateDownloading(release, p),
       );
+      downloaded = true;
       if (!await installer.canInstall()) {
         state = UpdateNeedsPermission(release, path);
         return;
@@ -108,7 +111,13 @@ class UpdateFlow extends Notifier<UpdateState> {
       state = UpdateReadyToInstall(release, path);
       await installer.install(path);
     } catch (e) {
-      state = UpdateFailed('$e');
+      debugPrint('[myemail] update download or install failed: $e');
+      state = UpdateFailed(readableUpdateFailure(
+        e,
+        otherwise: downloaded
+            ? 'The update could not be installed.'
+            : 'The update could not be downloaded.',
+      ));
     }
   }
 
@@ -124,7 +133,11 @@ class UpdateFlow extends Notifier<UpdateState> {
       state = UpdateReadyToInstall(release, path);
       await installer.install(path);
     } catch (e) {
-      state = UpdateFailed('$e');
+      debugPrint('[myemail] update install failed: $e');
+      state = UpdateFailed(readableUpdateFailure(
+        e,
+        otherwise: 'The update could not be installed.',
+      ));
     }
   }
 

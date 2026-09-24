@@ -39,8 +39,14 @@ abstract class ApkInstaller {
 }
 
 class AndroidApkInstaller implements ApkInstaller {
-  AndroidApkInstaller({http.Client? client})
-      : _client = client ?? http.Client();
+  AndroidApkInstaller({
+    http.Client? client,
+    this.stallLimit = const Duration(seconds: 30),
+  }) : _client = client ?? http.Client();
+
+  /// How long the server may say nothing, before the download starts or in
+  /// the middle of it, before it counts as failed.
+  final Duration stallLimit;
 
   static const _channel = MethodChannel('mailtree/installer');
 
@@ -52,7 +58,15 @@ class AndroidApkInstaller implements ApkInstaller {
     void Function(double progress)? onProgress,
   }) async {
     final request = http.Request('GET', Uri.parse(release.apkUrl));
-    final response = await _client.send(request);
+    // A connection that goes quiet raises nothing by itself: a NAT dropping
+    // it, or Wi-Fi handing over to mobile data, left About reading
+    // "Downloading 43%" until the app was killed. Silence is a failure
+    // here, which the screen offers to try again.
+    final response = await _client.send(request).timeout(
+          stallLimit,
+          onTimeout: () =>
+              throw const SocketException('The download server did not answer.'),
+        );
     if (response.statusCode != 200) {
       throw http.ClientException(
         'The download answered ${response.statusCode}.',
@@ -68,16 +82,26 @@ class AndroidApkInstaller implements ApkInstaller {
     final total = response.contentLength ?? release.sizeBytes;
     var received = 0;
     final sink = file.openWrite();
+    var whole = false;
     try {
-      await for (final chunk in response.stream) {
+      await for (final chunk in response.stream.timeout(
+        stallLimit,
+        onTimeout: (events) => events
+          ..addError(const SocketException('The download stopped.'))
+          ..close(),
+      )) {
         sink.add(chunk);
         received += chunk.length;
         if (total != null && total > 0) {
           onProgress?.call((received / total).clamp(0, 1));
         }
       }
+      whole = true;
     } finally {
       await sink.close();
+      // Part of a download is of no use to anyone, and would sit there at
+      // twenty megabytes.
+      if (!whole) await file.delete();
     }
 
     // A truncated download installs as a corrupt package, and Android's error
@@ -110,6 +134,22 @@ class AndroidApkInstaller implements ApkInstaller {
       _channel.invokeMethod<void>('openInstallSettings');
 }
 
+/// A download or install failure as the sentence About shows, which is
+/// followed there by "Tap to start again." The raw error went on screen, as
+/// "ClientException: The download answered 404." or a PlatformException with
+/// its nulls; the type name and the rest belong in the log.
+String readableUpdateFailure(Object error, {required String otherwise}) {
+  final message = switch (error) {
+    http.ClientException(:final message) => message,
+    SocketException(:final message) => message,
+    PlatformException(:final message?) => message,
+    _ => '',
+  }
+      .trim();
+  if (message.isEmpty) return otherwise;
+  return message.endsWith('.') ? message : '$message.';
+}
+
 /// Records instead of installing. Used by the tests and by the browser
 /// preview, which has no installer at all.
 class FakeApkInstaller implements ApkInstaller {
@@ -120,6 +160,7 @@ class FakeApkInstaller implements ApkInstaller {
   final List<String> installed = [];
   int permissionScreensOpened = 0;
   Object? downloadError;
+  Object? installError;
 
   @override
   Future<String> download(
@@ -134,7 +175,10 @@ class FakeApkInstaller implements ApkInstaller {
   }
 
   @override
-  Future<void> install(String path) async => installed.add(path);
+  Future<void> install(String path) async {
+    if (installError != null) throw installError!;
+    installed.add(path);
+  }
 
   @override
   Future<bool> canInstall() async => permitted;
