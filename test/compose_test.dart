@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:enough_mail/enough_mail.dart' as em;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/compose/quote_builder.dart';
 import 'package:myemail/data/compose/smtp_sender.dart';
@@ -495,6 +496,87 @@ void main() {
       final rendered = mime.renderMessage();
       expect(rendered, contains('notes.txt'));
       expect(mime.hasAttachments(), isTrue);
+    });
+
+    group('file names', () {
+      DraftAttachment file(String name) => DraftAttachment(
+            fileName: name,
+            mimeType: 'application/pdf',
+            bytes: Uint8List.fromList([1, 2, 3]),
+          );
+
+      /// What a reader makes of the name, from the message as it went out.
+      String? nameReadBack(String rendered) => em.MimeMessage.parseFromText(
+            rendered,
+          ).allPartsFlat.map((p) => p.decodeFileName()).nonNulls.single;
+
+      test('a Hebrew name goes out encoded, and reads back whole', () {
+        // Raw UTF-8 in a header, in a 7-bit session, which strict and older
+        // clients show as rubbish.
+        const name = 'חשבונית מס 2026.pdf';
+        final rendered = buildMimeMessage(
+          draft: draft(attachments: [file(name)]),
+          account: _account,
+        ).renderMessage();
+
+        expect(rendered.runes.every((c) => c < 128), isTrue,
+            reason: 'every header is 7-bit');
+        expect(rendered, contains(RegExp(r"filename\*(0\*)?=UTF-8''")),
+            reason: 'RFC 2231, which is what readers look for first');
+        expect(nameReadBack(rendered), name);
+      });
+
+      test('a name with quotes in it is not cut short', () {
+        const name = 'The "final" plan.pdf';
+        final rendered = buildMimeMessage(
+          draft: draft(attachments: [file(name)]),
+          account: _account,
+        ).renderMessage();
+
+        expect(rendered, isNot(contains('"The "final')));
+        expect(nameReadBack(rendered), name);
+      });
+
+      test('a long name is split, so no line runs past the limit', () {
+        final name = '${'דוח רבעוני מפורט של המחלקה ' * 4}.pdf';
+        final rendered = buildMimeMessage(
+          draft: draft(attachments: [file(name)]),
+          account: _account,
+        ).renderMessage();
+
+        for (final line in rendered.split('\r\n')) {
+          expect(line.length, lessThanOrEqualTo(78), reason: line);
+        }
+        expect(nameReadBack(rendered), name);
+      });
+
+      test('a plain name stays as it is', () {
+        final rendered = buildMimeMessage(
+          draft: draft(attachments: [file('Q3 report.pdf')]),
+          account: _account,
+        ).renderMessage();
+
+        expect(rendered, contains('filename="Q3 report.pdf"'));
+      });
+    });
+
+    test('a multipart carries no transfer encoding of its own', () {
+      // RFC 2045 allows a multipart only 7bit, 8bit or binary. enough_mail
+      // put base64 on the top of every message.
+      final rendered = buildMimeMessage(
+        draft: draft(attachments: [
+          DraftAttachment(
+            fileName: 'a.pdf',
+            mimeType: 'application/pdf',
+            bytes: Uint8List.fromList([1]),
+          ),
+        ]),
+        account: _account,
+      ).renderMessage();
+      final head = rendered.substring(0, rendered.indexOf('\r\n\r\n'));
+
+      expect(head, contains('multipart/mixed'));
+      expect(head.toLowerCase(), isNot(contains('content-transfer-encoding')));
     });
   });
 

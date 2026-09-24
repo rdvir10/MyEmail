@@ -160,6 +160,37 @@ void main() {
       expect(server.folder('[Gmail]/Trash').messages, isEmpty);
     });
 
+    test('a move that went is not reported as failed when the refresh after '
+        'it fails', () async {
+      // On a weak connection the move lands and the look at the destination
+      // afterwards does not. That used to fail the whole delete: the app
+      // said the message was where it was and put its row back, although
+      // it was already in Trash.
+      final flaky = _OfflineAfterMove();
+      flaky.folder('INBOX', role: FolderRole.inbox).deliver(subject: 'Bin');
+      flaky.folder('[Gmail]/Trash', role: FolderRole.deleted);
+      final engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: cache,
+        transportFactory: (_, _) => flaky,
+      );
+      final account = await engine.addAccount(
+        displayName: 'P',
+        emailAddress: 'p@example.com',
+        provider: MailProvider.gmail,
+        secret: 'abcdabcdabcdabcd',
+      );
+      final inbox = await engine.loadMessages('${account.id}:INBOX');
+      // Trash has been opened before, so the move is followed by a sync.
+      await engine.loadMessages('${account.id}:[Gmail]/Trash');
+
+      final moves = await engine.deleteMessages([inbox.single.id]);
+
+      expect(moves.single.toFolderId, '${account.id}:[Gmail]/Trash');
+      expect(await cache.countMessages(account.id, 'INBOX'), 0);
+    });
+
     test('moving between accounts is refused before any server call',
         () async {
       server.folder('INBOX').deliver();
@@ -366,4 +397,18 @@ class MailFolderFinder {
 
   dynamic byPath(String path) =>
       folders.firstWhere((dynamic f) => f.path == path);
+}
+
+/// A server whose connection goes the moment a move has been done.
+class _OfflineAfterMove extends FakeImapTransport {
+  @override
+  Future<List<int>?> moveMessages(
+    String fromPath,
+    List<int> uids,
+    String toPath,
+  ) async {
+    final landed = await super.moveMessages(fromPath, uids, toPath);
+    offline = true;
+    return landed;
+  }
 }

@@ -2,7 +2,9 @@ import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/imap/imap_mapping.dart' show nameFromPathSegment;
 import '../../data/mail_engine.dart';
+import '../../domain/account.dart';
 import '../../domain/mail_folder.dart';
 import '../../state/folder_tree.dart';
 import '../../state/providers.dart';
@@ -45,6 +47,7 @@ Future<void> showFolderActionsSheet(
   if (chosen == null || !context.mounted) return;
 
   final folders = ref.read(foldersProvider.notifier);
+  final slashAllowed = _namesTakeSlash(ref, folder.accountId);
   switch (chosen) {
     case _FolderAction.favorite:
       ref.read(favoriteFoldersProvider.notifier).toggle(folder.id);
@@ -62,8 +65,14 @@ Future<void> showFolderActionsSheet(
       await _promptForName(
         context,
         title: 'Rename folder',
-        initialValue: folder.name,
+        // The name as it is on the server: the path holds a look-alike in
+        // place of each slash, and saving that back renamed "AP/AR" to
+        // something that only looks like it.
+        initialValue: slashAllowed
+            ? nameFromPathSegment(folder.name)
+            : folder.name,
         confirmLabel: 'Rename',
+        slashAllowed: slashAllowed,
         onSubmit: (name) => folders.rename(folder.id, name),
       );
     case _FolderAction.newSubfolder:
@@ -71,6 +80,7 @@ Future<void> showFolderActionsSheet(
         context,
         title: 'New folder in ${folder.displayName}',
         confirmLabel: 'Create',
+        slashAllowed: slashAllowed,
         onSubmit: (name) => folders.create(
           accountId: folder.accountId,
           name: name,
@@ -285,6 +295,7 @@ Future<void> _promptForName(
   required String confirmLabel,
   required Future<void> Function(String name) onSubmit,
   String initialValue = '',
+  bool slashAllowed = false,
 }) {
   return showDialog<void>(
     context: context,
@@ -292,9 +303,24 @@ Future<void> _promptForName(
       title: title,
       confirmLabel: confirmLabel,
       initialValue: initialValue,
+      slashAllowed: slashAllowed,
       onSubmit: onSubmit,
     ),
   );
+}
+
+/// Whether a folder name on this account may have a "/" in it.
+///
+/// On a Microsoft account it may: Graph names a folder by its id, and
+/// "AP/AR" is an ordinary name there. Over IMAP the slash is what nests one
+/// folder in another, so a name with one would make two.
+bool _namesTakeSlash(WidgetRef ref, String accountId) {
+  final account = (ref.read(accountsProvider).value ?? const <Account>[])
+      .where((a) => a.id == accountId)
+      .firstOrNull;
+  return account != null &&
+      account.provider == MailProvider.outlook &&
+      account.authMethod == AuthMethod.oauth;
 }
 
 class _NameDialog extends StatefulWidget {
@@ -302,12 +328,14 @@ class _NameDialog extends StatefulWidget {
     required this.title,
     required this.confirmLabel,
     required this.initialValue,
+    required this.slashAllowed,
     required this.onSubmit,
   });
 
   final String title;
   final String confirmLabel;
   final String initialValue;
+  final bool slashAllowed;
   final Future<void> Function(String name) onSubmit;
 
   @override
@@ -339,7 +367,9 @@ class _NameDialogState extends State<_NameDialog> {
   String? _validate(String raw) {
     final name = raw.trim();
     if (name.isEmpty) return 'Enter a name.';
-    if (name.contains('/')) return 'A name cannot contain "/".';
+    if (!widget.slashAllowed && name.contains('/')) {
+      return 'A name cannot contain "/".';
+    }
     return null;
   }
 

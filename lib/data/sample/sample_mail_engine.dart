@@ -421,7 +421,12 @@ class SampleMailEngine implements MailEngine {
     final drafts = (_folders[draft.accountId] ?? const <MailFolder>[])
         .where((f) => f.role == FolderRole.drafts)
         .firstOrNull;
-    if (drafts == null) return null;
+    if (drafts == null) {
+      throw const SendFailed(
+        'The app cannot find a Drafts folder for this account, so the '
+        'message was not saved.',
+      );
+    }
 
     final list = _messages.putIfAbsent(drafts.id, () => []);
     // Replace the copy this was opened from, rather than piling up a version
@@ -653,7 +658,8 @@ class SampleMailEngine implements MailEngine {
       throw FolderOperationNotSupported(folderId, 'rename');
     }
     final segments = folder.path.split('/')..removeLast();
-    final newPath = [...segments, newName].join('/');
+    // As the real engine: a slash in a name is a stand-in in the path.
+    final newPath = [...segments, safePathSegment(newName)].join('/');
     return _relocate(folder, newPath: newPath, newParentId: folder.parentId);
   }
 
@@ -701,7 +707,8 @@ class SampleMailEngine implements MailEngine {
       throw FolderOperationNotSupported(parentId, 'create child in');
     }
     final parentPath = parentId == null ? null : _require(parentId).path;
-    final path = parentPath == null ? name : '$parentPath/$name';
+    final segment = safePathSegment(name);
+    final path = parentPath == null ? segment : '$parentPath/$segment';
     _assertNoConflict(accountId, path);
     final folder = MailFolder.at(
       accountId: accountId,

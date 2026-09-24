@@ -158,7 +158,11 @@ class GraphTransport implements ImapTransport {
     final cut = path.lastIndexOf('/');
     final name = cut < 0 ? path : path.substring(cut + 1);
     final parent = cut < 0 ? null : await _folderId(path.substring(0, cut));
-    final created = await api.createFolder(displayName: name, parentId: parent);
+    // The path has a stand-in for each slash in a name; Graph gets the name.
+    final created = await api.createFolder(
+      displayName: nameFromPathSegment(name),
+      parentId: parent,
+    );
     _folderIds[path] = created.id;
   }
 
@@ -181,7 +185,9 @@ class GraphTransport implements ImapTransport {
       );
     }
     if (oldPath.substring(oldCut + 1) != newName) {
-      await api.renameFolder(id, newName);
+      // The name, not the path segment: sending the stand-in saved "AP/AR"
+      // as a look-alike that nothing on the web matched.
+      await api.renameFolder(id, nameFromPathSegment(newName));
     }
     // The folder and everything under it now live at the new path. Graph
     // keeps every id, so the ids and the numbering move with them; the

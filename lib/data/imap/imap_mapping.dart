@@ -181,6 +181,13 @@ RemoteFolder remoteFolderFromMailbox(em.Mailbox box) => RemoteFolder(
 /// it: a Graph mailbox is addressed by folder id, not by this path.
 String safePathSegment(String name) => name.replaceAll('/', '∕');
 
+/// [safePathSegment] undone: the name as the server has it.
+///
+/// For whatever goes back to the server as a name. Sending the stand-in
+/// renamed "AP/AR" to a look-alike that matched nothing on the web, with no
+/// way to type the real slash back.
+String nameFromPathSegment(String segment) => segment.replaceAll('∕', '/');
+
 /// Paths in the domain always use `/`. Servers use their own delimiter
 /// (Gmail `/`, many others `.`), so the engine converts at the boundary.
 String toModelPath(String serverPath, String delimiter) =>

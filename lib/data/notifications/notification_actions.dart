@@ -117,11 +117,11 @@ class NotificationActions {
       await engine.sendDraft(draft);
     } catch (sending) {
       try {
-        // Null is an account with no Drafts folder: nothing was kept, and
-        // saying "It is in Drafts" would send someone looking for it.
-        if (await engine.saveDraft(draft) != null) {
-          return ActionOutcome.savedAsDraft;
-        }
+        // An account with no Drafts folder throws, so reaching the return
+        // means it is there, even where saveDraft could not say which
+        // message it became.
+        await engine.saveDraft(draft);
+        return ActionOutcome.savedAsDraft;
       } catch (_) {
         // Neither went. What was typed is still in the queue; see below.
       }

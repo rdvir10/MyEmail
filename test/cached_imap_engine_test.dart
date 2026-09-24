@@ -110,6 +110,31 @@ void main() {
       expect(await cache.countMessages(a.id, 'INBOX'), 0);
       expect(server.calls.last, 'LOGOUT');
     });
+
+    test('two callers at once share one connection', () async {
+      // At start-up the folder tree and the message list ask for the same
+      // account together. Each built its own connection and logged in, the
+      // second replaced the first, and the first was never closed.
+      seedGmail();
+      final a = await addAccount();
+      final restarted = CachedImapEngine(
+        accountStore: accounts,
+        credentialStore: secrets,
+        cache: cache,
+        transportFactory: (account, credentials) {
+          calls.add('transport for ${account.emailAddress}');
+          return server;
+        },
+      );
+      calls.clear();
+
+      await Future.wait([
+        restarted.loadFolders(a.id),
+        restarted.loadMessages('${a.id}:INBOX'),
+      ]);
+
+      expect(calls, hasLength(1));
+    });
   });
 
   group('folders', () {
@@ -195,6 +220,18 @@ void main() {
         engine.renameFolder('${a.id}:Work', 'office'),
         throwsA(isA<FolderNameConflict>()),
       );
+    });
+
+    test('changing only the capitals of a name is not a conflict', () async {
+      // The check is blind to case, as servers are, and it used to find the
+      // folder being renamed: "receipts" could never become "Receipts".
+      seedGmail();
+      final a = await addAccount();
+
+      final r = await engine.renameFolder('${a.id}:Work', 'WORK');
+
+      expect(r.folder.path, 'WORK');
+      expect(server.calls, contains('RENAME Work WORK'));
     });
 
     test('create and delete go to the server and the cache', () async {

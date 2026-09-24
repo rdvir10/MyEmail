@@ -75,6 +75,30 @@ void main() {
       expect(folders.map((f) => f.path), ['INBOX']);
       await t.close();
     });
+
+    test('a folder that would not open is not taken as still selected',
+        () async {
+      // A refused SELECT leaves the server with no folder selected. Taking
+      // the one before as still open sent the next read to nothing, which
+      // the server answers with BAD, until something else happened to
+      // select a folder again.
+      server
+        ..others.add('GONE')
+        ..refuseSelect.add('GONE');
+      final t = transport();
+      await t.selectFolder('INBOX');
+      await expectLater(t.selectFolder('GONE'), throwsA(anything));
+
+      await t.fetchHeadersBySequence('INBOX', 1, 1);
+
+      expect(
+        server.commands
+            .where((c) => c.replaceAll('"', '').startsWith('SELECT INBOX')),
+        hasLength(2),
+        reason: 'INBOX is selected again before it is read',
+      );
+      await t.close();
+    });
   });
 
   group('SMTP', () {
@@ -129,6 +153,16 @@ class _FakeImapServer {
   int connections = 0;
   _Reply onList = _Reply.answer;
 
+  /// What LIST names besides INBOX.
+  final List<String> others = [];
+
+  /// Folders LIST names and SELECT refuses, as Gmail does a label deleted
+  /// on the web since the list was read.
+  final Set<String> refuseSelect = {};
+
+  /// Every command, less its tag, in the order it came.
+  final List<String> commands = [];
+
   int get port => _socket.port;
 
   static Future<_FakeImapServer> start() async {
@@ -152,6 +186,7 @@ class _FakeImapServer {
       if (space < 0) return;
       final tag = line.substring(0, space);
       final command = line.substring(space + 1).toUpperCase();
+      commands.add(command);
       if (command.startsWith('LOGIN') || command.startsWith('AUTHENTICATE')) {
         client.write('$tag OK [CAPABILITY IMAP4rev1 IDLE] signed in\r\n');
       } else if (command.startsWith('CAPABILITY')) {
@@ -160,18 +195,32 @@ class _FakeImapServer {
         switch (onList) {
           case _Reply.answer:
             client.write('* LIST (\\HasNoChildren) "/" INBOX\r\n'
-                '* STATUS INBOX (MESSAGES 3 UNSEEN 1)\r\n'
-                '$tag OK LIST done\r\n');
+                '* STATUS INBOX (MESSAGES 3 UNSEEN 1)\r\n');
+            for (final name in others) {
+              client.write('* LIST (\\HasNoChildren) "/" $name\r\n'
+                  '* STATUS $name (MESSAGES 0 UNSEEN 0)\r\n');
+            }
+            client.write('$tag OK LIST done\r\n');
           case _Reply.drop:
             client.destroy();
           case _Reply.silence:
             break;
         }
+      } else if (command.startsWith('SELECT')) {
+        final name = command.split(' ')[1].replaceAll('"', '');
+        if (refuseSelect.contains(name)) {
+          client.write('$tag NO [NONEXISTENT] no such mailbox\r\n');
+        } else {
+          client.write('* 3 EXISTS\r\n'
+              '* OK [UIDVALIDITY 7] ok\r\n'
+              '* OK [UIDNEXT 4] ok\r\n'
+              '$tag OK [READ-WRITE] selected\r\n');
+        }
       } else if (command.startsWith('LOGOUT')) {
         client.write('* BYE\r\n$tag OK bye\r\n');
         client.destroy();
       } else {
-        client.write('$tag OK\r\n');
+        client.write('$tag OK done\r\n');
       }
     }, onError: (_) {}, cancelOnError: true);
   }

@@ -108,6 +108,41 @@ void main() {
           reason: 'the name reads as the person wrote it');
     });
 
+    test('a name with a slash goes back to Graph with the slash', () async {
+      // The path carries a look-alike in its place. Sending that as the name
+      // saved "AP/AR" as something that matched nothing on the web.
+      server
+        ..folder(id: 'f-fin', name: 'Finance', children: 1)
+        ..folder(id: 'f-apar', name: 'AP/AR', parent: 'f-fin');
+      await transport.listFolders();
+
+      await transport.renameFolder('Finance/AP∕AR', 'Finance/AP∕AP');
+
+      expect(server.folders['f-apar']!['displayName'], 'AP/AP');
+    });
+
+    test('so does a new folder with one', () async {
+      final sent = <Object?>[];
+      final creating = GraphTransport(
+        accountId: 'acct-1',
+        idMap: ids,
+        api: GraphMailApi(
+          accessToken: ({bool force = false}) async => 'token',
+          httpClient: http_testing.MockClient((request) async {
+            sent.add(jsonDecode(request.body)['displayName']);
+            return http.Response(
+              jsonEncode({'id': 'f-new', 'displayName': 'AP/AR'}),
+              201,
+            );
+          }),
+        ),
+      );
+
+      await creating.createFolder('AP∕AR');
+
+      expect(sent, ['AP/AR']);
+    });
+
     test('counts come through for the tree badges', () async {
       server.folder(
         id: 'f-inbox',
@@ -920,6 +955,83 @@ void main() {
     );
 
     expect(changed, isFalse);
+  });
+
+  group('files and invitation answers', () {
+    /// A Graph that throttles the first request of each kind once, and
+    /// records every wait it is asked to sit out.
+    ({GraphMailApi api, List<Duration> waits}) throttledOnce(
+      http.Response Function(http.Request request) answer,
+    ) {
+      final waits = <Duration>[];
+      final throttled = <String>{};
+      final api = GraphMailApi(
+        accessToken: ({bool force = false}) async => 'token',
+        sleep: (d) async => waits.add(d),
+        httpClient: http_testing.MockClient((request) async {
+          if (throttled.add('${request.method} ${request.url.path}')) {
+            return http.Response(
+              jsonEncode({
+                'error': {'code': 'TooManyRequests', 'message': 'Slow down.'},
+              }),
+              429,
+              headers: const {'retry-after': '1'},
+            );
+          }
+          return answer(request);
+        }),
+      );
+      return (api: api, waits: waits);
+    }
+
+    test('a throttled attachment download is waited out', () async {
+      // It failed at once with "rate limiting", while every other request
+      // to Graph waited as asked and went through.
+      final graph = throttledOnce(
+        (_) => http.Response.bytes([1, 2, 3], 200),
+      );
+
+      final bytes = await graph.api.attachmentBytes('m-1', 'a-1');
+
+      expect(bytes, [1, 2, 3]);
+      expect(graph.waits, [const Duration(seconds: 1)]);
+    });
+
+    test('a throttled invitation answer is waited out', () async {
+      final graph = throttledOnce((request) => request.method == 'GET'
+          ? http.Response(jsonEncode({'id': 'e-1'}), 200)
+          : http.Response('', 202));
+
+      final answered = await graph.api
+          .respondToInvite('m-1', InviteResponse.accepted);
+
+      expect(answered, isTrue);
+      expect(graph.waits, hasLength(2), reason: 'the lookup and the answer');
+    });
+
+    test('a refused download says what Graph said about it', () async {
+      final api = GraphMailApi(
+        accessToken: ({bool force = false}) async => 'token',
+        httpClient: http_testing.MockClient((_) async => http.Response(
+              jsonEncode({
+                'error': {
+                  'code': 'ErrorItemNotFound',
+                  'message': 'The attachment was removed.',
+                },
+              }),
+              400,
+            )),
+      );
+
+      await expectLater(
+        api.attachmentBytes('m-1', 'a-1'),
+        throwsA(isA<ConnectionFailed>().having(
+          (e) => e.message,
+          'message',
+          contains('The attachment was removed.'),
+        )),
+      );
+    });
   });
 
   // The folder sync over this transport, end to end. Graph numbers a message

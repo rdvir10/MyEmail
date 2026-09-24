@@ -674,6 +674,11 @@ class EnoughMailTransport implements ImapTransport {
 
   Future<em.Mailbox> _select(em.ImapClient c, String path) async {
     final box = await _box(c, path);
+    // Forgotten before asking rather than after: a SELECT the server refuses
+    // (a Gmail label deleted on the web) leaves no folder selected there,
+    // and a path still remembered here sent the next read to nothing, which
+    // the server answers with BAD.
+    _selectedPath = null;
     final selected = await c.selectMailbox(box, enableCondStore: true);
     _selectedPath = path;
     return selected;

@@ -196,12 +196,21 @@ void main() {
       expect(expungeAt, greaterThan(appendAt));
     });
 
-    test('an account with no Drafts folder reports that rather than throwing',
-        () async {
+    test('an account with no Drafts folder says nothing was saved', () async {
+      // It used to return quietly, and compose closed on "Saved to Drafts"
+      // with the message saved nowhere. An error keeps compose open.
       server.folders.remove('[Gmail]/Drafts');
       final account = await addAccount();
 
-      expect(await engine.saveDraft(_draft(accountId: account.id)), isNull);
+      await expectLater(
+        engine.saveDraft(_draft(accountId: account.id)),
+        throwsA(isA<SendFailed>().having(
+          (e) => e.message,
+          'message',
+          contains('not saved'),
+        )),
+      );
+      expect(server.appended, isEmpty);
     });
 
     test('sending a saved draft clears it out of Drafts', () async {
