@@ -25,6 +25,15 @@ void main() {
           isFalse);
       expect(htmlHasRemoteContent('<img src="cid:part1">'), isFalse);
     });
+
+    test('a link is not something to show', () {
+      // The bar came up on a plain note with a link in its signature, and
+      // Show images changed nothing.
+      expect(
+        htmlHasRemoteContent('<p>Thanks</p><a href="https://example.com">Me</a>'),
+        isFalse,
+      );
+    });
   });
 
   group('stripRemoteContent', () {

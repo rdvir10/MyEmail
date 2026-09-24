@@ -281,10 +281,12 @@ final _remoteRef = RegExp(r'''(https?:)?//''', caseSensitive: false);
 
 /// Whether the message references anything the WebView would fetch from the
 /// network. Used to decide whether to offer "Show images".
-bool htmlHasRemoteContent(String html) => RegExp(
-      r'''(\b(src|srcset|poster|background|href)\s*=\s*["']?\s*|url\(\s*["']?\s*|@import\s+["']?\s*)(https?:)?//''',
-      caseSensitive: false,
-    ).hasMatch(html);
+///
+/// Asked of [stripRemoteContent] itself, so the bar shows exactly when
+/// showing images would change something. A pattern of its own counted any
+/// `href`, a plain link included, and a note with a link in its signature
+/// offered to show images that were never there.
+bool htmlHasRemoteContent(String html) => stripRemoteContent(html) != html;
 
 /// The message with every remote fetch neutralised, leaving links alone:
 ///

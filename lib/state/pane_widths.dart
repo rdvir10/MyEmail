@@ -59,20 +59,35 @@ class PaneLayout {
 
   /// The widths that actually fit in [available].
   ///
-  /// The reading pane is last and has no width of its own, so without this a
-  /// tablet rotated into a narrower landscape would give it nothing. It keeps
-  /// [minReading] and the other two give the space back in proportion.
+  /// The last pane has no width of its own, so without this a tablet
+  /// rotated into a narrower landscape would give it nothing. It keeps its
+  /// minimum — [minReading] for the reading pane, [minList] for the list
+  /// when there is no reading pane — and the panes before it give the
+  /// space back in proportion.
+  ///
+  /// Only the panes on screen count, and each [divider] beside one. A
+  /// hidden tree still took its width from the list, which also made the
+  /// list's edge move slower than the finger dragging it; and with no room
+  /// kept for the list, split screen at about 620 left it 148 wide.
   static const double minReading = 320;
 
-  PaneLayout fitted(double available, {required bool hasReadingPane}) {
-    final needed = hasReadingPane ? minReading : 0.0;
-    final spare = available - needed;
-    final wanted = hasReadingPane ? tree + list : tree;
+  /// What each draggable edge between two panes takes.
+  static const double divider = 12;
+
+  PaneLayout fitted(
+    double available, {
+    required bool hasReadingPane,
+    bool hasTree = true,
+  }) {
+    final dividers = divider * ((hasTree ? 1 : 0) + (hasReadingPane ? 1 : 0));
+    final needed = hasReadingPane ? minReading : minList;
+    final spare = available - dividers - needed;
+    final wanted = (hasTree ? tree : 0.0) + (hasReadingPane ? list : 0.0);
     if (wanted <= spare) return this;
     if (spare <= 0) return this;
     final scale = spare / wanted;
     return PaneLayout(
-      tree: tree * scale,
+      tree: hasTree ? tree * scale : tree,
       list: hasReadingPane ? list * scale : list,
     );
   }

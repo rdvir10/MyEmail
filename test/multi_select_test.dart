@@ -244,6 +244,52 @@ void main() {
     expect(c.read(selectedMessageIdsProvider), {first.message.id});
   });
 
+  testWidgets('opening another folder lets the ticks go', (tester) async {
+    // Carried over, the bar counted messages nobody could see, and Delete
+    // found none of them in the new list and quietly cleared them.
+    final c = await pump(tester);
+    final tiles = tester.widgetList<MessageTile>(find.byType(MessageTile));
+    c.read(selectedMessageIdsProvider.notifier)
+        .addAll(tiles.take(3).map((t) => t.message.id));
+    await tester.pumpAndSettle();
+    expect(find.byType(SelectionBar), findsOneWidget);
+
+    final accounts = await tester.runAsync(
+      () => c.read(accountsProvider.future),
+    );
+    final folders = c.read(foldersProvider).value![accounts!.first.id]!;
+    final other = folders.firstWhere(
+      (f) => f.id != c.read(effectiveSelectedFolderIdProvider),
+    );
+    c.read(selectedFolderIdProvider.notifier).select(other.id);
+    await tester.pumpAndSettle();
+
+    expect(c.read(selectedMessageIdsProvider), isEmpty);
+    expect(find.byType(SelectionBar), findsNothing);
+  });
+
+  testWidgets('closing Move without a choice keeps the ticks',
+      (tester) async {
+    // Tick twenty-five, open Move, swipe the sheet away: all gone, and
+    // nothing had been done to any of them.
+    final c = await pump(tester);
+    final tiles = tester.widgetList<MessageTile>(find.byType(MessageTile));
+    final account = tiles.first.message.accountId;
+    final ids = {
+      for (final t in tiles.where((t) => t.message.accountId == account).take(2))
+        t.message.id,
+    };
+    c.read(selectedMessageIdsProvider.notifier).addAll(ids);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Move to…'));
+    await tester.pumpAndSettle();
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
+
+    expect(c.read(selectedMessageIdsProvider), ids);
+  });
+
   testWidgets('acting on the selection clears it', (tester) async {
     // Leaving the ticks behind after acting on them means the next action
     // lands on messages the person believes they have already dealt with.

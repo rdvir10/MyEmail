@@ -62,6 +62,12 @@ void main() {
       expect(neighbourOf(messages, 'm1', -1), 'm1');
     });
 
+    test('a page past an end goes to that end', () {
+      // Page Down with fewer than a page left did nothing at all.
+      expect(neighbourOf(messages, 'm2', 10), 'm3');
+      expect(neighbourOf(messages, 'm2', -10), 'm1');
+    });
+
     test(
       'with nothing selected, down starts at the top and up at the bottom',
       () {

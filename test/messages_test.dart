@@ -46,6 +46,27 @@ void main() {
       );
     });
 
+    test('the same message with changed headers is not equal', () {
+      // A draft edited on another device keeps its Microsoft id and comes
+      // back with a new subject and preview. Equal to the old copy, it was
+      // dropped by the list refresh as "no change".
+      MailMessage edited({String subject = 'Subject', String preview = ''}) =>
+          MailMessage(
+            id: base.id,
+            accountId: base.accountId,
+            folderId: base.folderId,
+            uid: base.uid,
+            subject: subject,
+            from: base.from,
+            to: base.to,
+            date: base.date,
+            preview: preview,
+          );
+      expect(edited(), base);
+      expect(edited(subject: 'Revised'), isNot(base));
+      expect(edited(preview: 'New first line'), isNot(base));
+    });
+
     test('the same message in the same state is equal', () {
       expect(base.copyWith(isRead: false), base);
       expect(base.copyWith(isRead: false).hashCode, base.hashCode);

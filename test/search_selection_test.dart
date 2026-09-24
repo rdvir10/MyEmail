@@ -169,6 +169,25 @@ void main() {
       expect(find.textContaining('.eml'), findsNWidgets(2));
     });
 
+    testWidgets('the search box comes back with the search still in it',
+        (tester) async {
+      // The selection bar stands in for the box, which came back empty
+      // after it, over a list still showing the hits for 'invoice'.
+      final c = await pump(tester);
+      final hits = await search(tester, 'invoice');
+      await tester.longPress(
+          find.byKey(ValueKey('search:${hits.first.message.id}')));
+      await tester.pumpAndSettle();
+      expect(find.byType(SelectionBar), findsOneWidget);
+
+      c.read(selectedMessageIdsProvider.notifier).clear();
+      await tester.pumpAndSettle();
+
+      expect(find.byType(SelectionBar), findsNothing);
+      final box = tester.widget<TextField>(find.byType(TextField).last);
+      expect(box.controller!.text, 'invoice');
+    });
+
     testWidgets('clearing the search lets the ticks go', (tester) async {
       final c = await pump(tester);
       final hits = await search(tester, 'invoice');

@@ -25,8 +25,11 @@ String formatMessageDate(DateTime date, {DateTime? now}) {
 String formatDateBar(DateTime date, {DateTime? now}) {
   final n = (now ?? DateTime.now()).toLocal();
   final d = date.toLocal();
-  final today = DateTime(n.year, n.month, n.day);
-  final day = DateTime(d.year, d.month, d.day);
+  // Calendar days, counted in UTC where every day is 24 hours. Between
+  // local midnights the night the clocks go forward is 23, which made
+  // yesterday a second "Today" the day after.
+  final today = DateTime.utc(n.year, n.month, n.day);
+  final day = DateTime.utc(d.year, d.month, d.day);
   final difference = today.difference(day).inDays;
   final written = '${_weekdays[d.weekday - 1]} ${d.day} ${_months[d.month - 1]}'
       '${d.year == n.year ? '' : ' ${d.year}'}';

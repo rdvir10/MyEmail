@@ -18,9 +18,19 @@ class PaneFocusNodes {
   /// The pane after (or, with a negative [step], before) the one that
   /// holds the focus, among the panes that are on screen. A pane that is
   /// not built — the tree behind a phone's drawer, the reading pane when
-  /// nothing is open — has no context and is skipped.
+  /// nothing is open — is skipped.
+  ///
+  /// Not built now, rather than never built: a node keeps the context it
+  /// last had after its pane goes. Taken for present, a hidden tree or a
+  /// closed reading pane was where F6 kept sending the focus, so it never
+  /// moved; and the request waited on the node, so the tree took the focus
+  /// by itself the moment it was shown again.
   FocusNode? neighbour(int step) {
-    final shown = [for (final n in inOrder) if (n.context != null) n];
+    final shown = [
+      for (final n in inOrder)
+        if (n.context?.mounted == true && n.parent != null && n.canRequestFocus)
+          n,
+    ];
     if (shown.isEmpty) return null;
     final at = shown.indexWhere((n) => n.hasFocus);
     if (at < 0) return shown.first;
@@ -42,10 +52,15 @@ final paneFocusProvider = Provider<PaneFocusNodes>((ref) {
 
 /// Whether the focus is in something being typed into. Every key handler
 /// asks this first: arrows in a search box move the caret, not the folder.
-bool focusIsInTextField() =>
-    FocusManager.instance.primaryFocus?.context
-        ?.findAncestorStateOfType<EditableTextState>() !=
-    null;
+///
+/// Typed into, not merely text: a plain-text message body is a read-only
+/// [SelectableText], and clicking into it to select a line switched off
+/// Ctrl+R, Ctrl+D, F6 and the rest until the list was clicked again.
+bool focusIsInTextField() {
+  final text = FocusManager.instance.primaryFocus?.context
+      ?.findAncestorStateOfType<EditableTextState>();
+  return text != null && !text.widget.readOnly;
+}
 
 /// Whether a hardware keyboard has been used this session.
 ///

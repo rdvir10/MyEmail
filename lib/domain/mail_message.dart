@@ -159,15 +159,36 @@ class MailMessage {
   /// thing that changed was a flag: the reading pane and the ribbon would
   /// keep showing "mark as read" for a message that had just been read.
   ///
-  /// Only the fields that can change for a given id are compared. Everything
-  /// else about a message is fixed once the server has assigned it a UID.
+  /// Every field is compared, not just the flags. A UID's headers are fixed
+  /// on the server, but not on this device: a draft edited elsewhere comes
+  /// back under the same Microsoft id with a new subject and preview, and a
+  /// cached row can be filled in later (a preview, an attachment size). The
+  /// list keeps its old copy when a refresh compares equal, so comparing the
+  /// flags alone kept the old subject on screen until a restart.
   @override
   bool operator ==(Object other) =>
       other is MailMessage &&
       other.id == id &&
       other.isRead == isRead &&
-      other.isFlagged == isFlagged;
+      other.isFlagged == isFlagged &&
+      other.accountId == accountId &&
+      other.folderId == folderId &&
+      other.uid == uid &&
+      other.subject == subject &&
+      other.from == from &&
+      listEquals(other.to, to) &&
+      listEquals(other.cc, cc) &&
+      listEquals(other.replyTo, replyTo) &&
+      other.date == date &&
+      other.preview == preview &&
+      other.hasAttachments == hasAttachments &&
+      other.attachmentBytes == attachmentBytes &&
+      other.isMeeting == isMeeting &&
+      other.messageId == messageId &&
+      other.inReplyTo == inReplyTo;
 
+  /// The id and the flags only: enough to spread messages out, and equal
+  /// messages still hash alike.
   @override
   int get hashCode => Object.hash(id, isRead, isFlagged);
 

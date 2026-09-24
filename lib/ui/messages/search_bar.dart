@@ -14,7 +14,12 @@ class MessageSearchBar extends ConsumerStatefulWidget {
 }
 
 class _MessageSearchBarState extends ConsumerState<MessageSearchBar> {
-  final _controller = TextEditingController();
+  // Starts from the search there is, not empty. The selection bar takes
+  // this bar's place while messages are ticked, so it comes back new after
+  // every selection: empty, over a list still showing the old search's
+  // hits, and typing started a new search instead of editing that one.
+  late final _controller =
+      TextEditingController(text: ref.read(searchQueryProvider));
   final _focus = FocusNode();
 
   @override

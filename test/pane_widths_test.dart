@@ -102,8 +102,39 @@ void main() {
 
     test('with no reading pane only the tree has to fit', () {
       const panes = PaneLayout(tree: 460, list: 620);
-      expect(panes.fitted(700, hasReadingPane: false).tree, 460,
+      expect(panes.fitted(800, hasReadingPane: false).tree, 460,
           reason: 'the message list is the pane that expands here');
+    });
+
+    test('with no reading pane the list keeps room for itself', () {
+      // Split screen at about 620 with a wide tree left the list 148 wide:
+      // its title bar overflowed and the rows could not be read.
+      const panes = PaneLayout(tree: 460, list: 620);
+      final fitted = panes.fitted(620, hasReadingPane: false);
+
+      expect(
+        620 - fitted.tree - PaneLayout.divider,
+        greaterThanOrEqualTo(PaneLayout.minList),
+      );
+    });
+
+    test('the edges between the panes are counted too', () {
+      const wide = PaneLayout(tree: 460, list: 620);
+      final fitted = wide.fitted(900, hasReadingPane: true);
+
+      expect(
+        fitted.tree + fitted.list + 2 * PaneLayout.divider,
+        lessThanOrEqualTo(900 - PaneLayout.minReading),
+      );
+    });
+
+    test('a hidden tree leaves its width to the others', () {
+      // The list was shrunk as if the tree were still there, and its edge
+      // moved slower than the finger dragging it.
+      const panes = PaneLayout(tree: 460, list: 620);
+      final fitted = panes.fitted(1000, hasReadingPane: true, hasTree: false);
+
+      expect(fitted.list, 620);
     });
   });
 
@@ -159,6 +190,25 @@ void main() {
 
       expect(tester.getTopLeft(find.byType(MessageListPane)).dx,
           lessThan(before));
+    });
+
+    testWidgets('the list gets back what the tree had taken from it',
+        (tester) async {
+      // Hidden, the tree still counted when the panes were fitted, so the
+      // list stayed shrunk as if it were there. With the tree shown, 1300
+      // is too narrow for both at their widest and the reading pane's
+      // minimum; without it, the list fits at its full width.
+      _useSize(tester, const Size(1300, 900));
+      final c = _container();
+      c.read(paneWidthsProvider.notifier)
+        ..dragTree(PaneLayout.maxTree)
+        ..dragList(PaneLayout.maxList);
+      c.read(folderPaneVisibleProvider.notifier).set(false);
+      await tester.pumpWidget(_app(container: c));
+      await tester.pumpAndSettle();
+
+      expect(tester.getSize(find.byType(MessageListPane)).width,
+          PaneLayout.maxList);
     });
 
     testWidgets('it works on the two-pane layout too', (tester) async {

@@ -681,14 +681,29 @@ final folderSearchQueryProvider =
 /// means "nothing chosen yet", in which case
 /// [effectiveSelectedFolderIdProvider] supplies a default.
 class SelectedFolderId extends Notifier<String?> {
+  /// Off once [showOnly] has been used, for the rest of this copy of the app.
+  var _remember = true;
+
   @override
   String? build() {
     final store = ref.watch(uiStateStoreProvider);
-    listenSelf((_, next) => store.writeString(UiStateKeys.selected, next));
+    listenSelf((_, next) {
+      if (_remember) store.writeString(UiStateKeys.selected, next);
+    });
     return store.readString(UiStateKeys.selected);
   }
 
   void select(String? folderId) => state = folderId;
+
+  /// Shows [folderId] without making it the folder the app opens on.
+  ///
+  /// For a window opened on one message, whose folder is only the list its
+  /// actions go through. Remembered like a choice, the next cold start
+  /// opened on that message's folder instead of the one chosen in the app.
+  void showOnly(String? folderId) {
+    _remember = false;
+    state = folderId;
+  }
 
   void remap(FolderRename r) {
     final current = state;
