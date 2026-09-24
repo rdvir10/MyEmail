@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../domain/mail_attachment.dart';
@@ -12,8 +14,8 @@ import '../../domain/mail_attachment.dart';
 /// needs the space. Saving one somewhere permanent is a separate, deliberate
 /// act, and goes wherever the person points the file picker.
 ///
-/// The layout is `attachments/<message>/<file name>`, one directory per
-/// message, so two messages can both carry `invoice.pdf` without one
+/// The layout is `attachments/<attachment>/<file name>`, one directory per
+/// attachment, so two messages can both carry `invoice.pdf` without one
 /// standing in for the other — which would be the kind of wrong that is
 /// never noticed until the wrong invoice is sent on.
 abstract class AttachmentFiles {
@@ -58,15 +60,33 @@ class DiskAttachmentFiles implements AttachmentFiles {
   Future<File> _fileFor(String messageId, MailAttachment attachment) async {
     final root = await getTemporaryDirectory();
     return File(
-      '${root.path}/attachments/${_folderFor(messageId)}/'
+      '${root.path}/attachments/${await folderFor(messageId, attachment)}/'
       '${safeFileName(attachment.name)}',
     );
   }
 
-  /// A message id holds a colon and a slash — `acct:INBOX#42` — neither of
-  /// which belongs in a directory name.
-  static String _folderFor(String messageId) =>
-      messageId.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+  /// The directory one attachment is kept in.
+  ///
+  /// Not the message id alone. `acct:INBOX#42` names a place in a folder,
+  /// not a message: IMAP numbers a recreated folder from 1 again, and
+  /// Microsoft's messages are numbered here and start again once a folder
+  /// is forgotten. A new message then opened an old one's file of the same
+  /// name. The attachment's own id and size go in too: Microsoft's ids are
+  /// unique by themselves, and over IMAP, where a part id is only "2", it
+  /// would take another file with the same name, place and size to the
+  /// byte. Hashed, because an id holds a colon and a slash, and a deep
+  /// folder path can be longer than a directory name may be.
+  static Future<String> folderFor(
+    String messageId,
+    MailAttachment attachment,
+  ) async {
+    final hash = await Sha256().hash(utf8.encode(
+      '$messageId\n${attachment.id}\n${attachment.sizeBytes}',
+    ));
+    return [
+      for (final b in hash.bytes.take(16)) b.toRadixString(16).padLeft(2, '0'),
+    ].join();
+  }
 }
 
 /// Keeps the bytes in memory. Tests, and the browser preview.
@@ -77,7 +97,9 @@ class MemoryAttachmentFiles implements AttachmentFiles {
 
   @override
   Future<File?> cached(String messageId, MailAttachment attachment) async =>
-      null;
+      written.containsKey(_key(messageId, attachment))
+          ? File('/memory/${safeFileName(attachment.name)}')
+          : null;
 
   @override
   Future<File> write(

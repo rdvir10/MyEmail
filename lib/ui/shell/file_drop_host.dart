@@ -51,6 +51,7 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
   /// as attachments, text as the body, a subject if one came along.
   Future<void> _shared(SharedContent content) async {
     if (!mounted) return;
+    _sayLeftOut(content.skipped);
     final attachments = await readIncoming(content.files);
     if (!mounted) return;
     if (attachments.isEmpty && content.text == null) return;
@@ -80,6 +81,7 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
       await _ownMessages(dropped);
       return;
     }
+    _sayLeftOut(dropped.skipped);
     final files = dropped.files;
     if (files.isEmpty) return;
     final claimed = ref.read(dropTargetProvider).current;
@@ -108,6 +110,21 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
   /// Anywhere else they are left alone: a file from outside starts a new
   /// message, but a message of our own dropped on the list is far more
   /// likely a slip than a request to forward it.
+  /// Files handed over that could not be read, said before whatever
+  /// happens with the rest, so a message that opens with one file of two
+  /// does not look complete.
+  void _sayLeftOut(int skipped) {
+    if (skipped == 0) return;
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        duration: kBottomMessage,
+        content: Text(skipped == 1
+            ? 'One file could not be read, and was left out.'
+            : '$skipped files could not be read, and were left out.'),
+      ));
+  }
+
   Future<void> _ownMessages(DroppedFiles dropped) async {
     final ids = [
       for (final id in (dropped.text ?? '').split('\n'))

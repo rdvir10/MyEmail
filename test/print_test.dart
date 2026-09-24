@@ -55,6 +55,78 @@ void main() {
       expect(page, contains('<p>Body</p>'));
     });
 
+    // The message's styles share the page with the header. One rule,
+    // `.head{display:none}`, printed a message without its real From and
+    // Date, and a little more drew a fake pair in their place. These check
+    // the page's side of that; what a browser makes of it was checked in
+    // Chrome, printing to PDF, against those attacks.
+    group("the message's styles cannot reach the header", () {
+      const attack = '<style>.head{display:none !important}</style>'
+          '<p>Body</p>';
+
+      test('the page rules come first, in a layer of their own', () {
+        final page = printableMessage(
+          message,
+          const MailBody(text: 'x'),
+          bodyHtml: attack,
+        );
+
+        // Among !important rules the first layer beats everything after
+        // it, whatever the selector. Unnamed, so nothing can join it.
+        final layer = page.indexOf('@layer {');
+        expect(layer, greaterThan(0));
+        expect(layer, lessThan(page.indexOf(attack)));
+        expect(page, contains('body > .head *'));
+        expect(
+          RegExp(r'body > \.head, body > \.head \* \{ all: revert !important; \}')
+              .hasMatch(page),
+          isTrue,
+          reason: 'every property of the header is the page\'s to set',
+        );
+      });
+
+      test('a style on the message\'s own <body> is not taken as the page\'s',
+          () {
+        // The parser merges a stray <body style> into the page's body, but
+        // only where the page's body has no such attribute.
+        final page = printableMessage(
+          message,
+          const MailBody(text: 'x'),
+          bodyHtml: '<body style="margin-top:-900px !important"><p>Body</p>',
+        );
+
+        expect(page, contains('<html style="">'));
+        expect(page, contains('<body style="">'));
+      });
+
+      test('the message is shut in an element it cannot close', () {
+        // A stray </div> closed the last div open, and what followed was out
+        // in the page, free to be laid over the header.
+        String shutIn(String page) => RegExp(r'<(mailtree-message-[0-9a-f]{12})>')
+            .firstMatch(page)!
+            .group(1)!;
+        final page = printableMessage(
+          message,
+          const MailBody(text: 'x'),
+          bodyHtml: '</div></div><p>Body</p>',
+        );
+        final name = shutIn(page);
+        final opened = page.indexOf('<$name>');
+
+        expect(page.indexOf('</div></div><p>Body</p>'), greaterThan(opened));
+        expect(page.indexOf('</$name>'),
+            greaterThan(page.indexOf('<p>Body</p>')));
+        expect(page, contains('body > $name { display: block !important; '
+            'position: relative !important; z-index: 0 !important;'));
+        // Made up afresh each time, so a message cannot name it.
+        expect(
+          shutIn(printableMessage(message, const MailBody(text: 'x'),
+              bodyHtml: '<p>Body</p>')),
+          isNot(name),
+        );
+      });
+    });
+
     test('a plain-text message keeps its line breaks', () {
       final page = printableMessage(
         message,

@@ -1,4 +1,9 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/files/attachment_files.dart';
@@ -19,9 +24,22 @@ void main() {
   late FakeFileBridge bridge;
   late MemoryAttachmentFiles files;
 
+  // The cache directory, for the tests that use the real disk.
+  late Directory temp;
+  const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
+
   setUp(() {
     bridge = FakeFileBridge();
     files = MemoryAttachmentFiles();
+    temp = Directory.systemTemp.createTempSync('myemail-attachments-');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathProvider, (_) async => temp.path);
+  });
+
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathProvider, null);
+    temp.deleteSync(recursive: true);
   });
 
   group('names that have to touch a filesystem', () {
@@ -48,6 +66,47 @@ void main() {
     test('characters Windows refuses are replaced, not dropped', () {
       expect(safeFileName('Q3: plan?.xlsx'), 'Q3_ plan_.xlsx');
     });
+
+    test('a long name in Chinese or Thai still fits on the disk', () {
+      // The disk counts bytes, 255 of them, and each of these is three. At
+      // 120 characters the download could never be written.
+      final cut = safeFileName('${'季度财务报告' * 30}.pdf');
+
+      expect(utf8.encode(cut).length, lessThanOrEqualTo(200));
+      expect(cut, endsWith('.pdf'));
+      expect(cut, startsWith('季度财务报告'));
+    });
+
+    test('and is cut between characters, never through one', () {
+      final cut = safeFileName('a${'😀' * 100}');
+
+      // Half an emoji is a lone surrogate, which no filesystem takes.
+      expect(cut.runes.where((r) => r >= 0xD800 && r <= 0xDFFF), isEmpty);
+      expect(cut.runes.last, 0x1F600);
+    });
+  });
+
+  group('the copy on disk', () {
+    MailAttachment invoice({String id = '2', int size = 10}) => MailAttachment(
+          id: id,
+          name: 'invoice.pdf',
+          mimeType: 'application/pdf',
+          sizeBytes: size,
+        );
+
+    test('is not handed to a new message in the same place', () async {
+      // `acct:INBOX#1` is a place, not a message: a recreated folder numbers
+      // from 1 again, and so does a forgotten Microsoft folder.
+      const disk = DiskAttachmentFiles();
+      await disk.write(
+          'a:INBOX#1', invoice(), Uint8List.fromList(utf8.encode('old')));
+
+      expect(await disk.cached('a:INBOX#1', invoice()), isNotNull);
+      expect(await disk.cached('a:INBOX#1', invoice(size: 11)), isNull,
+          reason: 'IMAP: same part, another file');
+      expect(await disk.cached('a:INBOX#1', invoice(id: 'AAMkAD=')), isNull,
+          reason: 'Microsoft: another attachment id');
+    });
   });
 
   group('sizes as a person reads them', () {
@@ -60,20 +119,22 @@ void main() {
   });
 
   group('downloading', () {
-    ProviderContainer container() {
+    ProviderContainer container(AttachmentFiles on) {
       final c = ProviderContainer(
         overrides: [
           uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
           fileBridgeProvider.overrideWithValue(bridge),
-          attachmentFilesProvider.overrideWithValue(files),
+          attachmentFilesProvider.overrideWithValue(on),
         ],
       );
       addTearDown(c.dispose);
       return c;
     }
 
-    Future<(ProviderContainer, String)> messageWithFiles() async {
-      final c = container();
+    Future<(ProviderContainer, String)> messageWithFiles({
+      AttachmentFiles? on,
+    }) async {
+      final c = container(on ?? files);
       final engine = c.read(mailEngineProvider) as SampleMailEngine;
       final accounts = await engine.loadAccounts();
       final folders = await engine.loadFolders(accounts.first.id);
@@ -110,6 +171,22 @@ void main() {
           reason: 'the second ask is answered from what was already fetched');
     });
 
+    test('a copy Android has cleared away is fetched again', () async {
+      // The cache is Android's to empty. A file remembered from earlier was
+      // handed out anyway, and Save as failed on it without a word.
+      final (c, messageId) =
+          await messageWithFiles(on: const DiskAttachmentFiles());
+      final listed = await c.read(attachmentsProvider(messageId).future);
+      final downloads = c.read(attachmentDownloadsProvider.notifier);
+
+      final first = await downloads.file(messageId, listed.first);
+      first!.deleteSync();
+      final again = await downloads.file(messageId, listed.first);
+
+      expect(again!.existsSync(), isTrue);
+      expect(again.lengthSync(), greaterThan(0));
+    });
+
     test('a failure is remembered rather than thrown at the screen', () async {
       final (c, messageId) = await messageWithFiles();
       final downloads = c.read(attachmentDownloadsProvider.notifier);
@@ -128,12 +205,15 @@ void main() {
   });
 
   group('the bar on a message', () {
-    Future<ProviderContainer> pumpBar(WidgetTester tester) async {
+    Future<ProviderContainer> pumpBar(
+      WidgetTester tester, {
+      AttachmentFiles? on,
+    }) async {
       final c = ProviderContainer(
         overrides: [
           uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
           fileBridgeProvider.overrideWithValue(bridge),
-          attachmentFilesProvider.overrideWithValue(files),
+          attachmentFilesProvider.overrideWithValue(on ?? files),
         ],
       );
       addTearDown(c.dispose);
@@ -213,5 +293,74 @@ void main() {
 
       expect(bridge.shared, hasLength(1));
     });
+
+    group('Save as', () {
+      late _Picker picker;
+      late FilePickerPlatform before;
+      setUp(() {
+        before = FilePickerPlatform.instance;
+        FilePickerPlatform.instance = picker = _Picker();
+      });
+      tearDown(() => FilePickerPlatform.instance = before);
+
+      /// Choose Save as from the chip's menu, on a real disk.
+      Future<void> saveAs(WidgetTester tester) async {
+        await pumpBar(tester, on: const DiskAttachmentFiles());
+        await tester.tap(find.byIcon(Icons.more_vert).first);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Save as…'));
+        // In turns until it has said something: the sample server's delay
+        // runs on the test's clock, and each step on the disk on the real
+        // one, which a widget test's clock does not wait for.
+        for (var i = 0;
+            i < 250 && find.byType(SnackBar).evaluate().isEmpty;
+            i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 20)),
+          );
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+      }
+
+      testWidgets('puts the file where the person chose', (tester) async {
+        await saveAs(tester);
+
+        expect(picker.saved.single, endsWith('.pdf'));
+        expect(find.text('Saved.'), findsOneWidget);
+      });
+
+      testWidgets('that fails says so', (tester) async {
+        // A full disk, or a cloud folder that will not take the write. It
+        // used to end with nothing on screen at all.
+        picker.fails = true;
+
+        await saveAs(tester);
+
+        expect(find.text('Could not save the attachment.'), findsOneWidget);
+      });
+    });
   });
+}
+
+/// The system's save dialog, answered without one.
+class _Picker extends FilePickerPlatform {
+  bool fails = false;
+  final List<String> saved = [];
+
+  @override
+  Future<Uri?> saveFile({
+    required String fileName,
+    required Uint8List bytes,
+    required String mimeType,
+    String? dialogTitle,
+    String? initialDirectory,
+    Function(FilePickerStatus)? onFileSaving,
+    WindowsOptions windowsOptions = const WindowsOptions(),
+    LinuxOptions linuxOptions = const LinuxOptions(),
+    WebOptions webOptions = const WebOptions(),
+  }) async {
+    if (fails) throw const FileSystemException('No space left on device');
+    saved.add(fileName);
+    return Uri.parse('content://documents/$fileName');
+  }
 }

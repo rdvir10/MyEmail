@@ -22,9 +22,20 @@ String mimeTypeForFile(String name, {String? declared}) {
   final byName = _byExtension[_extensionOf(name)];
   if (byName != null) return byName;
   final said = _withoutParameters(declared);
-  if (said != null && !_isVague(said)) return said;
+  if (said != null && !_isVague(said) && said != _androidPackage) return said;
   return 'application/octet-stream';
 }
+
+/// An app to install, which is never what opening an attachment should do.
+///
+/// Android sends this type straight to its installer, and because MyEmail
+/// may install apps (its own updates), a mailed APK tapped once was a
+/// "Do you want to install this app?" with MyEmail as the source. So an APK
+/// goes out as bytes, by name or by what the sender claimed: a file with no
+/// extension that says it is an app gets no more trust than one called
+/// `.apk`. Saved to Files, it can still be installed from there, on purpose.
+/// The updater hands its download to the installer itself.
+const _androidPackage = 'application/vnd.android.package-archive';
 
 /// Whether a media type says anything worth acting on.
 ///
@@ -113,6 +124,7 @@ const _byExtension = <String, String>{
   // Drawings and the rest
   'dwg': 'image/vnd.dwg',
   'dxf': 'image/vnd.dxf',
-  'apk': 'application/vnd.android.package-archive',
+  // Not the installer's type: see [_androidPackage].
+  'apk': 'application/octet-stream',
   'epub': 'application/epub+zip',
 };

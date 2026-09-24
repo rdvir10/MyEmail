@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/domain/file_types.dart';
 import 'package:myemail/domain/mail_attachment.dart';
@@ -91,6 +93,44 @@ void main() {
       expect(mimeTypeForFile('mystery'), 'application/octet-stream');
       expect(mimeTypeForFile(''), 'application/octet-stream');
       expect(mimeTypeForFile('trailing.'), 'application/octet-stream');
+    });
+  });
+
+  group('an app to install', () {
+    // MyEmail may install apps, for its own updates, so the installer takes
+    // a file it is handed as coming from a trusted source. A mailed APK
+    // opened as one was a phishing mail one tap from "install this app?".
+    const installer = 'application/vnd.android.package-archive';
+
+    test('is opened as bytes, not handed to the installer', () {
+      expect(mimeTypeForFile('Invoice.apk', declared: installer),
+          'application/octet-stream');
+      expect(file('update.APK', 'application/octet-stream').openAs,
+          'application/octet-stream');
+    });
+
+    test('whatever the sender claims for a name that says nothing', () {
+      expect(mimeTypeForFile('Invoice', declared: installer),
+          'application/octet-stream');
+      expect(
+        mimeTypeForFile('scan0001', declared: '$installer; name=x.apk'),
+        'application/octet-stream',
+      );
+    });
+
+    test('and the Android side refuses the type too', () {
+      // Handed octet-stream, FilesBridge looks the extension up again, and
+      // Android's own table maps .apk back to the installer.
+      final bridge = File(
+        'android/app/src/main/kotlin/com/rdvir/mailtree/FilesBridge.kt',
+      ).readAsStringSync();
+      final typeFor = RegExp(r'private fun typeFor\([\s\S]*?\n    }')
+          .firstMatch(bridge)
+          ?.group(0);
+      expect(typeFor, isNotNull);
+      expect(typeFor,
+          contains('if (type == ANDROID_PACKAGE) "application/octet-stream"'));
+      expect(bridge, contains('ANDROID_PACKAGE = "$installer"'));
     });
   });
 
