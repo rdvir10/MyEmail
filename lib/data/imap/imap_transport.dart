@@ -266,6 +266,7 @@ class RemoteHeader {
     required this.isRead,
     required this.isFlagged,
     required this.hasAttachments,
+    this.arrived,
     this.cc = const [],
     this.replyTo = const [],
     this.attachmentBytes = 0,
@@ -286,6 +287,9 @@ class RemoteHeader {
   /// See [MailMessage.replyTo].
   final List<MailAddress> replyTo;
   final DateTime date;
+
+  /// See [MailMessage.arrived].
+  final DateTime? arrived;
   final bool isRead;
   final bool isFlagged;
   final bool hasAttachments;

@@ -89,21 +89,25 @@ class DriftGraphIdMap implements GraphIdMap {
     if (remoteIds.isEmpty) return const {};
 
     final known = await _lookUp(accountId, path, remoteIds);
-    final missing = [
-      for (final id in remoteIds)
-        if (!known.containsKey(id)) id,
-    ];
-    if (missing.isEmpty) return known;
+    if (known.length == remoteIds.toSet().length) return known;
 
-    // One transaction for the read of the high-water mark and the writes that
-    // follow it. Two folders syncing at once would otherwise both read the
-    // same highest number and hand out the same ones, and the second write
-    // would collide on the primary key.
+    // One transaction for the look-up, the read of the high-water mark and
+    // the writes that follow them. Two syncs of this folder at once, a
+    // refresh and a load-more or the app and the worker, each used to find
+    // a new message missing before either had numbered it, and each gave it
+    // a number of its own: the message showed twice. Looked up again in
+    // here, the second finds the first's number. Across connections the
+    // unique index on the remote id makes a second insert a no-op instead.
     await db.transaction(() async {
+      final numbered = await _lookUp(accountId, path, remoteIds);
+      final missing = {
+        for (final id in remoteIds)
+          if (!numbered.containsKey(id)) id,
+      };
+      if (missing.isEmpty) return;
       var next = await highestUid(accountId, path) + 1;
       await db.batch((batch) {
         for (final id in missing) {
-          known[id] = next;
           batch.insert(
             db.graphIds,
             GraphIdsCompanion.insert(
@@ -112,9 +116,6 @@ class DriftGraphIdMap implements GraphIdMap {
               uid: next,
               remoteId: id,
             ),
-            // A concurrent sync may have inserted the same id already. Its
-            // number is as good as ours; the reconciling read below settles
-            // which one everyone uses.
             mode: InsertMode.insertOrIgnore,
           );
           next++;
@@ -190,31 +191,24 @@ class DriftGraphIdMap implements GraphIdMap {
     String newPath,
   ) async {
     if (oldPath == newPath) return;
-    const scope = "WHERE account_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')";
+    final from = folderSubtree(oldPath);
+    final to = folderSubtree(newPath);
     await db.transaction(() async {
       // Anything left at the destination belongs to no folder that exists
       // now, and would collide with the rows arriving.
-      await db.customStatement('DELETE FROM graph_ids $scope', [
-        accountId,
-        newPath,
-        '${_escapeLike(newPath)}/%',
-      ]);
+      await db.customStatement(
+        'DELETE FROM graph_ids WHERE account_id = ? AND ${to.sql} '
+        'AND NOT ${from.sql}',
+        [accountId, ...to.args, ...from.args],
+      );
       // The same prefix swap the cache makes for its messages.
       await db.customStatement(
-        'UPDATE graph_ids SET path = ? || substr(path, ?) $scope',
-        [
-          newPath,
-          oldPath.length + 1,
-          accountId,
-          oldPath,
-          '${_escapeLike(oldPath)}/%',
-        ],
+        'UPDATE graph_ids SET path = ? || substr(path, ?) '
+        'WHERE account_id = ? AND ${from.sql}',
+        [newPath, sqlLength(oldPath) + 1, accountId, ...from.args],
       );
     });
   }
-
-  static String _escapeLike(String s) =>
-      s.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 
   @override
   Future<void> forgetMoved(

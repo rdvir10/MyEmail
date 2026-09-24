@@ -61,6 +61,7 @@ class MailMessage {
     required this.to,
     required this.date,
     required this.preview,
+    this.arrived,
     this.cc = const [],
     this.replyTo = const [],
     this.isRead = false,
@@ -96,6 +97,15 @@ class MailMessage {
   /// before it was read.
   final List<MailAddress> replyTo;
   final DateTime date;
+
+  /// When the server took it in, where that is not [date].
+  ///
+  /// [date] is what the sender's Date header says, which a message sent
+  /// offline or through a slow relay can put hours before it arrived, and a
+  /// wrong clock can put in the future. Gmail's arrival time is kept here;
+  /// Microsoft's [date] is already the arrival, so this is null there, and
+  /// on anything cached before it was read.
+  final DateTime? arrived;
 
   /// The first line or so of the body, for the list.
   final String preview;
@@ -140,6 +150,7 @@ class MailMessage {
       cc: cc,
       replyTo: replyTo,
       date: date,
+      arrived: arrived,
       preview: preview,
       isRead: isRead ?? this.isRead,
       isFlagged: isFlagged ?? this.isFlagged,

@@ -60,7 +60,10 @@ class EnoughMailTransport implements ImapTransport {
   String? _selectedPath;
   Future<void> _tail = Future.value();
 
-  static const _headerCriteria = '(UID FLAGS ENVELOPE BODYSTRUCTURE)';
+  /// INTERNALDATE for when each message arrived, which the Date header
+  /// is not: see [MailMessage.arrived].
+  static const _headerCriteria =
+      '(UID FLAGS ENVELOPE BODYSTRUCTURE INTERNALDATE)';
 
   // --- ImapTransport ---------------------------------------------------------
 

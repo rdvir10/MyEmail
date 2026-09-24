@@ -551,6 +551,13 @@ class CachedImapEngine implements MailEngine {
       final t = await _transport(accountId);
       remote = await t.listFolders();
       await folderLists.write(accountId, remote);
+      // A full listing from the server: whatever is cached for a folder not
+      // in it is for one deleted or renamed elsewhere, and would sit here
+      // for good. Never on an empty one, which is more likely a server
+      // having a bad moment than an account with no Inbox.
+      if (remote.isNotEmpty) {
+        await cache.pruneFolders(accountId, {for (final r in remote) r.path});
+      }
     } on ConnectionFailed {
       final cached = folderLists.read(accountId);
       if (cached == null) rethrow;
@@ -1104,6 +1111,7 @@ class CachedImapEngine implements MailEngine {
               cc: h.cc,
               replyTo: h.replyTo,
               date: h.date,
+              arrived: h.arrived,
               preview: h.preview,
               isRead: h.isRead,
               isFlagged: h.isFlagged,
