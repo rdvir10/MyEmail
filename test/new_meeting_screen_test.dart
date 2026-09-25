@@ -318,18 +318,43 @@ void main() {
   });
 
   group('a Microsoft account that has not allowed the calendar', () {
-    testWidgets('names the administrator when only they can allow it',
-        (tester) async {
+    testWidgets('names the administrator when only they can allow it, and '
+        'offers the sign-in that asks them', (tester) async {
+      // The sign-in cannot succeed then, but Microsoft's page is where the
+      // request to the administrator is made ("Request approval"), which
+      // is how the mail permissions were granted the first time. Without
+      // the button there was no way to ask.
+      final web = FakeWebViewPlatform.install();
       engine = _NeedsConsent(needsAdministrator: true);
-      await pumpScreen(tester, accountId: 'acct-ms');
+      final oauth = MicrosoftOAuth(
+        clientId: 'test-client',
+        authority: 'https://login.example/common/oauth2/v2.0',
+        httpClient: http_testing.MockClient(
+          (_) async => http.Response('{}', 500),
+        ),
+      );
+      await pumpScreen(tester, accountId: 'acct-ms', oauth: oauth);
       await type(tester, 'meeting-title', 'Q3 review');
 
       await send(tester);
 
       expect(find.byType(NewMeetingScreen), findsOneWidget);
-      expect(find.textContaining('administrator'), findsOneWidget);
+      expect(find.textContaining("only the organisation's administrator"),
+          findsOneWidget);
+      expect(find.textContaining('send them the request'), findsOneWidget);
       expect(find.text('Allow the calendar'), findsNothing);
       expect(engine.meetings, isEmpty);
+
+      await tester.tap(find.text('Ask the administrator'));
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.byType(MicrosoftSignInScreen), findsOneWidget);
+      expect(
+        web.loadedUrls.last.queryParameters['scope'],
+        contains('Calendars.ReadWrite'),
+        reason: 'the page asks for the calendar, which is what is requested',
+      );
     });
 
     testWidgets('otherwise offers the sign-in that asks, and sends after it',

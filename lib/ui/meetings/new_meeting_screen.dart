@@ -131,9 +131,15 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
   String? _notice;
 
   /// Whether a sign-in that asks Microsoft for the calendar is offered
-  /// under [_notice]. Not when only an administrator can give it: the
-  /// button would loop without ever succeeding.
+  /// under [_notice], and whether it is the administrator being asked.
+  ///
+  /// Offered even when only an administrator can give it. The sign-in
+  /// cannot succeed then, but Microsoft's page is where the request to
+  /// the administrator is made: it offers "Request approval", the
+  /// administrator is told, and the mail permissions were granted this
+  /// way the first time. Kept off it, there was no way to ask.
   bool _offerConsent = false;
+  bool _askAdministrator = false;
 
   /// Something that went wrong out of their hands. Worth reporting.
   ProblemReport? _problem;
@@ -251,11 +257,12 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
         _notice = e.needsAdministrator
             ? "Microsoft has not allowed the app to use this account's "
                 "calendar, and only the organisation's administrator can "
-                'allow it: they have to approve the app for calendars before '
-                'a meeting can be created here.'
+                "allow it. Sign in below: Microsoft's page will offer to "
+                'send them the request. Once they approve, tap Send again.'
             : "Microsoft has not yet allowed the app to use this account's "
                 'calendar. Sign in again to allow it; nothing cached is lost.';
-        _offerConsent = !e.needsAdministrator;
+        _offerConsent = true;
+        _askAdministrator = e.needsAdministrator;
       });
     } catch (e) {
       // Every failure the calendars throw on purpose already carries a
@@ -521,7 +528,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
                 action: _offerConsent
                     ? FilledButton.tonal(
                         onPressed: _sending ? null : _allowCalendar,
-                        child: const Text('Allow the calendar'),
+                        child: Text(_askAdministrator
+                            ? 'Ask the administrator'
+                            : 'Allow the calendar'),
                       )
                     : null,
               ),
