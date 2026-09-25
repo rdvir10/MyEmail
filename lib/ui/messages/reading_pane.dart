@@ -7,7 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/draft.dart';
 import '../../state/trusted_senders.dart';
 import '../../domain/trusted_senders.dart';
-import '../../state/calendar_providers.dart';
 import 'invite_card.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/recipient_summary.dart';
@@ -17,6 +16,7 @@ import '../../state/providers.dart';
 import '../../state/window_providers.dart';
 import '../../domain/window_handoff.dart';
 import '../compose/open_compose.dart';
+import '../meetings/new_meeting_screen.dart';
 import 'attachment_bar.dart';
 import 'date_format.dart';
 import '../shell/pane_focus.dart';
@@ -287,10 +287,17 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
             onFullScreen: body.value == null
                 ? null
                 : () => FullScreenMessage.open(context, message),
-            onCreateEvent: body.value == null ||
-                    !(ref.watch(calendarAvailableProvider).value ?? false)
+            // Whatever the phone has: the account's own calendar takes it,
+            // and the calendar app is only the way out for an account
+            // without one.
+            onCreateEvent: body.value == null
                 ? null
-                : () => _createEvent(message, body.value!),
+                : () => openNewMeetingFromMessage(
+                      context,
+                      ref,
+                      message,
+                      body.value!,
+                    ),
           ),
         ),
         // The invitation, when the message carries one, before the body:
@@ -321,26 +328,6 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
         ),
       ),
     );
-  }
-
-  /// An event from the message: its subject as the title, its text as
-  /// the notes, in the calendar app's own new-event screen where the
-  /// time is picked. For the mail that says "let's meet Thursday" without
-  /// sending an invitation.
-  Future<void> _createEvent(MailMessage message, MailBody body) async {
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    final notes = body.text.trim();
-    final ok = await ref.read(deviceCalendarProvider).insertEvent(
-          title: message.subject,
-          description:
-              '${notes.length > 2000 ? '${notes.substring(0, 2000)}…' : notes}'
-              '\n\nFrom: ${message.from.display}',
-        );
-    if (!ok) {
-      messenger?.showSnackBar(
-        const SnackBar(duration: kBottomMessage, content: Text('No calendar app to add it to.')),
-      );
-    }
   }
 
   /// The system's print sheet, which is also where "Save as PDF" lives.

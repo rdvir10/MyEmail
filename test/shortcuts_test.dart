@@ -13,6 +13,7 @@ import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/search_providers.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
+import 'package:myemail/ui/meetings/new_meeting_screen.dart';
 import 'package:myemail/ui/messages/conversation_tile.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/html_body_view.dart';
@@ -113,6 +114,14 @@ void main() {
 
       expect(find.byType(ComposeScreen), findsOneWidget);
       expect(find.text('New message'), findsOneWidget);
+    });
+
+    testWidgets('Ctrl+Shift+M starts a new meeting', (tester) async {
+      await pump(tester);
+
+      await press(tester, LogicalKeyboardKey.keyM, control: true, shift: true);
+
+      expect(find.byType(NewMeetingScreen), findsOneWidget);
     });
 
     testWidgets('Ctrl+R replies to the open message, Ctrl+F forwards it',

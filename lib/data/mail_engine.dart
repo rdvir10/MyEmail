@@ -10,6 +10,7 @@ import '../domain/calendar_invite.dart';
 import '../domain/mail_attachment.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
+import '../domain/meeting.dart';
 import '../domain/message_move.dart';
 
 /// Everything the UI is allowed to know about talking to mail.
@@ -194,6 +195,16 @@ abstract class MailEngine {
     InviteResponse response,
   );
 
+  /// Put the meeting on the account's own calendar with everyone in it
+  /// invited. The server sends the invitations and keeps the answers on the
+  /// event, so they show in every client the account has.
+  ///
+  /// Throws [CalendarUnavailable] for an account whose calendar the app
+  /// cannot reach, `SignInNeedsConsent` for a Microsoft account that has
+  /// not allowed the app its calendar, and [AuthenticationFailed] or
+  /// [ConnectionFailed] as [sendDraft] does.
+  Future<void> createMeeting(MeetingDraft meeting);
+
   /// Set or clear \Seen. The folder's unread count follows on next load.
   Future<void> setRead(String messageId, bool isRead);
 
@@ -347,6 +358,21 @@ class AuthenticationFailed implements Exception, NeedsSignIn, ReadableError {
 /// The server could not be reached at all: no network, wrong host, TLS.
 class ConnectionFailed implements Exception, Retryable, ReadableError {
   const ConnectionFailed(this.message);
+
+  @override
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// The account has no calendar the app can reach: a Gmail account with an
+/// app password, which covers its mail and nothing else. Not a failure of
+/// anything, and shown as one only when there is nowhere else to go: it is
+/// the screen's cue to hand the meeting to the phone's calendar app, which
+/// has the account's calendar if anything on the phone does.
+class CalendarUnavailable implements Exception, ReadableError {
+  const CalendarUnavailable(this.message);
 
   @override
   final String message;

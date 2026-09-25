@@ -13,6 +13,7 @@ import '../../domain/address_suggestions.dart';
 import '../../domain/calendar_invite.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/meeting.dart';
 import '../../domain/message_move.dart';
 import '../../domain/draft.dart';
 import '../account_store.dart';
@@ -24,6 +25,7 @@ import '../auth/oauth_token.dart';
 import '../auth/oauth_token_repository.dart';
 import '../cache/cache_store.dart';
 import '../cache/folder_sync.dart';
+import '../calendar/account_calendar.dart';
 import '../compose/graph_sender.dart';
 import '../compose/smtp_sender.dart';
 import '../compose/reply_draft.dart' show escapeHtml;
@@ -874,6 +876,18 @@ class CachedImapEngine implements MailEngine {
       calendarReply: iMipReply(invite, attendee: me, response: response),
       originalMessageId: messageId,
     ));
+  }
+
+  @override
+  Future<void> createMeeting(MeetingDraft meeting) async {
+    final account = accountStore.read().firstWhere(
+          (a) => a.id == meeting.accountId,
+          orElse: () => throw StateError('Unknown account ${meeting.accountId}'),
+        );
+    // The account's calendar chooses the wire and asks for the token the
+    // way that wire wants it; the engine's part is naming the account.
+    await AccountCalendar(accessToken: oauthTokens.accessToken)
+        .createMeeting(account, meeting);
   }
 
   @override

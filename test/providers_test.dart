@@ -12,6 +12,7 @@ import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/address_suggestions.dart';
 import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/domain/calendar_invite.dart';
+import 'package:myemail/domain/meeting.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/state/folder_tree.dart';
@@ -182,6 +183,10 @@ class _SingleAccountReversedEngine implements MailEngine {
     InviteResponse response,
   ) =>
       _inner.respondToInvite(messageId, invite, response);
+
+  @override
+  Future<void> createMeeting(MeetingDraft meeting) =>
+      _inner.createMeeting(meeting);
 
   @override
   Future<void> setRead(String messageId, bool isRead) =>

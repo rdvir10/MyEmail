@@ -18,13 +18,13 @@ import '../../state/search_providers.dart';
 import '../../state/sync_now.dart';
 import '../../state/window_providers.dart';
 import '../../state/message_transfer.dart';
-import '../../state/calendar_providers.dart';
 import '../../domain/window_handoff.dart';
 import 'date_format.dart';
 import '../quick_steps/quick_steps_screen.dart';
 import 'forward_as_attachment.dart';
 import 'message_actions.dart';
 import '../compose/open_compose.dart';
+import '../meetings/new_meeting_screen.dart';
 import 'conversation_tile.dart';
 import '../shell/app_shell.dart';
 import '../shell/pane_focus.dart';
@@ -811,8 +811,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         ),
       if (steps.isNotEmpty) const PopupMenuDivider(),
       _item('copy', Icons.copy_outlined, 'Copy'),
-      if (ref.read(calendarAvailableProvider).value ?? false)
-        _item('event', Icons.event_outlined, 'Create calendar event…'),
+      _item('event', Icons.event_outlined, 'Create calendar event…'),
       _item('select', Icons.checklist, 'Select'),
       _item('move', Icons.drive_file_move_outline, 'Move to…'),
       _item(
@@ -904,15 +903,8 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         final body = await ref
             .read(mailEngineProvider)
             .loadMessageBody(message.id);
-        final notes = body.text.trim();
-        await ref
-            .read(deviceCalendarProvider)
-            .insertEvent(
-              title: message.subject,
-              description:
-                  '${notes.length > 2000 ? '${notes.substring(0, 2000)}…' : notes}'
-                  '\n\nFrom: ${message.from.display}',
-            );
+        if (!context.mounted) return;
+        await openNewMeetingFromMessage(context, ref, message, body);
       case 'select':
         ref.read(selectedMessageIdsProvider.notifier).addAll([message.id]);
       case 'move':

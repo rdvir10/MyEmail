@@ -22,6 +22,7 @@ import '../../state/search_providers.dart';
 import '../../domain/draft.dart';
 import '../accounts/add_account_screen.dart';
 import '../compose/open_compose.dart';
+import '../meetings/new_meeting_screen.dart';
 import '../folder_tree/folder_tree_panel.dart';
 import '../messages/message_list_pane.dart';
 import '../messages/reading_pane.dart';
@@ -731,15 +732,34 @@ void _pushMessage(BuildContext context, MailMessage message) {
 
 /// New message, on every layout. Outlook puts it bottom-right and so does
 /// every mail app; putting it anywhere else would be novelty for its own sake.
+/// New meeting sits above it, smaller: the rarer of the two, and out of the
+/// way of a thumb reaching for the first.
 class _ComposeButton extends ConsumerWidget {
   const _ComposeButton();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return FloatingActionButton(
-      tooltip: 'New message',
-      onPressed: () => openCompose(context, ref, kind: ComposeKind.newMessage),
-      child: const Icon(Icons.edit_outlined),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        // Two buttons on one screen need tags of their own, or the page
+        // transition finds two heroes with the same one and refuses.
+        FloatingActionButton.small(
+          heroTag: 'new-meeting',
+          tooltip: 'New meeting',
+          onPressed: () => openNewMeeting(context, ref),
+          child: const Icon(Icons.event),
+        ),
+        const SizedBox(height: 12),
+        FloatingActionButton(
+          heroTag: 'new-message',
+          tooltip: 'New message',
+          onPressed: () =>
+              openCompose(context, ref, kind: ComposeKind.newMessage),
+          child: const Icon(Icons.edit_outlined),
+        ),
+      ],
     );
   }
 }

@@ -8,6 +8,10 @@ abstract class DeviceCalendar {
   Future<bool> available();
 
   /// True if a calendar app took it. False when there is none.
+  ///
+  /// [attendees] are addresses, which the calendar app invites once the
+  /// event is saved there: the way a meeting is sent from an account whose
+  /// calendar this app cannot reach itself.
   Future<bool> insertEvent({
     required String title,
     String? description,
@@ -15,7 +19,14 @@ abstract class DeviceCalendar {
     DateTime? start,
     DateTime? end,
     bool allDay = false,
+    List<String> attendees = const [],
   });
+
+  /// The device's time zone by its IANA name, "Asia/Jerusalem", or null
+  /// where the device will not say. Dart knows the zone's offset and its
+  /// abbreviation, and neither is what a calendar server is told a meeting's
+  /// time is in.
+  Future<String?> timeZoneId();
 }
 
 class AndroidDeviceCalendar implements DeviceCalendar {
@@ -35,6 +46,7 @@ class AndroidDeviceCalendar implements DeviceCalendar {
     DateTime? start,
     DateTime? end,
     bool allDay = false,
+    List<String> attendees = const [],
   }) async =>
       await _channel.invokeMethod<bool>('insert', {
         'title': title,
@@ -43,8 +55,12 @@ class AndroidDeviceCalendar implements DeviceCalendar {
         'start': start?.millisecondsSinceEpoch,
         'end': end?.millisecondsSinceEpoch,
         'allDay': allDay,
+        'attendees': attendees,
       }) ??
       false;
+
+  @override
+  Future<String?> timeZoneId() => _channel.invokeMethod<String>('timeZone');
 }
 
 /// One event handed over, as the fake remembers it.
@@ -56,6 +72,7 @@ class InsertedEvent {
     this.start,
     this.end,
     this.allDay = false,
+    this.attendees = const [],
   });
 
   final String title;
@@ -64,14 +81,20 @@ class InsertedEvent {
   final DateTime? start;
   final DateTime? end;
   final bool allDay;
+  final List<String> attendees;
 }
 
 /// Records what would have gone to the calendar. Tests, and the browser
 /// preview.
 class FakeDeviceCalendar implements DeviceCalendar {
-  FakeDeviceCalendar({this.supported = true});
+  FakeDeviceCalendar({this.supported = true, this.timeZone});
 
   final bool supported;
+
+  /// What the device says its zone is; null, the default, for one that
+  /// will not say.
+  final String? timeZone;
+
   final List<InsertedEvent> inserted = [];
 
   @override
@@ -85,6 +108,7 @@ class FakeDeviceCalendar implements DeviceCalendar {
     DateTime? start,
     DateTime? end,
     bool allDay = false,
+    List<String> attendees = const [],
   }) async {
     if (!supported) return false;
     inserted.add(InsertedEvent(
@@ -94,7 +118,11 @@ class FakeDeviceCalendar implements DeviceCalendar {
       start: start,
       end: end,
       allDay: allDay,
+      attendees: attendees,
     ));
     return true;
   }
+
+  @override
+  Future<String?> timeZoneId() async => timeZone;
 }

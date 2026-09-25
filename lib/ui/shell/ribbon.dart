@@ -13,6 +13,7 @@ import '../../state/providers.dart';
 import '../../state/quick_steps.dart';
 import '../../state/search_providers.dart';
 import '../compose/open_compose.dart';
+import '../meetings/new_meeting_screen.dart';
 import '../settings/settings_screen.dart';
 import '../messages/message_actions.dart';
 import '../quick_steps/quick_steps_screen.dart';
@@ -101,6 +102,11 @@ class _RibbonState extends ConsumerState<Ribbon> {
           label: 'New email',
           onPressed: () =>
               openCompose(context, ref, kind: ComposeKind.newMessage),
+        ),
+        _Button(
+          icon: Icons.event_outlined,
+          label: 'New meeting',
+          onPressed: () => openNewMeeting(context, ref),
         ),
         const _Separator(),
         _Button(

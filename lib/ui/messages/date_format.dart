@@ -73,3 +73,12 @@ const _months = [
 ];
 
 const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+/// A day as the list writes one, "Thu 1 Oct", with the year when it is
+/// not this year's: for a date that is chosen rather than read.
+String formatDay(DateTime date, {DateTime? now}) {
+  final d = date.toLocal();
+  final year = (now ?? DateTime.now()).year;
+  return '${_weekdays[d.weekday - 1]} ${d.day} ${_months[d.month - 1]}'
+      '${d.year == year ? '' : ' ${d.year}'}';
+}
