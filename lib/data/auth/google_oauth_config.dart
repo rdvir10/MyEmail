@@ -1,25 +1,24 @@
 /// The OAuth client ID of the app's registration in Google Cloud.
 ///
-/// Not a secret, for the same reason as [microsoftClientId]: a phone app has
-/// nowhere to keep one, so Google's flow for installed apps does not use
-/// one. The ID names the registration and grants nothing on its own.
+/// Handed to the build by tool/release.ps1 as a `--dart-define`, read from
+/// android/google-oauth.properties, which git ignores. Not because the ID
+/// is a secret (a phone app has nowhere to keep one, and the ID grants
+/// nothing on its own) but because GitHub's secret scanning refuses a push
+/// carrying it beside the client secret, and the two belong together.
 ///
-/// Empty until the registration exists. See docs/google-sign-in.md for the
-/// walkthrough that produces it, and [googleSignInConfigured], which the
+/// Empty in a build made without the file: tests, and a checkout with no
+/// registration. See docs/google-sign-in.md for the walkthrough that
+/// produces the values, and [googleSignInConfigured], which the
 /// add-account screen checks so an unconfigured build explains itself.
 const googleClientId = String.fromEnvironment(
   'GOOGLE_CLIENT_ID',
   defaultValue: _registeredClientId,
 );
 
-/// The MyEmail client in Ron's Google Cloud project (myemail-509715),
-/// created 25 September 2026. Android type, tied to the release signing
-/// key, with custom URI schemes enabled.
-const _registeredClientId =
-    '405275087615-atj0c35i92g4v34bthoqau2erhfh3mlu.apps.googleusercontent.com';
+const _registeredClientId = '';
 
 /// The desktop client's secret, which goes with [googleClientId] on every
-/// token request.
+/// token request. From the same file, the same way.
 ///
 /// Carried inside the app on purpose. Google's own guidance for installed
 /// apps says the secret of a desktop client is not confidential, since an

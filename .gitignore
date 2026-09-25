@@ -16,6 +16,7 @@ pubspec.lock.bak
 android/.gradle/
 android/local.properties
 android/key.properties
+android/google-oauth.properties
 android/app/debug/
 android/app/profile/
 android/app/release/

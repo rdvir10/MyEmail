@@ -135,7 +135,10 @@ class CachedImapEngine implements MailEngine {
       OAuthTokenRepository(
         credentialStore: credentialStore,
         oauthClient: (accountId) => switch (_providerFor(accountId)) {
-          MailProvider.gmail => GoogleOAuth(clientId: googleClientId),
+          MailProvider.gmail => GoogleOAuth(
+              clientId: googleClientId,
+              clientSecret: googleClientSecret,
+            ),
           MailProvider.outlook => MicrosoftOAuth(clientId: microsoftClientId),
         },
       );

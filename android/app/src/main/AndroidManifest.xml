@@ -99,11 +99,11 @@
                 <data android:mimeType="*/*"/>
             </intent-filter>
         </activity>
-        <!-- The way back from the browser after a Google sign-in. The
-             scheme is the app's Google client ID reversed, which is the one
-             form Google accepts for an Android client; it must match
-             googleClientId in lib/data/auth/google_oauth_config.dart, and a
-             test checks that it does. See OAuthRedirectActivity.kt. -->
+        <!-- A way back from the browser after a Google sign-in: the app's
+             Google client ID reversed as a URI scheme. The loopback address
+             is the way in use; this one is taken if Google ever sends it.
+             It follows the clientId in android/google-oauth.properties, and
+             a test checks that it does. See OAuthRedirectActivity.kt. -->
         <activity
             android:name=".OAuthRedirectActivity"
             android:exported="true"
@@ -114,7 +114,7 @@
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
-                <data android:scheme="com.googleusercontent.apps.405275087615-atj0c35i92g4v34bthoqau2erhfh3mlu"/>
+                <data android:scheme="com.googleusercontent.apps.405275087615-jgihskc3cfn1hmkculideabl041n86kl"/>
             </intent-filter>
         </activity>
 

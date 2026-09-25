@@ -156,8 +156,25 @@ Write-Host "Version $Version, build $build" -ForegroundColor Cyan
 if ($LASTEXITCODE -ne 0) { throw "Could not regenerate the documents. pubspec.yaml has been bumped; run 'git checkout -- pubspec.yaml assets/help' before running this again." }
 
 # --- 3. build -------------------------------------------------------------
+# The Google sign-in's client ID and secret come from a file git ignores,
+# like the signing key: GitHub's secret scanning refuses a push that
+# carries them. A build without the file has no Google sign-in, and says
+# so on the add-account screen, so the file is required here.
+$googleProperties = "$repoRoot\android\google-oauth.properties"
+if (-not (Test-Path $googleProperties)) {
+    throw "android/google-oauth.properties is missing, so this build would have no Google sign-in. See docs/google-sign-in.md. Run 'git checkout -- pubspec.yaml assets/help' before running this again."
+}
+$google = @{}
+Get-Content $googleProperties | ForEach-Object {
+    if ($_ -match '^\s*([A-Za-z]+)\s*=\s*(.+?)\s*$') { $google[$Matches[1]] = $Matches[2] }
+}
+if (-not $google.clientId -or -not $google.clientSecret) {
+    throw "android/google-oauth.properties needs clientId and clientSecret. Run 'git checkout -- pubspec.yaml assets/help' before running this again."
+}
 $env:PATH = "$env:USERPROFILE\tools\flutter\bin;$env:PATH"
-& flutter build apk --release --target-platform android-arm64
+& flutter build apk --release --target-platform android-arm64 `
+    --dart-define="GOOGLE_CLIENT_ID=$($google.clientId)" `
+    --dart-define="GOOGLE_CLIENT_SECRET=$($google.clientSecret)"
 # A rerun refuses the tree this leaves (the bump and the regenerated
 # documents), so the way back is said in full.
 if ($LASTEXITCODE -ne 0) { throw "The build failed. pubspec.yaml and the documents have been changed; run 'git checkout -- pubspec.yaml assets/help', fix the problem, then run this again." }

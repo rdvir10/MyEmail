@@ -37,12 +37,21 @@ void main() {
         .where((s) => s.startsWith('com.googleusercontent.apps.'))
         .toList();
     expect(scheme, hasLength(1));
-    if (googleSignInConfigured) {
-      expect(scheme.single, googleRedirectScheme(googleClientId));
+    // The ID lives in a file git ignores and the release script reads;
+    // where the file is here, the scheme has to follow it. Elsewhere (a
+    // fresh checkout) the shape is all that can be checked.
+    final properties = File('android/google-oauth.properties');
+    final clientId = googleSignInConfigured
+        ? googleClientId
+        : properties.existsSync()
+            ? RegExp(r'^\s*clientId\s*=\s*(\S+)', multiLine: true)
+                .firstMatch(properties.readAsStringSync())
+                ?.group(1)
+            : null;
+    if (clientId != null) {
+      expect(scheme.single, googleRedirectScheme(clientId));
     } else {
-      // Not registered yet: a stand-in nobody can reach, and the Dart says
-      // so on the add-account screen.
-      expect(scheme.single, 'com.googleusercontent.apps.not-configured');
+      expect(scheme.single, matches(r'^com\.googleusercontent\.apps\.\S+$'));
     }
   });
 
