@@ -199,8 +199,12 @@ class _EmptyEngine implements MailEngine {
       _inner.respondToInvite(messageId, invite, response);
 
   @override
-  Future<void> createMeeting(MeetingDraft meeting) =>
+  Future<CreatedMeeting> createMeeting(MeetingDraft meeting) =>
       _inner.createMeeting(meeting);
+
+  @override
+  Future<OnlineMeetingKind?> onlineMeetingsFor(String accountId) =>
+      _inner.onlineMeetingsFor(accountId);
 
   @override
   Future<void> setRead(String messageId, bool isRead) =>

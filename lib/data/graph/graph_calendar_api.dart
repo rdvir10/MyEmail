@@ -6,8 +6,9 @@ import '../../domain/meeting.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
 import '../mail_engine.dart';
 
-/// A thin client over the Microsoft Graph calendar: one call, to put a
-/// meeting on the account's calendar with its attendees invited.
+/// A thin client over the Microsoft Graph calendar: a call to put a meeting
+/// on the account's calendar with its attendees invited, and one to ask
+/// where that calendar holds a meeting online.
 ///
 /// Its own class rather than a method on GraphMailApi, which is the mail
 /// endpoints under the mail consent. The calendar is a consent of its own,
@@ -50,17 +51,53 @@ class GraphCalendarApi {
   /// event created here, and keeps the answers on it.
   static final eventsUri = Uri.parse('$base/me/events');
 
-  /// Create the event, invitations and all. Returns its id, or null if Graph
-  /// did not say.
-  Future<String?> createEvent(MeetingDraft meeting) async {
+  /// The calendar itself, for the two properties that say where it holds
+  /// a meeting online.
+  static final calendarUri = Uri.parse('$base/me/calendar').replace(
+    queryParameters: {
+      r'$select': 'allowedOnlineMeetingProviders,defaultOnlineMeetingProvider',
+    },
+  );
+
+  /// Create the event, invitations and all.
+  ///
+  /// [onlineMeetingProvider] is Graph's name for where the calendar holds
+  /// a meeting online, as [onlineMeetings] found it, and goes with a
+  /// meeting held online. Without one, Graph holds it at the calendar's
+  /// default.
+  Future<CreatedMeeting> createEvent(
+    MeetingDraft meeting, {
+    String? onlineMeetingProvider,
+  }) async {
+    final body = jsonEncode(
+      eventJson(meeting, onlineMeetingProvider: onlineMeetingProvider),
+    );
     final response = await _exchange(
       () => http.Request('POST', eventsUri)
         ..headers['Content-Type'] = 'application/json'
-        ..body = jsonEncode(eventJson(meeting)),
+        ..body = body,
     );
     if (response.statusCode >= 400) throw _failureFor(response);
-    final id = _jsonOf(response)['id'];
-    return id is String && id.isNotEmpty ? id : null;
+    final json = _jsonOf(response);
+    final id = json['id'];
+    final online = json['onlineMeeting'];
+    final joinUrl = online is Map ? online['joinUrl'] : null;
+    return CreatedMeeting(
+      id: id is String && id.isNotEmpty ? id : null,
+      joinUrl: joinUrl is String && joinUrl.isNotEmpty ? joinUrl : null,
+    );
+  }
+
+  /// Where the calendar holds a meeting online, or null when nowhere: what
+  /// the screen's switch is labelled with, and what [createEvent] is told.
+  ///
+  /// Teams wherever the mailbox allows it, which every work mailbox does.
+  /// Otherwise whatever the calendar defaults to, if anything: Skype, on a
+  /// personal mailbox that still has it. Graph keeps both on the calendar.
+  Future<GraphOnlineMeetings?> onlineMeetings() async {
+    final response = await _exchange(() => http.Request('GET', calendarUri));
+    if (response.statusCode >= 400) throw _failureFor(response);
+    return GraphOnlineMeetings.fromCalendarJson(_jsonOf(response));
   }
 
   /// The event as Graph takes it.
@@ -70,7 +107,10 @@ class GraphCalendarApi {
   /// because Graph counts the end as exclusive and refuses one on the same
   /// day. Every attendee is required: the screen has no optional list, and
   /// Graph wants each one typed.
-  static Map<String, Object?> eventJson(MeetingDraft meeting) {
+  static Map<String, Object?> eventJson(
+    MeetingDraft meeting, {
+    String? onlineMeetingProvider,
+  }) {
     final sent = meeting.asSent;
     final end = meeting.allDay ? dayAfter(sent.end) : sent.end;
     final location = meeting.location.trim();
@@ -91,9 +131,11 @@ class GraphCalendarApi {
             'type': 'required',
           },
       ],
-      // A Teams link is a thing the person would have asked for. Left to
-      // Graph's default, some tenants add one to every meeting.
-      'isOnlineMeeting': false,
+      // A Teams link only when asked for. Left to Graph's default, some
+      // tenants add one to every meeting.
+      'isOnlineMeeting': meeting.online,
+      if (meeting.online && onlineMeetingProvider != null)
+        'onlineMeetingProvider': onlineMeetingProvider,
     };
   }
 
@@ -213,4 +255,39 @@ class GraphCalendarApi {
   static String _stamp(DateTime t) =>
       '${t.year}-${_two(t.month)}-${_two(t.day)}T'
       '${_two(t.hour)}:${_two(t.minute)}:${_two(t.second)}';
+}
+
+/// Where a mailbox's calendar holds a meeting online: the kind, and Graph's
+/// own name for the provider, which goes back to Graph on an event held
+/// there.
+class GraphOnlineMeetings {
+  const GraphOnlineMeetings({required this.kind, required this.provider});
+
+  final OnlineMeetingKind kind;
+  final String provider;
+
+  /// Read from the calendar's `allowedOnlineMeetingProviders` and
+  /// `defaultOnlineMeetingProvider`. Null for a calendar that holds
+  /// meetings nowhere, whose default is `unknown`.
+  static GraphOnlineMeetings? fromCalendarJson(Map<String, Object?> json) {
+    final allowed = json['allowedOnlineMeetingProviders'];
+    if (allowed is List && allowed.contains('teamsForBusiness')) {
+      return const GraphOnlineMeetings(
+        kind: OnlineMeetingKind.teams,
+        provider: 'teamsForBusiness',
+      );
+    }
+    final fallback = json['defaultOnlineMeetingProvider'];
+    if (fallback is! String || fallback.isEmpty || fallback == 'unknown') {
+      return null;
+    }
+    return GraphOnlineMeetings(
+      kind: switch (fallback) {
+        'teamsForBusiness' => OnlineMeetingKind.teams,
+        'skypeForConsumer' => OnlineMeetingKind.skype,
+        _ => OnlineMeetingKind.other,
+      },
+      provider: fallback,
+    );
+  }
 }

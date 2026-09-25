@@ -20,6 +20,7 @@ class MeetingDraft {
     this.location = '',
     this.notes = '',
     this.timeZone,
+    this.online = false,
   });
 
   /// Whose calendar it goes on, and who the invitations come from.
@@ -49,6 +50,11 @@ class MeetingDraft {
   /// reads and shows on its own clock the same.
   final String? timeZone;
 
+  /// Held online as well, with a link to join it: Teams or Google Meet, as
+  /// the account's calendar offers (see `MailEngine.onlineMeetingsFor`).
+  /// The calendar makes the link and puts it on the invitation.
+  final bool online;
+
   bool get hasAttendees => attendees.isNotEmpty;
 
   /// What stops this being created, as a sentence, or null when nothing
@@ -72,6 +78,37 @@ class MeetingDraft {
       timeZone == null && !allDay
           ? (start: start.toUtc(), end: end.toUtc(), timeZone: 'UTC')
           : (start: start, end: end, timeZone: timeZone ?? 'UTC');
+}
+
+/// Where an account's calendar holds a meeting online, which is what the
+/// screen's switch is labelled with.
+enum OnlineMeetingKind {
+  teams('Teams meeting', 'a Teams link'),
+  skype('Skype meeting', 'a Skype link'),
+  googleMeet('Google Meet', 'a Google Meet link'),
+  other('Online meeting', 'an online meeting link');
+
+  const OnlineMeetingKind(this.label, this.link);
+
+  /// The switch's label.
+  final String label;
+
+  /// What went out with the invitation, for the message that says so.
+  final String link;
+}
+
+/// What creating a meeting left behind.
+@immutable
+class CreatedMeeting {
+  const CreatedMeeting({this.id, this.joinUrl});
+
+  /// The event's id on the calendar, or null where the calendar did not
+  /// say.
+  final String? id;
+
+  /// Where to join it online, when it was held online and the calendar
+  /// said where. Null otherwise.
+  final String? joinUrl;
 }
 
 /// The day after [day]'s date, at midnight: where a whole-day event ends

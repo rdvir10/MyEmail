@@ -202,8 +202,17 @@ abstract class MailEngine {
   /// Throws [CalendarUnavailable] for an account whose calendar the app
   /// cannot reach, `SignInNeedsConsent` for a Microsoft account that has
   /// not allowed the app its calendar, and [AuthenticationFailed] or
-  /// [ConnectionFailed] as [sendDraft] does.
-  Future<void> createMeeting(MeetingDraft meeting);
+  /// [ConnectionFailed] as [sendDraft] does. What comes back names the
+  /// event, and where to join it when it was held online.
+  Future<CreatedMeeting> createMeeting(MeetingDraft meeting);
+
+  /// Where the account's calendar holds a meeting online, Teams or Google
+  /// Meet, or null where it holds none: the screen shows its switch only
+  /// for an account this answers for. Asked of the server once and
+  /// remembered. A calendar that could not be asked (no consent yet, no
+  /// connection) answers null, said in the log and never thrown, and is
+  /// asked again next time.
+  Future<OnlineMeetingKind?> onlineMeetingsFor(String accountId);
 
   /// Set or clear \Seen. The folder's unread count follows on next load.
   Future<void> setRead(String messageId, bool isRead);

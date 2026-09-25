@@ -83,7 +83,8 @@ Future<void> openNewMeetingFromMessage(
 /// app can reach, the meeting goes to the phone's calendar app instead,
 /// attendees and all; where Microsoft has not yet allowed the app the
 /// calendar, the sign-in that asks for it is offered here rather than in
-/// Settings.
+/// Settings. Where the account's calendar holds meetings online, Teams or
+/// Google Meet, a switch asks for a link with the invitation.
 class NewMeetingScreen extends ConsumerStatefulWidget {
   const NewMeetingScreen({
     super.key,
@@ -121,6 +122,23 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
   bool _allDay = false;
   bool _sending = false;
 
+  /// Where this account's calendar holds a meeting online, or null while
+  /// it has not said, or where it holds none: the switch is on the screen
+  /// only with an answer. Asked when the screen opens and again when From
+  /// changes.
+  OnlineMeetingKind? _onlineKind;
+
+  /// Whether a link was asked for. Honoured only where the account's
+  /// calendar holds meetings online: the switch keeps its setting through
+  /// a change of From, and a meeting from an account with nowhere to hold
+  /// one goes without.
+  bool _online = false;
+
+  /// Which ask is the current one. From can change while an answer is on
+  /// its way, and the answer for the account before must not label the
+  /// switch for the account now.
+  int _onlineAsk = 0;
+
   /// Something the person can correct on the screen: no title, an end
   /// before the start, an address with a typo. Not a failure.
   String? _invalid;
@@ -146,6 +164,23 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
 
   static DateTime _nextHour(DateTime now) =>
       DateTime(now.year, now.month, now.day, now.hour + 1);
+
+  @override
+  void initState() {
+    super.initState();
+    _askOnline();
+  }
+
+  /// Ask where this account's calendar holds a meeting online, and show
+  /// the switch for it, labelled so, once it answers. Gone for an account
+  /// whose calendar holds none.
+  Future<void> _askOnline() async {
+    final ask = ++_onlineAsk;
+    final kind =
+        await ref.read(mailEngineProvider).onlineMeetingsFor(_accountId);
+    if (!mounted || ask != _onlineAsk) return;
+    setState(() => _onlineKind = kind);
+  }
 
   @override
   void dispose() {
@@ -220,6 +255,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
       location: _location.text.trim(),
       notes: _notes.text.trim(),
       timeZone: zone,
+      online: _online && _onlineKind != null,
     );
   }
 
@@ -244,10 +280,15 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
       _offerConsent = false;
       _problem = null;
     });
+    // Where it is held, for the message that says what went out.
+    final held = meeting.online ? _onlineKind : null;
     try {
       await ref.read(mailEngineProvider).createMeeting(meeting);
       if (!mounted) return;
-      _leave(meeting.hasAttendees ? 'Invitation sent' : 'Added to your calendar');
+      final link = held == null ? '' : ', with ${held.link}';
+      _leave(meeting.hasAttendees
+          ? 'Invitation sent$link'
+          : 'Added to your calendar$link');
     } on CalendarUnavailable catch (e) {
       await _handToDevice(meeting, e);
     } on SignInNeedsConsent catch (e) {
@@ -436,8 +477,14 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
                         onChanged: _sending
                             ? null
                             : (id) {
-                                if (id == null) return;
-                                setState(() => _accountId = id);
+                                if (id == null || id == _accountId) return;
+                                setState(() {
+                                  _accountId = id;
+                                  // Unknown again until this account's
+                                  // calendar has answered for itself.
+                                  _onlineKind = null;
+                                });
+                                _askOnline();
                               },
                       ),
                     ),
@@ -496,6 +543,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
                 children: [
                   SizedBox(width: 64, child: Text('All day', style: muted)),
                   Switch(
+                    key: const ValueKey('meeting-all-day'),
                     value: _allDay,
                     onChanged: _sending
                         ? null
@@ -504,6 +552,34 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
                 ],
               ),
             ),
+            // Only once the account's calendar has said it holds meetings
+            // online, and named where: the switch says what it does, a
+            // Teams link or a Meet link, rather than promising one that
+            // the calendar cannot make.
+            if (_onlineKind case final kind?)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+                child: Row(
+                  children: [
+                    SizedBox(width: 64, child: Text('Online', style: muted)),
+                    Switch(
+                      key: const ValueKey('meeting-online'),
+                      value: _online,
+                      onChanged: _sending
+                          ? null
+                          : (on) => setState(() => _online = on),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        kind.label,
+                        style: theme.textTheme.bodyMedium,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             HeaderField(
               key: const ValueKey('meeting-location'),
               label: 'Location',

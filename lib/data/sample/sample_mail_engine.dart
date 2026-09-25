@@ -616,13 +616,39 @@ class SampleMailEngine implements MailEngine {
 
   /// Kept, whatever the account: the sample engine has no calendar to be
   /// without, and the screen's other ways out are tried with fakes that
-  /// throw.
+  /// throw. Held online, it answers with a link of the kind the account
+  /// would have got.
   @override
-  Future<void> createMeeting(MeetingDraft meeting) async {
+  Future<CreatedMeeting> createMeeting(MeetingDraft meeting) async {
     await _latency();
     final problem = meeting.problem;
     if (problem != null) throw ArgumentError(problem);
     meetings.add(meeting);
+    final kind =
+        meeting.online ? await onlineMeetingsFor(meeting.accountId) : null;
+    return CreatedMeeting(
+      id: 'sample-meeting-${meetings.length}',
+      joinUrl: switch (kind) {
+        null => null,
+        OnlineMeetingKind.googleMeet => 'https://meet.google.com/abc-defg-hij',
+        _ => 'https://teams.microsoft.com/l/meetup-join/sample',
+      },
+    );
+  }
+
+  /// As the real engine answers: Teams for a Microsoft account, Meet for a
+  /// Google one, nowhere for an app password. By the accounts as loaded,
+  /// so a test's fake with accounts of its own is answered for them.
+  @override
+  Future<OnlineMeetingKind?> onlineMeetingsFor(String accountId) async {
+    final account =
+        (await loadAccounts()).where((a) => a.id == accountId).firstOrNull;
+    return switch (account) {
+      null => null,
+      Account(provider: MailProvider.outlook) => OnlineMeetingKind.teams,
+      Account(authMethod: AuthMethod.oauth) => OnlineMeetingKind.googleMeet,
+      _ => null,
+    };
   }
 
   @override

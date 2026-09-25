@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
@@ -7,7 +8,8 @@ import '../auth/microsoft_oauth.dart' show SignInUnreachable;
 import '../mail_engine.dart';
 
 /// A thin client over the Google Calendar API: one call, to put a meeting
-/// on the account's calendar with its attendees invited.
+/// on the account's calendar with its attendees invited, and a Meet link
+/// on it when it is held online.
 ///
 /// For a Gmail account signed in with Google, whose one token carries the
 /// calendar beside the mail. Google sends the invitations itself when asked
@@ -36,17 +38,34 @@ class GoogleCalendarApi {
   static final eventsUri =
       Uri.parse('$base/calendars/primary/events?sendUpdates=all');
 
-  /// Create the event, invitations and all. Returns its id, or null if
-  /// Google did not say.
-  Future<String?> createEvent(MeetingDraft meeting) async {
+  /// Create the event, invitations and all.
+  ///
+  /// A meeting held online asks for a Meet link with it. The ask travels in
+  /// the event, and `conferenceDataVersion=1` on the request is what makes
+  /// the API read it and answer with the link; without it the ask is
+  /// dropped without a word.
+  Future<CreatedMeeting> createEvent(MeetingDraft meeting) async {
+    final uri = meeting.online
+        ? eventsUri.replace(queryParameters: {
+            ...eventsUri.queryParameters,
+            'conferenceDataVersion': '1',
+          })
+        : eventsUri;
+    // Built once: a try sent again after a refused token asks for the same
+    // link, and Google makes one link for one ask.
+    final body = jsonEncode(eventJson(meeting));
     final response = await _authorised(
-      () => http.Request('POST', eventsUri)
+      () => http.Request('POST', uri)
         ..headers['Content-Type'] = 'application/json'
-        ..body = jsonEncode(eventJson(meeting)),
+        ..body = body,
     );
     if (response.statusCode >= 400) throw _failureFor(response);
-    final id = _jsonOf(response)['id'];
-    return id is String && id.isNotEmpty ? id : null;
+    final json = _jsonOf(response);
+    final id = json['id'];
+    return CreatedMeeting(
+      id: id is String && id.isNotEmpty ? id : null,
+      joinUrl: _joinUrlOf(json),
+    );
   }
 
   /// The event as Google takes it.
@@ -54,6 +73,8 @@ class GoogleCalendarApi {
   /// A timed meeting is a wall-clock time with the zone named beside it,
   /// which the API accepts in place of an offset. A whole day is dates, and
   /// ends on the day after the last: Google counts the end as exclusive.
+  /// Held online, the event carries the ask for a Meet link, under a
+  /// request id that makes the ask one ask however often it is sent.
   static Map<String, Object?> eventJson(MeetingDraft meeting) {
     final sent = meeting.asSent;
     final location = meeting.location.trim();
@@ -75,6 +96,13 @@ class GoogleCalendarApi {
               'displayName': a.name!.trim(),
           },
       ],
+      if (meeting.online)
+        'conferenceData': {
+          'createRequest': {
+            'requestId': _requestId(),
+            'conferenceSolutionKey': {'type': 'hangoutsMeet'},
+          },
+        },
     };
   }
 
@@ -86,6 +114,32 @@ class GoogleCalendarApi {
   }
 
   // --- plumbing --------------------------------------------------------------
+
+  /// An id for one ask for a link. Random, so two meetings made in a row
+  /// are two links: Google answers a repeated id with the link it made the
+  /// first time.
+  static String _requestId() {
+    final random = Random.secure();
+    return [
+      for (var i = 0; i < 16; i++)
+        random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ].join();
+  }
+
+  /// The link to join, from the conference Google made: the entry point
+  /// that is the video call, not the phone number that may sit beside it.
+  static String? _joinUrlOf(Map<String, Object?> json) {
+    final conference = json['conferenceData'];
+    if (conference is! Map) return null;
+    final points = conference['entryPoints'];
+    if (points is! List) return null;
+    for (final point in points) {
+      if (point is! Map || point['entryPointType'] != 'video') continue;
+      final uri = point['uri'];
+      if (uri is String && uri.isNotEmpty) return uri;
+    }
+    return null;
+  }
 
   /// With the account's token, and once more with a freshly refreshed one
   /// if Google turns the first away, as the Graph calls do: a token can

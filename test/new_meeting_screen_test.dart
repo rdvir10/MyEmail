@@ -265,6 +265,112 @@ void main() {
     });
   });
 
+  group('held online', () {
+    /// Pick [email] in the From dropdown.
+    Future<void> chooseFrom(WidgetTester tester, String email) async {
+      await tester.tap(find.byKey(const ValueKey('meeting-from-account')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(email).last);
+      await tester.pumpAndSettle();
+    }
+
+    final online = find.byKey(const ValueKey('meeting-online'));
+
+    testWidgets('no switch for an account whose calendar holds none',
+        (tester) async {
+      // The sample accounts sign in with app passwords.
+      await pumpScreen(tester);
+
+      expect(find.text('Online'), findsNothing);
+      expect(online, findsNothing);
+    });
+
+    testWidgets('the switch is labelled for where the account holds them, '
+        'and follows From', (tester) async {
+      engine = _EachKind();
+      await pumpScreen(tester, accountId: 'acct-ms');
+      expect(find.text('Online'), findsOneWidget);
+      expect(online, findsOneWidget);
+      expect(find.text('Teams meeting'), findsOneWidget);
+
+      await chooseFrom(tester, 'ron@gmail.com');
+      expect(find.text('Google Meet'), findsOneWidget);
+      expect(find.text('Teams meeting'), findsNothing);
+
+      await chooseFrom(tester, 'old@gmail.com');
+      expect(find.text('Online'), findsNothing);
+      expect(online, findsNothing);
+    });
+
+    testWidgets('on, the meeting is held online and the message says so',
+        (tester) async {
+      engine = _EachKind();
+      await pumpScreen(tester, accountId: 'acct-ms');
+      await type(tester, 'meeting-title', 'Q3 review');
+      await type(tester, 'meeting-attendees', 'dana@example.com');
+      await tester.tap(online);
+      await tester.pumpAndSettle();
+
+      await send(tester);
+
+      expect(engine.meetings.single.online, isTrue);
+      expect(find.byType(NewMeetingScreen), findsNothing);
+      expect(find.text('Invitation sent, with a Teams link'), findsOneWidget);
+    });
+
+    testWidgets('with nobody invited it is added, link and all',
+        (tester) async {
+      engine = _EachKind();
+      await pumpScreen(tester, accountId: 'acct-g');
+      await type(tester, 'meeting-title', 'Planning');
+      await tester.tap(online);
+      await tester.pumpAndSettle();
+
+      await send(tester);
+
+      expect(engine.meetings.single.online, isTrue);
+      expect(find.text('Added to your calendar, with a Google Meet link'),
+          findsOneWidget);
+    });
+
+    testWidgets('off, the meeting is not held online', (tester) async {
+      engine = _EachKind();
+      await pumpScreen(tester, accountId: 'acct-ms');
+      await type(tester, 'meeting-title', 'Q3 review');
+      await type(tester, 'meeting-attendees', 'dana@example.com');
+
+      await send(tester);
+
+      expect(engine.meetings.single.online, isFalse);
+      expect(find.text('Invitation sent'), findsOneWidget);
+    });
+
+    testWidgets('what was asked for stays asked for across accounts that '
+        'can, and goes unasked from one that cannot', (tester) async {
+      engine = _EachKind();
+      await pumpScreen(tester, accountId: 'acct-ms');
+      await type(tester, 'meeting-title', 'Q3 review');
+      await tester.tap(online);
+      await tester.pumpAndSettle();
+
+      // To an account whose calendar holds them elsewhere: still asked for,
+      // under the new name.
+      await chooseFrom(tester, 'ron@gmail.com');
+      expect(tester.widget<Switch>(online).value, isTrue);
+      expect(find.text('Google Meet'), findsOneWidget);
+
+      // To one whose calendar holds none: no switch, and no link asked for
+      // behind it.
+      await chooseFrom(tester, 'old@gmail.com');
+      expect(online, findsNothing);
+      await send(tester);
+
+      expect(engine.meetings.single.accountId, 'acct-p');
+      expect(engine.meetings.single.online, isFalse);
+      expect(find.text('Added to your calendar'), findsOneWidget);
+    });
+  });
+
   group('an account whose calendar the app cannot reach', () {
     testWidgets('hands the meeting to the calendar app, attendees and all',
         (tester) async {
@@ -492,8 +598,43 @@ void main() {
 /// account with an app password, as the real engine answers for one.
 class _NoCalendar extends SampleMailEngine {
   @override
-  Future<void> createMeeting(MeetingDraft meeting) async =>
+  Future<CreatedMeeting> createMeeting(MeetingDraft meeting) async =>
       throw const CalendarUnavailable('No calendar can be reached.');
+}
+
+/// An engine with an account of each kind, so From can move between them:
+/// a Microsoft one, whose calendar holds meetings on Teams; a Google one,
+/// with Meet; and one with an app password, whose calendar holds none.
+class _EachKind extends SampleMailEngine {
+  static const accounts = [
+    Account(
+      id: 'acct-ms',
+      displayName: 'Work',
+      emailAddress: 'ron@contoso.com',
+      provider: MailProvider.outlook,
+      authMethod: AuthMethod.oauth,
+      colorValue: 0xFF0F6CBD,
+    ),
+    Account(
+      id: 'acct-g',
+      displayName: 'Personal',
+      emailAddress: 'ron@gmail.com',
+      provider: MailProvider.gmail,
+      authMethod: AuthMethod.oauth,
+      colorValue: 0xFF107C41,
+    ),
+    Account(
+      id: 'acct-p',
+      displayName: 'Old',
+      emailAddress: 'old@gmail.com',
+      provider: MailProvider.gmail,
+      authMethod: AuthMethod.appPassword,
+      colorValue: 0xFFB4009E,
+    ),
+  ];
+
+  @override
+  Future<List<Account>> loadAccounts() async => accounts;
 }
 
 /// An engine with one Microsoft account whose calendar Microsoft has not
@@ -527,7 +668,7 @@ class _NeedsConsent extends SampleMailEngine {
   }
 
   @override
-  Future<void> createMeeting(MeetingDraft meeting) {
+  Future<CreatedMeeting> createMeeting(MeetingDraft meeting) {
     if (!signedInAgain) {
       throw SignInNeedsConsent(
         'The app has not been allowed the calendar.',

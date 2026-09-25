@@ -878,16 +878,28 @@ class CachedImapEngine implements MailEngine {
     ));
   }
 
+  /// The accounts' calendars, held for the engine's life: where a calendar
+  /// said it holds meetings online is remembered there.
+  late final AccountCalendar _calendars =
+      AccountCalendar(accessToken: oauthTokens.accessToken);
+
   @override
-  Future<void> createMeeting(MeetingDraft meeting) async {
+  Future<OnlineMeetingKind?> onlineMeetingsFor(String accountId) async {
+    final account =
+        accountStore.read().where((a) => a.id == accountId).firstOrNull;
+    if (account == null) return null;
+    return _calendars.onlineMeetingsFor(account);
+  }
+
+  @override
+  Future<CreatedMeeting> createMeeting(MeetingDraft meeting) async {
     final account = accountStore.read().firstWhere(
           (a) => a.id == meeting.accountId,
           orElse: () => throw StateError('Unknown account ${meeting.accountId}'),
         );
     // The account's calendar chooses the wire and asks for the token the
     // way that wire wants it; the engine's part is naming the account.
-    await AccountCalendar(accessToken: oauthTokens.accessToken)
-        .createMeeting(account, meeting);
+    return _calendars.createMeeting(account, meeting);
   }
 
   @override

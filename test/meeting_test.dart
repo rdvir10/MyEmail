@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart' as http_testing;
@@ -53,6 +54,7 @@ void main() {
     DateTime? end,
     bool allDay = false,
     String? timeZone = 'Asia/Jerusalem',
+    bool online = false,
   }) =>
       MeetingDraft(
         accountId: accountId,
@@ -67,6 +69,7 @@ void main() {
         location: 'Room 4',
         notes: 'Bring the numbers.',
         timeZone: timeZone,
+        online: online,
       );
 
   http.Response json(Object body, [int status = 200]) =>
@@ -124,6 +127,17 @@ void main() {
       expect(sent.start.isUtc, isFalse);
     });
 
+    test('is held online only when asked', () {
+      final bare = MeetingDraft(
+        accountId: 'acct-ms',
+        title: 'Q3 review',
+        start: DateTime(2026, 10, 1, 9),
+        end: DateTime(2026, 10, 1, 10),
+      );
+      expect(bare.online, isFalse);
+      expect(meeting(online: true).online, isTrue);
+    });
+
     test('the day after is built from the date, not by adding a day', () {
       expect(dayAfter(DateTime(2026, 10, 31)), DateTime(2026, 11, 1));
       expect(dayAfter(DateTime(2026, 12, 31)), DateTime(2027, 1, 1));
@@ -161,10 +175,11 @@ void main() {
         );
 
     test('posts the event to /me/events in Graph\'s shape', () async {
-      final id = await api((_) async => json({'id': 'evt-1'}, 201))
+      final created = await api((_) async => json({'id': 'evt-1'}, 201))
           .createEvent(meeting());
 
-      expect(id, 'evt-1');
+      expect(created.id, 'evt-1');
+      expect(created.joinUrl, isNull);
       final request = sent.single;
       expect(request.method, 'POST');
       expect(request.url.toString(),
@@ -296,6 +311,102 @@ void main() {
       expect(sent, isEmpty);
     });
 
+    test('held online, it is held where the calendar said, and the link '
+        'comes back', () async {
+      final created = await api((_) async => json({
+            'id': 'evt-1',
+            'onlineMeeting': {
+              'joinUrl': 'https://teams.microsoft.com/l/meetup-join/abc',
+            },
+          }, 201)).createEvent(
+        meeting(online: true),
+        onlineMeetingProvider: 'teamsForBusiness',
+      );
+
+      final body = jsonDecode(sent.single.body) as Map;
+      expect(body['isOnlineMeeting'], isTrue);
+      expect(body['onlineMeetingProvider'], 'teamsForBusiness');
+      expect(created.joinUrl, 'https://teams.microsoft.com/l/meetup-join/abc');
+    });
+
+    test('not held online, no provider is named whatever was found',
+        () async {
+      final created = await api((_) async => json({'id': 'evt-1'}, 201))
+          .createEvent(meeting(), onlineMeetingProvider: 'teamsForBusiness');
+
+      final body = jsonDecode(sent.single.body) as Map;
+      expect(body['isOnlineMeeting'], isFalse);
+      expect(body.containsKey('onlineMeetingProvider'), isFalse);
+      expect(created.joinUrl, isNull);
+    });
+
+    group('asking where the calendar holds meetings online', () {
+      Future<GraphOnlineMeetings?> ask(Map<String, Object?> calendar) =>
+          api((_) async => json(calendar)).onlineMeetings();
+
+      test('reads the calendar, the two properties and nothing else',
+          () async {
+        await ask({'allowedOnlineMeetingProviders': ['teamsForBusiness']});
+
+        final request = sent.single;
+        expect(request.method, 'GET');
+        expect(request.url.path, '/v1.0/me/calendar');
+        expect(request.url.queryParameters[r'$select'],
+            'allowedOnlineMeetingProviders,defaultOnlineMeetingProvider');
+        expect(request.headers['Authorization'], 'Bearer stale');
+      });
+
+      test('Teams wherever it is allowed, whatever the default', () async {
+        final found = await ask({
+          'allowedOnlineMeetingProviders': ['skypeForBusiness', 'teamsForBusiness'],
+          'defaultOnlineMeetingProvider': 'skypeForBusiness',
+        });
+
+        expect(found!.kind, OnlineMeetingKind.teams);
+        expect(found.provider, 'teamsForBusiness');
+      });
+
+      test('otherwise the default: Skype on a personal mailbox', () async {
+        final found = await ask({
+          'allowedOnlineMeetingProviders': ['skypeForConsumer'],
+          'defaultOnlineMeetingProvider': 'skypeForConsumer',
+        });
+
+        expect(found!.kind, OnlineMeetingKind.skype);
+        expect(found.provider, 'skypeForConsumer');
+      });
+
+      test('a default the app has no name for is still somewhere', () async {
+        final found = await ask({
+          'allowedOnlineMeetingProviders': ['skypeForBusiness'],
+          'defaultOnlineMeetingProvider': 'skypeForBusiness',
+        });
+
+        expect(found!.kind, OnlineMeetingKind.other);
+        expect(found.provider, 'skypeForBusiness');
+      });
+
+      test('nothing allowed and no default is nowhere', () async {
+        expect(
+          await ask({
+            'allowedOnlineMeetingProviders': <String>[],
+            'defaultOnlineMeetingProvider': 'unknown',
+          }),
+          isNull,
+        );
+        expect(await ask({}), isNull);
+      });
+
+      test('a refusal is thrown, for the caller to read as nowhere',
+          () async {
+        await expectLater(
+          api((_) async => json({'error': {'code': 'ErrorAccessDenied'}}, 403))
+              .onlineMeetings(),
+          throwsA(isA<AuthenticationFailed>()),
+        );
+      });
+    });
+
     test('a refresh that could not reach Microsoft is no connection',
         () async {
       await expectLater(
@@ -334,10 +445,11 @@ void main() {
 
     test('posts the event to the primary calendar, invitations sent',
         () async {
-      final id = await api((_) async => json({'id': 'evt-g'}))
+      final created = await api((_) async => json({'id': 'evt-g'}))
           .createEvent(meeting(accountId: 'acct-g'));
 
-      expect(id, 'evt-g');
+      expect(created.id, 'evt-g');
+      expect(created.joinUrl, isNull);
       final request = sent.single;
       expect(request.method, 'POST');
       expect(
@@ -370,6 +482,55 @@ void main() {
       final body = jsonDecode(sent.single.body) as Map;
       expect(body['start'], {'date': '2026-10-01'});
       expect(body['end'], {'date': '2026-10-02'});
+    });
+
+    test('held online, it asks for a Meet link and reads it back', () async {
+      final created = await api((_) async => json({
+            'id': 'evt-g',
+            'conferenceData': {
+              'entryPoints': [
+                {'entryPointType': 'phone', 'uri': 'tel:+1-555-0100'},
+                {
+                  'entryPointType': 'video',
+                  'uri': 'https://meet.google.com/abc-defg-hij',
+                },
+              ],
+            },
+          })).createEvent(meeting(online: true));
+
+      final request = sent.single;
+      // Without this the ask in the event is dropped without a word.
+      expect(request.url.queryParameters['conferenceDataVersion'], '1');
+      expect(request.url.queryParameters['sendUpdates'], 'all');
+      final body = jsonDecode(request.body) as Map;
+      final ask = (body['conferenceData'] as Map)['createRequest'] as Map;
+      expect(ask['conferenceSolutionKey'], {'type': 'hangoutsMeet'});
+      expect(ask['requestId'], isA<String>().having((s) => s.length, 'length',
+          greaterThanOrEqualTo(16)));
+      expect(created.joinUrl, 'https://meet.google.com/abc-defg-hij');
+    });
+
+    test('each ask for a link has a request id of its own', () async {
+      final client = api((_) async => json({'id': 'evt-g'}));
+      await client.createEvent(meeting(online: true));
+      await client.createEvent(meeting(online: true));
+
+      String idOf(http.Request r) =>
+          (((jsonDecode(r.body) as Map)['conferenceData'] as Map)['createRequest']
+              as Map)['requestId'] as String;
+      expect(idOf(sent.first), isNot(idOf(sent.last)));
+    });
+
+    test('not held online, nothing is asked for and there is no link',
+        () async {
+      final created =
+          await api((_) async => json({'id': 'evt-g'})).createEvent(meeting());
+
+      expect(sent.single.url.queryParameters.containsKey('conferenceDataVersion'),
+          isFalse);
+      expect((jsonDecode(sent.single.body) as Map).containsKey('conferenceData'),
+          isFalse);
+      expect(created.joinUrl, isNull);
     });
 
     test('a refused token is refreshed once and the request sent again',
@@ -428,17 +589,108 @@ void main() {
       asked = [];
     });
 
-    AccountCalendar calendar() => AccountCalendar(
+    /// A calendar whose server answers with [answer], an event created
+    /// otherwise, and whose token is refused for want of consent when
+    /// [consent] is false.
+    AccountCalendar calendar({
+      http.Response Function(http.Request request)? answer,
+      bool consent = true,
+    }) =>
+        AccountCalendar(
           accessToken: (accountId, {bool force = false, List<String>? scopes}) async {
             asked.add((accountId, scopes));
+            if (!consent) {
+              throw const SignInNeedsConsent('Not allowed the calendar.');
+            }
             return 'token';
           },
           httpClient: http_testing.MockClient((request) async {
             sent.add(request);
-            return json({'id': 'evt'}, 201);
+            return answer?.call(request) ?? json({'id': 'evt'}, 201);
           }),
           sleep: (_) async {},
         );
+
+    /// A Microsoft calendar that holds meetings on Teams.
+    http.Response teamsCalendar(http.Request request) => request.method == 'GET'
+        ? json({
+            'allowedOnlineMeetingProviders': ['teamsForBusiness'],
+            'defaultOnlineMeetingProvider': 'teamsForBusiness',
+          })
+        : json({'id': 'evt'}, 201);
+
+    group('where meetings are held online', () {
+      test('a Microsoft account is asked once, on the calendar\'s token, and '
+          'remembered', () async {
+        final c = calendar(answer: teamsCalendar);
+
+        expect(await c.onlineMeetingsFor(microsoft), OnlineMeetingKind.teams);
+        expect(await c.onlineMeetingsFor(microsoft), OnlineMeetingKind.teams);
+
+        expect(sent.where((r) => r.method == 'GET'), hasLength(1));
+        expect(asked.single, ('acct-ms', MicrosoftOAuth.calendarScopes));
+      });
+
+      test('and a meeting held online is held where the calendar said',
+          () async {
+        final c = calendar(answer: teamsCalendar);
+
+        await c.createMeeting(microsoft, meeting(online: true));
+
+        final post = sent.singleWhere((r) => r.method == 'POST');
+        final body = jsonDecode(post.body) as Map;
+        expect(body['isOnlineMeeting'], isTrue);
+        expect(body['onlineMeetingProvider'], 'teamsForBusiness');
+        expect(sent.where((r) => r.method == 'GET'), hasLength(1),
+            reason: 'asked on the way, and kept');
+      });
+
+      test('a calendar that could not be asked holds none, says so in the '
+          'log, and is asked again next time', () async {
+        final logged = <String>[];
+        final was = debugPrint;
+        debugPrint = (String? message, {int? wrapWidth}) =>
+            logged.add(message ?? '');
+        addTearDown(() => debugPrint = was);
+        var refused = true;
+        final c = calendar(answer: (request) => refused
+            ? json({'error': {'code': 'ErrorAccessDenied'}}, 403)
+            : teamsCalendar(request));
+
+        expect(await c.onlineMeetingsFor(microsoft), isNull);
+        expect(logged.single, contains('online meetings'));
+
+        refused = false;
+        expect(await c.onlineMeetingsFor(microsoft), OnlineMeetingKind.teams);
+        expect(sent.where((r) => r.method == 'GET'), hasLength(2));
+      });
+
+      test('no consent yet holds none rather than failing', () async {
+        final was = debugPrint;
+        debugPrint = (String? message, {int? wrapWidth}) {};
+        addTearDown(() => debugPrint = was);
+
+        expect(
+          await calendar(consent: false).onlineMeetingsFor(microsoft),
+          isNull,
+        );
+        expect(sent, isEmpty);
+      });
+
+      test('a Google account has Meet, and is not asked', () async {
+        expect(
+          await calendar().onlineMeetingsFor(google),
+          OnlineMeetingKind.googleMeet,
+        );
+        expect(sent, isEmpty);
+        expect(asked, isEmpty);
+      });
+
+      test('an app password has none', () async {
+        expect(await calendar().onlineMeetingsFor(appPassword), isNull);
+        expect(sent, isEmpty);
+      });
+    });
 
     test('a Microsoft account goes to Graph, on the calendar\'s own token',
         () async {
@@ -503,6 +755,25 @@ void main() {
         engine.createMeeting(meeting(accountId: 'acct-nobody')),
         throwsA(isA<StateError>()),
       );
+    });
+
+    test('says where an account holds meetings online, or that it does not',
+        () async {
+      final engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => FakeImapTransport(),
+      );
+      final added = await engine.addAccount(
+        displayName: 'Old',
+        emailAddress: 'old@gmail.com',
+        provider: MailProvider.gmail,
+        secret: 'app-password',
+      );
+
+      expect(await engine.onlineMeetingsFor(added.id), isNull);
+      expect(await engine.onlineMeetingsFor('acct-nobody'), isNull);
     });
   });
 }
