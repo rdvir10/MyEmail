@@ -15,6 +15,8 @@ import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/search_bar.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 
+import 'helpers/open_search.dart';
+
 import 'fakes/fake_imap_transport.dart';
 
 void main() {
@@ -349,7 +351,8 @@ void main() {
       await tester.pumpWidget(app());
       await tester.pumpAndSettle();
 
-      await tester.enterText(find.byType(TextField).last, 'invoice');
+      await openSearch(tester);
+      await tester.enterText(searchField, 'invoice');
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pumpAndSettle();
 
@@ -370,7 +373,8 @@ void main() {
       final before =
           tester.widgetList<MessageTile>(find.byType(MessageTile)).length;
 
-      await tester.enterText(find.byType(TextField).last, 'invoice');
+      await openSearch(tester);
+      await tester.enterText(searchField, 'invoice');
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pumpAndSettle();
 
@@ -392,7 +396,8 @@ void main() {
       await tester.pumpWidget(app());
       await tester.pumpAndSettle();
 
-      await tester.enterText(find.byType(TextField).last, 'zzzznotpresent');
+      await openSearch(tester);
+      await tester.enterText(searchField, 'zzzznotpresent');
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pumpAndSettle();
 
@@ -406,7 +411,8 @@ void main() {
       await tester.pumpAndSettle();
 
       // Unified inbox: nothing to scope to.
-      await tester.enterText(find.byType(TextField).last, 'invoice');
+      await openSearch(tester);
+      await tester.enterText(searchField, 'invoice');
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pumpAndSettle();
       expect(find.text('All mail'), findsNothing);

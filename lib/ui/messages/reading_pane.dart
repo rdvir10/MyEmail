@@ -193,6 +193,19 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     if (ownScreen) navigator.maybePop();
   }
 
+  /// Move, from the header: the same folder picker the list and the ribbon
+  /// use. Like a delete, a move that happened takes a screen of its own
+  /// with it; a picker closed without a choice leaves everything as it was.
+  Future<void> _move() async {
+    final listId = _listId;
+    if (listId == null) return;
+    final ownScreen = widget.onPopOut == null;
+    final navigator = Navigator.of(context);
+    final moved = await MessageActions(ref, listId)
+        .moveWithPrompt(context, [widget.message]);
+    if (moved && ownScreen) navigator.maybePop();
+  }
+
   Future<void> _openWindow(MailMessage message) async {
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (!await ref.read(windowOpenerProvider).open(MessageWindow(message))) {
@@ -243,6 +256,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
             message: message,
             onPopOut: widget.onPopOut,
             onDelete: _delete,
+            onMove: _move,
             onOpenWindow: (ref.watch(windowsAvailableProvider).value ?? false) &&
                     widget.onPopOut != null
                 ? () => _openWindow(message)
@@ -428,6 +442,7 @@ class _Header extends StatelessWidget {
     required this.onToggleRead,
     required this.onCompose,
     required this.onDelete,
+    required this.onMove,
     this.onPopOut,
     this.onOpenWindow,
     this.onPrint,
@@ -456,6 +471,9 @@ class _Header extends StatelessWidget {
   final VoidCallback onToggleFlag;
   final VoidCallback onToggleRead;
   final VoidCallback onDelete;
+
+  /// Into another folder, chosen from the folder picker.
+  final VoidCallback onMove;
 
   /// Narrow: Delete takes the flag's place in the row and the flag moves
   /// into the menu.
@@ -542,6 +560,13 @@ class _Header extends StatelessWidget {
               ),
               onPressed: onToggleRead,
             ),
+            // The ribbon's icon for the same thing, beside Delete: the two
+            // ways a message leaves the folder it is in.
+            IconButton(
+              tooltip: 'Move to folder',
+              icon: const Icon(Icons.drive_file_move_outline),
+              onPressed: onMove,
+            ),
             IconButton(
               tooltip: 'Delete',
               icon: const Icon(Icons.delete_outline),
@@ -626,7 +651,10 @@ class _Header extends StatelessWidget {
                             ?.copyWith(fontWeight: FontWeight.w600),
                       ),
                       Text(
-                        formatMessageDateLong(message.date),
+                        formatMessageDateLong(
+                          message.date,
+                          use24h: MediaQuery.alwaysUse24HourFormatOf(context),
+                        ),
                         style: theme.textTheme.labelSmall
                             ?.copyWith(color: scheme.onSurfaceVariant),
                       ),

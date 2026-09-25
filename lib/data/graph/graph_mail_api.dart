@@ -3,6 +3,8 @@ import 'dart:convert';
 import '../../domain/calendar_invite.dart';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import 'package:http/http.dart' as http;
 
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
@@ -373,22 +375,45 @@ class GraphMailApi {
   /// One at a time, and cast to a file in the path: `contentId` is not on
   /// the base attachment type, so the listing cannot select it, and listing
   /// without a selection downloads every file on the message.
-  Future<String?> contentIdOf(String messageId, String attachmentId) async {
+  ///
+  /// Where the cast is refused, the attachment is asked for whole, which
+  /// says the same, bytes and all. For the small pictures a body names that
+  /// costs little, and it is not done past [wholeAttachmentLimit]: a
+  /// photograph is not worth its own weight again to learn its name. A cast
+  /// that answers without a name is believed, and nothing more is asked.
+  Future<String?> contentIdOf(
+    String messageId,
+    String attachmentId, {
+    int sizeBytes = 0,
+  }) async {
+    final at = '$base/me/messages/${_id(messageId)}'
+        '/attachments/${Uri.encodeComponent(attachmentId)}';
     try {
       final json = await _get(
-        Uri.parse(
-          '$base/me/messages/${_id(messageId)}'
-          '/attachments/${Uri.encodeComponent(attachmentId)}'
-          '/microsoft.graph.fileAttachment',
-        ).replace(queryParameters: {'\$select': 'id,contentId'}),
+        Uri.parse('$at/microsoft.graph.fileAttachment')
+            .replace(queryParameters: {'\$select': 'id,contentId'}),
       );
       final id = json['contentId'];
-      return id is String ? bareContentId(id) : null;
-    } catch (_) {
+      return id is String && id.trim().isNotEmpty ? bareContentId(id) : null;
+    } catch (e) {
+      // Said, because a picture that never showed failed silently here for
+      // as long as it did.
+      debugPrint('[myemail] content id: the cast was refused: $e');
+    }
+    if (sizeBytes > wholeAttachmentLimit) return null;
+    try {
+      final json = await _get(Uri.parse(at));
+      final id = json['contentId'];
+      return id is String && id.trim().isNotEmpty ? bareContentId(id) : null;
+    } catch (e) {
       // A picture shown as a chip rather than in the body; nothing worse.
+      debugPrint('[myemail] content id not had: $e');
       return null;
     }
   }
+
+  /// The largest attachment asked for whole just to learn its Content-ID.
+  static const wholeAttachmentLimit = 1024 * 1024;
 
   /// The bytes of one attachment.
   ///

@@ -19,6 +19,7 @@ import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
+import 'package:myemail/ui/messages/reading_pane.dart';
 
 /// Refuses every flag change, as a server that is unreachable would.
 class _RefusingEngine implements MailEngine {
@@ -319,10 +320,15 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byTooltip('Mark as read'), findsOneWidget);
 
-      final wasFlagged = find.byTooltip('Remove flag').evaluate().isNotEmpty;
-      await tester.tap(find.byTooltip(wasFlagged ? 'Remove flag' : 'Flag'));
+      // In the pane: every row in the list has a flag of its own now.
+      Finder inPane(String tooltip) => find.descendant(
+            of: find.byType(ReadingPane),
+            matching: find.byTooltip(tooltip),
+          );
+      final wasFlagged = inPane('Remove flag').evaluate().isNotEmpty;
+      await tester.tap(inPane(wasFlagged ? 'Remove flag' : 'Flag'));
       await tester.pumpAndSettle();
-      expect(find.byTooltip(wasFlagged ? 'Flag' : 'Remove flag'), findsOneWidget);
+      expect(inPane(wasFlagged ? 'Flag' : 'Remove flag'), findsOneWidget);
     });
   });
 

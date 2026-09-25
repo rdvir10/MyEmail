@@ -217,7 +217,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           // ticked. Both at once would be two rows of controls above a list
           // that has shrunk to make room for them, and searching is not what
           // anyone is doing mid-selection.
-          if (ref.watch(isSelectingProvider))
+          if (ref.watch(isSelectingProvider)) ...[
             SelectionBar(
               listId: folderId,
               onScreen: () => messagesOnScreen(_listKey),
@@ -227,10 +227,12 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                   ? ref.watch(searchResultsProvider).value ?? const []
                   : ref.watch(messagesProvider(folderId)).value ?? const [],
               selectAllIsEverything: searching,
-            )
-          else
+            ),
+            const Divider(height: 1),
+          ] else if (ref.watch(searchShownProvider)) ...[
             const MessageSearchBar(),
-          const Divider(height: 1),
+            const Divider(height: 1),
+          ],
           Expanded(
             child: MessageListKeyboard(
               listId: folderId,
@@ -335,6 +337,8 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                       .addAll([m.id]),
                   onContextMenu: (at) =>
                       _showMessageMenu(context, ref, actions, m, at),
+                  onToggleFlag: () =>
+                      actions.setFlagged(context, [m], !m.isFlagged),
                 );
               },
             );
@@ -392,6 +396,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             final ticked = ref.watch(selectedMessageIdsProvider);
             final selecting = ticked.isNotEmpty;
             final display = ref.watch(displayProvider);
+            final ownAddresses = <String>{
+              for (final a in ref.watch(accountsProvider).value ?? const [])
+                a.emailAddress.trim().toLowerCase(),
+            };
             final rows = display.conversations
                 ? _conversationRows(
                     conversationsInOrder(messages, display.sort),
@@ -491,6 +499,12 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                           conversation,
                           at,
                         ),
+                        onToggleFlag: () => actions.setFlagged(
+                          context,
+                          conversation.messages,
+                          !anyFlagged(conversation.messages),
+                        ),
+                        ownAddresses: ownAddresses,
                       ),
                     ));
                   }
@@ -535,6 +549,8 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     // wins the gesture, which is a drag that never starts.
                     onContextMenu: (at) =>
                         _showMessageMenu(context, ref, actions, m, at),
+                    onToggleFlag: () =>
+                        actions.setFlagged(context, [m], !m.isFlagged),
                     key: ValueKey('tile:${m.id}'),
                   );
                   final swipeable = _SwipeableRow(
@@ -1200,7 +1216,17 @@ class _DateBar extends StatelessWidget {
     final theme = Theme.of(context);
     return Container(
       width: double.infinity,
-      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+      // Underlined in the accent colour, so the bar reads as a heading and
+      // not as one more read row, which sit on a shade of their own.
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+        border: Border(
+          bottom: BorderSide(
+            color: theme.colorScheme.primary.withValues(alpha: 0.7),
+            width: 1.5,
+          ),
+        ),
+      ),
       padding: const EdgeInsets.fromLTRB(16, 5, 16, 5),
       child: Text(
         formatDateBar(date),

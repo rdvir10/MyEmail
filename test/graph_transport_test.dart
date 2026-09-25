@@ -533,6 +533,46 @@ void main() {
       expect(server.contentIdLookups, ['a-1'],
           reason: 'a file nobody draws needs no second request');
       expect(server.fetchedAttachments, isEmpty);
+      expect(server.wholeAttachmentLookups, isEmpty,
+          reason: 'the cast answered, so nothing is asked twice');
+    });
+
+    test('where the cast is refused, the picture is still named', () async {
+      // Signature pictures on a work mailbox showed as dashed boxes: the
+      // name that matches them to the body came from the cast alone, and a
+      // refusal was swallowed.
+      server
+        ..fileCastRefused = true
+        ..message('f-inbox',
+            id: 'm1', subject: 'Look', minutesAgo: 5, hasAttachments: true)
+        ..attachments['m1'] = [
+          ('a-1', 'image.png', 'image/png', 'png bytes'),
+        ]
+        ..contentIds['a-1'] = '<ii_m1abc0>';
+      final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
+
+      final files = await transport.listAttachments('Inbox', header.uid);
+
+      expect(files.single.contentId, 'ii_m1abc0');
+      expect(server.wholeAttachmentLookups, ['a-1']);
+    });
+
+    test('but a large picture is not fetched whole just for its name',
+        () async {
+      server
+        ..fileCastRefused = true
+        ..message('f-inbox',
+            id: 'm1', subject: 'Look', minutesAgo: 5, hasAttachments: true)
+        ..attachments['m1'] = [
+          ('a-1', 'photo.jpg', 'image/jpeg', 'x' * (1024 * 1024 + 1)),
+        ]
+        ..contentIds['a-1'] = '<photo@x>';
+      final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
+
+      final files = await transport.listAttachments('Inbox', header.uid);
+
+      expect(files.single.contentId, isNull);
+      expect(server.wholeAttachmentLookups, isEmpty);
     });
 
     group('a meeting request', () {
@@ -1265,6 +1305,13 @@ class _FakeGraph {
   /// Which attachments were asked for their Content-ID.
   final List<String> contentIdLookups = [];
 
+  /// A mailbox that will not take `/microsoft.graph.fileAttachment` after
+  /// an attachment, the way some would not take the event cast.
+  bool fileCastRefused = false;
+
+  /// Which attachments were asked for whole, bytes and all.
+  final List<String> wholeAttachmentLookups = [];
+
   /// Events on the calendar: id to the invitation UID it came from.
   final Map<String, String> events = {};
 
@@ -1505,6 +1552,7 @@ class _FakeGraph {
     // One file's Content-ID, asked of it cast to a file.
     if (request.method == 'GET' &&
         path.endsWith('/microsoft.graph.fileAttachment')) {
+      if (fileCastRefused) return _parseUri('microsoft.graph');
       final attachmentId =
           path.split('/attachments/').last.split('/').first;
       contentIdLookups.add(attachmentId);
@@ -1526,6 +1574,30 @@ class _FakeGraph {
         if (a.$1 != attachmentId) continue;
         fetchedAttachments.add('$messageId/$attachmentId');
         return http.Response(a.$4, 200);
+      }
+      return http.Response('{}', 404);
+    }
+
+    // One attachment whole: what it is, its Content-ID, and its bytes.
+    if (request.method == 'GET' &&
+        path.contains('/attachments/') &&
+        !path.endsWith(r'/$value')) {
+      final rest = path.split('/me/messages/').last;
+      final messageId = rest.split('/').first;
+      final attachmentId = rest.split('/attachments/').last;
+      for (final a in attachments[messageId] ?? const []) {
+        if (a.$1 != attachmentId) continue;
+        wholeAttachmentLookups.add(attachmentId);
+        return json({
+          '@odata.type': '#microsoft.graph.fileAttachment',
+          'id': a.$1,
+          'name': a.$2,
+          'contentType': a.$3,
+          'size': a.$4.length,
+          'isInline': contentIds.containsKey(a.$1),
+          if (contentIds[a.$1] != null) 'contentId': contentIds[a.$1],
+          'contentBytes': base64Encode(utf8.encode(a.$4)),
+        });
       }
       return http.Response('{}', 404);
     }

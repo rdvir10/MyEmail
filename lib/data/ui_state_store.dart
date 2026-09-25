@@ -37,6 +37,7 @@ abstract final class UiStateKeys {
   static const folderPane = 'panes.folder-visible';
   static const display = 'display.v1';
   static const trustedSenders = 'images.trusted.v1';
+  static const attachmentsFolded = 'attachments.folded';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.

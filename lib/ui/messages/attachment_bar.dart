@@ -14,6 +14,11 @@ import 'attachment_save.dart';
 /// it if it is not here yet and hands it to whatever app opens that sort of
 /// file. A long press picks it up, so it can be dragged into another app in
 /// split screen. The menu has the rest — save, copy, share.
+///
+/// Above the chips, a line with how many there are and their size, which
+/// folds them away and brings them back ([attachmentsFoldedProvider]).
+/// Pictures the body is already showing get no chip at all; see
+/// [attachmentsShownInBody].
 class AttachmentBar extends ConsumerWidget {
   const AttachmentBar({super.key, required this.messageId});
 
@@ -44,16 +49,66 @@ class AttachmentBar extends ConsumerWidget {
           ],
         ),
       ),
-      data: (files) {
+      data: (all) {
+        final inBody = attachmentsShownInBody(ref, messageId, all);
+        final files = [
+          for (final f in all)
+            if (!inBody.contains(f.id)) f,
+        ];
         if (files.isEmpty) return const SizedBox.shrink();
+        final folded = ref.watch(attachmentsFoldedProvider);
+        final bytes = files.fold<int>(0, (n, f) => n + f.sizeBytes);
+        final count =
+            '${files.length} ${files.length == 1 ? 'attachment' : 'attachments'}'
+            '${bytes > 0 ? ' \u00b7 ${formatFileSize(bytes)}' : ''}';
+        final muted = theme.colorScheme.onSurfaceVariant;
         return Padding(
-          padding: const EdgeInsets.only(top: 10),
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
+          padding: const EdgeInsets.only(top: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
-              for (final file in files)
-                _AttachmentChip(messageId: messageId, attachment: file),
+              Tooltip(
+                message: folded ? 'Show attachments' : 'Hide attachments',
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: () =>
+                      ref.read(attachmentsFoldedProvider.notifier).toggle(),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.attach_file, size: 16, color: muted),
+                        const SizedBox(width: 4),
+                        Text(
+                          count,
+                          style: theme.textTheme.labelMedium
+                              ?.copyWith(color: muted),
+                        ),
+                        const SizedBox(width: 2),
+                        Icon(
+                          folded ? Icons.expand_more : Icons.expand_less,
+                          size: 18,
+                          color: muted,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              if (!folded)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final file in files)
+                        _AttachmentChip(messageId: messageId, attachment: file),
+                    ],
+                  ),
+                ),
             ],
           ),
         );

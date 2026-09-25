@@ -415,7 +415,7 @@ class GraphTransport implements ImapTransport {
     final contentIds = await Future.wait([
       for (final a in listed)
         a.isInline || a.mimeType.toLowerCase().startsWith('image/')
-            ? api.contentIdOf(remoteId, a.id)
+            ? api.contentIdOf(remoteId, a.id, sizeBytes: a.sizeBytes)
             : Future<String?>.value(),
     ]);
     return [

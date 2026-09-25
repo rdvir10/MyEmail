@@ -6,6 +6,7 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/mail_message.dart';
 import '../../state/calendar_providers.dart';
 import '../../state/providers.dart';
+import 'date_format.dart';
 
 /// The invitation inside a message, under its header: what, when, where,
 /// who is asking, and the three answers. Cancellations say so instead.
@@ -108,7 +109,14 @@ class _InviteCardState extends ConsumerState<InviteCard> {
           const SizedBox(height: 6),
           Text(i.summary, style: theme.textTheme.titleMedium),
           const SizedBox(height: 4),
-          _line(theme, Icons.schedule, describeWhen(i)),
+          _line(
+            theme,
+            Icons.schedule,
+            describeWhen(
+              i,
+              use24h: MediaQuery.alwaysUse24HourFormatOf(context),
+            ),
+          ),
           if (i.location != null && i.location!.trim().isNotEmpty)
             _line(theme, Icons.place_outlined, i.location!),
           if (i.organizer != null)
@@ -169,22 +177,24 @@ class _InviteCardState extends ConsumerState<InviteCard> {
 
 /// "Mon 21 Sep 2026, 13:00–14:00 (Eastern Standard Time)", or the day
 /// alone for a whole-day event.
-String describeWhen(CalendarInvite i) {
+///
+/// Times are written the way the phone's clock is set ([use24h]).
+String describeWhen(CalendarInvite i, {bool use24h = true}) {
   const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const months = [
     'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
   ];
-  String two(int n) => n.toString().padLeft(2, '0');
+  String clock(DateTime t) => formatClock(t, use24h: use24h);
   final s = i.start.isUtc ? i.start.toLocal() : i.start;
   final day = '${days[s.weekday - 1]} ${s.day} ${months[s.month - 1]} ${s.year}';
   if (i.isAllDay) return '$day, all day';
   final e = i.end == null ? null : (i.end!.isUtc ? i.end!.toLocal() : i.end!);
-  var when = '$day, ${two(s.hour)}:${two(s.minute)}';
+  var when = '$day, ${clock(s)}';
   if (e != null) {
     when += e.year == s.year && e.month == s.month && e.day == s.day
-        ? '–${two(e.hour)}:${two(e.minute)}'
-        : ' to ${days[e.weekday - 1]} ${e.day} ${months[e.month - 1]}, ${two(e.hour)}:${two(e.minute)}';
+        ? '–${clock(e)}'
+        : ' to ${days[e.weekday - 1]} ${e.day} ${months[e.month - 1]}, ${clock(e)}';
   }
   // A named zone the device could not apply: the time is the sender's.
   if (i.timeZone != null && !i.start.isUtc) when += ' (${i.timeZone})';

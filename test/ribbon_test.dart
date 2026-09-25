@@ -10,6 +10,10 @@ import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 import 'package:myemail/ui/shell/ribbon.dart';
 
+import 'package:myemail/ui/messages/search_bar.dart';
+
+import 'helpers/open_search.dart';
+
 import 'fakes/fake_webview.dart';
 import 'helpers/landing.dart';
 
@@ -206,19 +210,20 @@ void main() {
       expect(find.byType(BottomSheet), findsOneWidget);
     });
 
-    testWidgets('Search puts the cursor in the search box', (tester) async {
-      // The ribbon has no field of its own; it asks the list's box for focus.
+    testWidgets('Search puts out the search box, with the cursor in it',
+        (tester) async {
+      // The ribbon has no field of its own, and the list has none until one
+      // is asked for; this is one of the ways to ask.
       await pump(tester, _landscapeTablet);
-      final field = find.widgetWithText(TextField, 'Search mail').first;
-      expect(
-        tester.widget<TextField>(field).focusNode?.hasFocus ?? false,
-        isFalse,
-      );
+      expect(find.byType(MessageSearchBar), findsNothing);
 
       await tester.tap(button('Search'));
       await tester.pumpAndSettle();
 
-      expect(tester.widget<TextField>(field).focusNode?.hasFocus, isTrue);
+      expect(
+        tester.widget<TextField>(searchField).focusNode?.hasFocus,
+        isTrue,
+      );
     });
 
     testWidgets('Search works a second time', (tester) async {

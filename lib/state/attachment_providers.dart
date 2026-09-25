@@ -1,12 +1,15 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/files/attachment_files.dart';
 import '../data/files/file_bridge.dart';
+import '../data/ui_state_store.dart';
 import '../domain/html_safety.dart';
 import '../domain/mail_attachment.dart';
+import 'message_providers.dart';
 import 'providers.dart';
 
 /// Opening, saving and carrying attachments about. main() overrides both on
@@ -42,24 +45,88 @@ final inlinePicturesProvider =
   for (final a in attachments) {
     final contentId = a.contentId?.toLowerCase();
     if (contentId == null || pictures.containsKey(contentId)) continue;
-    final type = a.mimeType.toLowerCase().startsWith('image/')
-        ? a.mimeType.toLowerCase()
-        : a.openAs;
+    // The bare type: a declared "image/png; name=logo.png" put whole into
+    // a data: link makes a link no WebView can read.
+    final declared = a.mimeType.toLowerCase().split(';').first.trim();
+    final type = declared.startsWith('image/') ? declared : a.openAs;
     if (!type.startsWith('image/') || a.sizeBytes > room) continue;
     try {
       final bytes = await engine.fetchAttachment(messageId, a.id);
       if (bytes.length > room) continue;
       room -= bytes.length;
       pictures[contentId] = 'data:$type;base64,${base64Encode(bytes)}';
-    } catch (_) {
+    } catch (e) {
       // Shown as a chip, as before.
+      debugPrint('[myemail] inline picture ${a.name} not fetched: $e');
     }
   }
+  debugPrint('[myemail] inline pictures: ${pictures.length} of '
+      '${attachments.where((a) => a.contentId != null).length} named, '
+      '${attachments.length} attached');
   return pictures;
 });
 
 /// More than a screenful of screenshots; not a message's worth of photos.
 const maxInlinePictureBytes = 15 * 1024 * 1024;
+
+/// Whether the files under a message are folded to their one-line count.
+///
+/// Remembered, and for every message alike: someone who folds them away
+/// wants the room on the next message too, and the count line still says
+/// there is something there, so nothing is missed by it.
+class AttachmentsFolded extends Notifier<bool> {
+  @override
+  bool build() {
+    final store = ref.watch(uiStateStoreProvider);
+    listenSelf((_, next) => store.writeString(
+          UiStateKeys.attachmentsFolded,
+          next ? 'folded' : 'open',
+        ));
+    return store.readString(UiStateKeys.attachmentsFolded) == 'folded';
+  }
+
+  void toggle() => state = !state;
+}
+
+final attachmentsFoldedProvider =
+    NotifierProvider<AttachmentsFolded, bool>(AttachmentsFolded.new);
+
+/// The attachments a message's body is already showing: pictures it names
+/// by Content-ID that have arrived and been put in place. They are part of
+/// the message, and a chip for each (a signature's logo, its icons) was a
+/// row of "image.png" above every letter from some senders.
+///
+/// Held back while the pictures are on their way, so chips do not flash up
+/// and vanish; given back for any that could not be fetched, so a picture
+/// the body cannot show can still be opened.
+Set<String> attachmentsShownInBody(
+  WidgetRef ref,
+  String messageId,
+  List<MailAttachment> attachments,
+) {
+  // Only a body something is already showing. The reading pane asks for it
+  // before it builds this bar; on its own, the bar is no reason to fetch one.
+  final body = messageBodyProvider(messageId);
+  if (!ref.exists(body)) return const {};
+  final html = ref.watch(body).value?.html;
+  if (html == null || !namesInlinePictures(html)) return const {};
+  final lower = html.toLowerCase();
+  final named = {
+    for (final a in attachments)
+      if (a.contentId case final id?)
+        if (lower.contains('cid:${id.toLowerCase()}')) a.id: id.toLowerCase(),
+  };
+  if (named.isEmpty) return const {};
+  return ref.watch(inlinePicturesProvider(messageId)).when(
+        loading: () => named.keys.toSet(),
+        error: (_, _) => const {},
+        data: (pictures) => {
+          for (final MapEntry(key: attachmentId, value: contentId)
+              in named.entries)
+            if (pictures.containsKey(contentId)) attachmentId,
+        },
+      );
+}
 
 /// The pictures [html] names by Content-ID, once they are here: none while
 /// they are coming, and none asked for when it names none.

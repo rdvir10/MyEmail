@@ -1,15 +1,21 @@
 import 'package:flutter/material.dart';
 
 import '../../domain/display_settings.dart';
+import '../../domain/mail_message.dart';
 import '../../state/conversations.dart';
 import 'date_format.dart';
+import 'message_tile.dart';
 
 /// The collapsed row for a conversation of more than one message.
 ///
 /// Shaped like [MessageTile] on purpose, so a list with conversations on does
-/// not look like a different app. Three differences, each earning its place:
-/// the senders are everyone who has written rather than one name, the count
-/// says how many messages are inside, and a chevron says it opens.
+/// not look like a different app: the same sender line, shade for a thread
+/// with nothing unread, and flag. Two differences, each earning its place:
+/// the count says how many messages are inside, and a chevron says it opens.
+///
+/// The sender is the newest one who is not you, name and address, as it is
+/// on a message row. A thread you answered last would otherwise be headed
+/// with your own name, which says nothing about whose conversation it is.
 ///
 /// A conversation of one is never drawn with this. It is a plain message row,
 /// because a "1" badge next to every ordinary message is noise.
@@ -26,7 +32,16 @@ class ConversationTile extends StatelessWidget {
     this.tickedCount,
     this.onTicked,
     this.onContextMenu,
+    this.onToggleFlag,
+    this.ownAddresses = const {},
   });
+
+  /// Flag the whole thread, or take the flag off every message in it.
+  final VoidCallback? onToggleFlag;
+
+  /// Your own addresses, in lower case, so the row can be headed by the
+  /// last person who is not you.
+  final Set<String> ownAddresses;
 
   /// A right click, with where it landed, so a menu can open there.
   final void Function(Offset at)? onContextMenu;
@@ -63,6 +78,7 @@ class ConversationTile extends StatelessWidget {
     final scheme = theme.colorScheme;
     final unread = conversation.hasUnread;
     final weight = unread ? FontWeight.w700 : FontWeight.w400;
+    final line = listLineStyle(theme)?.copyWith(fontWeight: weight);
 
     return Semantics(
       expanded: isExpanded,
@@ -71,7 +87,9 @@ class ConversationTile extends StatelessWidget {
       child: Material(
         color: isSelected
             ? scheme.secondaryContainer.withValues(alpha: 0.7)
-            : Colors.transparent,
+            : unread
+                ? Colors.transparent
+                : readRowColour(scheme),
         child: InkWell(
           onTap: onTap,
           onLongPress: onLongPress,
@@ -82,7 +100,7 @@ class ConversationTile extends StatelessWidget {
             padding: EdgeInsets.fromLTRB(
               8,
               density.verticalPadding,
-              12,
+              6,
               density.verticalPadding,
             ),
             child: Row(
@@ -142,16 +160,20 @@ class ConversationTile extends StatelessWidget {
                         children: [
                           Expanded(
                             child: Text(
-                              _participants,
+                              senderLine(leadSender),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodyMedium
-                                  ?.copyWith(fontWeight: weight),
+                              style: line,
                             ),
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            formatMessageDate(conversation.newest.date),
+                            formatMessageDate(
+                              conversation.newest.date,
+                              use24h: MediaQuery.alwaysUse24HourFormatOf(
+                                context,
+                              ),
+                            ),
                             style: theme.textTheme.labelSmall?.copyWith(
                               color: unread
                                   ? scheme.primary
@@ -159,9 +181,10 @@ class ConversationTile extends StatelessWidget {
                               fontWeight: weight,
                             ),
                           ),
+                          const SizedBox(width: 6),
                         ],
                       ),
-                      const SizedBox(height: 2),
+                      SizedBox(height: density.lineGap),
                       Row(
                         children: [
                           _CountBadge(
@@ -175,8 +198,7 @@ class ConversationTile extends StatelessWidget {
                               conversation.subject,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodyMedium
-                                  ?.copyWith(fontWeight: weight),
+                              style: line,
                             ),
                           ),
                           if (conversation.hasAttachments) ...[
@@ -184,10 +206,10 @@ class ConversationTile extends StatelessWidget {
                             Icon(Icons.attach_file,
                                 size: 14, color: scheme.onSurfaceVariant),
                           ],
-                          if (conversation.isFlagged) ...[
-                            const SizedBox(width: 6),
-                            Icon(Icons.flag, size: 14, color: scheme.error),
-                          ],
+                          RowFlag(
+                            flagged: conversation.isFlagged,
+                            onToggle: onToggleFlag,
+                          ),
                           Icon(
                             isExpanded ? Icons.expand_less : Icons.expand_more,
                             size: 18,
@@ -196,13 +218,12 @@ class ConversationTile extends StatelessWidget {
                         ],
                       ),
                       if (density.previewLines > 0) ...[
-                        const SizedBox(height: 2),
+                        SizedBox(height: density.lineGap),
                         Text(
                           conversation.newest.preview,
                           maxLines: density.previewLines,
                           overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall
-                              ?.copyWith(color: scheme.onSurfaceVariant),
+                          style: listPreviewStyle(theme),
                         ),
                       ],
                     ],
@@ -216,24 +237,17 @@ class ConversationTile extends StatelessWidget {
     );
   }
 
-  /// Names where there are names, addresses otherwise, and a tail count once
-  /// there are more than three. A row of eight addresses is unreadable and
-  /// tells you less than "Dana, Sam, Ron +5".
-  String get _participants {
-    final people = conversation.participants;
-    String name(int i) {
-      final p = people[i];
-      final display = p.name?.trim();
-      if (display == null || display.isEmpty) return p.email;
-      // First name only once there are several: full names do not fit.
-      return people.length > 2 ? display.split(' ').first : display;
+  /// Who heads the row: the newest sender who is not you, or the newest
+  /// sender where everyone in it is you.
+  MailAddress get leadSender {
+    final newestFirst = [...conversation.messages]
+      ..sort((a, b) => b.date.compareTo(a.date));
+    for (final m in newestFirst) {
+      if (!ownAddresses.contains(m.from.email.trim().toLowerCase())) {
+        return m.from;
+      }
     }
-
-    if (people.length <= 3) {
-      return [for (var i = 0; i < people.length; i++) name(i)].join(', ');
-    }
-    final shown = [for (var i = 0; i < 3; i++) name(i)].join(', ');
-    return '$shown +${people.length - 3}';
+    return conversation.newest.from;
   }
 }
 

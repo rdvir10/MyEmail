@@ -14,6 +14,8 @@ import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/settings/view_settings_screen.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 
+import 'helpers/open_search.dart';
+
 import 'fakes/fake_webview.dart';
 
 /// What order the list is in, and the menu that changes it.
@@ -237,7 +239,8 @@ void main() {
       c.read(displayProvider.notifier).setSort(MessageSort.sender);
       await tester.pumpAndSettle();
 
-      await tester.enterText(find.byType(TextField).last, 'the');
+      await openSearch(tester);
+      await tester.enterText(searchField, 'the');
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pumpAndSettle();
 

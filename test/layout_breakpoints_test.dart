@@ -4,6 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 
+import 'package:myemail/ui/messages/message_list_pane.dart';
+
 void main() {
   testWidgets('Pixel Tablet landscape gets the three-pane layout',
       (tester) async {
@@ -19,7 +21,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Search folders'), findsOneWidget, reason: 'tree pane');
-    expect(find.text('Search mail'), findsOneWidget, reason: 'list pane');
+    expect(find.byType(MessageListPane), findsOneWidget, reason: 'list pane');
     // A message, not the "Select a message" placeholder: opening a folder
     // lands on one so the keyboard has somewhere to start.
     expect(find.byType(ReadingPane), findsOneWidget, reason: 'reading pane');

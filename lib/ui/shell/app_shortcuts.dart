@@ -125,7 +125,7 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
           await MessageActions(ref, listId).moveWithPrompt(context, [message]);
         }
       case AppCommand.search:
-        ref.read(searchFocusRequestsProvider.notifier).request();
+        ref.read(searchOpenProvider.notifier).open();
       case AppCommand.sync:
         try {
           await syncNow(ref, listId);

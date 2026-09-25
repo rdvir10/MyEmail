@@ -166,8 +166,7 @@ class _RibbonState extends ConsumerState<Ribbon> {
         _Button(
           icon: Icons.search,
           label: 'Search',
-          onPressed: () =>
-              ref.read(searchFocusRequestsProvider.notifier).request(),
+          onPressed: () => ref.read(searchOpenProvider.notifier).open(),
         ),
         const _Separator(),
         // The folder pane has Settings at its foot, but the pane can

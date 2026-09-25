@@ -5,7 +5,8 @@ import '../../state/providers.dart';
 import '../../state/search_providers.dart';
 
 /// The message search box above the list, with a scope chooser underneath
-/// once there is something to search for.
+/// once there is something to search for. On screen only when asked for;
+/// see [searchShownProvider].
 class MessageSearchBar extends ConsumerStatefulWidget {
   const MessageSearchBar({super.key});
 
@@ -21,6 +22,17 @@ class _MessageSearchBarState extends ConsumerState<MessageSearchBar> {
   late final _controller =
       TextEditingController(text: ref.read(searchQueryProvider));
   final _focus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    // Put out empty by the magnifier, the ribbon or Ctrl+F, it takes the
+    // keyboard at once: there is nothing else to do with an empty box. Back
+    // with a search in it, after a selection, it waits to be touched.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _controller.text.isEmpty) _focus.requestFocus();
+    });
+  }
 
   @override
   void dispose() {
@@ -55,16 +67,16 @@ class _MessageSearchBarState extends ConsumerState<MessageSearchBar> {
                   ? 'Search ${folder.displayName}'
                   : 'Search mail',
               prefixIcon: const Icon(Icons.search, size: 18),
-              suffixIcon: query.isEmpty
-                  ? null
-                  : IconButton(
-                      icon: const Icon(Icons.close, size: 18),
-                      tooltip: 'Clear',
-                      onPressed: () {
-                        _controller.clear();
-                        ref.read(searchQueryProvider.notifier).clear();
-                      },
-                    ),
+              // Puts the box away, the search with it. The box only came
+              // out because it was asked for, so there is always a way back.
+              suffixIcon: IconButton(
+                icon: const Icon(Icons.close, size: 18),
+                tooltip: 'Close search',
+                onPressed: () {
+                  _controller.clear();
+                  ref.read(searchOpenProvider.notifier).close();
+                },
+              ),
             ),
             onChanged: (value) =>
                 ref.read(searchQueryProvider.notifier).set(value),

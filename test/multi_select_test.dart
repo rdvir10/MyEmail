@@ -13,6 +13,8 @@ import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/selection_bar.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 
+import 'helpers/open_search.dart';
+
 import 'fakes/fake_webview.dart';
 
 /// Picking several messages and doing one thing to all of them.
@@ -120,6 +122,7 @@ void main() {
       // shrunk to make room, and searching is not what anyone is doing
       // mid-selection.
       final c = await pump(tester);
+      await openSearch(tester);
       expect(find.text('Search mail'), findsOneWidget);
 
       final first = tester.widget<MessageTile>(find.byType(MessageTile).first);

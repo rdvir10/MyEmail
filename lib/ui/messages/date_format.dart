@@ -3,13 +3,18 @@
 ///
 /// Hand-rolled rather than pulling in intl for three formats; revisit if the
 /// app ever localises.
-String formatMessageDate(DateTime date, {DateTime? now}) {
+///
+/// The time is written the way the phone's clock is set: [use24h] comes
+/// from `MediaQuery.alwaysUse24HourFormatOf`, which is Android's own
+/// 24-hour switch. "20:14" on a phone that says "8:14 PM" everywhere else
+/// was this app being the odd one out.
+String formatMessageDate(DateTime date, {DateTime? now, bool use24h = true}) {
   final n = (now ?? DateTime.now()).toLocal();
   final d = date.toLocal();
   String two(int v) => v.toString().padLeft(2, '0');
 
   if (d.year == n.year && d.month == n.month && d.day == n.day) {
-    return '${two(d.hour)}:${two(d.minute)}';
+    return formatClock(d, use24h: use24h);
   }
   if (d.year == n.year) {
     return '${d.day} ${_months[d.month - 1]}';
@@ -45,12 +50,21 @@ bool startsNewDay(DateTime a, DateTime b) {
   return x.year != y.year || x.month != y.month || x.day != y.day;
 }
 
-/// The reading pane's fuller form, e.g. "Mon 14 Sep 2026, 09:41".
-String formatMessageDateLong(DateTime date) {
+/// The reading pane's fuller form, e.g. "Mon 14 Sep 2026, 09:41", or
+/// "Mon 14 Sep 2026, 9:41 AM" on a phone set to a 12-hour clock.
+String formatMessageDateLong(DateTime date, {bool use24h = true}) {
   final d = date.toLocal();
-  String two(int v) => v.toString().padLeft(2, '0');
   return '${_weekdays[d.weekday - 1]} ${d.day} ${_months[d.month - 1]} '
-      '${d.year}, ${two(d.hour)}:${two(d.minute)}';
+      '${d.year}, ${formatClock(d, use24h: use24h)}';
+}
+
+/// A time of day as the phone's clock writes it: "20:14" or "8:14 PM".
+String formatClock(DateTime time, {required bool use24h}) {
+  final t = time.toLocal();
+  String two(int v) => v.toString().padLeft(2, '0');
+  if (use24h) return '${two(t.hour)}:${two(t.minute)}';
+  final hour = t.hour % 12 == 0 ? 12 : t.hour % 12;
+  return '$hour:${two(t.minute)} ${t.hour < 12 ? 'AM' : 'PM'}';
 }
 
 const _months = [

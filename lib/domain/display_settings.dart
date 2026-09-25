@@ -82,10 +82,20 @@ enum ListDensity {
   /// Vertical padding per row. The horizontal padding does not change: the
   /// text should stay on the same left edge as the density changes, or the
   /// whole list appears to shift sideways.
+  ///
+  /// Tighter than it was (7, 10 and 14). Set beside another app's list, ours
+  /// showed two thirds as many messages for the same mail.
   double get verticalPadding => switch (this) {
-        ListDensity.compact => 7,
-        ListDensity.cozy => 10,
-        ListDensity.comfortable => 14,
+        ListDensity.compact => 4,
+        ListDensity.cozy => 6,
+        ListDensity.comfortable => 10,
+      };
+
+  /// The space between one line of a row and the next.
+  double get lineGap => switch (this) {
+        ListDensity.compact => 1,
+        ListDensity.cozy => 1,
+        ListDensity.comfortable => 2,
       };
 }
 

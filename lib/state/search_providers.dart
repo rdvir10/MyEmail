@@ -32,6 +32,40 @@ class SearchFocusRequests extends Notifier<int> {
 final searchFocusRequestsProvider =
     NotifierProvider<SearchFocusRequests, int>(SearchFocusRequests.new);
 
+/// Whether the search box has been asked for.
+///
+/// Not until it is: by the magnifier in the title bar, the ribbon's Search
+/// button, or Ctrl+F. A box above every list spent a row of mail's worth of
+/// screen on something done now and then. See [searchShownProvider], which
+/// also keeps it out while it holds a search.
+class SearchOpen extends Notifier<bool> {
+  @override
+  bool build() => false;
+
+  /// Out, and focused, so typing can start at once.
+  void open() {
+    state = true;
+    ref.read(searchFocusRequestsProvider.notifier).request();
+  }
+
+  /// Away, and the search with it: a box put away with words still in it
+  /// would leave the list showing hits with nothing on screen saying why.
+  void close() {
+    state = false;
+    ref.read(searchQueryProvider.notifier).clear();
+  }
+}
+
+final searchOpenProvider =
+    NotifierProvider<SearchOpen, bool>(SearchOpen.new);
+
+/// Whether the search box is on screen: asked for, or holding a search.
+final searchShownProvider = Provider<bool>(
+  (ref) =>
+      ref.watch(searchOpenProvider) ||
+      ref.watch(searchQueryProvider).isNotEmpty,
+);
+
 final searchQueryProvider =
     NotifierProvider<SearchQuery, String>(SearchQuery.new);
 

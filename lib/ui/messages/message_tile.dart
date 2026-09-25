@@ -6,11 +6,15 @@ import '../../domain/mail_message.dart';
 import 'date_format.dart';
 
 /// One row of the message list: sender, subject, preview, date, and the
-/// unread / flagged / attachment marks. Compact, like Outlook mobile.
+/// unread / flagged / attachment marks.
 ///
 /// [density] decides how many lines the row gets. The marks always ride on
 /// the last visible line rather than living on the preview line, or setting
 /// the list to Compact would hide the fact that a message has an attachment.
+///
+/// Read and unread differ by more than weight: an unread row sits on the
+/// list's own ground and a read one on a shade of it, so what is new can be
+/// picked out from across a screen, the way it can in Outlook.
 class MessageTile extends StatelessWidget {
   const MessageTile({
     super.key,
@@ -24,6 +28,7 @@ class MessageTile extends StatelessWidget {
     this.isTicked,
     this.onTicked,
     this.onContextMenu,
+    this.onToggleFlag,
   });
 
   /// A right click, with where it landed, so a menu can open there.
@@ -49,6 +54,10 @@ class MessageTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
 
+  /// Flag it, or take the flag off, from the row itself. Where the row has
+  /// nothing to do it with, a flag that is set is still shown.
+  final VoidCallback? onToggleFlag;
+
   /// Shown as a thin bar on the left in the unified Inbox, so the reader can
   /// tell at a glance which account a message came through.
   final Color? accountColor;
@@ -59,13 +68,16 @@ class MessageTile extends StatelessWidget {
     final scheme = theme.colorScheme;
     final unread = !message.isRead;
     final weight = unread ? FontWeight.w700 : FontWeight.w400;
+    final line = listLineStyle(theme)?.copyWith(fontWeight: weight);
 
     return Semantics(
       selected: isSelecting ? isTicked : isSelected,
       child: Material(
         color: isSelected
             ? scheme.secondaryContainer.withValues(alpha: 0.7)
-            : Colors.transparent,
+            : unread
+                ? Colors.transparent
+                : readRowColour(scheme),
         child: InkWell(
           // While selecting, a tap ticks rather than opens. Opening a message
           // mid-selection would take the list off screen and lose the ticks
@@ -79,7 +91,7 @@ class MessageTile extends StatelessWidget {
             padding: EdgeInsets.fromLTRB(
               8,
               density.verticalPadding,
-              12,
+              6,
               density.verticalPadding,
             ),
             child: Row(
@@ -128,36 +140,26 @@ class MessageTile extends StatelessWidget {
                     children: [
                       Row(
                         children: [
-                          // One line, not two. The name reads first and the
-                          // address follows it quietly; a line of its own
-                          // doubled the height of every row to say something
-                          // most rows did not need to say at all.
+                          // Name and address together, at the name's size,
+                          // in every density. Small and grey after the name,
+                          // the address was the first thing cut off, and
+                          // Compact left it out altogether.
                           Expanded(
-                            child: Text.rich(
-                              TextSpan(
-                                children: [
-                                  TextSpan(text: message.from.display),
-                                  if (senderAddress case final address?)
-                                    TextSpan(
-                                      text: '   $address',
-                                      style: theme.textTheme.labelSmall
-                                          ?.copyWith(
-                                        color: scheme.onSurfaceVariant,
-                                        fontWeight: FontWeight.normal,
-                                      ),
-                                    ),
-                                ],
-                              ),
+                            child: Text(
+                              senderLine(message.from),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                fontWeight: weight,
-                              ),
+                              style: line,
                             ),
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            formatMessageDate(message.date),
+                            formatMessageDate(
+                              message.date,
+                              use24h: MediaQuery.alwaysUse24HourFormatOf(
+                                context,
+                              ),
+                            ),
                             style: theme.textTheme.labelSmall?.copyWith(
                               color: unread
                                   ? scheme.primary
@@ -165,9 +167,10 @@ class MessageTile extends StatelessWidget {
                               fontWeight: weight,
                             ),
                           ),
+                          const SizedBox(width: 6),
                         ],
                       ),
-                      const SizedBox(height: 2),
+                      SizedBox(height: density.lineGap),
                       Row(
                         children: [
                           Expanded(
@@ -175,19 +178,21 @@ class MessageTile extends StatelessWidget {
                               message.subject,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                fontWeight: weight,
-                              ),
+                              style: line,
                             ),
                           ),
                           // With no preview line there is nowhere else for
                           // these to go, and a hidden attachment mark is worse
                           // than a slightly busier subject line.
                           if (showsPreview == false) ..._marks(theme, scheme),
+                          RowFlag(
+                            flagged: message.isFlagged,
+                            onToggle: onToggleFlag,
+                          ),
                         ],
                       ),
                       if (showsPreview) ...[
-                        const SizedBox(height: 2),
+                        SizedBox(height: density.lineGap),
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -213,12 +218,11 @@ class MessageTile extends StatelessWidget {
                                 message.preview,
                                 maxLines: density.previewLines,
                                 overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: scheme.onSurfaceVariant,
-                                ),
+                                style: listPreviewStyle(theme),
                               ),
                             ),
                             ..._marks(theme, scheme),
+                            const SizedBox(width: 6),
                           ],
                         ),
                       ],
@@ -235,21 +239,8 @@ class MessageTile extends StatelessWidget {
 
   bool get showsPreview => density.previewLines > 0;
 
-  /// The sender's address, where it is worth a line of its own.
-  ///
-  /// Only when there is a name to sit above it. A row whose sender is just
-  /// an address would otherwise print it twice, and a compact list has no
-  /// room to spend on that.
-  String? get senderAddress {
-    if (density == ListDensity.compact) return null;
-    final name = message.from.name?.trim() ?? '';
-    final email = message.from.email.trim();
-    if (name.isEmpty || email.isEmpty) return null;
-    if (name.toLowerCase() == email.toLowerCase()) return null;
-    return email;
-  }
-
-  /// Attachment and flag, in that order, at the end of the last line.
+  /// Invitation and attachment, in that order, at the end of the last line.
+  /// The flag has a place of its own at the end of the subject's line.
   ///
   /// The attachment mark carries a size where the server gave one. It is
   /// free over IMAP, which reports a size per part with the structure the
@@ -274,9 +265,74 @@ class MessageTile extends StatelessWidget {
             ),
           ],
         ],
-        if (message.isFlagged) ...[
-          const SizedBox(width: 6),
-          Icon(Icons.flag, size: 14, color: scheme.error),
-        ],
       ];
+}
+
+/// `Crystal R <crystalr@hadco-metal.com>`, or the address alone where there
+/// is no name, or where the name is only the address again.
+String senderLine(MailAddress from) {
+  final name = from.name?.trim() ?? '';
+  final email = from.email.trim();
+  if (name.isEmpty || email.isEmpty) return from.display;
+  if (name.toLowerCase() == email.toLowerCase()) return email;
+  return '$name <$email>';
+}
+
+/// The shade a read row sits on; an unread one sits on the list itself.
+Color readRowColour(ColorScheme scheme) => scheme.surfaceContainerHigh;
+
+/// The sender and subject lines of a list row: the body size, set tight.
+/// Material's line height is meant for paragraphs, and between one-line
+/// rows it was a third of every row's height spent on nothing.
+TextStyle? listLineStyle(ThemeData theme) =>
+    theme.textTheme.bodyMedium?.copyWith(height: 1.25);
+
+/// A row's preview line, a size down and quieter.
+TextStyle? listPreviewStyle(ThemeData theme) => theme.textTheme.bodySmall
+    ?.copyWith(height: 1.25, color: theme.colorScheme.onSurfaceVariant);
+
+/// The flag at the end of a row's subject line: a tap sets it or takes it
+/// off, without opening the message or reaching for a swipe.
+///
+/// An outline where there is no flag, so the place to tap is always there;
+/// the red flag where there is one. Where there is nothing to toggle it
+/// with, only a flag that is set is drawn.
+class RowFlag extends StatelessWidget {
+  const RowFlag({super.key, required this.flagged, required this.onToggle});
+
+  final bool flagged;
+  final VoidCallback? onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final icon = Icon(
+      flagged ? Icons.flag : Icons.flag_outlined,
+      size: 18,
+      color: flagged
+          ? scheme.error
+          : scheme.onSurfaceVariant.withValues(alpha: 0.55),
+    );
+    if (onToggle == null) {
+      return flagged
+          ? Padding(padding: const EdgeInsets.only(left: 6), child: icon)
+          : const SizedBox(width: 6);
+    }
+    return Semantics(
+      button: true,
+      label: flagged ? 'Remove flag' : 'Flag',
+      excludeSemantics: true,
+      child: Tooltip(
+        message: flagged ? 'Remove flag' : 'Flag',
+        child: InkResponse(
+          onTap: onToggle,
+          radius: 18,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: icon,
+          ),
+        ),
+      ),
+    );
+  }
 }

@@ -140,6 +140,9 @@ void main() {
 
     testWidgets('an invitation shows as a card with when and where',
         (tester) async {
+      // A phone set to a 24-hour clock.
+      tester.platformDispatcher.alwaysUse24HourFormatTestValue = true;
+      addTearDown(tester.platformDispatcher.clearAlwaysUse24HourTestValue);
       final c = await pump(tester);
       await openInvite(tester, c);
 
@@ -149,6 +152,16 @@ void main() {
       expect(find.textContaining('Room 4'), findsOneWidget);
       expect(find.text('Accept'), findsOneWidget);
       expect(find.text('Add to calendar'), findsOneWidget);
+    });
+
+    testWidgets('on a 12-hour phone the times are written its way',
+        (tester) async {
+      tester.platformDispatcher.alwaysUse24HourFormatTestValue = false;
+      addTearDown(tester.platformDispatcher.clearAlwaysUse24HourTestValue);
+      final c = await pump(tester);
+      await openInvite(tester, c);
+
+      expect(find.textContaining('10:00 AM–11:00 AM'), findsOneWidget);
     });
 
     testWidgets('Accept answers through the account and says so',

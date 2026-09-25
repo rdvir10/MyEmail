@@ -12,6 +12,8 @@ import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/selection_bar.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 
+import 'helpers/open_search.dart';
+
 import 'fakes/fake_webview.dart';
 
 /// Search hits can be ticked and acted on like any other rows, and any
@@ -45,7 +47,8 @@ void main() {
   }
 
   Future<List<MessageTile>> search(WidgetTester tester, String query) async {
-    await tester.enterText(find.byType(TextField).last, query);
+    await openSearch(tester);
+    await tester.enterText(searchField, query);
     await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
     return tester.widgetList<MessageTile>(find.byType(MessageTile)).toList();
@@ -184,7 +187,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byType(SelectionBar), findsNothing);
-      final box = tester.widget<TextField>(find.byType(TextField).last);
+      final box = tester.widget<TextField>(searchField);
       expect(box.controller!.text, 'invoice');
     });
 

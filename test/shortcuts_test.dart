@@ -22,6 +22,8 @@ import 'package:myemail/ui/shell/app_shell.dart';
 import 'package:myemail/ui/shell/app_shortcuts.dart';
 import 'package:myemail/ui/shell/pane_focus.dart';
 
+import 'helpers/open_search.dart';
+
 import 'fakes/fake_webview.dart';
 
 /// What the keyboard does, from anywhere in the shell and in the list.
@@ -451,7 +453,8 @@ void main() {
       // hit in another folder opened a message not in the results at all.
       final c = await pump(tester);
       final open = c.read(effectiveSelectedFolderIdProvider)!;
-      await tester.enterText(find.byType(TextField).last, 'the');
+      await openSearch(tester);
+      await tester.enterText(searchField, 'the');
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pumpAndSettle();
       final hits = sortMessages(

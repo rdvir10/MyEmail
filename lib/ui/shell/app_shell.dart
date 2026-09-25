@@ -18,6 +18,7 @@ import '../../domain/display_settings.dart';
 import '../../state/display_providers.dart';
 import '../../state/pane_widths.dart';
 import '../../state/providers.dart';
+import '../../state/search_providers.dart';
 import '../../domain/draft.dart';
 import '../accounts/add_account_screen.dart';
 import '../compose/open_compose.dart';
@@ -26,6 +27,7 @@ import '../messages/message_list_pane.dart';
 import '../messages/reading_pane.dart';
 import '../messages/view_options_sheet.dart';
 import 'app_shortcuts.dart';
+import 'folder_heading.dart';
 import 'pane_focus.dart';
 import 'ribbon.dart';
 
@@ -298,16 +300,23 @@ class _NarrowLayout extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final selectedId = ref.watch(effectiveSelectedFolderIdProvider);
-    final folder = selectedId == null
-        ? null
-        : ref.watch(folderIndexProvider)[selectedId];
-
     return Scaffold(
       appBar: AppBar(
-        title: Text(folder?.displayName ?? 'MyEmail'),
+        // Whose folder this is, under its name: with four Inboxes and the
+        // tree in a drawer, "Inbox" alone does not say which.
+        title: FolderHeading(
+          nameStyle: Theme.of(context).textTheme.titleLarge,
+        ),
         centerTitle: false,
         actions: [
+          const FolderUnreadCount(),
+          // Search is asked for rather than always there: a box above the
+          // list was a row of mail's worth of a phone's screen.
+          IconButton(
+            tooltip: 'Search',
+            icon: const Icon(Icons.search),
+            onPressed: () => ref.read(searchOpenProvider.notifier).open(),
+          ),
           // Sorting and what a row looks like, a tap from the list rather
           // than four taps into Settings. On screen while searching too,
           // because that is when the order matters most.
@@ -633,10 +642,7 @@ class _FolderTitleBar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final selectedId = ref.watch(effectiveSelectedFolderIdProvider);
-    final folder = selectedId == null
-        ? null
-        : ref.watch(folderIndexProvider)[selectedId];
+    final folder = folderOnScreen(ref);
     final paneShown = ref.watch(folderPaneVisibleProvider);
     return Column(
       children: [
@@ -661,12 +667,7 @@ class _FolderTitleBar extends ConsumerWidget {
               ),
               const SizedBox(width: 4),
               Expanded(
-                child: Text(
-                  folder?.displayName ?? '',
-                  style: theme.textTheme.titleMedium,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+                child: FolderHeading(nameStyle: theme.textTheme.titleMedium),
               ),
               if (folder != null && folder.unreadCount > 0)
                 Text(
@@ -675,6 +676,12 @@ class _FolderTitleBar extends ConsumerWidget {
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
+              IconButton(
+                tooltip: 'Search',
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.search, size: 20),
+                onPressed: () => ref.read(searchOpenProvider.notifier).open(),
+              ),
               IconButton(
                 tooltip: 'View and sort',
                 visualDensity: VisualDensity.compact,
