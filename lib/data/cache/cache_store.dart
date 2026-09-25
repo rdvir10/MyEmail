@@ -39,6 +39,15 @@ class FolderSyncState {
 /// it pulled every cached body out of the database on every sync.
 typedef SyncRow = ({int uid, DateTime date, bool hasPreview});
 
+/// A cached row's flags, all of them, as [CacheStore.updateFlags] writes
+/// them.
+typedef CachedFlags = ({
+  bool isRead,
+  bool isFlagged,
+  bool isAnswered,
+  bool isForwarded,
+});
+
 /// A message as cached: the list row plus, once fetched, the body.
 @immutable
 class CachedMessage {
@@ -51,6 +60,8 @@ class CachedMessage {
     required this.isRead,
     required this.isFlagged,
     required this.hasAttachments,
+    this.isAnswered = false,
+    this.isForwarded = false,
     this.arrived,
     this.cc = const [],
     this.replyTo = const [],
@@ -78,6 +89,10 @@ class CachedMessage {
   final DateTime? arrived;
   final bool isRead;
   final bool isFlagged;
+
+  /// See [MailMessage.isAnswered] and [MailMessage.isForwarded].
+  final bool isAnswered;
+  final bool isForwarded;
   final bool hasAttachments;
 
   /// See [MailMessage.attachmentBytes].
@@ -102,6 +117,8 @@ class CachedMessage {
   CachedMessage copyWith({
     bool? isRead,
     bool? isFlagged,
+    bool? isAnswered,
+    bool? isForwarded,
     String? preview,
     String? bodyText,
     String? bodyHtml,
@@ -118,6 +135,8 @@ class CachedMessage {
       arrived: arrived,
       isRead: isRead ?? this.isRead,
       isFlagged: isFlagged ?? this.isFlagged,
+      isAnswered: isAnswered ?? this.isAnswered,
+      isForwarded: isForwarded ?? this.isForwarded,
       hasAttachments: hasAttachments,
       attachmentBytes: attachmentBytes,
       isMeeting: isMeeting,
@@ -146,6 +165,8 @@ class CachedMessage {
       preview: preview,
       isRead: isRead,
       isFlagged: isFlagged,
+      isAnswered: isAnswered,
+      isForwarded: isForwarded,
       hasAttachments: hasAttachments,
       attachmentBytes: attachmentBytes,
       isMeeting: isMeeting,
@@ -219,7 +240,7 @@ abstract class CacheStore {
   Future<void> updateFlags(
     String accountId,
     String path,
-    Map<int, ({bool isRead, bool isFlagged})> flagsByUid,
+    Map<int, CachedFlags> flagsByUid,
   );
 
   Future<void> deleteUids(String accountId, String path, Set<int> uids);
@@ -395,14 +416,18 @@ class MemoryCacheStore implements CacheStore {
   Future<void> updateFlags(
     String accountId,
     String path,
-    Map<int, ({bool isRead, bool isFlagged})> flagsByUid,
+    Map<int, CachedFlags> flagsByUid,
   ) async {
     final folder = _folder(accountId, path);
     for (final e in flagsByUid.entries) {
       final m = folder[e.key];
       if (m != null) {
-        folder[e.key] =
-            m.copyWith(isRead: e.value.isRead, isFlagged: e.value.isFlagged);
+        folder[e.key] = m.copyWith(
+          isRead: e.value.isRead,
+          isFlagged: e.value.isFlagged,
+          isAnswered: e.value.isAnswered,
+          isForwarded: e.value.isForwarded,
+        );
       }
     }
   }

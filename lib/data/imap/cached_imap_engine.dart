@@ -1172,6 +1172,8 @@ class CachedImapEngine implements MailEngine {
               preview: h.preview,
               isRead: h.isRead,
               isFlagged: h.isFlagged,
+              isAnswered: h.isAnswered,
+              isForwarded: h.isForwarded,
               hasAttachments: h.hasAttachments,
               attachmentBytes: h.attachmentBytes,
               isMeeting: h.isMeeting,
@@ -1283,6 +1285,8 @@ class CachedImapEngine implements MailEngine {
         uid: (
           isRead: flag == MessageFlag.seen ? set : cached.isRead,
           isFlagged: flag == MessageFlag.flagged ? set : cached.isFlagged,
+          isAnswered: cached.isAnswered,
+          isForwarded: cached.isForwarded,
         ),
       });
     }
@@ -1381,19 +1385,58 @@ class CachedImapEngine implements MailEngine {
       }
     }
 
-    // Mark the message being answered as \Answered, which is what makes
-    // other clients show the reply arrow.
-    final originalId = draft.originalMessageId;
-    if (originalId != null && draft.kind != ComposeKind.forward) {
-      try {
-        final (folderId, uid) = splitMessageId(originalId);
-        final (accountId, path) = splitFolderId(folderId);
-        final t = await _transport(accountId);
-        await t.storeFlag(path, uids: [uid], flag: MessageFlag.answered,
-            set: true);
-      } catch (_) {
-        // Cosmetic; never fail a successful send over it.
+    // What it replied to or passed on, marked so the arrow shows beside it
+    // here and in every other mail app.
+    await _markOriginals(draft);
+  }
+
+  /// Mark what [draft] replied to or forwarded, now that it is away: the
+  /// message it was written from, and each message it carries whole as an
+  /// attachment.
+  ///
+  /// On the server, then in the cache, so a list drawn again shows the mark
+  /// at once rather than after the next sync. Never throws: the message has
+  /// gone, and a mark that could not be made is no reason to say it has not.
+  Future<void> _markOriginals(Draft draft) async {
+    final original = draft.originalMessageId;
+    if (original != null && draft.kind != ComposeKind.newMessage) {
+      await _markOriginal(original, draft.kind);
+    }
+    final forwarded = {
+      for (final a in draft.attachments) ?a.forwardedMessageId,
+    };
+    for (final messageId in forwarded) {
+      await _markOriginal(messageId, ComposeKind.forward);
+    }
+  }
+
+  Future<void> _markOriginal(String messageId, ComposeKind kind) async {
+    final forward = kind == ComposeKind.forward;
+    try {
+      final (folderId, uid) = splitMessageId(messageId);
+      final (accountId, path) = splitFolderId(folderId);
+      final t = await _transport(accountId);
+      if (forward) {
+        await t.markForwarded(path, uid);
+      } else {
+        await t.markAnswered(path, uid, toAll: kind == ComposeKind.replyAll);
       }
+      final cached = await cache.readMessage(accountId, path, uid);
+      if (cached == null) return;
+      // Written as the server now has it. Exchange keeps only what was done
+      // last, so there the other mark goes; IMAP keeps both.
+      final keepsOther = t.keepsBothMarks;
+      await cache.updateFlags(accountId, path, {
+        uid: (
+          isRead: cached.isRead,
+          isFlagged: cached.isFlagged,
+          isAnswered: !forward || (keepsOther && cached.isAnswered),
+          isForwarded: forward || (keepsOther && cached.isForwarded),
+        ),
+      });
+    } catch (e) {
+      debugPrint('[myemail] could not mark $messageId '
+          '${forward ? 'forwarded' : 'answered'}: $e');
     }
   }
 

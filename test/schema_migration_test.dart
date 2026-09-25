@@ -4,10 +4,13 @@ import 'package:drift/drift.dart' show driftRuntimeOptions;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/cache/cache_store.dart';
+import 'package:myemail/data/cache/folder_sync.dart';
 import 'package:myemail/data/cache/mail_database.dart';
 import 'package:myemail/data/graph/graph_id_map.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:sqlite3/sqlite3.dart' show sqlite3;
+
+import 'fakes/fake_imap_transport.dart';
 
 /// Upgrading the database that is already on someone's device.
 ///
@@ -51,10 +54,19 @@ void main() {
   // and every test here would still have passed, while every device
   // upgrading from 2.35 or earlier failed on every cache read.
 
+  /// What schema 9 added: whether a message was replied to or forwarded.
+  Future<void> dropSchema9(MailDatabase db) async {
+    for (final column in ['is_answered', 'is_forwarded']) {
+      await db.customStatement('ALTER TABLE messages DROP COLUMN $column');
+    }
+  }
+
   /// What schema 8 added: when a message arrived, whether a folder's
   /// previews were asked for, and one number per Graph message. And the
   /// lookup index, which a database created at schema 3 or later never had.
+  /// And everything after it.
   Future<void> dropSchema8(MailDatabase db) async {
+    await dropSchema9(db);
     await db.customStatement('ALTER TABLE messages DROP COLUMN arrived');
     await db.customStatement(
       'ALTER TABLE folder_states DROP COLUMN previews_checked',
@@ -162,6 +174,27 @@ void main() {
     await db.close();
   }
 
+  /// A database as it stood at schema 8, the release before this one: a
+  /// Gmail Inbox synced with CONDSTORE, so its place in the folder is
+  /// recorded, and a message cached before replies were read.
+  Future<void> buildVersion8() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await DriftCacheStore(db).writeFolderState(
+      'acct-1',
+      'INBOX',
+      FolderSyncState(
+        uidValidity: 1000,
+        uidNext: 12,
+        highestModSeq: 2,
+        lastSync: DateTime.utc(2026, 9, 1),
+      ),
+    );
+    await dropSchema9(db);
+    await db.customStatement('PRAGMA user_version = 8');
+    await db.close();
+  }
+
   /// A database as it stood at schema 6.
   Future<void> buildVersion6() async {
     final db = MailDatabase(NativeDatabase(file));
@@ -177,6 +210,64 @@ void main() {
             .get())
           row.read<String>('name'),
       };
+
+  test('a version 8 database gains replied and forwarded, and keeps its rows',
+      () async {
+    await buildVersion8();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    final cached = (await store.readMessages('acct-1', 'INBOX')).single;
+
+    expect(cached.bodyHtml, '<p>A body worth keeping</p>');
+    expect(cached.isAnswered, isFalse, reason: 'cached before it was read');
+    expect(cached.isForwarded, isFalse);
+
+    await store.updateFlags('acct-1', 'INBOX', {
+      11: (
+        isRead: true,
+        isFlagged: false,
+        isAnswered: true,
+        isForwarded: true,
+      ),
+    });
+    final after = await store.readMessage('acct-1', 'INBOX', 11);
+    expect(after!.isAnswered, isTrue);
+    expect(after.isForwarded, isTrue);
+    expect(after.bodyHtml, '<p>A body worth keeping</p>');
+  });
+
+  test('a reply made before the update shows once its folder syncs',
+      () async {
+    // Gmail's sync asks only for flags changed since the last (CONDSTORE),
+    // and a message answered before the update has not changed since, so
+    // its mark would never have been read. The upgrade drops each folder's
+    // place instead: its next sync reads every flag, once.
+    await buildVersion8();
+    final server = FakeImapTransport();
+    final inbox = server.folder('INBOX')..nextUid = 11;
+    inbox.deliver(subject: 'Cached before the upgrade').isAnswered = true;
+    expect(inbox.highestModSeq, 2, reason: 'where the device last left it');
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    final sync =
+        FolderSync(transport: server, store: store, accountId: 'acct-1');
+    Iterable<String> sinceCalls() =>
+        server.calls.where((c) => c.contains('CHANGEDSINCE'));
+
+    await sync.sync('INBOX');
+
+    final row = await store.readMessage('acct-1', 'INBOX', 11);
+    expect(row!.isAnswered, isTrue);
+    expect(sinceCalls(), isEmpty, reason: 'every flag in the window');
+
+    await sync.sync('INBOX');
+    expect(sinceCalls(), hasLength(1),
+        reason: 'once: after it, only what changed');
+  });
 
   test('a version 7 database gains the schema 8 columns and keeps its rows',
       () async {

@@ -69,6 +69,8 @@ class MailMessage {
     this.hasAttachments = false,
     this.attachmentBytes = 0,
     this.isMeeting = false,
+    this.isAnswered = false,
+    this.isForwarded = false,
     this.messageId,
     this.inReplyTo,
   });
@@ -121,6 +123,16 @@ class MailMessage {
   /// a meeting request outright. Neither costs a request.
   final bool isMeeting;
 
+  /// Whether it has been replied to, and whether it has been forwarded.
+  ///
+  /// Kept on the server, so a reply made in another mail app that marks it
+  /// shows here too. IMAP keeps the two apart, as `\Answered` and the
+  /// `$Forwarded` keyword, and a message can carry both. Exchange keeps only
+  /// what was done to a message last, so on a Microsoft account it is one or
+  /// the other.
+  final bool isAnswered;
+  final bool isForwarded;
+
   /// What the files on it add up to, or 0 where the server did not say.
   ///
   /// Free over IMAP: the structure the header fetch already asks for
@@ -138,7 +150,12 @@ class MailMessage {
   /// Every field is carried across. Cc, the attachment size and the meeting
   /// flag used to be left behind, so a message that had just been marked
   /// read lost its Cc line, and Reply all from it left those people out.
-  MailMessage copyWith({bool? isRead, bool? isFlagged}) {
+  MailMessage copyWith({
+    bool? isRead,
+    bool? isFlagged,
+    bool? isAnswered,
+    bool? isForwarded,
+  }) {
     return MailMessage(
       id: id,
       accountId: accountId,
@@ -157,6 +174,8 @@ class MailMessage {
       hasAttachments: hasAttachments,
       attachmentBytes: attachmentBytes,
       isMeeting: isMeeting,
+      isAnswered: isAnswered ?? this.isAnswered,
+      isForwarded: isForwarded ?? this.isForwarded,
       messageId: messageId,
       inReplyTo: inReplyTo,
     );
@@ -196,6 +215,8 @@ class MailMessage {
       other.hasAttachments == hasAttachments &&
       other.attachmentBytes == attachmentBytes &&
       other.isMeeting == isMeeting &&
+      other.isAnswered == isAnswered &&
+      other.isForwarded == isForwarded &&
       other.messageId == messageId &&
       other.inReplyTo == inReplyTo;
 

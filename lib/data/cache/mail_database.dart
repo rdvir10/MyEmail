@@ -67,6 +67,11 @@ class Messages extends Table {
   /// An invitation, a change to one, or a cancellation. Added in schema 6;
   /// false on rows cached before, until that folder next syncs.
   BoolColumn get isMeeting => boolean().withDefault(const Constant(false))();
+
+  /// Whether it was replied to, and whether forwarded. Added in schema 9;
+  /// false on rows cached before, until that folder next syncs.
+  BoolColumn get isAnswered => boolean().withDefault(const Constant(false))();
+  BoolColumn get isForwarded => boolean().withDefault(const Constant(false))();
   TextColumn get bodyText => text().nullable()();
   TextColumn get bodyHtml => text().nullable()();
 
@@ -165,7 +170,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 8;
+  int get schemaVersion => 9;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -261,6 +266,16 @@ class MailDatabase extends _$MailDatabase {
         'AND g.remote_id = graph_ids.remote_id AND g.uid < graph_ids.uid)',
       );
       await m.createIndex(graphIdOnePerRemote);
+    }
+    if (from < 9) {
+      // Whether a message was replied to or forwarded, read with its
+      // flags. A sync where the server has CONDSTORE (Gmail) asks only for
+      // what changed since the last, which a reply made before the update
+      // did not, so it would never show. Each folder's place is dropped
+      // instead, and its next sync reads every flag in its window, once.
+      await _addColumnIfMissing(m, messages, messages.isAnswered);
+      await _addColumnIfMissing(m, messages, messages.isForwarded);
+      await customStatement('UPDATE folder_states SET highest_mod_seq = NULL');
     }
     if (from < 5) {
       // Throwing away every cached body on a Microsoft account, once.
@@ -511,6 +526,8 @@ class DriftCacheStore implements CacheStore {
             arrived: Value(m.arrived),
             isRead: m.isRead,
             isFlagged: m.isFlagged,
+            isAnswered: Value(m.isAnswered),
+            isForwarded: Value(m.isForwarded),
             hasAttachments: m.hasAttachments,
             attachmentBytes: Value(m.attachmentBytes),
             isMeeting: Value(m.isMeeting),
@@ -543,6 +560,8 @@ class DriftCacheStore implements CacheStore {
               inReplyTo: Value(m.inReplyTo),
               isRead: Value(m.isRead),
               isFlagged: Value(m.isFlagged),
+              isAnswered: Value(m.isAnswered),
+              isForwarded: Value(m.isForwarded),
               hasAttachments: Value(m.hasAttachments),
               isMeeting: Value(m.isMeeting),
               // Only when the server said. A re-read header that carries no
@@ -611,7 +630,7 @@ class DriftCacheStore implements CacheStore {
   Future<void> updateFlags(
     String accountId,
     String path,
-    Map<int, ({bool isRead, bool isFlagged})> flagsByUid,
+    Map<int, CachedFlags> flagsByUid,
   ) async {
     if (flagsByUid.isEmpty) return;
     await db.batch((b) {
@@ -621,6 +640,8 @@ class DriftCacheStore implements CacheStore {
           MessagesCompanion(
             isRead: Value(e.value.isRead),
             isFlagged: Value(e.value.isFlagged),
+            isAnswered: Value(e.value.isAnswered),
+            isForwarded: Value(e.value.isForwarded),
           ),
           where: (m) => _folder(m, accountId, path) & m.uid.equals(e.key),
         );
@@ -753,6 +774,8 @@ class DriftCacheStore implements CacheStore {
         arrived: r.arrived,
         isRead: r.isRead,
         isFlagged: r.isFlagged,
+        isAnswered: r.isAnswered,
+        isForwarded: r.isForwarded,
         hasAttachments: r.hasAttachments,
         attachmentBytes: r.attachmentBytes,
         isMeeting: r.isMeeting,

@@ -79,6 +79,22 @@ void main() {
       expect(base.copyWith(isRead: false), base);
       expect(base.copyWith(isRead: false).hashCode, base.hashCode);
     });
+
+    test('replied to or forwarded since is a different state', () {
+      // A reply sent from another device comes in with the next sync. Equal
+      // to the copy on screen, the list would keep that copy, and the
+      // arrow would not show until the app was restarted.
+      expect(base.copyWith(isAnswered: true), isNot(base));
+      expect(base.copyWith(isForwarded: true), isNot(base));
+      expect(base.copyWith(isAnswered: true), base.copyWith(isAnswered: true));
+    });
+
+    test('marking read keeps the reply and forward marks', () {
+      final answered = base.copyWith(isAnswered: true, isForwarded: true);
+      final read = answered.copyWith(isRead: true);
+      expect(read.isAnswered, isTrue);
+      expect(read.isForwarded, isTrue);
+    });
   });
 
   group('sample messages', () {
@@ -116,6 +132,20 @@ void main() {
       final msgs = generateSampleMessages(sent);
       expect(msgs.every((m) => m.from.email == 'me@example.com'), isTrue);
       expect(msgs.every((m) => m.isRead), isTrue);
+    });
+
+    test('some were replied to, some forwarded, and a few both', () async {
+      // So the list's reply and forward marks have something to show in
+      // the browser preview and the widget tests, in each combination.
+      final msgs = generateSampleMessages(await _folder('INBOX'));
+      final answered = msgs.where((m) => m.isAnswered && !m.isForwarded);
+      final forwarded = msgs.where((m) => m.isForwarded && !m.isAnswered);
+      final both = msgs.where((m) => m.isAnswered && m.isForwarded);
+      expect(answered.length, greaterThan(2));
+      expect(forwarded.length, greaterThan(2));
+      expect(both, isNotEmpty);
+      expect(msgs.take(15).where((m) => m.isAnswered || m.isForwarded),
+          isNotEmpty, reason: 'on the first screen, not only far down');
     });
 
     test('bodies are generated and stable', () async {

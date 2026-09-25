@@ -18,6 +18,7 @@ class DraftAttachment {
     required this.mimeType,
     required this.bytes,
     this.contentId,
+    this.forwardedMessageId,
   });
 
   final String fileName;
@@ -29,6 +30,12 @@ class DraftAttachment {
   /// Sent inline under this id so the link keeps working. Without the angle
   /// brackets.
   final String? contentId;
+
+  /// Set when the file is a whole message forwarded as an attachment: that
+  /// message, as `<folderId>#<uid>`, marked forwarded once this is away.
+  /// Kept on the file rather than the draft, so taking the file off before
+  /// sending takes the mark with it.
+  final String? forwardedMessageId;
 
   int get size => bytes.length;
 
@@ -84,7 +91,7 @@ class Draft {
   final List<String> references;
 
   /// The message this is a reply to or forward of, as `<folderId>#<uid>`.
-  /// Used to set \Answered once the reply is away.
+  /// Marked answered or forwarded, as [kind] says, once this is away.
   final String? originalMessageId;
 
   /// Where this draft already sits in the Drafts folder, as

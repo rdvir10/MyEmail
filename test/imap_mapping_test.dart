@@ -162,6 +162,35 @@ void main() {
       expect(h.isFlagged, isTrue);
     });
 
+    test('so are replied to and forwarded', () {
+      // \Answered is IMAP's own flag; $Forwarded is the keyword every mail
+      // app that marks a forward uses, and a message can carry both.
+      final answered =
+          remoteHeaderFromMime(build()..flags = [em.MessageFlags.answered]);
+      expect(answered.isAnswered, isTrue);
+      expect(answered.isForwarded, isFalse);
+
+      final forwarded = remoteHeaderFromMime(
+          build()..flags = [em.MessageFlags.seen, r'$Forwarded']);
+      expect(forwarded.isAnswered, isFalse);
+      expect(forwarded.isForwarded, isTrue);
+
+      final both = remoteHeaderFromMime(build()
+        ..flags = [em.MessageFlags.answered, em.MessageFlags.keywordForwarded]);
+      expect(both.isAnswered, isTrue);
+      expect(both.isForwarded, isTrue);
+
+      expect(remoteHeaderFromMime(build()).isAnswered, isFalse);
+      expect(remoteHeaderFromMime(build()).isForwarded, isFalse);
+    });
+
+    test('a forward is read whatever case its keyword comes back in', () {
+      // A keyword is written by whichever app did the forwarding, and a
+      // server need not hand it back in the case it was set in.
+      final h = remoteHeaderFromMime(build()..flags = [r'$FORWARDED']);
+      expect(h.isForwarded, isTrue);
+    });
+
     test("the ENVELOPE's Message-ID and In-Reply-To, without brackets", () {
       final mime = build()
         ..envelope = em.Envelope(

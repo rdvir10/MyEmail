@@ -137,6 +137,22 @@ abstract class ImapTransport {
     required bool set,
   });
 
+  /// Mark a message replied to, once the reply is away: `\Answered` over
+  /// IMAP. Exchange keeps what was last done to a message instead, and tells
+  /// a reply to all ([toAll]) from a reply. Either way it is what makes a
+  /// mail app draw the arrow beside the message, here and anywhere else it
+  /// is read.
+  Future<void> markAnswered(String path, int uid, {bool toAll = false});
+
+  /// The same for a forward, inline or as an attachment: the `$Forwarded`
+  /// keyword over IMAP.
+  Future<void> markForwarded(String path, int uid);
+
+  /// Whether a message can be marked both replied to and forwarded. IMAP
+  /// keeps the two apart. Exchange keeps only what was done last, so there a
+  /// forward takes the reply's mark away, and a reply the forward's.
+  bool get keepsBothMarks => true;
+
   /// Move messages to another folder, returning the UIDs they were given
   /// there when the server says (UIDPLUS / MOVE report it; not every server
   /// does, hence nullable).
@@ -196,7 +212,10 @@ abstract class ImapTransport {
   Future<void> close();
 }
 
-enum MessageFlag { seen, flagged, deleted, answered }
+/// What [ImapTransport.storeFlag] sets or clears. [forwarded] is the
+/// `$Forwarded` keyword, which is how IMAP marks a forward: a keyword rather
+/// than one of its own backslashed flags.
+enum MessageFlag { seen, flagged, deleted, answered, forwarded }
 
 /// A transport's move that stopped part way through a folder's messages:
 /// [moved] went, numbered [landed] where they went where that is known.
@@ -265,6 +284,8 @@ class RemoteHeader {
     required this.date,
     required this.isRead,
     required this.isFlagged,
+    required this.isAnswered,
+    required this.isForwarded,
     required this.hasAttachments,
     this.arrived,
     this.cc = const [],
@@ -292,6 +313,10 @@ class RemoteHeader {
   final DateTime? arrived;
   final bool isRead;
   final bool isFlagged;
+
+  /// See [MailMessage.isAnswered] and [MailMessage.isForwarded].
+  final bool isAnswered;
+  final bool isForwarded;
   final bool hasAttachments;
 
   /// What the files on it add up to. See [MailMessage.attachmentBytes].
@@ -327,9 +352,16 @@ class RemoteFlags {
     required this.uid,
     required this.isRead,
     required this.isFlagged,
+    required this.isAnswered,
+    required this.isForwarded,
   });
 
   final int uid;
   final bool isRead;
   final bool isFlagged;
+
+  /// Read with the others, so a reply or forward marked from another device
+  /// comes through at the next sync the way a message read there does.
+  final bool isAnswered;
+  final bool isForwarded;
 }

@@ -222,8 +222,9 @@ abstract class MailEngine {
   });
 
   /// Send the draft (over SMTP for Gmail, through Graph for Microsoft), see
-  /// that Sent has a copy, and mark the message it answers as \Answered when
-  /// there is one.
+  /// that Sent has a copy, and mark what it replied to or forwarded, the
+  /// messages it carries as attachments included. A mark that cannot be made
+  /// is logged, never thrown: the message has gone either way.
   ///
   /// Throws [SendFailed] when the server refuses, [AuthenticationFailed] when
   /// it refuses the login, and [ConnectionFailed] when it cannot be reached.

@@ -1,19 +1,27 @@
 import 'dart:convert';
 
 import 'package:drift/native.dart';
+import 'package:enough_mail/enough_mail.dart' as em;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart' as http_testing;
+import 'package:myemail/data/account_store.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/cache/folder_sync.dart';
 import 'package:myemail/data/cache/mail_database.dart';
+import 'package:myemail/data/compose/smtp_sender.dart';
+import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/graph/graph_id_map.dart';
 import 'package:myemail/data/graph/graph_mail_api.dart';
 import 'package:myemail/data/graph/graph_transport.dart';
+import 'package:myemail/data/imap/cached_imap_engine.dart';
 import 'package:myemail/data/imap/imap_transport.dart';
 import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/calendar_invite.dart';
+import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_credentials.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/mail_folder.dart';
 
@@ -314,6 +322,35 @@ void main() {
         )),
       );
     });
+
+    test('every list of messages asks what was last done to each, at once',
+        () async {
+      // Exchange says a message was replied to or forwarded in a property
+      // Graph hands over only when asked. Asked in the same request as the
+      // rows, it costs nothing; asked message by message it would be a
+      // request for every row of every folder.
+      final asked = <Uri>[];
+      final api = GraphMailApi(
+        accessToken: ({bool force = false}) async => 'token',
+        httpClient: http_testing.MockClient((request) async {
+          asked.add(request.url);
+          return http.Response(jsonEncode({'id': 'm-1', 'value': []}), 200);
+        }),
+      );
+
+      await api.messages('f-inbox');
+      await api.message('m-1');
+      await api.search('f-inbox', 'invoice');
+
+      expect(asked, hasLength(3), reason: 'one request each, no more');
+      for (final uri in asked) {
+        expect(uri.queryParameters[r'$select'], GraphMailApi.headerFields);
+        expect(
+          uri.queryParameters[r'$expand'],
+          r"singleValueExtendedProperties($filter=id eq 'Integer 0x1081')",
+        );
+      }
+    });
   });
 
   group('numbering messages', () {
@@ -500,6 +537,51 @@ void main() {
       final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
 
       expect(header.isFlagged, isTrue);
+    });
+
+    test('what was last done to a message reads as replied or forwarded',
+        () async {
+      // Exchange keeps one last verb rather than a flag for each: 102 a
+      // reply, 103 a reply to all, 104 a forward. Anything else Outlook
+      // records, a meeting accepted say, is neither, and so is nothing.
+      server
+        ..message('f-inbox', id: 'm1', subject: 'Replied', minutesAgo: 50,
+            lastVerb: 102)
+        ..message('f-inbox', id: 'm2', subject: 'Replied to all',
+            minutesAgo: 40, lastVerb: 103)
+        ..message('f-inbox', id: 'm3', subject: 'Forwarded', minutesAgo: 30,
+            lastVerb: 104)
+        ..message('f-inbox', id: 'm4', subject: 'Accepted', minutesAgo: 20,
+            lastVerb: 512)
+        ..message('f-inbox', id: 'm5', subject: 'Untouched', minutesAgo: 10);
+
+      final headers = await transport.fetchHeadersFromUid('Inbox', 1);
+
+      final marks = {
+        for (final h in headers) h.subject: (h.isAnswered, h.isForwarded),
+      };
+      expect(marks, {
+        'Replied': (true, false),
+        'Replied to all': (true, false),
+        'Forwarded': (false, true),
+        'Accepted': (false, false),
+        'Untouched': (false, false),
+      });
+
+      // The flags a sync reads again say the same.
+      final uid = {for (final h in headers) h.subject: h.uid};
+      final flags = {
+        for (final f in await transport.fetchFlags('Inbox', 1, 5))
+          f.uid: (f.isAnswered, f.isForwarded),
+      };
+      expect(flags[uid['Replied to all']], (true, false));
+      expect(flags[uid['Forwarded']], (false, true));
+      expect(flags[uid['Untouched']], (false, false));
+
+      // And so does a search hit read on its own.
+      final hit =
+          await transport.fetchHeadersByUids('Inbox', [uid['Replied']!]);
+      expect(hit.single.isAnswered, isTrue);
     });
 
     test('the body comes back as HTML when Graph sends HTML', () async {
@@ -806,6 +888,41 @@ void main() {
           flag: MessageFlag.seen, set: true);
 
       expect(server.messages['m1']!['isRead'], isTrue);
+    });
+
+    test('a reply is written on the original as Outlook writes one',
+        () async {
+      // Exchange has no answered flag. Outlook records what it did and
+      // when, and says "You replied on ..." from the two; the same two are
+      // written here.
+      server.message('f-inbox', id: 'm1', subject: 'A', minutesAgo: 5);
+      final uid = (await transport.fetchHeadersFromUid('Inbox', 1)).single.uid;
+      final before = DateTime.now().toUtc();
+
+      await transport.markAnswered('Inbox', uid);
+
+      final written = server.extendedProperties('m1');
+      expect(written['Integer 0x1081'], '102');
+      final at = DateTime.parse(written['SystemTime 0x1082']!);
+      expect(at.isUtc, isTrue);
+      expect(at.difference(before).inSeconds.abs(), lessThan(5));
+    });
+
+    test('a reply to all and a forward are verbs of their own', () async {
+      server.message('f-inbox', id: 'm1', subject: 'A', minutesAgo: 5);
+      final uid = (await transport.fetchHeadersFromUid('Inbox', 1)).single.uid;
+
+      await transport.markAnswered('Inbox', uid, toAll: true);
+      expect(server.extendedProperties('m1')['Integer 0x1081'], '103');
+
+      await transport.markForwarded('Inbox', uid);
+      expect(server.extendedProperties('m1')['Integer 0x1081'], '104');
+
+      // One verb, the last, so the forward is all the message shows now.
+      expect(transport.keepsBothMarks, isFalse);
+      final flags = (await transport.fetchFlags('Inbox', uid, uid)).single;
+      expect(flags.isForwarded, isTrue);
+      expect(flags.isAnswered, isFalse);
     });
 
     test('deleting removes it, because Graph has no two-step expunge',
@@ -1156,6 +1273,79 @@ void main() {
           reason: 'the count carries on, not from 1');
     });
   });
+
+  // Sending through the engine, which is where the message answered is
+  // marked, on Exchange and in the cache.
+  group('a reply sent from a Microsoft account', () {
+    late MemoryCacheStore cache;
+    late CachedImapEngine engine;
+
+    setUp(() {
+      server.folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox');
+      cache = MemoryCacheStore();
+      engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: cache,
+        transportFactory: (_, _) => transport,
+        // Sends nothing: the Graph send has tests of its own.
+        senderFactory: (_, _) => _SendsNothing(),
+      );
+    });
+
+    test('marks the original at once, and a forward after it replaces it',
+        () async {
+      server.message('f-inbox', id: 'm1', subject: 'Numbers', minutesAgo: 5,
+          from: 'dana@example.com');
+      final account = await engine.addAccount(
+        displayName: 'Work',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      final inbox = '${account.id}:Inbox';
+      final original = (await engine.loadMessages(inbox)).single;
+      Draft answer(ComposeKind kind) => Draft(
+            accountId: account.id,
+            kind: kind,
+            to: const [MailAddress(email: 'dana@example.com')],
+            subject: 'Re: Numbers',
+            htmlBody: '<p>Yes.</p>',
+            originalMessageId: original.id,
+          );
+
+      await engine.sendDraft(answer(ComposeKind.reply));
+
+      expect(server.extendedProperties('m1')['Integer 0x1081'], '102');
+      final replied = await engine.cachedMessage(original.id);
+      expect(replied!.isAnswered, isTrue, reason: 'in the list before a sync');
+
+      await engine.sendDraft(answer(ComposeKind.forward));
+
+      expect(server.extendedProperties('m1')['Integer 0x1081'], '104');
+      final forwarded = await engine.cachedMessage(original.id);
+      expect(forwarded!.isForwarded, isTrue);
+      expect(forwarded.isAnswered, isFalse,
+          reason: 'Exchange keeps only the last, and the list says the same');
+
+      final synced = (await engine.loadMessages(inbox)).single;
+      expect((synced.isAnswered, synced.isForwarded), (false, true),
+          reason: 'and the next sync agrees');
+    });
+  });
+}
+
+/// A sender that sends nothing.
+class _SendsNothing extends SmtpSender {
+  _SendsNothing()
+      : super(
+          host: 'smtp.example',
+          user: '',
+          credentials: const PasswordCredentials(''),
+        );
+
+  @override
+  Future<void> send(em.MimeMessage message) async {}
 }
 
 /// A Graph mailbox in memory, answering the endpoints the transport uses.
@@ -1295,6 +1485,7 @@ class _FakeGraph {
     String? flagStatus,
     String preview = '',
     List<String> replyTo = const [],
+    int? lastVerb,
   }) {
     messages[id] = {
       'id': id,
@@ -1319,6 +1510,11 @@ class _FakeGraph {
       },
       'hasAttachments': hasAttachments,
       'bodyPreview': preview,
+      // What Outlook, or anything else, last did to it.
+      if (lastVerb != null)
+        'singleValueExtendedProperties': [
+          {'id': 'Integer 0x1081', 'value': '$lastVerb'},
+        ],
     };
     _recount(folderId);
   }
@@ -1336,6 +1532,34 @@ class _FakeGraph {
     folder['totalItemCount'] = inFolder.length;
     folder['unreadItemCount'] =
         inFolder.where((m) => m['isRead'] != true).length;
+  }
+
+  /// A message's extended properties, id to value, as they stand.
+  Map<String, String> extendedProperties(String id) => {
+        for (final p in (messages[id]?['singleValueExtendedProperties']
+                as List?) ??
+            const [])
+          '${(p as Map)['id']}': '${p['value']}',
+      };
+
+  /// [message] as Graph answers with it: extended properties only where
+  /// `$expand` asked for them, and only the one its filter names. Asked for
+  /// any other way, a row has none.
+  static Map<String, Object?> _row(
+    Map<String, Object?> message,
+    Map<String, String> query,
+  ) {
+    final row = {...message}..remove('singleValueExtendedProperties');
+    final asked = RegExp(
+      r"^singleValueExtendedProperties\(\$filter=id eq '([^']+)'\)$",
+    ).firstMatch(query[r'$expand'] ?? '')?.group(1);
+    final kept = [
+      for (final p in (message['singleValueExtendedProperties'] as List?) ??
+          const [])
+        if ((p as Map)['id'] == asked) p,
+    ];
+    if (kept.isNotEmpty) row['singleValueExtendedProperties'] = kept;
+    return row;
   }
 
   Future<http.Response> handle(http.Request request) async {
@@ -1455,7 +1679,9 @@ class _FakeGraph {
       final top = int.tryParse(query['\$top'] ?? '50') ?? 50;
       final page = inFolder.skip(skip).take(top).toList();
       afterListing?.call(listings);
-      return json({'value': page});
+      return json({
+        'value': [for (final m in page) _row(m, query)],
+      });
     }
 
     // One folder.
@@ -1562,7 +1788,8 @@ class _FakeGraph {
       final id = path.split('/me/messages/').last;
       final message = messages[id];
       if (message == null) return http.Response('{}', 404);
-      if ((query['\$select'] ?? '').contains('body')) {
+      // The body itself, not a header's bodyPreview.
+      if ((query['\$select'] ?? '').split(',').contains('body')) {
         final body = bodies[id] ?? ('text', '');
         final select = query['\$select'] ?? '';
         if (castSelectRefused && select.contains('microsoft.graph.')) {
@@ -1581,7 +1808,7 @@ class _FakeGraph {
             'meetingMessageType': 'meetingRequest',
         });
       }
-      return json(message);
+      return json(_row(message, query));
     }
 
     // Renaming a folder: a new display name, the same id.
@@ -1600,6 +1827,16 @@ class _FakeGraph {
       if (message == null) return http.Response('{}', 404);
       patched.add(id);
       final body = jsonDecode(request.body) as Map<String, Object?>;
+      // Extended properties are set one by one, by id, and the rest kept.
+      final properties = body.remove('singleValueExtendedProperties');
+      if (properties is List) {
+        message['singleValueExtendedProperties'] = {
+          for (final p in (message['singleValueExtendedProperties'] as List?) ??
+              const [])
+            (p as Map)['id']: p,
+          for (final p in properties) (p as Map)['id']: p,
+        }.values.toList();
+      }
       message.addAll(body);
       _recount('${message['_folder']}');
       return json(message);

@@ -10,7 +10,8 @@ import '../../domain/mail_message.dart';
 import '../../state/providers.dart';
 import '../compose/open_compose.dart';
 
-/// Messages as `.eml` attachments, each as it arrived.
+/// Messages as `.eml` attachments, each as it arrived, and each naming the
+/// message it is so that it can be marked forwarded once the draft is away.
 Future<List<DraftAttachment>> emlAttachments(
   WidgetRef ref,
   List<MailMessage> messages,
@@ -22,6 +23,7 @@ Future<List<DraftAttachment>> emlAttachments(
         fileName: emlFileName(m),
         mimeType: emlMimeType,
         bytes: rawMessageBytes(await engine.rawMessage(m.id)),
+        forwardedMessageId: m.id,
       ),
   ];
 }

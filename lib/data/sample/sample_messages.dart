@@ -44,6 +44,11 @@ List<MailMessage> generateSampleMessages(
         isRead: isOutgoing || i >= folder.unreadCount,
         isFlagged: i % 7 == 3,
         hasAttachments: i % 5 == 1,
+        // Some of what came in has been answered and some passed on, and a
+        // little of it both, as IMAP allows, so the list's reply and forward
+        // marks have something to show.
+        isAnswered: !isOutgoing && i % 6 == 2,
+        isForwarded: !isOutgoing && i % 9 == 5,
       ),
     );
     // Gaps of a few hours, with occasional multi-day silences so the date

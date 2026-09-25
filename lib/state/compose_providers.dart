@@ -13,6 +13,7 @@ import '../domain/draft.dart';
 import '../domain/error_report.dart' show ReadableError;
 import '../domain/mail_message.dart';
 import '../domain/signature.dart';
+import 'folder_tree.dart' show kUnifiedInboxId;
 import 'message_providers.dart';
 import 'providers.dart';
 
@@ -220,10 +221,18 @@ String _escape(String s) => s
 Future<void> sendDraft(WidgetRef ref, Draft draft) async {
   await ref.read(mailEngineProvider).sendDraft(draft);
   await _refreshAfter(ref, draft.accountId, 'send');
-  // The Sent folder has a new message, and the answered flag may have moved.
-  final original = draft.originalMessageId;
-  if (original != null) {
-    final folderId = original.substring(0, original.lastIndexOf('#'));
+  // What it replied to or forwarded is marked now, in the cache too, so
+  // every list that shows one of them reads it again: its own folder's, and
+  // the unified Inbox, which holds the same messages under another list.
+  final marked = {
+    ?draft.originalMessageId,
+    for (final a in draft.attachments) ?a.forwardedMessageId,
+  };
+  if (marked.isEmpty) return;
+  for (final folderId in {
+    for (final id in marked) id.substring(0, id.lastIndexOf('#')),
+    kUnifiedInboxId,
+  }) {
     ref.invalidate(messagesProvider(folderId));
   }
 }
