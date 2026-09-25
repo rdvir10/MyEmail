@@ -3,19 +3,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/error_report.dart';
 import '../common/problem_view.dart';
 
+import '../../data/mail_engine.dart' show AuthenticationFailed;
 import '../../domain/account.dart';
 import '../../state/providers.dart';
 import '../settings/backup_screen.dart';
+import 'google_sign_in_screen.dart';
 import 'microsoft_sign_in_screen.dart';
 
-/// Add a mailbox: Gmail with an app password, or a Microsoft one with
-/// Microsoft sign-in.
+/// Add a mailbox: Gmail with Google sign-in or an app password, or a
+/// Microsoft one with Microsoft sign-in.
 ///
-/// The two differ in more than the button. Gmail takes a secret the person
-/// pastes in and that never expires. Microsoft retired password sign-in, so
-/// its accounts go out to Microsoft, come back with a token, and the app
-/// refreshes that token from then on. The form below is therefore the same
-/// shape with a different second half.
+/// The ways differ in more than the button. An app password is a secret the
+/// person pastes in and that never expires. A sign-in goes out to Google or
+/// Microsoft, comes back with a token, and the app refreshes that token from
+/// then on. The form below is therefore the same shape with a different
+/// second half.
+///
+/// Gmail offers both. Google sign-in is the one to use: no app password to
+/// make and keep, and the sign-in says which account it is, so the address
+/// need not be typed. The app password stays for the day Google sign-in
+/// cannot be had, and for a build with no Google registration behind it.
 ///
 /// "Microsoft" covers both a personal Outlook.com mailbox and a work or
 /// school one on Microsoft 365. They take the same path here — same sign-in,
@@ -93,8 +100,42 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
         ));
   }
 
+  /// Google's sign-in names the account, so the address box may be empty;
+  /// typed, it has to be the account that signed in, which the engine
+  /// checks.
+  Future<void> _signInWithGoogle() async {
+    final result =
+        await GoogleSignInScreen.show(context, loginHint: _emailText);
+    if (result == null || !mounted) return;
+
+    final signedInAs = result.identity?.email;
+    final address = _emailText.isNotEmpty ? _emailText : (signedInAs ?? '');
+    if (address.isEmpty) {
+      setState(() => _problem = ProblemReport(
+            doing: 'Adding a Google account',
+            error: const AuthenticationFailed(
+              'Google did not say which account signed in. Type the address '
+              'and try again.',
+            ),
+          ));
+      return;
+    }
+    final typedName = _name.text.trim();
+    await _run(
+      () => ref.read(accountsProvider.notifier).addOAuth(
+            displayName:
+                typedName.isEmpty ? address.split('@').first : typedName,
+            emailAddress: address,
+            provider: MailProvider.gmail,
+            token: result.token,
+            signedInAs: signedInAs,
+          ),
+      doing: 'Adding $address',
+    );
+  }
+
   /// Run an add, turning whatever it throws into a line on the screen.
-  Future<void> _run(Future<Account> Function() add) async {
+  Future<void> _run(Future<Account> Function() add, {String? doing}) async {
     setState(() {
       _busy = true;
       _problem = null;
@@ -107,7 +148,7 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
       // say it on, and setState on a closed one throws.
       if (!mounted) return;
       setState(() => _problem = ProblemReport(
-            doing: 'Adding $_emailText',
+            doing: doing ?? 'Adding $_emailText',
             error: e,
           ));
     } finally {
@@ -131,6 +172,7 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
     final isOutlook = _provider == MailProvider.outlook;
     final signInConfigured =
         ref.watch(microsoftClientIdProvider).isNotEmpty;
+    final googleConfigured = ref.watch(googleClientIdProvider).isNotEmpty;
     final canSubmit = !isOutlook || signInConfigured;
 
     return Scaffold(
@@ -196,7 +238,14 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
                           labelText: isOutlook
                               ? 'Outlook or Microsoft 365 address'
                               : 'Gmail address',
+                          helperText: !isOutlook && googleConfigured
+                              ? 'Optional with Google sign-in, which says '
+                                  'which account it is.'
+                              : null,
+                          helperMaxLines: 2,
                         ),
+                        // Run by the app-password path alone: the Google
+                        // path takes an empty box and the sign-in's answer.
                         validator: (v) {
                           final s = v?.trim() ?? '';
                           if (s.isEmpty) return 'Enter the address.';
@@ -207,6 +256,31 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
                         },
                       ),
                       const SizedBox(height: 12),
+                      if (!isOutlook && googleConfigured) ...[
+                        FilledButton.icon(
+                          onPressed: _busy ? null : _signInWithGoogle,
+                          icon: const Icon(Icons.login),
+                          label: const Text('Sign in with Google'),
+                        ),
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            const Expanded(child: Divider()),
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 10),
+                              child: Text(
+                                'or use an app password',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                            const Expanded(child: Divider()),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                      ],
                       if (!isOutlook) ...[
                         TextFormField(
                           controller: _password,

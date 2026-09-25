@@ -495,7 +495,7 @@ void main() {
         OAuthTokenRepository(
           credentialStore: secrets,
           clock: () => now,
-          oauthClient: () => MicrosoftOAuth(
+          oauthClient: (_) => MicrosoftOAuth(
             clientId: 'test-client-id',
             clock: () => now,
             authority: 'https://login.example/common/oauth2/v2.0',

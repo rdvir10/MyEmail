@@ -3,11 +3,15 @@ import 'dart:async';
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../data/account_store.dart';
 import '../data/credential_store.dart';
+import '../data/auth/google_oauth.dart';
+import '../data/auth/google_oauth_config.dart';
 import '../data/auth/microsoft_oauth.dart';
 import '../data/auth/oauth_config.dart';
+import '../data/auth/oauth_redirects.dart';
 import '../data/auth/oauth_token.dart';
 import '../data/mail_engine.dart';
 import '../data/sample/sample_mail_engine.dart';
@@ -42,6 +46,42 @@ final microsoftOAuthProvider = Provider<MicrosoftOAuth>((ref) {
   ref.onDispose(oauth.close);
   return oauth;
 });
+
+/// Which Google Cloud client this build signs in against; see
+/// [microsoftClientIdProvider] for why it is a provider.
+final googleClientIdProvider = Provider<String>((ref) => googleClientId);
+
+/// How the app signs in to Google.
+final googleOAuthProvider = Provider<GoogleOAuth>((ref) {
+  final oauth = GoogleOAuth(clientId: ref.watch(googleClientIdProvider));
+  ref.onDispose(oauth.close);
+  return oauth;
+});
+
+/// The redirects Android hands the app after a sign-in in the browser. One
+/// for the app: the channel it listens on has one handler.
+final oauthRedirectsProvider = Provider<OAuthRedirects>((ref) => OAuthRedirects());
+
+/// Opens a page in the phone's browser, as a tab over the app where the
+/// browser offers that, and answers whether anything opened.
+///
+/// A provider so a widget test can see what would have opened and open
+/// nothing. Google's sign-in page has to open here rather than in a
+/// WebView, which Google refuses to sign anyone in from.
+final openInBrowserProvider = Provider<Future<bool> Function(Uri)>(
+  (ref) => (uri) async {
+    try {
+      if (await launchUrl(uri, mode: LaunchMode.inAppBrowserView)) return true;
+    } catch (_) {
+      // No browser that takes a tab: the ordinary one, below.
+    }
+    try {
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      return false;
+    }
+  },
+);
 
 /// Where account secrets live.
 ///
@@ -95,12 +135,14 @@ class Accounts extends AsyncNotifier<List<Account>> {
     required String emailAddress,
     required MailProvider provider,
     required OAuthToken token,
+    String? signedInAs,
   }) async {
     final account = await ref.read(mailEngineProvider).addOAuthAccount(
           displayName: displayName,
           emailAddress: emailAddress,
           provider: provider,
           token: token,
+          signedInAs: signedInAs,
         );
     state = AsyncData([...state.value ?? const [], account]);
     return account;
@@ -139,10 +181,18 @@ class Accounts extends AsyncNotifier<List<Account>> {
     required String accountId,
     String? appPassword,
     OAuthToken? token,
+    String? signedInAs,
   }) async {
     final engine = ref.read(mailEngineProvider);
     if (token != null) {
-      await engine.updateOAuthToken(accountId: accountId, token: token);
+      await engine.updateOAuthToken(
+        accountId: accountId,
+        token: token,
+        signedInAs: signedInAs,
+      );
+      // An app-password account that just signed in with a token is an
+      // OAuth account now, and the record says so; the list follows it.
+      state = AsyncData(await engine.loadAccounts());
     } else if (appPassword != null) {
       await engine.updateAppPassword(
         accountId: accountId,

@@ -185,6 +185,8 @@ void main() {
       final dart = {
         'mailtree/files': {'dropped', 'shared'},
         'mailtree/widget': {'configure'},
+        // OAuthRedirects, which google_redirect_contract_test holds to it.
+        'mailtree/oauth': {'redirect'},
       };
       for (final MapEntry(key: channel, value: methods)
           in kotlin.invoked.entries) {
@@ -192,6 +194,7 @@ void main() {
       }
       expect(kotlin.invoked['mailtree/files'], {'dropped', 'shared'});
       expect(kotlin.invoked['mailtree/widget'], {'configure'});
+      expect(kotlin.invoked['mailtree/oauth'], {'redirect'});
     });
 
     // Each payload built from the keys the Kotlin puts in it, so a key

@@ -6,6 +6,7 @@ import '../common/problem_view.dart';
 import '../../data/auth/oauth_token.dart';
 import '../../domain/account.dart';
 import '../../state/providers.dart';
+import '../accounts/google_sign_in_screen.dart';
 import '../accounts/microsoft_sign_in_screen.dart';
 
 /// Rename an account, recolour it, or sign it in again.
@@ -67,7 +68,11 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
   /// Kept apart from [_save] on purpose. Saving a name is instant and local;
   /// this one goes to the server and can fail, and rolling the two into one
   /// button would mean a rename that could be refused by a mail server.
-  Future<void> _signInAgain({String? appPassword, OAuthToken? token}) async {
+  Future<void> _signInAgain({
+    String? appPassword,
+    OAuthToken? token,
+    String? signedInAs,
+  }) async {
     setState(() {
       _busy = true;
       _problem = null;
@@ -78,12 +83,21 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
             accountId: widget.account.id,
             appPassword: appPassword,
             token: token,
+            signedInAs: signedInAs,
           );
       // The tree lists this account again, so its "Sign in again" goes.
       ref.invalidate(foldersProvider);
       if (!mounted) return;
       _password.clear();
-      setState(() => _signInResult = 'Signed in. Nothing cached was lost.');
+      final updated = ref
+          .read(accountsProvider)
+          .value
+          ?.where((a) => a.id == widget.account.id)
+          .firstOrNull;
+      setState(() {
+        _signInResult = 'Signed in. Nothing cached was lost.';
+        if (updated != null) _current = updated;
+      });
     } catch (e) {
       // Left while the server was still being asked: there is no screen to
       // say it on, and setState on a closed one throws.
@@ -106,6 +120,28 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
     if (token == null || !mounted) return;
     await _signInAgain(token: token);
   }
+
+  /// For a Google account, and for a Gmail account with an app password
+  /// that is moving to Google sign-in: the same call, since the engine
+  /// keeps the account and changes only how it signs in.
+  Future<void> _signInWithGoogle() async {
+    final result = await GoogleSignInScreen.show(
+      context,
+      loginHint: widget.account.emailAddress,
+    );
+    if (result == null || !mounted) return;
+    await _signInAgain(
+      token: result.token,
+      signedInAs: result.identity?.email,
+    );
+  }
+
+  /// The account as it is now, which a sign-in on this screen can change:
+  /// it came in with an app password and signs in with Google from then on.
+  /// Held here rather than watched, so showing the screen asks the engine
+  /// for nothing.
+  Account? _current;
+  Account get _account => _current ?? widget.account;
 
   bool get _changed =>
       _name.text.trim() != widget.account.displayName ||
@@ -215,9 +251,10 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
           ),
           _FixedField(
             label: 'Signs in with',
-            value: switch (widget.account.authMethod) {
-              AuthMethod.appPassword => 'An app password',
-              AuthMethod.oauth => '${widget.account.provider.label} sign-in',
+            value: switch ((_account.provider, _account.authMethod)) {
+              (_, AuthMethod.appPassword) => 'An app password',
+              (MailProvider.gmail, AuthMethod.oauth) => 'Google sign-in',
+              (MailProvider.outlook, AuthMethod.oauth) => 'Microsoft sign-in',
             },
             theme: theme,
           ),
@@ -240,7 +277,7 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
           Text('Sign in again', style: theme.textTheme.labelLarge),
           const SizedBox(height: 4),
           Text(
-            switch (widget.account.authMethod) {
+            switch (_account.authMethod) {
               AuthMethod.appPassword =>
                 'If the app password stopped working — revoked, or replaced — '
                     'put the new one here. The account keeps its cached mail, '
@@ -254,7 +291,7 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
                 ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
           ),
           const SizedBox(height: 12),
-          if (widget.account.authMethod == AuthMethod.appPassword) ...[
+          if (_account.authMethod == AuthMethod.appPassword) ...[
             TextField(
               controller: _password,
               enabled: !_busy,
@@ -287,7 +324,32 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
                       ),
               child: const Text('Check and save'),
             ),
-          ] else
+            if (_account.provider == MailProvider.gmail &&
+                ref.watch(googleClientIdProvider).isNotEmpty) ...[
+              const SizedBox(height: 20),
+              Text('Or switch to Google sign-in', style: theme.textTheme.labelLarge),
+              const SizedBox(height: 4),
+              Text(
+                'No app password to make or keep, and meetings you create '
+                'go on your Google calendar. The account and its cached mail '
+                'stay as they are.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _signInWithGoogle,
+                icon: const Icon(Icons.login),
+                label: const Text('Sign in with Google'),
+              ),
+            ],
+          ] else if (_account.provider == MailProvider.gmail)
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _signInWithGoogle,
+              icon: const Icon(Icons.login),
+              label: const Text('Sign in with Google'),
+            )
+          else
             OutlinedButton.icon(
               onPressed: _busy ? null : _signInWithMicrosoft,
               icon: const Icon(Icons.login),

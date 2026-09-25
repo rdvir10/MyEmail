@@ -31,8 +31,10 @@ open class MainActivity : FlutterActivity() {
 
     private val channelName = "mailtree/installer"
     private val widgetChannelName = "mailtree/widget"
+    private val oauthChannelName = "mailtree/oauth"
 
     private var widgetChannel: MethodChannel? = null
+    private var oauthChannel: MethodChannel? = null
 
     private var files: FilesBridge? = null
     private var contacts: ContactsBridge? = null
@@ -67,6 +69,17 @@ open class MainActivity : FlutterActivity() {
     override fun getInitialRoute(): String? =
         if (this is WindowActivity) super.getInitialRoute() else null
 
+    /**
+     * Hand a sign-in redirect to Dart, and nothing else: only a URL on the
+     * app's own Google scheme, whichever activity sent it.
+     */
+    private fun passOAuthRedirect(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (intent.action != Intent.ACTION_VIEW) return
+        if (data.scheme?.startsWith(OAUTH_SCHEME_PREFIX) != true) return
+        oauthChannel?.invokeMethod("redirect", data.toString())
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
@@ -89,6 +102,17 @@ open class MainActivity : FlutterActivity() {
                 // intent that started us, and Dart will ask for them.
                 if (!restarted) it.takeShare(intent, pushNow = false)
             }
+
+        // The URL the browser came back with after a Google sign-in, from
+        // OAuthRedirectActivity. Only the main window takes it: a second
+        // window is a copy of this activity with no sign-in of its own.
+        if (this !is WindowActivity) {
+            oauthChannel = MethodChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                oauthChannelName,
+            )
+            passOAuthRedirect(intent)
+        }
 
         widgetChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -169,6 +193,9 @@ open class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // Back from the browser after a Google sign-in, by way of
+        // OAuthRedirectActivity.
+        passOAuthRedirect(intent)
         // Shared to an app that was already running: Dart is up, so it is
         // told straight away.
         files?.takeShare(intent, pushNow = true)
@@ -228,5 +255,10 @@ open class MainActivity : FlutterActivity() {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         startActivity(intent)
+    }
+
+    companion object {
+        /** Google's reverse-client-ID schemes all begin this way. */
+        const val OAUTH_SCHEME_PREFIX = "com.googleusercontent.apps."
     }
 }

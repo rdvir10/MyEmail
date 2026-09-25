@@ -66,8 +66,15 @@ class SampleMailEngine implements MailEngine {
     required String emailAddress,
     required MailProvider provider,
     required OAuthToken token,
+    String? signedInAs,
   }) async {
     await _latency();
+    if (signedInAs != null &&
+        signedInAs.toLowerCase() != emailAddress.trim().toLowerCase()) {
+      throw AuthenticationFailed(
+        'That sign-in is for $signedInAs, not ${emailAddress.trim()}.',
+      );
+    }
     return _remember(
       displayName: displayName,
       emailAddress: emailAddress,
@@ -114,9 +121,20 @@ class SampleMailEngine implements MailEngine {
   Future<void> updateOAuthToken({
     required String accountId,
     required OAuthToken token,
+    String? signedInAs,
   }) async {
     await _latency();
     _requireAccount(accountId);
+    final i = _accounts.indexWhere((a) => a.id == accountId);
+    if (signedInAs != null &&
+        signedInAs.toLowerCase() != _accounts[i].emailAddress.toLowerCase()) {
+      throw AuthenticationFailed(
+        'That sign-in is for $signedInAs, not ${_accounts[i].emailAddress}.',
+      );
+    }
+    // As the real engine does: a password account signs in with the token
+    // from here on.
+    _accounts[i] = _accounts[i].copyWith(authMethod: AuthMethod.oauth);
   }
 
   void _requireAccount(String accountId) {

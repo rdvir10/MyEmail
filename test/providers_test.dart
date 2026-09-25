@@ -57,12 +57,14 @@ class _SingleAccountReversedEngine implements MailEngine {
     required String emailAddress,
     required MailProvider provider,
     required OAuthToken token,
+    String? signedInAs,
   }) =>
       _inner.addOAuthAccount(
         displayName: displayName,
         emailAddress: emailAddress,
         provider: provider,
         token: token,
+        signedInAs: signedInAs,
       );
 
   @override
@@ -89,8 +91,13 @@ class _SingleAccountReversedEngine implements MailEngine {
   Future<void> updateOAuthToken({
     required String accountId,
     required OAuthToken token,
+    String? signedInAs,
   }) =>
-      _inner.updateOAuthToken(accountId: accountId, token: token);
+      _inner.updateOAuthToken(
+        accountId: accountId,
+        token: token,
+        signedInAs: signedInAs,
+      );
 
   @override
   Future<void> removeAccount(String accountId) =>

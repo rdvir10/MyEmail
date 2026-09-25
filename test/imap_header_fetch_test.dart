@@ -26,6 +26,30 @@ void main() {
     return t;
   }
 
+  test('a Google sign-in logs in with its token, not a password', () async {
+    // XOAUTH2, the one mechanism Gmail takes a token by: the address and
+    // the access token, base64 together, in the AUTHENTICATE line itself.
+    final t = EnoughMailTransport(
+      host: '127.0.0.1',
+      port: server.port,
+      user: 'ron@example.com',
+      credentials: OAuthCredentials(({bool force = false}) async => 'ya29.t'),
+      useTls: false,
+      commandLimit: const Duration(seconds: 5),
+    );
+    addTearDown(t.close);
+
+    await t.listFolders();
+
+    expect(server.logins, hasLength(1));
+    expect(server.logins.single, startsWith('AUTHENTICATE XOAUTH2 '));
+    final blob = utf8.decode(
+      base64Decode(server.logins.single.split(' ').last.trim()),
+    );
+    expect(blob, contains('user=ron@example.com'));
+    expect(blob, contains('auth=Bearer ya29.t'));
+  });
+
   test('a header fetch asks when each message arrived, and keeps it',
       () async {
     // The Date header is the sender's word, and missing here. INTERNALDATE
@@ -95,6 +119,9 @@ class _HeaderServer {
   /// Every STORE command, as sent.
   final stores = <String>[];
 
+  /// Every LOGIN or AUTHENTICATE command, as sent.
+  final logins = <String>[];
+
   /// The message's FLAGS, as the server sends them.
   String flags = '';
 
@@ -122,6 +149,7 @@ class _HeaderServer {
       final command = line.substring(space + 1);
       final verb = command.toUpperCase();
       if (verb.startsWith('LOGIN') || verb.startsWith('AUTHENTICATE')) {
+        logins.add(command);
         client.write('$tag OK [CAPABILITY IMAP4rev1] signed in\r\n');
       } else if (verb.startsWith('CAPABILITY')) {
         client.write('* CAPABILITY IMAP4rev1\r\n$tag OK done\r\n');

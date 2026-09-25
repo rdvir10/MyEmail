@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../credential_store.dart';
 import 'microsoft_oauth.dart';
+import 'oauth_refresher.dart';
 import 'oauth_token.dart';
 
 /// Keeps each OAuth account in usable access tokens.
@@ -34,8 +35,10 @@ class OAuthTokenRepository {
   final CredentialStore credentialStore;
 
   /// Built per refresh rather than held, so the HTTP client it owns is not
-  /// kept open between the hours when nothing needs refreshing.
-  final MicrosoftOAuth Function() oauthClient;
+  /// kept open between the hours when nothing needs refreshing. By account,
+  /// because a Google account and a Microsoft one refresh at different
+  /// places; the engine answers from the account's provider.
+  final OAuthRefresher Function(String accountId) oauthClient;
   final DateTime Function() _clock;
 
   final Map<String, Future<OAuthToken>> _inFlight = {};
@@ -192,7 +195,7 @@ class OAuthTokenRepository {
     List<String>? scopes,
   ) async {
     final generation = _forgotten[accountId] ?? 0;
-    final client = oauthClient();
+    final client = oauthClient(accountId);
     try {
       final refreshed = await client.refresh(stored, scopes: scopes);
 

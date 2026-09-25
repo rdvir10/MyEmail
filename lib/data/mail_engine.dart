@@ -44,11 +44,17 @@ abstract class MailEngine {
   /// an expiry that has to be refreshed. Folding them into one call would
   /// mean a parameter that is a password sometimes and a serialised token
   /// other times, which is exactly the sort of thing that goes wrong quietly.
+  ///
+  /// [signedInAs] is the address the sign-in itself named, where the provider
+  /// says (Google does, in its ID token). It must be the address the account
+  /// is added as: signing in as one mailbox while typing another's address
+  /// made an account that showed one mailbox under another's name.
   Future<Account> addOAuthAccount({
     required String displayName,
     required String emailAddress,
     required MailProvider provider,
     required OAuthToken token,
+    String? signedInAs,
   });
 
   /// Change the name and colour an account is shown under.
@@ -79,10 +85,16 @@ abstract class MailEngine {
     required String secret,
   });
 
-  /// The same, for an account that signs in with OAuth.
+  /// The same, for an account that signs in with OAuth — or one that is
+  /// moving to it: an account added with an app password signs in with the
+  /// token from here on, keeping everything cached under it.
+  ///
+  /// [signedInAs] as in [addOAuthAccount]: the sign-in must be for this
+  /// account's address.
   Future<void> updateOAuthToken({
     required String accountId,
     required OAuthToken token,
+    String? signedInAs,
   });
 
   /// Forget the account and its secret. Local caches for it go too.

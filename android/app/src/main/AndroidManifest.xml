@@ -99,6 +99,24 @@
                 <data android:mimeType="*/*"/>
             </intent-filter>
         </activity>
+        <!-- The way back from the browser after a Google sign-in. The
+             scheme is the app's Google client ID reversed, which is the one
+             form Google accepts for an Android client; it must match
+             googleClientId in lib/data/auth/google_oauth_config.dart, and a
+             test checks that it does. See OAuthRedirectActivity.kt. -->
+        <activity
+            android:name=".OAuthRedirectActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="com.googleusercontent.apps.not-configured"/>
+            </intent-filter>
+        </activity>
 
         <!-- A second window: the same app under another name, launched as
              a document with its own task affinity, so every start is a new

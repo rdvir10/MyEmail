@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../../domain/error_report.dart';
+import 'oauth_refresher.dart';
 import 'pkce.dart';
 import 'oauth_token.dart';
 
@@ -36,7 +37,7 @@ import 'oauth_token.dart';
 /// Microsoft requires "Allow public client flows" = Yes on the registration
 /// for either. Without it the sign-in fails with AADSTS7000218, which reads as
 /// a missing client secret; [_readableAadError] translates it.
-class MicrosoftOAuth {
+class MicrosoftOAuth implements OAuthRefresher {
   MicrosoftOAuth({
     required this.clientId,
     http.Client? httpClient,
@@ -312,6 +313,7 @@ class MicrosoftOAuth {
   /// [scopes] names which resource the access token is for, and defaults to
   /// [MicrosoftOAuth.scopes]. Any set the account has consented to works from
   /// the same refresh token.
+  @override
   Future<OAuthToken> refresh(
     OAuthToken token, {
     List<String>? scopes,
@@ -356,6 +358,7 @@ class MicrosoftOAuth {
     );
   }
 
+  @override
   void close() => _http.close();
 
   // --- plumbing --------------------------------------------------------------
@@ -518,14 +521,19 @@ class SignInUnreachable extends SignInFailed implements Retryable {
 /// administrator instead and the app is simply refused. The two are
 /// indistinguishable from here, so the message names both rather than
 /// blaming the person for a decision their employer made.
+///
+/// The message is Microsoft's unless a provider gives its own.
 @immutable
 class SignInDeclined implements Exception, ReadableError {
-  const SignInDeclined();
-  @override
-  String get message =>
+  const SignInDeclined([this.message = _microsoft]);
+
+  static const _microsoft =
       'Microsoft did not grant access. If this is a work or school account, '
       'your organisation may require an administrator to approve the app '
       'before anyone there can sign in to it.';
+
+  @override
+  final String message;
   @override
   String toString() => message;
 }

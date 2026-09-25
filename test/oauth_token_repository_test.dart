@@ -34,7 +34,7 @@ void main() {
       OAuthTokenRepository(
         credentialStore: secrets,
         clock: () => now,
-        oauthClient: () => MicrosoftOAuth(
+        oauthClient: (_) => MicrosoftOAuth(
           clientId: 'test-client-id',
           clock: () => now,
           authority: 'https://login.example/consumers/oauth2/v2.0',
@@ -280,7 +280,7 @@ void main() {
       final repository = OAuthTokenRepository(
         credentialStore: counted,
         clock: () => now,
-        oauthClient: () => throw StateError('no refresh was needed'),
+        oauthClient: (_) => throw StateError('no refresh was needed'),
       );
 
       for (var i = 0; i < 12; i++) {
@@ -296,7 +296,7 @@ void main() {
       final repository = OAuthTokenRepository(
         credentialStore: counted,
         clock: () => now,
-        oauthClient: () => MicrosoftOAuth(
+        oauthClient: (_) => MicrosoftOAuth(
           clientId: 'test-client-id',
           clock: () => now,
           authority: 'https://login.example/consumers/oauth2/v2.0',

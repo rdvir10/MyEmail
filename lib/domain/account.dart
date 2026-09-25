@@ -70,17 +70,22 @@ class Account {
   /// are what the stored secret was proved against and what the cache is
   /// keyed on, so changing one is adding a different account, not editing
   /// this one.
+  ///
+  /// [authMethod] can change, once: an account added with an app password
+  /// that signs in with Google from then on is the same account, with the
+  /// same cache under it.
   Account copyWith({
     String? displayName,
     int? colorValue,
     String? senderName,
+    AuthMethod? authMethod,
   }) =>
       Account(
         id: id,
         displayName: displayName ?? this.displayName,
         emailAddress: emailAddress,
         provider: provider,
-        authMethod: authMethod,
+        authMethod: authMethod ?? this.authMethod,
         colorValue: colorValue ?? this.colorValue,
         chosenSenderName: senderName ?? chosenSenderName,
       );

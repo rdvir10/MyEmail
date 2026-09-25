@@ -53,12 +53,24 @@ void main() {
           .allMatches(manifest)
           .map((m) => m.group(0)!)
           .toList();
-      expect(activities, hasLength(2));
+      expect(activities, hasLength(3));
       for (final activity in activities) {
+        final name =
+            RegExp(r'android:name="([^"]+)"').firstMatch(activity)!.group(1);
+        // The sign-in redirect activity runs no Flutter: it takes a URL on
+        // the app's Google scheme and hands it to MainActivity, which
+        // believes only that scheme. Its own guard is in
+        // google_redirect_contract_test.
+        if (name == '.OAuthRedirectActivity') {
+          expect(activity, isNot(contains('flutter')));
+          expect(activity, contains('android.intent.action.VIEW'));
+          expect(activity, isNot(contains('android.intent.action.MAIN')));
+          continue;
+        }
         expect(
           activity,
           matches(RegExp(r'flutter_deeplinking_enabled"\s+android:value="false"')),
-          reason: RegExp(r'android:name="([^"]+)"').firstMatch(activity)!.group(1),
+          reason: name,
         );
       }
     });

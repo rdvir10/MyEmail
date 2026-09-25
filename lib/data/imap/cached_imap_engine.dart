@@ -16,6 +16,8 @@ import '../../domain/mail_message.dart';
 import '../../domain/message_move.dart';
 import '../../domain/draft.dart';
 import '../account_store.dart';
+import '../auth/google_oauth.dart';
+import '../auth/google_oauth_config.dart';
 import '../auth/microsoft_oauth.dart';
 import '../auth/oauth_config.dart';
 import '../auth/oauth_token.dart';
@@ -130,7 +132,10 @@ class CachedImapEngine implements MailEngine {
   late final OAuthTokenRepository oauthTokens = _injectedOAuthTokens ??
       OAuthTokenRepository(
         credentialStore: credentialStore,
-        oauthClient: () => MicrosoftOAuth(clientId: microsoftClientId),
+        oauthClient: (accountId) => switch (_providerFor(accountId)) {
+          MailProvider.gmail => GoogleOAuth(clientId: googleClientId),
+          MailProvider.outlook => MicrosoftOAuth(clientId: microsoftClientId),
+        },
       );
 
   final Map<String, ImapTransport> _transports = {};
@@ -232,14 +237,17 @@ class CachedImapEngine implements MailEngine {
     required String emailAddress,
     required MailProvider provider,
     required OAuthToken token,
+    String? signedInAs,
   }) async {
     final typed = emailAddress.trim();
     final signedIn = TokenIdentity.of(token.accessToken);
-    final address = signedIn?.address;
+    // Google names the account in its ID token, which the caller passes
+    // on; a Microsoft work account names itself inside the access token.
+    final address = signedInAs ?? signedIn?.address;
     if (address != null && address.toLowerCase() != typed.toLowerCase()) {
       throw AuthenticationFailed(
         'That sign-in is for $address, not $typed. Add the account as '
-        '$address, or sign in to Microsoft as $typed.',
+        '$address, or sign in as $typed.',
       );
     }
     if (signedIn != null) {
@@ -371,7 +379,10 @@ class CachedImapEngine implements MailEngine {
   Future<void> updateOAuthToken({
     required String accountId,
     required OAuthToken token,
+    String? signedInAs,
   }) async {
+    final account =
+        accountStore.read().where((a) => a.id == accountId).firstOrNull;
     // The same person as before, as far as the tokens can tell. Signing in
     // again as someone else was accepted, and the account went on showing
     // the other mailbox under its own name, mixed into its own cache.
@@ -382,21 +393,38 @@ class CachedImapEngine implements MailEngine {
           TokenIdentity.of(stored.accessToken),
           TokenIdentity.of(token.accessToken),
         )) {
-      final account =
-          accountStore.read().where((a) => a.id == accountId).firstOrNull;
       throw AuthenticationFailed(
         'That sign-in is for a different Microsoft account. Sign in as '
         '${account?.emailAddress ?? 'the account being repaired'}.',
       );
     }
-    return _replaceSecret(
-        accountId: accountId,
-        // As in addOAuthAccount: the probe runs before anything is stored, so
-        // the token cannot come from the repository yet.
-        credentials:
-            OAuthCredentials(({bool force = false}) async => token.accessToken),
-        storedSecret: token.toStoredJson(),
+    // Where the sign-in names its address, it has to be this account's.
+    if (signedInAs != null &&
+        account != null &&
+        signedInAs.trim().toLowerCase() !=
+            account.emailAddress.trim().toLowerCase()) {
+      throw AuthenticationFailed(
+        'That sign-in is for $signedInAs, not ${account.emailAddress}. '
+        'Sign in as ${account.emailAddress}.',
       );
+    }
+    await _replaceSecret(
+      accountId: accountId,
+      // As in addOAuthAccount: the probe runs before anything is stored, so
+      // the token cannot come from the repository yet.
+      credentials:
+          OAuthCredentials(({bool force = false}) async => token.accessToken),
+      storedSecret: token.toStoredJson(),
+    );
+    // An account that signed in with an app password until now signs in
+    // with the token from here on. Written after the probe: a refused
+    // sign-in leaves the account as it was, password and all.
+    if (account != null && account.authMethod != AuthMethod.oauth) {
+      await accountStore.write([
+        for (final a in accountStore.read())
+          a.id == accountId ? a.copyWith(authMethod: AuthMethod.oauth) : a,
+      ]);
+    }
   }
 
   Future<void> _replaceSecret({
