@@ -496,6 +496,7 @@ class _NeedsConsent extends SampleMailEngine {
   Future<void> updateOAuthToken({
     required String accountId,
     required OAuthToken token,
+    String? signedInAs,
   }) async {
     signedInAgain = true;
   }
