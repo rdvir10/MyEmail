@@ -45,7 +45,7 @@ class GoogleCalendarApi {
   /// the API read it and answer with the link; without it the ask is
   /// dropped without a word.
   Future<CreatedMeeting> createEvent(MeetingDraft meeting) async {
-    final uri = meeting.online
+    final uri = meeting.isOnline
         ? eventsUri.replace(queryParameters: {
             ...eventsUri.queryParameters,
             'conferenceDataVersion': '1',
@@ -96,7 +96,7 @@ class GoogleCalendarApi {
               'displayName': a.name!.trim(),
           },
       ],
-      if (meeting.online)
+      if (meeting.isOnline)
         'conferenceData': {
           'createRequest': {
             'requestId': _requestId(),

@@ -201,18 +201,24 @@ abstract class MailEngine {
   ///
   /// Throws [CalendarUnavailable] for an account whose calendar the app
   /// cannot reach, `SignInNeedsConsent` for a Microsoft account that has
-  /// not allowed the app its calendar, and [AuthenticationFailed] or
-  /// [ConnectionFailed] as [sendDraft] does. What comes back names the
-  /// event, and where to join it when it was held online.
+  /// not allowed the app its calendar, [MeetLinkNeedsConsent] for a Google
+  /// Meet link the Gmail account has not yet allowed the app to make, and
+  /// [AuthenticationFailed] or [ConnectionFailed] as [sendDraft] does. What
+  /// comes back names the event, and where to join it when it was held
+  /// online.
   Future<CreatedMeeting> createMeeting(MeetingDraft meeting);
 
-  /// Where the account's calendar holds a meeting online, Teams or Google
-  /// Meet, or null where it holds none: the screen shows its switch only
-  /// for an account this answers for. Asked of the server once and
-  /// remembered. A calendar that could not be asked (no consent yet, no
-  /// connection) answers null, said in the log and never thrown, and is
-  /// asked again next time.
-  Future<OnlineMeetingKind?> onlineMeetingsFor(String accountId);
+  /// The kinds of online meeting a meeting from this account can be held
+  /// as, the account's own calendar's first: Teams on a Microsoft account,
+  /// Google Meet on a Gmail account signed in with Google. Google Meet
+  /// follows on a Microsoft account too while a Gmail account signed in
+  /// with Google is in the app: that account makes the link, and the
+  /// Outlook invitation carries it. Empty where there is none, and the
+  /// screen shows no switch. A Microsoft calendar is asked once and
+  /// remembered; one that could not be asked (no consent yet, no
+  /// connection) holds none for now, said in the log and never thrown, and
+  /// is asked again next time.
+  Future<List<OnlineMeetingKind>> onlineMeetingsFor(String accountId);
 
   /// Set or clear \Seen. The folder's unread count follows on next load.
   Future<void> setRead(String messageId, bool isRead);
@@ -382,6 +388,28 @@ class ConnectionFailed implements Exception, Retryable, ReadableError {
 /// has the account's calendar if anything on the phone does.
 class CalendarUnavailable implements Exception, ReadableError {
   const CalendarUnavailable(this.message);
+
+  @override
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// A Google Meet link was asked for on another account's calendar, and the
+/// Gmail account that would make it has not allowed the app to: its sign-in
+/// is from before the app asked for Meet. Names that account, which is not
+/// the meeting's, so the screen offers the right sign-in.
+class MeetLinkNeedsConsent implements Exception, ReadableError {
+  const MeetLinkNeedsConsent({
+    required this.accountId,
+    required this.emailAddress,
+    required this.message,
+  });
+
+  /// The Gmail account to sign in again.
+  final String accountId;
+  final String emailAddress;
 
   @override
   final String message;

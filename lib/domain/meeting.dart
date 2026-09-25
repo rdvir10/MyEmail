@@ -20,7 +20,7 @@ class MeetingDraft {
     this.location = '',
     this.notes = '',
     this.timeZone,
-    this.online = false,
+    this.online,
   });
 
   /// Whose calendar it goes on, and who the invitations come from.
@@ -50,10 +50,15 @@ class MeetingDraft {
   /// reads and shows on its own clock the same.
   final String? timeZone;
 
-  /// Held online as well, with a link to join it: Teams or Google Meet, as
-  /// the account's calendar offers (see `MailEngine.onlineMeetingsFor`).
-  /// The calendar makes the link and puts it on the invitation.
-  final bool online;
+  /// Held online as well, with a link to join it, of this kind: Teams or
+  /// Google Meet, one of those the screen offered for the account (see
+  /// `MailEngine.onlineMeetingsFor`). Null for a meeting held in the room
+  /// alone. The account's own calendar makes the link where it can; Google
+  /// Meet on a Microsoft account is made by a Gmail account signed in with
+  /// Google, and the Outlook invitation carries it.
+  final OnlineMeetingKind? online;
+
+  bool get isOnline => online != null;
 
   bool get hasAttendees => attendees.isNotEmpty;
 
@@ -80,8 +85,8 @@ class MeetingDraft {
           : (start: start, end: end, timeZone: timeZone ?? 'UTC');
 }
 
-/// Where an account's calendar holds a meeting online, which is what the
-/// screen's switch is labelled with.
+/// Where a meeting is held online, which is what the screen's switch is
+/// labelled with, or its menu lists where there is a choice.
 enum OnlineMeetingKind {
   teams('Teams meeting', 'a Teams link'),
   skype('Skype meeting', 'a Skype link'),

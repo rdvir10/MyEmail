@@ -5,10 +5,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart' as http_testing;
 import 'package:myemail/data/account_store.dart';
+import 'package:myemail/data/auth/google_oauth.dart';
 import 'package:myemail/data/auth/microsoft_oauth.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/calendar/account_calendar.dart';
 import 'package:myemail/data/calendar/google_calendar_api.dart';
+import 'package:myemail/data/calendar/google_meet_api.dart';
 import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/graph/graph_calendar_api.dart';
 import 'package:myemail/data/imap/cached_imap_engine.dart';
@@ -54,7 +56,7 @@ void main() {
     DateTime? end,
     bool allDay = false,
     String? timeZone = 'Asia/Jerusalem',
-    bool online = false,
+    OnlineMeetingKind? online,
   }) =>
       MeetingDraft(
         accountId: accountId,
@@ -134,8 +136,11 @@ void main() {
         start: DateTime(2026, 10, 1, 9),
         end: DateTime(2026, 10, 1, 10),
       );
-      expect(bare.online, isFalse);
-      expect(meeting(online: true).online, isTrue);
+      expect(bare.online, isNull);
+      expect(bare.isOnline, isFalse);
+      final teams = meeting(online: OnlineMeetingKind.teams);
+      expect(teams.online, OnlineMeetingKind.teams);
+      expect(teams.isOnline, isTrue);
     });
 
     test('the day after is built from the date, not by adding a day', () {
@@ -319,7 +324,7 @@ void main() {
               'joinUrl': 'https://teams.microsoft.com/l/meetup-join/abc',
             },
           }, 201)).createEvent(
-        meeting(online: true),
+        meeting(online: OnlineMeetingKind.teams),
         onlineMeetingProvider: 'teamsForBusiness',
       );
 
@@ -338,6 +343,60 @@ void main() {
       expect(body['isOnlineMeeting'], isFalse);
       expect(body.containsKey('onlineMeetingProvider'), isFalse);
       expect(created.joinUrl, isNull);
+    });
+
+    test('held on Google Meet, the link made elsewhere is the body\'s last '
+        'line and the location, and no Teams link is asked for', () async {
+      final created = await api((_) async => json({'id': 'evt-1'}, 201))
+          .createEvent(
+        MeetingDraft(
+          accountId: 'acct-ms',
+          title: 'Q3 review',
+          start: DateTime(2026, 10, 1, 9),
+          end: DateTime(2026, 10, 1, 10),
+          notes: 'Bring the numbers.',
+          online: OnlineMeetingKind.googleMeet,
+        ),
+        onlineMeetingProvider: 'teamsForBusiness',
+        joinUrl: 'https://meet.google.com/abc-defg-hij',
+      );
+
+      final body = jsonDecode(sent.single.body) as Map;
+      expect(body['isOnlineMeeting'], isFalse);
+      expect(body.containsKey('onlineMeetingProvider'), isFalse);
+      expect(body['body'], {
+        'contentType': 'text',
+        'content': 'Bring the numbers.\n\nJoin with Google Meet: https://meet.google.com/abc-defg-hij',
+      });
+      expect(body['location'], {'displayName': 'https://meet.google.com/abc-defg-hij'});
+      expect(created.joinUrl, 'https://meet.google.com/abc-defg-hij');
+    });
+
+    test('a location given keeps its place, and the link is the whole body '
+        'where there were no notes', () async {
+      await api((_) async => json({'id': 'evt-1'}, 201)).createEvent(
+        meeting(online: OnlineMeetingKind.googleMeet),
+        joinUrl: 'https://meet.google.com/abc-defg-hij',
+      );
+      var body = jsonDecode(sent.single.body) as Map;
+      expect(body['location'], {'displayName': 'Room 4'});
+      expect((body['body'] as Map)['content'],
+          'Bring the numbers.\n\nJoin with Google Meet: https://meet.google.com/abc-defg-hij');
+
+      sent.clear();
+      await api((_) async => json({'id': 'evt-1'}, 201)).createEvent(
+        MeetingDraft(
+          accountId: 'acct-ms',
+          title: 'Q3 review',
+          start: DateTime(2026, 10, 1, 9),
+          end: DateTime(2026, 10, 1, 10),
+          online: OnlineMeetingKind.googleMeet,
+        ),
+        joinUrl: 'https://meet.google.com/abc-defg-hij',
+      );
+      body = jsonDecode(sent.single.body) as Map;
+      expect((body['body'] as Map)['content'],
+          'Join with Google Meet: https://meet.google.com/abc-defg-hij');
     });
 
     group('asking where the calendar holds meetings online', () {
@@ -496,7 +555,7 @@ void main() {
                 },
               ],
             },
-          })).createEvent(meeting(online: true));
+          })).createEvent(meeting(online: OnlineMeetingKind.googleMeet));
 
       final request = sent.single;
       // Without this the ask in the event is dropped without a word.
@@ -512,8 +571,8 @@ void main() {
 
     test('each ask for a link has a request id of its own', () async {
       final client = api((_) async => json({'id': 'evt-g'}));
-      await client.createEvent(meeting(online: true));
-      await client.createEvent(meeting(online: true));
+      await client.createEvent(meeting(online: OnlineMeetingKind.googleMeet));
+      await client.createEvent(meeting(online: OnlineMeetingKind.googleMeet));
 
       String idOf(http.Request r) =>
           (((jsonDecode(r.body) as Map)['conferenceData'] as Map)['createRequest']
@@ -580,6 +639,133 @@ void main() {
     });
   });
 
+  group('GoogleMeetApi', () {
+    late List<http.Request> sent;
+    late List<bool> asked;
+
+    setUp(() {
+      sent = [];
+      asked = [];
+    });
+
+    GoogleMeetApi api(
+      Future<http.Response> Function(http.Request request) handler,
+    ) =>
+        GoogleMeetApi(
+          accessToken: ({bool force = false}) async {
+            asked.add(force);
+            return force ? 'fresh' : 'stale';
+          },
+          httpClient: http_testing.MockClient((request) async {
+            sent.add(request);
+            return handler(request);
+          }),
+        );
+
+    http.Response space() => json({
+          'name': 'spaces/abc',
+          'meetingUri': 'https://meet.google.com/abc-defg-hij',
+          'meetingCode': 'abc-defg-hij',
+        });
+
+    /// A refusal in the Meet API's envelope, which puts the reason under
+    /// `details` rather than the calendar's `errors`.
+    http.Response forbidden(String reason, {String message = 'Forbidden'}) =>
+        json({
+          'error': {
+            'code': 403,
+            'message': message,
+            'status': 'PERMISSION_DENIED',
+            'details': [
+              {
+                '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+                'reason': reason,
+              },
+            ],
+          }
+        }, 403);
+
+    test('makes a space and answers with the link to join it', () async {
+      final link = await api((_) async => space()).createSpace();
+
+      expect(link, 'https://meet.google.com/abc-defg-hij');
+      final request = sent.single;
+      expect(request.method, 'POST');
+      expect(request.url.toString(), 'https://meet.googleapis.com/v2/spaces');
+      expect(request.headers['Authorization'], 'Bearer stale');
+      expect(jsonDecode(request.body), <String, Object?>{});
+    });
+
+    test('a refused token is refreshed once and the request sent again',
+        () async {
+      final link = await api((request) async =>
+          request.headers['Authorization'] == 'Bearer fresh'
+              ? space()
+              : json({'error': {'code': 401, 'status': 'UNAUTHENTICATED'}}, 401))
+          .createSpace();
+
+      expect(link, 'https://meet.google.com/abc-defg-hij');
+      expect(asked, [false, true]);
+      expect(sent, hasLength(2));
+    });
+
+    test('a second refusal is the sign-in being dead', () async {
+      await expectLater(
+        api((_) async => json({'error': {'code': 401}}, 401)).createSpace(),
+        throwsA(isA<AuthenticationFailed>()),
+      );
+      expect(sent, hasLength(2), reason: 'once fresh, then no more');
+    });
+
+    test('the API switched off in the project names the switch', () async {
+      await expectLater(
+        api((_) async => forbidden(
+              'SERVICE_DISABLED',
+              message: 'Google Meet API has not been used in project 1 '
+                  'before or it is disabled.',
+            )).createSpace(),
+        throwsA(isA<ConnectionFailed>().having(
+            (e) => e.message, 'message', contains('Google Meet API'))),
+      );
+    });
+
+    test('a token that does not cover Meet is a sign-in again, for the '
+        'screen to offer', () async {
+      await expectLater(
+        api((_) async => forbidden('ACCESS_TOKEN_SCOPE_INSUFFICIENT'))
+            .createSpace(),
+        throwsA(isA<SignInNeedsConsent>()),
+      );
+    });
+
+    test('a quota run out is worth waiting for', () async {
+      await expectLater(
+        api((_) async =>
+                json({'error': {'code': 429, 'status': 'RESOURCE_EXHAUSTED'}}, 429))
+            .createSpace(),
+        throwsA(isA<ConnectionFailed>().having(
+            (e) => e.message, 'message', contains('rate limiting'))),
+      );
+    });
+
+    test('a space with no link in it is no space', () async {
+      await expectLater(
+        api((_) async => json({'name': 'spaces/abc'})).createSpace(),
+        throwsA(isA<ConnectionFailed>()),
+      );
+    });
+
+    test('Google\'s own sentence is kept on a refusal', () async {
+      await expectLater(
+        api((_) async => json({
+              'error': {'code': 400, 'message': 'Request contains an invalid argument.'}
+            }, 400)).createSpace(),
+        throwsA(isA<ConnectionFailed>().having(
+            (e) => e.message, 'message', contains('invalid argument'))),
+      );
+    });
+  });
+
   group('AccountCalendar', () {
     late List<http.Request> sent;
     late List<(String, List<String>?)> asked;
@@ -590,11 +776,14 @@ void main() {
     });
 
     /// A calendar whose server answers with [answer], an event created
-    /// otherwise, and whose token is refused for want of consent when
-    /// [consent] is false.
+    /// otherwise, among [accounts], and whose token is refused for want of
+    /// consent when [consent] is false, or for Meet alone when
+    /// [meetConsent] is.
     AccountCalendar calendar({
       http.Response Function(http.Request request)? answer,
       bool consent = true,
+      bool meetConsent = true,
+      List<Account> accounts = const [microsoft, appPassword],
     }) =>
         AccountCalendar(
           accessToken: (accountId, {bool force = false, List<String>? scopes}) async {
@@ -602,8 +791,13 @@ void main() {
             if (!consent) {
               throw const SignInNeedsConsent('Not allowed the calendar.');
             }
+            if (!meetConsent &&
+                (scopes?.contains(GoogleOAuth.meetScopes.single) ?? false)) {
+              throw const SignInNeedsConsent('Not allowed Meet.');
+            }
             return 'token';
           },
+          accounts: () => accounts,
           httpClient: http_testing.MockClient((request) async {
             sent.add(request);
             return answer?.call(request) ?? json({'id': 'evt'}, 201);
@@ -619,13 +813,21 @@ void main() {
           })
         : json({'id': 'evt'}, 201);
 
+    /// The same, with a Google beside it that makes Meet spaces.
+    http.Response meetAndTeams(http.Request request) =>
+        request.url.host == 'meet.googleapis.com'
+            ? json({'meetingUri': 'https://meet.google.com/abc-defg-hij'})
+            : teamsCalendar(request);
+
+    const everyone = [microsoft, google, appPassword];
+
     group('where meetings are held online', () {
       test('a Microsoft account is asked once, on the calendar\'s token, and '
           'remembered', () async {
         final c = calendar(answer: teamsCalendar);
 
-        expect(await c.onlineMeetingsFor(microsoft), OnlineMeetingKind.teams);
-        expect(await c.onlineMeetingsFor(microsoft), OnlineMeetingKind.teams);
+        expect(await c.onlineMeetingsFor(microsoft), [OnlineMeetingKind.teams]);
+        expect(await c.onlineMeetingsFor(microsoft), [OnlineMeetingKind.teams]);
 
         expect(sent.where((r) => r.method == 'GET'), hasLength(1));
         expect(asked.single, ('acct-ms', MicrosoftOAuth.calendarScopes));
@@ -635,7 +837,10 @@ void main() {
           () async {
         final c = calendar(answer: teamsCalendar);
 
-        await c.createMeeting(microsoft, meeting(online: true));
+        await c.createMeeting(
+          microsoft,
+          meeting(online: OnlineMeetingKind.teams),
+        );
 
         final post = sent.singleWhere((r) => r.method == 'POST');
         final body = jsonDecode(post.body) as Map;
@@ -657,11 +862,11 @@ void main() {
             ? json({'error': {'code': 'ErrorAccessDenied'}}, 403)
             : teamsCalendar(request));
 
-        expect(await c.onlineMeetingsFor(microsoft), isNull);
+        expect(await c.onlineMeetingsFor(microsoft), isEmpty);
         expect(logged.single, contains('online meetings'));
 
         refused = false;
-        expect(await c.onlineMeetingsFor(microsoft), OnlineMeetingKind.teams);
+        expect(await c.onlineMeetingsFor(microsoft), [OnlineMeetingKind.teams]);
         expect(sent.where((r) => r.method == 'GET'), hasLength(2));
       });
 
@@ -672,7 +877,7 @@ void main() {
 
         expect(
           await calendar(consent: false).onlineMeetingsFor(microsoft),
-          isNull,
+          isEmpty,
         );
         expect(sent, isEmpty);
       });
@@ -680,15 +885,173 @@ void main() {
       test('a Google account has Meet, and is not asked', () async {
         expect(
           await calendar().onlineMeetingsFor(google),
-          OnlineMeetingKind.googleMeet,
+          [OnlineMeetingKind.googleMeet],
         );
         expect(sent, isEmpty);
         expect(asked, isEmpty);
       });
 
       test('an app password has none', () async {
-        expect(await calendar().onlineMeetingsFor(appPassword), isNull);
+        expect(await calendar().onlineMeetingsFor(appPassword), isEmpty);
         expect(sent, isEmpty);
+      });
+
+      test('with a Gmail account signed in with Google in the app, a '
+          'Microsoft account can hold one on Google Meet as well, after its '
+          'own', () async {
+        final c = calendar(answer: teamsCalendar, accounts: everyone);
+
+        expect(
+          await c.onlineMeetingsFor(microsoft),
+          [OnlineMeetingKind.teams, OnlineMeetingKind.googleMeet],
+        );
+        expect(asked.map((a) => a.$1), ['acct-ms'],
+            reason: 'the Gmail account is asked nothing to be offered');
+      });
+
+      test('and a Microsoft calendar that holds none has Google Meet alone',
+          () async {
+        final c = calendar(
+          answer: (request) => request.method == 'GET'
+              ? json({
+                  'allowedOnlineMeetingProviders': <String>[],
+                  'defaultOnlineMeetingProvider': 'unknown',
+                })
+              : json({'id': 'evt'}, 201),
+          accounts: const [microsoft, google],
+        );
+
+        expect(
+          await c.onlineMeetingsFor(microsoft),
+          [OnlineMeetingKind.googleMeet],
+        );
+      });
+
+      test('an app password still has none: its meeting goes to the phone',
+          () async {
+        expect(
+          await calendar(accounts: everyone).onlineMeetingsFor(appPassword),
+          isEmpty,
+        );
+      });
+    });
+
+    group('held on Google Meet from a Microsoft account', () {
+      test('the Gmail account makes the link on its Meet token, first, and '
+          'the Outlook event carries it', () async {
+        final created = await calendar(answer: meetAndTeams, accounts: everyone)
+            .createMeeting(
+          microsoft,
+          meeting(online: OnlineMeetingKind.googleMeet),
+        );
+
+        expect(created.joinUrl, 'https://meet.google.com/abc-defg-hij');
+        expect(sent.map((r) => r.url.host),
+            ['meet.googleapis.com', 'graph.microsoft.com']);
+        expect(asked, [
+          ('acct-g', GoogleOAuth.meetScopes),
+          ('acct-ms', MicrosoftOAuth.calendarScopes),
+        ]);
+        final body = jsonDecode(sent.last.body) as Map;
+        expect(body['isOnlineMeeting'], isFalse,
+            reason: 'no Teams link beside it');
+        expect((body['body'] as Map)['content'], contains('https://meet.google.com/abc-defg-hij'));
+        expect(sent.where((r) => r.method == 'GET'), isEmpty,
+            reason: 'where the calendar holds its own is beside the point');
+      });
+
+      test('the Gmail account not yet allowed Meet is named, for the screen '
+          'to offer its sign-in', () async {
+        await expectLater(
+          calendar(answer: meetAndTeams, accounts: everyone, meetConsent: false)
+              .createMeeting(
+            microsoft,
+            meeting(online: OnlineMeetingKind.googleMeet),
+          ),
+          throwsA(isA<MeetLinkNeedsConsent>()
+              .having((e) => e.accountId, 'accountId', 'acct-g')
+              .having((e) => e.emailAddress, 'emailAddress', 'ron@gmail.com')
+              .having((e) => e.message, 'message', 'Not allowed Meet.')),
+        );
+        expect(sent, isEmpty, reason: 'no event without the link');
+      });
+
+      test('Meet itself refusing the token reads the same', () async {
+        await expectLater(
+          calendar(
+            answer: (request) => request.url.host == 'meet.googleapis.com'
+                ? json({
+                    'error': {
+                      'code': 403,
+                      'status': 'PERMISSION_DENIED',
+                      'details': [
+                        {'reason': 'ACCESS_TOKEN_SCOPE_INSUFFICIENT'},
+                      ],
+                    }
+                  }, 403)
+                : teamsCalendar(request),
+            accounts: everyone,
+          ).createMeeting(
+            microsoft,
+            meeting(online: OnlineMeetingKind.googleMeet),
+          ),
+          throwsA(isA<MeetLinkNeedsConsent>()
+              .having((e) => e.accountId, 'accountId', 'acct-g')),
+        );
+        expect(sent.map((r) => r.url.host), ['meet.googleapis.com']);
+      });
+
+      test('a Gmail sign-in that died is said in its name, not the '
+          'meeting\'s account\'s', () async {
+        final c = AccountCalendar(
+          accessToken: (accountId, {bool force = false, List<String>? scopes}) async {
+            if (accountId == 'acct-g') {
+              throw const SignInExpired('Google no longer accepts this sign-in.');
+            }
+            return 'token';
+          },
+          accounts: () => everyone,
+          httpClient: http_testing.MockClient((_) async => json({'id': 'evt'}, 201)),
+        );
+
+        await expectLater(
+          c.createMeeting(microsoft, meeting(online: OnlineMeetingKind.googleMeet)),
+          throwsA(isA<AuthenticationFailed>().having(
+              (e) => e.message, 'message', contains('ron@gmail.com'))),
+        );
+      });
+
+      test('with no Gmail account, Google Meet was never offered and asking '
+          'for it is a bug', () async {
+        await expectLater(
+          calendar(answer: teamsCalendar).createMeeting(
+            microsoft,
+            meeting(online: OnlineMeetingKind.googleMeet),
+          ),
+          throwsA(isA<ArgumentError>()),
+        );
+        expect(sent, isEmpty);
+      });
+
+      test('a Google account\'s own meeting on Meet is still its '
+          'calendar\'s', () async {
+        final created = await calendar(
+          answer: (_) => json({
+            'id': 'evt-g',
+            'conferenceData': {
+              'entryPoints': [
+                {'entryPointType': 'video', 'uri': 'https://meet.google.com/own-link'},
+              ],
+            },
+          }),
+          accounts: everyone,
+        ).createMeeting(
+          google,
+          meeting(accountId: 'acct-g', online: OnlineMeetingKind.googleMeet),
+        );
+
+        expect(sent.single.url.host, 'www.googleapis.com');
+        expect(created.joinUrl, 'https://meet.google.com/own-link');
       });
     });
 
@@ -772,8 +1135,8 @@ void main() {
         secret: 'app-password',
       );
 
-      expect(await engine.onlineMeetingsFor(added.id), isNull);
-      expect(await engine.onlineMeetingsFor('acct-nobody'), isNull);
+      expect(await engine.onlineMeetingsFor(added.id), isEmpty);
+      expect(await engine.onlineMeetingsFor('acct-nobody'), isEmpty);
     });
   });
 }

@@ -624,11 +624,9 @@ class SampleMailEngine implements MailEngine {
     final problem = meeting.problem;
     if (problem != null) throw ArgumentError(problem);
     meetings.add(meeting);
-    final kind =
-        meeting.online ? await onlineMeetingsFor(meeting.accountId) : null;
     return CreatedMeeting(
       id: 'sample-meeting-${meetings.length}',
-      joinUrl: switch (kind) {
+      joinUrl: switch (meeting.online) {
         null => null,
         OnlineMeetingKind.googleMeet => 'https://meet.google.com/abc-defg-hij',
         _ => 'https://teams.microsoft.com/l/meetup-join/sample',
@@ -636,18 +634,24 @@ class SampleMailEngine implements MailEngine {
     );
   }
 
-  /// As the real engine answers: Teams for a Microsoft account, Meet for a
-  /// Google one, nowhere for an app password. By the accounts as loaded,
-  /// so a test's fake with accounts of its own is answered for them.
+  /// As the real engine answers: Teams for a Microsoft account, and Google
+  /// Meet after it while a Google account is in the app; Meet for a Google
+  /// one; nowhere for an app password. By the accounts as loaded, so a
+  /// test's fake with accounts of its own is answered for them.
   @override
-  Future<OnlineMeetingKind?> onlineMeetingsFor(String accountId) async {
-    final account =
-        (await loadAccounts()).where((a) => a.id == accountId).firstOrNull;
+  Future<List<OnlineMeetingKind>> onlineMeetingsFor(String accountId) async {
+    final accounts = await loadAccounts();
+    final account = accounts.where((a) => a.id == accountId).firstOrNull;
+    final meetMaker = accounts.any((a) =>
+        a.provider == MailProvider.gmail && a.authMethod == AuthMethod.oauth);
     return switch (account) {
-      null => null,
-      Account(provider: MailProvider.outlook) => OnlineMeetingKind.teams,
-      Account(authMethod: AuthMethod.oauth) => OnlineMeetingKind.googleMeet,
-      _ => null,
+      null => const [],
+      Account(provider: MailProvider.outlook) => [
+          OnlineMeetingKind.teams,
+          if (meetMaker) OnlineMeetingKind.googleMeet,
+        ],
+      Account(authMethod: AuthMethod.oauth) => const [OnlineMeetingKind.googleMeet],
+      _ => const [],
     };
   }
 

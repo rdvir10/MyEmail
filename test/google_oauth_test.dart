@@ -64,6 +64,7 @@ void main() {
       expect(q['response_type'], 'code');
       expect(q['scope'], contains('https://mail.google.com/'));
       expect(q['scope'], contains('calendar.events'));
+      expect(q['scope'], contains('meetings.space.created'));
       expect(q['scope'], contains('openid'));
       expect(q['access_type'], 'offline',
           reason: 'without it there is no refresh token');
@@ -331,10 +332,32 @@ void main() {
         () => o.refresh(stored,
             scopes: const ['https://www.googleapis.com/auth/calendar.events']),
         throwsA(isA<SignInNeedsConsent>()
-            .having((e) => e.needsAdministrator, 'needsAdministrator', isFalse)),
+            .having((e) => e.needsAdministrator, 'needsAdministrator', isFalse)
+            .having((e) => e.message, 'message', contains('the calendar'))),
       );
       expect(await o.refresh(stored), isA<OAuthToken>(),
           reason: 'for mail alone the same sign-in is fine');
+    });
+
+    test('and one from before Meet was asked for needs consent for Meet, '
+        'said so, while the calendar is fine', () async {
+      final o = oauth(handler: (_) async => json({
+            'access_token': 'new',
+            'expires_in': 3600,
+            'scope': 'https://mail.google.com/ '
+                'https://www.googleapis.com/auth/calendar.events openid email',
+          }));
+
+      expect(
+        () => o.refresh(stored, scopes: GoogleOAuth.meetScopes),
+        throwsA(isA<SignInNeedsConsent>()
+            .having((e) => e.message, 'message', contains('Google Meet'))),
+      );
+      expect(
+        await o.refresh(stored,
+            scopes: const ['https://www.googleapis.com/auth/calendar.events']),
+        isA<OAuthToken>(),
+      );
     });
 
     test('no connection is not a sign-out either', () async {

@@ -64,14 +64,19 @@ class GraphCalendarApi {
   /// [onlineMeetingProvider] is Graph's name for where the calendar holds
   /// a meeting online, as [onlineMeetings] found it, and goes with a
   /// meeting held online. Without one, Graph holds it at the calendar's
-  /// default.
+  /// default. [joinUrl] is a link made elsewhere, Google Meet's, for a
+  /// meeting held there instead: the event carries it, and no Teams link
+  /// is asked for.
   Future<CreatedMeeting> createEvent(
     MeetingDraft meeting, {
     String? onlineMeetingProvider,
+    String? joinUrl,
   }) async {
-    final body = jsonEncode(
-      eventJson(meeting, onlineMeetingProvider: onlineMeetingProvider),
-    );
+    final body = jsonEncode(eventJson(
+      meeting,
+      onlineMeetingProvider: onlineMeetingProvider,
+      joinUrl: joinUrl,
+    ));
     final response = await _exchange(
       () => http.Request('POST', eventsUri)
         ..headers['Content-Type'] = 'application/json'
@@ -81,10 +86,10 @@ class GraphCalendarApi {
     final json = _jsonOf(response);
     final id = json['id'];
     final online = json['onlineMeeting'];
-    final joinUrl = online is Map ? online['joinUrl'] : null;
+    final made = online is Map ? online['joinUrl'] : null;
     return CreatedMeeting(
       id: id is String && id.isNotEmpty ? id : null,
-      joinUrl: joinUrl is String && joinUrl.isNotEmpty ? joinUrl : null,
+      joinUrl: joinUrl ?? (made is String && made.isNotEmpty ? made : null),
     );
   }
 
@@ -106,21 +111,34 @@ class GraphCalendarApi {
   /// is Graph's own shape. A whole day ends at the next day's midnight,
   /// because Graph counts the end as exclusive and refuses one on the same
   /// day. Every attendee is required: the screen has no optional list, and
-  /// Graph wants each one typed.
+  /// Graph wants each one typed. A link made elsewhere goes where a person
+  /// pasting one would put it: the body's last line, and the location
+  /// where none was given, so every client shows it and Outlook's Join
+  /// finds it.
   static Map<String, Object?> eventJson(
     MeetingDraft meeting, {
     String? onlineMeetingProvider,
+    String? joinUrl,
   }) {
     final sent = meeting.asSent;
     final end = meeting.allDay ? dayAfter(sent.end) : sent.end;
     final location = meeting.location.trim();
+    final elsewhere = joinUrl != null;
+    final notes = !elsewhere
+        ? meeting.notes
+        : meeting.notes.trim().isEmpty
+            ? 'Join with Google Meet: $joinUrl'
+            : '${meeting.notes.trimRight()}\n\nJoin with Google Meet: $joinUrl';
     return {
       'subject': meeting.title.trim(),
-      'body': {'contentType': 'text', 'content': meeting.notes},
+      'body': {'contentType': 'text', 'content': notes},
       'start': {'dateTime': _stamp(sent.start), 'timeZone': sent.timeZone},
       'end': {'dateTime': _stamp(end), 'timeZone': sent.timeZone},
       'isAllDay': meeting.allDay,
-      if (location.isNotEmpty) 'location': {'displayName': location},
+      if (location.isNotEmpty)
+        'location': {'displayName': location}
+      else if (elsewhere)
+        'location': {'displayName': joinUrl},
       'attendees': [
         for (final a in meeting.attendees)
           {
@@ -131,10 +149,11 @@ class GraphCalendarApi {
             'type': 'required',
           },
       ],
-      // A Teams link only when asked for. Left to Graph's default, some
-      // tenants add one to every meeting.
-      'isOnlineMeeting': meeting.online,
-      if (meeting.online && onlineMeetingProvider != null)
+      // A Teams link only when asked for, and not beside a link made
+      // elsewhere. Left to Graph's default, some tenants add one to every
+      // meeting.
+      'isOnlineMeeting': meeting.isOnline && !elsewhere,
+      if (meeting.isOnline && !elsewhere && onlineMeetingProvider != null)
         'onlineMeetingProvider': onlineMeetingProvider,
     };
   }

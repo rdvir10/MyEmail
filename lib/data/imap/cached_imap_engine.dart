@@ -883,14 +883,16 @@ class CachedImapEngine implements MailEngine {
 
   /// The accounts' calendars, held for the engine's life: where a calendar
   /// said it holds meetings online is remembered there.
-  late final AccountCalendar _calendars =
-      AccountCalendar(accessToken: oauthTokens.accessToken);
+  late final AccountCalendar _calendars = AccountCalendar(
+    accessToken: oauthTokens.accessToken,
+    accounts: accountStore.read,
+  );
 
   @override
-  Future<OnlineMeetingKind?> onlineMeetingsFor(String accountId) async {
+  Future<List<OnlineMeetingKind>> onlineMeetingsFor(String accountId) async {
     final account =
         accountStore.read().where((a) => a.id == accountId).firstOrNull;
-    if (account == null) return null;
+    if (account == null) return const [];
     return _calendars.onlineMeetingsFor(account);
   }
 

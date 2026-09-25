@@ -65,12 +65,23 @@ class GoogleOAuth implements OAuthRefresher {
   /// `https://mail.google.com/` is the only scope Gmail's IMAP and SMTP
   /// servers accept for XOAUTH2; the narrower Gmail API scopes do not
   /// work there. `calendar.events` is for meetings created in the app.
+  /// [meetScopes] is for Meet links made for other accounts' meetings.
   /// `openid` and `email` bring back an ID token naming the account.
   static const scopes = [
     'https://mail.google.com/',
     'https://www.googleapis.com/auth/calendar.events',
+    ...meetScopes,
     'openid',
     'email',
+  ];
+
+  /// The Meet REST API, for a link made with no event on the Google
+  /// calendar: a meeting on a Microsoft account's calendar, held on Google
+  /// Meet. Named on its own when a token is asked for Meet, so a sign-in
+  /// from before the app asked for it reads as [SignInNeedsConsent] for
+  /// Meet, not as a dead sign-in; the mail keeps its own token regardless.
+  static const meetScopes = [
+    'https://www.googleapis.com/auth/meetings.space.created',
   ];
 
   /// The custom-scheme way back, for an Android client that has it enabled.
@@ -224,9 +235,11 @@ class GoogleOAuth implements OAuthRefresher {
           if (!granted.contains(s)) s,
       ];
       if (missing.isNotEmpty) {
-        throw const SignInNeedsConsent(
+        final wanted =
+            missing.any(meetScopes.contains) ? 'Google Meet' : 'the calendar';
+        throw SignInNeedsConsent(
           'This Google account needs signing in again: it was set up before '
-          'the app asked permission for the calendar. Open Settings, then '
+          'the app asked permission for $wanted. Open Settings, then '
           'Accounts, tap the account and use "Sign in with Google" — nothing '
           'cached is lost.',
         );

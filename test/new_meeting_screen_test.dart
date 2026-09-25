@@ -1,10 +1,12 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart' as http_testing;
+import 'package:myemail/data/auth/google_oauth.dart';
 import 'package:myemail/data/auth/microsoft_oauth.dart';
 import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/calendar/device_calendar.dart';
@@ -16,6 +18,7 @@ import 'package:myemail/domain/meeting.dart';
 import 'package:myemail/state/calendar_providers.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/ui/accounts/google_sign_in_screen.dart';
 import 'package:myemail/ui/accounts/microsoft_sign_in_screen.dart';
 import 'package:myemail/ui/meetings/new_meeting_screen.dart';
 import 'package:myemail/ui/messages/date_format.dart';
@@ -38,12 +41,24 @@ void main() {
     calendar = FakeDeviceCalendar(timeZone: 'Asia/Jerusalem');
   });
 
-  ProviderContainer container({MicrosoftOAuth? oauth}) {
+  /// [google] and [openInBrowser] stand in for the app's Google sign-in
+  /// where a test reaches it.
+  ProviderContainer container({
+    MicrosoftOAuth? oauth,
+    GoogleOAuth? google,
+    Future<bool> Function(Uri)? openInBrowser,
+  }) {
     final c = ProviderContainer(overrides: [
       uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
       mailEngineProvider.overrideWithValue(engine),
       deviceCalendarProvider.overrideWithValue(calendar),
       if (oauth != null) microsoftOAuthProvider.overrideWithValue(oauth),
+      if (google != null) ...[
+        googleClientIdProvider.overrideWithValue(google.clientId),
+        googleOAuthProvider.overrideWithValue(google),
+      ],
+      if (openInBrowser != null)
+        openInBrowserProvider.overrideWithValue(openInBrowser),
     ]);
     addTearDown(c.dispose);
     return c;
@@ -57,8 +72,14 @@ void main() {
     String accountId = 'acct-personal',
     String title = '',
     MicrosoftOAuth? oauth,
+    GoogleOAuth? google,
+    Future<bool> Function(Uri)? openInBrowser,
   }) async {
-    final c = container(oauth: oauth);
+    final c = container(
+      oauth: oauth,
+      google: google,
+      openInBrowser: openInBrowser,
+    );
     await tester.pumpWidget(UncontrolledProviderScope(
       container: c,
       child: MaterialApp(
@@ -275,6 +296,16 @@ void main() {
     }
 
     final online = find.byKey(const ValueKey('meeting-online'));
+    final kindMenu = find.byKey(const ValueKey('meeting-online-kind'));
+
+    /// Choose [label] from the menu of kinds. Its label is in the tree
+    /// twice while the menu is open: the closed menu's, and the menu's.
+    Future<void> chooseKind(WidgetTester tester, String label) async {
+      await tester.tap(kindMenu);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(label).last);
+      await tester.pumpAndSettle();
+    }
 
     testWidgets('no switch for an account whose calendar holds none',
         (tester) async {
@@ -313,7 +344,7 @@ void main() {
 
       await send(tester);
 
-      expect(engine.meetings.single.online, isTrue);
+      expect(engine.meetings.single.online, OnlineMeetingKind.teams);
       expect(find.byType(NewMeetingScreen), findsNothing);
       expect(find.text('Invitation sent, with a Teams link'), findsOneWidget);
     });
@@ -328,7 +359,7 @@ void main() {
 
       await send(tester);
 
-      expect(engine.meetings.single.online, isTrue);
+      expect(engine.meetings.single.online, OnlineMeetingKind.googleMeet);
       expect(find.text('Added to your calendar, with a Google Meet link'),
           findsOneWidget);
     });
@@ -341,7 +372,7 @@ void main() {
 
       await send(tester);
 
-      expect(engine.meetings.single.online, isFalse);
+      expect(engine.meetings.single.online, isNull);
       expect(find.text('Invitation sent'), findsOneWidget);
     });
 
@@ -366,8 +397,163 @@ void main() {
       await send(tester);
 
       expect(engine.meetings.single.accountId, 'acct-p');
-      expect(engine.meetings.single.online, isFalse);
+      expect(engine.meetings.single.online, isNull);
       expect(find.text('Added to your calendar'), findsOneWidget);
+    });
+
+    testWidgets('a Microsoft account with a Gmail account beside it has a '
+        'choice, Teams first, and choosing Google Meet asks for it',
+        (tester) async {
+      engine = _EachKind();
+      await pumpScreen(tester, accountId: 'acct-ms');
+      await type(tester, 'meeting-title', 'Q3 review');
+      await type(tester, 'meeting-attendees', 'dana@example.com');
+      expect(kindMenu, findsOneWidget);
+      expect(
+        tester.widget<DropdownButton<OnlineMeetingKind>>(kindMenu).value,
+        OnlineMeetingKind.teams,
+      );
+      expect(tester.widget<Switch>(online).value, isFalse);
+
+      await chooseKind(tester, 'Google Meet');
+      expect(tester.widget<Switch>(online).value, isTrue,
+          reason: 'choosing a kind is asking for a link');
+
+      await send(tester);
+
+      expect(engine.meetings.single.online, OnlineMeetingKind.googleMeet);
+      expect(find.text('Invitation sent, with a Google Meet link'),
+          findsOneWidget);
+    });
+
+    testWidgets('the kind chosen is kept through a change of From where the '
+        'account can hold it too', (tester) async {
+      engine = _EachKind();
+      await pumpScreen(tester, accountId: 'acct-ms');
+      await chooseKind(tester, 'Google Meet');
+
+      await chooseFrom(tester, 'ron@gmail.com');
+      expect(kindMenu, findsNothing, reason: 'one kind is no choice');
+      expect(find.text('Google Meet'), findsOneWidget);
+
+      await chooseFrom(tester, 'ron@contoso.com');
+      expect(
+        tester.widget<DropdownButton<OnlineMeetingKind>>(kindMenu).value,
+        OnlineMeetingKind.googleMeet,
+      );
+      expect(tester.widget<Switch>(online).value, isTrue);
+    });
+
+    testWidgets('with no Gmail account in the app there is no choice',
+        (tester) async {
+      engine = _MicrosoftAlone();
+      await pumpScreen(tester, accountId: 'acct-ms');
+
+      expect(kindMenu, findsNothing);
+      expect(find.text('Teams meeting'), findsOneWidget);
+      expect(find.text('Google Meet'), findsNothing);
+    });
+  });
+
+  group('Google Meet from a Microsoft account, before the Gmail account '
+      'has allowed Meet', () {
+    const clientId = '1234-abcd.apps.googleusercontent.com';
+
+    /// A Google that redeems any code for a token naming [email].
+    GoogleOAuth google(String email) => GoogleOAuth(
+          clientId: clientId,
+          httpClient: http_testing.MockClient((request) async {
+            final form = Uri.splitQueryString(request.body);
+            if (form['grant_type'] != 'authorization_code') {
+              return http.Response('{"error":"invalid_grant"}', 400);
+            }
+            final claims = base64Url
+                .encode(utf8.encode(jsonEncode({'sub': '1', 'email': email})))
+                .replaceAll('=', '');
+            return http.Response(
+              jsonEncode({
+                'access_token': 'ya29.${form['code']}',
+                'refresh_token': '1//r',
+                'expires_in': 3600,
+                'id_token': 'h.$claims.s',
+              }),
+              200,
+              headers: const {'content-type': 'application/json'},
+            );
+          }),
+        );
+
+    /// What the browser does when the person is done: it follows the
+    /// redirect to the loopback address the request named, over a real
+    /// socket, which is what the app listens on. As google_sign_in_ui_test
+    /// has it.
+    Future<void> comeBack(WidgetTester tester, Uri request) async {
+      final q = request.queryParameters;
+      final back = Uri.parse(q['redirect_uri']!).replace(
+        queryParameters: {'code': 'c-1', 'state': q['state']!},
+      );
+      await tester.runAsync(() async {
+        final socket = await Socket.connect(back.host, back.port);
+        socket.write('GET ${back.path}?${back.query} HTTP/1.1\r\n'
+            'Host: ${back.host}\r\nConnection: close\r\n\r\n');
+        await socket.flush();
+        await socket.first.timeout(const Duration(seconds: 5));
+        socket.destroy();
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+    }
+
+    testWidgets('names the Gmail account, offers its sign-in with Google '
+        'asking for Meet, and sends after it', (tester) async {
+      final consent = _MeetNeedsConsent();
+      engine = consent;
+      final opened = <Uri>[];
+      await pumpScreen(
+        tester,
+        accountId: 'acct-ms',
+        google: google('ron@gmail.com'),
+        openInBrowser: (uri) async {
+          opened.add(uri);
+          return true;
+        },
+      );
+      await type(tester, 'meeting-title', 'Q3 review');
+      await type(tester, 'meeting-attendees', 'dana@example.com');
+      await tester.tap(find.byKey(const ValueKey('meeting-online-kind')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Google Meet').last);
+      await tester.pumpAndSettle();
+
+      await send(tester);
+
+      expect(find.byType(NewMeetingScreen), findsOneWidget);
+      expect(find.textContaining('make Meet links with ron@gmail.com'),
+          findsOneWidget);
+      expect(find.text('Allow the calendar'), findsNothing);
+      expect(consent.meetings, isEmpty);
+
+      await tester.tap(find.text('Sign in with Google'));
+      // Not pumpAndSettle: the sign-in screen shows a spinner for as long
+      // as it waits for the browser, and a spinner never settles.
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(find.byType(GoogleSignInScreen), findsOneWidget);
+      final asked = opened.single.queryParameters;
+      expect(asked['login_hint'], 'ron@gmail.com');
+      expect(asked['scope'], contains('meetings.space.created'));
+      expect(asked['scope'], contains('https://mail.google.com/'),
+          reason: 'the mail stays beside the new permission');
+
+      await comeBack(tester, opened.single);
+      await tester.pumpAndSettle();
+
+      expect(consent.signedInAccount, 'acct-g',
+          reason: 'the Gmail account, not the meeting\'s');
+      expect(consent.meetings.single.online, OnlineMeetingKind.googleMeet);
+      expect(find.byType(NewMeetingScreen), findsNothing);
+      expect(find.text('Invitation sent, with a Google Meet link'),
+          findsOneWidget);
     });
   });
 
@@ -635,6 +821,45 @@ class _EachKind extends SampleMailEngine {
 
   @override
   Future<List<Account>> loadAccounts() async => accounts;
+}
+
+/// An engine with a Microsoft account alone: Teams, and no Gmail account
+/// to make a Meet link.
+class _MicrosoftAlone extends SampleMailEngine {
+  @override
+  Future<List<Account>> loadAccounts() async => [_EachKind.accounts.first];
+}
+
+/// An engine with an account of each kind whose Gmail account has not yet
+/// allowed the app to make Meet links: a meeting on Google Meet from the
+/// Microsoft account is refused until that account signs in again.
+class _MeetNeedsConsent extends SampleMailEngine {
+  String? signedInAccount;
+
+  @override
+  Future<List<Account>> loadAccounts() async => _EachKind.accounts;
+
+  @override
+  Future<void> updateOAuthToken({
+    required String accountId,
+    required OAuthToken token,
+    String? signedInAs,
+  }) async {
+    signedInAccount = accountId;
+  }
+
+  @override
+  Future<CreatedMeeting> createMeeting(MeetingDraft meeting) {
+    if (meeting.online == OnlineMeetingKind.googleMeet &&
+        signedInAccount == null) {
+      throw const MeetLinkNeedsConsent(
+        accountId: 'acct-g',
+        emailAddress: 'ron@gmail.com',
+        message: 'Not allowed Meet.',
+      );
+    }
+    return super.createMeeting(meeting);
+  }
 }
 
 /// An engine with one Microsoft account whose calendar Microsoft has not

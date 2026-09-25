@@ -3,10 +3,13 @@ import 'package:http/http.dart' as http;
 
 import '../../domain/account.dart';
 import '../../domain/meeting.dart';
-import '../auth/microsoft_oauth.dart' show MicrosoftOAuth;
+import '../auth/google_oauth.dart' show GoogleOAuth;
+import '../auth/microsoft_oauth.dart'
+    show MicrosoftOAuth, SignInExpired, SignInNeedsConsent;
 import '../graph/graph_calendar_api.dart';
 import '../mail_engine.dart';
 import 'google_calendar_api.dart';
+import 'google_meet_api.dart';
 
 /// The calendar behind an account, reached the way the account signs in.
 ///
@@ -18,6 +21,11 @@ import 'google_calendar_api.dart';
 /// SMTP and nothing else, and saying so is what lets the screen hand the
 /// meeting to the phone's calendar app instead.
 ///
+/// A meeting held on Google Meet from a Microsoft account is the one case
+/// that crosses accounts: the Gmail account signed in with Google makes the
+/// link, through the Meet API, and the Outlook invitation carries it. Ron
+/// asked for it for his Microsoft account at myhomestudio.club.
+///
 /// Held for the engine's life: what a Microsoft calendar said about where
 /// it holds meetings online is remembered here, asked once rather than
 /// every time the screen opens.
@@ -27,18 +35,24 @@ import 'google_calendar_api.dart';
 class AccountCalendar {
   AccountCalendar({
     required this.accessToken,
+    required this.accounts,
     http.Client? httpClient,
     this.sleep,
   }) : _http = httpClient;
 
   /// The account's token for [scopes]: the calendar's for a Microsoft
   /// account, the default for a Google one, whose token has the calendar
-  /// in it already.
+  /// in it already, and Meet's for the Google account that makes a link
+  /// for another account's meeting.
   final Future<String> Function(
     String accountId, {
     bool force,
     List<String>? scopes,
   }) accessToken;
+
+  /// Every account in the app, as it stands: where the Gmail account that
+  /// makes Meet links is looked for.
+  final Iterable<Account> Function() accounts;
 
   /// Handed to the clients by tests. Null in the app, where each makes and
   /// closes its own.
@@ -53,17 +67,30 @@ class AccountCalendar {
   /// sign-in is not remembered as having said nowhere.
   final Map<String, GraphOnlineMeetings?> _graphOnline = {};
 
-  /// Where [account]'s calendar holds a meeting online, or null where it
-  /// holds none or would not say; see `MailEngine.onlineMeetingsFor`.
-  Future<OnlineMeetingKind?> onlineMeetingsFor(Account account) async {
+  /// The Gmail account signed in with Google that makes Meet links for the
+  /// accounts that cannot, or null while there is none. The first such
+  /// account, which is the one there is.
+  Account? _meetMaker() => accounts()
+      .where((a) =>
+          a.provider == MailProvider.gmail &&
+          a.authMethod == AuthMethod.oauth)
+      .firstOrNull;
+
+  /// The kinds a meeting from [account] can be held online as, its own
+  /// calendar's first; see `MailEngine.onlineMeetingsFor`.
+  Future<List<OnlineMeetingKind>> onlineMeetingsFor(Account account) async {
     switch (account.provider) {
       case MailProvider.outlook:
-        return (await _graphOnlineMeetings(account))?.kind;
+        final own = (await _graphOnlineMeetings(account))?.kind;
+        return [
+          ?own,
+          if (_meetMaker() != null) OnlineMeetingKind.googleMeet,
+        ];
       case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
         // Every Google calendar has Meet; there is nothing to ask.
-        return OnlineMeetingKind.googleMeet;
+        return const [OnlineMeetingKind.googleMeet];
       case MailProvider.gmail:
-        return null;
+        return const [];
     }
   }
 
@@ -107,9 +134,20 @@ class AccountCalendar {
 
     switch (account.provider) {
       case MailProvider.outlook:
+        if (meeting.online == OnlineMeetingKind.googleMeet) {
+          // Made first, by the Google account, so a link that cannot be
+          // had leaves no event behind without one.
+          final link = await _meetLink();
+          final api = _graphApi(account);
+          try {
+            return await api.createEvent(meeting, joinUrl: link);
+          } finally {
+            api.close();
+          }
+        }
         // Held where the calendar said it holds them. Where it would not
         // say, Graph is left to the calendar's default.
-        final provider = meeting.online
+        final provider = meeting.isOnline
             ? (await _graphOnlineMeetings(account))?.provider
             : null;
         final api = _graphApi(account);
@@ -137,6 +175,45 @@ class AccountCalendar {
           "The app cannot reach this account's calendar: an app password "
           'covers its mail and nothing else.',
         );
+    }
+  }
+
+  /// A Meet link from the Gmail account, on its token for Meet. What goes
+  /// wrong with that sign-in is said in that account's name: it is not the
+  /// meeting's account, and the screen's remedies would otherwise point at
+  /// the wrong one.
+  Future<String> _meetLink() async {
+    final maker = _meetMaker();
+    if (maker == null) {
+      // The screen offers Google Meet only while there is one.
+      throw ArgumentError(
+        'Google Meet was asked for with no Google account to make the link.',
+      );
+    }
+    final api = GoogleMeetApi(
+      accessToken: ({bool force = false}) => accessToken(
+        maker.id,
+        force: force,
+        scopes: GoogleOAuth.meetScopes,
+      ),
+      httpClient: _http,
+    );
+    try {
+      return await api.createSpace();
+    } on SignInNeedsConsent catch (e) {
+      throw MeetLinkNeedsConsent(
+        accountId: maker.id,
+        emailAddress: maker.emailAddress,
+        message: e.message,
+      );
+    } on SignInExpired {
+      throw AuthenticationFailed(
+        'The Google sign-in for ${maker.emailAddress}, which makes the Meet '
+        'link, is no longer accepted. Open Settings, Accounts and sign in '
+        'to it again.',
+      );
+    } finally {
+      api.close();
     }
   }
 }

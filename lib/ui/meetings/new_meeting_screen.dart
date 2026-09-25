@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/auth/microsoft_oauth.dart';
+import '../../data/auth/oauth_token.dart';
 import '../../data/mail_engine.dart';
 import '../../domain/account.dart';
 import '../../domain/error_report.dart';
@@ -12,6 +13,7 @@ import '../../state/compose_providers.dart'
     show addressesLookValid, parseAddresses;
 import '../../state/meeting_providers.dart';
 import '../../state/providers.dart';
+import '../accounts/google_sign_in_screen.dart';
 import '../accounts/microsoft_sign_in_screen.dart';
 import '../common/bottom_message.dart';
 import '../common/problem_view.dart';
@@ -84,7 +86,9 @@ Future<void> openNewMeetingFromMessage(
 /// attendees and all; where Microsoft has not yet allowed the app the
 /// calendar, the sign-in that asks for it is offered here rather than in
 /// Settings. Where the account's calendar holds meetings online, Teams or
-/// Google Meet, a switch asks for a link with the invitation.
+/// Google Meet, a switch asks for a link with the invitation; where there
+/// is a choice, a Microsoft account with a Gmail account signed in with
+/// Google beside it, a menu says which.
 class NewMeetingScreen extends ConsumerStatefulWidget {
   const NewMeetingScreen({
     super.key,
@@ -122,10 +126,16 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
   bool _allDay = false;
   bool _sending = false;
 
-  /// Where this account's calendar holds a meeting online, or null while
-  /// it has not said, or where it holds none: the switch is on the screen
-  /// only with an answer. Asked when the screen opens and again when From
-  /// changes.
+  /// The kinds a meeting from this account can be held online as, empty
+  /// while it has not said, or where there is none: the switch is on the
+  /// screen only with an answer. Asked when the screen opens and again
+  /// when From changes.
+  List<OnlineMeetingKind> _onlineKinds = const [];
+
+  /// Which of them, where there is a choice: a Microsoft account with
+  /// Teams and, through the Gmail account, Google Meet. The first unless
+  /// one was chosen, and the choice kept through a change of From where
+  /// the account now can hold it too.
   OnlineMeetingKind? _onlineKind;
 
   /// Whether a link was asked for. Honoured only where the account's
@@ -147,6 +157,11 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
   /// reporting, said in a sentence: Microsoft wanting a consent, or nowhere
   /// to hand the meeting to.
   String? _notice;
+
+  /// The Gmail account offered a sign-in under [_notice], when it is that
+  /// account, not the meeting's, that has to allow the app something:
+  /// making Meet links, for a meeting from a Microsoft account.
+  String? _offerMeet;
 
   /// Whether a sign-in that asks Microsoft for the calendar is offered
   /// under [_notice], and whether it is the administrator being asked.
@@ -171,15 +186,19 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
     _askOnline();
   }
 
-  /// Ask where this account's calendar holds a meeting online, and show
-  /// the switch for it, labelled so, once it answers. Gone for an account
-  /// whose calendar holds none.
+  /// Ask how a meeting from this account can be held online, and show the
+  /// switch for it, labelled so, once it answers. Gone for an account that
+  /// has no way.
   Future<void> _askOnline() async {
     final ask = ++_onlineAsk;
-    final kind =
+    final kinds =
         await ref.read(mailEngineProvider).onlineMeetingsFor(_accountId);
     if (!mounted || ask != _onlineAsk) return;
-    setState(() => _onlineKind = kind);
+    setState(() {
+      _onlineKinds = kinds;
+      _onlineKind =
+          kinds.contains(_onlineKind) ? _onlineKind : kinds.firstOrNull;
+    });
   }
 
   @override
@@ -255,7 +274,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
       location: _location.text.trim(),
       notes: _notes.text.trim(),
       timeZone: zone,
-      online: _online && _onlineKind != null,
+      online: _online ? _onlineKind : null,
     );
   }
 
@@ -278,10 +297,11 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
       _invalid = null;
       _notice = null;
       _offerConsent = false;
+      _offerMeet = null;
       _problem = null;
     });
     // Where it is held, for the message that says what went out.
-    final held = meeting.online ? _onlineKind : null;
+    final held = meeting.online;
     try {
       await ref.read(mailEngineProvider).createMeeting(meeting);
       if (!mounted) return;
@@ -291,6 +311,16 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
           : 'Added to your calendar$link');
     } on CalendarUnavailable catch (e) {
       await _handToDevice(meeting, e);
+    } on MeetLinkNeedsConsent catch (e) {
+      // The Gmail account's sign-in is from before the app asked for Meet.
+      // Offered here, as the Microsoft one is, and named: it is not the
+      // account the meeting is from.
+      setState(() {
+        _notice = 'Google has not yet allowed the app to make Meet links '
+            'with ${e.emailAddress}. Sign in with Google again to allow it; '
+            'nothing cached is lost.';
+        _offerMeet = e.accountId;
+      });
     } on SignInNeedsConsent catch (e) {
       // In words of its own rather than Microsoft's, which send the person
       // to Settings for the sign-in that is offered right here.
@@ -344,8 +374,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
   }
 
   /// A sign-in that asks Microsoft for the calendar beside the mail, then
-  /// the meeting again. The account keeps everything cached: this is the
-  /// same sign-in again that Settings offers, brought to where it is needed.
+  /// the meeting again.
   Future<void> _allowCalendar() async {
     final account = _account;
     if (account == null) return;
@@ -355,15 +384,50 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
       scopes: [...MicrosoftOAuth.scopes, ...MicrosoftOAuth.calendarScopes],
     );
     if (token == null || !mounted) return;
+    await _signedInAgain(account, token);
+  }
+
+  /// A sign-in with Google that asks for Meet beside the mail, for the
+  /// Gmail account that makes the link, then the meeting again.
+  Future<void> _allowMeet() async {
+    final maker = ref
+        .read(accountsProvider)
+        .value
+        ?.where((a) => a.id == _offerMeet)
+        .firstOrNull;
+    if (maker == null) return;
+    final result = await GoogleSignInScreen.show(
+      context,
+      loginHint: maker.emailAddress,
+    );
+    if (result == null || !mounted) return;
+    await _signedInAgain(
+      maker,
+      result.token,
+      signedInAs: result.identity?.email,
+    );
+  }
+
+  /// Keep the sign-in [account] just made, then Send again. The account
+  /// keeps everything cached: this is the same sign-in again that Settings
+  /// offers, brought to where it is needed.
+  Future<void> _signedInAgain(
+    Account account,
+    OAuthToken token, {
+    String? signedInAs,
+  }) async {
     setState(() {
       _sending = true;
       _notice = null;
       _offerConsent = false;
+      _offerMeet = null;
     });
     try {
-      await ref
-          .read(accountsProvider.notifier)
-          .signInAgain(accountId: account.id, token: token);
+      await ref.read(accountsProvider.notifier).signInAgain(
+            accountId: account.id,
+            token: token,
+            signedInAs: signedInAs,
+          );
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -480,9 +544,10 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
                                 if (id == null || id == _accountId) return;
                                 setState(() {
                                   _accountId = id;
-                                  // Unknown again until this account's
-                                  // calendar has answered for itself.
-                                  _onlineKind = null;
+                                  // Unknown again until this account has
+                                  // answered for itself; the kind chosen
+                                  // waits to see whether it can too.
+                                  _onlineKinds = const [];
                                 });
                                 _askOnline();
                               },
@@ -552,11 +617,12 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
                 ],
               ),
             ),
-            // Only once the account's calendar has said it holds meetings
-            // online, and named where: the switch says what it does, a
-            // Teams link or a Meet link, rather than promising one that
-            // the calendar cannot make.
-            if (_onlineKind case final kind?)
+            // Only once the account has said how a meeting from it can be
+            // held online, and named where: the switch says what it does,
+            // a Teams link or a Meet link, rather than promising one that
+            // cannot be made. With a choice, a menu in the label's place;
+            // choosing from it is asking for a link.
+            if (_onlineKinds.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
                 child: Row(
@@ -571,11 +637,38 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text(
-                        kind.label,
-                        style: theme.textTheme.bodyMedium,
-                        overflow: TextOverflow.ellipsis,
-                      ),
+                      child: _onlineKinds.length > 1
+                          ? DropdownButton<OnlineMeetingKind>(
+                              key: const ValueKey('meeting-online-kind'),
+                              value: _onlineKind,
+                              isExpanded: true,
+                              underline: const SizedBox.shrink(),
+                              style: theme.textTheme.bodyMedium,
+                              items: [
+                                for (final kind in _onlineKinds)
+                                  DropdownMenuItem(
+                                    value: kind,
+                                    child: Text(
+                                      kind.label,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                              ],
+                              onChanged: _sending
+                                  ? null
+                                  : (kind) {
+                                      if (kind == null) return;
+                                      setState(() {
+                                        _onlineKind = kind;
+                                        _online = true;
+                                      });
+                                    },
+                            )
+                          : Text(
+                              _onlineKinds.single.label,
+                              style: theme.textTheme.bodyMedium,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                     ),
                   ],
                 ),
@@ -601,14 +694,19 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
             if (_notice != null)
               _Notice(
                 _notice!,
-                action: _offerConsent
+                action: _offerMeet != null
                     ? FilledButton.tonal(
-                        onPressed: _sending ? null : _allowCalendar,
-                        child: Text(_askAdministrator
-                            ? 'Ask the administrator'
-                            : 'Allow the calendar'),
+                        onPressed: _sending ? null : _allowMeet,
+                        child: const Text('Sign in with Google'),
                       )
-                    : null,
+                    : _offerConsent
+                        ? FilledButton.tonal(
+                            onPressed: _sending ? null : _allowCalendar,
+                            child: Text(_askAdministrator
+                                ? 'Ask the administrator'
+                                : 'Allow the calendar'),
+                          )
+                        : null,
               ),
             if (_problem != null)
               Padding(

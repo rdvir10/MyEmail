@@ -203,7 +203,7 @@ class _EmptyEngine implements MailEngine {
       _inner.createMeeting(meeting);
 
   @override
-  Future<OnlineMeetingKind?> onlineMeetingsFor(String accountId) =>
+  Future<List<OnlineMeetingKind>> onlineMeetingsFor(String accountId) =>
       _inner.onlineMeetingsFor(accountId);
 
   @override
