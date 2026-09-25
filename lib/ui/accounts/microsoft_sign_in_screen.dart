@@ -30,18 +30,27 @@ import 'microsoft_sign_in_sheet.dart';
 /// resource at a time. Everything is Graph now, so there is one resource and
 /// one screen.
 class MicrosoftSignInScreen extends ConsumerStatefulWidget {
-  const MicrosoftSignInScreen({super.key, this.loginHint});
+  const MicrosoftSignInScreen({super.key, this.loginHint, this.scopes});
 
   /// The address already typed on the add-account screen, so Microsoft does
   /// not ask for it a second time.
   final String? loginHint;
 
+  /// What to ask consent for; [MicrosoftOAuth.scopes] when null. A sign-in
+  /// again with more, such as the calendar, adds to what the account may do.
+  final List<String>? scopes;
+
   /// Returns the token, or null if the person backed out or it failed.
-  static Future<OAuthToken?> show(BuildContext context, {String? loginHint}) =>
+  static Future<OAuthToken?> show(
+    BuildContext context, {
+    String? loginHint,
+    List<String>? scopes,
+  }) =>
       Navigator.of(context).push<OAuthToken>(
         MaterialPageRoute(
           fullscreenDialog: true,
-          builder: (_) => MicrosoftSignInScreen(loginHint: loginHint),
+          builder: (_) =>
+              MicrosoftSignInScreen(loginHint: loginHint, scopes: scopes),
         ),
       );
 
@@ -132,6 +141,7 @@ class _MicrosoftSignInScreenState extends ConsumerState<MicrosoftSignInScreen> {
         pkce: pkce,
         state: state,
         loginHint: widget.loginHint,
+        scopes: widget.scopes,
       ),
     );
     if (!mounted) return;

@@ -93,6 +93,15 @@ class MicrosoftOAuth {
     'offline_access',
   ];
 
+  /// The calendar, for meetings created here. Asked for on its own, never
+  /// with [scopes]: an organisation that approved the app for mail may not
+  /// have approved it for this, and a refresh that asked for both would
+  /// fail the mail along with the calendar. See
+  /// [OAuthTokenRepository.accessToken]'s `scopes`.
+  static const calendarScopes = [
+    'https://graph.microsoft.com/Calendars.ReadWrite',
+  ];
+
   static Future<void> _realSleep(Duration d) => Future<void>.delayed(d);
 
   /// Where the redirect lands after a successful sign-in.
