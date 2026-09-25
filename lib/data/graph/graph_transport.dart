@@ -295,9 +295,17 @@ class GraphTransport implements ImapTransport {
             uid: scan.uids[m.id]!,
             isRead: m.isRead,
             isFlagged: m.isFlagged,
+            isAnswered: _answered(m.lastVerb),
+            isForwarded: _forwarded(m.lastVerb),
           ),
     ];
   }
+
+  /// Exchange's last verb as the two marks. A reply to all is a reply.
+  static bool _answered(int? verb) =>
+      verb == GraphMailApi.verbReply || verb == GraphMailApi.verbReplyAll;
+
+  static bool _forwarded(int? verb) => verb == GraphMailApi.verbForward;
 
   @override
   bool get canRefreshHeaders => true;
@@ -567,12 +575,40 @@ class GraphTransport implements ImapTransport {
         // does. Unsetting is meaningless, so it does nothing rather than
         // pretending to undelete.
         if (set) await api.delete(remoteId);
-      case MessageFlag.answered:
-        // Graph exposes no answered flag on a message. Nothing to do, and
-        // nothing lost: it is decoration in the list, not mail state.
-        break;
+      case MessageFlag.answered || MessageFlag.forwarded:
+        // Exchange has no flag for either. It keeps what was last done to a
+        // message, so setting one writes that, and there is nothing to clear.
+        if (set) {
+          await api.setLastVerb(
+            remoteId,
+            flag == MessageFlag.forwarded
+                ? GraphMailApi.verbForward
+                : GraphMailApi.verbReply,
+            at: DateTime.now(),
+          );
+        }
     }
   }
+
+  /// A reply to all is a verb of its own on Exchange.
+  @override
+  Future<void> markAnswered(String path, int uid, {bool toAll = false}) async =>
+      api.setLastVerb(
+        await _remoteId(path, uid),
+        toAll ? GraphMailApi.verbReplyAll : GraphMailApi.verbReply,
+        at: DateTime.now(),
+      );
+
+  @override
+  Future<void> markForwarded(String path, int uid) async => api.setLastVerb(
+        await _remoteId(path, uid),
+        GraphMailApi.verbForward,
+        at: DateTime.now(),
+      );
+
+  /// One last verb per message, so a forward replaces the reply before it.
+  @override
+  bool get keepsBothMarks => false;
 
   @override
   Future<List<int>?> moveMessages(
@@ -837,6 +873,8 @@ class GraphTransport implements ImapTransport {
             date: m.received,
             isRead: m.isRead,
             isFlagged: m.isFlagged,
+            isAnswered: _answered(m.lastVerb),
+            isForwarded: _forwarded(m.lastVerb),
             hasAttachments: m.hasAttachments,
             preview: m.preview,
             messageId: m.internetMessageId,

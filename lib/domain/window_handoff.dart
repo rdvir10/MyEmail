@@ -89,6 +89,8 @@ Map<String, Object?> _draftToJson(Draft d) => {
             'mimeType': a.mimeType,
             'bytes': base64Encode(a.bytes),
             if (a.contentId != null) 'contentId': a.contentId,
+            if (a.forwardedMessageId != null)
+              'forwardedMessageId': a.forwardedMessageId,
           },
       ],
       if (d.inReplyTo != null) 'inReplyTo': d.inReplyTo,
@@ -113,6 +115,7 @@ Draft _draftFromJson(Map json) => Draft(
             mimeType: a['mimeType'] as String,
             bytes: Uint8List.fromList(base64Decode(a['bytes'] as String)),
             contentId: a['contentId'] as String?,
+            forwardedMessageId: a['forwardedMessageId'] as String?,
           ),
       ],
       inReplyTo: json['inReplyTo'] as String?,
@@ -140,6 +143,8 @@ Map<String, Object?> _messageToJson(MailMessage m) => {
       'hasAttachments': m.hasAttachments,
       'attachmentBytes': m.attachmentBytes,
       'isMeeting': m.isMeeting,
+      'isAnswered': m.isAnswered,
+      'isForwarded': m.isForwarded,
       if (m.messageId != null) 'messageId': m.messageId,
       if (m.inReplyTo != null) 'inReplyTo': m.inReplyTo,
     };
@@ -168,6 +173,8 @@ MailMessage _messageFromJson(Map json) => MailMessage(
       hasAttachments: json['hasAttachments'] as bool,
       attachmentBytes: (json['attachmentBytes'] as int?) ?? 0,
       isMeeting: (json['isMeeting'] as bool?) ?? false,
+      isAnswered: (json['isAnswered'] as bool?) ?? false,
+      isForwarded: (json['isForwarded'] as bool?) ?? false,
       messageId: json['messageId'] as String?,
       inReplyTo: json['inReplyTo'] as String?,
     );

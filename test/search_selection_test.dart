@@ -170,6 +170,12 @@ void main() {
       expect(find.byType(ComposeScreen), findsOneWidget);
       expect(find.text('FW: 2 messages'), findsOneWidget);
       expect(find.textContaining('.eml'), findsNWidgets(2));
+      // Each file says which message it is, so that each is marked
+      // forwarded once this is sent.
+      final draft =
+          tester.widget<ComposeScreen>(find.byType(ComposeScreen)).draft;
+      expect(draft.attachments.map((a) => a.forwardedMessageId),
+          unorderedEquals(two.map((m) => m.id)));
     });
 
     testWidgets('the search box comes back with the search still in it',

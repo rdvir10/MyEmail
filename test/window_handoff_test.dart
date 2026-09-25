@@ -65,6 +65,25 @@ void main() {
       expect(d.savedAs, isNull);
       expect(d.lostAttachmentNames, ['big.zip']);
     });
+
+    test('keeps which message each forwarded file is', () {
+      // Without it, a forward as attachment carried on in a window of its
+      // own left the messages it sent unmarked.
+      final forwarding = draft.copyWith(attachments: [
+        DraftAttachment(
+          fileName: 'numbers.eml',
+          mimeType: 'message/rfc822',
+          bytes: Uint8List.fromList([1, 2, 3]),
+          forwardedMessageId: 'acct:INBOX#12',
+        ),
+        ...draft.attachments,
+      ]);
+
+      final back = WindowRequest.decode(ComposeWindow(forwarding).encode());
+
+      final files = (back as ComposeWindow).draft.attachments;
+      expect(files.map((a) => a.forwardedMessageId), ['acct:INBOX#12', null]);
+    });
   });
 
   group('a message', () {
@@ -83,6 +102,17 @@ void main() {
       expect(m.hasAttachments, isTrue);
       expect(m.messageId, message.messageId);
       expect(m.inReplyTo, isNull);
+    });
+
+    test('says whether it was replied to or forwarded', () {
+      final marked = message.copyWith(isAnswered: true, isForwarded: true);
+
+      final back = WindowRequest.decode(MessageWindow(marked).encode());
+
+      final m = (back as MessageWindow).message;
+      expect(m.isAnswered, isTrue);
+      expect(m.isForwarded, isTrue);
+      expect(m, marked, reason: 'the same message, in the same state');
     });
   });
 

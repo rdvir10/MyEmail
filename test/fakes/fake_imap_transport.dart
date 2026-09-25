@@ -131,7 +131,13 @@ class FakeImapTransport implements ImapTransport {
         if (m.uid >= fromUid &&
             m.uid <= toUid &&
             (since == null || m.modSeq > since))
-          RemoteFlags(uid: m.uid, isRead: m.isRead, isFlagged: m.isFlagged),
+          RemoteFlags(
+            uid: m.uid,
+            isRead: m.isRead,
+            isFlagged: m.isFlagged,
+            isAnswered: m.isAnswered,
+            isForwarded: m.isForwarded,
+          ),
     ];
   }
 
@@ -264,6 +270,18 @@ class FakeImapTransport implements ImapTransport {
       m._apply(flag, set, f.bump());
     }
   }
+
+  /// As a real IMAP server has it: one `\Answered` for either kind of reply.
+  @override
+  Future<void> markAnswered(String path, int uid, {bool toAll = false}) =>
+      storeFlag(path, uids: [uid], flag: MessageFlag.answered, set: true);
+
+  @override
+  Future<void> markForwarded(String path, int uid) =>
+      storeFlag(path, uids: [uid], flag: MessageFlag.forwarded, set: true);
+
+  @override
+  bool get keepsBothMarks => true;
 
   /// Set false to model a server without MOVE or UIDPLUS, which cannot say
   /// what UIDs the copies were given.
@@ -517,6 +535,7 @@ class FakeMessage {
   bool isFlagged;
   bool isDeleted = false;
   bool isAnswered = false;
+  bool isForwarded = false;
   final String body;
   final String? html;
   int modSeq;
@@ -531,6 +550,8 @@ class FakeMessage {
         isDeleted = set;
       case MessageFlag.answered:
         isAnswered = set;
+      case MessageFlag.forwarded:
+        isForwarded = set;
     }
     modSeq = newModSeq;
   }
@@ -543,6 +564,8 @@ class FakeMessage {
         date: date,
         isRead: isRead,
         isFlagged: isFlagged,
+        isAnswered: isAnswered,
+        isForwarded: isForwarded,
         hasAttachments: false,
         preview: preview,
         messageId: messageId,

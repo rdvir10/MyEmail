@@ -6,6 +6,8 @@ import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/compose_providers.dart';
+import 'package:myemail/state/folder_tree.dart' show kUnifiedInboxId;
+import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 
 /// What compose asks of the app before and after the screen: the draft it
@@ -109,6 +111,38 @@ void main() {
       await tester.runAsync(() => sendDraft(ref, draft));
 
       expect(engine.sent, hasLength(1));
+    });
+
+    testWidgets('what it answered shows so at once, in every list',
+        (tester) async {
+      // The engine marks the original in the cache as well as on the
+      // server. The lists showing it read it again: its own folder's, and
+      // the unified Inbox, which holds the same message in a list of its own.
+      final c = over(SampleMailEngine());
+      final ref = await refOver(tester, c);
+      await tester.runAsync(() => c.read(foldersProvider.future));
+      const inboxId = 'acct-personal:INBOX';
+      Future<List<MailMessage>> list(String id) async =>
+          (await tester.runAsync(() => c.read(messagesProvider(id).future)))!;
+      final original = (await list(inboxId)).firstWhere((m) => !m.isAnswered);
+      await list(kUnifiedInboxId);
+
+      await tester.runAsync(() => sendDraft(
+            ref,
+            Draft(
+              accountId: 'acct-personal',
+              kind: ComposeKind.reply,
+              to: [original.from],
+              subject: 'Re: ${original.subject}',
+              htmlBody: '<p>Yes.</p>',
+              originalMessageId: original.id,
+            ),
+          ));
+
+      for (final id in [inboxId, kUnifiedInboxId]) {
+        final shown = (await list(id)).firstWhere((m) => m.id == original.id);
+        expect(shown.isAnswered, isTrue, reason: id);
+      }
     });
 
     testWidgets('nor the save, which says where the copy went',

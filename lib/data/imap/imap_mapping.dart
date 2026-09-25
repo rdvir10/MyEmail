@@ -87,6 +87,8 @@ RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
     arrived: arrived,
     isRead: m.isSeen,
     isFlagged: m.isFlagged,
+    isAnswered: m.isAnswered,
+    isForwarded: markedForwarded(m),
     hasAttachments: m.hasAttachments(),
     attachmentBytes: attachmentBytesOf(m),
     isMeeting: carriesInvitation(m),
@@ -97,6 +99,17 @@ RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
       m.envelope?.inReplyTo ?? m.getHeaderValue('in-reply-to'),
     ),
   );
+}
+
+/// Whether the message's FLAGS carry `$Forwarded`.
+///
+/// Compared without regard to case, where enough_mail's own getter matches
+/// it exactly. It is a keyword, set by whichever mail app did the
+/// forwarding, and a server can hand a keyword back in another case than the
+/// one it was set in.
+bool markedForwarded(em.MimeMessage m) {
+  const wanted = r'$forwarded';
+  return m.flags?.any((f) => f.toLowerCase() == wanted) ?? false;
 }
 
 /// IMAP's INTERNALDATE, `17-Jul-1996 02:44:25 -0700`, or null where it is

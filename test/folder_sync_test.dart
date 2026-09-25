@@ -52,6 +52,24 @@ void main() {
       expect(result.added, 0);
       expect(await store.readFolderState('a', 'INBOX'), isNotNull);
     });
+
+    test('mail already replied to or forwarded arrives marked', () async {
+      final inbox = server.folder('INBOX');
+      inbox.deliver().isAnswered = true;
+      inbox.deliver().isForwarded = true;
+      inbox.deliver();
+
+      await sync.sync('INBOX');
+
+      final answered = await store.readMessage('a', 'INBOX', 1);
+      final forwarded = await store.readMessage('a', 'INBOX', 2);
+      final neither = await store.readMessage('a', 'INBOX', 3);
+      expect(answered!.isAnswered, isTrue);
+      expect(answered.isForwarded, isFalse);
+      expect(forwarded!.isForwarded, isTrue);
+      expect(forwarded.isAnswered, isFalse);
+      expect(neither!.isAnswered || neither.isForwarded, isFalse);
+    });
   });
 
   group('incremental sync', () {
@@ -109,6 +127,38 @@ void main() {
         isTrue,
         reason: 'CONDSTORE was used',
       );
+    });
+
+    test('a reply or forward marked elsewhere comes through, as read does',
+        () async {
+      // Sent from another mail app, or from this one on another device, a
+      // reply shows here only if the sync reads the mark back. And a mark
+      // taken off there goes here too.
+      final inbox = server.folder('INBOX');
+      inbox.deliver();
+      inbox.deliver();
+      await sync.sync('INBOX');
+
+      await server.storeFlag('INBOX',
+          uids: [1], flag: MessageFlag.answered, set: true);
+      await server.storeFlag('INBOX',
+          uids: [2], flag: MessageFlag.forwarded, set: true);
+      final result = await sync.sync('INBOX');
+
+      expect(result.updated, 2, reason: 'found by CONDSTORE like any flag');
+      final m1 = await store.readMessage('a', 'INBOX', 1);
+      final m2 = await store.readMessage('a', 'INBOX', 2);
+      expect(m1!.isAnswered, isTrue);
+      expect(m1.isForwarded, isFalse);
+      expect(m2!.isForwarded, isTrue);
+      expect(m2.isAnswered, isFalse);
+
+      await server.storeFlag('INBOX',
+          uids: [1], flag: MessageFlag.answered, set: false);
+      await sync.sync('INBOX');
+
+      expect((await store.readMessage('a', 'INBOX', 1))!.isAnswered, isFalse);
+      expect((await store.readMessage('a', 'INBOX', 2))!.isForwarded, isTrue);
     });
 
     test('without CONDSTORE every flag in the window is fetched', () async {

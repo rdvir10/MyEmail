@@ -103,6 +103,35 @@ Future<void> _copiedAreSuggested(CacheStore store) async {
   expect(addresses.last.name, 'Omer');
 }
 
+/// Replied to and forwarded are kept with the row, replaced by the flags a
+/// sync reads, and written again by a header read again, as read is.
+Future<void> _repliedAndForwarded(CacheStore store) async {
+  await store.upsertMessages('a', 'INBOX', [
+    _msg(1).copyWith(isAnswered: true),
+    _msg(2),
+  ]);
+  Future<CachedMessage> row(int uid) async =>
+      (await store.readMessage('a', 'INBOX', uid))!;
+
+  expect((await row(1)).isAnswered, isTrue);
+  expect((await row(1)).isForwarded, isFalse);
+  final listed =
+      (await row(1)).toMailMessage(accountId: 'a', folderId: 'a:INBOX');
+  expect(listed.isAnswered, isTrue);
+
+  await store.updateFlags('a', 'INBOX', {
+    1: (isRead: false, isFlagged: false, isAnswered: false, isForwarded: true),
+  });
+  expect((await row(1)).isAnswered, isFalse);
+  expect((await row(1)).isForwarded, isTrue);
+
+  await store.upsertMessages('a', 'INBOX', [
+    _msg(2).copyWith(isAnswered: true, isForwarded: true),
+  ]);
+  expect((await row(2)).isAnswered, isTrue);
+  expect((await row(2)).isForwarded, isTrue);
+}
+
 /// Every query a database runs, to see what it reads.
 class _Selects extends QueryInterceptor {
   final statements = <String>[];
@@ -132,6 +161,9 @@ void main() {
 
   test('MemoryCacheStore suggests the copied as the database does',
       () => _copiedAreSuggested(MemoryCacheStore()));
+
+  test('MemoryCacheStore keeps replies and forwards as the database does',
+      () => _repliedAndForwarded(MemoryCacheStore()));
 
   group(
     'DriftCacheStore',
@@ -253,6 +285,9 @@ void main() {
       test('address suggestions include the copied',
           () => _copiedAreSuggested(store));
 
+      test('replied to and forwarded are kept, and a sync replaces them',
+          () => _repliedAndForwarded(store));
+
       test('a rename lands over what a vanished folder left',
           () => _renameOntoLeftovers(store));
 
@@ -325,7 +360,12 @@ void main() {
       test('flags update and uids delete', () async {
         await store.upsertMessages('a', 'INBOX', [_msg(1), _msg(2), _msg(3)]);
         await store.updateFlags('a', 'INBOX', {
-          2: (isRead: true, isFlagged: true),
+          2: (
+            isRead: true,
+            isFlagged: true,
+            isAnswered: false,
+            isForwarded: false,
+          ),
         });
         expect((await store.readMessage('a', 'INBOX', 2))!.isFlagged, isTrue);
         await store.deleteUids('a', 'INBOX', {1, 3});

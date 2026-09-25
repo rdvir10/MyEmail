@@ -13,11 +13,7 @@ void main() {
   setUp(() async => server = await _HeaderServer.start());
   tearDown(() => server.close());
 
-  test('a header fetch asks when each message arrived, and keeps it',
-      () async {
-    // The Date header is the sender's word, and missing here. INTERNALDATE
-    // is when the server took the message in: what a message with no
-    // usable Date is dated by, and what the widget counts new mail by.
+  EnoughMailTransport transport() {
     final t = EnoughMailTransport(
       host: '127.0.0.1',
       port: server.port,
@@ -27,6 +23,15 @@ void main() {
       commandLimit: const Duration(seconds: 5),
     );
     addTearDown(t.close);
+    return t;
+  }
+
+  test('a header fetch asks when each message arrived, and keeps it',
+      () async {
+    // The Date header is the sender's word, and missing here. INTERNALDATE
+    // is when the server took the message in: what a message with no
+    // usable Date is dated by, and what the widget counts new mail by.
+    final t = transport();
 
     final headers = await t.fetchHeadersBySequence('INBOX', 1, 1);
 
@@ -35,6 +40,46 @@ void main() {
     expect(h.uid, 7);
     expect(h.arrived!.toUtc(), DateTime.utc(2019, 10, 25, 14, 35, 31));
     expect(h.date.toUtc(), DateTime.utc(2019, 10, 25, 14, 35, 31));
+  });
+
+  test('a reply and a forward made elsewhere come with the header', () async {
+    // \Answered is IMAP's own flag, and $Forwarded the keyword every mail
+    // app that marks a forward uses: another app, or this one on another
+    // device.
+    server.flags = r'\Seen \Answered $Forwarded';
+    final t = transport();
+
+    final h = (await t.fetchHeadersBySequence('INBOX', 1, 1)).single;
+
+    expect(h.isAnswered, isTrue);
+    expect(h.isForwarded, isTrue);
+  });
+
+  test('and with the flags a sync reads again', () async {
+    // What a folder already cached is brought up to date with.
+    server.flags = r'\Seen $Forwarded';
+    final t = transport();
+
+    final flags = (await t.fetchFlags('INBOX', 7, 7)).single;
+
+    expect(flags.isAnswered, isFalse);
+    expect(flags.isForwarded, isTrue);
+  });
+
+  test(r'a reply marks the original \Answered, a forward $Forwarded',
+      () async {
+    final t = transport();
+
+    await t.markAnswered('INBOX', 7);
+    await t.markAnswered('INBOX', 7, toAll: true);
+    await t.markForwarded('INBOX', 7);
+
+    expect(server.stores, [
+      r'UID STORE 7 +FLAGS.SILENT (\Answered)',
+      r'UID STORE 7 +FLAGS.SILENT (\Answered)',
+      r'UID STORE 7 +FLAGS.SILENT ($Forwarded)',
+    ]);
+    expect(t.keepsBothMarks, isTrue);
   });
 }
 
@@ -46,6 +91,12 @@ class _HeaderServer {
 
   /// Every FETCH command, as sent.
   final fetches = <String>[];
+
+  /// Every STORE command, as sent.
+  final stores = <String>[];
+
+  /// The message's FLAGS, as the server sends them.
+  String flags = '';
 
   int get port => _socket.port;
 
@@ -85,13 +136,16 @@ class _HeaderServer {
             '$tag OK [READ-WRITE] selected\r\n');
       } else if (verb.startsWith('FETCH') || verb.startsWith('UID FETCH')) {
         fetches.add(command);
-        client.write('* 1 FETCH (UID 7 FLAGS () '
+        client.write('* 1 FETCH (UID 7 FLAGS ($flags) '
             'INTERNALDATE "25-Oct-2019 16:35:31 +0200" '
             'ENVELOPE (NIL "Hello" (("Dana" NIL "dana" "example.com")) '
             'NIL NIL NIL NIL NIL NIL "<m-1@example.com>") '
             'BODYSTRUCTURE ("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL '
             '"7BIT" 5 1))\r\n'
             '$tag OK FETCH done\r\n');
+      } else if (verb.startsWith('STORE') || verb.startsWith('UID STORE')) {
+        stores.add(command);
+        client.write('$tag OK STORE done\r\n');
       } else if (verb.startsWith('LOGOUT')) {
         client.write('* BYE\r\n$tag OK bye\r\n');
         client.destroy();

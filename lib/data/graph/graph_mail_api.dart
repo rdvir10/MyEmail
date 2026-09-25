@@ -93,6 +93,24 @@ class GraphMailApi {
       'isRead,flag,hasAttachments,bodyPreview,internetMessageId,'
       'conversationId';
 
+  /// What was last done to a message, as Exchange keeps it: the MAPI
+  /// properties PidLastVerbExecuted and PidLastVerbExecutionTime. Graph has
+  /// no property of its own for either, so they are read and written by
+  /// their tags.
+  static const lastVerbProperty = 'Integer 0x1081';
+  static const lastVerbTimeProperty = 'SystemTime 0x1082';
+
+  /// The last verb's values for a reply, a reply to all and a forward.
+  /// Other values stand for other things done to a message, and are neither.
+  static const verbReply = 102;
+  static const verbReplyAll = 103;
+  static const verbForward = 104;
+
+  /// The last verb, asked for with every list row in the same request as
+  /// the row. Asked for separately it would be a request per message.
+  static const lastVerbExpand =
+      "singleValueExtendedProperties(\$filter=id eq '$lastVerbProperty')";
+
   // --- folders ---------------------------------------------------------------
 
   /// Every folder, including nested ones.
@@ -272,6 +290,7 @@ class GraphMailApi {
   }) async {
     final query = {
       '\$select': headerFields,
+      '\$expand': lastVerbExpand,
       '\$orderby': 'receivedDateTime desc',
       '\$top': '$top',
       if (skip > 0) '\$skip': '$skip',
@@ -293,8 +312,12 @@ class GraphMailApi {
   Future<GraphMessage?> message(String messageId) async {
     try {
       final json = await _get(
-        Uri.parse('$base/me/messages/${_id(messageId)}')
-            .replace(queryParameters: {'\$select': headerFields}),
+        Uri.parse('$base/me/messages/${_id(messageId)}').replace(
+          queryParameters: {
+            '\$select': headerFields,
+            '\$expand': lastVerbExpand,
+          },
+        ),
       );
       return GraphMessage.fromJson(json);
     } on GraphNotFound {
@@ -541,6 +564,7 @@ class GraphMailApi {
         queryParameters: {
           '\$search': '"$escaped"',
           '\$select': headerFields,
+          '\$expand': lastVerbExpand,
           '\$top': '$top',
         },
       ),
@@ -557,6 +581,27 @@ class GraphMailApi {
         Uri.parse('$base/me/messages/${_id(messageId)}'),
         {
           'flag': {'flagStatus': isFlagged ? 'flagged' : 'notFlagged'},
+        },
+      );
+
+  /// Record what was just done to a message, [verb] at [at], as Outlook
+  /// records its own replies and forwards, and says "You replied on ..."
+  /// from the two.
+  Future<void> setLastVerb(
+    String messageId,
+    int verb, {
+    required DateTime at,
+  }) =>
+      _patch(
+        Uri.parse('$base/me/messages/${_id(messageId)}'),
+        {
+          'singleValueExtendedProperties': [
+            {'id': lastVerbProperty, 'value': '$verb'},
+            {
+              'id': lastVerbTimeProperty,
+              'value': at.toUtc().toIso8601String(),
+            },
+          ],
         },
       );
 
@@ -875,6 +920,7 @@ class GraphMessage {
     required this.hasAttachments,
     required this.preview,
     this.internetMessageId,
+    this.lastVerb,
   });
 
   final String id;
@@ -898,6 +944,11 @@ class GraphMessage {
   final bool hasAttachments;
   final String preview;
   final String? internetMessageId;
+
+  /// What was last done to it: one of the verbs on [GraphMailApi], or
+  /// another Exchange keeps. Null where nothing has been, or where the row
+  /// was read without asking.
+  final int? lastVerb;
 
   static GraphMessage? fromJson(Map<String, Object?> json) {
     final id = json['id'];
@@ -938,7 +989,22 @@ class GraphMessage {
       internetMessageId: json['internetMessageId'] is String
           ? json['internetMessageId'] as String
           : null,
+      lastVerb: _lastVerb(json['singleValueExtendedProperties']),
     );
+  }
+
+  /// The last verb among a row's extended properties. Absent altogether on
+  /// a message nothing has been done to, and sent as a string, as Graph
+  /// sends every extended property's value.
+  static int? _lastVerb(Object? properties) {
+    if (properties is! List) return null;
+    for (final p in properties) {
+      if (p is! Map) continue;
+      final id = '${p['id']}'.toLowerCase();
+      if (id != GraphMailApi.lastVerbProperty.toLowerCase()) continue;
+      return int.tryParse('${p['value']}'.trim());
+    }
+    return null;
   }
 
   static ({String email, String? name})? _address(Object? value) {

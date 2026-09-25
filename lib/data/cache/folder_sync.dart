@@ -88,7 +88,8 @@ class FolderSync {
     ];
     await store.upsertMessages(accountId, path, newHeaders.map(_cached).toList());
 
-    // Flag changes across the cached window.
+    // Flag changes across the cached window: read, flagged, and a reply or
+    // forward sent from somewhere else.
     final useCondStore =
         previous.highestModSeq != null && status.highestModSeq != null;
     final flags = await transport.fetchFlags(
@@ -99,7 +100,13 @@ class FolderSync {
       windowStart: windowStart,
     );
     await store.updateFlags(accountId, path, {
-      for (final f in flags) f.uid: (isRead: f.isRead, isFlagged: f.isFlagged),
+      for (final f in flags)
+        f.uid: (
+          isRead: f.isRead,
+          isFlagged: f.isFlagged,
+          isAnswered: f.isAnswered,
+          isForwarded: f.isForwarded,
+        ),
     });
 
     // Deletions.
@@ -252,6 +259,8 @@ class FolderSync {
         arrived: h.arrived,
         isRead: h.isRead,
         isFlagged: h.isFlagged,
+        isAnswered: h.isAnswered,
+        isForwarded: h.isForwarded,
         hasAttachments: h.hasAttachments,
         cc: h.cc,
         replyTo: h.replyTo,

@@ -472,6 +472,7 @@ class SampleMailEngine implements MailEngine {
     if (!draft.hasRecipients) {
       throw const SendFailed('Add at least one recipient.');
     }
+    _markOriginals(draft);
     final sent = (_folders[draft.accountId] ?? const <MailFolder>[])
         .where((f) => f.role == FolderRole.sent)
         .firstOrNull;
@@ -513,6 +514,30 @@ class SampleMailEngine implements MailEngine {
       for (final folderMessages in _messages.values) {
         folderMessages.removeWhere((m) => m.id == previous);
       }
+    }
+  }
+
+  /// What the real engine does once a message is away: the message it
+  /// replied to or forwarded is marked so, and so is each it carried as an
+  /// attachment. The Gmail way, as this engine is: a message can be both.
+  void _markOriginals(Draft draft) {
+    void mark(String messageId, {required bool forwarded}) {
+      final folderId = messageId.substring(0, messageId.lastIndexOf('#'));
+      final list = _messages[folderId];
+      final i = list?.indexWhere((m) => m.id == messageId) ?? -1;
+      if (list == null || i < 0) return;
+      list[i] = forwarded
+          ? list[i].copyWith(isForwarded: true)
+          : list[i].copyWith(isAnswered: true);
+    }
+
+    final original = draft.originalMessageId;
+    if (original != null && draft.kind != ComposeKind.newMessage) {
+      mark(original, forwarded: draft.kind == ComposeKind.forward);
+    }
+    for (final a in draft.attachments) {
+      final forwarded = a.forwardedMessageId;
+      if (forwarded != null) mark(forwarded, forwarded: true);
     }
   }
 

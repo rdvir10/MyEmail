@@ -132,7 +132,13 @@ class EnoughMailTransport implements ImapTransport {
         return [
           for (final m in result.messages)
             if (m.uid != null)
-              RemoteFlags(uid: m.uid!, isRead: m.isSeen, isFlagged: m.isFlagged),
+              RemoteFlags(
+                uid: m.uid!,
+                isRead: m.isSeen,
+                isFlagged: m.isFlagged,
+                isAnswered: m.isAnswered,
+                isForwarded: markedForwarded(m),
+              ),
         ];
       });
 
@@ -292,6 +298,18 @@ class EnoughMailTransport implements ImapTransport {
           silent: true,
         );
       });
+
+  /// IMAP has the one `\Answered` for a reply and a reply to all alike.
+  @override
+  Future<void> markAnswered(String path, int uid, {bool toAll = false}) =>
+      storeFlag(path, uids: [uid], flag: MessageFlag.answered, set: true);
+
+  @override
+  Future<void> markForwarded(String path, int uid) =>
+      storeFlag(path, uids: [uid], flag: MessageFlag.forwarded, set: true);
+
+  @override
+  bool get keepsBothMarks => true;
 
   @override
   Future<List<int>?> moveMessages(
@@ -698,6 +716,7 @@ class EnoughMailTransport implements ImapTransport {
         MessageFlag.flagged => em.MessageFlags.flagged,
         MessageFlag.deleted => em.MessageFlags.deleted,
         MessageFlag.answered => em.MessageFlags.answered,
+        MessageFlag.forwarded => em.MessageFlags.keywordForwarded,
       };
 }
 
