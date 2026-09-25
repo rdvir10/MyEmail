@@ -11,6 +11,7 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/meeting.dart';
 import '../../domain/message_move.dart';
 import '../compose/quote_builder.dart';
 import '../imap/imap_mapping.dart';
@@ -590,6 +591,20 @@ class SampleMailEngine implements MailEngine {
   ) async {
     await _latency();
     inviteResponses.add((messageId: messageId, response: response));
+  }
+
+  /// Every meeting created, for tests to look at.
+  final List<MeetingDraft> meetings = [];
+
+  /// Kept, whatever the account: the sample engine has no calendar to be
+  /// without, and the screen's other ways out are tried with fakes that
+  /// throw.
+  @override
+  Future<void> createMeeting(MeetingDraft meeting) async {
+    await _latency();
+    final problem = meeting.problem;
+    if (problem != null) throw ArgumentError(problem);
+    meetings.add(meeting);
   }
 
   @override

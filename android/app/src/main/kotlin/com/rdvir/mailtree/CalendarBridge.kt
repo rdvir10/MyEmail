@@ -7,6 +7,7 @@ import android.provider.CalendarContract
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.util.TimeZone
 
 /**
  * Handing an event to the device's calendar.
@@ -30,6 +31,10 @@ class CalendarBridge(
         try {
             when (call.method) {
                 "available" -> result.success(true)
+                // The zone by its IANA name, which is what a calendar server
+                // is told a meeting's time is in. Dart has the offset and the
+                // abbreviation, and neither names the zone.
+                "timeZone" -> result.success(TimeZone.getDefault().id)
                 "insert" -> {
                     val intent = Intent(Intent.ACTION_INSERT).apply {
                         data = CalendarContract.Events.CONTENT_URI
@@ -50,6 +55,15 @@ class CalendarBridge(
                             CalendarContract.EXTRA_EVENT_ALL_DAY,
                             call.argument<Boolean>("allDay") ?: false,
                         )
+                        // The attendees, whom the calendar app invites once
+                        // the event is saved. One string with commas between,
+                        // which is how ACTION_INSERT documents this extra and
+                        // what the calendar app's new-event screen splits; the
+                        // array a share sheet puts under the same key is read
+                        // there as nobody.
+                        call.argument<List<String>>("attendees")?.let {
+                            if (it.isNotEmpty()) putExtra(Intent.EXTRA_EMAIL, it.joinToString(","))
+                        }
                     }
                     try {
                         activity.startActivity(intent)

@@ -10,6 +10,7 @@ import '../../state/providers.dart';
 import '../../state/search_providers.dart';
 import '../../state/sync_now.dart';
 import '../compose/open_compose.dart';
+import '../meetings/new_meeting_screen.dart';
 import '../../data/print/message_printer.dart';
 import '../../state/display_providers.dart';
 import '../../state/print_providers.dart';
@@ -66,6 +67,8 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
     switch (command) {
       case AppCommand.newMessage:
         await openCompose(context, ref, kind: ComposeKind.newMessage);
+      case AppCommand.newMeeting:
+        await openNewMeeting(context, ref);
       case AppCommand.reply:
         if (message != null) {
           await openCompose(context, ref,
@@ -181,6 +184,7 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
 /// What a shell-wide key press can do.
 enum AppCommand {
   newMessage,
+  newMeeting,
   reply,
   replyAll,
   forward,
@@ -212,6 +216,7 @@ AppCommand? commandFor(
   if (control) {
     return switch (key) {
       LogicalKeyboardKey.keyN => AppCommand.newMessage,
+      LogicalKeyboardKey.keyM when shift => AppCommand.newMeeting,
       LogicalKeyboardKey.keyR =>
         shift ? AppCommand.replyAll : AppCommand.reply,
       LogicalKeyboardKey.keyF =>
@@ -273,6 +278,7 @@ const shortcutHelp = <String, List<ShortcutHelp>>{
   ],
   'Anywhere': [
     ShortcutHelp('Ctrl+N', 'New message'),
+    ShortcutHelp('Ctrl+Shift+M', 'New meeting'),
     ShortcutHelp('Ctrl+R', 'Reply'),
     ShortcutHelp('Ctrl+Shift+R', 'Reply all'),
     ShortcutHelp('Ctrl+F', 'Forward'),

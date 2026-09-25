@@ -45,6 +45,11 @@ void main() {
       'mailtree/windows',
     ]));
     expect(kotlin.handled['mailtree/files']!['open'], contains('path'));
+    // The attendees of a meeting handed to the calendar app, and the zone a
+    // meeting sent from here is in: both new, both nothing without the
+    // Kotlin side.
+    expect(kotlin.handled['mailtree/calendar']!['insert'], contains('attendees'));
+    expect(kotlin.handled['mailtree/calendar'], contains('timeZone'));
     expect(kotlin.fileKeys, containsAll(['path', 'name', 'mime', 'size']));
     expect(kotlin.droppedKeys,
         containsAll(['files', 'skipped', 'label', 'text', 'x', 'y']));
@@ -64,6 +69,7 @@ void main() {
           return switch (call.method) {
             'paste' || 'search' || 'placedWidgets' => <Object?>[],
             'takeShare' => null,
+            'timeZone' => 'Asia/Jerusalem',
             _ => true,
           };
         });
@@ -93,8 +99,10 @@ void main() {
         start: DateTime(2026, 10, 1, 9),
         end: DateTime(2026, 10, 1, 10),
         allDay: false,
+        attendees: const ['dana@example.com', 'sam@example.com'],
       );
       await calendar.insertEvent(title: 'Only a title');
+      await calendar.timeZoneId();
 
       const contacts = AndroidDeviceContacts();
       await contacts.hasPermission();
@@ -156,11 +164,18 @@ void main() {
               reason: '$where: Android needs "$key" and it is not sent');
         }
       }
+      // The attendees travel with the event, under the key Android reads.
+      final insert = calls.firstWhere((c) => c.$2.method == 'insert').$2;
+      expect(
+        (insert.arguments as Map)['attendees'],
+        ['dana@example.com', 'sam@example.com'],
+      );
       // Each method Dart has, asked at least once above.
       expect(
         {for (final (c, call) in calls) '$c ${call.method}'},
         containsAll([
           'mailtree/calendar insert',
+          'mailtree/calendar timeZone',
           'mailtree/files startDragMany',
           'mailtree/installer install',
           'mailtree/widget placedWidgets',

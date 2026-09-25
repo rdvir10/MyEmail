@@ -14,6 +14,7 @@ import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/calendar_providers.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/ui/meetings/new_meeting_screen.dart';
 import 'package:myemail/ui/messages/invite_card.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/reading_pane.dart';
@@ -230,7 +231,7 @@ void main() {
       expect(find.text('Add to calendar'), findsNothing);
     });
 
-    testWidgets('any message can become an event from the menu',
+    testWidgets('any message can become a meeting from the menu',
         (tester) async {
       final c = await pump(tester);
       final open = c.read(selectedMessageProvider)!;
@@ -243,8 +244,18 @@ void main() {
       await tester.tap(find.text('Create calendar event…'));
       await tester.pumpAndSettle();
 
-      expect(calendar.inserted.single.title, open.subject);
-      expect(calendar.inserted.single.description, contains('From: '));
+      // On the new-meeting screen, filled in from the message, and sent
+      // from there to the account's own calendar; the phone's calendar app
+      // is only where an account without one hands it on.
+      expect(find.byType(NewMeetingScreen), findsOneWidget);
+      await tester.tap(find.byTooltip('Send'));
+      await tester.pumpAndSettle();
+
+      final meeting = engine.meetings.single;
+      expect(meeting.title, open.subject);
+      expect(meeting.notes, contains('From: '));
+      expect(meeting.accountId, open.accountId);
+      expect(calendar.inserted, isEmpty);
       expect(find.byType(MessageTile), findsWidgets);
     });
 
