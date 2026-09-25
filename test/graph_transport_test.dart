@@ -946,6 +946,8 @@ void main() {
       final at = DateTime.parse(written['SystemTime 0x1082']!);
       expect(at.isUtc, isTrue);
       expect(at.difference(before).inSeconds.abs(), lessThan(5));
+      expect(written['Integer 0x1080'], '261',
+          reason: 'the icon Outlook on a desktop draws its arrow from');
     });
 
     test('a reply to all and a forward are verbs of their own', () async {
@@ -957,6 +959,7 @@ void main() {
 
       await transport.markForwarded('Inbox', uid);
       expect(server.extendedProperties('m1')['Integer 0x1081'], '104');
+      expect(server.extendedProperties('m1')['Integer 0x1080'], '262');
 
       // One verb, the last, so the forward is all the message shows now.
       expect(transport.keepsBothMarks, isFalse);

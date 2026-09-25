@@ -140,6 +140,21 @@ class MessageTile extends StatelessWidget {
                     children: [
                       Row(
                         children: [
+                          // What has been done with it, before who it is
+                          // from: a mail already answered is the first
+                          // thing worth knowing about it when scanning.
+                          if (message.isAnswered)
+                            _Mark(
+                              icon: Icons.reply,
+                              label: 'Replied',
+                              colour: scheme.onSurfaceVariant,
+                            ),
+                          if (message.isForwarded)
+                            _Mark(
+                              icon: Icons.forward,
+                              label: 'Forwarded',
+                              colour: scheme.onSurfaceVariant,
+                            ),
                           // Name and address together, at the name's size,
                           // in every density. Small and grey after the name,
                           // the address was the first thing cut off, and
@@ -266,6 +281,24 @@ class MessageTile extends StatelessWidget {
           ],
         ],
       ];
+}
+
+/// A small mark before the sender: replied, or forwarded.
+class _Mark extends StatelessWidget {
+  const _Mark({required this.icon, required this.label, required this.colour});
+
+  final IconData icon;
+  final String label;
+  final Color colour;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(right: 4),
+        child: Tooltip(
+          message: label,
+          child: Icon(icon, size: 15, color: colour, semanticLabel: label),
+        ),
+      );
 }
 
 /// `Crystal R <crystalr@hadco-metal.com>`, or the address alone where there

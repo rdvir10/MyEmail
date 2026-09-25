@@ -100,6 +100,12 @@ class GraphMailApi {
   static const lastVerbProperty = 'Integer 0x1081';
   static const lastVerbTimeProperty = 'SystemTime 0x1082';
 
+  /// PidTagIconIndex: the icon Outlook draws beside a message in its own
+  /// list, replied (261) or forwarded (262). Outlook on a desktop draws its
+  /// arrow from this, not from the last verb, so without it a reply sent
+  /// here went unmarked there.
+  static const iconIndexProperty = 'Integer 0x1080';
+
   /// The last verb's values for a reply, a reply to all and a forward.
   /// Other values stand for other things done to a message, and are neither.
   static const verbReply = 102;
@@ -600,6 +606,10 @@ class GraphMailApi {
             {
               'id': lastVerbTimeProperty,
               'value': at.toUtc().toIso8601String(),
+            },
+            {
+              'id': iconIndexProperty,
+              'value': verb == 104 ? '262' : '261',
             },
           ],
         },

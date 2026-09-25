@@ -19,6 +19,8 @@ void main() {
     String email = 'crystalr@hadco-metal.com',
     bool read = false,
     bool flagged = false,
+    bool answered = false,
+    bool forwarded = false,
     DateTime? date,
   }) =>
       MailMessage(
@@ -33,6 +35,8 @@ void main() {
         date: date ?? DateTime(today.year, today.month, today.day, 8, 14),
         isRead: read,
         isFlagged: flagged,
+        isAnswered: answered,
+        isForwarded: forwarded,
       );
 
   Future<void> pump(WidgetTester tester, Widget row) async {
@@ -156,6 +160,33 @@ void main() {
       await tester.tap(find.byTooltip('Flag'));
       await tester.pump();
       expect(toggled, 1);
+    });
+  });
+
+  group('what has been done with it', () {
+    testWidgets('a reply is an arrow before the sender', (tester) async {
+      await pump(tester, tile(message(read: true, answered: true)));
+
+      final arrow = tester.getRect(find.byIcon(Icons.reply));
+      final sender =
+          tester.getRect(find.text('Crystal R <crystalr@hadco-metal.com>'));
+      expect(arrow.right, lessThanOrEqualTo(sender.left));
+      expect(find.byTooltip('Replied'), findsOneWidget);
+    });
+
+    testWidgets('and a forward is an arrow of its own', (tester) async {
+      await pump(tester, tile(message(read: true, forwarded: true)));
+
+      expect(find.byIcon(Icons.forward), findsOneWidget);
+      expect(find.byTooltip('Forwarded'), findsOneWidget);
+      expect(find.byIcon(Icons.reply), findsNothing);
+    });
+
+    testWidgets('mail that was neither shows neither', (tester) async {
+      await pump(tester, tile(message(read: true)));
+
+      expect(find.byIcon(Icons.reply), findsNothing);
+      expect(find.byIcon(Icons.forward), findsNothing);
     });
   });
 
