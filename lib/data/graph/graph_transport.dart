@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import '../../domain/folder_role.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
@@ -288,6 +289,11 @@ class GraphTransport implements ImapTransport {
       downToUid: fromUid,
       downToDate: windowStart,
     );
+    // The newest rows' last verbs as Graph sent them, for the log: an arrow
+    // that fails to appear is either not on the server or not read, and
+    // this tells the two apart.
+    debugPrint('[myemail] verbs $path: '
+        '${[for (final m in scan.messages.take(8)) '${scan.uids[m.id]}=${m.lastVerb}'].join(' ')}');
     return [
       for (final m in scan.messages)
         if (_inRange(scan.uids[m.id], fromUid, toUid))
