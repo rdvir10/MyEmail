@@ -105,6 +105,15 @@ class SampleMailEngine implements MailEngine {
   }
 
   @override
+  Future<void> reorderAccounts(List<String> accountIds) async {
+    await _latency();
+    final ordered = accountsInOrder(_accounts, accountIds);
+    _accounts
+      ..clear()
+      ..addAll(ordered);
+  }
+
+  @override
   Future<void> updateAppPassword({
     required String accountId,
     required String secret,

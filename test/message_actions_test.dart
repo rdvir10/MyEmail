@@ -36,6 +36,10 @@ class _RefusingEngine implements MailEngine {
 
   @override
   Future<List<Account>> loadAccounts() => _inner.loadAccounts();
+
+  @override
+  Future<void> reorderAccounts(List<String> accountIds) =>
+      _inner.reorderAccounts(accountIds);
   @override
   Future<Account> addAccount({
     required String displayName,

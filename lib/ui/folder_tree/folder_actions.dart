@@ -5,7 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/imap/imap_mapping.dart' show nameFromPathSegment;
 import '../../data/mail_engine.dart';
 import '../../domain/account.dart';
+import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
+import '../../state/display_providers.dart';
 import '../../state/folder_tree.dart';
 import '../../state/providers.dart';
 
@@ -15,7 +17,7 @@ import '../../state/providers.dart';
 /// Gating on [FolderCapabilities] here, rather than showing everything and
 /// failing later, is the whole point of carrying the flags: a Gmail system
 /// folder offers Favourite and Mark all read and nothing else, and the unified
-/// Inbox offers nothing at all, so the sheet is not shown for it.
+/// Inbox, which is not a folder at all, offers only to be put away.
 Future<void> showFolderActionsSheet(
   BuildContext context,
   WidgetRef ref,
@@ -49,6 +51,9 @@ Future<void> showFolderActionsSheet(
   final folders = ref.read(foldersProvider.notifier);
   final slashAllowed = _namesTakeSlash(ref, folder.accountId);
   switch (chosen) {
+    case _FolderAction.hideAllInboxes:
+      ref.read(displayProvider.notifier).setShowAllInboxes(false);
+      if (context.mounted) _sayAllInboxesHidden(context, ref);
     case _FolderAction.favorite:
       ref.read(favoriteFoldersProvider.notifier).toggle(folder.id);
     case _FolderAction.hide:
@@ -142,7 +147,29 @@ void _sayHidden(BuildContext context, WidgetRef ref, MailFolder folder) {
     );
 }
 
+/// The same for All Inboxes, whose way back is a switch in Settings, View,
+/// which is further away than a folder's, so the way back is offered here.
+void _sayAllInboxesHidden(BuildContext context, WidgetRef ref) {
+  ScaffoldMessenger.of(context)
+    ..hideCurrentSnackBar()
+    ..showSnackBar(
+      SnackBar(
+        duration: kBottomMessage,
+        persist: false,
+        content: const Text(
+          'All Inboxes hidden. Settings, View brings it back.',
+        ),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () =>
+              ref.read(displayProvider.notifier).setShowAllInboxes(true),
+        ),
+      ),
+    );
+}
+
 enum _FolderAction {
+  hideAllInboxes('Hide All Inboxes', Icons.visibility_off_outlined),
   newSubfolder('New subfolder', Icons.create_new_folder_outlined),
   hide('Hide', Icons.visibility_off_outlined),
   rename('Rename', Icons.drive_file_rename_outline),
@@ -163,6 +190,11 @@ List<_FolderAction> _availableActions(
   required bool isFavorite,
   required bool isHidden,
 }) {
+  // Not a folder: nothing below applies, and the one thing to do with it
+  // is put it away.
+  if (folder.role == FolderRole.unifiedInbox) {
+    return const [_FolderAction.hideAllInboxes];
+  }
   final c = folder.capabilities;
   return [
     if (c.canCreateChild) _FolderAction.newSubfolder,

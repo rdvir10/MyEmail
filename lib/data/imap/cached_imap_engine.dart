@@ -370,6 +370,10 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
+  Future<void> reorderAccounts(List<String> accountIds) =>
+      accountStore.write(accountsInOrder(accountStore.read(), accountIds));
+
+  @override
   Future<void> updateAppPassword({
     required String accountId,
     required String secret,

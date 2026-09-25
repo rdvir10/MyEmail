@@ -160,6 +160,7 @@ class DisplaySettings {
     this.alwaysShowImages = false,
     this.sort = MessageSort.dateNewest,
     this.textSize = TextSize.standard,
+    this.showAllInboxes = true,
   });
 
   /// What the list is ordered by. The default is what every list did
@@ -193,6 +194,11 @@ class DisplaySettings {
   /// decision to make on someone's behalf on first run.
   final bool conversations;
 
+  /// The All Inboxes row at the top of the folder list, with more than one
+  /// account. On by default, as it always was; Ron asked to be able to put
+  /// it away, and a long press on the row does, with this to bring it back.
+  final bool showAllInboxes;
+
   DisplaySettings copyWith({
     ReadingPanePosition? readingPane,
     ListDensity? density,
@@ -202,6 +208,7 @@ class DisplaySettings {
     bool? alwaysShowImages,
     MessageSort? sort,
     TextSize? textSize,
+    bool? showAllInboxes,
   }) {
     return DisplaySettings(
       readingPane: readingPane ?? this.readingPane,
@@ -212,6 +219,7 @@ class DisplaySettings {
       alwaysShowImages: alwaysShowImages ?? this.alwaysShowImages,
       sort: sort ?? this.sort,
       textSize: textSize ?? this.textSize,
+      showAllInboxes: showAllInboxes ?? this.showAllInboxes,
     );
   }
 
@@ -224,6 +232,7 @@ class DisplaySettings {
         'alwaysShowImages': alwaysShowImages,
         'sort': sort.name,
         'textSize': textSize.name,
+        'showAllInboxes': showAllInboxes,
       };
 
   /// Tolerant of anything: a value written by a newer build, or a corrupted
@@ -243,6 +252,10 @@ class DisplaySettings {
       alwaysShowImages: json['alwaysShowImages'] is bool
           ? json['alwaysShowImages'] as bool
           : false,
+      // A record from before the row could be put away shows it, as it did.
+      showAllInboxes: json['showAllInboxes'] is bool
+          ? json['showAllInboxes'] as bool
+          : true,
       // 'showRecipientDetails', written up to 2.44.0, is left unread: every
       // message now opens with its recipients folded to one line.
       textSize: _byName(TextSize.values, json['textSize'], TextSize.standard),
@@ -293,7 +306,8 @@ class DisplaySettings {
       other.swipeLeft == swipeLeft &&
       other.alwaysShowImages == alwaysShowImages &&
       other.sort == sort &&
-      other.textSize == textSize;
+      other.textSize == textSize &&
+      other.showAllInboxes == showAllInboxes;
 
   // Every field, without exception: Riverpod skips notifying when the new
   // state equals the old, so a field left out here is a setting that can
@@ -308,6 +322,7 @@ class DisplaySettings {
         alwaysShowImages,
         sort,
         textSize,
+        showAllInboxes,
       );
 
   @override
@@ -316,5 +331,6 @@ class DisplaySettings {
       'swipe: ${swipeRight.name}/${swipeLeft.name}, '
       'images: $alwaysShowImages, '
       'sort: ${sort.name}, '
-      'text: ${textSize.name})';
+      'text: ${textSize.name}, '
+      'all inboxes: $showAllInboxes)';
 }

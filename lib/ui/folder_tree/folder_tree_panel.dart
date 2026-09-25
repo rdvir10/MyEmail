@@ -56,10 +56,19 @@ class FolderTreePanel extends ConsumerWidget {
                 : ListView.builder(
                     padding: const EdgeInsets.only(bottom: 24),
                     itemCount: rows.length,
+                    // Rows are keyed, and found again by key, so a row keeps
+                    // its widget when the rows around it come and go: the
+                    // heading being dragged is still the one that was picked
+                    // up once the tree folds to headings alone beneath it.
+                    findChildIndexCallback: (key) {
+                      final i = rows.indexWhere((r) => ValueKey(r.key) == key);
+                      return i < 0 ? null : i;
+                    },
                     itemBuilder: (context, i) {
                       final row = rows[i];
                       return switch (row) {
                         SectionHeaderRow() => _SectionHeader(
+                            key: ValueKey(row.key),
                             row: row,
                             problem: row.accountId == null
                                 ? null
@@ -82,6 +91,27 @@ class FolderTreePanel extends ConsumerWidget {
                                       target: null,
                                       accountId: row.accountId!,
                                       zone: DropZone.into,
+                                    ),
+                            // Held, the heading lifts and the tree folds to
+                            // the headings alone, so every place it could
+                            // go is on screen; see draggingAccountProvider.
+                            onDragStarted: row.accountId == null
+                                ? null
+                                : () => ref
+                                    .read(draggingAccountProvider.notifier)
+                                    .set(row.accountId),
+                            onDragEnded: row.accountId == null
+                                ? null
+                                : () => ref
+                                    .read(draggingAccountProvider.notifier)
+                                    .set(null),
+                            onDropAccount: row.accountId == null
+                                ? null
+                                : (dragged, zone) => performAccountDrop(
+                                      ref,
+                                      draggedId: dragged.accountId,
+                                      targetId: row.accountId!,
+                                      zone: zone,
                                     ),
                           ),
                         FolderRow() => FolderTile(
@@ -122,6 +152,14 @@ class FolderTreePanel extends ConsumerWidget {
                                       ref,
                                       dragged,
                                       row.folder.id,
+                                    ),
+                            onDropFavorite: !row.inFavorites
+                                ? null
+                                : (dragged, zone) => performFavoriteDrop(
+                                      ref,
+                                      draggedId: dragged.folder.id,
+                                      targetId: row.folder.id,
+                                      zone: zone,
                                     ),
                           ),
                       };
@@ -314,14 +352,20 @@ class _FolderSearchFieldState extends ConsumerState<_FolderSearchField> {
 }
 
 /// A section heading. Account headers double as a drop target meaning "move
-/// this folder to the top level of the account".
-class _SectionHeader extends ConsumerWidget {
+/// this folder to the top level of the account", and can be held and dragged
+/// to put the account before or after another: Ron asked to arrange the
+/// accounts from the list itself.
+class _SectionHeader extends ConsumerStatefulWidget {
   const _SectionHeader({
+    super.key,
     required this.row,
     this.problem,
     this.canAcceptRoot,
     this.onDropToRoot,
     this.onToggleCollapsed,
+    this.onDragStarted,
+    this.onDragEnded,
+    this.onDropAccount,
   });
 
   final SectionHeaderRow row;
@@ -336,6 +380,39 @@ class _SectionHeader extends ConsumerWidget {
   /// Fold this account's folders away, or bring them back. Null for a heading
   /// that does not belong to an account.
   final VoidCallback? onToggleCollapsed;
+
+  /// The heading picked up, and let go wherever it was let go. Null for a
+  /// heading that is not an account's.
+  final VoidCallback? onDragStarted;
+  final VoidCallback? onDragEnded;
+
+  /// Called with an account heading dropped on this one, and whether it
+  /// landed on the top half or the bottom. Null for a heading that is not
+  /// an account's, which takes nothing.
+  final void Function(DraggedAccount dragged, DropZone zone)? onDropAccount;
+
+  @override
+  ConsumerState<_SectionHeader> createState() => _SectionHeaderState();
+}
+
+class _SectionHeaderState extends ConsumerState<_SectionHeader> {
+  /// Which half of this heading a dragged account is over, for the line
+  /// that says where it would land.
+  DropZone? _hoverZone;
+
+  SectionHeaderRow get row => widget.row;
+  AccountProblem? get problem => widget.problem;
+  bool Function(DraggedFolder dragged)? get canAcceptRoot =>
+      widget.canAcceptRoot;
+  void Function(DraggedFolder dragged)? get onDropToRoot => widget.onDropToRoot;
+  VoidCallback? get onToggleCollapsed => widget.onToggleCollapsed;
+
+  DropZone? _zoneAt(Offset global) {
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return null;
+    final local = box.globalToLocal(global);
+    return edgeZone((local.dy / box.size.height).clamp(0.0, 1.0));
+  }
 
   /// Reload, or open the account so its sign-in can be replaced.
   Future<void> _remedy(
@@ -356,7 +433,7 @@ class _SectionHeader extends ConsumerWidget {
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final collapsible = row.canCollapse && onToggleCollapsed != null;
     final isCollapsed = row.isCollapsed ?? false;
@@ -478,17 +555,67 @@ class _SectionHeader extends ConsumerWidget {
       );
     }
 
-    if (canAcceptRoot == null || onDropToRoot == null) return header;
+    if (canAcceptRoot != null && onDropToRoot != null) {
+      final inner = header;
+      header = DragTarget<DraggedFolder>(
+        onWillAcceptWithDetails: (d) => canAcceptRoot!(d.data),
+        onAcceptWithDetails: (d) => onDropToRoot!(d.data),
+        builder: (context, candidates, _) => candidates.isEmpty
+            ? inner
+            : ColoredBox(
+                color:
+                    theme.colorScheme.primaryContainer.withValues(alpha: 0.6),
+                child: inner,
+              ),
+      );
+    }
 
-    return DragTarget<DraggedFolder>(
-      onWillAcceptWithDetails: (d) => canAcceptRoot!(d.data),
-      onAcceptWithDetails: (d) => onDropToRoot!(d.data),
-      builder: (context, candidates, _) => candidates.isEmpty
-          ? header
-          : ColoredBox(
-              color: theme.colorScheme.primaryContainer.withValues(alpha: 0.6),
-              child: header,
-            ),
+    final accountId = row.accountId;
+    final onDropAccount = widget.onDropAccount;
+    if (accountId == null || onDropAccount == null) return header;
+
+    // Held, the heading lifts; dropped on another heading's top half the
+    // account goes before it, on the bottom half after. The tree folds to
+    // headings alone for the length of the drag (the panel's doing, from
+    // onDragStarted), so the place it is going is on screen.
+    final draggable = LongPressDraggable<DraggedAccount>(
+      data: DraggedAccount(accountId),
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      feedback: DragFeedbackCard(
+        label: row.title,
+        leading: Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(
+            color: row.accentColor == null
+                ? theme.colorScheme.primary
+                : Color(row.accentColor!),
+            shape: BoxShape.circle,
+          ),
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.35, child: header),
+      onDragStarted: widget.onDragStarted,
+      onDragEnd: (_) => widget.onDragEnded?.call(),
+      child: header,
+    );
+    return DragTarget<DraggedAccount>(
+      onWillAcceptWithDetails: (d) => d.data.accountId != accountId,
+      onMove: (d) {
+        // Its own drag passing over it is not a place it could land.
+        if (d.data.accountId == accountId) return;
+        final zone = _zoneAt(d.offset);
+        if (zone != _hoverZone) setState(() => _hoverZone = zone);
+      },
+      onLeave: (_) {
+        if (_hoverZone != null) setState(() => _hoverZone = null);
+      },
+      onAcceptWithDetails: (d) {
+        final zone = _zoneAt(d.offset) ?? DropZone.after;
+        setState(() => _hoverZone = null);
+        onDropAccount(d.data, zone);
+      },
+      builder: (_, _, _) => dropIndicated(context, draggable, _hoverZone),
     );
   }
 }

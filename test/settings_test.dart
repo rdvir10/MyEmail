@@ -50,8 +50,14 @@ void main() {
         readingPane: ReadingPanePosition.bottom,
         density: ListDensity.compact,
         conversations: true,
+        showAllInboxes: false,
       );
       expect(DisplaySettings.fromJson(settings.toJson()), settings);
+    });
+
+    test('a record from before All Inboxes could be put away shows it', () {
+      expect(DisplaySettings.fromJson({}).showAllInboxes, isTrue);
+      expect(const DisplaySettings().showAllInboxes, isTrue);
     });
 
     test('an unrecognised value falls back rather than throwing', () {

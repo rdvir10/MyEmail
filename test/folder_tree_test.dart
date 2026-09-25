@@ -126,6 +126,19 @@ void main() {
       expect(unified.capabilities.canAcceptMessages, isFalse);
       expect(unified.capabilities.canRename, isFalse);
     });
+
+    test('can be put away', () async {
+      final input = await _input();
+      final rows = _folderRows(buildTreeRows(FolderTreeInput(
+        accounts: input.accounts,
+        foldersByAccount: input.foldersByAccount,
+        expandedIds: const {},
+        favoriteIds: const {},
+        showUnifiedInbox: false,
+      )));
+      expect(rows.any((r) => r.folder.id == kUnifiedInboxId), isFalse);
+      expect(rows, isNotEmpty, reason: 'the rest of the tree is as it was');
+    });
   });
 
   group('search', () {
@@ -197,6 +210,40 @@ void main() {
       final keys = rows.map((r) => r.key).toList();
       expect(keys.toSet().length, keys.length,
           reason: 'duplicate keys would break Flutter list diffing');
+    });
+
+    test('favourites keep the order they were made in, across accounts',
+        () async {
+      // The set keeps its insertion order, and that order is the section's:
+      // the second account's favourite first, because it was made first.
+      final input = await _input(
+        favorites: {'acct-side:Clients', 'acct-personal:Travel'},
+      );
+      final favourites = buildTreeRows(input)
+          .whereType<FolderRow>()
+          .where((r) => r.inFavorites)
+          .map((r) => r.folder.id)
+          .toList();
+      expect(favourites, ['acct-side:Clients', 'acct-personal:Travel']);
+    });
+  });
+
+  group('while an account heading is being dragged', () {
+    test('the tree is the headings alone, each folded', () async {
+      final input = await _input(favorites: {'acct-personal:Travel'});
+      final rows = buildTreeRows(FolderTreeInput(
+        accounts: input.accounts,
+        foldersByAccount: input.foldersByAccount,
+        expandedIds: const {},
+        favoriteIds: input.favoriteIds,
+        accountsOnly: true,
+      ));
+      expect(rows, everyElement(isA<SectionHeaderRow>()));
+      final headings = rows.cast<SectionHeaderRow>();
+      expect(headings.map((h) => h.accountId), ['acct-personal', 'acct-side']);
+      expect(headings.map((h) => h.isCollapsed), everyElement(isTrue));
+      expect(headings.first.folderCount, greaterThan(0),
+          reason: 'folded, with the count that says the folders are there');
     });
   });
 

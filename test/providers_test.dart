@@ -39,6 +39,10 @@ class _SingleAccountReversedEngine implements MailEngine {
       (await _inner.loadAccounts()).take(1).toList();
 
   @override
+  Future<void> reorderAccounts(List<String> accountIds) =>
+      _inner.reorderAccounts(accountIds);
+
+  @override
   Future<Account> addAccount({
     required String displayName,
     required String emailAddress,

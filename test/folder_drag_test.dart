@@ -3,9 +3,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_folder.dart';
+import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/state/folder_drag.dart';
+import 'package:myemail/state/folder_tree.dart';
+import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/folder_tree/folder_tree_panel.dart';
 
 // ---------------------------------------------------------------------------
@@ -120,6 +124,39 @@ void main() {
           reason: 'already at the root');
       expect(canDropOnRoot(f['Finance/Receipts']!, 'acct-side'), isFalse);
       expect(canDropOnRoot(f['[Gmail]/Spam']!, 'acct-personal'), isFalse);
+    });
+  });
+
+  group('reorderedIds', () {
+    const ids = ['a', 'b', 'c'];
+
+    test('puts the moved id before or after the target', () {
+      expect(
+        reorderedIds(ids, movedId: 'c', targetId: 'a', zone: DropZone.before),
+        ['c', 'a', 'b'],
+      );
+      expect(
+        reorderedIds(ids, movedId: 'a', targetId: 'b', zone: DropZone.after),
+        ['b', 'a', 'c'],
+      );
+      expect(
+        reorderedIds(ids, movedId: 'a', targetId: 'c', zone: DropZone.after),
+        ['b', 'c', 'a'],
+      );
+    });
+
+    test('a target that is not there puts the moved id last', () {
+      expect(
+        reorderedIds(ids, movedId: 'a', targetId: 'x', zone: DropZone.before),
+        ['b', 'c', 'a'],
+      );
+    });
+
+    test('the top half of a row is before it, the bottom half after', () {
+      expect(edgeZone(0.1), DropZone.before);
+      expect(edgeZone(0.49), DropZone.before);
+      expect(edgeZone(0.5), DropZone.after);
+      expect(edgeZone(0.9), DropZone.after);
     });
   });
 
@@ -306,6 +343,218 @@ void main() {
 
       expect(find.byType(BottomSheet), findsOneWidget);
       expect(find.text('Add to Favourites'), findsOneWidget);
+    });
+  });
+
+  group('arranging accounts and favourites', () {
+    setUp(() {
+      final binding = TestWidgetsFlutterBinding.ensureInitialized();
+      binding.platformDispatcher.views.first.physicalSize =
+          const Size(800, 1400);
+      binding.platformDispatcher.views.first.devicePixelRatio = 1.0;
+    });
+    tearDown(() {
+      final binding = TestWidgetsFlutterBinding.ensureInitialized();
+      binding.platformDispatcher.views.first.resetPhysicalSize();
+      binding.platformDispatcher.views.first.resetDevicePixelRatio();
+    });
+
+    /// The tree over [store], which holds the favourites.
+    Widget harness([UiStateStore? store]) => ProviderScope(
+          overrides: [
+            if (store != null) uiStateStoreProvider.overrideWithValue(store),
+          ],
+          child: const MaterialApp(home: Scaffold(body: FolderTreePanel())),
+        );
+
+    Future<MemoryUiStateStore> favourites(Set<String> ids) async {
+      final store = MemoryUiStateStore();
+      await store.writeIds(UiStateKeys.favorites, ids);
+      return store;
+    }
+
+    ProviderContainer containerOf(WidgetTester tester) =>
+        ProviderScope.containerOf(tester.element(find.byType(FolderTreePanel)));
+
+    /// Hold [finder] until it lifts.
+    Future<TestGesture> lift(WidgetTester tester, Finder finder) async {
+      final gesture = await tester.startGesture(tester.getCenter(finder));
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
+      await tester.pump();
+      return gesture;
+    }
+
+    Future<void> dragTo(
+      WidgetTester tester,
+      TestGesture gesture,
+      Offset to,
+    ) async {
+      await gesture.moveTo(to);
+      await tester.pump(const Duration(milliseconds: 50));
+      await gesture.moveTo(to + const Offset(0, 1));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+
+    Future<void> drop(WidgetTester tester, TestGesture gesture) async {
+      await gesture.up();
+      await tester.pumpAndSettle();
+    }
+
+    Rect headingRect(WidgetTester tester, String label) => tester.getRect(
+          find
+              .ancestor(
+                of: find.text(label),
+                matching: find.byType(DragTarget<DraggedAccount>),
+              )
+              .first,
+        );
+
+    double top(WidgetTester tester, String label) =>
+        tester.getTopLeft(find.text(label).first).dy;
+
+    testWidgets('an account heading dragged above another puts the account '
+        'first, for good', (tester) async {
+      await tester.pumpWidget(harness());
+      await tester.pumpAndSettle();
+      expect(top(tester, 'PERSONAL'), lessThan(top(tester, 'PROJECTS')));
+
+      final g = await lift(tester, find.text('PROJECTS'));
+      expect(find.text('Inbox'), findsNothing,
+          reason: 'the tree folds to the headings alone while one is held');
+      expect(find.text('All Inboxes'), findsNothing);
+      expect(find.text('PERSONAL'), findsOneWidget);
+
+      final personal = headingRect(tester, 'PERSONAL');
+      await dragTo(tester, g, Offset(personal.center.dx, personal.top + 3));
+      await drop(tester, g);
+
+      expect(top(tester, 'PROJECTS'), lessThan(top(tester, 'PERSONAL')));
+      expect(find.text('Inbox'), findsWidgets,
+          reason: 'unfolded again once dropped');
+      final container = containerOf(tester);
+      expect(
+        container.read(accountsProvider).value!.map((a) => a.id),
+        ['acct-side', 'acct-personal'],
+      );
+      // The sample engine answers after a delay on a real timer, which the
+      // test's fake clock never reaches: asked outside it.
+      final kept = await tester.runAsync(
+        () => container.read(mailEngineProvider).loadAccounts(),
+      );
+      expect(
+        kept!.map((a) => a.id),
+        ['acct-side', 'acct-personal'],
+        reason: 'kept by the engine, so it holds across restarts',
+      );
+    });
+
+    testWidgets('dropped on the bottom half of another it goes after',
+        (tester) async {
+      await tester.pumpWidget(harness());
+      await tester.pumpAndSettle();
+
+      final g = await lift(tester, find.text('PERSONAL'));
+      final projects = headingRect(tester, 'PROJECTS');
+      await dragTo(tester, g, Offset(projects.center.dx, projects.bottom - 3));
+      await drop(tester, g);
+
+      expect(top(tester, 'PROJECTS'), lessThan(top(tester, 'PERSONAL')));
+    });
+
+    testWidgets('held and let go in place, it stays put and the tree comes '
+        'back', (tester) async {
+      await tester.pumpWidget(harness());
+      await tester.pumpAndSettle();
+
+      final g = await lift(tester, find.text('PROJECTS'));
+      expect(find.text('Inbox'), findsNothing);
+      await drop(tester, g);
+
+      expect(top(tester, 'PERSONAL'), lessThan(top(tester, 'PROJECTS')));
+      expect(find.text('Inbox'), findsWidgets);
+      expect(find.byType(BottomSheet), findsNothing);
+    });
+
+    testWidgets('a favourite dragged above another goes first, and stays',
+        (tester) async {
+      final store =
+          await favourites({'acct-personal:Travel', 'acct-personal:Family'});
+      await tester.pumpWidget(harness(store));
+      await tester.pumpAndSettle();
+      // In Favourites, above the tree's own rows for the same folders.
+      expect(top(tester, 'Travel'), lessThan(top(tester, 'Family')));
+
+      final g = await lift(tester, find.text('Family').first);
+      final travel = tester.getRect(find
+          .ancestor(
+            of: find.text('Travel').first,
+            matching: find.byType(DragTarget<DraggedFavorite>),
+          )
+          .first);
+      await dragTo(tester, g, Offset(travel.center.dx, travel.top + 3));
+      await drop(tester, g);
+
+      expect(top(tester, 'Family'), lessThan(top(tester, 'Travel')));
+      expect(
+        store.readIds(UiStateKeys.favorites).toList(),
+        ['acct-personal:Family', 'acct-personal:Travel'],
+        reason: 'the order is kept with the favourites themselves',
+      );
+    });
+
+    testWidgets('a favourite dropped on a folder in the tree does nothing to '
+        'either', (tester) async {
+      final store = await favourites({'acct-personal:Travel'});
+      await tester.pumpWidget(harness(store));
+      await tester.pumpAndSettle();
+
+      final g = await lift(tester, find.text('Travel').first);
+      await dragTo(tester, g, tester.getCenter(find.text('Finance')));
+      await drop(tester, g);
+
+      expect(store.readIds(UiStateKeys.favorites), {'acct-personal:Travel'});
+      await tester.enterText(find.byType(TextField).first, 'travel');
+      await tester.pumpAndSettle();
+      expect(find.textContaining('›'), findsNothing,
+          reason: 'not nested under Finance');
+    });
+
+    testWidgets('a favourite held without moving opens its menu',
+        (tester) async {
+      final store = await favourites({'acct-personal:Travel'});
+      await tester.pumpWidget(harness(store));
+      await tester.pumpAndSettle();
+
+      final g = await lift(tester, find.text('Travel').first);
+      await drop(tester, g);
+
+      expect(find.byType(BottomSheet), findsOneWidget);
+      expect(find.text('Remove from Favourites'), findsOneWidget);
+    });
+
+    testWidgets('All Inboxes can be put away from its menu, and Undo brings '
+        'it back', (tester) async {
+      await tester.pumpWidget(harness(MemoryUiStateStore()));
+      await tester.pumpAndSettle();
+      expect(find.text('All Inboxes'), findsOneWidget);
+
+      await tester.longPress(find.text('All Inboxes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Hide All Inboxes'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('All Inboxes'), findsNothing);
+      expect(find.textContaining('All Inboxes hidden'), findsOneWidget);
+      final container = containerOf(tester);
+      expect(container.read(displayProvider).showAllInboxes, isFalse);
+      expect(container.read(effectiveSelectedFolderIdProvider),
+          isNot(kUnifiedInboxId),
+          reason: 'the list does not stay on a row that is gone');
+
+      await tester.tap(find.text('Undo'));
+      await tester.pumpAndSettle();
+      expect(find.text('All Inboxes'), findsOneWidget);
+      expect(container.read(displayProvider).showAllInboxes, isTrue);
     });
   });
 

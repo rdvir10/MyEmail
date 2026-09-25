@@ -15,6 +15,9 @@ import '../../theme/app_theme.dart';
 ///  * hold lifts the folder; drop it on another row to nest or reorder, drop
 ///    it on an account header to move it to the top level, or let go without
 ///    moving to open the menu instead;
+///  * in Favourites, hold lifts the favourite; drop it on another favourite's
+///    top or bottom half to put it before or after, or let go in place for
+///    the menu;
 ///  * right-click opens the menu directly (browser preview, tablets with a
 ///    mouse).
 ///
@@ -33,6 +36,7 @@ class FolderTile extends StatefulWidget {
     this.onAutoExpand,
     this.onDrop,
     this.onDropMessages,
+    this.onDropFavorite,
   });
 
   final FolderRow row;
@@ -53,6 +57,12 @@ class FolderTile extends StatefulWidget {
 
   /// Called with messages dropped onto this folder. Null disables it.
   final void Function(DraggedMessages dragged)? onDropMessages;
+
+  /// Called with a favourite dropped on this row, which is a favourite too,
+  /// and whether it landed on the top half or the bottom. Non-null makes a
+  /// favourite row one that can be picked up and dropped on; null for the
+  /// tree, where a favourite's copy stays where the tree puts it.
+  final void Function(DraggedFavorite dragged, DropZone zone)? onDropFavorite;
 
   static const double indentPerLevel = 16;
   static const double twistyWidth = 28;
@@ -75,6 +85,9 @@ class _FolderTileState extends State<FolderTile> {
       widget.row.folder.capabilities.canMove && !widget.row.inFavorites;
 
   bool get _canReceive => widget.onDrop != null && !widget.row.inFavorites;
+
+  bool get _canDragFavorite =>
+      widget.row.inFavorites && widget.onDropFavorite != null;
 
   @override
   void dispose() {
@@ -148,16 +161,38 @@ class _FolderTileState extends State<FolderTile> {
     _expandTimer = null;
   }
 
+  // --- a favourite among favourites ------------------------------------------
+
+  /// Which half of this row a drag is over: the top puts the dragged
+  /// favourite before it, the bottom after.
+  DropZone? _edgeZoneAt(Offset global) {
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return null;
+    final local = box.globalToLocal(global);
+    return edgeZone((local.dy / box.size.height).clamp(0.0, 1.0));
+  }
+
+  void _onFavoriteMove(DragTargetDetails<DraggedFavorite> details) {
+    // A row is told about its own drag passing over it. Marking itself
+    // would rebuild the very widget the drag is held by, which ends the
+    // drag without a word; and a favourite cannot land on itself anyway.
+    if (details.data.folder.id == widget.row.folder.id) return;
+    final zone = _edgeZoneAt(details.offset);
+    if (zone != _hoverZone) setState(() => _hoverZone = zone);
+  }
+
+  void _onFavoriteAccept(DragTargetDetails<DraggedFavorite> details) {
+    final zone = _edgeZoneAt(details.offset) ?? DropZone.after;
+    setState(() => _hoverZone = null);
+    widget.onDropFavorite?.call(details.data, zone);
+  }
+
   // --- build -----------------------------------------------------------------
 
-  @override
-  Widget build(BuildContext context) {
-    final row = widget.row;
-    Widget child = _buildRow(context, menuOnLongPress: !_canDrag);
-
-    if (_canDrag) {
-      final plainRow = child;
-      child = Listener(
+  /// Notes whether the pointer moved while it was held, which is what tells
+  /// a drag let go in place (the menu gesture) from one that went somewhere
+  /// and was refused.
+  Widget _trackingPress(Widget child) => Listener(
         onPointerDown: (e) {
           _pressedAt = e.position;
           _movedDuringPress = false;
@@ -168,10 +203,24 @@ class _FolderTileState extends State<FolderTile> {
             _movedDuringPress = true;
           }
         },
-        child: LongPressDraggable<DraggedFolder>(
+        child: child,
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final row = widget.row;
+    Widget child = _buildRow(
+      context,
+      menuOnLongPress: !_canDrag && !_canDragFavorite,
+    );
+
+    if (_canDrag) {
+      final plainRow = child;
+      child = _trackingPress(
+        LongPressDraggable<DraggedFolder>(
           data: DraggedFolder(row.folder),
           dragAnchorStrategy: pointerDragAnchorStrategy,
-          feedback: _DragFeedback(
+          feedback: DragFeedbackCard(
             label: row.folder.displayName,
             icon: _iconFor(row),
           ),
@@ -194,7 +243,41 @@ class _FolderTileState extends State<FolderTile> {
         onMove: _onMove,
         onLeave: _onLeave,
         onAcceptWithDetails: _onAccept,
-        builder: (_, _, _) => _withDropIndicator(context, inner),
+        builder: (_, _, _) => dropIndicated(context, inner, _hoverZone),
+      );
+    }
+
+    if (_canDragFavorite) {
+      // The same hold as a folder's, carrying a favourite: dropped on
+      // another favourite it goes before or after it, and let go in place
+      // it opens the menu, as a folder does.
+      final plainRow = child;
+      child = _trackingPress(
+        LongPressDraggable<DraggedFavorite>(
+          data: DraggedFavorite(row.folder),
+          dragAnchorStrategy: pointerDragAnchorStrategy,
+          feedback: DragFeedbackCard(
+            label: row.folder.displayName,
+            icon: Icons.star,
+          ),
+          childWhenDragging: Opacity(opacity: 0.35, child: plainRow),
+          onDragEnd: (details) {
+            if (!details.wasAccepted && !_movedDuringPress) {
+              widget.onLongPress?.call();
+            }
+          },
+          child: plainRow,
+        ),
+      );
+      final inner = child;
+      child = DragTarget<DraggedFavorite>(
+        onWillAcceptWithDetails: (d) => d.data.folder.id != row.folder.id,
+        onMove: _onFavoriteMove,
+        onLeave: (_) {
+          if (_hoverZone != null) setState(() => _hoverZone = null);
+        },
+        onAcceptWithDetails: _onFavoriteAccept,
+        builder: (_, _, _) => dropIndicated(context, inner, _hoverZone),
       );
     }
 
@@ -245,29 +328,6 @@ class _FolderTileState extends State<FolderTile> {
       label: row.isHidden ? '${row.folder.displayName}, hidden' : null,
       child: child,
     );
-  }
-
-  Widget _withDropIndicator(BuildContext context, Widget child) {
-    final scheme = Theme.of(context).colorScheme;
-    return switch (_hoverZone) {
-      null => child,
-      DropZone.into => ColoredBox(
-          color: scheme.primaryContainer.withValues(alpha: 0.6),
-          child: child,
-        ),
-      DropZone.before => DecoratedBox(
-          decoration: BoxDecoration(
-            border: Border(top: BorderSide(color: scheme.primary, width: 2)),
-          ),
-          child: child,
-        ),
-      DropZone.after => DecoratedBox(
-          decoration: BoxDecoration(
-            border: Border(bottom: BorderSide(color: scheme.primary, width: 2)),
-          ),
-          child: child,
-        ),
-    };
   }
 
   Widget _buildRow(BuildContext context, {required bool menuOnLongPress}) {
@@ -409,13 +469,44 @@ String? formatFolderCounts(int unread, int total) {
   return '${cap(unread, 999)}/${cap(total, 9999)}';
 }
 
-/// What follows the finger during a drag: a small card with the folder name,
-/// offset so the finger does not cover it.
-class _DragFeedback extends StatelessWidget {
-  const _DragFeedback({required this.label, required this.icon});
+/// [child] marked with where a drag over it would land: tinted for into,
+/// a line along the top edge for before, along the bottom for after, and
+/// as it is when nothing is over it.
+///
+/// One [DecoratedBox] whatever the zone, undecorated for none, rather than
+/// the bare child. The mark comes and goes while a drag is held, and a
+/// child that is sometimes wrapped and sometimes not is rebuilt from
+/// nothing each time; when that child is the very draggable the drag is
+/// held by, the drag loses its end and never says it was let go.
+Widget dropIndicated(BuildContext context, Widget child, DropZone? zone) {
+  final scheme = Theme.of(context).colorScheme;
+  final line = BorderSide(color: scheme.primary, width: 2);
+  return DecoratedBox(
+    decoration: switch (zone) {
+      null => const BoxDecoration(),
+      DropZone.into =>
+        BoxDecoration(color: scheme.primaryContainer.withValues(alpha: 0.6)),
+      DropZone.before => BoxDecoration(border: Border(top: line)),
+      DropZone.after => BoxDecoration(border: Border(bottom: line)),
+    },
+    child: child,
+  );
+}
+
+/// What follows the finger during a drag: a small card with a name and an
+/// icon, or a [leading] widget of the caller's, offset so the finger does
+/// not cover it.
+class DragFeedbackCard extends StatelessWidget {
+  const DragFeedbackCard({
+    super.key,
+    required this.label,
+    this.icon,
+    this.leading,
+  });
 
   final String label;
-  final IconData icon;
+  final IconData? icon;
+  final Widget? leading;
 
   @override
   Widget build(BuildContext context) {
@@ -433,7 +524,8 @@ class _DragFeedback extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(icon, size: 18, color: scheme.onSurfaceVariant),
+                leading ??
+                    Icon(icon, size: 18, color: scheme.onSurfaceVariant),
                 const SizedBox(width: 8),
                 Flexible(
                   child: Text(

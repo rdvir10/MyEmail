@@ -78,6 +78,22 @@ class ViewSettingsScreen extends ConsumerWidget {
             theme: theme,
           ),
           const Divider(height: 1),
+          const _Heading('Folder list'),
+          SwitchListTile(
+            title: const Text('All Inboxes'),
+            subtitle: const Text(
+              "A row at the top of the folder list with every account's "
+              'Inbox in it.',
+            ),
+            value: display.showAllInboxes,
+            onChanged: notifier.setShowAllInboxes,
+          ),
+          _Note(
+            'Only there with more than one account. A long press on the row '
+            'puts it away as well; this is what brings it back.',
+            theme: theme,
+          ),
+          const Divider(height: 1),
           const _Heading('Writing'),
           Consumer(
             builder: (context, ref, _) {

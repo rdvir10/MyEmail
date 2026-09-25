@@ -48,6 +48,9 @@ class Display extends Notifier<DisplaySettings> {
 
   void setSwipeLeft(SwipeAction action) =>
       state = state.copyWith(swipeLeft: action);
+
+  void setShowAllInboxes(bool on) =>
+      state = state.copyWith(showAllInboxes: on);
 }
 
 final displayProvider =

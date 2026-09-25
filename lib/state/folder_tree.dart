@@ -118,6 +118,7 @@ class FolderTreeInput {
     this.orderOverrides = const {},
     this.searchQuery = '',
     this.showUnifiedInbox = true,
+    this.accountsOnly = false,
   });
 
   final List<Account> accounts;
@@ -151,6 +152,12 @@ class FolderTreeInput {
   final Map<String, int> orderOverrides;
   final String searchQuery;
   final bool showUnifiedInbox;
+
+  /// The account headings alone, each folded: what the tree shows while an
+  /// account heading is being dragged to a new place, so every heading it
+  /// could be dropped on is on screen at once, however many folders sit
+  /// between them on an ordinary day.
+  final bool accountsOnly;
 }
 
 const kUnifiedInboxId = 'unified:inbox';
@@ -234,6 +241,7 @@ MailFolder buildUnifiedInbox(Map<String, List<MailFolder>> foldersByAccount) {
 /// effective sort index keeps any manual arrangement, which is local-only
 /// because IMAP has no concept of folder order.
 List<TreeRow> buildTreeRows(FolderTreeInput input) {
+  if (input.accountsOnly) return _accountHeadingRows(input);
   final query = input.searchQuery.trim().toLowerCase();
   if (query.isNotEmpty) return _buildSearchRows(input, query);
 
@@ -399,35 +407,52 @@ List<TreeRow> _buildSearchRows(FolderTreeInput input, String query) {
   return rows;
 }
 
+/// Every account's heading and nothing else, for a drag of one of them.
+/// Every account, even one still loading: an order is for all of them.
+List<TreeRow> _accountHeadingRows(FolderTreeInput input) => [
+      for (final account in input.accounts)
+        SectionHeaderRow(
+          title: account.displayName,
+          subtitle: account.emailAddress,
+          accountId: account.id,
+          accentColor: account.colorValue,
+          isCollapsed: true,
+          folderCount:
+              (input.foldersByAccount[account.id] ?? const <MailFolder>[])
+                  .length,
+        ),
+    ];
+
+/// The favourites, in the order of [FolderTreeInput.favoriteIds]: the order
+/// they were made favourites in, and then whatever order they were dragged
+/// into. The section is a list of the person's own making rather than a
+/// view of the tree, so it keeps their order and not the tree's.
 List<FolderRow> _favoriteRows(FolderTreeInput input) {
   final rows = <FolderRow>[];
-  final compare = folderComparator(input.orderOverrides);
   final byId = _indexById(input.foldersByAccount);
-  for (final account in input.accounts) {
-    final folders = input.foldersByAccount[account.id] ?? const <MailFolder>[];
-    final favorites = folders
-        .where((f) =>
-            input.favoriteIds.contains(f.id) &&
-            // Hidden means hidden, in Favourites too. One rule, wherever a
-            // folder could otherwise appear, is what makes it explainable.
-            (input.showHidden ||
-                !isFolderHidden(f, input.hiddenIds, byId)))
-        .toList()
-      ..sort(compare);
-    for (final folder in favorites) {
-      rows.add(
-        FolderRow(
-          folder: folder,
-          depth: 0,
-          hasChildren: false,
-          isExpanded: false,
-          accentColor: account.colorValue,
-          inFavorites: true,
-          flat: true,
-          subtitle: input.accounts.length > 1 ? account.displayName : null,
-        ),
-      );
+  final accountsById = {for (final a in input.accounts) a.id: a};
+  for (final id in input.favoriteIds) {
+    final folder = byId[id];
+    if (folder == null) continue;
+    final account = accountsById[folder.accountId];
+    if (account == null) continue;
+    // Hidden means hidden, in Favourites too. One rule, wherever a folder
+    // could otherwise appear, is what makes it explainable.
+    if (!input.showHidden && isFolderHidden(folder, input.hiddenIds, byId)) {
+      continue;
     }
+    rows.add(
+      FolderRow(
+        folder: folder,
+        depth: 0,
+        hasChildren: false,
+        isExpanded: false,
+        accentColor: account.colorValue,
+        inFavorites: true,
+        flat: true,
+        subtitle: input.accounts.length > 1 ? account.displayName : null,
+      ),
+    );
   }
   return rows;
 }

@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../domain/account.dart';
 import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
@@ -9,6 +10,24 @@ import 'providers.dart';
 /// The payload carried by a folder being dragged in the tree.
 class DraggedFolder {
   const DraggedFolder(this.folder);
+
+  final MailFolder folder;
+}
+
+/// The payload carried by an account heading being dragged to a new place
+/// among the accounts.
+class DraggedAccount {
+  const DraggedAccount(this.accountId);
+
+  final String accountId;
+}
+
+/// The payload carried by a favourite being dragged to a new place in its
+/// section. Not a [DraggedFolder]: a favourite dropped on a folder in the
+/// tree must not nest there, and a folder dropped among the favourites is
+/// not a reordering.
+class DraggedFavorite {
+  const DraggedFavorite(this.folder);
 
   final MailFolder folder;
 }
@@ -79,6 +98,61 @@ DropZone? resolveDropZone({
       if (target.role != FolderRole.user) return null;
       return zone;
   }
+}
+
+/// Which side of a row a drag over it lands on, for a row that is only ever
+/// put before or after: the top half is before, the bottom half after.
+DropZone edgeZone(double fraction) =>
+    fraction < 0.5 ? DropZone.before : DropZone.after;
+
+/// [ids] with [movedId] taken out and put before or after [targetId]. The
+/// order of a list that is the person's own to arrange: the accounts, or
+/// the favourites. A target not in the list puts the moved id last.
+List<String> reorderedIds(
+  List<String> ids, {
+  required String movedId,
+  required String targetId,
+  required DropZone zone,
+}) {
+  final result = ids.where((id) => id != movedId).toList();
+  final at = result.indexOf(targetId);
+  final index = at < 0
+      ? result.length
+      : zone == DropZone.after
+          ? at + 1
+          : at;
+  result.insert(index, movedId);
+  return result;
+}
+
+/// An account heading dropped on another: the account goes before or after
+/// it, for good, everywhere accounts are listed.
+Future<void> performAccountDrop(
+  WidgetRef ref, {
+  required String draggedId,
+  required String targetId,
+  required DropZone zone,
+}) {
+  final ids = [
+    for (final a in ref.read(accountsProvider).value ?? const <Account>[]) a.id,
+  ];
+  return ref.read(accountsProvider.notifier).reorder(
+        reorderedIds(ids, movedId: draggedId, targetId: targetId, zone: zone),
+      );
+}
+
+/// A favourite dropped on another: it goes before or after it in the
+/// section, and stays there.
+void performFavoriteDrop(
+  WidgetRef ref, {
+  required String draggedId,
+  required String targetId,
+  required DropZone zone,
+}) {
+  final ids = ref.read(favoriteFoldersProvider).toList();
+  ref.read(favoriteFoldersProvider.notifier).setOrder(
+        reorderedIds(ids, movedId: draggedId, targetId: targetId, zone: zone),
+      );
 }
 
 /// Whether [dragged] may be dropped on an account header to move it to the

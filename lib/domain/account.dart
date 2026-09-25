@@ -18,6 +18,19 @@ enum MailProvider {
 /// does not mean reshaping the account model.
 enum AuthMethod { appPassword, oauth }
 
+/// [accounts] in the order [ids] names, then any not named, in the order
+/// they had. Ids that name no account are passed over. What a drag of an
+/// account heading in the folder list settles on.
+List<Account> accountsInOrder(List<Account> accounts, List<String> ids) {
+  final byId = {for (final a in accounts) a.id: a};
+  final named = <Account>[];
+  for (final id in ids) {
+    final account = byId.remove(id);
+    if (account != null) named.add(account);
+  }
+  return [...named, for (final a in accounts) if (byId.containsKey(a.id)) a];
+}
+
 @immutable
 class Account {
   const Account({

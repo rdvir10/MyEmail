@@ -20,6 +20,7 @@ import '../domain/account.dart';
 import '../domain/error_report.dart';
 import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
+import 'display_providers.dart';
 import 'folder_tree.dart';
 import 'quick_steps.dart';
 import 'widget_providers.dart';
@@ -215,6 +216,14 @@ class Accounts extends AsyncNotifier<List<Account>> {
       for (final a in state.value ?? const <Account>[])
         if (a.id != accountId) a,
     ]);
+  }
+
+  /// Put the accounts in [ids]' order, which is what a drag of an account
+  /// heading in the folder list settles on. Kept by the engine, so it holds
+  /// across restarts and shows everywhere accounts are listed.
+  Future<void> reorder(List<String> ids) async {
+    await ref.read(mailEngineProvider).reorderAccounts(ids);
+    state = AsyncData(accountsInOrder(state.value ?? const [], ids));
   }
 }
 
@@ -533,7 +542,9 @@ final folderIndexProvider = Provider<Map<String, MailFolder>>((ref) {
     for (final list in folders.values)
       for (final f in list) f.id: f,
   };
-  if (accounts.length > 1) {
+  // Put away, it is nowhere: not in the tree, and not somewhere the
+  // selection can rest on with no row for it.
+  if (accounts.length > 1 && ref.watch(displayProvider).showAllInboxes) {
     index[kUnifiedInboxId] = buildUnifiedInbox(folders);
   }
   return index;
@@ -644,6 +655,16 @@ final collapsedAccountsProvider =
 class FavoriteFolders extends FolderIdSet {
   @override
   String get storageKey => UiStateKeys.favorites;
+
+  /// The favourites in [orderedIds]' order, which is the order the section
+  /// shows them in: the set keeps its insertion order, all the way to the
+  /// store and back. Ids not in the set are passed over; favourites not
+  /// named keep their place after the named ones.
+  void setOrder(List<String> orderedIds) => state = {
+        for (final id in orderedIds)
+          if (state.contains(id)) id,
+        ...state,
+      };
 }
 
 final favoriteFoldersProvider =
@@ -790,7 +811,9 @@ final defaultFolderIdProvider = Provider<String?>((ref) {
   final accounts = ref.watch(accountsProvider).value ?? const [];
   final folders = ref.watch(foldersProvider).value;
   if (folders == null || folders.isEmpty) return null;
-  if (accounts.length > 1) return kUnifiedInboxId;
+  if (accounts.length > 1 && ref.watch(displayProvider).showAllInboxes) {
+    return kUnifiedInboxId;
+  }
   final list = accounts.isEmpty
       ? folders.values.first
       : folders[accounts.first.id] ?? folders.values.first;
@@ -819,6 +842,19 @@ final effectiveSelectedFolderIdProvider = Provider<String?>((ref) {
   return ref.watch(defaultFolderIdProvider);
 });
 
+/// The account whose heading is being dragged to a new place, or null.
+/// While there is one the tree shows the headings alone, so every place it
+/// could be dropped is on screen; see [FolderTreeInput.accountsOnly].
+class DraggingAccount extends Notifier<String?> {
+  @override
+  String? build() => null;
+
+  void set(String? accountId) => state = accountId;
+}
+
+final draggingAccountProvider =
+    NotifierProvider<DraggingAccount, String?>(DraggingAccount.new);
+
 /// The rendered tree. Recomputed whenever folders, expand state, favourites,
 /// ordering or the search query change.
 final treeRowsProvider = Provider<List<TreeRow>>((ref) {
@@ -839,6 +875,8 @@ final treeRowsProvider = Provider<List<TreeRow>>((ref) {
       showHidden: ref.watch(showHiddenFoldersProvider),
       orderOverrides: ref.watch(folderOrderProvider),
       searchQuery: ref.watch(folderSearchQueryProvider),
+      showUnifiedInbox: ref.watch(displayProvider).showAllInboxes,
+      accountsOnly: ref.watch(draggingAccountProvider) != null,
     ),
   );
 });

@@ -72,6 +72,13 @@ abstract class MailEngine {
     String? senderName,
   });
 
+  /// Put the accounts in this order, which is the order the folder list and
+  /// every other list of them shows: what dragging an account heading in
+  /// the folder list does. Ids that name no account are passed over, and
+  /// accounts not named keep their place after the named ones. Local only,
+  /// like [updateAccount]. See [accountsInOrder].
+  Future<void> reorderAccounts(List<String> accountIds);
+
   /// Replace the app password an account signs in with, keeping the account.
   ///
   /// The point of this over removing and re-adding: the account id stays the

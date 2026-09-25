@@ -93,11 +93,19 @@ void main() {
       expect(find.text('Mark all as read'), findsOneWidget);
     });
 
-    testWidgets('the unified inbox has no menu', (tester) async {
+    testWidgets('the unified inbox offers only to be put away', (tester) async {
       await _pumpTree(tester);
       await _openMenuFor(tester, find.text('All Inboxes'));
 
-      expect(find.byType(BottomSheet), findsNothing);
+      expect(find.byType(BottomSheet), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(BottomSheet),
+          matching: find.byType(ListTile),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Hide All Inboxes'), findsOneWidget);
     });
   });
 

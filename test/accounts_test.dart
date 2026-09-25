@@ -38,6 +38,14 @@ class _EmptyEngine implements MailEngine {
   Future<List<Account>> loadAccounts() async => List.of(_accounts);
 
   @override
+  Future<void> reorderAccounts(List<String> accountIds) async {
+    final ordered = accountsInOrder(_accounts, accountIds);
+    _accounts
+      ..clear()
+      ..addAll(ordered);
+  }
+
+  @override
   Future<Account> addAccount({
     required String displayName,
     required String emailAddress,
