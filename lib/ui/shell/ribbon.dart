@@ -43,6 +43,15 @@ class _RibbonState extends ConsumerState<Ribbon> {
     final message = ref.watch(selectedMessageProvider);
     final listId = ref.watch(effectiveSelectedFolderIdProvider);
     final pane = ref.watch(displayProvider).readingPane;
+    // 48 holds an icon and a label line at the text's normal size. It grows
+    // by what the label line grows, so a larger text size (Android's or
+    // ours) takes the ribbon down with it rather than out through its floor.
+    final label = theme.textTheme.labelSmall;
+    final labelSize = label?.fontSize ?? 11;
+    final labelGrowth = (MediaQuery.textScalerOf(context).scale(labelSize) -
+            labelSize) *
+        (label?.height ?? 1.45);
+    final height = 48.0 + (labelGrowth > 0 ? labelGrowth.ceilToDouble() : 0.0);
 
     return Material(
       color: theme.colorScheme.surfaceContainerLow,
@@ -54,7 +63,7 @@ class _RibbonState extends ConsumerState<Ribbon> {
           // the view buttons to the right. IntrinsicWidth is what lets a
           // Row hold a Spacer inside a horizontal scroll view.
           SizedBox(
-            height: 48,
+            height: height,
             child: LayoutBuilder(
               builder: (context, constraints) => SingleChildScrollView(
                 scrollDirection: Axis.horizontal,

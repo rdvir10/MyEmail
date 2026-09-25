@@ -89,6 +89,26 @@ enum ListDensity {
       };
 }
 
+/// How large the app's text is, on top of Android's own font size.
+///
+/// A multiplier rather than sizes of its own, so the phone's setting still
+/// counts: someone who has Android's text large and picks Large here gets
+/// both. Four steps, because a slider invites fiddling with a value nobody
+/// can judge until they have read some mail in it.
+enum TextSize {
+  small(0.9, 'Small', '90%'),
+  standard(1.0, 'Default', 'As Android sets it'),
+  large(1.15, 'Large', '115%'),
+  extraLarge(1.3, 'Extra large', '130%');
+
+  const TextSize(this.factor, this.label, this.description);
+
+  /// What Android's size is multiplied by.
+  final double factor;
+  final String label;
+  final String description;
+}
+
 /// What a swipe across a message row does.
 ///
 /// Deliberately a small set. A swipe is one gesture with no confirmation step
@@ -129,7 +149,7 @@ class DisplaySettings {
     this.swipeLeft = SwipeAction.delete,
     this.alwaysShowImages = false,
     this.sort = MessageSort.dateNewest,
-    this.showRecipientDetails = true,
+    this.textSize = TextSize.standard,
   });
 
   /// What the list is ordered by. The default is what every list did
@@ -154,13 +174,8 @@ class DisplaySettings {
   /// who reads a lot of mail from shops, where the pictures are the message.
   final bool alwaysShowImages;
 
-  /// Show every name a message went to, with their addresses, above it.
-  ///
-  /// On by default. A work message is addressed to two people and copied to
-  /// five, and which five is often the whole point of it; a header that
-  /// names only the first two describes a different message. The link folds
-  /// it away for anyone who would rather have the room.
-  final bool showRecipientDetails;
+  /// The size of everything the app writes, message bodies included.
+  final TextSize textSize;
 
   /// Group a list by conversation rather than showing every message.
   ///
@@ -176,7 +191,7 @@ class DisplaySettings {
     SwipeAction? swipeLeft,
     bool? alwaysShowImages,
     MessageSort? sort,
-    bool? showRecipientDetails,
+    TextSize? textSize,
   }) {
     return DisplaySettings(
       readingPane: readingPane ?? this.readingPane,
@@ -186,8 +201,7 @@ class DisplaySettings {
       swipeLeft: swipeLeft ?? this.swipeLeft,
       alwaysShowImages: alwaysShowImages ?? this.alwaysShowImages,
       sort: sort ?? this.sort,
-      showRecipientDetails:
-          showRecipientDetails ?? this.showRecipientDetails,
+      textSize: textSize ?? this.textSize,
     );
   }
 
@@ -199,7 +213,7 @@ class DisplaySettings {
         'swipeLeft': swipeLeft.name,
         'alwaysShowImages': alwaysShowImages,
         'sort': sort.name,
-        'showRecipientDetails': showRecipientDetails,
+        'textSize': textSize.name,
       };
 
   /// Tolerant of anything: a value written by a newer build, or a corrupted
@@ -219,9 +233,9 @@ class DisplaySettings {
       alwaysShowImages: json['alwaysShowImages'] is bool
           ? json['alwaysShowImages'] as bool
           : false,
-      showRecipientDetails: json['showRecipientDetails'] is bool
-          ? json['showRecipientDetails'] as bool
-          : true,
+      // 'showRecipientDetails', written up to 2.44.0, is left unread: every
+      // message now opens with its recipients folded to one line.
+      textSize: _byName(TextSize.values, json['textSize'], TextSize.standard),
       // A record written before sorting existed has no key at all, and one
       // written by 2.23.0 has the field and direction it used to keep as
       // two. Either way it lands on an order that was already being shown.
@@ -269,7 +283,7 @@ class DisplaySettings {
       other.swipeLeft == swipeLeft &&
       other.alwaysShowImages == alwaysShowImages &&
       other.sort == sort &&
-      other.showRecipientDetails == showRecipientDetails;
+      other.textSize == textSize;
 
   // Every field, without exception: Riverpod skips notifying when the new
   // state equals the old, so a field left out here is a setting that can
@@ -283,7 +297,7 @@ class DisplaySettings {
         swipeLeft,
         alwaysShowImages,
         sort,
-        showRecipientDetails,
+        textSize,
       );
 
   @override
@@ -292,5 +306,5 @@ class DisplaySettings {
       'swipe: ${swipeRight.name}/${swipeLeft.name}, '
       'images: $alwaysShowImages, '
       'sort: ${sort.name}, '
-      'recipients: $showRecipientDetails)';
+      'text: ${textSize.name})';
 }

@@ -10,6 +10,7 @@ import '../../domain/trusted_senders.dart';
 import '../../state/calendar_providers.dart';
 import 'invite_card.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/recipient_summary.dart';
 import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
@@ -605,14 +606,31 @@ class _Header extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Addresses have no spaces, so an unnamed sender would
-                  // otherwise wrap mid-word on a phone; clip instead.
-                  Text(
-                    message.from.display,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodyMedium
-                        ?.copyWith(fontWeight: FontWeight.w600),
+                  // The date shares the name's line and no other. In a
+                  // column of its own beside the whole header it kept its
+                  // width all the way down, and every address under the
+                  // name was cut off two thirds of the way across. When
+                  // the two do not fit side by side, at a large text size
+                  // or with a long name, the date goes under the name.
+                  OverflowBar(
+                    spacing: 12,
+                    alignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      // Addresses have no spaces, so an unnamed sender would
+                      // otherwise wrap mid-word on a phone; clip instead.
+                      Text(
+                        message.from.display,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                      Text(
+                        formatMessageDateLong(message.date),
+                        style: theme.textTheme.labelSmall
+                            ?.copyWith(color: scheme.onSurfaceVariant),
+                      ),
+                    ],
                   ),
                   if (message.from.name != null)
                     Text(
@@ -623,15 +641,15 @@ class _Header extends StatelessWidget {
                           ?.copyWith(color: scheme.onSurfaceVariant),
                     ),
                   const SizedBox(height: 2),
-                  _Recipients(to: message.to, cc: message.cc),
+                  // Keyed by the message, so the next one opens folded
+                  // whatever was done with this one.
+                  _Recipients(
+                    key: ValueKey(message.id),
+                    to: message.to,
+                    cc: message.cc,
+                  ),
                 ],
               ),
-            ),
-            const SizedBox(width: 12),
-            Text(
-              formatMessageDateLong(message.date),
-              style: theme.textTheme.labelSmall
-                  ?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ],
         ),
@@ -649,32 +667,33 @@ class _Header extends StatelessWidget {
   }
 }
 
-/// Who else got it.
+/// Who a message went to.
 ///
-/// A mail at work goes to nine people, and nine names cut off mid-word
-/// tell you nothing except that the list is long. Two names and a count
-/// say the same thing in one line, and a tap opens the rest — with their
-/// addresses, since "Ron Dvir" is the part you already knew.
-/// Who a message went to: every name, with the address beside it.
+/// Every message opens with this folded to one line: as many names as the
+/// line holds, then how many more. Details opens the full list, each name
+/// with its address, and nothing in it is cut off. A line too long for the
+/// pane wraps, the address moving under its name whole rather than losing
+/// its end to an ellipsis, which is what a work list of nine names did.
 ///
-/// Shown in full by default, because on a work mailbox the copy list is
-/// often the point of the message — who else is watching this thread is
-/// what decides how you answer it. Folding it to the first two names, which
-/// is what this did, described a different message.
-///
-/// The link folds it away for anyone who would rather have the room, and
-/// the choice is remembered rather than asked again on the next message.
-class _Recipients extends ConsumerWidget {
-  const _Recipients({required this.to, required this.cc});
+/// Folded or open belongs to this message, not to a setting. Remembered,
+/// opening one list to see who was copied left every message after it open.
+class _Recipients extends StatefulWidget {
+  const _Recipients({super.key, required this.to, required this.cc});
 
   final List<MailAddress> to;
   final List<MailAddress> cc;
 
-  /// How many names the folded line names before it starts counting.
-  static const named = 2;
+  @override
+  State<_Recipients> createState() => _RecipientsState();
+}
+
+class _RecipientsState extends State<_Recipients> {
+  bool _open = false;
+
+  void _toggle() => setState(() => _open = !_open);
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final style = theme.textTheme.bodySmall
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
@@ -682,35 +701,60 @@ class _Recipients extends ConsumerWidget {
       color: theme.colorScheme.primary,
       fontWeight: FontWeight.w600,
     );
-    final open = ref.watch(
-      displayProvider.select((d) => d.showRecipientDetails),
-    );
-    void toggle() => ref
-        .read(displayProvider.notifier)
-        .setShowRecipientDetails(!open);
+    final to = widget.to;
+    final cc = widget.cc;
 
     if (to.isEmpty && cc.isEmpty) {
       return Text('To: (nobody named)', style: style);
     }
 
-    if (!open) {
-      // One paragraph rather than a row of two, so the link cannot be
-      // pushed off the end by a long list of names. The summary ellipsises
-      // and "Details" always has somewhere to sit.
+    if (!_open) {
       return InkWell(
-        onTap: toggle,
+        onTap: _toggle,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 2),
-          child: Text.rich(
-            TextSpan(
-              children: [
-                TextSpan(text: '${_summary()}  '),
-                TextSpan(text: 'Details', style: link),
-              ],
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: style,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Measured at the size the line will be drawn, text size and
+              // all, so a tablet's pane names more people than a phone.
+              final scaler = MediaQuery.textScalerOf(context);
+              final direction = Directionality.of(context);
+              double width(String text, TextStyle? s) {
+                final painter = TextPainter(
+                  text: TextSpan(text: text, style: s),
+                  textDirection: direction,
+                  textScaler: scaler,
+                  maxLines: 1,
+                )..layout();
+                final w = painter.width;
+                painter.dispose();
+                return w;
+              }
+
+              const gap = 8.0;
+              final room = constraints.maxWidth - width('Details', link) - gap;
+              final summary = recipientSummary(
+                to,
+                cc,
+                fits: (line) => width(line, style) <= room,
+              );
+              // A row of two rather than one paragraph, so the link keeps its
+              // place however long the names are: the summary is what gives.
+              return Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      summary,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: style,
+                    ),
+                  ),
+                  const SizedBox(width: gap),
+                  Text('Details', style: link),
+                ],
+              );
+            },
           ),
         ),
       );
@@ -721,10 +765,20 @@ class _Recipients extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (to.isNotEmpty) _block(context, 'To', to, style),
-          if (cc.isNotEmpty) _block(context, 'CC', cc, style),
+          // A table, so "To:" and "CC:" take the width their text needs at
+          // any text size and the names under both start on one edge.
+          Table(
+            columnWidths: const {
+              0: IntrinsicColumnWidth(),
+              1: FlexColumnWidth(),
+            },
+            children: [
+              if (to.isNotEmpty) _row('To', to, style),
+              if (cc.isNotEmpty) _row('CC', cc, style),
+            ],
+          ),
           InkWell(
-            onTap: toggle,
+            onTap: _toggle,
             child: Padding(
               padding: const EdgeInsets.only(top: 2),
               child: Text('Hide details', style: link),
@@ -735,56 +789,46 @@ class _Recipients extends ConsumerWidget {
     );
   }
 
-  /// "To: Itay Toledano, Sharon Shiloh · CC 4"
-  String _summary() {
-    final parts = <String>[];
-    if (to.isNotEmpty) {
-      final first = to.take(named).map((a) => a.display).join(', ');
-      final rest = to.length - named;
-      parts.add(rest > 0 ? 'To: $first +$rest' : 'To: $first');
-    }
-    if (cc.isNotEmpty) parts.add('CC ${cc.length}');
-    return parts.join('  \u00b7  ');
-  }
-
-  /// One label and the names under it, each with its address.
-  ///
-  /// Selectable, because an address in a header is something people copy.
-  Widget _block(
-    BuildContext context,
-    String label,
-    List<MailAddress> people,
-    TextStyle? style,
-  ) =>
-      Padding(
-        padding: const EdgeInsets.only(bottom: 2),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              width: 30,
-              child: Text(
-                '$label:',
-                style: style?.copyWith(fontWeight: FontWeight.w600),
-              ),
+  /// One label and the people under it, each on a line of their own.
+  TableRow _row(String label, List<MailAddress> people, TextStyle? style) =>
+      TableRow(
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8, bottom: 2),
+            child: Text(
+              '$label:',
+              style: style?.copyWith(fontWeight: FontWeight.w600),
             ),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (final a in people)
-                    Text(
-                      a.name == null || a.name!.trim().isEmpty
-                          ? a.email
-                          : '${a.name}  ${a.email}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: style,
-                    ),
-                ],
-              ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 2),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final a in people) _person(a, style),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       );
+
+  /// A name and its address, side by side where they fit.
+  ///
+  /// Two pieces of a Wrap rather than one line of text: text would break
+  /// wherever it could, and "hadco-metal.com" can be broken at its hyphen.
+  /// This way a pair too long for the line puts the address under the name,
+  /// in one piece.
+  Widget _person(MailAddress a, TextStyle? style) {
+    final name = a.name?.trim() ?? '';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 1),
+      child: Wrap(
+        spacing: 8,
+        children: [
+          if (name.isNotEmpty) Text(name, style: style),
+          Text(a.email, style: style),
+        ],
+      ),
+    );
+  }
 }

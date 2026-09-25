@@ -34,6 +34,7 @@ import 'state/attachment_providers.dart';
 import 'state/contact_providers.dart';
 import 'state/widget_providers.dart';
 import 'theme/app_theme.dart';
+import 'ui/common/text_size.dart';
 import 'ui/shell/app_shell.dart';
 import 'data/windows/window_opener.dart';
 import 'domain/window_handoff.dart';
@@ -214,6 +215,9 @@ class _MyEmailAppState extends State<MyEmailApp> {
       darkTheme: buildTheme(Brightness.dark),
       // Light and dark follow the system, as planned.
       themeMode: ThemeMode.system,
+      // Above the navigator, so dialogs and sheets are sized with the rest.
+      builder: (context, child) =>
+          AppTextSize(child: child ?? const SizedBox.shrink()),
       home: switch ((widget.window, widgetToSetUp)) {
         (final WindowRequest request, _) =>
           FileDropHost(child: WindowHost(request: request)),

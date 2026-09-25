@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../domain/error_report.dart';
+import '../common/text_size.dart';
 
 /// A rich-text editor backed by a `contenteditable` WebView.
 ///
@@ -89,9 +90,19 @@ class _HtmlEditorState extends State<HtmlEditor> {
   bool _loaded = false;
   Brightness _brightness = Brightness.light;
 
+  /// The text zoom last given to the WebView, or null for its own.
+  int? _textZoom;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    // What is being written is shown at the size everything else is. The
+    // zoom is the view's, not the document's: nothing sent changes with it.
+    final zoom = webTextZoomAt(context, applied: _textZoom != null);
+    if (zoom != null && zoom != _textZoom) {
+      _textZoom = zoom;
+      applyWebTextZoom(_web, zoom);
+    }
     final next = Theme.of(context).brightness;
     final dark = next == Brightness.dark;
     _web.setBackgroundColor(dark ? const Color(0xFF1C1B1F) : Colors.white);

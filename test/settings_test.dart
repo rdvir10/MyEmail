@@ -137,7 +137,11 @@ void main() {
       for (final p in ReadingPanePosition.values) {
         expect(find.text(p.label), findsOneWidget);
       }
+      // Below Text size and the reading pane, so further down than a
+      // screen shows at once.
       for (final d in ListDensity.values) {
+        await tester.scrollUntilVisible(find.text(d.label), 200,
+            scrollable: find.byType(Scrollable).first);
         expect(find.text(d.label), findsOneWidget);
       }
     });
@@ -393,6 +397,8 @@ void main() {
 
       await tester.tap(find.text('View'));
       await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(find.text('Compact'), 200,
+          scrollable: find.byType(Scrollable).first);
       await tester.tap(find.text('Compact'));
       await tester.pumpAndSettle();
 

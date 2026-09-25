@@ -6,6 +6,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../domain/html_safety.dart';
 import '../../domain/trusted_senders.dart';
+import '../common/text_size.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 /// An HTML mail body in a WebView that is locked down as far as it goes:
@@ -136,10 +137,22 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _sizeText();
     final next = Theme.of(context).brightness;
     if (next == _brightness) return;
     _brightness = next;
     _load();
+  }
+
+  /// The text zoom last given to the WebView, or null for its own.
+  int? _textZoom;
+
+  /// The body's text at the app's size (Settings, View, Text size).
+  void _sizeText() {
+    final zoom = webTextZoomAt(context, applied: _textZoom != null);
+    if (zoom == null || zoom == _textZoom) return;
+    _textZoom = zoom;
+    applyWebTextZoom(_controller, zoom);
   }
 
   @override

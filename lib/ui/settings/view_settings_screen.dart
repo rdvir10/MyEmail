@@ -9,8 +9,8 @@ import 'trusted_senders_screen.dart';
 import '../../state/trusted_senders.dart';
 import '../../state/window_providers.dart';
 
-/// Settings, View: where the message being read goes, and how much room each
-/// row in the list gets.
+/// Settings, View: how large the text is, where the message being read goes,
+/// and how much room each row in the list gets.
 class ViewSettingsScreen extends ConsumerWidget {
   const ViewSettingsScreen({super.key});
 
@@ -25,6 +25,30 @@ class ViewSettingsScreen extends ConsumerWidget {
       appBar: AppBar(title: const Text('View'), centerTitle: false),
       body: ListView(
         children: [
+          const _Heading('Text size'),
+          // This screen is drawn at the size being chosen, so picking one
+          // shows it straight away, on these very words.
+          RadioGroup<TextSize>(
+            groupValue: display.textSize,
+            onChanged: (v) => v == null ? null : notifier.setTextSize(v),
+            child: Column(
+              children: [
+                for (final size in TextSize.values)
+                  RadioListTile<TextSize>(
+                    value: size,
+                    title: Text(size.label),
+                    subtitle: Text(size.description),
+                  ),
+              ],
+            ),
+          ),
+          _Note(
+            'For the lists, the message, and what you write. It is on top '
+            "of Android's own font size, so a large size there and Large "
+            'here make both larger.',
+            theme: theme,
+          ),
+          const Divider(height: 1),
           const _Heading('Reading pane'),
           RadioGroup<ReadingPanePosition>(
             groupValue: display.readingPane,
@@ -265,6 +289,7 @@ class ViewSummary {
     final d = ref.watch(displayProvider);
     return 'Reading pane ${d.readingPane.label.toLowerCase()}, '
         '${d.density.label.toLowerCase()} list, '
+        '${d.textSize == TextSize.standard ? '' : '${d.textSize.label.toLowerCase()} text, '}'
         'swipe ${d.swipeRight.label.toLowerCase()} / '
         '${d.swipeLeft.label.toLowerCase()}';
   }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/ui_state_store.dart';
@@ -89,29 +90,35 @@ void main() {
   });
 
   group('who it went to', () {
-    testWidgets('every name is there, with its address', (tester) async {
+    Future<void> openDetails(WidgetTester tester) async {
+      await tester.tap(find.text('Details'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('every name is there, with its address, once opened',
+        (tester) async {
       final m = message(to: const [
         MailAddress(email: 'nadav@example.com', name: 'Nadav Elster'),
         MailAddress(email: 'ron@example.com', name: 'Ron Dvir'),
       ]);
       await pump(tester, m: m, home: MessageScreen(message: m));
+      await openDetails(tester);
 
-      expect(find.textContaining('Nadav Elster'), findsOneWidget);
-      expect(find.textContaining('nadav@example.com'), findsOneWidget);
-      expect(find.textContaining('Ron Dvir'), findsOneWidget);
+      expect(find.text('Nadav Elster'), findsOneWidget);
+      expect(find.text('nadav@example.com'), findsOneWidget);
+      expect(find.text('Ron Dvir'), findsOneWidget);
     });
 
-    testWidgets('a long list is not folded away', (tester) async {
-      // Folding to the first two was what this did, and on a work mailbox
-      // the copy list is often the point of the message.
+    testWidgets('a long list is all there once opened', (tester) async {
       final m = message(to: [
         for (var i = 0; i < 9; i++)
           MailAddress(email: 'person$i@example.com', name: 'Person $i'),
       ]);
       await pump(tester, m: m, home: MessageScreen(message: m));
+      await openDetails(tester);
 
-      expect(find.textContaining('Person 8'), findsOneWidget);
-      expect(find.textContaining('person8@example.com'), findsOneWidget);
+      expect(find.text('Person 8'), findsOneWidget);
+      expect(find.text('person8@example.com'), findsOneWidget);
     });
 
     testWidgets('everyone copied is named too', (tester) async {
@@ -123,13 +130,14 @@ void main() {
         ],
       );
       await pump(tester, m: m, home: MessageScreen(message: m));
+      await openDetails(tester);
 
       expect(find.text('CC:'), findsOneWidget);
-      expect(find.textContaining('Michal Raz'), findsOneWidget);
-      expect(find.textContaining('Nik Shatzir'), findsOneWidget);
+      expect(find.text('Michal Raz'), findsOneWidget);
+      expect(find.text('Nik Shatzir'), findsOneWidget);
     });
 
-    testWidgets('and it folds away for anyone who wants the room',
+    testWidgets('it starts folded to one line, and opens and folds again',
         (tester) async {
       final m = message(
         to: const [
@@ -141,16 +149,146 @@ void main() {
       );
       await pump(tester, m: m, home: MessageScreen(message: m));
 
-      await tester.tap(find.text('Hide details'));
-      await tester.pumpAndSettle();
-
-      expect(find.textContaining('Barry Boyd'), findsNothing);
+      expect(find.text('barry@example.com'), findsNothing);
+      expect(find.textContaining('To: Nadav Elster'), findsOneWidget);
       expect(find.textContaining('CC 1'), findsOneWidget);
 
-      // The link is a span inside the summary line, not a Text of its own.
-      await tester.tap(find.textContaining('Details'));
+      await openDetails(tester);
+      expect(find.text('barry@example.com'), findsOneWidget);
+
+      await tester.tap(find.text('Hide details'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('Barry Boyd'), findsOneWidget);
+      expect(find.text('barry@example.com'), findsNothing);
+    });
+
+    testWidgets('the next message opens folded, whatever was done with this',
+        (tester) async {
+      // Remembered, opening one list to see who was copied left every
+      // message after it open too.
+      final first = message(to: const [
+        MailAddress(email: 'nadav@example.com', name: 'Nadav Elster'),
+      ]);
+      final second = MailMessage(
+        id: 'a:INBOX#2',
+        accountId: 'a',
+        folderId: 'a:INBOX',
+        uid: 2,
+        subject: 'Second',
+        preview: '',
+        from: const MailAddress(email: 'mike@example.com', name: 'Mike McD'),
+        to: const [
+          MailAddress(email: 'barry@example.com', name: 'Barry Boyd'),
+        ],
+        date: DateTime(2026, 9, 22, 9),
+        isRead: true,
+      );
+      final shown = ValueNotifier(first);
+      addTearDown(shown.dispose);
+      tester.view.physicalSize = const Size(1200, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        for (final m in [first, second])
+          messageBodyProvider(m.id).overrideWith(
+            (ref) async => const MailBody(text: 'Hello'),
+          ),
+      ]);
+      addTearDown(c.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: MaterialApp(
+            home: Scaffold(
+              body: ValueListenableBuilder<MailMessage>(
+                valueListenable: shown,
+                builder: (_, m, _) =>
+                    ReadingPane(message: m, onPopOut: () {}),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await openDetails(tester);
+      expect(find.text('nadav@example.com'), findsOneWidget);
+
+      shown.value = second;
+      await tester.pumpAndSettle();
+      expect(find.text('barry@example.com'), findsNothing);
+      expect(find.text('Details'), findsOneWidget);
+    });
+
+    testWidgets('the folded line names as many as the width takes',
+        (tester) async {
+      // Short names: the test font draws every character a full em wide.
+      final m = message(to: [
+        for (var i = 0; i < 9; i++)
+          MailAddress(email: 'p$i@example.com', name: 'P$i'),
+      ]);
+
+      await pump(tester, m: m, home: MessageScreen(message: m));
+      final phone = tester.widget<Text>(find.textContaining('To: P0')).data!;
+      expect(phone, contains('+'), reason: 'nine names do not fit a phone');
+      expect(phone, contains('P2'),
+          reason: 'more than the two it always used to name');
+
+      await pump(
+        tester,
+        m: m,
+        size: const Size(1400, 900),
+        home: MessageScreen(message: m),
+      );
+      final wide = tester.widget<Text>(find.textContaining('To: P0')).data!;
+      expect(wide, contains('P8'),
+          reason: 'on a wide screen all nine fit on the line');
+      expect(wide, isNot(contains('+')));
+    });
+
+    testWidgets('Details keeps its place, however long the names',
+        (tester) async {
+      final m = message(to: [
+        MailAddress(
+          email: 'someone@example.com',
+          name: 'A name far too long to fit on any phone ' * 3,
+        ),
+      ]);
+      await pump(tester, m: m, home: MessageScreen(message: m));
+
+      final details = tester.getRect(find.text('Details'));
+      expect(details.right, lessThanOrEqualTo(420));
+      await openDetails(tester);
+      expect(find.text('someone@example.com'), findsOneWidget);
+    });
+
+    testWidgets('opened, nothing is cut off, and it has the width to use',
+        (tester) async {
+      // The screenshot: nine people, each "Name  addr…" cut two thirds of
+      // the way across, because the date's column ran down the whole header.
+      const long = 'a.rather.long.address.for.one.person@hadco-metal.com';
+      final m = message(to: const [
+        MailAddress(email: 'michaelr@hadco-metal.com', name: 'Michael Reznik'),
+        MailAddress(email: long, name: 'Rolland Kloes'),
+      ]);
+      await pump(tester, m: m, home: MessageScreen(message: m));
+      await openDetails(tester);
+
+      for (final address in ['michaelr@hadco-metal.com', long]) {
+        final text = find.text(address);
+        expect(text, findsOneWidget, reason: '$address stands on its own');
+        expect(
+          tester.renderObject<RenderParagraph>(text).didExceedMaxLines,
+          isFalse,
+          reason: '$address is not cut short',
+        );
+        expect(tester.getRect(text).right, lessThanOrEqualTo(420));
+      }
+
+      final date = tester.getRect(find.textContaining('2026, '));
+      expect(tester.getRect(find.text(long)).right, greaterThan(date.left),
+          reason: 'the addresses run under the date, not beside it');
     });
 
     testWidgets('a message addressed to nobody says so', (tester) async {
