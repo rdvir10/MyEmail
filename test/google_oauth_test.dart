@@ -177,6 +177,113 @@ void main() {
     });
   });
 
+  group('a desktop client', () {
+    // The one kind of client Google lets an unreviewed app make with a way
+    // back into the app: it comes with a secret that is not one, and takes
+    // the loopback address as its redirect.
+    GoogleOAuth desktop({
+      required Future<http.Response> Function(http.Request request) handler,
+    }) =>
+        GoogleOAuth(
+          clientId: clientId,
+          clientSecret: 'GOCSPX-not-really-secret',
+          clock: () => now,
+          httpClient: http_testing.MockClient(handler),
+        );
+
+    test('the request goes to the loopback address it was given', () async {
+      final pkce = await PkcePair.generate();
+      final url = desktop(handler: (_) async => json({})).authorizationUrl(
+        pkce: pkce,
+        state: 's',
+        redirectUri: 'http://127.0.0.1:43210/',
+      );
+      expect(url.queryParameters['redirect_uri'], 'http://127.0.0.1:43210/');
+    });
+
+    test('the way back is that address, port and all', () {
+      final o = desktop(handler: (_) async => json({}));
+      const mine = 'http://127.0.0.1:43210/';
+      expect(
+        o.codeFromRedirect(
+          Uri.parse('http://127.0.0.1:43210/?code=c-1&state=s'),
+          expectedState: 's',
+          redirectUri: mine,
+        ),
+        'c-1',
+      );
+      expect(
+        o.codeFromRedirect(
+          Uri.parse('http://127.0.0.1:43211/?code=c-1&state=s'),
+          expectedState: 's',
+          redirectUri: mine,
+        ),
+        isNull,
+        reason: 'another port is another sign-in',
+      );
+      expect(
+        o.codeFromRedirect(
+          Uri.parse('$scheme:/oauth2redirect?code=c-1&state=s'),
+          expectedState: 's',
+        ),
+        'c-1',
+        reason: 'the custom scheme still counts, with no address given',
+      );
+    });
+
+    test('the secret and the address go with the code', () async {
+      final pkce = await PkcePair.generate();
+      late Map<String, String> form;
+      final o = desktop(handler: (request) async {
+        form = Uri.splitQueryString(request.body);
+        return json({
+          'access_token': 'a',
+          'refresh_token': 'r',
+          'expires_in': 3600,
+        });
+      });
+
+      await o.exchangeCode(
+        code: 'c-1',
+        pkce: pkce,
+        redirectUri: 'http://127.0.0.1:43210/',
+      );
+
+      expect(form['client_secret'], 'GOCSPX-not-really-secret');
+      expect(form['redirect_uri'], 'http://127.0.0.1:43210/');
+      expect(form['code_verifier'], pkce.verifier,
+          reason: 'PKCE stays: the secret protects nothing on a phone');
+    });
+
+    test('and with every refresh', () async {
+      late Map<String, String> form;
+      final o = desktop(handler: (request) async {
+        form = Uri.splitQueryString(request.body);
+        return json({'access_token': 'a', 'expires_in': 3600});
+      });
+      await o.refresh(OAuthToken(
+        accessToken: 'old',
+        refreshToken: 'r',
+        expiresAt: now,
+      ));
+      expect(form['client_secret'], 'GOCSPX-not-really-secret');
+    });
+
+    test('an Android client sends no secret, having none', () async {
+      late Map<String, String> form;
+      final o = oauth(handler: (request) async {
+        form = Uri.splitQueryString(request.body);
+        return json({'access_token': 'a', 'expires_in': 3600});
+      });
+      await o.refresh(OAuthToken(
+        accessToken: 'old',
+        refreshToken: 'r',
+        expiresAt: now,
+      ));
+      expect(form.containsKey('client_secret'), isFalse);
+    });
+  });
+
   group('refreshing', () {
     final stored = OAuthToken(
       accessToken: 'old',

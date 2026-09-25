@@ -114,7 +114,7 @@
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
-                <data android:scheme="com.googleusercontent.apps.not-configured"/>
+                <data android:scheme="com.googleusercontent.apps.405275087615-atj0c35i92g4v34bthoqau2erhfh3mlu"/>
             </intent-filter>
         </activity>
 

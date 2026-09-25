@@ -53,7 +53,10 @@ final googleClientIdProvider = Provider<String>((ref) => googleClientId);
 
 /// How the app signs in to Google.
 final googleOAuthProvider = Provider<GoogleOAuth>((ref) {
-  final oauth = GoogleOAuth(clientId: ref.watch(googleClientIdProvider));
+  final oauth = GoogleOAuth(
+    clientId: ref.watch(googleClientIdProvider),
+    clientSecret: googleClientSecret,
+  );
   ref.onDispose(oauth.close);
   return oauth;
 });

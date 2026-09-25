@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/auth/google_oauth.dart';
+import '../../data/auth/loopback_redirect.dart';
 import '../../data/auth/microsoft_oauth.dart'
     show SignInDeclined, SignInExpired, SignInFailed, SignInNeedsConsent;
 import '../../data/auth/pkce.dart';
@@ -14,9 +15,12 @@ import '../../state/providers.dart';
 /// Google will not sign anyone in inside an app's WebView, so unlike the
 /// Microsoft screen this one shows no page of its own. It opens Google's
 /// sign-in page in the browser, as a tab over the app, and waits: when the
-/// person is done, the browser follows the redirect to the app's own URI
-/// scheme, Android brings the app back with it, and [OAuthRedirects] hands
-/// the URL here. The code in it is redeemed with the PKCE verifier, which
+/// person is done, the browser follows the redirect to the app's own
+/// loopback address, where [LoopbackRedirect] is listening for the length
+/// of the sign-in, and the app brings itself back in front of the tab.
+/// (The custom URI scheme, which Android would hand the app through
+/// [OAuthRedirects], is taken too, for the day Google allows it on the
+/// Android client.) The code is redeemed with the PKCE verifier, which
 /// never left the app.
 ///
 /// While the app is unverified with Google, the page warns that it is. That
@@ -57,6 +61,9 @@ class _GoogleSignInScreenState extends ConsumerState<GoogleSignInScreen> {
   String? _state;
   Uri? _page;
 
+  /// Listening on the loopback address for this attempt's redirect.
+  LoopbackRedirect? _loopback;
+
   /// Guards against the redirect being handled twice. Android can deliver
   /// the same intent more than once, and redeeming a code twice fails the
   /// second time, which would replace a successful sign-in with an error.
@@ -76,24 +83,45 @@ class _GoogleSignInScreenState extends ConsumerState<GoogleSignInScreen> {
   @override
   void dispose() {
     _arrivals?.cancel();
+    _loopback?.close();
     super.dispose();
   }
 
   Future<void> _start() async {
-    // A try again is a fresh sign-in, with a request of its own.
+    // A try again is a fresh sign-in, with a request of its own, listening
+    // on a port of its own. The old listener is let go without waiting:
+    // nothing depends on when it is gone.
     _handled = false;
+    unawaited(_loopback?.close());
+    _loopback = null;
     final oauth = ref.read(googleOAuthProvider);
     final pkce = await PkcePair.generate();
     final state = newOAuthState();
-    if (!mounted) return;
+    final LoopbackRedirect loopback;
+    try {
+      loopback = await LoopbackRedirect.start();
+    } catch (e) {
+      _finishWithError(SignInFailed('The app could not listen for the '
+          'sign-in to come back. ($e)'));
+      return;
+    }
+    if (!mounted) {
+      await loopback.close();
+      return;
+    }
+    unawaited(loopback.arrival.then(_onRedirect, onError: (Object e) {
+      if (mounted && !_handled) _finishWithError(e);
+    }));
     setState(() {
       _error = null;
       _pkce = pkce;
       _state = state;
+      _loopback = loopback;
       _page = oauth.authorizationUrl(
         pkce: pkce,
         state: state,
         loginHint: widget.loginHint,
+        redirectUri: loopback.redirectUri,
       );
     });
     await _openPage();
@@ -119,9 +147,26 @@ class _GoogleSignInScreenState extends ConsumerState<GoogleSignInScreen> {
     final pkce = _pkce;
     if (state == null || pkce == null || _handled) return;
 
+    // The loopback address of this attempt, or the custom scheme; the code
+    // is redeemed against whichever the browser came back by.
+    final loopbackUri = _loopback?.redirectUri;
     final String? code;
+    final String? redirectUri;
     try {
-      code = oauth.codeFromRedirect(uri, expectedState: state);
+      final byLoopback = loopbackUri == null
+          ? null
+          : oauth.codeFromRedirect(
+              uri,
+              expectedState: state,
+              redirectUri: loopbackUri,
+            );
+      if (byLoopback != null) {
+        code = byLoopback;
+        redirectUri = loopbackUri;
+      } else {
+        code = oauth.codeFromRedirect(uri, expectedState: state);
+        redirectUri = null;
+      }
     } catch (e) {
       _finishWithError(e);
       return;
@@ -129,10 +174,18 @@ class _GoogleSignInScreenState extends ConsumerState<GoogleSignInScreen> {
     if (code == null) return;
 
     _handled = true;
-    unawaited(_redeem(oauth, code, pkce));
+    // The tab is still on top, showing "signed in"; the app comes back in
+    // front of it while the code is being redeemed.
+    unawaited(ref.read(oauthRedirectsProvider).bringAppToFront());
+    unawaited(_redeem(oauth, code, pkce, redirectUri: redirectUri));
   }
 
-  Future<void> _redeem(GoogleOAuth oauth, String code, PkcePair pkce) async {
+  Future<void> _redeem(
+    GoogleOAuth oauth,
+    String code,
+    PkcePair pkce, {
+    String? redirectUri,
+  }) async {
     if (mounted) {
       setState(() {
         _waiting = false;
@@ -140,7 +193,11 @@ class _GoogleSignInScreenState extends ConsumerState<GoogleSignInScreen> {
       });
     }
     try {
-      final result = await oauth.exchangeCode(code: code, pkce: pkce);
+      final result = await oauth.exchangeCode(
+        code: code,
+        pkce: pkce,
+        redirectUri: redirectUri,
+      );
       if (!mounted) return;
       Navigator.of(context).pop(result);
     } catch (e) {

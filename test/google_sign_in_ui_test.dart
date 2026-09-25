@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -26,15 +27,21 @@ void main() {
   late List<Uri> opened;
   late OAuthRedirects redirects;
   late String signedInEmail;
+  late int broughtToFront;
 
   setUp(() {
     opened = [];
     signedInEmail = 'personal@example.com';
+    broughtToFront = 0;
     // A channel of its own per test, so handlers do not pile up on the real
-    // one across tests.
-    redirects = OAuthRedirects(
-      channel: const MethodChannel('mailtree/oauth-under-test'),
-    );
+    // one across tests. Its platform side records the one call Dart makes.
+    const channel = MethodChannel('mailtree/oauth-under-test');
+    redirects = OAuthRedirects(channel: channel);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'foreground') broughtToFront++;
+      return null;
+    });
   });
 
   /// A Google that redeems any code for a token naming [signedInEmail].
@@ -80,15 +87,44 @@ void main() {
     }
   }
 
-  /// What the browser does when the person is done: Android hands the app
-  /// the redirect, with the state the request carried.
-  void comeBack(WidgetTester tester, {String? state, String? error}) {
+  /// What the browser does when the person is done: it follows the
+  /// redirect to the loopback address the request named, with the state
+  /// the request carried. A real request over the real socket, which is
+  /// what the app listens on, so under runAsync.
+  Future<void> comeBack(WidgetTester tester,
+      {String? state, String? error}) async {
+    final request = opened.last.queryParameters;
+    final back = Uri.parse(request['redirect_uri']!).replace(
+      queryParameters: {
+        if (error == null) 'code': 'c-1' else 'error': error,
+        'state': state ?? request['state']!,
+      },
+    );
+    expect(back.host, '127.0.0.1', reason: 'the loopback way back');
+    await tester.runAsync(() async {
+      // A raw socket, not HttpClient: flutter_test replaces HttpClient with
+      // one that answers 400 on its own and never touches the network,
+      // which is the point of it elsewhere and useless here.
+      final socket = await Socket.connect(back.host, back.port);
+      socket.write('GET ${back.path}?${back.query} HTTP/1.1\r\n'
+          'Host: ${back.host}\r\nConnection: close\r\n\r\n');
+      await socket.flush();
+      // The first bytes of the answer are enough: the page has been sent
+      // and the listener has the code.
+      await socket.first.timeout(const Duration(seconds: 5));
+      socket.destroy();
+      // The listener completes on the next turn of the real event loop.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+  }
+
+  /// The other way back, for an Android client with its custom scheme
+  /// allowed: Android hands the app the redirect.
+  void comeBackByScheme(WidgetTester tester) {
     final requested = opened.last.queryParameters['state']!;
-    redirects.deliver(Uri.parse(
-      error == null
-          ? '$scheme:/oauth2redirect?code=c-1&state=${state ?? requested}'
-          : '$scheme:/oauth2redirect?error=$error&state=${state ?? requested}',
-    ));
+    redirects.deliver(
+      Uri.parse('$scheme:/oauth2redirect?code=c-1&state=$requested'),
+    );
   }
 
   group('the sign-in screen', () {
@@ -133,12 +169,27 @@ void main() {
       await tester.tap(find.text('go'));
       await settle(tester);
 
-      comeBack(tester);
+      await comeBack(tester);
       await settle(tester);
 
       expect(find.byType(GoogleSignInScreen), findsNothing);
       expect(result?.token.accessToken, 'ya29.c-1');
       expect(result?.identity?.email, 'personal@example.com');
+      expect(broughtToFront, 1,
+          reason: 'the app comes back in front of the browser tab');
+    });
+
+    testWidgets('the custom scheme finishes it too, when Android brings it',
+        (tester) async {
+      await tester.pumpWidget(app(host()));
+      await tester.tap(find.text('go'));
+      await settle(tester);
+
+      comeBackByScheme(tester);
+      await settle(tester);
+
+      expect(find.byType(GoogleSignInScreen), findsNothing);
+      expect(result?.token.accessToken, 'ya29.c-1');
     });
 
     testWidgets('a redirect from some other request is refused',
@@ -147,7 +198,7 @@ void main() {
       await tester.tap(find.text('go'));
       await settle(tester);
 
-      comeBack(tester, state: 'not-ours');
+      await comeBack(tester, state: 'not-ours');
       await settle(tester);
 
       expect(find.byType(GoogleSignInScreen), findsOneWidget);
@@ -161,7 +212,7 @@ void main() {
       await tester.tap(find.text('go'));
       await settle(tester);
 
-      comeBack(tester, error: 'access_denied');
+      await comeBack(tester, error: 'access_denied');
       await settle(tester);
       expect(find.textContaining('did not grant access'), findsOneWidget);
 
@@ -236,7 +287,7 @@ void main() {
 
       await tester.tap(find.text('Sign in with Google'));
       await settle(tester);
-      comeBack(tester);
+      await comeBack(tester);
       await settle(tester);
 
       final accounts = container.read(accountsProvider).value!;
@@ -261,7 +312,7 @@ void main() {
 
       await tester.tap(find.text('Sign in with Google'));
       await settle(tester);
-      comeBack(tester);
+      await comeBack(tester);
       await settle(tester);
 
       expect(find.textContaining('other@gmail.com'), findsOneWidget);
@@ -289,7 +340,7 @@ void main() {
           scrollable: find.byType(Scrollable).first);
       await tester.tap(find.text('Sign in with Google'));
       await settle(tester);
-      comeBack(tester);
+      await comeBack(tester);
       await settle(tester);
 
       expect(find.text('Google sign-in'), findsOneWidget);
@@ -306,7 +357,7 @@ void main() {
           scrollable: find.byType(Scrollable).first);
       await tester.tap(find.text('Sign in with Google'));
       await settle(tester);
-      comeBack(tester);
+      await comeBack(tester);
       await settle(tester);
 
       expect(find.textContaining('somebody.else@gmail.com'), findsOneWidget);

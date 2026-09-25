@@ -56,4 +56,12 @@ void main() {
     );
     expect(mainActivity, contains('override fun onNewIntent'));
   });
+
+  test('and answers the call that brings the app back in front of the tab',
+      () {
+    // The loopback way back leaves the browser's tab on top; Dart asks for
+    // this once the code is in hand, and CLEAR_TOP finishes the tab.
+    expect(mainActivity, contains('"foreground" ->'));
+    expect(mainActivity, contains('FLAG_ACTIVITY_CLEAR_TOP'));
+  });
 }

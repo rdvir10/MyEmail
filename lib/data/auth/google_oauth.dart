@@ -32,6 +32,7 @@ import 'pkce.dart';
 class GoogleOAuth implements OAuthRefresher {
   GoogleOAuth({
     required this.clientId,
+    this.clientSecret = '',
     http.Client? httpClient,
     DateTime Function()? clock,
     this.authorizeEndpoint = defaultAuthorizeEndpoint,
@@ -41,6 +42,11 @@ class GoogleOAuth implements OAuthRefresher {
 
   /// The OAuth client ID. Not a secret; see [googleClientId].
   final String clientId;
+
+  /// The desktop client's "secret", sent with every token request when
+  /// there is one. Empty for an Android client, which has none. See
+  /// [googleClientSecret] for why a phone app carries it.
+  final String clientSecret;
 
   final http.Client _http;
   final DateTime Function() _clock;
@@ -67,6 +73,8 @@ class GoogleOAuth implements OAuthRefresher {
     'email',
   ];
 
+  /// The custom-scheme way back, for an Android client that has it enabled.
+  /// The loopback way back is a URI per sign-in, given to each call.
   String get redirectUri => googleRedirectUri(clientId);
 
   /// Where to send the browser to start a sign-in.
@@ -81,10 +89,11 @@ class GoogleOAuth implements OAuthRefresher {
     required String state,
     String? loginHint,
     List<String>? scopes,
+    String? redirectUri,
   }) =>
       Uri.parse(authorizeEndpoint).replace(queryParameters: {
         'client_id': clientId,
-        'redirect_uri': redirectUri,
+        'redirect_uri': redirectUri ?? this.redirectUri,
         'response_type': 'code',
         'scope': (scopes ?? GoogleOAuth.scopes).join(' '),
         'state': state,
@@ -101,8 +110,12 @@ class GoogleOAuth implements OAuthRefresher {
   /// Null for any URL that is not the redirect. Throws when the redirect is
   /// ours but carries a refusal, or a state that does not match the request
   /// this app made.
-  String? codeFromRedirect(Uri uri, {required String expectedState}) {
-    if (!isRedirect(uri)) return null;
+  String? codeFromRedirect(
+    Uri uri, {
+    required String expectedState,
+    String? redirectUri,
+  }) {
+    if (!isRedirect(uri, redirectUri: redirectUri)) return null;
 
     final error = uri.queryParameters['error'];
     if (error != null) {
@@ -131,11 +144,17 @@ class GoogleOAuth implements OAuthRefresher {
     return code;
   }
 
-  /// Whether [uri] is the app's own redirect, whoever handed it over.
-  bool isRedirect(Uri uri) {
-    final target = Uri.parse(redirectUri);
-    return uri.scheme.toLowerCase() == target.scheme.toLowerCase() &&
-        uri.path == target.path;
+  /// Whether [uri] is the app's own redirect, whoever handed it over: the
+  /// custom scheme, or the loopback address of this sign-in, port and all.
+  bool isRedirect(Uri uri, {String? redirectUri}) {
+    final target = Uri.parse(redirectUri ?? this.redirectUri);
+    if (uri.scheme.toLowerCase() != target.scheme.toLowerCase()) return false;
+    if (target.scheme == 'http') {
+      return uri.host == target.host &&
+          uri.port == target.port &&
+          uri.path == target.path;
+    }
+    return uri.path == target.path;
   }
 
   /// Redeem the code the redirect carried.
@@ -146,14 +165,16 @@ class GoogleOAuth implements OAuthRefresher {
   Future<GoogleSignIn> exchangeCode({
     required String code,
     required PkcePair pkce,
+    String? redirectUri,
   }) async {
     final Map<String, Object?> json;
     try {
       json = await _post({
         'grant_type': 'authorization_code',
         'client_id': clientId,
+        if (clientSecret.isNotEmpty) 'client_secret': clientSecret,
         'code': code,
-        'redirect_uri': redirectUri,
+        'redirect_uri': redirectUri ?? this.redirectUri,
         'code_verifier': pkce.verifier,
       });
     } on _OAuthErrorResponse catch (e) {
@@ -182,6 +203,7 @@ class GoogleOAuth implements OAuthRefresher {
       json = await _post({
         'grant_type': 'refresh_token',
         'client_id': clientId,
+        if (clientSecret.isNotEmpty) 'client_secret': clientSecret,
         'refresh_token': token.refreshToken,
       });
     } on _OAuthErrorResponse catch (e) {

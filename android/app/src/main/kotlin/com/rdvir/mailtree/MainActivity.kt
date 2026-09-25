@@ -110,7 +110,26 @@ open class MainActivity : FlutterActivity() {
             oauthChannel = MethodChannel(
                 flutterEngine.dartExecutor.binaryMessenger,
                 oauthChannelName,
-            )
+            ).apply {
+                setMethodCallHandler { call, result ->
+                    when (call.method) {
+                        // Back in front of the browser tab that the sign-in
+                        // opened over the app: CLEAR_TOP finishes the tab.
+                        "foreground" -> {
+                            startActivity(
+                                Intent(this@MainActivity, MainActivity::class.java).apply {
+                                    addFlags(
+                                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                            Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                                    )
+                                },
+                            )
+                            result.success(null)
+                        }
+                        else -> result.notImplemented()
+                    }
+                }
+            }
             passOAuthRedirect(intent)
         }
 

@@ -12,9 +12,28 @@ const googleClientId = String.fromEnvironment(
   defaultValue: _registeredClientId,
 );
 
-/// The MyEmail client in Ron's Google Cloud project. Android type, tied to
-/// the release signing key, with custom URI schemes enabled.
-const _registeredClientId = '';
+/// The MyEmail client in Ron's Google Cloud project (myemail-509715),
+/// created 25 September 2026. Android type, tied to the release signing
+/// key, with custom URI schemes enabled.
+const _registeredClientId =
+    '405275087615-atj0c35i92g4v34bthoqau2erhfh3mlu.apps.googleusercontent.com';
+
+/// The desktop client's secret, which goes with [googleClientId] on every
+/// token request.
+///
+/// Carried inside the app on purpose. Google's own guidance for installed
+/// apps says the secret of a desktop client is not confidential, since an
+/// app on someone's device cannot keep one, and the flow is protected by
+/// PKCE and the loopback redirect instead; Thunderbird ships its Gmail
+/// client this way. The desktop client is used at all because it is the
+/// one kind an unreviewed app may make with a way back into the app:
+/// custom URI schemes on an Android client wait on a brand review.
+const googleClientSecret = String.fromEnvironment(
+  'GOOGLE_CLIENT_SECRET',
+  defaultValue: _registeredClientSecret,
+);
+
+const _registeredClientSecret = '';
 
 bool get googleSignInConfigured => googleClientId.isNotEmpty;
 

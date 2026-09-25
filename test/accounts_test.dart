@@ -331,6 +331,12 @@ void main() {
 
     testWidgets('first run shows the welcome form instead of the tree',
         (tester) async {
+      // Tall enough for the whole form: Google sign-in sits above the
+      // app-password fields now, and the Sign in button below both.
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpWidget(app(_EmptyEngine()));
       await tester.pumpAndSettle();
 
@@ -341,6 +347,12 @@ void main() {
     testWidgets('a blank password is caught before the server is asked',
         (tester) async {
       final engine = _EmptyEngine();
+      // Tall enough for the whole form: Google sign-in sits above the
+      // app-password fields now, and the Sign in button below both.
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpWidget(app(engine));
       await tester.pumpAndSettle();
 
@@ -348,6 +360,7 @@ void main() {
           find.widgetWithText(TextFormField, 'Gmail address'), 'me@example.com');
       await tester.enterText(
           find.widgetWithText(TextFormField, 'App password'), '   ');
+      await tester.ensureVisible(find.text('Sign in'));
       await tester.tap(find.text('Sign in'));
       await tester.pumpAndSettle();
 
@@ -360,6 +373,12 @@ void main() {
       // The blank one above never reached the server, so what the form does
       // when the server says no was never seen.
       final engine = _EmptyEngine()..refuse = true;
+      // Tall enough for the whole form: Google sign-in sits above the
+      // app-password fields now, and the Sign in button below both.
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpWidget(app(engine));
       await tester.pumpAndSettle();
 
@@ -367,6 +386,7 @@ void main() {
           find.widgetWithText(TextFormField, 'Gmail address'), 'me@example.com');
       await tester.enterText(find.widgetWithText(TextFormField, 'App password'),
           'abcd efgh ijkl mnop');
+      await tester.ensureVisible(find.text('Sign in'));
       await tester.tap(find.text('Sign in'));
       await tester.pumpAndSettle();
 
@@ -407,6 +427,7 @@ void main() {
           find.widgetWithText(TextFormField, 'Gmail address'), 'me@example.com');
       await tester.enterText(find.widgetWithText(TextFormField, 'App password'),
           'abcd efgh ijkl mnop');
+      await tester.ensureVisible(find.text('Sign in'));
       await tester.tap(find.text('Sign in'));
       await tester.pump();
 
@@ -422,6 +443,12 @@ void main() {
     testWidgets('signing in adds the account and lands in the tree',
         (tester) async {
       final engine = _EmptyEngine();
+      // Tall enough for the whole form: Google sign-in sits above the
+      // app-password fields now, and the Sign in button below both.
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpWidget(app(engine));
       await tester.pumpAndSettle();
 
@@ -429,6 +456,7 @@ void main() {
           find.widgetWithText(TextFormField, 'Gmail address'), 'me@example.com');
       await tester.enterText(find.widgetWithText(TextFormField, 'App password'),
           'abcd efgh ijkl mnop');
+      await tester.ensureVisible(find.text('Sign in'));
       await tester.tap(find.text('Sign in'));
       await tester.pumpAndSettle();
 

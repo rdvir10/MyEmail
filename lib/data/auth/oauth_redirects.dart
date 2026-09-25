@@ -37,4 +37,17 @@ class OAuthRedirects {
 
   /// For tests, and for anything else that has a redirect in hand.
   void deliver(Uri uri) => _arrivals.add(uri);
+
+  /// Bring the app back in front of the browser's tab.
+  ///
+  /// The loopback way back leaves the tab on top with a "signed in" page
+  /// on it; the app has the code by then and this puts it in front, which
+  /// closes the tab above it. Nothing to do where there is no platform.
+  Future<void> bringAppToFront() async {
+    try {
+      await _channel.invokeMethod<void>('foreground');
+    } on MissingPluginException {
+      // A test, or the browser preview.
+    }
+  }
 }
