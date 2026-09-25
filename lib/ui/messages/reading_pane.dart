@@ -27,6 +27,7 @@ import 'full_screen_message.dart';
 import 'html_body_view.dart';
 import 'message_actions.dart';
 import 'message_source.dart';
+import 'move_to_sheet.dart';
 
 /// One open message: a fixed header with actions, then the body.
 ///
@@ -184,26 +185,39 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
 
   /// Delete, from the header. On a screen of its own the screen goes too:
   /// a page showing a message that is no longer anywhere is a lie.
+  ///
+  /// It goes at once. The list has the message gone before the server is
+  /// asked, the way a swipe does, and waiting for the answer before
+  /// leaving was what made this slower than the swipe by the length of a
+  /// round trip. Should the server refuse, the row comes back and the bar
+  /// says so, as after a swipe.
   Future<void> _delete() async {
     final listId = _listId;
     if (listId == null) return;
-    final ownScreen = widget.onPopOut == null;
-    final navigator = Navigator.of(context);
-    await MessageActions(ref, listId).delete(context, [widget.message]);
-    if (ownScreen) navigator.maybePop();
+    final done = MessageActions(ref, listId).delete(context, [widget.message]);
+    if (widget.onPopOut == null) Navigator.of(context).maybePop();
+    await done;
   }
 
   /// Move, from the header: the same folder picker the list and the ribbon
-  /// use. Like a delete, a move that happened takes a screen of its own
-  /// with it; a picker closed without a choice leaves everything as it was.
+  /// use. Like a delete, a move takes a screen of its own with it, as soon
+  /// as the folder is chosen; a picker closed without a choice leaves
+  /// everything as it was.
   Future<void> _move() async {
     final listId = _listId;
     if (listId == null) return;
-    final ownScreen = widget.onPopOut == null;
-    final navigator = Navigator.of(context);
-    final moved = await MessageActions(ref, listId)
-        .moveWithPrompt(context, [widget.message]);
-    if (moved && ownScreen) navigator.maybePop();
+    final message = widget.message;
+    final actions = MessageActions(ref, listId);
+    final target = await showMoveToSheet(
+      context,
+      accountId: message.accountId,
+      fromFolderId: message.folderId,
+      messageCount: 1,
+    );
+    if (target == null || !mounted) return;
+    final done = actions.moveTo(context, [message], target);
+    if (widget.onPopOut == null) Navigator.of(context).maybePop();
+    await done;
   }
 
   Future<void> _openWindow(MailMessage message) async {

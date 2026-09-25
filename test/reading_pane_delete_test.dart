@@ -1,7 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
@@ -14,13 +19,20 @@ import 'fakes/fake_webview.dart';
 void main() {
   setUpAll(FakeWebViewPlatform.install);
 
-  Future<ProviderContainer> pump(WidgetTester tester, Size size) async {
+  Future<ProviderContainer> pump(
+    WidgetTester tester,
+    Size size, {
+    MailEngine? engine,
+  }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final c = ProviderContainer(
-      overrides: [uiStateStoreProvider.overrideWithValue(MemoryUiStateStore())],
+      overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        if (engine != null) mailEngineProvider.overrideWithValue(engine),
+      ],
     );
     addTearDown(c.dispose);
     await tester.pumpWidget(
@@ -59,6 +71,25 @@ void main() {
     }
   });
 
+  testWidgets('on a tablet, the bar says it was deleted, with Undo, though '
+      'the pane that asked has gone by then', (tester) async {
+    // The pane is keyed by its message, and the message leaves the list
+    // before the server answers, so the pane is disposed mid-delete. Read
+    // through its ref after that, the delete that had gone through was
+    // reported as "Could not delete: Bad state: ...", with no Undo.
+    final engine = _SlowDelete();
+    await pump(tester, const Size(1400, 900), engine: engine);
+
+    await tester.tap(inPane(find.byTooltip('Delete')));
+    await tester.pump(const Duration(milliseconds: 300));
+    engine.answer();
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Could not delete'), findsNothing);
+    expect(find.text('Message deleted'), findsOneWidget);
+    expect(find.text('Undo'), findsOneWidget);
+  });
+
   group('on a phone', () {
     Future<(ProviderContainer, String)> openFirst(WidgetTester tester) async {
       final c = await pump(tester, const Size(400, 900));
@@ -80,6 +111,30 @@ void main() {
 
       expect(find.byType(MessageScreen), findsNothing);
       expect(inList(c, id), isFalse);
+    });
+
+    testWidgets('the screen closes at once, before the server has answered',
+        (tester) async {
+      // A swipe has the row gone before the server is asked; this used to
+      // wait for the answer, a round trip the swipe never showed.
+      final engine = _SlowDelete();
+      await pump(tester, const Size(400, 900), engine: engine);
+      await tester.tap(find.byType(MessageTile).first);
+      await tester.pumpAndSettle();
+      expect(find.byType(MessageScreen), findsOneWidget);
+
+      await tester.tap(inPane(find.byTooltip('Delete')));
+      // Settles: nothing is waiting on the server, only the route's own
+      // transition out.
+      await tester.pumpAndSettle();
+
+      expect(engine.pending, isTrue, reason: 'the server has not answered');
+      expect(find.byType(MessageScreen), findsNothing,
+          reason: 'gone while the delete is still on its way');
+
+      engine.answer();
+      await tester.pumpAndSettle();
+      expect(find.text('Message deleted'), findsOneWidget);
     });
 
     testWidgets('Undo still works once the screen has closed',
@@ -130,4 +185,21 @@ void main() {
       expect(flagged(), !before);
     });
   });
+}
+
+/// A sample engine whose delete waits to be told to answer, so a test can
+/// look at what is on screen in the meantime.
+class _SlowDelete extends SampleMailEngine {
+  Completer<void>? _gate;
+
+  bool get pending => _gate != null && !_gate!.isCompleted;
+
+  void answer() => _gate?.complete();
+
+  @override
+  Future<List<MessageMove>> deleteMessages(List<String> messageIds) async {
+    _gate = Completer<void>();
+    await _gate!.future;
+    return super.deleteMessages(messageIds);
+  }
 }

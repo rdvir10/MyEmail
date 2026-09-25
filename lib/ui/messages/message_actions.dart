@@ -26,9 +26,19 @@ import 'move_to_sheet.dart';
 /// its size, and an Undo that quietly does less than it says is worse than
 /// none.
 class MessageActions {
-  const MessageActions(this.ref, this.listId);
+  MessageActions(WidgetRef ref, this.listId)
+      : container = ProviderScope.containerOf(ref.context, listen: false);
 
-  final WidgetRef ref;
+  /// The app's container, taken while the widget is still there. Nothing
+  /// here reads through the widget's own ref after that: an action outlives
+  /// the widget that started it. Deleting from the reading pane on a tablet
+  /// takes the pane away, since the pane is keyed by its message and the
+  /// message leaves the list before the server has answered, and a ref
+  /// belonging to a widget that has gone throws the moment it is read. A
+  /// delete that had gone through was reported as "Could not delete: Bad
+  /// state: Using "ref" when a widget is about to or has been unmounted is
+  /// unsafe", with no Undo, and Ron saw it as "Bad ref".
+  final ProviderContainer container;
 
   /// The list the message is being acted on from: a folder, or the unified
   /// inbox. Not necessarily the folder the message lives in.
@@ -66,23 +76,23 @@ class MessageActions {
   ) async {
     if (messages.isEmpty) return false;
     final to = _reporterFor(context);
-    final name = ref.read(folderIndexProvider)[toFolderId]?.displayName ?? '';
+    final name = container.read(folderIndexProvider)[toFolderId]?.displayName ?? '';
     final (held, elsewhere) = _split(messages);
     final moves = <MessageMove>[];
     try {
       if (held.isNotEmpty) {
-        moves.addAll(await ref
+        moves.addAll(await container
             .read(messagesProvider(listId).notifier)
             .move([for (final m in held) m.id], toFolderId));
         _refreshSearch();
       }
       if (elsewhere.isNotEmpty) {
-        moves.addAll(await ref
+        moves.addAll(await container
             .read(mailEngineProvider)
             .moveMessages([for (final m in elsewhere) m.id], toFolderId));
         await _afterEngineChange(elsewhere, touched: [toFolderId]);
       }
-      ref.read(recentMoveTargetsProvider.notifier).record(toFolderId);
+      container.read(recentMoveTargetsProvider.notifier).record(toFolderId);
       _say(
         to,
         '${_count(messages.length)} moved to $name',
@@ -113,13 +123,13 @@ class MessageActions {
     final moves = <MessageMove>[];
     try {
       if (held.isNotEmpty) {
-        moves.addAll(await ref
+        moves.addAll(await container
             .read(messagesProvider(listId).notifier)
             .delete([for (final m in held) m.id]));
         _refreshSearch();
       }
       if (elsewhere.isNotEmpty) {
-        final gone = await ref
+        final gone = await container
             .read(mailEngineProvider)
             .deleteMessages([for (final m in elsewhere) m.id]);
         moves.addAll(gone);
@@ -187,7 +197,7 @@ class MessageActions {
     if (messages.isEmpty) return;
     final to = _reporterFor(context);
     final (here, elsewhere) = _split(messages);
-    final notifier = ref.read(messagesProvider(listId).notifier);
+    final notifier = container.read(messagesProvider(listId).notifier);
     var failed = 0;
     Object? why;
     for (final m in here) {
@@ -199,7 +209,7 @@ class MessageActions {
       }
     }
     if (elsewhere.isNotEmpty) {
-      final mail = ref.read(mailEngineProvider);
+      final mail = container.read(mailEngineProvider);
       for (final m in elsewhere) {
         try {
           await engine(mail, m);
@@ -223,8 +233,8 @@ class MessageActions {
   /// again. It was only asked for a hit from another folder: one the open
   /// list also held stayed in the results as it was, deleted or not.
   void _refreshSearch() {
-    if (ref.read(searchQueryProvider).trim().isNotEmpty) {
-      ref.invalidate(searchResultsProvider);
+    if (container.read(searchQueryProvider).trim().isNotEmpty) {
+      container.invalidate(searchResultsProvider);
     }
   }
 
@@ -236,7 +246,7 @@ class MessageActions {
   /// directly, and every list that might show them is re-read afterwards.
   (List<MailMessage>, List<MailMessage>) _split(List<MailMessage> messages) {
     final held = {
-      for (final m in ref.read(messagesProvider(listId)).value ?? const [])
+      for (final m in container.read(messagesProvider(listId)).value ?? const [])
         m.id,
     };
     return (
@@ -254,11 +264,11 @@ class MessageActions {
       ...touched,
       kUnifiedInboxId,
     }) {
-      ref.invalidate(messagesProvider(folderId));
+      container.invalidate(messagesProvider(folderId));
     }
-    ref.invalidate(searchResultsProvider);
+    container.invalidate(searchResultsProvider);
     for (final accountId in changed.map((m) => m.accountId).toSet()) {
-      await ref.read(foldersProvider.notifier).refreshAccount(accountId);
+      await container.read(foldersProvider.notifier).refreshAccount(accountId);
     }
   }
 
@@ -267,11 +277,9 @@ class MessageActions {
   /// [undo] and [of] together decide whether the Undo link appears: the
   /// moves must cover every one of the [of] messages acted on.
   ///
-  /// The link's work is done through the [ProviderContainer] rather than
-  /// through this object's [WidgetRef]. A snackbar outlives the widget that
-  /// raised it — deleting from the reading pane closes the pane on the way
-  /// — and a WidgetRef belonging to a widget that has gone throws the
-  /// moment it is read. The container is the app's, and lasts as long.
+  /// The link's work is done through the [ProviderContainer], as is
+  /// everything else here: a snackbar outlives the widget that raised it,
+  /// and so does the action itself. See [container].
   void _say(
     _Reporter to,
     String message, {
@@ -304,7 +312,7 @@ class MessageActions {
   /// Undo with it, on the one gesture people use most.
   _Reporter _reporterFor(BuildContext context) => _Reporter(
         messenger: ScaffoldMessenger.of(context),
-        container: ProviderScope.containerOf(context, listen: false),
+        container: container,
       );
 }
 
