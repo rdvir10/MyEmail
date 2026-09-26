@@ -37,7 +37,15 @@ class FolderSyncState {
 
 /// What the sync needs of each cached row: no more. Reading whole rows for
 /// it pulled every cached body out of the database on every sync.
-typedef SyncRow = ({int uid, DateTime date, bool hasPreview});
+/// What the sync needs of a cached row: its number and date, and whether
+/// the row has what a header read again would bring, a preview and the
+/// server's conversation.
+typedef SyncRow = ({
+  int uid,
+  DateTime date,
+  bool hasPreview,
+  bool hasConversation,
+});
 
 /// A cached row's flags, all of them, as [CacheStore.updateFlags] writes
 /// them.
@@ -73,6 +81,7 @@ class CachedMessage {
     this.calendar,
     this.messageId,
     this.inReplyTo,
+    this.conversationId,
   });
 
   final int uid;
@@ -112,6 +121,10 @@ class CachedMessage {
   final String? messageId;
   final String? inReplyTo;
 
+  /// See [MailMessage.conversationId]. Null on rows cached before schema
+  /// 10, until the folder's next sync reads their headers again.
+  final String? conversationId;
+
   bool get hasBody => bodyText != null;
 
   CachedMessage copyWith({
@@ -146,6 +159,7 @@ class CachedMessage {
       calendar: calendar ?? this.calendar,
       messageId: messageId,
       inReplyTo: inReplyTo,
+      conversationId: conversationId,
     );
   }
 
@@ -172,6 +186,7 @@ class CachedMessage {
       isMeeting: isMeeting,
       messageId: messageId,
       inReplyTo: inReplyTo,
+      conversationId: conversationId,
     );
   }
 }
@@ -327,7 +342,12 @@ class MemoryCacheStore implements CacheStore {
   @override
   Future<List<SyncRow>> readSyncRows(String accountId, String path) async => [
         for (final m in _folder(accountId, path).values)
-          (uid: m.uid, date: m.date, hasPreview: m.preview.isNotEmpty),
+          (
+            uid: m.uid,
+            date: m.date,
+            hasPreview: m.preview.isNotEmpty,
+            hasConversation: m.conversationId != null,
+          ),
       ]..sort((a, b) => b.uid.compareTo(a.uid));
 
   @override

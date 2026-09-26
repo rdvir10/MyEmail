@@ -10,6 +10,7 @@ MailMessage _m({
   String from = 'dana@example.com',
   String? messageId,
   String? inReplyTo,
+  String? conversationId,
   int minute = 0,
   bool isRead = false,
   bool isFlagged = false,
@@ -30,6 +31,7 @@ MailMessage _m({
     isFlagged: isFlagged,
     messageId: messageId,
     inReplyTo: inReplyTo,
+    conversationId: conversationId,
   );
 }
 
@@ -67,6 +69,34 @@ void main() {
   });
 
   group('groupIntoConversations', () {
+    test('the conversation the server keeps says which subjects are one, '
+        'and which are not', () {
+      // Two unrelated "SEO"s, which the subject alone made one thread and
+      // both Outlooks show apart; and a renamed reply, which Exchange keeps
+      // with what it answered.
+      final apart = groupIntoConversations([
+        _m(subject: 'SEO', conversationId: 'AAQk-1', minute: 1),
+        _m(subject: 'SEO', from: 'sam@example.com', conversationId: 'AAQk-2',
+            minute: 2),
+      ]);
+      expect(apart, hasLength(2));
+
+      final together = groupIntoConversations([
+        _m(subject: 'Quote', conversationId: 'AAQk-3', minute: 1),
+        _m(subject: 'Re: Quote (final)', conversationId: 'AAQk-3', minute: 2),
+      ]);
+      expect(together.single.length, 2);
+    });
+
+    test('the server\'s conversation is scoped to the account, like the '
+        'subject', () {
+      final grouped = groupIntoConversations([
+        _m(subject: 'SEO', conversationId: 'AAQk-1', accountId: 'a'),
+        _m(subject: 'SEO', conversationId: 'AAQk-1', accountId: 'b'),
+      ]);
+      expect(grouped, hasLength(2));
+    });
+
     test('a reply joins the message it answers', () {
       final first = _m(subject: 'Contract', messageId: 'one@example.com');
       final reply = _m(

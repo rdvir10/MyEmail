@@ -903,6 +903,9 @@ class GraphTransport implements ImapTransport {
             // to the normalised subject for these accounts, which is what it
             // already does for any mail without the header.
             inReplyTo: null,
+            // What Exchange groups by, and Outlook shows: the one thing that
+            // tells two unrelated messages with one subject apart.
+            conversationId: m.conversationId,
           ),
     ];
   }

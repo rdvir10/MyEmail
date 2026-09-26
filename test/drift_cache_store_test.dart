@@ -256,8 +256,8 @@ void main() {
         final rows = await store.readSyncRows('a', 'INBOX');
 
         expect(rows, [
-          (uid: 2, date: _msg(2).date, hasPreview: true),
-          (uid: 1, date: _msg(1).date, hasPreview: false),
+          (uid: 2, date: _msg(2).date, hasPreview: true, hasConversation: false),
+          (uid: 1, date: _msg(1).date, hasPreview: false, hasConversation: false),
         ]);
       });
 

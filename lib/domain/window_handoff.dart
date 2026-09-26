@@ -147,6 +147,7 @@ Map<String, Object?> _messageToJson(MailMessage m) => {
       'isForwarded': m.isForwarded,
       if (m.messageId != null) 'messageId': m.messageId,
       if (m.inReplyTo != null) 'inReplyTo': m.inReplyTo,
+      if (m.conversationId != null) 'conversationId': m.conversationId,
     };
 
 MailMessage _messageFromJson(Map json) => MailMessage(
@@ -177,4 +178,5 @@ MailMessage _messageFromJson(Map json) => MailMessage(
       isForwarded: (json['isForwarded'] as bool?) ?? false,
       messageId: json['messageId'] as String?,
       inReplyTo: json['inReplyTo'] as String?,
+      conversationId: json['conversationId'] as String?,
     );

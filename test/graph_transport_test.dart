@@ -585,6 +585,25 @@ void main() {
       expect(hit.single.isAnswered, isTrue);
     });
 
+    test('the conversation Exchange keeps comes with the header', () async {
+      server
+        ..message('f-inbox', id: 'm1', subject: 'SEO', minutesAgo: 30,
+            conversationId: 'AAQk-1')
+        ..message('f-inbox', id: 'm2', subject: 'SEO', minutesAgo: 20,
+            conversationId: 'AAQk-2')
+        ..message('f-inbox', id: 'm3', subject: 'Re: SEO', minutesAgo: 10,
+            conversationId: 'AAQk-1');
+
+      final headers = await transport.fetchHeadersFromUid('Inbox', 1);
+
+      expect(
+        {for (final h in headers) h.subject: h.conversationId},
+        {'SEO': anyOf('AAQk-1', 'AAQk-2'), 'Re: SEO': 'AAQk-1'},
+      );
+      expect(headers.map((h) => h.conversationId).toSet(),
+          {'AAQk-1', 'AAQk-2'});
+    });
+
     test('a forward or reply Outlook marked by its icon alone reads too, '
         'and the verb wins where both are there', () async {
       // Outlook on a desktop sets the icon it draws its arrow from (261 a
@@ -1579,6 +1598,7 @@ class _FakeGraph {
     List<String> replyTo = const [],
     int? lastVerb,
     int? iconIndex,
+    String? conversationId,
   }) {
     messages[id] = {
       'id': id,
@@ -1603,6 +1623,7 @@ class _FakeGraph {
       },
       'hasAttachments': hasAttachments,
       'bodyPreview': preview,
+      'conversationId': ?conversationId,
       // What Outlook, or anything else, last did to it, and the icon it
       // draws for it.
       if (lastVerb != null || iconIndex != null)

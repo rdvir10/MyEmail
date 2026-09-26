@@ -85,6 +85,11 @@ class Messages extends Table {
   TextColumn get messageId => text().nullable()();
   TextColumn get inReplyTo => text().nullable()();
 
+  /// The conversation the server keeps the message in, added in schema
+  /// 10. Null on an IMAP account, and on rows cached before, until the
+  /// folder's next sync reads their headers again.
+  TextColumn get conversationId => text().nullable()();
+
   @override
   Set<Column> get primaryKey => {accountId, path, uid};
 }
@@ -170,7 +175,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 9;
+  int get schemaVersion => 10;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -266,6 +271,14 @@ class MailDatabase extends _$MailDatabase {
         'AND g.remote_id = graph_ids.remote_id AND g.uid < graph_ids.uid)',
       );
       await m.createIndex(graphIdOnePerRemote);
+    }
+    if (from < 10) {
+      // The conversation the server keeps, which comes with a header. Every
+      // folder's headers are asked for once more so the rows already cached
+      // get theirs: see FolderSync, which reads the window's headers again
+      // for a folder not yet marked as checked.
+      await _addColumnIfMissing(m, messages, messages.conversationId);
+      await customStatement('UPDATE folder_states SET previews_checked = 0');
     }
     if (from < 9) {
       // Whether a message was replied to or forwarded, read with its
@@ -425,8 +438,9 @@ class DriftCacheStore implements CacheStore {
     // Whether there is a preview, not the preview: the sync only asks.
     final m = db.messages;
     final hasPreview = m.preview.equals('').not();
+    final hasConversation = m.conversationId.isNotNull();
     final rows = await (db.selectOnly(m)
-          ..addColumns([m.uid, m.date, hasPreview])
+          ..addColumns([m.uid, m.date, hasPreview, hasConversation])
           ..where(_folder(m, accountId, path))
           ..orderBy([OrderingTerm.desc(m.uid)]))
         .get();
@@ -436,6 +450,7 @@ class DriftCacheStore implements CacheStore {
           uid: r.read(m.uid)!,
           date: r.read(m.date)!,
           hasPreview: r.read(hasPreview)!,
+          hasConversation: r.read(hasConversation)!,
         ),
     ];
   }
@@ -537,6 +552,7 @@ class DriftCacheStore implements CacheStore {
             calendar: Value(m.calendar),
             messageId: Value(m.messageId),
             inReplyTo: Value(m.inReplyTo),
+            conversationId: Value(m.conversationId),
           ),
           // A re-fetched header must not wipe a body we already have, so on
           // conflict only the header columns are rewritten. The preview is
@@ -558,6 +574,7 @@ class DriftCacheStore implements CacheStore {
                   m.arrived == null ? const Value.absent() : Value(m.arrived),
               messageId: Value(m.messageId),
               inReplyTo: Value(m.inReplyTo),
+              conversationId: Value(m.conversationId),
               isRead: Value(m.isRead),
               isFlagged: Value(m.isFlagged),
               isAnswered: Value(m.isAnswered),
@@ -785,6 +802,7 @@ class DriftCacheStore implements CacheStore {
         calendar: r.calendar,
         messageId: r.messageId,
         inReplyTo: r.inReplyTo,
+        conversationId: r.conversationId,
       );
 
   static String _encodeAddresses(List<MailAddress> list) => jsonEncode([

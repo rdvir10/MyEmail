@@ -1242,6 +1242,7 @@ class CachedImapEngine implements MailEngine {
               isMeeting: h.isMeeting,
               messageId: h.messageId,
               inReplyTo: h.inReplyTo,
+              conversationId: h.conversationId,
             ),
           );
         }

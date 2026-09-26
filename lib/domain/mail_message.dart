@@ -73,6 +73,7 @@ class MailMessage {
     this.isForwarded = false,
     this.messageId,
     this.inReplyTo,
+    this.conversationId,
   });
 
   static String idFor(String folderId, int uid) => '$folderId#$uid';
@@ -147,6 +148,13 @@ class MailMessage {
   final String? messageId;
   final String? inReplyTo;
 
+  /// The conversation the server keeps this in, where it keeps one:
+  /// Exchange puts one on every message, and it is what Outlook groups by.
+  /// Null on an IMAP account, and on a Microsoft row cached before it was
+  /// kept. Grouping trusts it over the subject: two unrelated messages
+  /// called "SEO" are two conversations there, and were one here.
+  final String? conversationId;
+
   /// Every field is carried across. Cc, the attachment size and the meeting
   /// flag used to be left behind, so a message that had just been marked
   /// read lost its Cc line, and Reply all from it left those people out.
@@ -178,6 +186,7 @@ class MailMessage {
       isForwarded: isForwarded ?? this.isForwarded,
       messageId: messageId,
       inReplyTo: inReplyTo,
+      conversationId: conversationId,
     );
   }
 
@@ -218,7 +227,8 @@ class MailMessage {
       other.isAnswered == isAnswered &&
       other.isForwarded == isForwarded &&
       other.messageId == messageId &&
-      other.inReplyTo == inReplyTo;
+      other.inReplyTo == inReplyTo &&
+      other.conversationId == conversationId;
 
   /// The id and the flags only: enough to spread messages out, and equal
   /// messages still hash alike.

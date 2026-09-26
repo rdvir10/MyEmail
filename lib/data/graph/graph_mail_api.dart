@@ -940,6 +940,7 @@ class GraphMessage {
     this.internetMessageId,
     this.lastVerb,
     this.iconIndex,
+    this.conversationId,
   });
 
   final String id;
@@ -975,6 +976,10 @@ class GraphMessage {
   /// a desktop sets this on a forward and not always the verb, so the two
   /// are read together.
   final int? iconIndex;
+
+  /// Exchange's conversation, on every row. See
+  /// [MailMessage.conversationId].
+  final String? conversationId;
 
   static GraphMessage? fromJson(Map<String, Object?> json) {
     final id = json['id'];
@@ -1023,6 +1028,10 @@ class GraphMessage {
         json['singleValueExtendedProperties'],
         GraphMailApi.iconIndexProperty,
       ),
+      conversationId: json['conversationId'] is String &&
+              (json['conversationId'] as String).isNotEmpty
+          ? json['conversationId'] as String
+          : null,
     );
   }
 

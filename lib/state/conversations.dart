@@ -3,14 +3,19 @@ import '../domain/message_sort.dart';
 
 /// Grouping a message list into conversations.
 ///
-/// Two signals, in that order of trust:
+/// Three signals, in that order of trust:
 ///
 ///  1. `In-Reply-To` pointing at another message's `Message-ID`. Exact, and
 ///     survives a renamed subject, which is what happens whenever a thread
 ///     drifts onto a new topic and someone edits the line.
-///  2. The normalised subject. Needed because the headers are optional in
-///     practice and absent from everything cached before threading existed,
-///     and because plenty of real mail answers a message without saying so.
+///  2. The conversation the server keeps, where it keeps one: Exchange puts
+///     one on every message and it is what Outlook groups by. A message
+///     that has one is grouped by it alone, never by its subject: the
+///     server knows two unrelated "SEO"s apart, and the subject does not.
+///  3. The normalised subject, for the rest. Needed because the headers are
+///     optional in practice and absent from everything cached before
+///     threading existed, and because plenty of real mail answers a message
+///     without saying so.
 ///
 /// Deliberately not the full JWZ algorithm. That one reconstructs a tree from
 /// the whole `References` chain, and a tree is not what a mail list shows: a
@@ -148,11 +153,30 @@ List<Conversation> groupIntoConversations(List<MailMessage> messages) {
     if (parentMessage != null) union(m.id, parentMessage.id);
   }
 
-  // 2. Subject, for everything the headers did not already join. Scoped to
-  //    the account: two people can both send "Lunch?" and they are not one
-  //    conversation just because both landed in a unified inbox.
+  // 2. The server's conversation. Scoped to the account, as the subject is
+  //    below: the ids are the server's, and two servers may agree on one.
+  final byConversation = <(String, String), String>{};
+  for (final m in messages) {
+    final conversation = m.conversationId;
+    if (conversation == null || conversation.isEmpty) continue;
+    final key = (m.accountId, conversation);
+    final existing = byConversation[key];
+    if (existing == null) {
+      byConversation[key] = m.id;
+    } else {
+      union(m.id, existing);
+    }
+  }
+
+  // 3. Subject, for everything the headers did not already join, and only
+  //    where the server has not spoken: a message with a conversation from
+  //    it joins by that alone, or the subject would undo the server's word
+  //    and put the two "SEO"s back together. Scoped to the account: two
+  //    people can both send "Lunch?" and they are not one conversation just
+  //    because both landed in a unified inbox.
   final bySubject = <(String, String), String>{};
   for (final m in messages) {
+    if (m.conversationId != null && m.conversationId!.isNotEmpty) continue;
     final subject = normaliseSubject(m.subject);
     // A blank subject joins nothing, or every "(No subject)" in a
     // mailbox becomes one enormous conversation.

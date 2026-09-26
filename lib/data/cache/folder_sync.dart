@@ -139,9 +139,14 @@ class FolderSync {
     // would get nothing again: once a folder's rows have all been asked
     // about, they are not asked about again. A pass over the whole folder
     // every sync, forever, for one empty message.
+    //
+    // A row without the server's conversation is read again the same way:
+    // it was cached before that was kept (schema 10 cleared every folder's
+    // mark so this runs once more), and the same read brings it.
     if (transport.canRefreshHeaders &&
         !previous.previewsChecked &&
-        cached.any((m) => !m.hasPreview && !gone.contains(m.uid))) {
+        cached.any((m) =>
+            (!m.hasPreview || !m.hasConversation) && !gone.contains(m.uid))) {
       final refreshed = await transport.refreshHeaders(
         path,
         range.min,
@@ -269,6 +274,7 @@ class FolderSync {
         preview: h.preview,
         messageId: h.messageId,
         inReplyTo: h.inReplyTo,
+        conversationId: h.conversationId,
       );
 }
 

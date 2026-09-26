@@ -295,6 +295,7 @@ class RemoteHeader {
     this.preview = '',
     this.messageId,
     this.inReplyTo,
+    this.conversationId,
   });
 
   final int uid;
@@ -344,6 +345,10 @@ class RemoteHeader {
   /// back to the subject rather than relying on these.
   final String? messageId;
   final String? inReplyTo;
+
+  /// See [MailMessage.conversationId]. Graph sends it with every list row;
+  /// IMAP has nothing of the kind, and leaves it null.
+  final String? conversationId;
 }
 
 @immutable

@@ -206,8 +206,9 @@ class ViewSettingsScreen extends ConsumerWidget {
             onChanged: notifier.setConversations,
           ),
           _Note(
-            'Grouped by the threading headers where a message has them, and '
-            'by subject where it does not. Mail cached before this existed '
+            'On a Microsoft account the threads are the ones Outlook shows. '
+            'Elsewhere, grouped by the threading headers where a message has '
+            'them, and by subject where it does not. Mail cached before this existed '
             'has none until its folder next syncs.',
             theme: theme,
           ),

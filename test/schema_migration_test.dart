@@ -55,7 +55,16 @@ void main() {
   // upgrading from 2.35 or earlier failed on every cache read.
 
   /// What schema 9 added: whether a message was replied to or forwarded.
+  /// What schema 10 added: the conversation the server keeps.
+  Future<void> dropSchema10(MailDatabase db) async {
+    await db.customStatement(
+      'ALTER TABLE messages DROP COLUMN conversation_id',
+    );
+  }
+
+  /// What schema 9 added, and everything after it.
   Future<void> dropSchema9(MailDatabase db) async {
+    await dropSchema10(db);
     for (final column in ['is_answered', 'is_forwarded']) {
       await db.customStatement('ALTER TABLE messages DROP COLUMN $column');
     }
@@ -174,7 +183,28 @@ void main() {
     await db.close();
   }
 
-  /// A database as it stood at schema 8, the release before this one: a
+  /// A database as it stood at schema 9, the release before this one: a
+  /// folder whose headers were asked about once, and a message cached
+  /// before the server's conversation was kept.
+  Future<void> buildVersion9() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await DriftCacheStore(db).writeFolderState(
+      'acct-1',
+      'INBOX',
+      FolderSyncState(
+        uidValidity: 1000,
+        uidNext: 12,
+        lastSync: DateTime.utc(2026, 9, 1),
+        previewsChecked: true,
+      ),
+    );
+    await dropSchema10(db);
+    await db.customStatement('PRAGMA user_version = 9');
+    await db.close();
+  }
+
+  /// A database as it stood at schema 8, two releases back: a
   /// Gmail Inbox synced with CONDSTORE, so its place in the folder is
   /// recorded, and a message cached before replies were read.
   Future<void> buildVersion8() async {
@@ -210,6 +240,44 @@ void main() {
             .get())
           row.read<String>('name'),
       };
+
+  test('a version 9 database gains the conversation, keeps its rows, and has '
+      'each folder read its headers once more', () async {
+    await buildVersion9();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    final cached = (await store.readMessages('acct-1', 'INBOX')).single;
+
+    expect(cached.bodyHtml, '<p>A body worth keeping</p>');
+    expect(cached.conversationId, isNull, reason: 'cached before it was kept');
+    final state = await store.readFolderState('acct-1', 'INBOX');
+    expect(state!.previewsChecked, isFalse,
+        reason: 'the next sync reads the headers again, and they bring it');
+    expect(
+      (await store.readSyncRows('acct-1', 'INBOX')).single.hasConversation,
+      isFalse,
+    );
+
+    await store.upsertMessages('acct-1', 'INBOX', [
+      CachedMessage(
+        uid: 11,
+        subject: 'Cached before the upgrade',
+        from: const MailAddress(email: 'dana@example.com'),
+        to: const [MailAddress(email: 'me@example.com')],
+        date: DateTime.utc(2026, 9, 1),
+        isRead: false,
+        isFlagged: false,
+        hasAttachments: false,
+        conversationId: 'AAQk-1',
+      ),
+    ]);
+    final after = await store.readMessage('acct-1', 'INBOX', 11);
+    expect(after!.conversationId, 'AAQk-1');
+    expect(after.bodyHtml, '<p>A body worth keeping</p>',
+        reason: 'a header read again keeps the body');
+  });
 
   test('a version 8 database gains replied and forwarded, and keeps its rows',
       () async {
