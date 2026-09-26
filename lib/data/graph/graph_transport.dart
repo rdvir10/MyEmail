@@ -289,11 +289,15 @@ class GraphTransport implements ImapTransport {
       downToUid: fromUid,
       downToDate: windowStart,
     );
-    // The newest rows' last verbs as Graph sent them, for the log: an arrow
-    // that fails to appear is either not on the server or not read, and
-    // this tells the two apart.
-    debugPrint('[myemail] verbs $path: '
-        '${[for (final m in scan.messages.take(8)) '${scan.uids[m.id]}=${m.lastVerb}'].join(' ')}');
+    // The rows with a last verb or an icon, as Graph sent them, for the
+    // log: an arrow that fails to appear is either not on the server or not
+    // read, and this tells the two apart.
+    final marked = [
+      for (final m in scan.messages)
+        if (m.lastVerb != null || m.iconIndex != null) m,
+    ];
+    debugPrint('[myemail] verbs $path: ${scan.messages.length} rows, marked '
+        '${[for (final m in marked.take(24)) '${scan.uids[m.id]}=${m.lastVerb}/${m.iconIndex}'].join(' ')}');
     return [
       for (final m in scan.messages)
         if (_inRange(scan.uids[m.id], fromUid, toUid))
@@ -301,17 +305,27 @@ class GraphTransport implements ImapTransport {
             uid: scan.uids[m.id]!,
             isRead: m.isRead,
             isFlagged: m.isFlagged,
-            isAnswered: _answered(m.lastVerb),
-            isForwarded: _forwarded(m.lastVerb),
+            isAnswered: _answered(m),
+            isForwarded: _forwarded(m),
           ),
     ];
   }
 
-  /// Exchange's last verb as the two marks. A reply to all is a reply.
-  static bool _answered(int? verb) =>
-      verb == GraphMailApi.verbReply || verb == GraphMailApi.verbReplyAll;
+  /// Exchange's last verb as the two marks, and where it has none, the
+  /// icon: Outlook on a desktop draws its own arrow from the icon and, for a
+  /// forward made there, set the icon and not the verb on the server. A
+  /// reply to all is a reply.
+  static bool _answered(GraphMessage m) => switch (m.lastVerb) {
+        GraphMailApi.verbReply || GraphMailApi.verbReplyAll => true,
+        GraphMailApi.verbForward => false,
+        _ => m.iconIndex == GraphMailApi.iconReplied,
+      };
 
-  static bool _forwarded(int? verb) => verb == GraphMailApi.verbForward;
+  static bool _forwarded(GraphMessage m) => switch (m.lastVerb) {
+        GraphMailApi.verbForward => true,
+        GraphMailApi.verbReply || GraphMailApi.verbReplyAll => false,
+        _ => m.iconIndex == GraphMailApi.iconForwarded,
+      };
 
   @override
   bool get canRefreshHeaders => true;
@@ -879,8 +893,8 @@ class GraphTransport implements ImapTransport {
             date: m.received,
             isRead: m.isRead,
             isFlagged: m.isFlagged,
-            isAnswered: _answered(m.lastVerb),
-            isForwarded: _forwarded(m.lastVerb),
+            isAnswered: _answered(m),
+            isForwarded: _forwarded(m),
             hasAttachments: m.hasAttachments,
             preview: m.preview,
             messageId: m.internetMessageId,

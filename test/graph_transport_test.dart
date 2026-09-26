@@ -347,7 +347,8 @@ void main() {
         expect(uri.queryParameters[r'$select'], GraphMailApi.headerFields);
         expect(
           uri.queryParameters[r'$expand'],
-          r"singleValueExtendedProperties($filter=id eq 'Integer 0x1081')",
+          r"singleValueExtendedProperties($filter=id eq 'Integer 0x1081' "
+          r"or id eq 'Integer 0x1080')",
         );
       }
     });
@@ -582,6 +583,47 @@ void main() {
       final hit =
           await transport.fetchHeadersByUids('Inbox', [uid['Replied']!]);
       expect(hit.single.isAnswered, isTrue);
+    });
+
+    test('a forward or reply Outlook marked by its icon alone reads too, '
+        'and the verb wins where both are there', () async {
+      // Outlook on a desktop sets the icon it draws its arrow from (261 a
+      // reply, 262 a forward) and, for a forward made there, not the last
+      // verb: Ron's two forwards had no verb on the server and no arrow
+      // here. The verb says more when it is there, and a verb of a forward
+      // beside an icon of a reply is a forward.
+      server
+        ..message('f-inbox', id: 'm1', subject: 'Icon forward', minutesAgo: 50,
+            iconIndex: 262)
+        ..message('f-inbox', id: 'm2', subject: 'Icon reply', minutesAgo: 40,
+            iconIndex: 261)
+        ..message('f-inbox', id: 'm3', subject: 'Both', minutesAgo: 30,
+            lastVerb: 104, iconIndex: 261)
+        ..message('f-inbox', id: 'm4', subject: 'Other icon', minutesAgo: 20,
+            iconIndex: 256)
+        ..message('f-inbox', id: 'm5', subject: 'Verb, other icon',
+            minutesAgo: 10, lastVerb: 102, iconIndex: 256);
+
+      final headers = await transport.fetchHeadersFromUid('Inbox', 1);
+
+      final marks = {
+        for (final h in headers) h.subject: (h.isAnswered, h.isForwarded),
+      };
+      expect(marks, {
+        'Icon forward': (false, true),
+        'Icon reply': (true, false),
+        'Both': (false, true),
+        'Other icon': (false, false),
+        'Verb, other icon': (true, false),
+      });
+
+      final uid = {for (final h in headers) h.subject: h.uid};
+      final flags = {
+        for (final f in await transport.fetchFlags('Inbox', 1, 5))
+          f.uid: (f.isAnswered, f.isForwarded),
+      };
+      expect(flags[uid['Icon forward']], (false, true));
+      expect(flags[uid['Icon reply']], (true, false));
     });
 
     test('the body comes back as HTML when Graph sends HTML', () async {
@@ -1536,6 +1578,7 @@ class _FakeGraph {
     String preview = '',
     List<String> replyTo = const [],
     int? lastVerb,
+    int? iconIndex,
   }) {
     messages[id] = {
       'id': id,
@@ -1560,10 +1603,12 @@ class _FakeGraph {
       },
       'hasAttachments': hasAttachments,
       'bodyPreview': preview,
-      // What Outlook, or anything else, last did to it.
-      if (lastVerb != null)
+      // What Outlook, or anything else, last did to it, and the icon it
+      // draws for it.
+      if (lastVerb != null || iconIndex != null)
         'singleValueExtendedProperties': [
-          {'id': 'Integer 0x1081', 'value': '$lastVerb'},
+          if (lastVerb != null) {'id': 'Integer 0x1081', 'value': '$lastVerb'},
+          if (iconIndex != null) {'id': 'Integer 0x1080', 'value': '$iconIndex'},
         ],
     };
     _recount(folderId);
@@ -1593,20 +1638,25 @@ class _FakeGraph {
       };
 
   /// [message] as Graph answers with it: extended properties only where
-  /// `$expand` asked for them, and only the one its filter names. Asked for
-  /// any other way, a row has none.
+  /// `$expand` asked for them, and only the ones its filter names. Asked
+  /// for any other way, a row has none.
   static Map<String, Object?> _row(
     Map<String, Object?> message,
     Map<String, String> query,
   ) {
     final row = {...message}..remove('singleValueExtendedProperties');
-    final asked = RegExp(
-      r"^singleValueExtendedProperties\(\$filter=id eq '([^']+)'\)$",
-    ).firstMatch(query[r'$expand'] ?? '')?.group(1);
+    final expand = query[r'$expand'] ?? '';
+    final asked = <String>{
+      if (RegExp(r"^singleValueExtendedProperties\(\$filter=(id eq '[^']+'"
+              r"( or id eq '[^']+')*)\)$")
+          .hasMatch(expand))
+        for (final m in RegExp(r"id eq '([^']+)'").allMatches(expand))
+          m.group(1)!,
+    };
     final kept = [
       for (final p in (message['singleValueExtendedProperties'] as List?) ??
           const [])
-        if ((p as Map)['id'] == asked) p,
+        if (asked.contains((p as Map)['id'])) p,
     ];
     if (kept.isNotEmpty) row['singleValueExtendedProperties'] = kept;
     return row;

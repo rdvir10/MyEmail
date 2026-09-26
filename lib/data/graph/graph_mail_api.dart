@@ -112,10 +112,18 @@ class GraphMailApi {
   static const verbReplyAll = 103;
   static const verbForward = 104;
 
-  /// The last verb, asked for with every list row in the same request as
-  /// the row. Asked for separately it would be a request per message.
+  /// The last verb and the icon, asked for with every list row in the same
+  /// request as the row. Asked for separately it would be a request per
+  /// message. Both, because Outlook on a desktop draws its arrow from the
+  /// icon and a forward made there left the last verb unset on the server,
+  /// so the arrow shown there was not shown here.
   static const lastVerbExpand =
-      "singleValueExtendedProperties(\$filter=id eq '$lastVerbProperty')";
+      "singleValueExtendedProperties(\$filter=id eq '$lastVerbProperty' "
+      "or id eq '$iconIndexProperty')";
+
+  /// The icon's values for a reply and a forward; see [iconIndexProperty].
+  static const iconReplied = 261;
+  static const iconForwarded = 262;
 
   // --- folders ---------------------------------------------------------------
 
@@ -931,6 +939,7 @@ class GraphMessage {
     required this.preview,
     this.internetMessageId,
     this.lastVerb,
+    this.iconIndex,
   });
 
   final String id;
@@ -959,6 +968,13 @@ class GraphMessage {
   /// another Exchange keeps. Null where nothing has been, or where the row
   /// was read without asking.
   final int? lastVerb;
+
+  /// The icon Outlook draws beside it: [GraphMailApi.iconReplied] or
+  /// [GraphMailApi.iconForwarded] after a reply or a forward, another
+  /// number otherwise, null where nothing has been done to it. Outlook on
+  /// a desktop sets this on a forward and not always the verb, so the two
+  /// are read together.
+  final int? iconIndex;
 
   static GraphMessage? fromJson(Map<String, Object?> json) {
     final id = json['id'];
@@ -999,19 +1015,26 @@ class GraphMessage {
       internetMessageId: json['internetMessageId'] is String
           ? json['internetMessageId'] as String
           : null,
-      lastVerb: _lastVerb(json['singleValueExtendedProperties']),
+      lastVerb: _property(
+        json['singleValueExtendedProperties'],
+        GraphMailApi.lastVerbProperty,
+      ),
+      iconIndex: _property(
+        json['singleValueExtendedProperties'],
+        GraphMailApi.iconIndexProperty,
+      ),
     );
   }
 
-  /// The last verb among a row's extended properties. Absent altogether on
-  /// a message nothing has been done to, and sent as a string, as Graph
-  /// sends every extended property's value.
-  static int? _lastVerb(Object? properties) {
+  /// One of a row's extended properties, by id, as a number. Absent
+  /// altogether on a message nothing has been done to, and sent as a
+  /// string, as Graph sends every extended property's value.
+  static int? _property(Object? properties, String wanted) {
     if (properties is! List) return null;
     for (final p in properties) {
       if (p is! Map) continue;
       final id = '${p['id']}'.toLowerCase();
-      if (id != GraphMailApi.lastVerbProperty.toLowerCase()) continue;
+      if (id != wanted.toLowerCase()) continue;
       return int.tryParse('${p['value']}'.trim());
     }
     return null;
