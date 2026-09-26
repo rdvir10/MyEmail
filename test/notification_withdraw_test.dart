@@ -190,7 +190,7 @@ void main() {
       plugin = _Plugin();
       notifier = AndroidMailNotifier(
         plugin: plugin,
-        drawBadge: (_, _) async => null,
+        drawBadge: (_) async => null,
       );
     });
 
@@ -240,7 +240,7 @@ void main() {
     });
   });
 
-  group('sender badges', () {
+  group('account badges', () {
     test('one that fails is tried again for the next batch', () async {
       // One slow draw in a worker that had just started used to take the
       // badges off everything that worker posted for most of an hour.
@@ -249,7 +249,7 @@ void main() {
       final png = Uint8List.fromList([1, 2, 3]);
       final notifier = AndroidMailNotifier(
         plugin: plugin,
-        drawBadge: (_, _) async => ++draws == 1 ? null : png,
+        drawBadge: (_) async => ++draws == 1 ? null : png,
       );
       const account = Account(
         id: 'a',

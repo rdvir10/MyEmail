@@ -11,7 +11,7 @@ import 'mail_notifier.dart';
 import 'notification_actions.dart';
 import 'notification_action_isolate.dart';
 import 'pending_actions.dart';
-import 'sender_badge.dart';
+import 'account_badge.dart';
 
 /// The real notifier, on top of flutter_local_notifications.
 ///
@@ -26,10 +26,10 @@ class AndroidMailNotifier implements MailNotifier {
   AndroidMailNotifier({
     FlutterLocalNotificationsPlugin? plugin,
     Future<void> Function(PendingAction action)? queueAction,
-    Future<Uint8List?> Function(String initial, int colorValue)? drawBadge,
+    Future<Uint8List?> Function(int colorValue)? drawBadge,
   })  : _plugin = plugin ?? FlutterLocalNotificationsPlugin(),
         _queue = queueAction ?? queueNotificationAction,
-        _draw = drawBadge ?? drawSenderBadge;
+        _draw = drawBadge ?? drawAccountBadge;
 
   final FlutterLocalNotificationsPlugin _plugin;
 
@@ -39,9 +39,9 @@ class AndroidMailNotifier implements MailNotifier {
   bool _ready = false;
   String? _launchPayload;
 
-  /// Badges already drawn, by letter and colour, so a pass announcing ten
-  /// messages from three people draws three.
-  final _badges = <String, Future<Uint8List?>>{};
+  /// Badges already drawn, by colour, so a pass announcing ten messages
+  /// to one account draws one.
+  final _badges = <int, Future<Uint8List?>>{};
 
   /// Set once a badge has failed to draw, for the rest of one batch. The
   /// likeliest cause is an isolate with no screen, where every badge would
@@ -54,17 +54,16 @@ class AndroidMailNotifier implements MailNotifier {
   bool _badgesFailed = false;
 
   /// Draws a badge, and for tests, one that fails.
-  final Future<Uint8List?> Function(String initial, int colorValue) _draw;
+  final Future<Uint8List?> Function(int colorValue) _draw;
 
-  Future<AndroidBitmap<Object>?> _badgeFor(String sender, int colorValue) async {
+  /// The app's dart on the account's colour; see [drawAccountBadge].
+  Future<AndroidBitmap<Object>?> _badgeFor(int colorValue) async {
     if (_badgesFailed) return null;
-    final initial = senderInitial(sender);
-    final key = '$initial:$colorValue';
-    final png = await _badges.putIfAbsent(key, () => _draw(initial, colorValue));
+    final png = await _badges.putIfAbsent(colorValue, () => _draw(colorValue));
     if (png == null) {
       _badgesFailed = true;
       // Not kept, so the next batch tries this one again.
-      _badges.remove(key);
+      _badges.remove(colorValue);
       return null;
     }
     return ByteArrayAndroidBitmap(png);
@@ -222,7 +221,7 @@ class AndroidMailNotifier implements MailNotifier {
             actions: actions,
             when: n.when.millisecondsSinceEpoch,
             color: Color(account.colorValue),
-            largeIcon: await _badgeFor(n.title, account.colorValue),
+            largeIcon: await _badgeFor(account.colorValue),
             // The subject and preview are two lines and will be cut off
             // otherwise; expanding the notification should show the whole
             // thing, which is often the entire message.
@@ -255,6 +254,9 @@ class AndroidMailNotifier implements MailNotifier {
           priority: Priority.high,
           category: AndroidNotificationCategory.email,
           color: Color(account.colorValue),
+          // The group's row wears the account's colour too, so a folded
+          // group says whose it is at a glance.
+          largeIcon: await _badgeFor(account.colorValue),
           styleInformation: InboxStyleInformation(
             [for (final n in notifications) '${n.title}  ${_firstLine(n.body)}'],
             contentTitle: account.emailAddress,
