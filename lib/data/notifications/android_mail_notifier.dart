@@ -228,7 +228,9 @@ class AndroidMailNotifier implements MailNotifier {
             styleInformation: BigTextStyleInformation(
               n.body,
               contentTitle: n.title,
-              summaryText: account.emailAddress,
+              // The account by the name it has in the app, on the line
+              // under the sender: an address was cut short there.
+              summaryText: account.displayName,
             ),
           ),
         ),
@@ -239,7 +241,7 @@ class AndroidMailNotifier implements MailNotifier {
     // message to show would be a guess.
     await _plugin.show(
       id: _summaryId(account.id),
-      title: account.emailAddress,
+      title: account.displayName,
       body: _summaryLine(notifications.length, folder.displayName),
       notificationDetails: NotificationDetails(
         android: AndroidNotificationDetails(
@@ -257,9 +259,13 @@ class AndroidMailNotifier implements MailNotifier {
           // The group's row wears the account's colour too, so a folded
           // group says whose it is at a glance.
           largeIcon: await _badgeFor(account.colorValue),
+          // Android draws the group's header itself, with the app's own icon
+          // and name and nothing of the summary but this: the one place the
+          // header names the account, as Outlook's names its mailbox.
+          subText: account.displayName,
           styleInformation: InboxStyleInformation(
             [for (final n in notifications) '${n.title}  ${_firstLine(n.body)}'],
-            contentTitle: account.emailAddress,
+            contentTitle: account.displayName,
           ),
         ),
       ),
