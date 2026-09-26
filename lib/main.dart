@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'data/recent_log.dart';
 import 'data/account_store.dart';
 import 'data/cache/mail_database.dart';
 import 'data/graph/graph_id_map.dart';
@@ -56,6 +57,10 @@ const _forceSample = bool.fromEnvironment('MYEMAIL_SAMPLE');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // From here on the log is kept as well as printed, for Settings, About,
+  // Recent log: the phone that is somewhere else can still show what it
+  // has been doing.
+  keepRecentLog();
   // Loaded before the first frame so the tree renders in its remembered shape
   // immediately rather than snapping into it a moment later.
   final prefs = await SharedPreferencesWithCache.create(

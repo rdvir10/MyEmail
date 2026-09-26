@@ -8,6 +8,7 @@ import 'package:myemail/data/updates/update_service.dart';
 import 'package:myemail/domain/app_release.dart';
 import 'package:myemail/state/update_providers.dart';
 import 'package:myemail/ui/settings/about_screen.dart';
+import 'package:myemail/ui/settings/recent_log_screen.dart';
 
 const _installed = InstalledVersion(version: '1.0.0', build: 4);
 
@@ -310,6 +311,14 @@ void main() {
         (tester) async {
       await pump(tester);
       expect(find.text('Check for updates'), findsOneWidget);
+    });
+
+    testWidgets('offers the recent log, for the phone that is elsewhere',
+        (tester) async {
+      await pump(tester);
+      await tester.tap(find.text('Recent log'));
+      await tester.pumpAndSettle();
+      expect(find.byType(RecentLogScreen), findsOneWidget);
     });
 
     testWidgets('says plainly when updates are not set up', (tester) async {

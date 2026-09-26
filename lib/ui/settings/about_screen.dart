@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/app_release.dart';
 import '../../state/update_providers.dart';
 import 'help_screen.dart';
+import 'recent_log_screen.dart';
 
 /// What is installed, and whether there is anything newer.
 ///
@@ -47,6 +48,20 @@ class AboutScreen extends ConsumerWidget {
             subtitle: const Text('Everything on offer, listed per device'),
             trailing: const Icon(Icons.chevron_right, size: 20),
             onTap: () => HelpScreen.open(context, HelpPage.features),
+          ),
+          // For the phone that is somewhere else when something needs
+          // looking at: what it has been doing, to copy or share from here.
+          ListTile(
+            leading: const Icon(Icons.receipt_long_outlined),
+            title: const Text('Recent log'),
+            subtitle: const Text(
+              'What the app has noted lately, to copy or share when '
+              'something needs looking at',
+            ),
+            trailing: const Icon(Icons.chevron_right, size: 20),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const RecentLogScreen()),
+            ),
           ),
           const Divider(height: 1),
           if (!configured)
