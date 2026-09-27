@@ -69,6 +69,20 @@ final searchShownProvider = Provider<bool>(
 final searchQueryProvider =
     NotifierProvider<SearchQuery, String>(SearchQuery.new);
 
+/// Which part of a message the search looks in: everything, or the sender,
+/// the subject or the body alone. Kept for the session, like the scope.
+class SearchFieldSelection extends Notifier<SearchField> {
+  @override
+  SearchField build() => SearchField.all;
+
+  void set(SearchField value) => state = value;
+}
+
+final searchFieldProvider =
+    NotifierProvider<SearchFieldSelection, SearchField>(
+  SearchFieldSelection.new,
+);
+
 /// Which scope the user picked: this folder, this account, or everything.
 enum SearchScopeChoice { folder, account, everywhere }
 
@@ -118,5 +132,8 @@ final searchResultsProvider = FutureProvider<List<MailMessage>?>((ref) async {
   await completer.future;
 
   final scope = ref.watch(searchScopeProvider);
-  return ref.watch(mailEngineProvider).searchMessages(query, scope);
+  final field = ref.watch(searchFieldProvider);
+  return ref
+      .watch(mailEngineProvider)
+      .searchMessages(query, scope, field: field);
 });

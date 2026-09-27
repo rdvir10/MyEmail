@@ -46,6 +46,17 @@ void main() {
       expect(buildSearchCriteria('   '), 'ALL');
     });
 
+    test('named a part of the message, it looks there alone', () {
+      expect(buildSearchCriteria('dana', field: SearchField.from),
+          'CHARSET UTF-8 FROM "dana"');
+      expect(buildSearchCriteria('acme invoice', field: SearchField.subject),
+          'CHARSET UTF-8 SUBJECT "acme" SUBJECT "invoice"');
+      expect(buildSearchCriteria('pay', field: SearchField.body),
+          'CHARSET UTF-8 BODY "pay"');
+      expect(buildSearchCriteria('pay', field: SearchField.body),
+          isNot(contains('OR')));
+    });
+
     test('a Hebrew or accented word goes as a literal, not between quotes',
         () {
       // IMAP allows only 7-bit text between quotes; Gmail answered BAD.
@@ -113,6 +124,29 @@ void main() {
       );
       expect(hits, isNotEmpty);
       expect(hits.every((m) => m.folderId == 'acct-personal:INBOX'), isTrue);
+    });
+
+    test('named a part of the message, it matches that part alone',
+        () async {
+      const scope = SearchScope.folder('acct-personal:INBOX');
+      final everywhere = await engine.searchMessages('invoice', scope);
+      expect(everywhere, isNotEmpty);
+
+      final inSubject = await engine.searchMessages('invoice', scope,
+          field: SearchField.subject);
+      expect(inSubject, isNotEmpty);
+      expect(
+        inSubject.every((m) => m.subject.toLowerCase().contains('invoice')),
+        isTrue,
+      );
+
+      final fromSender = await engine.searchMessages('invoice', scope,
+          field: SearchField.from);
+      expect(
+        fromSender.every((m) =>
+            '${m.from.display} ${m.from.email}'.toLowerCase().contains('invoice')),
+        isTrue,
+      );
     });
 
     test('an account scope spans that account only', () async {
@@ -202,6 +236,24 @@ void main() {
       );
       expect(hits.single.subject, 'Acme invoice');
       expect(server.calls.any((c) => c.startsWith('UID SEARCH INBOX')), isTrue);
+    });
+
+    test('named a part of the message, the server is asked for that part',
+        () async {
+      final scope = SearchScope.folder('${account.id}:INBOX');
+
+      String lastSearch() =>
+          server.calls.lastWhere((c) => c.startsWith('UID SEARCH'));
+
+      final inBody = await engine.searchMessages('pay', scope,
+          field: SearchField.body);
+      expect(inBody.single.subject, 'Acme invoice');
+      expect(lastSearch(), 'UID SEARCH INBOX BODY "pay"');
+
+      final inSubject = await engine.searchMessages('pay', scope,
+          field: SearchField.subject);
+      expect(inSubject, isEmpty, reason: '"pay" is in the body alone');
+      expect(lastSearch(), 'UID SEARCH INBOX SUBJECT "pay"');
     });
 
     test('an account search covers folders but skips All Mail', () async {
@@ -402,6 +454,38 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('No messages found'), findsOneWidget);
+    });
+
+    testWidgets('the part of the message to look in is chosen under the box',
+        (tester) async {
+      wide(tester);
+      await tester.pumpWidget(app());
+      await tester.pumpAndSettle();
+
+      await openSearch(tester);
+      await tester.enterText(searchField, 'invoice');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+      final chooser = find.byKey(const ValueKey('search-field'));
+      expect(chooser, findsOneWidget);
+      expect(find.byType(MessageTile), findsWidgets);
+
+      // Nobody is called "invoice": from the sender alone there is nothing.
+      await tester.tap(find.descendant(of: chooser, matching: find.text('From')));
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+      expect(find.text('No messages found'), findsOneWidget);
+
+      await tester.tap(
+          find.descendant(of: chooser, matching: find.text('Subject')));
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+      final tiles = tester.widgetList<MessageTile>(find.byType(MessageTile));
+      expect(tiles, isNotEmpty);
+      expect(
+        tiles.every((t) => t.message.subject.toLowerCase().contains('invoice')),
+        isTrue,
+      );
     });
 
     testWidgets('the scope chooser appears in a real folder only',

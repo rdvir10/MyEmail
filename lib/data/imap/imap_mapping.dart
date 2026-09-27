@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:enough_mail/enough_mail.dart' as em;
 
+import '../../domain/search_field.dart';
 import '../../domain/account.dart';
 import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
@@ -441,11 +442,14 @@ String htmlToText(String html) {
 /// An IMAP SEARCH criteria string for a free-text query.
 ///
 /// Matches subject, sender or body, which is what people expect a mail
-/// search box to do. Words are ANDed, since IMAP's default is to combine
-/// criteria with AND and each word narrows the result the way a search box
-/// should. Quotes in the query are escaped so they cannot close the string
-/// and inject further criteria.
-String buildSearchCriteria(String query) {
+/// search box to do, or only the one [field] names. Words are ANDed, since
+/// IMAP's default is to combine criteria with AND and each word narrows the
+/// result the way a search box should. Quotes in the query are escaped so
+/// they cannot close the string and inject further criteria.
+String buildSearchCriteria(
+  String query, {
+  SearchField field = SearchField.all,
+}) {
   final words = query
       .trim()
       .split(RegExp(r'\s+'))
@@ -455,10 +459,15 @@ String buildSearchCriteria(String query) {
   return [
     'CHARSET UTF-8',
     for (final word in words)
-      // OR takes exactly two arguments, so three fields nest as
-      // OR OR <a> <b> <c>.
-      'OR OR ${_term('SUBJECT', word)} ${_term('FROM', word)} '
-          '${_term('BODY', word)}',
+      switch (field) {
+        // OR takes exactly two arguments, so three fields nest as
+        // OR OR <a> <b> <c>.
+        SearchField.all => 'OR OR ${_term('SUBJECT', word)} '
+            '${_term('FROM', word)} ${_term('BODY', word)}',
+        SearchField.from => _term('FROM', word),
+        SearchField.subject => _term('SUBJECT', word),
+        SearchField.body => _term('BODY', word),
+      },
   ].join(' ');
 }
 

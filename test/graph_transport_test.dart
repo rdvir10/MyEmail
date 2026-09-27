@@ -323,6 +323,17 @@ void main() {
       );
     });
 
+    test('a search names the part of the message asked for, in the words '
+        'Graph takes', () {
+      expect(GraphMailApi.searchString('invoice', SearchField.all), 'invoice');
+      expect(GraphMailApi.searchString('dana levi', SearchField.from),
+          'from:dana from:levi');
+      expect(GraphMailApi.searchString(' acme ', SearchField.subject),
+          'subject:acme');
+      expect(GraphMailApi.searchString('pay "now"', SearchField.body),
+          r'body:pay body:\"now\"');
+    });
+
     test('every list of messages asks what was last done to each, at once',
         () async {
       // Exchange says a message was replied to or forwarded in a property

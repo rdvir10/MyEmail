@@ -160,14 +160,27 @@ class FakeImapTransport implements ImapTransport {
     String path,
     String query, {
     int limit = 100,
+    SearchField field = SearchField.all,
   }) async {
     _online();
-    calls.add('UID SEARCH $path TEXT "$query"');
+    final key = switch (field) {
+      SearchField.all => 'TEXT',
+      SearchField.from => 'FROM',
+      SearchField.subject => 'SUBJECT',
+      SearchField.body => 'BODY',
+    };
+    calls.add('UID SEARCH $path $key "$query"');
     final words = query.toLowerCase().split(RegExp(r'\s+'));
     final hits = [
       for (final m in _require(path).ordered)
-        if (words.every(
-            (w) => '${m.subject} ${m.from} ${m.body}'.toLowerCase().contains(w)))
+        if (words.every((w) => switch (field) {
+              SearchField.all => '${m.subject} ${m.from} ${m.body}',
+              SearchField.from => m.from,
+              SearchField.subject => m.subject,
+              SearchField.body => m.body,
+            }
+                .toLowerCase()
+                .contains(w)))
           m.uid,
     ]..sort((a, b) => b.compareTo(a));
     return hits.take(limit).toList();

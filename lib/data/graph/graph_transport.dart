@@ -476,8 +476,14 @@ class GraphTransport implements ImapTransport {
     String path,
     String query, {
     int limit = 100,
+    SearchField field = SearchField.all,
   }) async {
-    final found = await api.search(await _folderId(path), query, top: limit);
+    final found = await api.search(
+      await _folderId(path),
+      query,
+      top: limit,
+      field: field,
+    );
     final uids = await idMap.uidsFor(
       accountId,
       path,

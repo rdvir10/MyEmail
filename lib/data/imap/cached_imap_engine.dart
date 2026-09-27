@@ -1147,6 +1147,7 @@ class CachedImapEngine implements MailEngine {
     String query,
     SearchScope scope, {
     int limit = 100,
+    SearchField field = SearchField.all,
   }) async {
     if (query.trim().isEmpty) return const [];
     final wide = scope.folderId == null;
@@ -1159,12 +1160,12 @@ class CachedImapEngine implements MailEngine {
     final results = await Future.wait([
       for (final t in targets)
         wide
-            ? _searchOneFolder(t.accountId, t.path, query, limit)
+            ? _searchOneFolder(t.accountId, t.path, query, limit, field)
                 .catchError((Object e, StackTrace s) {
                 failures.add((e, s));
                 return const <MailMessage>[];
               })
-            : _searchOneFolder(t.accountId, t.path, query, limit),
+            : _searchOneFolder(t.accountId, t.path, query, limit, field),
     ]);
     if (failures.isNotEmpty && failures.length >= targets.length &&
         results.every((r) => r.isEmpty)) {
@@ -1197,10 +1198,12 @@ class CachedImapEngine implements MailEngine {
     String path,
     String query,
     int limit,
+    SearchField field,
   ) async {
     try {
       final t = await _transport(accountId);
-      final uids = await t.searchUids(path, query, limit: limit);
+      final uids =
+          await t.searchUids(path, query, limit: limit, field: field);
       if (uids.isEmpty) return const [];
       final folderId = MailFolder.idFor(accountId, path);
 

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/search_field.dart';
 import '../../domain/calendar_invite.dart';
 
 /// The wire-level operations the cache needs from a mail server, for one
@@ -114,11 +115,17 @@ abstract class ImapTransport {
   /// The bytes of one attachment, by the id [listAttachments] gave it.
   Future<Uint8List> fetchAttachment(String path, int uid, String attachmentId);
 
-  /// UIDs in the folder whose subject, sender or body contain [query].
+  /// UIDs in the folder whose subject, sender or body contain [query], or
+  /// only the one of them [field] names.
   ///
   /// Server-side: IMAP SEARCH, so it covers mail that was never cached.
   /// Newest first, capped at [limit].
-  Future<List<int>> searchUids(String path, String query, {int limit = 100});
+  Future<List<int>> searchUids(
+    String path,
+    String query, {
+    int limit = 100,
+    SearchField field = SearchField.all,
+  });
 
   /// Headers for specific UIDs, for turning search hits into rows.
   Future<List<RemoteHeader>> fetchHeadersByUids(String path, List<int> uids);

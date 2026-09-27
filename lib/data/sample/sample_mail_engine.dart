@@ -394,6 +394,7 @@ class SampleMailEngine implements MailEngine {
     String query,
     SearchScope scope, {
     int limit = 100,
+    SearchField field = SearchField.all,
   }) async {
     await _latency();
     final needle = query.trim().toLowerCase();
@@ -426,9 +427,14 @@ class SampleMailEngine implements MailEngine {
         () => generateSampleMessages(folder),
       );
       for (final m in list) {
-        final haystack =
-            '${m.subject} ${m.from.display} ${m.from.email} ${m.preview}'
-                .toLowerCase();
+        final haystack = switch (field) {
+          SearchField.all =>
+            '${m.subject} ${m.from.display} ${m.from.email} ${m.preview}',
+          SearchField.from => '${m.from.display} ${m.from.email}',
+          SearchField.subject => m.subject,
+          SearchField.body => m.preview,
+        }
+            .toLowerCase();
         if (words.every(haystack.contains)) hits.add(m);
       }
     }

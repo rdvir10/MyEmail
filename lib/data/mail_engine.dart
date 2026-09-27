@@ -3,6 +3,9 @@ import 'dart:typed_data';
 
 import '../domain/account.dart';
 import '../domain/error_report.dart';
+import '../domain/search_field.dart';
+
+export '../domain/search_field.dart';
 import 'auth/oauth_token.dart';
 import '../domain/draft.dart';
 import '../domain/address_suggestions.dart';
@@ -259,11 +262,13 @@ abstract class MailEngine {
   /// without saying where it put it.
   Future<void> undoMoves(List<MessageMove> moves);
 
-  /// Search the server for [query] within [scope], newest first.
+  /// Search the server for [query] within [scope], newest first, looking
+  /// in [field]: subject, sender and body together unless one is named.
   Future<List<MailMessage>> searchMessages(
     String query,
     SearchScope scope, {
     int limit = 100,
+    SearchField field = SearchField.all,
   });
 
   /// Send the draft (over SMTP for Gmail, through Graph for Microsoft), see

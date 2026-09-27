@@ -160,11 +160,16 @@ class EnoughMailTransport implements ImapTransport {
       });
 
   @override
-  Future<List<int>> searchUids(String path, String query, {int limit = 100}) =>
+  Future<List<int>> searchUids(
+    String path,
+    String query, {
+    int limit = 100,
+    SearchField field = SearchField.all,
+  }) =>
       _run((c) async {
         await _ensureSelected(c, path);
         final result = await c.uidSearchMessages(
-          searchCriteria: buildSearchCriteria(query),
+          searchCriteria: buildSearchCriteria(query, field: field),
         );
         final seq = result.matchingSequence;
         if (seq == null) return const [];

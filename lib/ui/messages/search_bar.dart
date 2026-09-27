@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/mail_engine.dart' show SearchField;
 import '../../state/providers.dart';
 import '../../state/search_providers.dart';
 
-/// The message search box above the list, with a scope chooser underneath
-/// once there is something to search for. On screen only when asked for;
+/// The message search box above the list, with a chooser underneath once
+/// there is something to search for: which part of a message to look in,
+/// and, in a real folder, how far to look. On screen only when asked for;
 /// see [searchShownProvider].
 class MessageSearchBar extends ConsumerStatefulWidget {
   const MessageSearchBar({super.key});
@@ -82,6 +84,29 @@ class _MessageSearchBarState extends ConsumerState<MessageSearchBar> {
                 ref.read(searchQueryProvider.notifier).set(value),
           ),
         ),
+        // Where in the message: everything, or the sender, the subject or
+        // the body alone. Ron asked for the three.
+        if (query.trim().isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: SegmentedButton<SearchField>(
+                key: const ValueKey('search-field'),
+                showSelectedIcon: false,
+                style: const ButtonStyle(
+                  visualDensity: VisualDensity.compact,
+                ),
+                segments: [
+                  for (final field in SearchField.values)
+                    ButtonSegment(value: field, label: Text(field.label)),
+                ],
+                selected: {ref.watch(searchFieldProvider)},
+                onSelectionChanged: (s) =>
+                    ref.read(searchFieldProvider.notifier).set(s.first),
+              ),
+            ),
+          ),
         if (query.trim().isNotEmpty && canScopeToFolder)
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),

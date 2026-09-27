@@ -241,8 +241,9 @@ class _EmptyEngine implements MailEngine {
     String query,
     SearchScope scope, {
     int limit = 100,
+    SearchField field = SearchField.all,
   }) =>
-      _inner.searchMessages(query, scope, limit: limit);
+      _inner.searchMessages(query, scope, limit: limit, field: field);
 
   @override
   Future<void> sendDraft(Draft draft) => _inner.sendDraft(draft);

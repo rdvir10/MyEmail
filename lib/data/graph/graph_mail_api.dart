@@ -564,19 +564,20 @@ class GraphMailApi {
         ),
       );
 
-  /// Full text search across the mailbox, scoped to one folder.
+  /// Full text search across the mailbox, scoped to one folder, or in one
+  /// part of each message where [field] names it.
   Future<List<GraphMessage>> search(
     String folderId,
     String query, {
     int top = 100,
+    SearchField field = SearchField.all,
   }) async {
     // $search takes a quoted string and cannot be combined with $orderby;
     // Graph returns its own relevance order, which is what a search wants.
-    final escaped = query.replaceAll('"', r'\"');
     final json = await _get(
       Uri.parse('$base/me/mailFolders/${_id(folderId)}/messages').replace(
         queryParameters: {
-          '\$search': '"$escaped"',
+          '\$search': '"${searchString(query, field)}"',
           '\$select': headerFields,
           '\$expand': lastVerbExpand,
           '\$top': '$top',
@@ -584,6 +585,26 @@ class GraphMailApi {
       ),
     );
     return _messagesFrom(json);
+  }
+
+  /// What goes between the quotes of `$search`: the words as typed for a
+  /// search of everything, or each word under the KQL property for the
+  /// part of the message asked for (`from:dana from:levi`), which Graph's
+  /// search takes and ANDs. Quotes in the words are escaped so they cannot
+  /// close the string.
+  static String searchString(String query, SearchField field) {
+    final escaped = query.trim().replaceAll('"', r'\"');
+    final property = switch (field) {
+      SearchField.all => null,
+      SearchField.from => 'from',
+      SearchField.subject => 'subject',
+      SearchField.body => 'body',
+    };
+    if (property == null) return escaped;
+    return [
+      for (final word in escaped.split(RegExp(r'\s+')))
+        if (word.isNotEmpty) '$property:$word',
+    ].join(' ');
   }
 
   Future<void> setRead(String messageId, bool isRead) => _patch(
