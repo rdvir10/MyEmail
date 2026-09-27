@@ -8,6 +8,7 @@ import '../../domain/account.dart';
 import '../../domain/error_report.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/meeting.dart';
+import '../../domain/text_direction.dart';
 import '../../state/calendar_providers.dart';
 import '../../state/compose_providers.dart'
     show addressesLookValid, parseAddresses;
@@ -716,18 +717,24 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
               ),
             const Divider(height: 1),
             Expanded(
-              child: TextField(
-                key: const ValueKey('meeting-notes'),
-                controller: _notes,
-                enabled: !_sending,
-                maxLines: null,
-                expands: true,
-                textAlignVertical: TextAlignVertical.top,
-                style: theme.textTheme.bodyMedium,
-                decoration: const InputDecoration(
-                  hintText: 'Notes',
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.all(16),
+              // As the header rows: the way its first letter reads.
+              child: ValueListenableBuilder<TextEditingValue>(
+                valueListenable: _notes,
+                builder: (context, value, _) => TextField(
+                  key: const ValueKey('meeting-notes'),
+                  controller: _notes,
+                  enabled: !_sending,
+                  maxLines: null,
+                  expands: true,
+                  textAlignVertical: TextAlignVertical.top,
+                  style: theme.textTheme.bodyMedium,
+                  textDirection: firstStrongDirection(value.text) ??
+                      Directionality.of(context),
+                  decoration: const InputDecoration(
+                    hintText: 'Notes',
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.all(16),
+                  ),
                 ),
               ),
             ),

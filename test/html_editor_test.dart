@@ -55,6 +55,41 @@ void main() {
       expect(RegExp(r'<script(?! nonce="n0nce")').hasMatch(doc), isFalse);
     });
 
+    test('each paragraph written takes the direction of its first letter, '
+        'and the quote is left as it came', () {
+      // As the JavaScript receives it: an escape a Dart string would have
+      // swallowed arrives as the letter alone, and the pattern matches
+      // nothing.
+      expect(doc, contains(r'var LETTER = /\p{L}/u;'));
+      expect(doc,
+          contains(r'var RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;'));
+      expect(doc, contains("if (top.classList.contains('mailtree-quote')) continue;"));
+      expect(doc, contains("document.body.addEventListener('input', orientAll);"));
+    });
+
+    test("what is sent has every paragraph's direction brought up to date",
+        () {
+      expect(
+        RegExp(r'window\.mailtreeGetHtml = function \(\) \{\s*orientAll\(\);')
+            .hasMatch(doc),
+        isTrue,
+      );
+    });
+
+    test('what is sent carries no script, though the page puts its own in '
+        'the body', () {
+      // Written after </body>, which a browser reads as more of the body:
+      // every message went out with the editor's code in it.
+      expect(doc.indexOf('<script nonce='), greaterThan(doc.indexOf('</body>')));
+      final getHtml = doc.substring(
+        doc.indexOf('window.mailtreeGetHtml = function'),
+        doc.indexOf('window.mailtreeSetTheme'),
+      );
+      expect(getHtml, contains("copy.querySelectorAll('script')"));
+      expect(getHtml, contains('return copy.innerHTML;'));
+      expect(getHtml, isNot(contains('return document.body.innerHTML')));
+    });
+
     test("a change of From replaces this message's signature only", () {
       // A quoted message sent from here has a signature div of its own,
       // which is the sender's and stays.

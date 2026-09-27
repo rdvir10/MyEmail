@@ -3,6 +3,7 @@ import 'package:html/parser.dart' as html_parser;
 
 import '../../domain/draft.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/text_direction.dart';
 import '../imap/imap_mapping.dart';
 
 /// Builds the HTML a compose window opens with.
@@ -94,7 +95,7 @@ String quotedOriginal({String? html, String? text}) {
   if (plain.isEmpty) return '<p></p>';
   return plain
       .split('\n')
-      .map((line) => '<p>${_escape(line)}</p>')
+      .map((line) => '<p${dirAttribute(line)}>${_escape(line)}</p>')
       .join();
 }
 

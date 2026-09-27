@@ -1,6 +1,7 @@
 import '../../domain/draft.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/signature.dart';
+import '../../domain/text_direction.dart';
 import 'quote_builder.dart';
 
 /// The draft a reply or a forward starts from, built from values rather than
@@ -123,12 +124,13 @@ bool _hasPrefix(String subject, String prefix) =>
     subject.toLowerCase().startsWith(prefix.toLowerCase());
 
 /// Plain text as HTML paragraphs, for text that was typed somewhere with no
-/// editor in it — the notification shade.
+/// editor in it — the notification shade. A Hebrew paragraph says it reads
+/// from the right, as one written in the editor does.
 String asParagraphs(String text) {
   final paragraphs = text.replaceAll('\r\n', '\n').trim().split('\n\n');
   return [
     for (final p in paragraphs)
-      '<p>${escapeHtml(p).replaceAll('\n', '<br>')}</p>',
+      '<p${dirAttribute(p)}>${escapeHtml(p).replaceAll('\n', '<br>')}</p>',
   ].join();
 }
 

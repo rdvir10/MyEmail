@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/address_suggestions.dart';
+import '../../domain/text_direction.dart';
 import '../../state/contact_providers.dart';
 
 /// The header rows of a compose-shaped screen: a name in muted text on the
@@ -44,23 +45,30 @@ class HeaderField extends StatelessWidget {
             ),
           ),
           Expanded(
-            child: TextField(
-              controller: controller,
-              enabled: enabled,
-              autofocus: autofocus,
-              style: theme.textTheme.bodyMedium,
-              keyboardType: keyboardType,
-              textInputAction: TextInputAction.next,
-              decoration: InputDecoration(
-                border: UnderlineInputBorder(
-                  borderSide: BorderSide(color: theme.dividerColor),
+            // The field reads the way its first letter does: a Hebrew
+            // subject from the right, an English one from the left.
+            child: ValueListenableBuilder<TextEditingValue>(
+              valueListenable: controller,
+              builder: (context, value, _) => TextField(
+                controller: controller,
+                enabled: enabled,
+                autofocus: autofocus,
+                style: theme.textTheme.bodyMedium,
+                keyboardType: keyboardType,
+                textInputAction: TextInputAction.next,
+                textDirection: firstStrongDirection(value.text) ??
+                    Directionality.of(context),
+                decoration: InputDecoration(
+                  border: UnderlineInputBorder(
+                    borderSide: BorderSide(color: theme.dividerColor),
+                  ),
+                  enabledBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: theme.dividerColor),
+                  ),
+                  isDense: true,
+                  filled: false,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
                 ),
-                enabledBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: theme.dividerColor),
-                ),
-                isDense: true,
-                filled: false,
-                contentPadding: const EdgeInsets.symmetric(vertical: 10),
               ),
             ),
           ),

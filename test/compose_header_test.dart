@@ -55,6 +55,28 @@ void main() {
     );
   }
 
+  group('which way it reads', () {
+    testWidgets('a Hebrew subject reads from the right, an English one from '
+        'the left', (tester) async {
+      await open(tester, draft());
+      final subject = find.descendant(
+        of: field('Subject'),
+        matching: find.byType(EditableText),
+      );
+      TextDirection direction() =>
+          tester.widget<EditableText>(subject).textDirection!;
+      expect(direction(), TextDirection.ltr, reason: 'empty, the app\'s own');
+
+      await tester.enterText(field('Subject'), 'הצעת מחיר');
+      await tester.pump();
+      expect(direction(), TextDirection.rtl);
+
+      await tester.enterText(field('Subject'), 'Quote 12');
+      await tester.pump();
+      expect(direction(), TextDirection.ltr);
+    });
+  });
+
   group('what is asked for', () {
     testWidgets('To, Cc and Subject are there from the start', (tester) async {
       // Cc used to hide behind a button. Anyone who copies someone in on

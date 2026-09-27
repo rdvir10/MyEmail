@@ -318,7 +318,19 @@ String editorDocument(String bodyHtml,
     if (window.MyEmail) window.MyEmail.postMessage(JSON.stringify(payload));
   }
 
-  window.mailtreeGetHtml = function () { return document.body.innerHTML; };
+  // Every paragraph's direction brought up to date first, so what is sent
+  // says which way each one reads; see orientAll. And without a script:
+  // this one is written after the body, and the browser moves it inside,
+  // so the body as it stands carried the editor's own code into every
+  // message sent and every signature saved. An old signature saved that
+  // way carries it still, and loses it here.
+  window.mailtreeGetHtml = function () {
+    orientAll();
+    var copy = document.body.cloneNode(true);
+    var scripts = copy.querySelectorAll('script');
+    for (var i = 0; i < scripts.length; i++) scripts[i].remove();
+    return copy.innerHTML;
+  };
 
   // Repainting rather than reloading: a theme change mid-message must not
   // discard what has been written.
@@ -329,11 +341,13 @@ String editorDocument(String bodyHtml,
   window.mailtreeFormat = function (command, value) {
     document.execCommand(command, false, value);
     document.body.focus();
+    orientAll();
     reportFormats();
   };
 
   window.mailtreeInsert = function (html) {
     document.execCommand('insertHTML', false, html);
+    orientAll();
     reportFormats();
   };
 
@@ -354,6 +368,7 @@ String editorDocument(String bodyHtml,
           sig, document.querySelector('body > .mailtree-quote'));
     }
     sig.innerHTML = html;
+    orientAll();
   };
 
   window.mailtreeFocus = function () {
@@ -363,6 +378,52 @@ String editorDocument(String bodyHtml,
 
   var FORMATS = ['bold', 'italic', 'underline',
                  'insertUnorderedList', 'insertOrderedList'];
+
+  // Right-to-left writing. Each paragraph written here takes the direction
+  // of its first letter, as Gmail's and Outlook's editors set it, and
+  // carries it as a dir attribute, so it goes out that way to every mail
+  // client: a Hebrew line sits on the right, an English one on the left,
+  // in one message. A paragraph with no letter yet keeps the direction it
+  // has, so a new line after Hebrew starts on the right. The quoted
+  // original is the sender's, and is left as they wrote it.
+  var RTL = /[\\u0590-\\u08FF\\uFB1D-\\uFDFF\\uFE70-\\uFEFF]/;
+  var LETTER = /\\p{L}/u;
+  var BLOCKS = 'p,div,li,ul,ol,h1,h2,h3,h4,h5,h6,blockquote';
+
+  function directionOf(text) {
+    var m = LETTER.exec(text);
+    if (!m) return null;
+    return RTL.test(m[0]) ? 'rtl' : 'ltr';
+  }
+
+  // An attribute only where the paragraph reads against what it sits in:
+  // an English message carries none at all.
+  function orient(el) {
+    var dir = directionOf(el.textContent || '');
+    if (!dir) return;
+    var parent = el.parentElement;
+    var inherited = parent ? getComputedStyle(parent).direction : 'ltr';
+    if (dir === inherited) {
+      if (el.hasAttribute('dir')) el.removeAttribute('dir');
+    } else if (el.getAttribute('dir') !== dir) {
+      el.setAttribute('dir', dir);
+    }
+  }
+
+  // Outer before inner, which is document order, so a paragraph is
+  // compared with its container as it now reads.
+  function orientAll() {
+    var tops = document.body.children;
+    for (var i = 0; i < tops.length; i++) {
+      var top = tops[i];
+      if (top.classList.contains('mailtree-quote')) continue;
+      if (top.matches(BLOCKS)) orient(top);
+      var inner = top.querySelectorAll(BLOCKS);
+      for (var j = 0; j < inner.length; j++) {
+        if (!inner[j].closest('.mailtree-quote')) orient(inner[j]);
+      }
+    }
+  }
 
   function reportFormats() {
     var active = [];
@@ -374,14 +435,17 @@ String editorDocument(String bodyHtml,
     post({type: 'formats', value: active});
   }
 
-  // Start where the compose builder asked, which is above the quote.
+  // Start where the compose builder asked, which is above the quote, or
+  // else at the start of the first paragraph.
   function placeCaret() {
     var marker = document.getElementById('mailtree-caret');
     var range = document.createRange();
     if (marker) {
       range.setStartBefore(marker);
     } else {
-      range.selectNodeContents(document.body);
+      var first = document.body.firstChild;
+      range.selectNodeContents(
+          first && first.nodeType === 1 ? first : document.body);
       range.collapse(true);
     }
     range.collapse(true);
@@ -391,6 +455,7 @@ String editorDocument(String bodyHtml,
   }
 
   document.addEventListener('selectionchange', reportFormats);
+  document.body.addEventListener('input', orientAll);
   document.body.addEventListener('input', reportFormats);
 
   // Keys pressed in here never reach Flutter, so the two the compose
@@ -425,6 +490,13 @@ String editorDocument(String bodyHtml,
     window.visualViewport.addEventListener('resize', keepCaretVisible);
   }
 
+  // An empty document, a signature not yet written, is given a paragraph
+  // to type into: text typed straight into the body belongs to no
+  // paragraph, and would have no direction of its own.
+  if (!document.body.innerHTML.trim()) {
+    document.body.innerHTML = '<p><br></p>';
+  }
+  orientAll();
   placeCaret();
   reportFormats();
 })();

@@ -12,6 +12,7 @@ import '../../state/folder_tree.dart';
 import '../../state/providers.dart';
 import '../../state/window_providers.dart';
 import '../../domain/window_handoff.dart';
+import '../../domain/text_direction.dart';
 import 'compose_screen.dart';
 
 /// Open a compose window.
@@ -90,15 +91,18 @@ Future<void> openCompose(
   );
 }
 
-/// Plain text as HTML paragraphs, with nothing in it taken as markup.
+/// Plain text as HTML paragraphs, with nothing in it taken as markup, and a
+/// Hebrew paragraph saying it reads from the right. Split before escaping,
+/// so the direction is read from the words and not from an entity.
 String textAsHtml(String text) {
-  final escaped = text
+  String escape(String s) => s
       .replaceAll('&', '&amp;')
       .replaceAll('<', '&lt;')
       .replaceAll('>', '&gt;');
   return [
-    for (final paragraph in escaped.split(RegExp(r'\n{2,}')))
-      '<p>${paragraph.replaceAll('\n', '<br>')}</p>',
+    for (final paragraph in text.split(RegExp(r'\n{2,}')))
+      '<p${dirAttribute(paragraph)}>'
+          '${escape(paragraph).replaceAll('\n', '<br>')}</p>',
   ].join();
 }
 
