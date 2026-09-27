@@ -433,6 +433,8 @@ class SampleMailEngine implements MailEngine {
           SearchField.from => '${m.from.display} ${m.from.email}',
           SearchField.subject => m.subject,
           SearchField.body => m.preview,
+          SearchField.attachment =>
+            _sampleAttachments(m).map((a) => a.name).join(' '),
         }
             .toLowerCase();
         if (words.every(haystack.contains)) hits.add(m);
@@ -594,9 +596,15 @@ class SampleMailEngine implements MailEngine {
     final message = _messages[folderId]
         ?.where((m) => m.id == messageId)
         .firstOrNull;
-    if (message == null || !message.hasAttachments) return const [];
-    // Made up from the message id, so the same message always has the same
-    // files and a widget test can count on them.
+    if (message == null) return const [];
+    return _sampleAttachments(message);
+  }
+
+  /// The files on a sample message: made up from its number, so the same
+  /// message always has the same files and a widget test can count on
+  /// them. None on a message without attachments.
+  static List<MailAttachment> _sampleAttachments(MailMessage message) {
+    if (!message.hasAttachments) return const [];
     return [
       MailAttachment(
         id: '2',

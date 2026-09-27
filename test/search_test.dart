@@ -11,6 +11,7 @@ import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/search_bar.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
@@ -55,6 +56,15 @@ void main() {
           'CHARSET UTF-8 BODY "pay"');
       expect(buildSearchCriteria('pay', field: SearchField.body),
           isNot(contains('OR')));
+    });
+
+    test('a file by its name goes to Gmail in its own words', () {
+      // IMAP has no key for it; Gmail, the one IMAP server here, has
+      // filename: under X-GM-RAW.
+      expect(buildSearchCriteria('invoice', field: SearchField.attachment),
+          'CHARSET UTF-8 X-GM-RAW "filename:invoice"');
+      expect(buildSearchCriteria('q3 report', field: SearchField.attachment),
+          'CHARSET UTF-8 X-GM-RAW "filename:q3" X-GM-RAW "filename:report"');
     });
 
     test('a Hebrew or accented word goes as a literal, not between quotes',
@@ -147,6 +157,15 @@ void main() {
             '${m.from.display} ${m.from.email}'.toLowerCase().contains('invoice')),
         isTrue,
       );
+
+      // Every sample message with files has a "Quote <n>.pdf" among them.
+      final byFile = await engine.searchMessages('quote', scope,
+          field: SearchField.attachment);
+      expect(byFile, isNotEmpty);
+      expect(byFile.every((m) => m.hasAttachments), isTrue);
+      final byPhoto = await engine.searchMessages('.jpg', scope,
+          field: SearchField.attachment);
+      expect(byPhoto.map((m) => m.id).toSet(), byFile.map((m) => m.id).toSet());
     });
 
     test('an account scope spans that account only', () async {
@@ -254,6 +273,19 @@ void main() {
           field: SearchField.subject);
       expect(inSubject, isEmpty, reason: '"pay" is in the body alone');
       expect(lastSearch(), 'UID SEARCH INBOX SUBJECT "pay"');
+
+      server.attachments[1] = [
+        MailAttachment(
+          id: '2',
+          name: 'Quote 44.pdf',
+          mimeType: 'application/pdf',
+          sizeBytes: 10,
+        ),
+      ];
+      final byFile = await engine.searchMessages('quote', scope,
+          field: SearchField.attachment);
+      expect(byFile.single.subject, 'Acme invoice');
+      expect(lastSearch(), 'UID SEARCH INBOX X-GM-RAW "quote"');
     });
 
     test('an account search covers folders but skips All Mail', () async {
@@ -471,13 +503,12 @@ void main() {
       expect(find.byType(MessageTile), findsWidgets);
 
       // Nobody is called "invoice": from the sender alone there is nothing.
-      await tester.tap(find.descendant(of: chooser, matching: find.text('From')));
+      await tester.tap(find.byKey(const ValueKey('search-field-from')));
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pumpAndSettle();
       expect(find.text('No messages found'), findsOneWidget);
 
-      await tester.tap(
-          find.descendant(of: chooser, matching: find.text('Subject')));
+      await tester.tap(find.byKey(const ValueKey('search-field-subject')));
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pumpAndSettle();
       final tiles = tester.widgetList<MessageTile>(find.byType(MessageTile));

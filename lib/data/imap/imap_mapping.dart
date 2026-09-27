@@ -446,6 +446,10 @@ String htmlToText(String html) {
 /// IMAP's default is to combine criteria with AND and each word narrows the
 /// result the way a search box should. Quotes in the query are escaped so
 /// they cannot close the string and inject further criteria.
+///
+/// IMAP has no key for an attachment's name. Gmail, the one IMAP server
+/// this app talks to, takes its own search language under `X-GM-RAW`, and
+/// `filename:` there is the file's name.
 String buildSearchCriteria(
   String query, {
   SearchField field = SearchField.all,
@@ -467,6 +471,7 @@ String buildSearchCriteria(
         SearchField.from => _term('FROM', word),
         SearchField.subject => _term('SUBJECT', word),
         SearchField.body => _term('BODY', word),
+        SearchField.attachment => _term('X-GM-RAW', 'filename:$word'),
       },
   ].join(' ');
 }

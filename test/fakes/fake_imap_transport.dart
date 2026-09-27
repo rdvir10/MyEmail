@@ -168,6 +168,7 @@ class FakeImapTransport implements ImapTransport {
       SearchField.from => 'FROM',
       SearchField.subject => 'SUBJECT',
       SearchField.body => 'BODY',
+      SearchField.attachment => 'X-GM-RAW',
     };
     calls.add('UID SEARCH $path $key "$query"');
     final words = query.toLowerCase().split(RegExp(r'\s+'));
@@ -178,6 +179,10 @@ class FakeImapTransport implements ImapTransport {
               SearchField.from => m.from,
               SearchField.subject => m.subject,
               SearchField.body => m.body,
+              SearchField.attachment =>
+                (attachments[m.uid] ?? const <MailAttachment>[])
+                    .map((a) => a.name)
+                    .join(' '),
             }
                 .toLowerCase()
                 .contains(w)))

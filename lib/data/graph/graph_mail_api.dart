@@ -599,6 +599,7 @@ class GraphMailApi {
       SearchField.from => 'from',
       SearchField.subject => 'subject',
       SearchField.body => 'body',
+      SearchField.attachment => 'attachment',
     };
     if (property == null) return escaped;
     return [

@@ -84,26 +84,30 @@ class _MessageSearchBarState extends ConsumerState<MessageSearchBar> {
                 ref.read(searchQueryProvider.notifier).set(value),
           ),
         ),
-        // Where in the message: everything, or the sender, the subject or
-        // the body alone. Ron asked for the three.
+        // Where in the message: everything, or the sender, the subject, the
+        // body or a file's name alone. Chips that wrap, not segments: five
+        // segments spread to the widest label's width each, and on a phone
+        // that is wider than the box.
         if (query.trim().isNotEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
             child: Align(
               alignment: Alignment.centerLeft,
-              child: SegmentedButton<SearchField>(
+              child: Wrap(
                 key: const ValueKey('search-field'),
-                showSelectedIcon: false,
-                style: const ButtonStyle(
-                  visualDensity: VisualDensity.compact,
-                ),
-                segments: [
+                spacing: 6,
+                runSpacing: 4,
+                children: [
                   for (final field in SearchField.values)
-                    ButtonSegment(value: field, label: Text(field.label)),
+                    ChoiceChip(
+                      key: ValueKey('search-field-${field.name}'),
+                      label: Text(field.label),
+                      visualDensity: VisualDensity.compact,
+                      selected: ref.watch(searchFieldProvider) == field,
+                      onSelected: (_) =>
+                          ref.read(searchFieldProvider.notifier).set(field),
+                    ),
                 ],
-                selected: {ref.watch(searchFieldProvider)},
-                onSelectionChanged: (s) =>
-                    ref.read(searchFieldProvider.notifier).set(s.first),
               ),
             ),
           ),

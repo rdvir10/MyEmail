@@ -332,6 +332,8 @@ void main() {
           'subject:acme');
       expect(GraphMailApi.searchString('pay "now"', SearchField.body),
           r'body:pay body:\"now\"');
+      expect(GraphMailApi.searchString('report.pdf', SearchField.attachment),
+          'attachment:report.pdf');
     });
 
     test('every list of messages asks what was last done to each, at once',
