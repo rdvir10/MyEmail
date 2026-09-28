@@ -161,6 +161,30 @@ void main() {
       expect(find.text('barry@example.com'), findsNothing);
     });
 
+    testWidgets('forty people: Hide details stays on the screen, and the list '
+        'scrolls in a box of its own', (tester) async {
+      // A company-wide mail pushed the link, and the message, off the bottom
+      // of the screen, and there was no way to fold it again.
+      final m = message(to: [
+        for (var i = 0; i < 40; i++)
+          MailAddress(email: 'person$i@example.com', name: 'Person $i'),
+      ]);
+      await pump(tester, m: m, home: MessageScreen(message: m));
+      await openDetails(tester);
+
+      final screen = tester.view.physicalSize / tester.view.devicePixelRatio;
+      final hide = tester.getRect(find.text('Hide details'));
+      expect(hide.bottom, lessThan(screen.height));
+      final list = tester.getRect(find.byKey(const ValueKey('recipients-list')));
+      expect(list.height, lessThanOrEqualTo(screen.height / 3 + 1));
+      expect(list.top, greaterThanOrEqualTo(hide.bottom - 1),
+          reason: 'the link is above the list, where Details was');
+
+      await tester.tap(find.text('Hide details'));
+      await tester.pumpAndSettle();
+      expect(find.text('person0@example.com'), findsNothing);
+    });
+
     testWidgets('the next message opens folded, whatever was done with this',
         (tester) async {
       // Remembered, opening one list to see who was copied left every

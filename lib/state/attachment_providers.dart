@@ -42,29 +42,72 @@ final inlinePicturesProvider =
   final engine = ref.watch(mailEngineProvider);
   final pictures = <String, String>{};
   var room = maxInlinePictureBytes;
-  for (final a in attachments) {
-    final contentId = a.contentId?.toLowerCase();
-    if (contentId == null || pictures.containsKey(contentId)) continue;
+
+  // Fetched and kept under [key], if it is a picture and there is room.
+  Future<bool> take(MailAttachment a, String key) async {
     // The bare type: a declared "image/png; name=logo.png" put whole into
     // a data: link makes a link no WebView can read.
     final declared = a.mimeType.toLowerCase().split(';').first.trim();
     final type = declared.startsWith('image/') ? declared : a.openAs;
-    if (!type.startsWith('image/') || a.sizeBytes > room) continue;
+    if (!type.startsWith('image/') || a.sizeBytes > room) return false;
     try {
       final bytes = await engine.fetchAttachment(messageId, a.id);
-      if (bytes.length > room) continue;
+      if (bytes.length > room) return false;
       room -= bytes.length;
-      pictures[contentId] = 'data:$type;base64,${base64Encode(bytes)}';
+      pictures[key] = 'data:$type;base64,${base64Encode(bytes)}';
+      return true;
     } catch (e) {
       // Shown as a chip, as before.
       debugPrint('[myemail] inline picture ${a.name} not fetched: $e');
+      return false;
     }
   }
+
+  for (final a in attachments) {
+    final contentId = a.contentId?.toLowerCase();
+    if (contentId == null || pictures.containsKey(contentId)) continue;
+    await take(a, contentId);
+  }
+
+  // What the body names that no Content-ID answered, by the file's name:
+  // Outlook builds the Content-ID of what it embeds from it,
+  // "image001.png@01DD2F3B.8B2E4F60" for image001.png. Microsoft does not
+  // always say a picture's Content-ID, and a picture the body named that
+  // way was a grey box with a broken image in it. Only a file whose own
+  // Content-ID is not known, and only once: one that is known and is
+  // another is someone else's picture.
+  var byName = 0;
+  final html = await _bodyHtml(ref, messageId);
+  final used = <String>{};
+  for (final named in contentIdsNamedIn(html)) {
+    if (pictures.containsKey(named)) continue;
+    final name = named.split('@').first;
+    final file = attachments
+        .where((a) =>
+            a.contentId == null &&
+            !used.contains(a.id) &&
+            a.name.toLowerCase() == name)
+        .firstOrNull;
+    if (file == null) continue;
+    used.add(file.id);
+    if (await take(file, named)) byName++;
+  }
+
   debugPrint('[myemail] inline pictures: ${pictures.length} of '
       '${attachments.where((a) => a.contentId != null).length} named, '
-      '${attachments.length} attached');
+      '$byName by file name, ${attachments.length} attached');
   return pictures;
 });
+
+/// The body's HTML, or nothing if it cannot be had: the pictures matched
+/// by name need it, and the ones matched by Content-ID do not.
+Future<String> _bodyHtml(Ref ref, String messageId) async {
+  try {
+    return (await ref.watch(messageBodyProvider(messageId).future)).html ?? '';
+  } catch (_) {
+    return '';
+  }
+}
 
 /// More than a screenful of screenshots; not a message's worth of photos.
 const maxInlinePictureBytes = 15 * 1024 * 1024;
@@ -110,12 +153,22 @@ Set<String> attachmentsShownInBody(
   if (!ref.exists(body)) return const {};
   final html = ref.watch(body).value?.html;
   if (html == null || !namesInlinePictures(html)) return const {};
-  final lower = html.toLowerCase();
-  final named = {
-    for (final a in attachments)
-      if (a.contentId case final id?)
-        if (lower.contains('cid:${id.toLowerCase()}')) a.id: id.toLowerCase(),
-  };
+  // Each file the body shows, by the Content-ID it is shown under: its own,
+  // or, where that is not known, the one built from its name (see
+  // [inlinePicturesProvider]).
+  final ids = contentIdsNamedIn(html);
+  final named = <String, String>{};
+  for (final a in attachments) {
+    final own = a.contentId?.toLowerCase();
+    if (own != null) {
+      if (ids.contains(own)) named[a.id] = own;
+      continue;
+    }
+    final byName = ids
+        .where((id) => id.split('@').first == a.name.toLowerCase())
+        .firstOrNull;
+    if (byName != null) named[a.id] = byName;
+  }
   if (named.isEmpty) return const {};
   return ref.watch(inlinePicturesProvider(messageId)).when(
         loading: () => named.keys.toSet(),

@@ -36,6 +36,27 @@ void main() {
         reason: 'an ordinary file is not downloaded to show the body');
   });
 
+  test("a picture Microsoft gave no Content-ID for is found by Outlook's "
+      'name for it', () async {
+    // Outlook names what it embeds after the file, "image001.png@01DD...",
+    // and a picture the body named that way, whose own id was not had, was
+    // a grey box with a broken image in it.
+    final engine = _ByName();
+    final c = ProviderContainer(
+      overrides: [mailEngineProvider.overrideWithValue(engine)],
+    );
+    addTearDown(c.dispose);
+
+    final pictures = await c.read(inlinePicturesProvider('m1').future);
+
+    expect(
+      pictures['image001.png@01dd2f3b.8b2e4f60'],
+      'data:image/png;base64,${base64Encode(_ByName.bytes['p1']!)}',
+      reason: 'the file with no Content-ID of its own, not the one whose '
+          'Content-ID is another picture',
+    );
+  });
+
   testWidgets('pictures arriving keep the images the reader asked for',
       (tester) async {
     // They come after the body, so the page loads again; taken for a new
@@ -91,6 +112,49 @@ void main() {
 }
 
 final _logo = Uint8List.fromList([137, 80, 78, 71]);
+
+/// A body naming Outlook's picture, whose file came with no Content-ID, and
+/// another picture of the same name whose Content-ID is someone else's.
+class _ByName extends SampleMailEngine {
+  final fetched = <String>[];
+
+  @override
+  Future<MailBody> loadMessageBody(String messageId) async => const MailBody(
+        text: 'Hi',
+        html: '<p>Hi</p><img src="cid:image001.png@01DD2F3B.8B2E4F60">',
+      );
+
+  @override
+  Future<List<MailAttachment>> listAttachments(String messageId) async => [
+        const MailAttachment(
+          id: 'p2',
+          name: 'image001.png',
+          mimeType: 'image/png',
+          sizeBytes: 4,
+          isInline: true,
+          contentId: 'image001.png@01AAAAAA.00000000',
+        ),
+        const MailAttachment(
+          id: 'p1',
+          name: 'image001.png',
+          mimeType: 'image/png',
+          sizeBytes: 4,
+          isInline: true,
+        ),
+      ];
+
+  /// Each file's own bytes, so which one was used can be told.
+  static final bytes = {
+    'p1': Uint8List.fromList([1, 1, 1, 1]),
+    'p2': Uint8List.fromList([2, 2, 2, 2]),
+  };
+
+  @override
+  Future<Uint8List> fetchAttachment(String messageId, String id) async {
+    fetched.add(id);
+    return bytes[id]!;
+  }
+}
 
 /// The sample engine, with a logo named by Content-ID in every body.
 class _WithPictures extends SampleMailEngine {

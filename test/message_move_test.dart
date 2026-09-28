@@ -297,7 +297,7 @@ void main() {
 
       await tester.drag(find.byType(MessageTile).first, const Offset(500, 0));
       await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(ListTile, 'Travel').first);
+      await tester.tap(_moveTarget('Travel'));
       await tester.pumpAndSettle();
       expect(find.textContaining('moved to Travel'), findsOneWidget);
       await tester.tap(find.text('Undo'));
@@ -348,7 +348,7 @@ void main() {
       await tester.drag(find.byType(MessageTile).first, const Offset(500, 0));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.widgetWithText(ListTile, 'Travel').first);
+      await tester.tap(_moveTarget('Travel'));
       await tester.pumpAndSettle();
 
       expect(find.textContaining('moved to Travel'), findsOneWidget);
@@ -412,3 +412,14 @@ class _OfflineAfterMove extends FakeImapTransport {
     return landed;
   }
 }
+
+/// A folder in the Move to sheet, by name: a row of the tree, or of Recent.
+Finder _moveTarget(String name) => find
+    .ancestor(
+      of: find.text(name),
+      matching: find.byWidgetPredicate((w) =>
+          w.key is ValueKey<String> &&
+          RegExp(r'^move-(tree|option)-')
+              .hasMatch((w.key as ValueKey<String>).value)),
+    )
+    .first;

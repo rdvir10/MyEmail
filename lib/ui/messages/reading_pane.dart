@@ -719,7 +719,17 @@ class _Recipients extends StatefulWidget {
 class _RecipientsState extends State<_Recipients> {
   bool _open = false;
 
+  /// The open list's own scroll. A company-wide mail named forty people,
+  /// and the list pushed Hide details, and the message, off the screen.
+  final _scroll = ScrollController();
+
   void _toggle() => setState(() => _open = !_open);
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -789,28 +799,45 @@ class _RecipientsState extends State<_Recipients> {
       );
     }
 
+    // Folded again from the line it was opened on, which is always on the
+    // screen, and the list under it no taller than a third of the screen,
+    // scrolling in its own right past that: forty names pushed the link, and
+    // the message itself, below the bottom edge.
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // A table, so "To:" and "CC:" take the width their text needs at
-          // any text size and the names under both start on one edge.
-          Table(
-            columnWidths: const {
-              0: IntrinsicColumnWidth(),
-              1: FlexColumnWidth(),
-            },
-            children: [
-              if (to.isNotEmpty) _row('To', to, style),
-              if (cc.isNotEmpty) _row('CC', cc, style),
-            ],
-          ),
           InkWell(
             onTap: _toggle,
             child: Padding(
-              padding: const EdgeInsets.only(top: 2),
+              padding: const EdgeInsets.only(bottom: 4),
               child: Text('Hide details', style: link),
+            ),
+          ),
+          ConstrainedBox(
+            key: const ValueKey('recipients-list'),
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height / 3,
+            ),
+            child: Scrollbar(
+              controller: _scroll,
+              child: SingleChildScrollView(
+                controller: _scroll,
+                // A table, so "To:" and "CC:" take the width their text
+                // needs at any text size and the names under both start on
+                // one edge.
+                child: Table(
+                  columnWidths: const {
+                    0: IntrinsicColumnWidth(),
+                    1: FlexColumnWidth(),
+                  },
+                  children: [
+                    if (to.isNotEmpty) _row('To', to, style),
+                    if (cc.isNotEmpty) _row('CC', cc, style),
+                  ],
+                ),
+              ),
             ),
           ),
         ],

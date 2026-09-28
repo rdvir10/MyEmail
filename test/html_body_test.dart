@@ -132,6 +132,16 @@ void main() {
       expect(out, isNot(contains('width=device-width')));
     });
 
+    test('scaled down to a narrow view, never up to a wide one', () {
+      // On a tablet's pane a 600-pixel signature table scaled the whole
+      // message up to twice its size.
+      expect(wrapHtmlForDisplay(kohlsLike, viewWidth: 390),
+          contains('content="width=640"'));
+      final wide = wrapHtmlForDisplay(kohlsLike, viewWidth: 1300);
+      expect(wide, contains('width=device-width'));
+      expect(wide, isNot(contains('content="width=640"')));
+    });
+
     test('and the tables are not capped underneath it', () {
       // max-width on the tables is what collapses a fixed layout.
       expect(wrapHtmlForDisplay(kohlsLike), isNot(contains('table{max-width')));

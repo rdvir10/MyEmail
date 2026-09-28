@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/state/providers.dart';
@@ -8,14 +10,19 @@ import 'package:myemail/ui/messages/move_to_sheet.dart';
 
 /// Finding the destination in a mailbox that has hundreds of folders.
 void main() {
-  Future<(ProviderContainer, List<MailFolder>)> open(WidgetTester tester) async {
+  Future<(ProviderContainer, List<MailFolder>)> open(
+    WidgetTester tester, {
+    MemoryUiStateStore? store,
+  }) async {
     tester.view.physicalSize = const Size(900, 1400);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final c = ProviderContainer(
-      overrides: [uiStateStoreProvider.overrideWithValue(MemoryUiStateStore())],
+      overrides: [
+        uiStateStoreProvider.overrideWithValue(store ?? MemoryUiStateStore()),
+      ],
     );
     addTearDown(c.dispose);
     // The sample engine answers after a short delay, which a widget test's
@@ -52,14 +59,80 @@ void main() {
     return (c, folders[account.id]!);
   }
 
-  testWidgets('it opens with a search box and the whole tree', (tester) async {
+  /// A folder with folders under it that can take a message, and one of
+  /// them.
+  (MailFolder, MailFolder) branch(List<MailFolder> folders) {
+    final child = folders.firstWhere((f) =>
+        f.parentId != null &&
+        f.capabilities.canAcceptMessages &&
+        folders.any((p) => p.id == f.parentId && p.parentId == null));
+    return (folders.firstWhere((f) => f.id == child.parentId), child);
+  }
+
+  Finder row(MailFolder f) => find.byKey(ValueKey('move-tree-${f.id}'));
+
+  Future<void> expand(WidgetTester tester, MailFolder f) async {
+    await tester.tap(find.descendant(of: row(f), matching: find.byTooltip('Expand')));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('it opens with a search box and the tree, branches folded',
+      (tester) async {
     final (_, folders) = await open(tester);
+    final (parent, child) = branch(folders);
 
     expect(find.widgetWithText(TextField, 'Search folders'), findsOneWidget);
     expect(find.text('Move to'), findsOneWidget);
-    // A folder that can take a message, somewhere down the tree.
-    final nested = folders.firstWhere((f) => f.parentId != null);
-    expect(find.text(nested.displayName), findsWidgets);
+    expect(row(parent), findsOneWidget);
+    expect(row(child), findsNothing, reason: 'the branch is folded');
+
+    await expand(tester, parent);
+    expect(row(child), findsOneWidget);
+  });
+
+  testWidgets('it opens where the folder pane has its branches open',
+      (tester) async {
+    final store = MemoryUiStateStore();
+    // The sample engine's folders, known before the sheet opens.
+    final engine = SampleMailEngine();
+    final account = (await tester.runAsync(engine.loadAccounts))!.first;
+    final folders = (await tester.runAsync(() => engine.loadFolders(account.id)))!;
+    final (parent, child) = branch(folders);
+    await store.writeIds(UiStateKeys.expanded, {parent.id});
+
+    await open(tester, store: store);
+
+    expect(row(child), findsOneWidget);
+  });
+
+  testWidgets('each folder has its own icon, and a subfolder sits further in',
+      (tester) async {
+    final (_, folders) = await open(tester);
+    final (parent, child) = branch(folders);
+    await expand(tester, parent);
+
+    double iconLeft(MailFolder f) => tester
+        .getTopLeft(find.descendant(of: row(f), matching: find.byType(Icon)).last)
+        .dx;
+    expect(iconLeft(child), greaterThan(iconLeft(parent)));
+    final inbox = folders.firstWhere((f) => f.role == FolderRole.inbox);
+    expect(
+      find.descendant(of: row(inbox), matching: find.byIcon(Icons.inbox_outlined)),
+      findsOneWidget,
+      reason: 'the Inbox looks as it does in the pane',
+    );
+  });
+
+  testWidgets('the folder it is in now is there, greyed, and says so',
+      (tester) async {
+    final (_, folders) = await open(tester);
+    final inbox = folders.firstWhere((f) => f.role == FolderRole.inbox);
+
+    expect(find.descendant(of: row(inbox), matching: find.text('Here now')),
+        findsOneWidget);
+    await tester.tap(row(inbox));
+    await tester.pumpAndSettle();
+    expect(find.text('Move to'), findsOneWidget, reason: 'nothing chosen');
   });
 
   testWidgets('typing narrows it to what was typed', (tester) async {
@@ -98,41 +171,11 @@ void main() {
     expect(find.textContaining('No folder matches'), findsOneWidget);
   });
 
-  testWidgets('a nested folder is indented under where it lives',
-      (tester) async {
-    final (_, folders) = await open(tester);
-    final nestedNames = {
-      for (final f in folders)
-        if (f.parentId != null) f.displayName,
-    };
-
-    // Measured from what is actually offered, since the source folder and
-    // the ones that cannot take a message are not on the list.
-    double? nestedLeft, topLeft;
-    for (final tile in find.byType(ListTile).evaluate()) {
-      final title = (tile.widget as ListTile).title;
-      if (title is! Text || title.data == null) continue;
-      final left = tester.getTopLeft(find.byWidget(tile.widget)).dx +
-          ((tile.widget as ListTile).contentPadding as EdgeInsets).left;
-      if (nestedNames.contains(title.data)) {
-        nestedLeft ??= left;
-      } else {
-        topLeft ??= left;
-      }
-    }
-
-    expect(topLeft, isNotNull);
-    expect(nestedLeft, isNotNull, reason: 'the sample account has subfolders');
-    expect(nestedLeft, greaterThan(topLeft!));
-  });
-
   testWidgets('choosing one closes the sheet with that folder', (tester) async {
-    await open(tester);
-    final chosen = find
-        .byWidgetPredicate((w) => w is ListTile && w.onTap != null)
-        .first;
+    final (_, folders) = await open(tester);
+    final (parent, _) = branch(folders);
 
-    await tester.tap(chosen);
+    await tester.tap(row(parent));
     await tester.pumpAndSettle();
 
     expect(find.text('Move to'), findsNothing, reason: 'the sheet closed');

@@ -30,4 +30,18 @@ void main() {
     expect(java.substring(call, build).split('\n'), hasLength(2),
         reason: 'on the line straight before it');
   });
+
+  test('where the small icon is asked for, the large one goes', () {
+    final java = File(pluginJava).readAsStringSync();
+    final method = java.substring(
+      java.indexOf('private static void preferSmallIcon('),
+      java.indexOf('private static void setSmallIcon('),
+    );
+    final ask = method.indexOf('putBoolean((String) key, true);');
+    final drop = method.indexOf('builder.setLargeIcon((android.graphics.Bitmap) null);');
+    expect(ask, greaterThan(0));
+    expect(drop, greaterThan(ask), reason: 'in the same branch, after it');
+    expect(method.substring(ask, drop), isNot(contains('}')),
+        reason: 'only where the small icon is asked for');
+  });
 }

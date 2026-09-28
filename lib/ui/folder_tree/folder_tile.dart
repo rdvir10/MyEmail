@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../domain/folder_role.dart';
+import '../../domain/mail_folder.dart';
 import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
 import '../../theme/app_theme.dart';
@@ -442,21 +443,26 @@ class _FolderTileState extends State<FolderTile> {
     );
   }
 
-  static IconData _iconFor(FolderRow row) => switch (row.folder.role) {
-        FolderRole.inbox => FolderIcons.inbox,
-        FolderRole.drafts => FolderIcons.drafts,
-        FolderRole.sent => FolderIcons.sent,
-        FolderRole.deleted => FolderIcons.deleted,
-        FolderRole.junk => FolderIcons.junk,
-        FolderRole.archive => FolderIcons.archive,
-        FolderRole.outbox => FolderIcons.outbox,
-        FolderRole.unifiedInbox => FolderIcons.unified,
-        FolderRole.user => row.isExpanded && row.hasChildren
-            ? FolderIcons.folderOpen
-            : FolderIcons.folder,
-      };
+  static IconData _iconFor(FolderRow row) =>
+      folderIconFor(row.folder, open: row.isExpanded && row.hasChildren);
 
 }
+
+/// The icon a folder is drawn with wherever folders are listed: the pane,
+/// and the Move to sheet, so one folder looks the same in both. [open] is a
+/// folder whose branch is showing.
+IconData folderIconFor(MailFolder folder, {bool open = false}) =>
+    switch (folder.role) {
+      FolderRole.inbox => FolderIcons.inbox,
+      FolderRole.drafts => FolderIcons.drafts,
+      FolderRole.sent => FolderIcons.sent,
+      FolderRole.deleted => FolderIcons.deleted,
+      FolderRole.junk => FolderIcons.junk,
+      FolderRole.archive => FolderIcons.archive,
+      FolderRole.outbox => FolderIcons.outbox,
+      FolderRole.unifiedInbox => FolderIcons.unified,
+      FolderRole.user => open ? FolderIcons.folderOpen : FolderIcons.folder,
+    };
 
 /// The numbers after a folder's name: unread, a slash, and everything in
 /// it — "14/2310" — or nothing for an empty folder. The unread count is

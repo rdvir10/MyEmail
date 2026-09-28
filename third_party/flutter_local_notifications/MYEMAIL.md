@@ -8,7 +8,10 @@ Copied from pub.dev (without `example/` and `test/`) and used through
 called just before `builder.build()` in `createNotification`. It sets
 Android's `Notification.EXTRA_PREFER_SMALL_ICON` on every notification,
 read by reflection (API 37 and later; earlier versions have neither the
-constant nor the behaviour).
+constant nor the behaviour). Where it sets it, it also takes the large icon
+off: MyEmail's large icon is the same dart on the same colour, drawn for the
+Android versions that show the launcher icon, and beside the small icon it
+was the same picture twice (asked for on 2026-09-28).
 
 **Why:** from Android 17 the shade shows the app's launcher icon on each
 notification and on its group's header instead of the small icon. MyEmail's

@@ -48,20 +48,33 @@ bool namesInlinePictures(String html) =>
 String withInlinePictures(String html, Map<String, String> pictures) {
   if (pictures.isEmpty) return html;
   return html.replaceAllMapped(
-    RegExp(
-      r'''((?<![-\w])(?:src|background)\s*=\s*["']?\s*|url\(\s*["']?\s*)cid:([^"'\s)>]+)''',
-      caseSensitive: false,
-    ),
+    _cidLink,
     (m) {
-      // A cid: link is URL-encoded (RFC 2392); the header it names is not.
-      var id = m[2]!;
-      try {
-        id = Uri.decodeComponent(id);
-      } catch (_) {
-        // Taken as written.
-      }
-      final uri = pictures[id.toLowerCase()];
+      final uri = pictures[_contentIdOf(m[2]!)];
       return uri == null ? m[0]! : '${m[1]}$uri';
     },
   );
+}
+
+/// Every Content-ID [html] names in a picture's link, as [withInlinePictures]
+/// looks them up: decoded, in lower case.
+Set<String> contentIdsNamedIn(String html) => {
+      for (final m in _cidLink.allMatches(html)) _contentIdOf(m[2]!),
+    };
+
+final _cidLink = RegExp(
+  r'''((?<![-\w])(?:src|background)\s*=\s*["']?\s*|url\(\s*["']?\s*)cid:([^"'\s)>]+)''',
+  caseSensitive: false,
+);
+
+/// A cid: link's Content-ID as a key: decoded, since a link is URL-encoded
+/// (RFC 2392) and the header it names is not, and in lower case.
+String _contentIdOf(String link) {
+  var id = link;
+  try {
+    id = Uri.decodeComponent(id);
+  } catch (_) {
+    // Taken as written.
+  }
+  return id.toLowerCase();
 }

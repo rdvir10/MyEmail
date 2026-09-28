@@ -1,8 +1,11 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/draft.dart';
+import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/compose_providers.dart';
@@ -97,6 +100,44 @@ void main() {
     expect(reply.cc.map((a) => a.email), ['noa@example.com']);
   });
 
+  group("the quote's pictures", () {
+    const html = '<p>Figures</p><img src="cid:logo@x" alt="Hadco Logo">';
+
+    Future<Draft> build(WidgetTester tester, ComposeKind kind) async {
+      final engine = _Engine()
+        ..body = const MailBody(text: 'Figures', html: html)
+        ..raw = _forwardedMime;
+      final c = over(engine);
+      final ref = await refOver(tester, c);
+      await tester.runAsync(() => c.read(accountsProvider.future));
+      return (await tester.runAsync(() => buildDraft(
+            ref: ref,
+            kind: kind,
+            accountId: 'acct-personal',
+            original: _message(id: 'acct-personal:INBOX#1'),
+          )))!;
+    }
+
+    testWidgets('go into a reply as data, which the editor can show',
+        (tester) async {
+      // The editor loads nothing else, so a signature's logo in the quote
+      // was a broken box; sent, the data goes out as a part again.
+      final reply = await build(tester, ComposeKind.reply);
+
+      expect(reply.htmlBody, contains('src="data:image/png;base64,'));
+      expect(reply.htmlBody, isNot(contains('cid:logo@x')));
+    });
+
+    testWidgets('and a forward carries the files, but not those pictures '
+        'twice', (tester) async {
+      final forward = await build(tester, ComposeKind.forward);
+
+      expect(forward.htmlBody, contains('src="data:image/png;base64,'));
+      expect(forward.attachments.map((a) => a.fileName), ['report.pdf'],
+          reason: 'the logo is in the body; a chip for it was a second copy');
+    });
+  });
+
   group('once the server has it', () {
     testWidgets('a folder refresh that fails does not fail the send',
         (tester) async {
@@ -161,6 +202,35 @@ void main() {
   });
 }
 
+/// A forwarded message as the server keeps it: the body with its logo in
+/// a related part under a Content-ID, and a PDF.
+const _forwardedMime = 'MIME-Version: 1.0\r\n'
+    'Subject: Numbers\r\n'
+    'Content-Type: multipart/mixed; boundary="mix"\r\n'
+    '\r\n'
+    '--mix\r\n'
+    'Content-Type: multipart/related; boundary="rel"\r\n'
+    '\r\n'
+    '--rel\r\n'
+    'Content-Type: text/html; charset=utf-8\r\n'
+    '\r\n'
+    '<p>Figures</p><img src="cid:logo@x">\r\n'
+    '--rel\r\n'
+    'Content-Type: image/png; name="logo.png"\r\n'
+    'Content-Transfer-Encoding: base64\r\n'
+    'Content-ID: <logo@x>\r\n'
+    'Content-Disposition: inline; filename="logo.png"\r\n'
+    '\r\n'
+    'iVBORw==\r\n'
+    '--rel--\r\n'
+    '--mix\r\n'
+    'Content-Type: application/pdf; name="report.pdf"\r\n'
+    'Content-Transfer-Encoding: base64\r\n'
+    'Content-Disposition: attachment; filename="report.pdf"\r\n'
+    '\r\n'
+    'JVBERi0=\r\n'
+    '--mix--\r\n';
+
 MailMessage _message({
   required String id,
   List<MailAddress> to = const [],
@@ -183,6 +253,7 @@ MailMessage _message({
 /// it sent, and a folder listing that can be made to fail.
 class _Engine extends SampleMailEngine {
   MailBody body = const MailBody(text: 'The figures');
+  String? raw;
   bool foldersFail = false;
   final sent = <Draft>[];
 
@@ -191,7 +262,30 @@ class _Engine extends SampleMailEngine {
 
   @override
   Future<String> rawMessage(String messageId) async =>
-      throw StateError('not kept');
+      raw ?? (throw StateError('not kept'));
+
+  /// The logo the quote names, and a file.
+  @override
+  Future<List<MailAttachment>> listAttachments(String messageId) async => [
+        const MailAttachment(
+          id: 'logo',
+          name: 'logo.png',
+          mimeType: 'image/png',
+          sizeBytes: 4,
+          isInline: true,
+          contentId: 'logo@x',
+        ),
+        const MailAttachment(
+          id: 'pdf',
+          name: 'report.pdf',
+          mimeType: 'application/pdf',
+          sizeBytes: 5,
+        ),
+      ];
+
+  @override
+  Future<Uint8List> fetchAttachment(String messageId, String id) async =>
+      Uint8List.fromList([137, 80, 78, 71]);
 
   @override
   Future<void> sendDraft(Draft draft) async => sent.add(draft);

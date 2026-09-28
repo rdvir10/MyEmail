@@ -13,9 +13,11 @@ import '../domain/draft.dart';
 import '../domain/error_report.dart' show ReadableError;
 import '../domain/mail_message.dart';
 import '../domain/signature.dart';
+import '../domain/html_safety.dart';
 import 'folder_tree.dart' show kUnifiedInboxId;
 import 'message_providers.dart';
 import 'providers.dart';
+import 'attachment_providers.dart' show inlinePicturesProvider;
 
 /// Per-account signatures, persisted with the rest of the UI state.
 class Signatures extends Notifier<Map<String, Signature>> {
@@ -70,7 +72,7 @@ Future<Draft> buildDraft({
 
   final accounts = ref.read(accountsProvider).value ?? const [];
 
-  final draft = draftFor(
+  var draft = draftFor(
     kind: kind,
     accountId: accountId,
     original: original,
@@ -87,15 +89,42 @@ Future<Draft> buildDraft({
     otherAccountEmails: [for (final a in accounts) a.emailAddress],
   );
 
+  // The pictures the quote names by Content-ID, a signature's logo above
+  // all, put in as data. The editor can show nothing else, so they were
+  // broken boxes in every reply and forward; sent, the data goes out as
+  // parts of the message again (withPicturesAsParts), so the recipient has
+  // them too.
+  final quoted = body?.html ?? '';
+  if (original != null && namesInlinePictures(quoted)) {
+    try {
+      final pictures =
+          await ref.read(inlinePicturesProvider(original.id).future);
+      draft = draft.copyWith(
+        htmlBody: withInlinePictures(draft.htmlBody, pictures),
+      );
+    } catch (e) {
+      debugPrint('[myemail] the quote goes without its pictures: $e');
+    }
+  }
+
   // A forward carries the files, and the pictures the quote shows through
   // cid: links. It used to arrive with the text alone and nothing on the
   // screen saying the files were gone.
   final carriesFiles = original != null &&
-      (original.hasAttachments || (body?.html?.contains('cid:') ?? false));
+      (original.hasAttachments || quoted.contains('cid:'));
   if (kind != ComposeKind.forward || !carriesFiles) return draft;
   try {
     final raw = await ref.read(mailEngineProvider).rawMessage(original.id);
-    return draft.copyWith(attachments: attachmentsInMime(raw));
+    // Not a picture the quote now shows as data: it goes with the message
+    // that way, and as a file of its own it was there twice, as a chip for
+    // every logo in the signature.
+    final stillLinked = contentIdsNamedIn(draft.htmlBody);
+    return draft.copyWith(attachments: [
+      for (final a in attachmentsInMime(raw))
+        if (a.contentId == null ||
+            stillLinked.contains(a.contentId!.toLowerCase()))
+          a,
+    ]);
   } catch (_) {
     // Offline, or the message has gone: say so rather than send without.
     return draft.copyWith(

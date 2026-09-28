@@ -131,7 +131,9 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
       }
     }
 
-    _load();
+    // A message laid out for a width of its own waits for the view's width,
+    // which its page depends on; everything else loads at once.
+    if (!_hasOwnWidth) _load();
   }
 
   @override
@@ -176,6 +178,30 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
     _load();
   }
 
+  /// How wide the view is, once it has been laid out; see [_noteWidth].
+  double? _width;
+
+  /// Whether this message is laid out for a width of its own, which is the
+  /// one kind whose page depends on the view's width.
+  bool get _hasOwnWidth => declaredLayoutWidth(widget.html) != null;
+
+  /// The view's width, from its layout. A message laid out for a width of
+  /// its own is loaded again when the view crosses that width, so it is
+  /// scaled down on a narrow view and shown as it is on a wide one; see
+  /// [wrapHtmlForDisplay]. Loaded after the frame: loading from a layout
+  /// would rebuild in the middle of one.
+  void _noteWidth(double width) {
+    if (!width.isFinite || width <= 0 || width == _width) return;
+    final before = _width;
+    _width = width;
+    final declared = declaredLayoutWidth(widget.html);
+    if (declared == null) return;
+    if (before != null && (declared > before) == (declared > width)) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _load();
+    });
+  }
+
   void _load() {
     final source = withInlinePictures(
       _showRemote ? widget.html : stripRemoteContent(widget.html),
@@ -192,6 +218,7 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
         source,
         brightness: _brightness,
         remoteAllowed: _showRemote,
+        viewWidth: _width,
       ));
   }
 
@@ -234,11 +261,16 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
             ),
           ),
         Expanded(
-          // Sees the pointer on its way to the WebView without taking it.
-          child: Listener(
-            behavior: HitTestBehavior.translucent,
-            onPointerDown: (_) => _touchedAt = DateTime.now(),
-            child: WebViewWidget(controller: _controller),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              _noteWidth(constraints.maxWidth);
+              // Sees the pointer on its way to the WebView without taking it.
+              return Listener(
+                behavior: HitTestBehavior.translucent,
+                onPointerDown: (_) => _touchedAt = DateTime.now(),
+                child: WebViewWidget(controller: _controller),
+              );
+            },
           ),
         ),
       ],
@@ -418,10 +450,17 @@ const maxLayoutWidth = 1400;
 /// the message was built, a readable default font, and images that never
 /// overflow. Anything the message brings of its own still applies, since this
 /// only sets defaults.
+///
+/// [viewWidth] is how wide the view showing it is, where that is known. A
+/// message laid out for a width of its own is scaled to the view only when
+/// the view is narrower: down to fit a phone, which is the point, but never
+/// up. On a tablet's wide pane a signature table of 600 pixels scaled the
+/// whole message up to twice its size.
 String wrapHtmlForDisplay(
   String html, {
   Brightness brightness = Brightness.light,
   bool remoteAllowed = false,
+  double? viewWidth,
 }) {
   final isDocument =
       RegExp(r'<(html|body)[\s>]', caseSensitive: false).hasMatch(html);
@@ -433,7 +472,11 @@ String wrapHtmlForDisplay(
   final sheets = isDocument ? _headStyles(html) : '';
   final bodyTag = isDocument ? _bodyTag(html) : '<body>';
   final dark = readsAsDark(html, brightness);
-  final laidOutFor = declaredLayoutWidth(body);
+  final declared = declaredLayoutWidth(body);
+  final laidOutFor =
+      declared != null && (viewWidth == null || declared > viewWidth)
+          ? declared
+          : null;
   final fg = dark ? '#e6e1e5' : '#1c1b1f';
   final bg = dark ? '#1c1b1f' : '#fff';
   final rule = dark ? '#5a585c' : '#ccc';

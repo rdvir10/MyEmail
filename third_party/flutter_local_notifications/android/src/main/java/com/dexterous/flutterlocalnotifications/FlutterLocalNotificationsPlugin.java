@@ -503,12 +503,19 @@ public class FlutterLocalNotificationsPlugin
    * a glance, so every notification asks. The key is read from the platform
    * rather than written out: the constant exists from API 37, and a version
    * without it has neither the constant nor the behaviour it undoes.
+   *
+   * Where it is asked for, the large icon goes: MyEmail's is the same dart
+   * on the same colour, drawn for Android versions that show the launcher
+   * icon on the left, and beside the small icon it said the same thing
+   * twice. Earlier versions keep it, since there it is the only place the
+   * account's colour shows.
    */
   private static void preferSmallIcon(NotificationCompat.Builder builder) {
     try {
       Object key = Notification.class.getField("EXTRA_PREFER_SMALL_ICON").get(null);
       if (key instanceof String) {
         builder.getExtras().putBoolean((String) key, true);
+        builder.setLargeIcon((android.graphics.Bitmap) null);
       }
     } catch (ReflectiveOperationException | RuntimeException e) {
       // Before Android 17: nothing to ask for.
