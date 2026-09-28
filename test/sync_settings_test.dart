@@ -4,8 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/notifications/mail_notifier.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/data/sync/background_allowance.dart';
 import 'package:myemail/data/sync/background_worker.dart';
 import 'package:myemail/data/sync/sync_state_store.dart';
+import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/sync_prefs.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/sync_providers.dart';
@@ -23,12 +25,16 @@ void main() {
   late MemorySyncStateStore state;
   late FakeMailNotifier notifier;
   late FakeBackgroundScheduler scheduler;
+  late FakeBackgroundAllowance allowance;
+  late MemoryUiStateStore uiState;
   late MailEngine engine;
 
   setUp(() {
     state = MemorySyncStateStore();
     notifier = FakeMailNotifier();
     scheduler = FakeBackgroundScheduler();
+    allowance = FakeBackgroundAllowance();
+    uiState = MemoryUiStateStore();
     engine = SampleMailEngine();
   });
 
@@ -39,6 +45,8 @@ void main() {
         mailNotifierProvider.overrideWithValue(notifier),
         syncStateStoreProvider.overrideWithValue(state),
         backgroundSchedulerProvider.overrideWithValue(scheduler),
+        backgroundAllowanceProvider.overrideWithValue(allowance),
+        uiStateStoreProvider.overrideWithValue(uiState),
       ],
     );
     addTearDown(c.dispose);
@@ -198,6 +206,111 @@ void main() {
         (await second.read(syncSettingsProvider.future)).intervalMinutes,
         180,
       );
+    });
+  });
+
+  group('running in the background', () {
+    // Android refuses push its foreground service whenever it is started
+    // from the background, unless MyEmail is exempt from battery
+    // optimisation. On a Pixel that left Microsoft mail twenty minutes late.
+    test('choosing push asks Android to let MyEmail run in the background',
+        () async {
+      allowance.exempt = false;
+      final c = container();
+      await c.read(syncSettingsProvider.future);
+
+      await c.read(syncSettingsProvider.notifier).setMode(SyncMode.realtime);
+
+      expect(allowance.requests, 1);
+      expect(await c.read(batteryExemptProvider.future), isTrue,
+          reason: 'read again after the dialog');
+    });
+
+    test('a no leaves push on, running while Android allows', () async {
+      allowance
+        ..exempt = false
+        ..grantsWhenAsked = false;
+      final c = container();
+      await c.read(syncSettingsProvider.future);
+
+      final ok =
+          await c.read(syncSettingsProvider.notifier).setMode(SyncMode.frequent);
+
+      expect(ok, isTrue);
+      expect((await state.readPrefs()).mode, SyncMode.frequent);
+    });
+
+    test('nothing is asked of an app already exempt, or for the occasional '
+        'mode', () async {
+      final c = container();
+      await c.read(syncSettingsProvider.future);
+      await c.read(syncSettingsProvider.notifier).setMode(SyncMode.realtime);
+      expect(allowance.requests, 0, reason: 'already exempt');
+
+      allowance.exempt = false;
+      await c.read(syncSettingsProvider.notifier).setMode(SyncMode.periodic);
+      expect(allowance.requests, 0, reason: 'no service to keep alive');
+    });
+
+    test('the app asks once as it opens with push on', () async {
+      // A phone that had push on before choosing it asked anything.
+      state = MemorySyncStateStore(
+        prefs: const SyncPrefs(mode: SyncMode.realtime),
+      );
+      allowance
+        ..exempt = false
+        ..grantsWhenAsked = false;
+      final c = container();
+      final settings = c.read(syncSettingsProvider.notifier);
+
+      expect(await settings.askToRunInBackgroundOnce(), isTrue);
+      expect(await settings.askToRunInBackgroundOnce(), isFalse,
+          reason: 'a no is an answer');
+      expect(allowance.requests, 1);
+    });
+
+    test('and not when nothing needs the service', () async {
+      state = MemorySyncStateStore(
+        prefs: const SyncPrefs(mode: SyncMode.periodic),
+      );
+      allowance.exempt = false;
+      final c = container();
+
+      expect(
+        await c.read(syncSettingsProvider.notifier).askToRunInBackgroundOnce(),
+        isFalse,
+      );
+      expect(allowance.requests, 0);
+    });
+
+    testWidgets('the Sync screen says what the limit costs, with a way out',
+        (tester) async {
+      state = MemorySyncStateStore(
+        prefs: const SyncPrefs(mode: SyncMode.realtime),
+      );
+      allowance.exempt = false;
+      await pump(tester, const SyncScreen());
+
+      final banner = find.byKey(const ValueKey('background-limited'));
+      expect(banner, findsOneWidget);
+      expect(find.textContaining('every 15 minutes'), findsOneWidget);
+
+      await tester.tap(find.descendant(of: banner, matching: find.text('Allow')));
+      await tester.pumpAndSettle();
+
+      expect(allowance.requests, 1);
+      expect(banner, findsNothing, reason: 'exempt now');
+    });
+
+    testWidgets('and says nothing when there is nothing to say',
+        (tester) async {
+      state = MemorySyncStateStore(
+        prefs: const SyncPrefs(mode: SyncMode.periodic),
+      );
+      allowance.exempt = false;
+      await pump(tester, const SyncScreen());
+      expect(find.byKey(const ValueKey('background-limited')), findsNothing,
+          reason: 'the occasional mode has no service');
     });
   });
 

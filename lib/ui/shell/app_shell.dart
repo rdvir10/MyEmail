@@ -87,8 +87,20 @@ class _AppShellState extends ConsumerState<AppShell>
     // After the first frame: the notifier may have to talk to the platform,
     // and selecting a folder during a build is a provider modification while
     // the tree is being built.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _openLaunchMessage());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _openLaunchMessage();
+      _askToRunInBackgroundOnce();
+    });
     _listenForPressesDone();
+  }
+
+  /// See [SyncSettings.askToRunInBackgroundOnce].
+  Future<void> _askToRunInBackgroundOnce() async {
+    try {
+      await ref.read(syncSettingsProvider.notifier).askToRunInBackgroundOnce();
+    } catch (e) {
+      debugPrint('[myemail] could not ask to run in the background: $e');
+    }
   }
 
   @override
@@ -142,6 +154,8 @@ class _AppShellState extends ConsumerState<AppShell>
     ref.invalidate(foldersProvider);
     _openLaunchMessage();
     _carryOutPressedButtons();
+    // Back from Android's battery dialog or its settings, perhaps.
+    ref.invalidate(batteryExemptProvider);
     _restartStalledSync();
   }
 

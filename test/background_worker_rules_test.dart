@@ -157,6 +157,32 @@ void main() {
       store.lastLivePass = now.subtract(const Duration(minutes: 5));
       expect(await restartStalledLiveSync(store, scheduler, now: now), isFalse);
     });
+
+    test('opening the app starts a worker Android refused, straight away',
+        () async {
+      // It fell back to occasional checks, and a service started with the
+      // app on screen is one Android allows.
+      final store = MemorySyncStateStore(prefs: push)
+        ..lastLivePass = now.subtract(const Duration(minutes: 5))
+        ..liveRefused = now.subtract(const Duration(minutes: 1));
+      final scheduler = FakeBackgroundScheduler();
+
+      expect(await restartStalledLiveSync(store, scheduler, now: now), isTrue);
+      expect(scheduler.last?.mode, SyncMode.realtime);
+      expect(store.liveRefused, isNull, reason: 'once');
+      expect(await restartStalledLiveSync(store, scheduler, now: now), isFalse);
+    });
+
+    test('a refusal outlived by a change of mode is forgotten', () async {
+      final store = MemorySyncStateStore(
+        prefs: const SyncPrefs(mode: SyncMode.periodic),
+      )..liveRefused = now;
+      final scheduler = FakeBackgroundScheduler();
+
+      expect(await restartStalledLiveSync(store, scheduler, now: now), isFalse);
+      expect(scheduler.applied, isEmpty);
+      expect(store.liveRefused, isNull);
+    });
   });
 
   group('the push worker and the account list', () {
@@ -252,17 +278,67 @@ void main() {
       await stop.stop();
     });
 
-    test('a stopped worker does not start the next one', () {
+    test('only a worker refused its service falls back to occasional checks',
+        () {
       const push = SyncPrefs(mode: SyncMode.realtime);
       const stopped =
           LiveSyncOutcome(passes: 3, failures: 0, stoppedEarly: true);
-      const spent =
-          LiveSyncOutcome(passes: 3, failures: 0, stoppedEarly: false);
+      const refused = LiveSyncOutcome(
+        passes: 1,
+        failures: 0,
+        stoppedEarly: false,
+        lostForeground: true,
+      );
 
-      expect(handsOver(stopped, push), isFalse);
-      expect(handsOver(spent, push), isTrue);
-      expect(handsOver(spent, const SyncPrefs(mode: SyncMode.periodic)),
-          isFalse);
+      expect(fallsBack(stopped, push), isFalse,
+          reason: 'Android stopped it for a reason; opening the app restarts');
+      expect(fallsBack(refused, push), isTrue);
+      expect(fallsBack(refused, const SyncPrefs(mode: SyncMode.periodic)),
+          isFalse, reason: 'the settings moved on without it');
+    });
+  });
+
+  group('whether the worker really has its foreground service', () {
+    test('the first question waits for the service to come up', () async {
+      // WorkManager asks for it as the worker starts; Android brings it up
+      // a moment later. Asked too soon, a good worker took itself for
+      // refused.
+      var asked = 0;
+      final slept = <Duration>[];
+      final check = foregroundCheck(
+        () async => ++asked >= 4,
+        sleep: (d) async => slept.add(d),
+      );
+
+      expect(await check(), isTrue);
+      expect(slept, hasLength(3));
+    });
+
+    test('but not for ever', () async {
+      final slept = <Duration>[];
+      final check = foregroundCheck(
+        () async => false,
+        grace: const Duration(seconds: 15),
+        sleep: (d) async => slept.add(d),
+      );
+
+      expect(await check(), isFalse);
+      expect(slept.fold(Duration.zero, (a, b) => a + b),
+          const Duration(seconds: 15));
+    });
+
+    test('and later questions are answered at once', () async {
+      var running = true;
+      final slept = <Duration>[];
+      final check = foregroundCheck(
+        () async => running,
+        sleep: (d) async => slept.add(d),
+      );
+      expect(await check(), isTrue);
+
+      running = false;
+      expect(await check(), isFalse);
+      expect(slept, isEmpty, reason: 'a service that went is gone');
     });
   });
 }

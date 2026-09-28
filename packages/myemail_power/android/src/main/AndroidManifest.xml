@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+        Lets the app show Android's own "Let MyEmail always run in the
+        background?" dialog. Without the exemption Android refuses the
+        foreground service that push runs in whenever it is started from the
+        background, which it is after a restart or a reboot.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+</manifest>

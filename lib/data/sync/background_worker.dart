@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui' show DartPluginRegistrant;
 
 import 'package:flutter/foundation.dart';
+import 'package:myemail_power/myemail_power.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
@@ -121,10 +122,18 @@ Future<void> applyBackgroundSchedule(
     return;
   }
 
+  await _registerPeriodicPass(prefs.interval);
+}
+
+/// The occasional check, every [frequency].
+///
+/// Also where push falls back to when Android refuses its foreground
+/// service, until the app is opened and can start it again.
+Future<void> _registerPeriodicPass(Duration frequency) async {
   await Workmanager().registerPeriodicTask(
     _uniqueName,
     _taskName,
-    frequency: prefs.interval,
+    frequency: frequency,
     // `update` rather than `keep`: with `keep`, changing the interval in
     // settings would leave the old one running and the screen would be lying.
     existingWorkPolicy: ExistingPeriodicWorkPolicy.update,
@@ -158,9 +167,14 @@ ExistingWorkPolicy liveWorkPolicy({required bool restart}) =>
 /// Start (or replace) the long-running foreground worker.
 ///
 /// A one-off rather than a periodic task, because what is wanted is one
-/// process that stays alive and loops, not a job that runs and exits. It
-/// re-enqueues itself when its budget is spent; see [_runLive]. [after]
-/// holds the start back, for a worker handing over after it failed.
+/// process that stays alive and loops, not a job that runs and exits; see
+/// [_runLive]. [after] holds the start back, for a worker handing over
+/// after it failed.
+///
+/// Best started from the app while it is on screen. Android refuses a
+/// foreground service started from the background unless MyEmail is exempt
+/// from battery optimisation, and a worker without one falls back to
+/// occasional checks until the app is next opened.
 Future<void> _startLiveWorker(
   SyncPrefs prefs, {
   Duration? after,
@@ -263,14 +277,52 @@ class LiveWorkerStop {
   }
 }
 
-/// Whether a live worker whose loop has ended starts the next one.
+/// Whether a live worker whose loop has ended falls back to occasional
+/// checks.
 ///
-/// Not after a stop. Android stopped it, either for a new worker already
-/// enqueued in its place or because it ran out of time, and starting one
-/// here would cancel the new one or fight the system.
+/// Only when it lost its foreground service while the settings still ask
+/// for one. Starting another worker from here would be refused in the same
+/// way, and a worker Android stopped needs nothing: it stopped it for a new
+/// one already enqueued in its place, or because it ran out of time, which
+/// opening the app starts again.
 @visibleForTesting
-bool handsOver(LiveSyncOutcome outcome, SyncPrefs current) =>
-    !outcome.stoppedEarly && current.mode.needsForegroundService;
+bool fallsBack(LiveSyncOutcome outcome, SyncPrefs current) =>
+    outcome.lostForeground && current.mode.needsForegroundService;
+
+/// What the loop asks after each pass: does the worker still have its
+/// foreground service?
+///
+/// The first time, it waits up to [grace] for one. WorkManager asks Android
+/// for the service as the worker starts, and it comes up a moment after;
+/// a worker checking too early would take itself for refused.
+///
+/// Why this is asked at all. When Android refuses the service, which it
+/// does to a worker started from the background unless MyEmail is exempt
+/// from battery optimisation, WorkManager still counts the worker as
+/// foreground work and ignores Android's stop. The worker then lives on
+/// with no service and no job: frozen between Android's rationed job slots
+/// on a Pixel, so mail from a Microsoft account arrived twenty minutes late
+/// or more; waking every ten seconds with its network cut on a Samsung,
+/// until Android killed it for the battery it was using.
+@visibleForTesting
+Future<bool> Function() foregroundCheck(
+  Future<bool> Function() running, {
+  Duration grace = const Duration(seconds: 15),
+  Duration poll = const Duration(seconds: 1),
+  Future<void> Function(Duration)? sleep,
+}) {
+  final wait = sleep ?? (d) => Future<void>.delayed(d);
+  var first = true;
+  return () async {
+    if (!first) return running();
+    first = false;
+    for (var waited = Duration.zero;; waited += poll) {
+      if (await running()) return true;
+      if (waited >= grace) return false;
+      await wait(poll);
+    }
+  };
+}
 
 /// Carry out the notification buttons that are waiting.
 ///
@@ -293,11 +345,11 @@ Future<bool> _runPendingActions() async {
   }
 }
 
-/// The foreground modes: one worker that stays alive and loops.
+/// The foreground modes: one worker that stays alive and loops, for as long
+/// as Android keeps its foreground service going.
 ///
 /// Returns true either way. A false here would make WorkManager retry with
-/// backoff, but this worker re-enqueues itself deliberately and immediately,
-/// and two competing restart mechanisms is how you end up with two services.
+/// backoff, and a worker Android refused its service would be refused again.
 Future<bool> _runLive(Map<String, dynamic>? inputData) async {
   DartPluginRegistrant.ensureInitialized();
 
@@ -352,13 +404,23 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
       },
       waitForNext: () => _waitForNext(mode, liveEngine),
       stopSignal: stop.signal,
+      stillForeground:
+          foregroundCheck(const MyEmailPower().foregroundServiceRunning),
     ).run());
     debugPrint('[myemail] live worker finished: $outcome');
 
-    // Hand over to a fresh worker unless the settings changed underneath us,
-    // or Android stopped this one.
+    // Refused its service: occasional checks until the app is opened, which
+    // starts push again where Android allows it. See restartStalledLiveSync.
     final current = await state.readPrefs();
-    if (handsOver(outcome, current)) await _startLiveWorker(current);
+    if (fallsBack(outcome, current)) {
+      await state.writeLiveRefused(DateTime.now());
+      await _registerPeriodicPass(
+        const Duration(minutes: SyncPrefs.minimumIntervalMinutes),
+      );
+      debugPrint('[myemail] live: Android refused the foreground service; '
+          'checking every ${SyncPrefs.minimumIntervalMinutes} minutes '
+          'until MyEmail is opened');
+    }
     return true;
   } catch (e, stack) {
     debugPrint('[myemail] live worker threw: $e');

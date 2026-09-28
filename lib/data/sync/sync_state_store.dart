@@ -34,12 +34,19 @@ abstract class SyncStateStore {
   /// can tell that Android has stopped it.
   Future<DateTime?> readLastLivePass();
   Future<void> writeLastLivePass(DateTime at);
+
+  /// When Android last refused the push or five-minute worker its
+  /// foreground service, so that it fell back to occasional checks; null
+  /// once the app has started it again. See [restartStalledLiveSync].
+  Future<DateTime?> readLiveRefused();
+  Future<void> writeLiveRefused(DateTime? at);
 }
 
 abstract final class SyncStateKeys {
   static const prefs = 'notify.prefs.v1';
   static const watermarkPrefix = 'notify.mark.';
   static const lastLivePass = 'sync.live.last';
+  static const liveRefused = 'sync.live.refused';
 
   static String watermark(String folderId) => '$watermarkPrefix$folderId';
 }
@@ -87,6 +94,17 @@ class PrefsSyncStateStore implements SyncStateStore {
   Future<void> writeLastLivePass(DateTime at) =>
       _prefs.setInt(SyncStateKeys.lastLivePass, at.millisecondsSinceEpoch);
 
+  @override
+  Future<DateTime?> readLiveRefused() async {
+    final ms = await _prefs.getInt(SyncStateKeys.liveRefused);
+    return ms == null ? null : DateTime.fromMillisecondsSinceEpoch(ms);
+  }
+
+  @override
+  Future<void> writeLiveRefused(DateTime? at) => at == null
+      ? _prefs.remove(SyncStateKeys.liveRefused)
+      : _prefs.setInt(SyncStateKeys.liveRefused, at.millisecondsSinceEpoch);
+
   // Watermarks for a removed account are deliberately not cleaned up. A folder
   // id starts with the account id, and account ids carry the millisecond they
   // were created, so a stale key can never be matched by a later account. The
@@ -124,4 +142,12 @@ class MemorySyncStateStore implements SyncStateStore {
 
   @override
   Future<void> writeLastLivePass(DateTime at) async => lastLivePass = at;
+
+  DateTime? liveRefused;
+
+  @override
+  Future<DateTime?> readLiveRefused() async => liveRefused;
+
+  @override
+  Future<void> writeLiveRefused(DateTime? at) async => liveRefused = at;
 }

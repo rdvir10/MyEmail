@@ -13,7 +13,7 @@ import 'package:myemail/domain/sync_prefs.dart';
 
 import 'fakes/fake_imap_transport.dart';
 
-/// A clock the test moves by hand, so a fifty-minute budget takes no time.
+/// A clock the test moves by hand, so an hour of waiting takes no time.
 class _Clock {
   DateTime now = DateTime(2026, 9, 16, 9);
   DateTime call() => now;
@@ -112,7 +112,7 @@ void main() {
       expect(slept.every((d) => d <= const Duration(seconds: 10)), isTrue);
     });
 
-    test('keeps checking until the budget is spent, then hands over', () async {
+    test('keeps checking at every tick for as long as it runs', () async {
       final outcome = await loop(
         onePass: () async => const BackgroundSyncReport(),
         tick: const Duration(minutes: 5),
@@ -120,6 +120,51 @@ void main() {
       ).run();
 
       expect(outcome.passes, 10, reason: 'fifty minutes at five-minute ticks');
+      expect(outcome.stoppedEarly, isFalse);
+    });
+
+    test('has no budget of its own: it runs until Android stops it',
+        () async {
+      // It handed over to a fresh worker every fifty minutes, and Android
+      // refused every one after the first its foreground service.
+      final stop = Completer<void>();
+      var passes = 0;
+      final outcome = await LiveSyncLoop(
+        onePass: () async {
+          if (++passes == 100) stop.complete();
+          return const BackgroundSyncReport();
+        },
+        waitForNext: () async => clock.advance(const Duration(minutes: 24)),
+        stopSignal: stop.future,
+        clock: clock.call,
+        sleep: (d) async => clock.advance(d),
+      ).run();
+
+      expect(outcome.passes, 100, reason: 'forty hours in, still going');
+      expect(outcome.stoppedEarly, isTrue);
+    });
+
+    test('ends after the pass once its foreground service is gone', () async {
+      // Without the service it neither stays awake nor keeps its network.
+      var passes = 0;
+      var waits = 0;
+      final outcome = await LiveSyncLoop(
+        onePass: () async {
+          passes++;
+          return const BackgroundSyncReport();
+        },
+        waitForNext: () async {
+          waits++;
+          clock.advance(const Duration(minutes: 5));
+        },
+        stillForeground: () async => passes < 3,
+        clock: clock.call,
+        sleep: (d) async => clock.advance(d),
+      ).run();
+
+      expect(passes, 3, reason: 'the pass it had the job for still ran');
+      expect(waits, 2, reason: 'and nothing waited after it');
+      expect(outcome.lostForeground, isTrue);
       expect(outcome.stoppedEarly, isFalse);
     });
 
@@ -203,10 +248,6 @@ void main() {
     test('an IDLE is renewed before a server would drop it', () {
       // RFC 2177 says re-issue at least every 29 minutes.
       expect(idleRenewInterval.inMinutes, lessThan(29));
-    });
-
-    test('the worker hands over well before its own budget looks risky', () {
-      expect(liveSyncBudget.inMinutes, greaterThan(idleRenewInterval.inMinutes));
     });
 
     test('every mode states its battery cost', () {

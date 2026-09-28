@@ -18,6 +18,7 @@ class SyncScreen extends ConsumerWidget {
     final theme = Theme.of(context);
     final settings = ref.watch(syncSettingsProvider);
     final stoppedAt = ref.watch(stalledLiveSyncProvider).value;
+    final exempt = ref.watch(batteryExemptProvider).value;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Sync'), centerTitle: false),
@@ -43,6 +44,14 @@ class SyncScreen extends ConsumerWidget {
                     style: theme.textTheme.bodyMedium
                         ?.copyWith(color: theme.colorScheme.error),
                   ),
+                ),
+              if (prefs.syncs &&
+                  prefs.mode.needsForegroundService &&
+                  exempt == false)
+                _LimitedBanner(
+                  onAllow: () => ref
+                      .read(syncSettingsProvider.notifier)
+                      .askToRunInBackground(),
                 ),
               RadioGroup<SyncMode>(
                 groupValue: prefs.mode,
@@ -119,6 +128,48 @@ class SyncScreen extends ConsumerWidget {
           ),
         ),
       );
+  }
+}
+
+/// Android is optimising MyEmail's battery, which is what refuses push its
+/// service whenever it starts again on its own. The way out is Android's
+/// own dialog.
+class _LimitedBanner extends StatelessWidget {
+  const _LimitedBanner({required this.onAllow});
+
+  final VoidCallback onAllow;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final foreground = theme.colorScheme.onErrorContainer;
+    return Container(
+      key: const ValueKey('background-limited'),
+      width: double.infinity,
+      color: theme.colorScheme.errorContainer,
+      padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.battery_alert_outlined, size: 18, color: foreground),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Android limits MyEmail in the background. When it restarts '
+              'MyEmail on its own, this cannot run, and mail is checked only '
+              'every ${SyncPrefs.minimumIntervalMinutes} minutes until you '
+              'open the app.',
+              style: theme.textTheme.bodySmall?.copyWith(color: foreground),
+            ),
+          ),
+          TextButton(
+            onPressed: onAllow,
+            style: TextButton.styleFrom(foregroundColor: foreground),
+            child: const Text('Allow'),
+          ),
+        ],
+      ),
+    );
   }
 }
 

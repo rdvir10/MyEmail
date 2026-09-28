@@ -79,13 +79,6 @@ bool liveSyncStalled(SyncPrefs prefs, DateTime? lastPass, DateTime now) =>
 /// is below Android's fifteen-minute floor for scheduled work.
 const frequentSyncInterval = Duration(minutes: 5);
 
-/// How long one foreground pass runs before handing over to a fresh one.
-///
-/// Android will stop a long-lived worker eventually, and a worker that has
-/// been stopped does not restart itself. Re-enqueuing well before that keeps
-/// the handover ours rather than the system's.
-const liveSyncBudget = Duration(minutes: 50);
-
 /// An IDLE connection has to be renewed or the server drops it. RFC 2177 says
 /// clients must re-issue at least every 29 minutes; 24 leaves room for a slow
 /// network without a dropped connection looking like silence.

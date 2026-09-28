@@ -17,9 +17,11 @@ import 'background_sync.dart';
 ///
 ///  * Check immediately, before waiting at all. Turning the setting on and
 ///    then seeing nothing for five minutes reads as a broken switch.
-///  * Stop when the budget is spent rather than running forever. Android will
-///    eventually stop a long-lived worker, and a stopped worker does not
-///    restart itself; handing over on our own schedule keeps that ours.
+///  * Run until Android says stop, and not past the foreground service
+///    going. It used to hand over to a fresh worker every fifty minutes,
+///    and Android refuses a foreground service started from the background,
+///    so every worker after the first ran with none: frozen between Android's
+///    rationed job slots on a Pixel, checking every ten seconds on a Samsung.
 ///  * A failed check must not end the loop. A mailbox that is briefly
 ///    unreachable is the normal case on a phone, not a reason to go quiet
 ///    until the app is opened again.
@@ -29,7 +31,8 @@ class LiveSyncLoop {
   LiveSyncLoop({
     required this.onePass,
     required this.waitForNext,
-    this.budget = liveSyncBudget,
+    this.budget,
+    this.stillForeground,
     this.retryDelay = const Duration(seconds: 30),
     this.minimumGap = const Duration(seconds: 10),
     Future<void> Function(Duration)? sleep,
@@ -44,8 +47,14 @@ class LiveSyncLoop {
   /// Waits until it is worth checking again: a timer, or the server speaking.
   final Future<void> Function() waitForNext;
 
-  /// How long this worker may live before handing over to a fresh one.
-  final Duration budget;
+  /// How long the loop may run. Only tests set one: the worker runs until
+  /// Android stops it.
+  final Duration? budget;
+
+  /// Whether the worker still has its foreground service, asked after every
+  /// pass. False ends the loop, because without the service there is no
+  /// staying alive between passes; see [LiveSyncOutcome.lostForeground].
+  final Future<bool> Function()? stillForeground;
 
   /// How long to wait after a pass that failed outright, or a wait that did.
   final Duration retryDelay;
@@ -72,10 +81,13 @@ class LiveSyncLoop {
     stopSignal?.then((_) => _stopped = true);
 
     final startedAt = _clock();
+    final budget = this.budget;
     var passes = 0;
     var failures = 0;
+    var lostForeground = false;
 
-    while (!_stopped && _clock().difference(startedAt) < budget) {
+    while (!_stopped &&
+        (budget == null || _clock().difference(startedAt) < budget)) {
       var failed = false;
       final passStarted = _clock();
       debugPrint('[myemail] live: pass ${passes + 1} starting');
@@ -98,6 +110,14 @@ class LiveSyncLoop {
       }
 
       if (_stopped) break;
+      // After the pass, not before: a worker that was refused its service
+      // still has the job Android started it in, and its network, and one
+      // check out of that is worth having.
+      if (stillForeground != null && !await stillForeground!()) {
+        debugPrint('[myemail] live: no foreground service, so stopping');
+        lostForeground = true;
+        break;
+      }
       // Deliberately after the stop check: a worker being torn down should
       // not sit in a sleep Android is waiting on.
       final waitStarted = _clock();
@@ -130,6 +150,7 @@ class LiveSyncLoop {
       passes: passes,
       failures: failures,
       stoppedEarly: _stopped,
+      lostForeground: lostForeground,
     );
   }
 }
@@ -140,17 +161,22 @@ class LiveSyncOutcome {
     required this.passes,
     required this.failures,
     required this.stoppedEarly,
+    this.lostForeground = false,
   });
 
   final int passes;
   final int failures;
 
-  /// True when Android asked us to stop rather than the budget running out.
-  /// The caller uses this to decide whether re-enqueuing is wanted or would
-  /// be fighting the system.
+  /// True when Android asked us to stop.
   final bool stoppedEarly;
+
+  /// True when the worker found itself without its foreground service:
+  /// Android refused it, which it does to one started from the background
+  /// unless the app is exempt from battery optimisation.
+  final bool lostForeground;
 
   @override
   String toString() => 'LiveSyncOutcome(passes: $passes, '
-      'failures: $failures, stoppedEarly: $stoppedEarly)';
+      'failures: $failures, stoppedEarly: $stoppedEarly, '
+      'lostForeground: $lostForeground)';
 }

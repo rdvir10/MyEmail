@@ -17,6 +17,7 @@ import 'data/sample/sample_mail_engine.dart';
 import 'data/notifications/android_mail_notifier.dart';
 import 'data/notifications/mail_notifier.dart';
 import 'data/secure_credential_store.dart';
+import 'data/sync/background_allowance.dart';
 import 'data/sync/background_worker.dart';
 import 'data/sync/sync_state_store.dart';
 import 'data/updates/apk_installer.dart';
@@ -131,6 +132,10 @@ Future<void> main() async {
         await syncState.readPrefs(),
         restart: false,
       );
+      // Unless Android stopped it or refused it its foreground service,
+      // which a worker it started again on its own may have been. Now, with
+      // the app on screen, is when Android allows one.
+      await restartStalledLiveSync(syncState, const WorkManagerScheduler());
     } catch (e, stack) {
       debugPrint('[myemail] notification setup failed at startup: $e');
       debugPrint('$stack');
@@ -151,9 +156,12 @@ Future<void> main() async {
         mailEngineProvider.overrideWithValue(engine),
         mailNotifierProvider.overrideWithValue(notifier),
         syncStateStoreProvider.overrideWithValue(syncState),
-        if (onAndroid)
+        if (onAndroid) ...[
           backgroundSchedulerProvider
               .overrideWithValue(const WorkManagerScheduler()),
+          backgroundAllowanceProvider
+              .overrideWithValue(const AndroidBackgroundAllowance()),
+        ],
         installedVersionProvider
             .overrideWithValue(const PackageInstalledVersion()),
         if (onAndroid) ...[

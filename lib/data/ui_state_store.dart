@@ -38,6 +38,7 @@ abstract final class UiStateKeys {
   static const display = 'display.v1';
   static const trustedSenders = 'images.trusted.v1';
   static const attachmentsFolded = 'attachments.folded';
+  static const backgroundAsked = 'sync.background-asked';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.

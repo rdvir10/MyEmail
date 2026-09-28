@@ -1,9 +1,12 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/notifications/mail_notifier.dart';
+import '../data/sync/background_allowance.dart';
 import '../data/sync/background_worker.dart';
 import '../data/sync/sync_state_store.dart';
+import '../data/ui_state_store.dart';
 import '../domain/sync_prefs.dart';
+import 'providers.dart' show uiStateStoreProvider;
 
 /// Posts notifications. main() overrides this with the Android one; tests and
 /// the browser preview get a fake that records instead.
@@ -20,6 +23,18 @@ final syncStateStoreProvider =
 /// nothing, so the settings screens behave the same in a test.
 final backgroundSchedulerProvider =
     Provider<BackgroundScheduler>((ref) => FakeBackgroundScheduler());
+
+/// Whether Android lets MyEmail run in the background. main() overrides this
+/// with the Android one; elsewhere it says yes and records requests.
+final backgroundAllowanceProvider =
+    Provider<BackgroundAllowance>((ref) => FakeBackgroundAllowance());
+
+/// Whether MyEmail is exempt from battery optimisation. Read again each time
+/// the app comes back to the front, which is where Android's dialog and its
+/// settings screen return to.
+final batteryExemptProvider = FutureProvider<bool>(
+  (ref) => ref.watch(backgroundAllowanceProvider).isExempt(),
+);
 
 /// Whether Android itself will let us show anything. The in-app switch is the
 /// user's intent; this is whether the OS agrees, and the screen has to show
@@ -56,9 +71,15 @@ class SyncSettings extends AsyncNotifier<SyncPrefs> {
   /// notification it raised was dropped by Android without a word. A no
   /// there does not stop it syncing: the mode stands, and the screen shows
   /// that Android is blocking the notifications.
+  ///
+  /// The foreground modes then ask Android to let MyEmail run in the
+  /// background; see [BackgroundAllowance]. A no there does not stop them
+  /// either: they run while Android allows, and the Sync screen says what
+  /// that costs.
   Future<bool> setMode(SyncMode mode) async {
     final current = state.value ?? const SyncPrefs();
     if (mode.needsForegroundService && !await _ensurePermission()) return false;
+    if (mode.needsForegroundService) await askToRunInBackground();
     if (mode.isOn && !mode.needsForegroundService && current.notify) {
       await _ensurePermission();
     }
@@ -91,6 +112,32 @@ class SyncSettings extends AsyncNotifier<SyncPrefs> {
     await _save(current.withAccountMuted(accountId, muted));
   }
 
+  /// Show Android's battery dialog unless MyEmail is already exempt.
+  Future<void> askToRunInBackground() async {
+    final allowance = ref.read(backgroundAllowanceProvider);
+    if (!await allowance.isExempt()) await allowance.requestExemption();
+    ref.invalidate(batteryExemptProvider);
+  }
+
+  /// The same, once, as the app opens with push or five-minute sync on.
+  ///
+  /// For the phone that had push on before MyEmail asked when it was
+  /// chosen. Once only: a no is an answer, and the Sync screen keeps the
+  /// way back to the question. Returns whether it asked.
+  Future<bool> askToRunInBackgroundOnce() async {
+    final prefs = await future;
+    if (!prefs.syncs || !prefs.mode.needsForegroundService) return false;
+    final store = ref.read(uiStateStoreProvider);
+    if (store.readString(UiStateKeys.backgroundAsked) != null) return false;
+    if (await ref.read(backgroundAllowanceProvider).isExempt()) return false;
+    await store.writeString(
+      UiStateKeys.backgroundAsked,
+      DateTime.now().toIso8601String(),
+    );
+    await askToRunInBackground();
+    return true;
+  }
+
   /// Saying yes to a switch and then no to Android's dialog must not leave
   /// the switch on.
   Future<bool> _ensurePermission() async {
@@ -111,10 +158,12 @@ final stalledLiveSyncProvider = FutureProvider<DateTime?>((ref) async {
   return liveSyncStalled(prefs, last, DateTime.now()) ? last : null;
 });
 
-/// Start the push or five-minute worker again if Android has stopped it.
+/// Start the push or five-minute worker again if Android has stopped it, or
+/// refused it its foreground service.
 ///
-/// Opening the app is what resets Android's six-hour allowance, so this is
-/// the moment. Returns whether it had to.
+/// Opening the app is the moment for both. It resets Android's six-hour
+/// allowance, and a foreground service started while the app is on screen
+/// is one Android allows. Returns whether it had to.
 Future<bool> restartStalledLiveSync(
   SyncStateStore store,
   BackgroundScheduler scheduler, {
@@ -122,7 +171,11 @@ Future<bool> restartStalledLiveSync(
 }) async {
   final prefs = await store.readPrefs();
   final last = await store.readLastLivePass();
-  if (!liveSyncStalled(prefs, last, now ?? DateTime.now())) return false;
+  final refused = await store.readLiveRefused();
+  final wanted = prefs.syncs && prefs.mode.needsForegroundService;
+  if (refused != null) await store.writeLiveRefused(null);
+  final stalled = liveSyncStalled(prefs, last, now ?? DateTime.now());
+  if (!wanted || (refused == null && !stalled)) return false;
   await scheduler.apply(prefs);
   return true;
 }

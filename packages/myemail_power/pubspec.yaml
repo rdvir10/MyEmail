@@ -1,0 +1,22 @@
+name: myemail_power
+description: >-
+  MyEmail's own Android bridge for staying alive in the background: whether
+  Android exempts the app from battery optimisation, asking for that, and
+  whether the app's foreground service is actually running.
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.2
+  flutter: ">=3.35.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.rdvir.myemail.power
+        pluginClass: MyEmailPowerPlugin
