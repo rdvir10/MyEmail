@@ -170,13 +170,13 @@
     <p class="eyebrow">MyEmail · manual</p>
     <h1>User manual</h1>
     <p class="lede">How to use MyEmail on the phone and on the tablet. Where the two differ, it says so; everything else works the same on both.</p>
-    <div class="badges"><span class="badge">Version 2.64.0</span><a class="badge" href="Features.html">See the feature list →</a></div>
+    <div class="badges"><span class="badge">Version 2.65.0</span><a class="badge" href="Features.html">See the feature list →</a></div>
   </div>
 </header>
 <div class="layout sidebar">
 <nav class="contents"><h2>Contents</h2><ol><li><a href="#1-getting-started">Getting started</a></li><li><a href="#2-what-is-on-screen">What is on screen</a></li><li><a href="#3-reading-mail">Reading mail</a></li><li><a href="#4-writing-mail">Writing mail</a></li><li><a href="#5-sorting-and-finding">Sorting and finding</a></li><li><a href="#6-tidying-up">Tidying up</a></li><li><a href="#7-folders">Folders</a></li><li><a href="#8-being-told-about-new-mail">Being told about new mail</a></li><li><a href="#9-home-screen-widgets">Home screen widgets</a></li><li><a href="#10-windows-and-split-screen">Windows and split screen</a></li><li><a href="#11-the-keyboard">The keyboard</a></li><li><a href="#12-settings-screen-by-screen">Settings, screen by screen</a></li><li><a href="#13-backup-and-updates">Backup and updates</a></li><li><a href="#14-when-something-looks-wrong">When something looks wrong</a></li></ol></nav>
 <article>
-<p>For the phone and the tablet. Version 2.64.0.</p>
+<p>For the phone and the tablet. Version 2.65.0.</p>
 <p>Where the two differ, it says so. Everything else works the same on both.</p>
 <hr>
 <hr>
@@ -280,6 +280,7 @@
 <p>Two separate things, deliberately.</p>
 <p><strong>Settings → Sync</strong> — how often MyEmail looks:</p>
 <div class="scroller"><table><thead><tr><th>Setting</th><th>What it costs</th></tr></thead><tbody><tr><td>Only when I open MyEmail</td><td>Nothing. Nothing reaches you until you open the app.</td></tr><tr><td>Occasionally</td><td>Easiest on the battery; Android decides when, and overnight that can be much later than asked.</td></tr><tr><td>Every 5 minutes</td><td>A permanent notification, noticeably more battery.</td></tr><tr><td>Push, as it arrives</td><td>Seconds. A permanent notification, and the most battery.</td></tr></tbody></table></div>
+<p>Choosing either of the two with a permanent notification also asks Android to let MyEmail run in the background. Say <strong>Allow</strong>. Without it, Android refuses them whenever it restarts MyEmail on its own, and mail is then checked only every 15 minutes until you open the app. <strong>Settings → Sync</strong> shows a red band with an <strong>Allow</strong> button while that is missing.</p>
 <p>On Android 15 and later, the two with a permanent notification run for about six hours a day unless MyEmail is opened. Opening it starts them again, and <strong>Settings → Sync</strong> says when Android stopped them. With push on, Microsoft accounts are checked every five minutes, because Microsoft offers no way to be told the moment mail arrives.</p>
 <p><strong>Settings → Notifications</strong> — whether to announce it: a master switch and a mute per account. A muted account still syncs, so its mail is waiting when you open the app.</p>
 <p>Each notification shows the app's icon, the dart, in the account's colour, so you can tell which account the mail came to before reading it — and on Android 17 and later so does the row Android draws over a group of them, beside the app's name and the account's. The colour is the one set under <strong>Settings → Accounts</strong>; the sender is in the notification's first line, with the account's name after it. On earlier Android versions the row over a group keeps the app's own icon, and each notification carries the coloured dart on its right.</p>
@@ -324,7 +325,7 @@
 <p><strong>A message looks broken or blank.</strong> Some senders build mail that needs pictures to make sense. Tap <strong>Show images</strong>. If it still looks wrong, <strong>⋮ → Save source</strong> writes the message exactly as it arrived, which is the thing to look at.</p>
 <p><strong>Archive does nothing.</strong> Gmail has no Archive folder — "All Mail" is a view, not somewhere to move things to. The swipe says so rather than pretending. Use a folder of your own, or a Quick Step.</p>
 <p><strong>An attachment vanished from a draft.</strong> A draft reopened from Drafts brings its attachments back. If one cannot be brought back, the screen names it; attach it again.</p>
-<p><strong>Mail arrives late.</strong> Check <strong>Settings → Sync</strong>. "Occasionally" lets Android decide, and overnight it decides slowly. "Every 5 minutes" or "Push" are the ones that are prompt, and both show a permanent notification because Android will not let a background app do that quietly.</p>
+<p><strong>Mail arrives late.</strong> Check <strong>Settings → Sync</strong>. "Occasionally" lets Android decide, and overnight it decides slowly. "Every 5 minutes" or "Push" are the ones that are prompt, and both show a permanent notification because Android will not let a background app do that quietly. If a red band there says Android limits MyEmail in the background, tap <strong>Allow</strong>.</p>
 <p><strong>A notification arrived but the message is not in the list.</strong> Pull down to sync, or press <strong>F9</strong>. Mail that a server-side rule filed outside the Inbox is not what the background pass watches.</p>
 <p><strong>Two copies in Sent on Microsoft.</strong> There should not be: Graph files the sent message itself and MyEmail adds nothing. If you see two, say so.</p>
 <p><strong>The widget shows old numbers.</strong> It is redrawn by the background sync, so it is as current as <strong>Settings → Sync</strong> allows. Opening the app refreshes it.</p>
