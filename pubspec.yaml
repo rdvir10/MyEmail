@@ -119,3 +119,10 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+# The notifications plugin, with one change: every notification asks
+# Android 17 for its small icon, drawn in the account's colour, rather than
+# the launcher icon. See third_party/flutter_local_notifications/MYEMAIL.md.
+dependency_overrides:
+  flutter_local_notifications:
+    path: third_party/flutter_local_notifications
