@@ -205,16 +205,13 @@ void main() {
       expect(carriesInvitation(builder.buildMimeMessage()), isFalse);
     });
 
-    test('what the files weigh leaves the body out of it', () {
-      final builder = em.MessageBuilder()
-        ..addTextHtml('<p>Here it is.</p>')
-        ..addBinary(
-          _bytes('0123456789'),
-          em.MediaType.fromText('application/pdf'),
-          filename: 'report.pdf',
-        );
-      final bytes = attachmentBytesOf(builder.buildMimeMessage());
-      expect(bytes, greaterThan(0));
+    test('the size is the whole message, as the server gives it', () {
+      // What Outlook shows for Gmail: RFC822.SIZE, fetched with the rows.
+      final message = em.MessageBuilder()..addTextPlain('Hello');
+      final fetched = message.buildMimeMessage()
+        ..uid = 7
+        ..size = 48213;
+      expect(remoteHeaderFromMime(fetched).sizeBytes, 48213);
     });
   });
 
@@ -265,7 +262,7 @@ void main() {
           isRead: false,
           isFlagged: false,
           hasAttachments: true,
-          attachmentBytes: 2048,
+          sizeBytes: 2048,
           isMeeting: true,
         ),
       ]);
@@ -275,7 +272,7 @@ void main() {
           .toMailMessage(accountId: 'a', folderId: 'a:INBOX');
 
       expect(message.isMeeting, isTrue);
-      expect(message.attachmentBytes, 2048);
+      expect(message.sizeBytes, 2048);
     });
 
     test('the server unused here still reports its folder', () async {

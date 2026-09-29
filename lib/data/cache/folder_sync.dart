@@ -90,8 +90,12 @@ class FolderSync {
 
     // Flag changes across the cached window: read, flagged, and a reply or
     // forward sent from somewhere else.
-    final useCondStore =
-        previous.highestModSeq != null && status.highestModSeq != null;
+    // Changes only, where the server can say what changed, unless a row
+    // has no size yet: cached before sizes were fetched, it needs the whole
+    // window read once, and the size comes with the flags.
+    final useCondStore = previous.highestModSeq != null &&
+        status.highestModSeq != null &&
+        cached.every((m) => m.hasSize);
     final flags = await transport.fetchFlags(
       path,
       range.min,
@@ -108,9 +112,9 @@ class FolderSync {
           isForwarded: f.isForwarded,
         ),
     });
-    await store.updateAttachmentBytes(accountId, path, {
+    await store.updateSizes(accountId, path, {
       for (final f in flags)
-        f.uid: ?f.attachmentBytes,
+        if (f.sizeBytes case final size? when size > 0) f.uid: size,
     });
 
     // Deletions.
@@ -273,7 +277,7 @@ class FolderSync {
         hasAttachments: h.hasAttachments,
         cc: h.cc,
         replyTo: h.replyTo,
-        attachmentBytes: h.attachmentBytes,
+        sizeBytes: h.sizeBytes,
         isMeeting: h.isMeeting,
         preview: h.preview,
         messageId: h.messageId,

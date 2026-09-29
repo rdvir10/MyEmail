@@ -131,13 +131,18 @@ Future<void> _repliedAndForwarded(CacheStore store) async {
   expect((await row(2)).isAnswered, isTrue);
   expect((await row(2)).isForwarded, isTrue);
 
-  // A size the server sends with the flags (Microsoft does) is kept; a
-  // message not cached is left alone.
-  await store.updateAttachmentBytes('a', 'INBOX', {1: 2048, 99: 5});
-  expect((await row(1)).attachmentBytes, 2048);
+  // A row read again without a size keeps the one it had, in either store.
+  await store.upsertMessages('a', 'INBOX', [_msg(1).copyWith(sizeBytes: 4096)]);
+  await store.upsertMessages('a', 'INBOX', [_msg(1)]);
+  expect((await row(1)).sizeBytes, 4096);
+
+  // A size the server sends with the flags is kept; a message not cached
+  // is left alone.
+  await store.updateSizes('a', 'INBOX', {1: 2048, 99: 5});
+  expect((await row(1)).sizeBytes, 2048);
   expect(
     (await row(1)).toMailMessage(accountId: 'a', folderId: 'a:INBOX')
-        .attachmentBytes,
+        .sizeBytes,
     2048,
   );
   expect(await store.readMessage('a', 'INBOX', 99), isNull);
@@ -259,7 +264,7 @@ void main() {
       test('the sync reads numbers, dates and whether there is a preview',
           () async {
         await store.upsertMessages('a', 'INBOX', [
-          _msg(1),
+          _msg(1).copyWith(sizeBytes: 4096),
           _msg(2).copyWith(preview: 'Hello'),
         ]);
         await store.upsertMessages('a', 'Other', [_msg(3)]);
@@ -267,8 +272,20 @@ void main() {
         final rows = await store.readSyncRows('a', 'INBOX');
 
         expect(rows, [
-          (uid: 2, date: _msg(2).date, hasPreview: true, hasConversation: false),
-          (uid: 1, date: _msg(1).date, hasPreview: false, hasConversation: false),
+          (
+            uid: 2,
+            date: _msg(2).date,
+            hasPreview: true,
+            hasConversation: false,
+            hasSize: false,
+          ),
+          (
+            uid: 1,
+            date: _msg(1).date,
+            hasPreview: false,
+            hasConversation: false,
+            hasSize: true,
+          ),
         ]);
       });
 

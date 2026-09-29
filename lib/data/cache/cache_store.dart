@@ -45,6 +45,7 @@ typedef SyncRow = ({
   DateTime date,
   bool hasPreview,
   bool hasConversation,
+  bool hasSize,
 });
 
 /// A cached row's flags, all of them, as [CacheStore.updateFlags] writes
@@ -73,7 +74,7 @@ class CachedMessage {
     this.arrived,
     this.cc = const [],
     this.replyTo = const [],
-    this.attachmentBytes = 0,
+    this.sizeBytes = 0,
     this.isMeeting = false,
     this.preview = '',
     this.bodyText,
@@ -104,8 +105,8 @@ class CachedMessage {
   final bool isForwarded;
   final bool hasAttachments;
 
-  /// See [MailMessage.attachmentBytes].
-  final int attachmentBytes;
+  /// See [MailMessage.sizeBytes].
+  final int sizeBytes;
 
   /// See [MailMessage.isMeeting].
   final bool isMeeting;
@@ -132,7 +133,7 @@ class CachedMessage {
     bool? isFlagged,
     bool? isAnswered,
     bool? isForwarded,
-    int? attachmentBytes,
+    int? sizeBytes,
     String? preview,
     String? bodyText,
     String? bodyHtml,
@@ -152,7 +153,7 @@ class CachedMessage {
       isAnswered: isAnswered ?? this.isAnswered,
       isForwarded: isForwarded ?? this.isForwarded,
       hasAttachments: hasAttachments,
-      attachmentBytes: attachmentBytes ?? this.attachmentBytes,
+      sizeBytes: sizeBytes ?? this.sizeBytes,
       isMeeting: isMeeting,
       preview: preview ?? this.preview,
       bodyText: bodyText ?? this.bodyText,
@@ -183,7 +184,7 @@ class CachedMessage {
       isAnswered: isAnswered,
       isForwarded: isForwarded,
       hasAttachments: hasAttachments,
-      attachmentBytes: attachmentBytes,
+      sizeBytes: sizeBytes,
       isMeeting: isMeeting,
       messageId: messageId,
       inReplyTo: inReplyTo,
@@ -259,9 +260,10 @@ abstract class CacheStore {
     Map<int, CachedFlags> flagsByUid,
   );
 
-  /// What rows show beside their paperclip, as the server now says it
-  /// (Microsoft sends it with the flags).
-  Future<void> updateAttachmentBytes(
+  /// Each row's whole-message size, as the server now gives it with the
+  /// flags: see [MailMessage.sizeBytes]. Callers pass only known, positive
+  /// sizes.
+  Future<void> updateSizes(
     String accountId,
     String path,
     Map<int, int> bytesByUid,
@@ -356,6 +358,7 @@ class MemoryCacheStore implements CacheStore {
             date: m.date,
             hasPreview: m.preview.isNotEmpty,
             hasConversation: m.conversationId != null,
+            hasSize: m.sizeBytes > 0,
           ),
       ]..sort((a, b) => b.uid.compareTo(a.uid));
 
@@ -435,6 +438,8 @@ class MemoryCacheStore implements CacheStore {
               // only an empty one leaves it. The two used to differ, so the
               // tests on this store passed over the database's own bug.
               preview: m.preview.isEmpty ? existing.preview : m.preview,
+              // And a size the new row does not know leaves the old one.
+              sizeBytes: m.sizeBytes > 0 ? m.sizeBytes : existing.sizeBytes,
               bodyText: existing.bodyText,
               bodyHtml: existing.bodyHtml,
             );
@@ -462,7 +467,7 @@ class MemoryCacheStore implements CacheStore {
   }
 
   @override
-  Future<void> updateAttachmentBytes(
+  Future<void> updateSizes(
     String accountId,
     String path,
     Map<int, int> bytesByUid,
@@ -470,7 +475,7 @@ class MemoryCacheStore implements CacheStore {
     final folder = _folder(accountId, path);
     for (final e in bytesByUid.entries) {
       final m = folder[e.key];
-      if (m != null) folder[e.key] = m.copyWith(attachmentBytes: e.value);
+      if (m != null) folder[e.key] = m.copyWith(sizeBytes: e.value);
     }
   }
 

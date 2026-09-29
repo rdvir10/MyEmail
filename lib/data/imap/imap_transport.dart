@@ -297,7 +297,7 @@ class RemoteHeader {
     this.arrived,
     this.cc = const [],
     this.replyTo = const [],
-    this.attachmentBytes = 0,
+    this.sizeBytes = 0,
     this.isMeeting = false,
     this.preview = '',
     this.messageId,
@@ -327,8 +327,10 @@ class RemoteHeader {
   final bool isForwarded;
   final bool hasAttachments;
 
-  /// What the files on it add up to. See [MailMessage.attachmentBytes].
-  final int attachmentBytes;
+  /// The whole message's size in bytes (IMAP RFC822.SIZE, Exchange
+  /// PidTagMessageSize), or 0 where the server did not say. See
+  /// [MailMessage.sizeBytes].
+  final int sizeBytes;
 
   /// See [MailMessage.isMeeting].
   final bool isMeeting;
@@ -366,16 +368,18 @@ class RemoteFlags {
     required this.isFlagged,
     required this.isAnswered,
     required this.isForwarded,
-    this.attachmentBytes,
+    this.sizeBytes,
   });
 
   final int uid;
   final bool isRead;
   final bool isFlagged;
 
-  /// What the row shows beside its paperclip, where the server sends it with
-  /// the flags (Microsoft does); null leaves the cached one as it is.
-  final int? attachmentBytes;
+  /// The whole message's size, sent with the flags (IMAP RFC822.SIZE, Graph
+  /// PidTagMessageSize) so rows cached without one get it. Null or 0 means
+  /// unknown, and leaves the cached size as it is. See
+  /// [MailMessage.sizeBytes].
+  final int? sizeBytes;
 
   /// Read with the others, so a reply or forward marked from another device
   /// comes through at the next sync the way a message read there does.

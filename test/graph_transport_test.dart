@@ -1231,7 +1231,7 @@ void main() {
           isNot(GraphMailApi.propertyKey('Long 0x0E08')));
     });
 
-    test('a row with files says what the message weighs', () async {
+    test('every row says what the message weighs', () async {
       // Microsoft sends no size with a row, so the paperclip on a Microsoft
       // row stood alone where Gmail's said what it weighed. Exchange's own
       // size of the message comes with the marks it already asks for.
@@ -1250,24 +1250,38 @@ void main() {
           h.subject: h,
       };
 
-      expect(rows['Drawings']!.attachmentBytes, 1843200);
-      expect(rows['Plain']!.attachmentBytes, 0,
-          reason: 'no paperclip, nothing beside it');
+      expect(rows['Drawings']!.sizeBytes, 1843200);
+      expect(rows['Plain']!.sizeBytes, 9000,
+          reason: 'with files or without, as Outlook shows it');
     });
 
     test('and mail already on the phone gets its size at the next sync',
         () async {
-      server.message('f-inbox',
-          id: 'm1',
-          subject: 'Drawings',
-          minutesAgo: 5,
-          hasAttachments: true,
-          sizeBytes: 1843200);
-      final uid = (await transport.fetchHeadersFromUid('Inbox', 1)).single.uid;
+      server
+        ..message('f-inbox',
+            id: 'm1',
+            subject: 'Drawings',
+            minutesAgo: 5,
+            hasAttachments: true,
+            sizeBytes: 1843200)
+        ..message('f-inbox',
+            id: 'm2', subject: 'Plain', minutesAgo: 4, sizeBytes: 9000)
+        ..message('f-inbox', id: 'm3', subject: 'Unsaid', minutesAgo: 3);
+      final uid = {
+        for (final h in await transport.fetchHeadersFromUid('Inbox', 1))
+          h.subject: h.uid,
+      };
 
-      final flags = await transport.fetchFlags('Inbox', uid, uid);
+      final sizes = {
+        for (final f in await transport.fetchFlags('Inbox', 1, 10))
+          f.uid: f.sizeBytes,
+      };
 
-      expect(flags.single.attachmentBytes, 1843200);
+      expect(sizes[uid['Drawings']], 1843200);
+      expect(sizes[uid['Plain']], 9000,
+          reason: 'rows without files get their size too');
+      expect(sizes[uid['Unsaid']], isNull,
+          reason: 'unknown, not 0, so a size already had is kept');
     });
 
     test('a move that fails part way says which went', () async {

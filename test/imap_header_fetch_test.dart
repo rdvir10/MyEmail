@@ -62,6 +62,9 @@ void main() {
     expect(server.fetches.single, contains('INTERNALDATE'));
     final h = headers.single;
     expect(h.uid, 7);
+    // And its size, as Outlook shows it for Gmail.
+    expect(server.fetches.single, contains('RFC822.SIZE'));
+    expect(h.sizeBytes, 48213);
     expect(h.arrived!.toUtc(), DateTime.utc(2019, 10, 25, 14, 35, 31));
     expect(h.date.toUtc(), DateTime.utc(2019, 10, 25, 14, 35, 31));
   });
@@ -88,6 +91,17 @@ void main() {
 
     expect(flags.isAnswered, isFalse);
     expect(flags.isForwarded, isTrue);
+    // The size too, so rows cached without one get it.
+    expect(server.fetches.single, contains('RFC822.SIZE'));
+    expect(flags.sizeBytes, 48213);
+  });
+
+  test('a server that sends no size leaves it unknown', () async {
+    server.sendSize = false;
+    final t = transport();
+
+    expect((await t.fetchHeadersBySequence('INBOX', 1, 1)).single.sizeBytes, 0);
+    expect((await t.fetchFlags('INBOX', 7, 7)).single.sizeBytes, isNull);
   });
 
   test(r'a reply marks the original \Answered, a forward $Forwarded',
@@ -123,6 +137,9 @@ class _HeaderServer {
   final logins = <String>[];
 
   /// The message's FLAGS, as the server sends them.
+  /// Whether FETCH answers carry RFC822.SIZE.
+  bool sendSize = true;
+
   String flags = '';
 
   int get port => _socket.port;
@@ -165,6 +182,7 @@ class _HeaderServer {
       } else if (verb.startsWith('FETCH') || verb.startsWith('UID FETCH')) {
         fetches.add(command);
         client.write('* 1 FETCH (UID 7 FLAGS ($flags) '
+            '${sendSize ? 'RFC822.SIZE 48213 ' : ''}'
             'INTERNALDATE "25-Oct-2019 16:35:31 +0200" '
             'ENVELOPE (NIL "Hello" (("Dana" NIL "dana" "example.com")) '
             'NIL NIL NIL NIL NIL NIL "<m-1@example.com>") '

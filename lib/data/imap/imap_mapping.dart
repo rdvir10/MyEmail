@@ -91,7 +91,7 @@ RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
     isAnswered: m.isAnswered,
     isForwarded: markedForwarded(m),
     hasAttachments: m.hasAttachments(),
-    attachmentBytes: attachmentBytesOf(m),
+    sizeBytes: m.size ?? 0,
     isMeeting: carriesInvitation(m),
     messageId: normaliseMessageId(
       m.envelope?.messageId ?? m.getHeaderValue('message-id'),
@@ -321,19 +321,6 @@ bool carriesInvitation(em.MimeMessage message) {
   return false;
 }
 
-/// What the files on a message add up to, in bytes.
-///
-/// Free: the BODYSTRUCTURE the header fetch already asks for carries a size
-/// per part, so this costs nothing beyond the arithmetic. Inline parts are
-/// left out — a logo in a signature is not a file anyone attached, and
-/// counting it would make every signed message look like it carries one.
-int attachmentBytesOf(em.MimeMessage message) {
-  var total = 0;
-  for (final a in attachmentsOf(message)) {
-    if (!a.isInline) total += a.sizeBytes;
-  }
-  return total;
-}
 
 /// What a message has attached, read from its structure alone.
 ///

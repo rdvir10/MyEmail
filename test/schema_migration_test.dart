@@ -204,6 +204,26 @@ void main() {
     await db.close();
   }
 
+  /// A database as it stood at schema 10: a Gmail folder synced with
+  /// CONDSTORE, its rows holding the files' total where the size goes now.
+  Future<void> buildVersion10() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages(
+        'acct-1', 'INBOX', [message(11).copyWith(sizeBytes: 20480)]);
+    await DriftCacheStore(db).writeFolderState(
+      'acct-1',
+      'INBOX',
+      FolderSyncState(
+        uidValidity: 1000,
+        uidNext: 12,
+        highestModSeq: 7,
+        lastSync: DateTime.utc(2026, 9, 1),
+      ),
+    );
+    await db.customStatement('PRAGMA user_version = 10');
+    await db.close();
+  }
+
   /// A database as it stood at schema 8, two releases back: a
   /// Gmail Inbox synced with CONDSTORE, so its place in the folder is
   /// recorded, and a message cached before replies were read.
@@ -478,7 +498,7 @@ void main() {
     expect(cached, hasLength(1));
     expect(cached.single.bodyHtml, '<p>A body worth keeping</p>');
     expect(cached.single.cc, isEmpty, reason: 'cached before Cc was kept');
-    expect(cached.single.attachmentBytes, 0);
+    expect(cached.single.sizeBytes, 0);
     expect(cached.single.isMeeting, isFalse);
 
     // And the new columns take what a sync writes.
@@ -493,13 +513,13 @@ void main() {
         isRead: false,
         isFlagged: false,
         hasAttachments: true,
-        attachmentBytes: 2048,
+        sizeBytes: 2048,
         isMeeting: true,
       ),
     ]);
     final after = await store.readMessage('acct-1', 'INBOX', 12);
     expect(after!.cc.single.email, 'sam@example.com');
-    expect(after.attachmentBytes, 2048);
+    expect(after.sizeBytes, 2048);
     expect(after.isMeeting, isTrue);
   });
 
@@ -645,5 +665,21 @@ void main() {
     final cached = await store.readMessages('gmail-acct', 'INBOX');
 
     expect(cached.single.uid, 12);
+  });
+
+  test('schema 11 has every folder read its sizes once', () async {
+    // The column held the files' total on a Gmail row, and a folder of
+    // nothing but mail with files would have kept it: CONDSTORE asks only
+    // for what changed.
+    await buildVersion10();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    final state = await store.readFolderState('acct-1', 'INBOX');
+
+    expect(state!.highestModSeq, isNull);
+    expect(state.uidValidity, 1000, reason: 'the folder is not thrown away');
+    expect((await store.readMessage('acct-1', 'INBOX', 11))!.sizeBytes, 20480);
   });
 }

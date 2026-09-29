@@ -63,7 +63,7 @@ class EnoughMailTransport implements ImapTransport {
   /// INTERNALDATE for when each message arrived, which the Date header
   /// is not: see [MailMessage.arrived].
   static const _headerCriteria =
-      '(UID FLAGS ENVELOPE BODYSTRUCTURE INTERNALDATE)';
+      '(UID FLAGS ENVELOPE BODYSTRUCTURE INTERNALDATE RFC822.SIZE)';
 
   // --- ImapTransport ---------------------------------------------------------
 
@@ -126,7 +126,9 @@ class EnoughMailTransport implements ImapTransport {
         await _ensureSelected(c, path);
         final result = await c.uidFetchMessages(
           em.MessageSequence.fromRange(fromUid, toUid, isUidSequence: true),
-          '(UID FLAGS)',
+          // The size as well, so rows cached before it was fetched with
+          // the headers get one; see FolderSync.
+          '(UID FLAGS RFC822.SIZE)',
           changedSinceModSequence: changedSinceModSeq,
         );
         return [
@@ -138,6 +140,7 @@ class EnoughMailTransport implements ImapTransport {
                 isFlagged: m.isFlagged,
                 isAnswered: m.isAnswered,
                 isForwarded: markedForwarded(m),
+                sizeBytes: m.size,
               ),
         ];
       });

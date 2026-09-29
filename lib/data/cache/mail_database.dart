@@ -60,9 +60,12 @@ class Messages extends Table {
   BoolColumn get hasAttachments => boolean()();
   TextColumn get preview => text().withDefault(const Constant(''))();
 
-  /// What the files on it add up to. Added in schema 6, 0 where unknown.
-  IntColumn get attachmentBytes =>
-      integer().withDefault(const Constant(0))();
+  /// The message's size: see [MailMessage.sizeBytes]. Added in schema 6,
+  /// 0 where unknown. Still named for what it first held, the files' total,
+  /// so no migration was needed when it came to hold the whole message.
+  IntColumn get sizeBytes => integer()
+      .named('attachment_bytes')
+      .withDefault(const Constant(0))();
 
   /// An invitation, a change to one, or a cancellation. Added in schema 6;
   /// false on rows cached before, until that folder next syncs.
@@ -175,7 +178,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 10;
+  int get schemaVersion => 11;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -222,6 +225,16 @@ class MailDatabase extends _$MailDatabase {
       );
 
   Future<void> _upgrade(Migrator m, int from) async {
+    if (from < 11) {
+      // attachment_bytes held the files' total on a Gmail row; it holds
+      // the whole message's size (RFC822.SIZE) now. A row with files looks
+      // as though it has a size already, and a sync with CONDSTORE asks
+      // only for what changed, so a folder of nothing but mail with files
+      // would have kept the old totals. Each folder's place is dropped
+      // instead, and its next sync reads every flag and size in its window
+      // once, as schema 9 did for replies.
+      await customStatement('UPDATE folder_states SET highest_mod_seq = NULL');
+    }
     if (from < 2) {
       await _addColumnIfMissing(m, messages, messages.messageId);
       await _addColumnIfMissing(m, messages, messages.inReplyTo);
@@ -245,7 +258,7 @@ class MailDatabase extends _$MailDatabase {
       // nobody and its files as weighing nothing, which is what the
       // nullable and the default are for.
       await _addColumnIfMissing(m, messages, messages.copiedJson);
-      await _addColumnIfMissing(m, messages, messages.attachmentBytes);
+      await _addColumnIfMissing(m, messages, messages.sizeBytes);
       await _addColumnIfMissing(m, messages, messages.isMeeting);
     }
     if (from < 7) {
@@ -439,8 +452,9 @@ class DriftCacheStore implements CacheStore {
     final m = db.messages;
     final hasPreview = m.preview.equals('').not();
     final hasConversation = m.conversationId.isNotNull();
+    final hasSize = m.sizeBytes.isBiggerThanValue(0);
     final rows = await (db.selectOnly(m)
-          ..addColumns([m.uid, m.date, hasPreview, hasConversation])
+          ..addColumns([m.uid, m.date, hasPreview, hasConversation, hasSize])
           ..where(_folder(m, accountId, path))
           ..orderBy([OrderingTerm.desc(m.uid)]))
         .get();
@@ -451,6 +465,7 @@ class DriftCacheStore implements CacheStore {
           date: r.read(m.date)!,
           hasPreview: r.read(hasPreview)!,
           hasConversation: r.read(hasConversation)!,
+          hasSize: r.read(hasSize)!,
         ),
     ];
   }
@@ -544,7 +559,7 @@ class DriftCacheStore implements CacheStore {
             isAnswered: Value(m.isAnswered),
             isForwarded: Value(m.isForwarded),
             hasAttachments: m.hasAttachments,
-            attachmentBytes: Value(m.attachmentBytes),
+            sizeBytes: Value(m.sizeBytes),
             isMeeting: Value(m.isMeeting),
             preview: Value(m.preview),
             bodyText: Value(m.bodyText),
@@ -583,8 +598,8 @@ class DriftCacheStore implements CacheStore {
               isMeeting: Value(m.isMeeting),
               // Only when the server said. A re-read header that carries no
               // size must not erase one that was found.
-              attachmentBytes: m.attachmentBytes > 0
-                  ? Value(m.attachmentBytes)
+              sizeBytes: m.sizeBytes > 0
+                  ? Value(m.sizeBytes)
                   : const Value.absent(),
               preview:
                   m.preview.isEmpty ? const Value.absent() : Value(m.preview),
@@ -667,7 +682,7 @@ class DriftCacheStore implements CacheStore {
   }
 
   @override
-  Future<void> updateAttachmentBytes(
+  Future<void> updateSizes(
     String accountId,
     String path,
     Map<int, int> bytesByUid,
@@ -677,11 +692,11 @@ class DriftCacheStore implements CacheStore {
       for (final e in bytesByUid.entries) {
         b.update(
           db.messages,
-          MessagesCompanion(attachmentBytes: Value(e.value)),
+          MessagesCompanion(sizeBytes: Value(e.value)),
           where: (m) =>
               _folder(m, accountId, path) &
               m.uid.equals(e.key) &
-              m.attachmentBytes.equals(e.value).not(),
+              m.sizeBytes.equals(e.value).not(),
         );
       }
     });
@@ -815,7 +830,7 @@ class DriftCacheStore implements CacheStore {
         isAnswered: r.isAnswered,
         isForwarded: r.isForwarded,
         hasAttachments: r.hasAttachments,
-        attachmentBytes: r.attachmentBytes,
+        sizeBytes: r.sizeBytes,
         isMeeting: r.isMeeting,
         preview: r.preview,
         bodyText: r.bodyText,

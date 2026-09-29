@@ -1241,7 +1241,7 @@ class CachedImapEngine implements MailEngine {
               isAnswered: h.isAnswered,
               isForwarded: h.isForwarded,
               hasAttachments: h.hasAttachments,
-              attachmentBytes: h.attachmentBytes,
+              sizeBytes: h.sizeBytes,
               isMeeting: h.isMeeting,
               messageId: h.messageId,
               inReplyTo: h.inReplyTo,

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/domain/display_settings.dart';
+import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/conversations.dart';
 import 'package:myemail/ui/messages/conversation_tile.dart';
@@ -231,6 +232,37 @@ void main() {
     });
   });
 
+  group('the size', () {
+    MailMessage sized({bool files = false}) => MailMessage(
+          id: 'a:INBOX#5',
+          accountId: 'a',
+          folderId: 'a:INBOX',
+          uid: 5,
+          subject: 'NC-SC-GA-FL Report',
+          preview: 'The weekly numbers',
+          from: const MailAddress(
+              email: 'crystalr@hadco-metal.com', name: 'Crystal R'),
+          to: const [],
+          date: DateTime(today.year, today.month, today.day, 8, 14),
+          hasAttachments: files,
+          sizeBytes: 48213,
+        );
+
+    testWidgets('is on every row, as Outlook shows it', (tester) async {
+      // Only mail with files showed one, and on Microsoft accounts none.
+      await pump(tester, tile(sized()));
+      expect(find.text(formatFileSize(48213)), findsOneWidget);
+      expect(find.byIcon(Icons.attach_file), findsNothing);
+    });
+
+    testWidgets('after the paperclip where there are files', (tester) async {
+      await pump(tester, tile(sized(files: true)));
+      final clip = tester.getRect(find.byIcon(Icons.attach_file));
+      final size = tester.getRect(find.text(formatFileSize(48213)));
+      expect(size.left, greaterThanOrEqualTo(clip.right));
+    });
+  });
+
   group('the time', () {
     test("is written the way the phone's clock is", () {
       final evening = DateTime(2026, 9, 24, 20, 14);
@@ -368,7 +400,7 @@ void main() {
           isAnswered: true,
           isForwarded: true,
           hasAttachments: true,
-          attachmentBytes: 1200000,
+          sizeBytes: 1200000,
         );
 
     testWidgets('keep two lines where one would leave no room to read',

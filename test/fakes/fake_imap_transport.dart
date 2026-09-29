@@ -137,6 +137,7 @@ class FakeImapTransport implements ImapTransport {
             isFlagged: m.isFlagged,
             isAnswered: m.isAnswered,
             isForwarded: m.isForwarded,
+            sizeBytes: m.sizeBytes,
           ),
     ];
   }
@@ -587,5 +588,9 @@ class FakeMessage {
         hasAttachments: false,
         preview: preview,
         messageId: messageId,
+        sizeBytes: sizeBytes,
       );
+
+  /// What RFC822.SIZE would say: the text and a header's worth.
+  int get sizeBytes => body.length + (html?.length ?? 0) + 400;
 }

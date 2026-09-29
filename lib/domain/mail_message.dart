@@ -67,7 +67,7 @@ class MailMessage {
     this.isRead = false,
     this.isFlagged = false,
     this.hasAttachments = false,
-    this.attachmentBytes = 0,
+    this.sizeBytes = 0,
     this.isMeeting = false,
     this.isAnswered = false,
     this.isForwarded = false,
@@ -134,16 +134,14 @@ class MailMessage {
   final bool isAnswered;
   final bool isForwarded;
 
-  /// What the row shows beside its paperclip, or 0 where the server did not
-  /// say.
+  /// The message's size, as Outlook's Size column shows it, or 0 where the
+  /// server has not said.
   ///
-  /// Over IMAP, what the files on it add up to: the structure the header
-  /// fetch already asks for carries a size per part. On a Microsoft
-  /// account, the whole message's size, which for mail with files is mostly
-  /// the files: Graph sends no per-file size with a list row, but reads
-  /// Exchange's own size of the message with the reply marks it already
-  /// asks for (PidTagMessageSize), at no extra request.
-  final int attachmentBytes;
+  /// Over IMAP, RFC822.SIZE, fetched with the headers and, once for rows
+  /// cached before it was, with the flags. On a Microsoft account, Exchange's
+  /// own size of the message (PidTagMessageSize), read with the reply marks
+  /// the rows already ask for: Graph sends no size of its own with a row.
+  final int sizeBytes;
 
   /// This message's own `Message-ID`, and the id of the one it answers.
   /// Both are what conversation grouping chains on. Either can be null: the
@@ -184,7 +182,7 @@ class MailMessage {
       isRead: isRead ?? this.isRead,
       isFlagged: isFlagged ?? this.isFlagged,
       hasAttachments: hasAttachments,
-      attachmentBytes: attachmentBytes,
+      sizeBytes: sizeBytes,
       isMeeting: isMeeting,
       isAnswered: isAnswered ?? this.isAnswered,
       isForwarded: isForwarded ?? this.isForwarded,
@@ -226,7 +224,7 @@ class MailMessage {
       other.arrived == arrived &&
       other.preview == preview &&
       other.hasAttachments == hasAttachments &&
-      other.attachmentBytes == attachmentBytes &&
+      other.sizeBytes == sizeBytes &&
       other.isMeeting == isMeeting &&
       other.isAnswered == isAnswered &&
       other.isForwarded == isForwarded &&

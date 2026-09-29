@@ -101,15 +101,14 @@ class MessageTile extends StatelessWidget {
             ? 6
             : flagWidth +
                 (message.isMeeting ? 20 : 0) +
-                (message.hasAttachments
-                    ? 20 +
-                        (message.attachmentBytes > 0
-                            ? textWidth(
-                                context,
-                                formatFileSize(message.attachmentBytes),
-                                theme.textTheme.labelSmall,
-                              )
-                            : 0)
+                (message.hasAttachments ? 20 : 0) +
+                (message.sizeBytes > 0
+                    ? 6 +
+                        textWidth(
+                          context,
+                          formatFileSize(message.sizeBytes),
+                          theme.textTheme.labelSmall,
+                        )
                     : 0));
     final oneLine = rowsOnOneLine(context, width: width, fixed: fixed);
     final singleLine = oneLine && !showsPreview;
@@ -321,13 +320,12 @@ class MessageTile extends StatelessWidget {
 
   bool get showsPreview => density.previewLines > 0;
 
-  /// Invitation and attachment, in that order, at the end of the last line.
-  /// The flag has a place of its own at the end of the subject's line.
+  /// Invitation, attachment and size, in that order, at the end of the last
+  /// line. The flag has a place of its own at the end of the subject's line.
   ///
-  /// The attachment mark carries a size where the server gave one. It is
-  /// free over IMAP, which reports a size per part with the structure the
-  /// header fetch already asks for; Microsoft sends none with a list row,
-  /// so there the paperclip stands on its own rather than lying about it.
+  /// The size is every message's, as Outlook shows it for Gmail and
+  /// Microsoft alike: the whole message, files and all, where the server
+  /// has said (see [MailMessage.sizeBytes]).
   List<Widget> _marks(ThemeData theme, ColorScheme scheme) => [
         // An invitation goes first: it is the one mark that changes what the
         // row is rather than describing what is on it.
@@ -338,14 +336,14 @@ class MessageTile extends StatelessWidget {
         if (message.hasAttachments) ...[
           const SizedBox(width: 6),
           Icon(Icons.attach_file, size: 14, color: scheme.onSurfaceVariant),
-          if (message.attachmentBytes > 0) ...[
-            const SizedBox(width: 2),
-            Text(
-              formatFileSize(message.attachmentBytes),
-              style: theme.textTheme.labelSmall
-                  ?.copyWith(color: scheme.onSurfaceVariant),
-            ),
-          ],
+        ],
+        if (message.sizeBytes > 0) ...[
+          SizedBox(width: message.hasAttachments ? 2 : 6),
+          Text(
+            formatFileSize(message.sizeBytes),
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
+          ),
         ],
       ];
 }

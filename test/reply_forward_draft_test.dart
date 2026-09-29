@@ -219,12 +219,12 @@ void main() {
         cc: const [michal],
         date: DateTime(2026, 9, 20, 9),
         preview: '',
-        attachmentBytes: 1234,
+        sizeBytes: 1234,
         isMeeting: true,
       );
       final read = m.copyWith(isRead: true);
       expect(read.cc, [michal]);
-      expect(read.attachmentBytes, 1234);
+      expect(read.sizeBytes, 1234);
       expect(read.isMeeting, isTrue);
     });
 

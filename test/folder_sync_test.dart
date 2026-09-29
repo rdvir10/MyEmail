@@ -161,6 +161,34 @@ void main() {
       expect((await store.readMessage('a', 'INBOX', 2))!.isForwarded, isTrue);
     });
 
+    test('rows cached before sizes were fetched get one, once', () async {
+      // Changes only, the server said nothing about rows that had not
+      // changed, and mail already on the phone never got a size.
+      final inbox = server.folder('INBOX');
+      inbox.deliver();
+      inbox.deliver();
+      await sync.sync('INBOX');
+      // As a version before this one left them.
+      await store.updateSizes('a', 'INBOX', {1: 0, 2: 0});
+      final cachedBefore = await store.readMessage('a', 'INBOX', 1);
+      expect(cachedBefore!.sizeBytes, 0);
+      server.calls.clear();
+
+      await sync.sync('INBOX');
+
+      expect(server.calls.any((c) => c.contains('CHANGEDSINCE')), isFalse,
+          reason: 'the whole window, once');
+      expect((await store.readMessage('a', 'INBOX', 1))!.sizeBytes,
+          greaterThan(0));
+      expect((await store.readMessage('a', 'INBOX', 2))!.sizeBytes,
+          greaterThan(0));
+
+      server.calls.clear();
+      await sync.sync('INBOX');
+      expect(server.calls.any((c) => c.contains('CHANGEDSINCE')), isTrue,
+          reason: 'and changes only again after that');
+    });
+
     test('without CONDSTORE every flag in the window is fetched', () async {
       server.supportsCondStore = false;
       final inbox = server.folder('INBOX');
