@@ -21,6 +21,7 @@ class MeetingDraft {
     this.notes = '',
     this.timeZone,
     this.online,
+    this.prepared,
   });
 
   /// Whose calendar it goes on, and who the invitations come from.
@@ -60,7 +61,41 @@ class MeetingDraft {
 
   bool get isOnline => online != null;
 
+  /// The online meeting made while the screen was open, whose invite text
+  /// the screen showed: the invitation goes out with that one rather than
+  /// with one made at Send. Used only where it is this account's and of
+  /// the kind [online] asks for; otherwise Send makes its own, as it did
+  /// before there was any.
+  final PreparedMeeting? prepared;
+
+  /// [prepared], where it belongs to this meeting as it stands.
+  PreparedMeeting? get preparedHere => prepared != null &&
+          prepared!.accountId == accountId &&
+          prepared!.kind == online
+      ? prepared
+      : null;
+
   bool get hasAttendees => attendees.isNotEmpty;
+
+  /// This meeting as the event made ahead of Send ([PreparedMeeting]):
+  /// nobody on it and no notes, since it is not being sent, a title before
+  /// one is typed, and an end after its start, since a calendar refuses
+  /// any other. Send gives the event everything as it then stands. No
+  /// location either: one typed now and cleared before Send would stay on
+  /// a Teams event, where Send leaves an empty location out so that
+  /// Exchange's own ("Microsoft Teams Meeting") stands.
+  MeetingDraft get shell {
+    final ends = allDay ? !end.isBefore(start) : end.isAfter(start);
+    return MeetingDraft(
+      accountId: accountId,
+      title: title.trim().isEmpty ? 'New meeting' : title,
+      start: start,
+      end: ends ? end : (allDay ? start : start.add(const Duration(hours: 1))),
+      allDay: allDay,
+      timeZone: timeZone,
+      online: online,
+    );
+  }
 
   /// What stops this being created, as a sentence, or null when nothing
   /// does.
@@ -100,6 +135,77 @@ enum OnlineMeetingKind {
 
   /// What went out with the invitation, for the message that says so.
   final String link;
+}
+
+/// An online meeting made before anyone is invited, so the text its
+/// invitation will carry can be shown while the meeting is written: Ron
+/// asked for the Teams block in the notes, as Outlook puts it there.
+///
+/// For Teams and for a Gmail account's own Meet, the meeting is the event
+/// itself, on the account's calendar with nobody on it, so nobody is told
+/// anything; Send gives it its details and then its attendees, and adding
+/// them is what sends the invitations. For Meet on a Microsoft account it
+/// is only a link, with no event anywhere.
+@immutable
+class PreparedMeeting {
+  const PreparedMeeting({
+    required this.accountId,
+    required this.kind,
+    this.eventId,
+    required this.joinUrl,
+    required this.inviteText,
+    this.bodyHtml,
+  });
+
+  /// Whose calendar it is on.
+  final String accountId;
+
+  final OnlineMeetingKind kind;
+
+  /// The event with nobody on it, or null where there is none to undo: a
+  /// Meet link made for a Microsoft account.
+  final String? eventId;
+
+  /// Where to join.
+  final String joinUrl;
+
+  /// What the invitation says about joining, as plain text for the screen.
+  final String inviteText;
+
+  /// Microsoft's: the event's body as Exchange wrote it, Teams block and
+  /// all. The invitation carries it unchanged below the notes: a body sent
+  /// without the block, or with it rewritten, loses the meeting.
+  final String? bodyHtml;
+
+  /// What is kept to find it again after the app was closed with it still
+  /// made: enough to delete it, and nothing of what it said.
+  Map<String, Object?> toJson() => {
+        'accountId': accountId,
+        'kind': kind.name,
+        'eventId': ?eventId,
+        'joinUrl': joinUrl,
+      };
+
+  /// Null for anything not written by [toJson].
+  static PreparedMeeting? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final accountId = json['accountId'];
+    final kind = OnlineMeetingKind.values
+        .where((k) => k.name == json['kind'])
+        .firstOrNull;
+    final eventId = json['eventId'];
+    final joinUrl = json['joinUrl'];
+    if (accountId is! String || kind == null || joinUrl is! String) {
+      return null;
+    }
+    return PreparedMeeting(
+      accountId: accountId,
+      kind: kind,
+      eventId: eventId is String ? eventId : null,
+      joinUrl: joinUrl,
+      inviteText: '',
+    );
+  }
 }
 
 /// What creating a meeting left behind.

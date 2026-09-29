@@ -648,13 +648,69 @@ class SampleMailEngine implements MailEngine {
     if (problem != null) throw ArgumentError(problem);
     meetings.add(meeting);
     return CreatedMeeting(
-      id: 'sample-meeting-${meetings.length}',
-      joinUrl: switch (meeting.online) {
-        null => null,
-        OnlineMeetingKind.googleMeet => 'https://meet.google.com/abc-defg-hij',
-        _ => 'https://teams.microsoft.com/l/meetup-join/sample',
-      },
+      // The event made ahead is the meeting now, as the real calendars
+      // answer.
+      id: meeting.preparedHere?.eventId ?? 'sample-meeting-${meetings.length}',
+      joinUrl: meeting.preparedHere?.joinUrl ??
+          switch (meeting.online) {
+            null => null,
+            OnlineMeetingKind.googleMeet =>
+              'https://meet.google.com/abc-defg-hij',
+            _ => 'https://teams.microsoft.com/l/meetup-join/sample',
+          },
     );
+  }
+
+  /// Every online meeting made ahead of Send, and every one undone, for
+  /// tests to look at.
+  final List<PreparedMeeting> preparedMeetings = [];
+  final List<PreparedMeeting> discardedMeetings = [];
+
+  /// A meeting made ahead with the text the real calendars show: a Teams
+  /// block for Teams, the Meet link for Meet. An event with nobody on it,
+  /// except for Meet on a Microsoft account, which is a link alone.
+  @override
+  Future<PreparedMeeting?> prepareOnlineMeeting(MeetingDraft meeting) async {
+    await _latency();
+    final kind = meeting.online;
+    if (kind == null) {
+      throw ArgumentError('A meeting held in the room alone has no link.');
+    }
+    final account = (await loadAccounts())
+        .where((a) => a.id == meeting.accountId)
+        .firstOrNull;
+    final linkAlone = kind == OnlineMeetingKind.googleMeet &&
+        account?.provider == MailProvider.outlook;
+    final n = preparedMeetings.length + 1;
+    final made = kind == OnlineMeetingKind.googleMeet
+        ? PreparedMeeting(
+            accountId: meeting.accountId,
+            kind: kind,
+            eventId: linkAlone ? null : 'sample-shell-$n',
+            joinUrl: 'https://meet.google.com/abc-defg-hij',
+            inviteText: linkAlone
+                ? 'Join with Google Meet: https://meet.google.com/abc-defg-hij'
+                : 'Join with Google Meet\nhttps://meet.google.com/abc-defg-hij',
+          )
+        : PreparedMeeting(
+            accountId: meeting.accountId,
+            kind: kind,
+            eventId: 'sample-shell-$n',
+            joinUrl: 'https://teams.microsoft.com/l/meetup-join/sample',
+            inviteText: 'Microsoft Teams meeting\n'
+                'Join the meeting now\n'
+                'Meeting ID: 244 810 212 347\n'
+                'Passcode: 7aP9Rv',
+            bodyHtml: '<html><body>Microsoft Teams meeting</body></html>',
+          );
+    preparedMeetings.add(made);
+    return made;
+  }
+
+  @override
+  Future<bool> discardPreparedMeeting(PreparedMeeting prepared) async {
+    discardedMeetings.add(prepared);
+    return true;
   }
 
   /// As the real engine answers: Teams for a Microsoft account, and Google

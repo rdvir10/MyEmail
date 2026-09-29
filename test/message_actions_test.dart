@@ -164,6 +164,14 @@ class _RefusingEngine implements MailEngine {
       _inner.respondToInvite(messageId, invite, response);
 
   @override
+  Future<PreparedMeeting?> prepareOnlineMeeting(MeetingDraft meeting) =>
+      _inner.prepareOnlineMeeting(meeting);
+
+  @override
+  Future<bool> discardPreparedMeeting(PreparedMeeting prepared) =>
+      _inner.discardPreparedMeeting(prepared);
+
+  @override
   Future<CreatedMeeting> createMeeting(MeetingDraft meeting) =>
       _inner.createMeeting(meeting);
 

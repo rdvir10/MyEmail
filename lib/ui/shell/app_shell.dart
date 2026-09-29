@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:isolate';
 import 'dart:ui' show IsolateNameServer;
 
@@ -16,6 +17,7 @@ import '../../state/message_transfer.dart';
 import '../../state/sync_providers.dart';
 import '../../domain/display_settings.dart';
 import '../../state/display_providers.dart';
+import '../../state/meeting_providers.dart';
 import '../../state/pane_widths.dart';
 import '../../state/providers.dart';
 import '../../state/search_providers.dart';
@@ -93,6 +95,10 @@ class _AppShellState extends ConsumerState<AppShell>
       // A cold start is not a resume, so presses waiting from before the
       // app opened were left until it next came back to the front.
       _carryOutPressedButtons();
+      // Meetings made ahead of Send by a screen the app was closed on.
+      unawaited(ref
+          .read(preparedMeetingLedgerProvider)
+          .dropLeftovers(ref.read(mailEngineProvider)));
     });
     _listenForPressesDone();
   }

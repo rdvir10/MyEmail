@@ -9,9 +9,12 @@ import 'package:myemail/data/backup/secret_vault.dart';
 import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/meeting.dart';
 import 'package:myemail/domain/settings_backup.dart';
 import 'package:myemail/state/backup_providers.dart';
 import 'package:myemail/state/compose_providers.dart' show signaturesProvider;
+import 'package:myemail/state/meeting_providers.dart'
+    show PreparedMeetingLedger;
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/accounts/add_account_screen.dart';
 import 'package:myemail/ui/settings/backup_screen.dart';
@@ -140,6 +143,26 @@ void main() {
 
       expect(entries.containsKey(UiStateKeys.selected), isFalse);
       expect(entries.containsKey(UiStateKeys.recentMoves), isFalse);
+    });
+
+    test('meetings made ahead of Send are left out', () async {
+      // Events this device made on the calendar and will delete itself.
+      // Restored elsewhere, that device's next start would delete one it
+      // never made, by then perhaps sent with nobody invited and meant to
+      // stay.
+      await PreparedMeetingLedger(uiState).record(const PreparedMeeting(
+        accountId: 'acct-bbb',
+        kind: OnlineMeetingKind.teams,
+        eventId: 'evt-1',
+        joinUrl: 'https://teams.microsoft.com/l/meetup-join/evt-1',
+        inviteText: 'Microsoft Teams meeting',
+      ));
+      expect(uiState.readString(UiStateKeys.preparedMeetings), isNotNull);
+
+      final entries = (await service.export()).entries;
+
+      expect(entries.containsKey(UiStateKeys.preparedMeetings), isFalse);
+      expect(entries, isEmpty);
     });
 
     test('empty settings are omitted rather than written as blanks', () async {

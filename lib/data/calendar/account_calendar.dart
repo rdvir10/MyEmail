@@ -113,6 +113,13 @@ class AccountCalendar {
     }
   }
 
+  GoogleCalendarApi _googleApi(Account account) => GoogleCalendarApi(
+        accessToken: ({bool force = false}) =>
+            accessToken(account.id, force: force),
+        httpClient: _http,
+        sleep: sleep,
+      );
+
   GraphCalendarApi _graphApi(Account account) => GraphCalendarApi(
         accessToken: ({bool force = false}) => accessToken(
           account.id,
@@ -132,12 +139,15 @@ class AccountCalendar {
     final problem = meeting.problem;
     if (problem != null) throw ArgumentError(problem);
 
+    // The online meeting the screen showed, where one was made ahead.
+    final prepared = meeting.preparedHere;
     switch (account.provider) {
       case MailProvider.outlook:
         if (meeting.online == OnlineMeetingKind.googleMeet) {
           // Made first, by the Google account, so a link that cannot be
-          // had leaves no event behind without one.
-          final link = await _meetLink();
+          // had leaves no event behind without one: when Google Meet was
+          // chosen, or here.
+          final link = prepared?.joinUrl ?? await _meetLink();
           final api = _graphApi(account);
           try {
             return await api.createEvent(meeting, joinUrl: link);
@@ -145,13 +155,24 @@ class AccountCalendar {
             api.close();
           }
         }
-        // Held where the calendar said it holds them. Where it would not
-        // say, Graph is left to the calendar's default.
-        final provider = meeting.isOnline
-            ? (await _graphOnlineMeetings(account))?.provider
-            : null;
         final api = _graphApi(account);
         try {
+          if (prepared?.eventId != null) {
+            try {
+              return await api.sendShell(prepared!, meeting);
+            } on PreparedMeetingLost catch (e) {
+              // Nobody has been asked yet: a new meeting instead, with a
+              // link of its own.
+              debugPrint('[myemail] the meeting made ahead is lost ($e); '
+                  'making it again');
+              await api.deleteShell(prepared!.eventId!);
+            }
+          }
+          // Held where the calendar said it holds them. Where it would not
+          // say, Graph is left to the calendar's default.
+          final provider = meeting.isOnline
+              ? (await _graphOnlineMeetings(account))?.provider
+              : null;
           return await api.createEvent(
             meeting,
             onlineMeetingProvider: provider,
@@ -160,12 +181,16 @@ class AccountCalendar {
           api.close();
         }
       case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
-        final api = GoogleCalendarApi(
-          accessToken: ({bool force = false}) =>
-              accessToken(account.id, force: force),
-          httpClient: _http,
-        );
+        final api = _googleApi(account);
         try {
+          if (prepared?.eventId != null) {
+            try {
+              return await api.sendShell(prepared!, meeting);
+            } on PreparedMeetingLost catch (e) {
+              debugPrint('[myemail] the meeting made ahead is lost ($e); '
+                  'making it again');
+            }
+          }
           return await api.createEvent(meeting);
         } finally {
           api.close();
@@ -175,6 +200,84 @@ class AccountCalendar {
           "The app cannot reach this account's calendar: an app password "
           'covers its mail and nothing else.',
         );
+    }
+  }
+
+  /// Make [meeting]'s online meeting before anyone is invited, so the
+  /// screen can show what the invitation will say; see
+  /// `MailEngine.prepareOnlineMeeting`.
+  Future<PreparedMeeting?> prepareOnlineMeeting(
+    Account account,
+    MeetingDraft meeting,
+  ) async {
+    final kind = meeting.online;
+    if (kind == null) {
+      throw ArgumentError('A meeting held in the room alone has no link.');
+    }
+    switch (account.provider) {
+      case MailProvider.outlook:
+        if (kind == OnlineMeetingKind.googleMeet) {
+          // A link and nothing else: there is no event to make ahead, and
+          // the Outlook invitation carries the line shown here.
+          final link = await _meetLink();
+          return PreparedMeeting(
+            accountId: account.id,
+            kind: kind,
+            joinUrl: link,
+            inviteText: GraphCalendarApi.meetLine(link),
+          );
+        }
+        final provider = (await _graphOnlineMeetings(account))?.provider;
+        final api = _graphApi(account);
+        try {
+          return await api.createShell(
+            meeting,
+            onlineMeetingProvider: provider,
+          );
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          return await api.createShell(meeting);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(
+          "The app cannot reach this account's calendar: an app password "
+          'covers its mail and nothing else.',
+        );
+    }
+  }
+
+  /// Undo [prepareOnlineMeeting] for a meeting that was not sent; see
+  /// `MailEngine.discardPreparedMeeting`. Never throws.
+  Future<bool> discardPreparedMeeting(
+    Account account,
+    PreparedMeeting prepared,
+  ) async {
+    final id = prepared.eventId;
+    if (id == null) return true;
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          return await api.deleteShell(id);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          return await api.deleteShell(id);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        // No calendar the app reaches, and so none it made anything on.
+        return true;
     }
   }
 

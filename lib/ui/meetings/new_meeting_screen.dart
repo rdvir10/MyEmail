@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/auth/microsoft_oauth.dart';
@@ -130,6 +133,12 @@ List<MailAddress> meetingAttendeesFor(
 /// Google Meet, a switch asks for a link with the invitation; where there
 /// is a choice, a Microsoft account with a Gmail account signed in with
 /// Google beside it, a menu says which.
+///
+/// The link is made as the switch goes on, not at Send, so that what the
+/// invitation will say about joining (the Teams block, the Meet link) is
+/// under the notes while they are written, as Outlook has it; see
+/// [PreparedMeeting]. It is undone when the switch goes off, From changes,
+/// or the screen is left without sending.
 class NewMeetingScreen extends ConsumerStatefulWidget {
   const NewMeetingScreen({
     super.key,
@@ -229,12 +238,46 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
   /// Something that went wrong out of their hands. Worth reporting.
   ProblemReport? _problem;
 
+  /// The online meeting made for the switch, whose text is under the
+  /// notes. Null while there is none, or while it is on its way.
+  PreparedMeeting? _prepared;
+
+  /// Its making, while it is on its way: Send waits for it, so that the
+  /// invitation carries what the screen showed.
+  Future<void>? _preparing;
+
+  /// Which making is the current one. An answer for one dropped since is
+  /// undone when it comes.
+  int _prepareAsk = 0;
+
+  /// Whether the last making came to nothing, so the screen says the link
+  /// comes at Send instead.
+  bool _prepareFailed = false;
+
+  /// Whether the consent a notice offers is for making the link, so that
+  /// signing in makes it rather than sending the meeting.
+  bool _consentToPrepare = false;
+
+  /// Set once the meeting is sent. What was made ahead is the meeting now,
+  /// and leaving must not undo it.
+  bool _sent = false;
+
+  /// Set while the calendar is sending it. Leaving then must not undo what
+  /// is being sent either: Send puts it back on the ledger if it did not
+  /// go, and the next start deletes it then.
+  bool _sendingMeeting = false;
+
+  /// The app's container, taken while the screen is there: a meeting made
+  /// ahead is undone as the screen goes, when its own ref no longer reads.
+  late final ProviderContainer _container;
+
   static DateTime _nextHour(DateTime now) =>
       DateTime(now.year, now.month, now.day, now.hour + 1);
 
   @override
   void initState() {
     super.initState();
+    _container = ProviderScope.containerOf(context, listen: false);
     _askOnline();
   }
 
@@ -251,10 +294,113 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
       _onlineKind =
           kinds.contains(_onlineKind) ? _onlineKind : kinds.firstOrNull;
     });
+    // From changed with the switch on: this account's link, and its text.
+    if (_online && _prepared == null && _preparing == null) {
+      unawaited(_prepare());
+    }
+  }
+
+  /// Make the online meeting for the switch as it now stands, and put what
+  /// its invitation says under the notes. Any made before is undone first.
+  Future<void> _prepare() async {
+    _dropPrepared();
+    final kind = _onlineKind;
+    if (!_online || kind == null || !_onlineKinds.contains(kind)) return;
+    final ask = ++_prepareAsk;
+    final done = Completer<void>();
+    setState(() {
+      _preparing = done.future;
+      _prepareFailed = false;
+    });
+    try {
+      final draft = await _draft(const []);
+      final made =
+          await _container.read(mailEngineProvider).prepareOnlineMeeting(draft);
+      // On the ledger at once, whatever comes of it: undone below or later,
+      // it is the next start's to delete should undoing it fail. A ledger
+      // that cannot be written to is no reason to lose the meeting.
+      if (made != null) {
+        try {
+          await _container.read(preparedMeetingLedgerProvider).record(made);
+        } catch (e) {
+          debugPrint('[myemail] could not keep the meeting made ahead: $e');
+        }
+      }
+      if (!mounted || ask != _prepareAsk) {
+        // Switched off, From changed, or the screen left, while it was
+        // being made.
+        if (made != null) unawaited(_discard(made));
+        return;
+      }
+      setState(() {
+        _prepared = made;
+        _prepareFailed = made == null;
+      });
+    } catch (error) {
+      // An event made and not undone: the next start deletes it.
+      var e = error;
+      if (e is PreparedMeetingLeft) {
+        try {
+          await _container
+              .read(preparedMeetingLedgerProvider)
+              .record(e.leftover);
+        } catch (_) {
+          // Nowhere to keep it; said below with the rest.
+        }
+        e = e.cause;
+      }
+      if (!mounted || ask != _prepareAsk) return;
+      // A sign-in that has not allowed it yet is offered here, as at Send.
+      // Anything else leaves the link to Send, which makes it as it always
+      // did and says what went wrong if it goes wrong again.
+      if (!_askForConsent(e, toPrepare: true)) {
+        debugPrint('[myemail] could not make the meeting link ahead: $e');
+      }
+      setState(() => _prepareFailed = true);
+    } finally {
+      done.complete();
+      if (mounted && ask == _prepareAsk) setState(() => _preparing = null);
+    }
+  }
+
+  /// Undo the meeting made for the switch, and any on its way, with any
+  /// sign-in the making asked for: the kind or account that needed it is
+  /// no longer the one wanted. The caller sets the state.
+  void _dropPrepared() {
+    _prepareAsk++;
+    final made = _prepared;
+    _prepared = null;
+    _preparing = null;
+    _prepareFailed = false;
+    if (_consentToPrepare) {
+      _consentToPrepare = false;
+      _notice = null;
+      _offerMeet = null;
+      _offerConsent = false;
+      _askAdministrator = false;
+    }
+    if (made != null) unawaited(_discard(made));
+  }
+
+  /// Delete it, telling nobody, and take it off the ledger once that is
+  /// done. Where it could not be done now, it stays there, and the next
+  /// start tries again.
+  Future<void> _discard(PreparedMeeting made) async {
+    try {
+      final done = await _container
+          .read(mailEngineProvider)
+          .discardPreparedMeeting(made);
+      if (done) {
+        await _container.read(preparedMeetingLedgerProvider).forget(made);
+      }
+    } catch (_) {
+      // Never thrown on purpose; the ledger has it either way.
+    }
   }
 
   @override
   void dispose() {
+    if (!_sent && !_sendingMeeting) _dropPrepared();
     _title.dispose();
     _attendees.dispose();
     _location.dispose();
@@ -327,6 +473,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
       notes: _notes.text.trim(),
       timeZone: zone,
       online: _online ? _onlineKind : null,
+      prepared: _online ? _prepared : null,
     );
   }
 
@@ -336,11 +483,22 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
       setState(() => _invalid = 'One of the addresses does not look right.');
       return;
     }
+    // A link still being made is waited for, so that the invitation goes
+    // with the one whose text is on the screen.
+    final making = _preparing;
+    if (making != null) {
+      setState(() => _sending = true);
+      await making;
+      if (!mounted) return;
+    }
     final meeting = await _draft(attendees);
     if (!mounted) return;
     final problem = meeting.problem;
     if (problem != null) {
-      setState(() => _invalid = problem);
+      setState(() {
+        _invalid = problem;
+        _sending = false;
+      });
       return;
     }
 
@@ -354,49 +512,97 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
     });
     // Where it is held, for the message that says what went out.
     final held = meeting.online;
+    final ledger = _container.read(preparedMeetingLedgerProvider);
+    final prepared = meeting.preparedHere;
+    // Off the ledger before it goes: an app closed from here on must not
+    // have the next start deleting a meeting that was sent.
+    _sendingMeeting = true;
     try {
-      await ref.read(mailEngineProvider).createMeeting(meeting);
+      if (prepared != null) await ledger.forget(prepared);
+      final created =
+          await _container.read(mailEngineProvider).createMeeting(meeting);
+      _sent = true;
+      // The one made ahead could not be used (deleted meanwhile, or its
+      // calendar dropped the link) and the calendar made another: the old
+      // one is undone, once more if need be, and the link shown, which may
+      // have been copied, is said to be a new one.
+      final remade = prepared?.eventId != null && created.id != prepared!.eventId;
+      if (remade) {
+        unawaited(ledger
+            .record(prepared)
+            .then((_) => _discard(prepared))
+            .catchError((_) {}));
+      }
       if (!mounted) return;
-      final link = held == null ? '' : ', with ${held.link}';
+      final link = held == null
+          ? ''
+          : remade
+              ? ', with a new ${held.link.replaceFirst(RegExp('^an? '), '')}: '
+                  'the one shown could not be used'
+              : ', with ${held.link}';
       _leave(meeting.hasAttendees
           ? 'Invitation sent$link'
           : 'Added to your calendar$link');
     } on CalendarUnavailable catch (e) {
       await _handToDevice(meeting, e);
-    } on MeetLinkNeedsConsent catch (e) {
-      // The Gmail account's sign-in is from before the app asked for Meet.
-      // Offered here, as the Microsoft one is, and named: it is not the
-      // account the meeting is from.
-      setState(() {
-        _notice = 'Google has not yet allowed the app to make Meet links '
-            'with ${e.emailAddress}. Sign in with Google again to allow it; '
-            'nothing cached is lost.';
-        _offerMeet = e.accountId;
-      });
-    } on SignInNeedsConsent catch (e) {
-      // In words of its own rather than Microsoft's, which send the person
-      // to Settings for the sign-in that is offered right here.
-      setState(() {
-        _notice = e.needsAdministrator
-            ? "Microsoft has not allowed the app to use this account's "
-                "calendar, and only the organisation's administrator can "
-                "allow it. Sign in below: Microsoft's page will offer to "
-                'send them the request. Once they approve, tap Send again.'
-            : "Microsoft has not yet allowed the app to use this account's "
-                'calendar. Sign in again to allow it; nothing cached is lost.';
-        _offerConsent = true;
-        _askAdministrator = e.needsAdministrator;
-      });
     } catch (e) {
+      if (!mounted) return;
       // Every failure the calendars throw on purpose already carries a
       // sentence written for a person; the rest is kept whole for a report.
-      setState(() => _problem = ProblemReport(
-            doing: 'Creating a meeting',
-            error: e,
-            account: _account,
-          ));
+      if (!_askForConsent(e, toPrepare: false)) {
+        setState(() => _problem = ProblemReport(
+              doing: 'Creating a meeting',
+              error: e,
+              account: _account,
+            ));
+      }
     } finally {
+      _sendingMeeting = false;
+      // Not sent: still made, and still the ledger's to clear up.
+      if (!_sent && prepared != null) {
+        unawaited(ledger.record(prepared).catchError((_) {}));
+      }
       if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  /// Say what a sign-in has not yet allowed, with the sign-in that allows
+  /// it, or false for any other failure. [toPrepare] is whether it came
+  /// from making the link, so signing in makes it again rather than
+  /// sending the meeting.
+  bool _askForConsent(Object e, {required bool toPrepare}) {
+    switch (e) {
+      case MeetLinkNeedsConsent():
+        // The Gmail account's sign-in is from before the app asked for
+        // Meet. Offered here, as the Microsoft one is, and named: it is not
+        // the account the meeting is from.
+        setState(() {
+          _notice = 'Google has not yet allowed the app to make Meet links '
+              'with ${e.emailAddress}. Sign in with Google again to allow '
+              'it; nothing cached is lost.';
+          _offerMeet = e.accountId;
+          _consentToPrepare = toPrepare;
+        });
+        return true;
+      case SignInNeedsConsent():
+        // In words of its own rather than Microsoft's, which send the
+        // person to Settings for the sign-in that is offered right here.
+        setState(() {
+          _notice = e.needsAdministrator
+              ? "Microsoft has not allowed the app to use this account's "
+                  "calendar, and only the organisation's administrator can "
+                  "allow it. Sign in below: Microsoft's page will offer to "
+                  'send them the request. Once they approve, tap Send again.'
+              : "Microsoft has not yet allowed the app to use this account's "
+                  'calendar. Sign in again to allow it; nothing cached is '
+                  'lost.';
+          _offerConsent = true;
+          _askAdministrator = e.needsAdministrator;
+          _consentToPrepare = toPrepare;
+        });
+        return true;
+      default:
+        return false;
     }
   }
 
@@ -493,7 +699,12 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
       return;
     }
     if (!mounted) return;
-    await _send();
+    if (_consentToPrepare) {
+      setState(() => _sending = false);
+      await _prepare();
+    } else {
+      await _send();
+    }
   }
 
   void _leave(String message) {
@@ -595,6 +806,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
                             : (id) {
                                 if (id == null || id == _accountId) return;
                                 setState(() {
+                                  // The old account's link goes with it;
+                                  // the new one's is made once it answers.
+                                  _dropPrepared();
                                   _accountId = id;
                                   // Unknown again until this account has
                                   // answered for itself; the kind chosen
@@ -685,7 +899,13 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
                       value: _online,
                       onChanged: _sending
                           ? null
-                          : (on) => setState(() => _online = on),
+                          : (on) {
+                              setState(() {
+                                _online = on;
+                                if (!on) _dropPrepared();
+                              });
+                              if (on) unawaited(_prepare());
+                            },
                     ),
                     const SizedBox(width: 8),
                     Expanded(
@@ -710,10 +930,15 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
                                   ? null
                                   : (kind) {
                                       if (kind == null) return;
+                                      final same = _online &&
+                                          kind == _onlineKind &&
+                                          (_prepared != null ||
+                                              _preparing != null);
                                       setState(() {
                                         _onlineKind = kind;
                                         _online = true;
                                       });
+                                      if (!same) unawaited(_prepare());
                                     },
                             )
                           : Text(
@@ -768,30 +993,180 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
               ),
             const Divider(height: 1),
             Expanded(
-              // As the header rows: the way its first letter reads.
-              child: ValueListenableBuilder<TextEditingValue>(
-                valueListenable: _notes,
-                builder: (context, value, _) => TextField(
-                  key: const ValueKey('meeting-notes'),
-                  controller: _notes,
-                  enabled: !_sending,
-                  maxLines: null,
-                  expands: true,
-                  textAlignVertical: TextAlignVertical.top,
-                  style: theme.textTheme.bodyMedium,
-                  textDirection: firstStrongDirection(value.text) ??
-                      Directionality.of(context),
-                  decoration: const InputDecoration(
-                    hintText: 'Notes',
-                    border: InputBorder.none,
-                    contentPadding: EdgeInsets.all(16),
-                  ),
+              child: LayoutBuilder(
+                builder: (context, box) => Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(
+                      // As the header rows: the way its first letter reads.
+                      child: ValueListenableBuilder<TextEditingValue>(
+                        valueListenable: _notes,
+                        builder: (context, value, _) => TextField(
+                          key: const ValueKey('meeting-notes'),
+                          controller: _notes,
+                          enabled: !_sending,
+                          maxLines: null,
+                          expands: true,
+                          textAlignVertical: TextAlignVertical.top,
+                          style: theme.textTheme.bodyMedium,
+                          textDirection: firstStrongDirection(value.text) ??
+                              Directionality.of(context),
+                          decoration: const InputDecoration(
+                            hintText: 'Notes',
+                            border: InputBorder.none,
+                            contentPadding: EdgeInsets.all(16),
+                          ),
+                        ),
+                      ),
+                    ),
+                    // Below the notes, as Outlook puts the Teams block,
+                    // and no more than half of them. Only where there is
+                    // room for its heading and two lines and some notes,
+                    // and three times that with the keyboard up: on a phone
+                    // the notes are then what is being written, and a
+                    // sliver of block would take their room to show nothing.
+                    if (_online &&
+                        _onlineKind != null &&
+                        _onlineKinds.contains(_onlineKind) &&
+                        box.maxHeight >=
+                            // The screen's own context: the Scaffold
+                            // takes the keyboard out of what its body sees.
+                            (MediaQuery.viewInsetsOf(this.context).bottom > 0
+                                    ? 3
+                                    : 1.5) *
+                                (12 +
+                                    MediaQuery.textScalerOf(context)
+                                        .scale(40) +
+                                    2 *
+                                        MediaQuery.textScalerOf(context)
+                                            .scale(16)))
+                      ConstrainedBox(
+                        constraints:
+                            BoxConstraints(maxHeight: box.maxHeight / 2),
+                        child: _InviteText(
+                          kind: _onlineKind!,
+                          prepared: _prepared,
+                          making: _preparing != null,
+                          failed: _prepareFailed,
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// What the invitation will say about joining, under the notes: the Teams
+/// block, or the Meet link and dial-in, as the calendar made them.
+///
+/// Shown, not written in. Exchange drops the Teams meeting from an event
+/// whose block comes back changed, and Google adds its own block to every
+/// invitation, so an edited copy would not be what went out. The link can
+/// be copied, to paste somewhere the invitation does not go.
+class _InviteText extends StatelessWidget {
+  const _InviteText({
+    required this.kind,
+    required this.prepared,
+    required this.making,
+    required this.failed,
+  });
+
+  final OnlineMeetingKind kind;
+  final PreparedMeeting? prepared;
+  final bool making;
+  final bool failed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final text = prepared?.inviteText.trim() ?? '';
+    final link = kind.link[0].toUpperCase() + kind.link.substring(1);
+    return Container(
+      key: const ValueKey('meeting-invite-text'),
+      width: double.infinity,
+      decoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(color: theme.colorScheme.outlineVariant),
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(16, 4, 8, 8),
+      child: making
+          ? Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text('Making ${kind.link}…', style: muted)),
+                ],
+              ),
+            )
+          : prepared == null || text.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    failed
+                        ? '$link is added when you send.'
+                        : '$link goes with the invitation.',
+                    style: muted,
+                  ),
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Goes with the invitation',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                        TextButton.icon(
+                          key: const ValueKey('meeting-copy-link'),
+                          onPressed: () async {
+                            final messenger = ScaffoldMessenger.of(context);
+                            await Clipboard.setData(
+                              ClipboardData(text: prepared!.joinUrl),
+                            );
+                            messenger
+                              ..hideCurrentSnackBar()
+                              ..showSnackBar(const SnackBar(
+                                duration: kBottomMessage,
+                                content: Text('Link copied'),
+                              ));
+                          },
+                          icon: const Icon(Icons.link, size: 18),
+                          label: const Text('Copy link'),
+                        ),
+                      ],
+                    ),
+                    Flexible(
+                      child: SingleChildScrollView(
+                        child: SelectableText(
+                          text,
+                          style: muted,
+                          textDirection: firstStrongDirection(text) ??
+                              Directionality.of(context),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
     );
   }
 }

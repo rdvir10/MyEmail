@@ -18,6 +18,10 @@ abstract class UiStateStore {
 
   String? readString(String key);
   Future<void> writeString(String key, String? value);
+
+  /// Read again what another window of the app may have written since:
+  /// each keeps its own copy, read once at its start.
+  Future<void> reload();
 }
 
 /// Keys, in one place so the notifiers and the tests agree.
@@ -39,6 +43,10 @@ abstract final class UiStateKeys {
   static const trustedSenders = 'images.trusted.v1';
   static const attachmentsFolded = 'attachments.folded';
   static const backgroundAsked = 'sync.background-asked';
+
+  /// Online meetings made ahead of Send and not yet sent or undone; see
+  /// `PreparedMeetingLedger`.
+  static const preparedMeetings = 'meetings.prepared.v1';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.
@@ -53,6 +61,9 @@ class PrefsUiStateStore implements UiStateStore {
     );
     return PrefsUiStateStore(prefs);
   }
+
+  @override
+  Future<void> reload() => _prefs.reloadCache();
 
   @override
   Set<String> readIds(String key) =>
@@ -91,6 +102,9 @@ class MemoryUiStateStore implements UiStateStore {
   final Map<String, Set<String>> _ids = {};
   final Map<String, Map<String, int>> _orders = {};
   final Map<String, String> _strings = {};
+
+  @override
+  Future<void> reload() async {}
 
   @override
   Set<String> readIds(String key) => Set.of(_ids[key] ?? const {});

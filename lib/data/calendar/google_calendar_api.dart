@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
 import '../../domain/meeting.dart';
@@ -9,14 +10,26 @@ import '../mail_engine.dart';
 
 /// A thin client over the Google Calendar API: one call, to put a meeting
 /// on the account's calendar with its attendees invited, and a Meet link
-/// on it when it is held online.
+/// on it when it is held online; and three that make the Meet meeting
+/// ahead of Send and send it later ([createShell], [sendShell],
+/// [deleteShell]).
 ///
 /// For a Gmail account signed in with Google, whose one token carries the
 /// calendar beside the mail. Google sends the invitations itself when asked
 /// to, and keeps the answers on the event, so nothing here tracks a reply.
 class GoogleCalendarApi {
-  GoogleCalendarApi({required this.accessToken, http.Client? httpClient})
-      : _given = httpClient;
+  GoogleCalendarApi({
+    required this.accessToken,
+    http.Client? httpClient,
+    this.sleep,
+  }) : _given = httpClient;
+
+  /// Overridden by tests, which must not really wait for a Meet link.
+  final Future<void> Function(Duration)? sleep;
+
+  /// How long a Meet link Google is still making is waited for, a second
+  /// at a time.
+  static const maxMeetWaits = 10;
 
   /// The account's token. Asked for per request, because a refused one is
   /// asked for again with `force`.
@@ -66,6 +79,188 @@ class GoogleCalendarApi {
       id: id is String && id.isNotEmpty ? id : null,
       joinUrl: _joinUrlOf(json),
     );
+  }
+
+  /// Make the meeting's Meet meeting now, on an event with nobody on it
+  /// and nobody told, so its invite text can be shown before Send; see
+  /// [PreparedMeeting].
+  ///
+  /// Google may answer before the link is made; it is waited for. Null,
+  /// with the event deleted again, where no link came: Send then asks for
+  /// one as it always did.
+  Future<PreparedMeeting?> createShell(MeetingDraft meeting) async {
+    final kind = meeting.online;
+    if (kind == null) {
+      throw ArgumentError('A meeting held in the room alone has no link.');
+    }
+    final uri = _eventsAt(null, {
+      'sendUpdates': 'none',
+      'conferenceDataVersion': '1',
+    });
+    final body = jsonEncode({
+      ...eventJson(meeting.shell),
+      // Not a meeting yet: no reminder of it, and not shown as busy, while
+      // it is being written. Send turns both on.
+      'reminders': {'useDefault': false},
+      'transparency': 'transparent',
+    });
+    final response = await _authorised(
+      () => http.Request('POST', uri)
+        ..headers['Content-Type'] = 'application/json'
+        ..body = body,
+    );
+    if (response.statusCode >= 400) throw _failureFor(response);
+    var json = _jsonOf(response);
+    final id = json['id'];
+    if (id is! String || id.isEmpty) return null;
+    // The event is there now. A failure while the link is waited for
+    // deletes it before saying so; one that cannot be deleted either is
+    // handed back to be put on the ledger, or it would stay for good.
+    final left = PreparedMeeting(
+      accountId: meeting.accountId,
+      kind: kind,
+      eventId: id,
+      joinUrl: '',
+      inviteText: '',
+    );
+    try {
+      for (var wait = 0; wait < maxMeetWaits && _pending(json); wait++) {
+        await (sleep ?? _realSleep)(const Duration(seconds: 1));
+        json = await _event(id) ?? const {};
+      }
+    } catch (e) {
+      if (!await deleteShell(id)) throw PreparedMeetingLeft(left, e);
+      rethrow;
+    }
+    final joinUrl = _joinUrlOf(json);
+    if (joinUrl == null) {
+      if (!await deleteShell(id)) {
+        throw PreparedMeetingLeft(left, 'no Meet link came');
+      }
+      return null;
+    }
+    return PreparedMeeting(
+      accountId: meeting.accountId,
+      kind: kind,
+      eventId: id,
+      joinUrl: joinUrl,
+      inviteText: inviteTextOf(json['conferenceData']),
+    );
+  }
+
+  /// Send a meeting made by [createShell]: everything as it now stands,
+  /// the attendees with it, and Google told to invite them. The conference
+  /// is left as it is, and so is the description: Google adds the joining
+  /// block to every invitation itself, and one in the notes too would show
+  /// twice. [PreparedMeetingLost] where the event was deleted meanwhile.
+  Future<CreatedMeeting> sendShell(
+    PreparedMeeting prepared,
+    MeetingDraft meeting,
+  ) async {
+    final id = prepared.eventId;
+    if (id == null) {
+      throw const PreparedMeetingLost('nothing was made ahead of Send');
+    }
+    // Looked at first: Google keeps a deleted event, marked cancelled, and
+    // a patch to it answers as though nothing were wrong. Invitations to a
+    // meeting that is not there must not go.
+    final current = await _event(id);
+    if (current == null ||
+        current['status'] == 'cancelled' ||
+        _joinUrlOf(current) == null) {
+      throw const PreparedMeetingLost('the event was deleted');
+    }
+    final fields = eventJson(meeting)..remove('conferenceData');
+    // A meeting now: reminded of as the calendar reminds, and busy.
+    fields['reminders'] = {'useDefault': true};
+    fields['transparency'] = 'opaque';
+    // Emptied as well as filled: the event had none, but a patch leaves out
+    // only what it is not given.
+    fields['description'] = meeting.notes;
+    fields['location'] = meeting.location.trim();
+    // A patch merges into what the event has, and All day may have changed
+    // since it was made: the other way of giving a time is emptied, or the
+    // event holds a date and a time at once and Google refuses it.
+    for (final key in const ['start', 'end']) {
+      fields[key] = meeting.allDay
+          ? {...fields[key] as Map, 'dateTime': null, 'timeZone': null}
+          : {...fields[key] as Map, 'date': null};
+    }
+    final body = jsonEncode(fields);
+    final response = await _authorised(
+      () => http.Request(
+        'PATCH',
+        _eventsAt(id, {'sendUpdates': 'all', 'conferenceDataVersion': '1'}),
+      )
+        ..headers['Content-Type'] = 'application/json'
+        ..body = body,
+    );
+    if (response.statusCode == 404 || response.statusCode == 410) {
+      throw const PreparedMeetingLost('the event was deleted');
+    }
+    if (response.statusCode >= 400) throw _failureFor(response);
+    return CreatedMeeting(
+      id: id,
+      joinUrl: _joinUrlOf(_jsonOf(response)) ?? prepared.joinUrl,
+    );
+  }
+
+  /// Delete an event [createShell] made, telling nobody, provided nobody is
+  /// on it: one with attendees was sent after all. Never throws. Its Meet
+  /// code goes unused and lapses on its own. False where it could not be
+  /// done now; see `MailEngine.discardPreparedMeeting`.
+  Future<bool> deleteShell(String id) async {
+    try {
+      final event = await _event(id);
+      if (event == null) return true;
+      final attendees = event['attendees'];
+      if (attendees is List && attendees.isNotEmpty) return true;
+      final response = await _authorised(
+        () => http.Request('DELETE', _eventsAt(id, {'sendUpdates': 'none'})),
+      );
+      final status = response.statusCode;
+      if (status >= 400 && status != 404 && status != 410) {
+        throw _failureFor(response);
+      }
+      return true;
+    } catch (e) {
+      debugPrint('[myemail] could not delete the meeting made ahead: $e');
+      return false;
+    }
+  }
+
+  /// The joining block of a Google invitation, as Google's own email writes
+  /// it, from the conference Google made: the Meet link, and where the
+  /// organiser's account has dial-in, the first number, its PIN and the
+  /// page of the others. A personal Gmail account has only the link.
+  static String inviteTextOf(Object? conference) {
+    final points = conference is Map ? conference['entryPoints'] : null;
+    Map? of(String type) => points is List
+        ? points.whereType<Map>().where((p) => p['entryPointType'] == type)
+            .firstOrNull
+        : null;
+    String? text(Object? v) => v is String && v.trim().isNotEmpty ? v : null;
+    final video = of('video');
+    final phone = of('phone');
+    final more = of('more');
+    final lines = <String>[];
+    final videoUri = text(video?['uri']);
+    if (videoUri != null) lines.addAll(['Join with Google Meet', videoUri]);
+    final number = text(phone?['label']) ??
+        text(phone?['uri'])?.replaceFirst(RegExp('^tel:'), '');
+    if (number != null) {
+      final region = text(phone?['regionCode']);
+      final pin = text(phone?['pin']);
+      lines.addAll([
+        if (lines.isNotEmpty) '',
+        'Join by phone',
+        region == null ? number : '($region) $number',
+        if (pin != null) 'PIN: $pin',
+      ]);
+      final others = text(more?['uri']);
+      if (others != null) lines.addAll(['', 'More phone numbers', others]);
+    }
+    return lines.join('\n');
   }
 
   /// The event as Google takes it.
@@ -125,6 +320,34 @@ class GoogleCalendarApi {
         random.nextInt(256).toRadixString(16).padLeft(2, '0'),
     ].join();
   }
+
+  /// The account's events, or one of them, with [query]. Ids Google makes
+  /// are letters and digits, but one is encoded all the same.
+  static Uri _eventsAt(String? id, Map<String, String> query) => Uri.parse(
+        '$base/calendars/primary/events'
+        '${id == null ? '' : '/${Uri.encodeComponent(id)}'}',
+      ).replace(queryParameters: query);
+
+  /// The event as it stands, or null where it is gone.
+  Future<Map<String, Object?>?> _event(String id) async {
+    final response = await _authorised(
+      () => http.Request('GET', _eventsAt(id, {'conferenceDataVersion': '1'})),
+    );
+    if (response.statusCode == 404 || response.statusCode == 410) return null;
+    if (response.statusCode >= 400) throw _failureFor(response);
+    return _jsonOf(response);
+  }
+
+  /// Whether Google is still making the conference: its answer to the ask
+  /// sits under the ask, not beside the entry points.
+  static bool _pending(Map<String, Object?> json) {
+    final conference = json['conferenceData'];
+    final ask = conference is Map ? conference['createRequest'] : null;
+    final status = ask is Map ? ask['status'] : null;
+    return status is Map && status['statusCode'] == 'pending';
+  }
+
+  static Future<void> _realSleep(Duration d) => Future<void>.delayed(d);
 
   /// The link to join, from the conference Google made: the entry point
   /// that is the video call, not the phone number that may sit beside it.

@@ -912,6 +912,27 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
+  Future<PreparedMeeting?> prepareOnlineMeeting(MeetingDraft meeting) async {
+    final account = accountStore.read().firstWhere(
+          (a) => a.id == meeting.accountId,
+          orElse: () => throw StateError('Unknown account ${meeting.accountId}'),
+        );
+    return _calendars.prepareOnlineMeeting(account, meeting);
+  }
+
+  @override
+  Future<bool> discardPreparedMeeting(PreparedMeeting prepared) async {
+    final account = accountStore
+        .read()
+        .where((a) => a.id == prepared.accountId)
+        .firstOrNull;
+    // An account removed meanwhile took its calendar's access with it:
+    // there is no trying again.
+    if (account == null) return true;
+    return _calendars.discardPreparedMeeting(account, prepared);
+  }
+
+  @override
   Future<String> rawMessage(String messageId) async {
     final (folderId, uid) = splitMessageId(messageId);
     final (accountId, path) = splitFolderId(folderId);

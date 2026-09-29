@@ -216,7 +216,32 @@ abstract class MailEngine {
   /// [AuthenticationFailed] or [ConnectionFailed] as [sendDraft] does. What
   /// comes back names the event, and where to join it when it was held
   /// online.
+  ///
+  /// A meeting that carries [MeetingDraft.prepared] is sent with that
+  /// online meeting, the one whose text the screen showed. Where it has
+  /// gone meanwhile, or the calendar lost the Teams meeting from it, a new
+  /// one is made as though none had been prepared: the invitation still
+  /// goes, with a link.
   Future<CreatedMeeting> createMeeting(MeetingDraft meeting);
+
+  /// Make [meeting]'s online meeting now, before anyone is invited, so the
+  /// screen can show the text the invitation will carry. For Teams and a
+  /// Gmail account's Meet it is an event on the account's calendar with
+  /// nobody on it; nothing is sent to anyone. [MeetingDraft.online] says
+  /// which kind; the attendees and notes are not used, and no title is
+  /// needed yet.
+  ///
+  /// Null where the calendar made none ahead of time (it would not hold
+  /// the meeting online after all): Send then asks for one as it always
+  /// did. Throws as [createMeeting] does.
+  Future<PreparedMeeting?> prepareOnlineMeeting(MeetingDraft meeting);
+
+  /// Undo [prepareOnlineMeeting] for a meeting that was not sent: the event
+  /// is deleted, silently, provided nobody is on it. Never throws. True
+  /// when there is nothing more to do (deleted, gone already, sent after
+  /// all, or nothing to delete); false when it could not be done now, no
+  /// connection or no sign-in, and is worth trying again later.
+  Future<bool> discardPreparedMeeting(PreparedMeeting prepared);
 
   /// The kinds of online meeting a meeting from this account can be held
   /// as, the account's own calendar's first: Teams on a Microsoft account,
@@ -391,6 +416,33 @@ class ConnectionFailed implements Exception, Retryable, ReadableError {
 
   @override
   String toString() => message;
+}
+
+/// A meeting made ahead of Send ([PreparedMeeting]) that can no longer be
+/// sent as it is: deleted meanwhile, or its calendar dropped the Teams
+/// meeting from it. The calendars' own to catch: they make a new one in
+/// its place, and the screen never sees this.
+class PreparedMeetingLost implements Exception {
+  const PreparedMeetingLost(this.why);
+
+  final String why;
+
+  @override
+  String toString() => 'PreparedMeetingLost: $why';
+}
+
+/// Making an online meeting ahead of Send failed after the calendar had
+/// made its event, and the event could not be deleted again: [leftover]
+/// names it, so it can be put on the ledger for the next start to delete.
+/// [cause] is what went wrong.
+class PreparedMeetingLeft implements Exception {
+  const PreparedMeetingLeft(this.leftover, this.cause);
+
+  final PreparedMeeting leftover;
+  final Object cause;
+
+  @override
+  String toString() => '$cause';
 }
 
 /// The account has no calendar the app can reach: a Gmail account with an

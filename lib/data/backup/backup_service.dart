@@ -59,7 +59,8 @@ class BackupService {
     // Deliberately absent: UiStateKeys.selected, which is where you happened
     // to be standing, and UiStateKeys.recentMoves, which is a short history
     // rather than a setting. Neither is worth carrying and both would be odd
-    // to find waiting on a new device.
+    // to find waiting on a new device. Nor UiStateKeys.preparedMeetings,
+    // events this device made and will delete itself.
   };
 
   /// Read everything into a backup.
