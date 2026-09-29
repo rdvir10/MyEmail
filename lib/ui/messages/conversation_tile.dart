@@ -10,7 +10,8 @@ import 'message_tile.dart';
 ///
 /// Shaped like [MessageTile] on purpose, so a list with conversations on does
 /// not look like a different app: the same lines, the same bold first line
-/// while anything in it is unread, the same flag, and the replied or
+/// while anything in it is unread, the same yellow while anything in it is
+/// flagged, and the replied or
 /// forwarded mark of the message the row is headed by (a thread you had
 /// answered showed no arrow until it was opened). Two differences, each
 /// earning its place: the count says how many messages are inside, and a
@@ -35,12 +36,8 @@ class ConversationTile extends StatelessWidget {
     this.tickedCount,
     this.onTicked,
     this.onContextMenu,
-    this.onToggleFlag,
     this.ownAddresses = const {},
   });
-
-  /// Flag the whole thread, or take the flag off every message in it.
-  final VoidCallback? onToggleFlag;
 
   /// Your own addresses, in lower case, so the row can be headed by the
   /// last person who is not you.
@@ -112,7 +109,7 @@ class ConversationTile extends StatelessWidget {
         textWidth(context, dateText, dateStyle) +
         (previews
             ? 6
-            : (conversation.hasAttachments ? 20 : 0) + flagWidth + 18);
+            : (conversation.hasAttachments ? 20 : 0) + 18);
     final oneLine = rowsOnOneLine(context, width: width, fixed: fixed);
     final singleLine = oneLine && !previews;
     Widget badge({required bool bold}) => _CountBadge(
@@ -126,7 +123,6 @@ class ConversationTile extends StatelessWidget {
         const SizedBox(width: 6),
         Icon(Icons.attach_file, size: 14, color: scheme.onSurfaceVariant),
       ],
-      RowFlag(flagged: conversation.isFlagged, onToggle: onToggleFlag),
       Icon(
         isExpanded ? Icons.expand_less : Icons.expand_more,
         size: 18,
@@ -225,11 +221,14 @@ class ConversationTile extends StatelessWidget {
     return Semantics(
       expanded: isExpanded,
       selected: isSelected,
-      label: '${conversation.length} messages',
+      label: '${conversation.length} messages'
+          '${conversation.isFlagged ? ', flagged' : ''}',
       child: Material(
-        color: isSelected
-            ? scheme.secondaryContainer.withValues(alpha: 0.7)
-            : Colors.transparent,
+        color: rowGround(
+          scheme,
+          selected: isSelected,
+          flagged: conversation.isFlagged,
+        ),
         child: InkWell(
           onTap: onTap,
           onLongPress: onLongPress,

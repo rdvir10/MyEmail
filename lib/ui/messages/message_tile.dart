@@ -29,7 +29,6 @@ class MessageTile extends StatelessWidget {
     this.isTicked,
     this.onTicked,
     this.onContextMenu,
-    this.onToggleFlag,
   });
 
   /// A right click, with where it landed, so a menu can open there.
@@ -54,10 +53,6 @@ class MessageTile extends StatelessWidget {
   final bool isSelected;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
-
-  /// Flag it, or take the flag off, from the row itself. Where the row has
-  /// nothing to do it with, a flag that is set is still shown.
-  final VoidCallback? onToggleFlag;
 
   /// Shown as a thin bar on the left in the unified Inbox, so the reader can
   /// tell at a glance which account a message came through.
@@ -90,7 +85,7 @@ class MessageTile extends StatelessWidget {
 
     // What the first line would hold besides the sender and the subject,
     // were they on it: the row's edges, the marks, the date, and with no
-    // preview line the attachment and the flag as well.
+    // preview line the attachment and the size as well.
     final marks = actionMarks(message, scheme);
     final fixed = rowEdges +
         marks.length * markWidth +
@@ -99,21 +94,21 @@ class MessageTile extends StatelessWidget {
         textWidth(context, dateText, dateStyle) +
         (showsPreview
             ? 6
-            : flagWidth +
+            : 6 +
                 (message.isMeeting ? 20 : 0) +
                 (message.hasAttachments ? 20 : 0) +
                 (message.sizeBytes > 0
                     ? 6 +
                         textWidth(
                           context,
-                          formatFileSize(message.sizeBytes),
+                          formatMessageSize(message.sizeBytes),
                           theme.textTheme.labelSmall,
                         )
                     : 0));
     final oneLine = rowsOnOneLine(context, width: width, fixed: fixed);
     final singleLine = oneLine && !showsPreview;
     final chipWidth = width * 0.35;
-    final flag = RowFlag(flagged: message.isFlagged, onToggle: onToggleFlag);
+    const end = SizedBox(width: 6);
 
     final List<Widget> lines;
     if (oneLine) {
@@ -145,12 +140,12 @@ class MessageTile extends StatelessWidget {
             if (!showsPreview) ..._marks(theme, scheme),
             const SizedBox(width: 8),
             date,
-            if (showsPreview) const SizedBox(width: 6) else flag,
+            end,
           ],
         ),
         if (showsPreview) ...[
           SizedBox(height: density.lineGap),
-          _previewLine(theme, scheme, trailing: flag, chipWidth: chipWidth),
+          _previewLine(theme, scheme, trailing: end, chipWidth: chipWidth),
         ],
       ];
     } else {
@@ -192,7 +187,7 @@ class MessageTile extends StatelessWidget {
             // and a hidden attachment mark is worse than a slightly busier
             // subject line.
             if (showsPreview == false) ..._marks(theme, scheme),
-            flag,
+            end,
           ],
         ),
         if (showsPreview) ...[
@@ -209,10 +204,13 @@ class MessageTile extends StatelessWidget {
 
     return Semantics(
       selected: isSelecting ? isTicked : isSelected,
+      label: message.isFlagged ? 'Flagged' : null,
       child: Material(
-        color: isSelected
-            ? scheme.secondaryContainer.withValues(alpha: 0.7)
-            : Colors.transparent,
+        color: rowGround(
+          scheme,
+          selected: isSelected,
+          flagged: message.isFlagged,
+        ),
         child: InkWell(
           // While selecting, a tap ticks rather than opens. Opening a message
           // mid-selection would take the list off screen and lose the ticks
@@ -321,7 +319,7 @@ class MessageTile extends StatelessWidget {
   bool get showsPreview => density.previewLines > 0;
 
   /// Invitation, attachment and size, in that order, at the end of the last
-  /// line. The flag has a place of its own at the end of the subject's line.
+  /// line.
   ///
   /// The size is every message's, as Outlook shows it for Gmail and
   /// Microsoft alike: the whole message, files and all, where the server
@@ -340,7 +338,7 @@ class MessageTile extends StatelessWidget {
         if (message.sizeBytes > 0) ...[
           SizedBox(width: message.hasAttachments ? 2 : 6),
           Text(
-            formatFileSize(message.sizeBytes),
+            formatMessageSize(message.sizeBytes),
             style: theme.textTheme.labelSmall
                 ?.copyWith(color: scheme.onSurfaceVariant),
           ),
@@ -376,8 +374,25 @@ const double rowEdges = 8 + 6 + 14 + 6;
 /// A replied or forwarded mark, with its gap.
 const double markWidth = 19;
 
-/// The flag at the end of a line, with its padding.
-const double flagWidth = 30;
+/// What a row sits on: the selection's colour when it is the open one,
+/// a pale yellow when it is flagged, as Outlook marks a flagged message
+/// (the flag icon at the end of every row is gone: Ron asked for the
+/// line to say it instead), and the list's own ground otherwise.
+Color rowGround(
+  ColorScheme scheme, {
+  required bool selected,
+  required bool flagged,
+}) {
+  if (selected) return scheme.secondaryContainer.withValues(alpha: 0.7);
+  if (flagged) return flaggedRowColour(scheme);
+  return Colors.transparent;
+}
+
+/// Outlook's flagged yellow, and a dim amber in the dark.
+Color flaggedRowColour(ColorScheme scheme) =>
+    scheme.brightness == Brightness.dark
+        ? const Color(0xFF3A3322)
+        : const Color(0xFFFFF4CE);
 
 /// How wide [text] is drawn in [style], at the reader's text size.
 double textWidth(BuildContext context, String text, TextStyle? style) {
@@ -549,49 +564,3 @@ TextStyle? listLineStyle(ThemeData theme) =>
 /// A row's preview line, a size down and quieter.
 TextStyle? listPreviewStyle(ThemeData theme) => theme.textTheme.bodySmall
     ?.copyWith(height: 1.25, color: theme.colorScheme.onSurfaceVariant);
-
-/// The flag at the end of a row's subject line: a tap sets it or takes it
-/// off, without opening the message or reaching for a swipe.
-///
-/// An outline where there is no flag, so the place to tap is always there;
-/// the red flag where there is one. Where there is nothing to toggle it
-/// with, only a flag that is set is drawn.
-class RowFlag extends StatelessWidget {
-  const RowFlag({super.key, required this.flagged, required this.onToggle});
-
-  final bool flagged;
-  final VoidCallback? onToggle;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final icon = Icon(
-      flagged ? Icons.flag : Icons.flag_outlined,
-      size: 18,
-      color: flagged
-          ? scheme.error
-          : scheme.onSurfaceVariant.withValues(alpha: 0.55),
-    );
-    if (onToggle == null) {
-      return flagged
-          ? Padding(padding: const EdgeInsets.only(left: 6), child: icon)
-          : const SizedBox(width: 6);
-    }
-    return Semantics(
-      button: true,
-      label: flagged ? 'Remove flag' : 'Flag',
-      excludeSemantics: true,
-      child: Tooltip(
-        message: flagged ? 'Remove flag' : 'Flag',
-        child: InkResponse(
-          onTap: onToggle,
-          radius: 18,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
-            child: icon,
-          ),
-        ),
-      ),
-    );
-  }
-}

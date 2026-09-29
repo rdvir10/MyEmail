@@ -337,8 +337,6 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                       .addAll([m.id]),
                   onContextMenu: (at) =>
                       _showMessageMenu(context, ref, actions, m, at),
-                  onToggleFlag: () =>
-                      actions.setFlagged(context, [m], !m.isFlagged),
                 );
               },
             );
@@ -502,11 +500,6 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                           conversation,
                           at,
                         ),
-                        onToggleFlag: () => actions.setFlagged(
-                          context,
-                          conversation.messages,
-                          !anyFlagged(conversation.messages),
-                        ),
                         ownAddresses: ownAddresses,
                       ),
                     ));
@@ -552,8 +545,6 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     // wins the gesture, which is a drag that never starts.
                     onContextMenu: (at) =>
                         _showMessageMenu(context, ref, actions, m, at),
-                    onToggleFlag: () =>
-                        actions.setFlagged(context, [m], !m.isFlagged),
                     key: ValueKey('tile:${m.id}'),
                   );
                   final swipeable = _SwipeableRow(

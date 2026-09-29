@@ -205,12 +205,18 @@ void main() {
             matching: find.byType(Scrollable),
           )
           .first;
-      await tester.scrollUntilVisible(
-        find.byType(CircularProgressIndicator),
-        400,
-        scrollable: list,
-      );
-      await tester.pumpAndSettle();
+      // Down to the end: the row there fetches the next page. Whether its
+      // spinner is ever caught on screen depends on the rows' height and
+      // how soon the page comes, and the fake answers at once, so what is
+      // asked is that the page came.
+      for (var i = 0;
+          i < 20 &&
+              c.read(messagesProvider(inbox)).value!.length <=
+                  Messages.pageSize;
+          i++) {
+        await tester.drag(list, const Offset(0, -400));
+        await tester.pumpAndSettle();
+      }
 
       expect(
         c.read(messagesProvider(inbox)).value!.length,

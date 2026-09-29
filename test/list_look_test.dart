@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/domain/display_settings.dart';
-import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/conversations.dart';
 import 'package:myemail/ui/messages/conversation_tile.dart';
@@ -54,14 +53,12 @@ void main() {
     MailMessage m, {
     ListDensity density = ListDensity.cozy,
     VoidCallback? onTap,
-    VoidCallback? onToggleFlag,
   }) =>
       MessageTile(
         message: m,
         isSelected: false,
         density: density,
         onTap: onTap ?? () {},
-        onToggleFlag: onToggleFlag,
       );
 
   group('who it is from', () {
@@ -150,58 +147,73 @@ void main() {
     });
   });
 
-  group('the flag', () {
-    testWidgets('is a tap away, and the tap does not open the message',
+  group('a flagged row', () {
+    Color? groundOf(WidgetTester tester, Type row) => tester
+        .widget<Material>(find
+            .descendant(of: find.byType(row), matching: find.byType(Material))
+            .first)
+        .color;
+
+    testWidgets('is yellow, as Outlook has it, with no flag on the line',
         (tester) async {
-      var toggled = 0;
-      var opened = 0;
+      // A flag icon at the end of every row, set or not; Ron would rather
+      // the line itself said so.
+      await pump(tester, tile(message(flagged: true)));
+
+      expect(groundOf(tester, MessageTile), const Color(0xFFFFF4CE));
+      expect(find.byIcon(Icons.flag), findsNothing);
+      expect(find.byIcon(Icons.flag_outlined), findsNothing);
+      expect(find.bySemanticsLabel(RegExp('Flagged')), findsOneWidget,
+          reason: 'said, not only shown');
+
+      await pump(tester, tile(message()));
+      expect(groundOf(tester, MessageTile), Colors.transparent);
+      expect(find.byIcon(Icons.flag_outlined), findsNothing);
+    });
+
+    testWidgets('the open one is still told by the selection',
+        (tester) async {
       await pump(
         tester,
-        tile(
-          message(),
-          onTap: () => opened++,
-          onToggleFlag: () => toggled++,
+        MessageTile(
+          message: message(flagged: true),
+          isSelected: true,
+          onTap: () {},
         ),
       );
+      final scheme = Theme.of(tester.element(find.byType(MessageTile)))
+          .colorScheme;
 
-      expect(find.byIcon(Icons.flag_outlined), findsOneWidget,
-          reason: 'the place to tap is there before anything is flagged');
-      await tester.tap(find.byTooltip('Flag'));
-      await tester.pump();
-
-      expect(toggled, 1);
-      expect(opened, 0);
+      expect(groundOf(tester, MessageTile),
+          scheme.secondaryContainer.withValues(alpha: 0.7));
     });
 
-    testWidgets('a flagged row shows it, and offers to take it off',
-        (tester) async {
-      await pump(
-        tester,
-        tile(message(flagged: true), onToggleFlag: () {}),
-      );
-
-      expect(find.byIcon(Icons.flag), findsOneWidget);
-      expect(find.byTooltip('Remove flag'), findsOneWidget);
-    });
-
-    testWidgets('a whole thread flags from its row', (tester) async {
-      var toggled = 0;
+    testWidgets('a thread with a flag in it is yellow', (tester) async {
       await pump(
         tester,
         ConversationTile(
           conversation: Conversation([
-            message(id: 'a:INBOX#1', read: true),
+            message(id: 'a:INBOX#1', read: true, flagged: true),
             message(id: 'a:INBOX#2', read: true),
           ]),
           isExpanded: false,
           onTap: () {},
-          onToggleFlag: () => toggled++,
         ),
       );
 
-      await tester.tap(find.byTooltip('Flag'));
-      await tester.pump();
-      expect(toggled, 1);
+      expect(groundOf(tester, ConversationTile), const Color(0xFFFFF4CE));
+      expect(find.byIcon(Icons.flag), findsNothing);
+      expect(find.bySemanticsLabel(RegExp('flagged')), findsOneWidget);
+    });
+
+    test('and in the dark, a dim amber the white text reads on', () {
+      final dark = ColorScheme.fromSeed(
+          seedColor: Colors.indigo, brightness: Brightness.dark);
+      final light = ColorScheme.fromSeed(seedColor: Colors.indigo);
+
+      expect(flaggedRowColour(light), const Color(0xFFFFF4CE));
+      expect(flaggedRowColour(dark), isNot(flaggedRowColour(light)));
+      expect(flaggedRowColour(dark).computeLuminance(), lessThan(0.1));
     });
   });
 
@@ -251,14 +263,15 @@ void main() {
     testWidgets('is on every row, as Outlook shows it', (tester) async {
       // Only mail with files showed one, and on Microsoft accounts none.
       await pump(tester, tile(sized()));
-      expect(find.text(formatFileSize(48213)), findsOneWidget);
+      expect(find.text('47 KB'), findsOneWidget,
+          reason: '47.1 KB, to the nearest, as Outlook writes it');
       expect(find.byIcon(Icons.attach_file), findsNothing);
     });
 
     testWidgets('after the paperclip where there are files', (tester) async {
       await pump(tester, tile(sized(files: true)));
       final clip = tester.getRect(find.byIcon(Icons.attach_file));
-      final size = tester.getRect(find.text(formatFileSize(48213)));
+      final size = tester.getRect(find.text('47 KB'));
       expect(size.left, greaterThanOrEqualTo(clip.right));
     });
   });
@@ -417,7 +430,6 @@ void main() {
           isTicked: true,
           onTicked: (_) {},
           onTap: () {},
-          onToggleFlag: () {},
         ),
         width: 280,
         textScale: 1.3,
@@ -470,7 +482,6 @@ void main() {
           isSelected: false,
           folderLabel: 'Purchase Orders and Everything Else 2026',
           onTap: () {},
-          onToggleFlag: () {},
         ),
       );
 

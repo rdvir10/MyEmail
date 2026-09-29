@@ -23,6 +23,7 @@ import 'date_format.dart';
 import '../shell/pane_focus.dart';
 import '../../data/print/message_printer.dart';
 import '../../state/print_providers.dart';
+import '../../state/search_providers.dart';
 import '../../state/attachment_providers.dart';
 import 'full_screen_message.dart';
 import 'html_body_view.dart';
@@ -238,35 +239,36 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     }
   }
 
-  Future<void> _act(Future<void> Function(Messages notifier) op) async {
+  /// Flag or read, the way the list's own menu does it. The open list's
+  /// notifier alone did nothing for a search hit from another folder, and
+  /// left the search's row as it was; with the flag gone from the rows,
+  /// this button is where a search hit is flagged.
+  Future<void> _act(
+    Future<void> Function(MessageActions actions) op,
+  ) async {
     final listId = _listId;
     if (listId == null) return;
-    try {
-      await op(ref.read(messagesProvider(listId).notifier));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          SnackBar(
-            duration: kBottomMessage,
-            content: Text('Could not update: $e'),
-          ),
-        );
-    }
+    await op(MessageActions(ref, listId));
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // Prefer the live copy so flag changes show at once.
-    final live = _listId == null
-        ? null
-        : ref
-              .watch(messagesProvider(_listId!))
-              .value
-              ?.where((m) => m.id == widget.message.id)
-              .firstOrNull;
+    // Prefer the live copy so flag changes show at once: the open list's,
+    // or for a search hit it does not hold, the search's.
+    final live =
+        (_listId == null
+            ? null
+            : ref
+                  .watch(messagesProvider(_listId!))
+                  .value
+                  ?.where((m) => m.id == widget.message.id)
+                  .firstOrNull) ??
+        ref
+            .watch(searchResultsProvider)
+            .value
+            ?.where((m) => m.id == widget.message.id)
+            .firstOrNull;
     final message = live ?? widget.message;
     final body = ref.watch(messageBodyProvider(message.id));
 
@@ -294,10 +296,12 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                 // has room for one of Flag and Delete, and Delete is the one
                 // reached for more.
                 compact: MediaQuery.sizeOf(context).width < 600,
-                onToggleFlag: () =>
-                    _act((n) => n.setFlagged(message.id, !message.isFlagged)),
-                onToggleRead: () =>
-                    _act((n) => n.setRead(message.id, !message.isRead)),
+                onToggleFlag: () => _act(
+                  (a) => a.setFlagged(context, [message], !message.isFlagged),
+                ),
+                onToggleRead: () => _act(
+                  (a) => a.setRead(context, [message], !message.isRead),
+                ),
                 onCompose: (kind) =>
                     openCompose(context, ref, kind: kind, original: message),
                 // Only once the body is here: there is nothing to save until it

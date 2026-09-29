@@ -112,16 +112,16 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
         }
       case AppCommand.markRead:
       case AppCommand.markUnread:
+        // Through the list's actions, as the menu does, so a search hit
+        // from another folder is changed too.
         if (message != null && listId != null) {
-          await ref
-              .read(messagesProvider(listId).notifier)
-              .setRead(message.id, command == AppCommand.markRead);
+          await MessageActions(ref, listId)
+              .setRead(context, [message], command == AppCommand.markRead);
         }
       case AppCommand.flag:
         if (message != null && listId != null) {
-          await ref
-              .read(messagesProvider(listId).notifier)
-              .setFlagged(message.id, !message.isFlagged);
+          await MessageActions(ref, listId)
+              .setFlagged(context, [message], !message.isFlagged);
         }
       case AppCommand.move:
         if (message != null && listId != null) {

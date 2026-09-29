@@ -126,6 +126,19 @@ String _cut(String text, {required int chars, required int bytes}) {
   return kept.toString();
 }
 
+/// A message's size as Outlook's Size column writes it: whole kilobytes,
+/// and from a megabyte on, whole megabytes, each to the nearest (never
+/// 0 KB). The list had a file's style, "1.9 MB" where Outlook said "2 MB".
+///
+/// Read off Ron's Outlook, a Gmail inbox's Size column beside each row's
+/// bytes: 84407 is "82 KB" (82.4), 19882 "19 KB" (19.4), 77764 "76 KB"
+/// (75.9) and 1329780 "1 MB" (1.27), so neither is rounded up.
+String formatMessageSize(int bytes) {
+  final kb = (bytes / 1024).round();
+  if (kb < 1024) return '${kb < 1 ? 1 : kb} KB';
+  return '${(bytes / (1024 * 1024)).round()} MB';
+}
+
 /// A size in the units a person reads.
 String formatFileSize(int bytes) {
   if (bytes < 1024) return '$bytes B';

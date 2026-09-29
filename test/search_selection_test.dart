@@ -9,6 +9,7 @@ import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/search_providers.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
+import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:myemail/ui/messages/selection_bar.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 
@@ -212,6 +213,51 @@ void main() {
       expect(c.read(selectedMessageIdsProvider), isEmpty,
           reason: 'a tick on a hit that is no longer shown is a trap');
     });
+
+    for (final open in [false, true]) {
+      testWidgets(
+          "the pane's Flag flags a hit ${open ? 'the open list also holds' : 'from a folder that is not open'}, "
+          'and its row says so', (tester) async {
+        // The pane asked the open folder's list alone: a hit it did not hold
+        // was not flagged, silently, and one it did stayed unflagged in the
+        // results. With the flag gone from the rows, a search hit is flagged
+        // here, and the row's yellow comes from the results.
+        final c = await pump(tester);
+        final hits = await search(tester, 'the');
+        final listId = c.read(effectiveSelectedFolderIdProvider)!;
+        final listed = {
+          for (final m in c.read(messagesProvider(listId)).value ?? const [])
+            m.id,
+        };
+        final hit = hits
+            .map((t) => t.message)
+            .where((m) => listed.contains(m.id) == open && !m.isFlagged)
+            .firstOrNull;
+        expect(hit, isNotNull, reason: 'the sample data needs such a hit');
+        Finder inPane(Finder f) =>
+            find.descendant(of: find.byType(ReadingPane), matching: f);
+
+        await tester.tap(find.byKey(ValueKey('search:${hit!.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(inPane(find.byTooltip('Flag')));
+        await tester.pumpAndSettle();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pumpAndSettle();
+
+        final stored = await c.read(mailEngineProvider).cachedMessage(hit.id);
+        expect(stored?.isFlagged, isTrue);
+        expect(
+          c
+              .read(searchResultsProvider)
+              .value!
+              .firstWhere((m) => m.id == hit.id)
+              .isFlagged,
+          isTrue,
+          reason: 'what the row is drawn from',
+        );
+        expect(inPane(find.byTooltip('Remove flag')), findsOneWidget);
+      });
+    }
 
     testWidgets('a hit from a folder that is not open opens in the pane',
         (tester) async {

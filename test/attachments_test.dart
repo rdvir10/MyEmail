@@ -116,6 +116,23 @@ void main() {
       expect(formatFileSize(1572864), '1.5 MB');
       expect(formatFileSize(52428800), '50 MB');
     });
+
+    test("a message's size is written as Outlook's Size column writes it", () {
+      // Ron's Outlook beside the list: "2 MB" where we said "1.9 MB". The
+      // rest are rows read off his Outlook, bytes against what it showed.
+      expect(formatMessageSize(84407), '82 KB');
+      expect(formatMessageSize(19882), '19 KB');
+      expect(formatMessageSize(27979), '27 KB');
+      expect(formatMessageSize(77764), '76 KB');
+      expect(formatMessageSize(133942), '131 KB');
+      expect(formatMessageSize(698850), '682 KB');
+      expect(formatMessageSize(1329780), '1 MB');
+      expect(formatMessageSize(1992294), '2 MB');
+      // Never 0 KB, and no "1024 KB".
+      expect(formatMessageSize(1), '1 KB');
+      expect(formatMessageSize(1024 * 1024 - 1), '1 MB');
+      expect(formatMessageSize(52428800), '50 MB');
+    });
   });
 
   group('downloading', () {

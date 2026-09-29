@@ -114,15 +114,27 @@ void main() {
       expect(compact.first.density, ListDensity.compact);
     });
 
-    testWidgets('a compact row keeps the attachment and flag marks',
+    testWidgets('a compact row keeps the attachment mark and the flag',
         (tester) async {
-      // They live on the preview line, which compact does not draw, so
-      // without moving them a compact list would hide them entirely.
+      // The paperclip lives on the preview line, which compact does not
+      // draw, so without moving it a compact list would hide it entirely.
+      // The flag is the row's yellow, which no density leaves out.
       await tester.pumpWidget(app(const _TileHarness(ListDensity.compact)));
       await tester.pumpAndSettle();
 
       expect(find.byIcon(Icons.attach_file), findsOneWidget);
-      expect(find.byIcon(Icons.flag), findsOneWidget);
+      expect(
+        tester
+            .widget<Material>(find
+                .descendant(
+                  of: find.byType(MessageTile),
+                  matching: find.byType(Material),
+                )
+                .first)
+            .color,
+        flaggedRowColour(Theme.of(tester.element(find.byType(MessageTile)))
+            .colorScheme),
+      );
       expect(find.text('The preview line'), findsNothing);
     });
 
