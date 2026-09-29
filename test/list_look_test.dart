@@ -96,15 +96,56 @@ void main() {
             .first)
         .color;
 
-    testWidgets('sit on different ground', (tester) async {
+    FontWeight? weightOf(WidgetTester tester, String text) =>
+        tester.widget<Text>(find.text(text)).style?.fontWeight;
+
+    testWidgets('sit on the same ground, as they do in Outlook',
+        (tester) async {
+      // Read rows were on a grey of their own; Ron would rather Outlook's
+      // white, with the unread ones told by their first line.
       await pump(tester, tile(message(read: false)));
       final unread = ground(tester);
       await pump(tester, tile(message(read: true)));
-      final read = ground(tester);
 
       expect(unread, Colors.transparent);
-      expect(read, isNot(Colors.transparent));
-      expect(read, isNot(unread));
+      expect(ground(tester), Colors.transparent);
+    });
+
+    testWidgets('unread is the first line in bold, and only that',
+        (tester) async {
+      // On the phone the subject is on the second line, and stays plain.
+      await pump(tester, tile(message(read: false)));
+      expect(weightOf(tester, 'Crystal R <crystalr@hadco-metal.com>'),
+          FontWeight.w700);
+      expect(weightOf(tester, 'NC-SC-GA-FL Report'), FontWeight.w400);
+
+      await pump(tester, tile(message(read: true)));
+      expect(weightOf(tester, 'Crystal R <crystalr@hadco-metal.com>'),
+          FontWeight.w400);
+    });
+
+    testWidgets('on a tablet the subject shares the first line, and its '
+        'weight', (tester) async {
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            // As narrow as the list is beside the reading pane.
+            width: 380,
+            child: Column(children: [tile(message(read: false))]),
+          ),
+        ),
+      ));
+
+      final sender = tester.getRect(find.text('Crystal R'));
+      final subject = tester.getRect(find.text('NC-SC-GA-FL Report'));
+      expect(subject.top, sender.top, reason: 'on one line');
+      expect(subject.left, greaterThan(sender.right));
+      expect(weightOf(tester, 'NC-SC-GA-FL Report'), FontWeight.w700);
+      expect(find.text('The weekly numbers'), findsOneWidget);
     });
   });
 
@@ -231,7 +272,258 @@ void main() {
         lessThanOrEqualTo(66));
   });
 
+  group('a thread, read and unread', () {
+    ConversationTile thread({bool unread = true}) => ConversationTile(
+          conversation: Conversation([
+            message(id: 'a:INBOX#1', read: true, date: DateTime(2026, 9, 29, 9)),
+            message(
+                id: 'a:INBOX#2',
+                read: !unread,
+                date: DateTime(2026, 9, 29, 10)),
+          ]),
+          isExpanded: false,
+          onTap: () {},
+        );
+    FontWeight? weightOf(WidgetTester tester, String text) =>
+        tester.widget<Text>(find.text(text)).style?.fontWeight;
+
+    testWidgets('on the phone, only the first line is bold', (tester) async {
+      await pump(tester, thread());
+      expect(weightOf(tester, 'Crystal R <crystalr@hadco-metal.com>'),
+          FontWeight.w700);
+      expect(weightOf(tester, 'NC-SC-GA-FL Report'), FontWeight.w400);
+      expect(weightOf(tester, '2'), FontWeight.w500,
+          reason: 'the count is on the second line too');
+
+      await pump(tester, thread(unread: false));
+      expect(weightOf(tester, 'Crystal R <crystalr@hadco-metal.com>'),
+          FontWeight.w400);
+      expect(
+        tester
+            .widget<Material>(find
+                .descendant(
+                  of: find.byType(ConversationTile),
+                  matching: find.byType(Material),
+                )
+                .first)
+            .color,
+        Colors.transparent,
+      );
+    });
+
+    testWidgets('on a tablet the count and subject share the first line',
+        (tester) async {
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: SizedBox(width: 380, child: Column(children: [thread()])),
+        ),
+      ));
+
+      final sender = tester.getRect(find.text('Crystal R'));
+      final count = tester.getRect(find.text('2'));
+      final subject = tester.getRect(find.text('NC-SC-GA-FL Report'));
+      expect(subject.top, sender.top);
+      expect(count.left, greaterThan(sender.right));
+      expect(subject.left, greaterThan(count.right));
+      expect(weightOf(tester, 'NC-SC-GA-FL Report'), FontWeight.w700);
+    });
+  });
+
+  group('rows of one line on a tablet', () {
+    Future<void> pumpTablet(WidgetTester tester, Widget row,
+        {double width = 380, double textScale = 1}) async {
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(MaterialApp(
+        home: MediaQuery(
+          data: MediaQueryData(
+            size: const Size(1400, 900),
+            textScaler: TextScaler.linear(textScale),
+          ),
+          child: Scaffold(
+            body: SizedBox(width: width, child: Column(children: [row])),
+          ),
+        ),
+      ));
+    }
+
+    MailMessage busy() => MailMessage(
+          id: 'a:INBOX#9',
+          accountId: 'a',
+          folderId: 'a:INBOX',
+          uid: 9,
+          subject: 'NC-SC-GA-FL Report',
+          preview: 'The weekly numbers',
+          from: const MailAddress(email: 'crystalr@hadco-metal.com',
+              name: 'Crystal R'),
+          to: const [],
+          date: DateTime(2025, 9, 29, 10),
+          isRead: false,
+          isAnswered: true,
+          isForwarded: true,
+          hasAttachments: true,
+          attachmentBytes: 1200000,
+        );
+
+    testWidgets('keep two lines where one would leave no room to read',
+        (tester) async {
+      // Compact, the list at its narrowest and the text at its largest:
+      // everything went on the first line, the sender and subject became
+      // "…", and the row overflowed.
+      await pumpTablet(
+        tester,
+        MessageTile(
+          message: busy(),
+          isSelected: false,
+          density: ListDensity.compact,
+          isTicked: true,
+          onTicked: (_) {},
+          onTap: () {},
+          onToggleFlag: () {},
+        ),
+        width: 280,
+        textScale: 1.3,
+      );
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Crystal R <crystalr@hadco-metal.com>'), findsOneWidget,
+          reason: 'the two-line row, with the address');
+    });
+
+    testWidgets('an account colour does not make one line two tall',
+        (tester) async {
+      Widget row({Color? colour}) => MessageTile(
+            message: busy(),
+            isSelected: false,
+            density: ListDensity.compact,
+            accountColor: colour,
+            onTap: () {},
+          );
+      await pumpTablet(tester, row(), width: 600);
+      final plain = tester.getSize(find.byType(MessageTile)).height;
+      await pumpTablet(tester, row(colour: Colors.teal), width: 600);
+
+      expect(tester.getSize(find.byType(MessageTile)).height, plain);
+    });
+
+    testWidgets('and starting a selection does not make it jump',
+        (tester) async {
+      Widget row({bool? ticked}) => MessageTile(
+            message: busy(),
+            isSelected: false,
+            density: ListDensity.compact,
+            isTicked: ticked,
+            onTicked: ticked == null ? null : (_) {},
+            onTap: () {},
+          );
+      await pumpTablet(tester, row(), width: 600);
+      final before = tester.getSize(find.byType(MessageTile)).height;
+      await pumpTablet(tester, row(ticked: false), width: 600);
+
+      expect(tester.getSize(find.byType(MessageTile)).height, before);
+    });
+
+    testWidgets('a long folder name in search keeps to its share of the line',
+        (tester) async {
+      await pumpTablet(
+        tester,
+        MessageTile(
+          message: busy(),
+          isSelected: false,
+          folderLabel: 'Purchase Orders and Everything Else 2026',
+          onTap: () {},
+          onToggleFlag: () {},
+        ),
+      );
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('The weekly numbers'), findsOneWidget);
+    });
+  });
+
   group('a thread', () {
+    testWidgets('shows the arrow its newest message has', (tester) async {
+      // Answered, the thread showed no arrow until it was opened, and then
+      // the message on top of it did.
+      await pump(
+        tester,
+        ConversationTile(
+          conversation: Conversation([
+            message(id: 'a:INBOX#1', date: DateTime(2026, 9, 29, 9)),
+            message(
+              id: 'a:INBOX#2',
+              read: true,
+              answered: true,
+              date: DateTime(2026, 9, 29, 10, 28),
+            ),
+          ]),
+          isExpanded: false,
+          onTap: () {},
+        ),
+      );
+
+      expect(find.byTooltip('Replied'), findsOneWidget);
+    });
+
+    testWidgets('shows the arrow of the message it is headed by, when '
+        'you wrote last', (tester) async {
+      // Answered last by you, the row is headed by the other person, and
+      // the arrow was looked for on your own reply.
+      await pump(
+        tester,
+        ConversationTile(
+          conversation: Conversation([
+            message(
+              id: 'a:INBOX#1',
+              name: 'Samantha Bechtloff',
+              email: 'samantha@mirjobs.com',
+              answered: true,
+              date: DateTime(2026, 9, 23, 8, 56),
+            ),
+            message(
+              id: 'a:INBOX#2',
+              name: 'Ron Dvir',
+              email: 'RDvir@hadco-metal.com',
+              date: DateTime(2026, 9, 23, 9, 30),
+            ),
+          ]),
+          isExpanded: false,
+          onTap: () {},
+          ownAddresses: const {'rdvir@hadco-metal.com'},
+        ),
+      );
+
+      expect(find.textContaining('Samantha'), findsOneWidget);
+      expect(find.byTooltip('Replied'), findsOneWidget);
+    });
+
+    testWidgets('and not one an older message has', (tester) async {
+      await pump(
+        tester,
+        ConversationTile(
+          conversation: Conversation([
+            message(
+              id: 'a:INBOX#1',
+              answered: true,
+              date: DateTime(2026, 9, 29, 9),
+            ),
+            message(id: 'a:INBOX#2', date: DateTime(2026, 9, 29, 10, 28)),
+          ]),
+          isExpanded: false,
+          onTap: () {},
+        ),
+      );
+
+      expect(find.byTooltip('Replied'), findsNothing,
+          reason: 'the newest is what waits for an answer');
+    });
+
     testWidgets('is headed by the last one to write who is not you',
         (tester) async {
       // Answered last, a thread was headed with your own name.

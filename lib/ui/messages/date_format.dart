@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart' show immutable;
+
 /// The date column of a message list, Outlook style: the time for today, day
 /// and month within the current year, the full date otherwise.
 ///
@@ -22,33 +24,79 @@ String formatMessageDate(DateTime date, {DateTime? now, bool use24h = true}) {
   return '${two(d.day)}/${two(d.month)}/${d.year}';
 }
 
-/// The bar that separates one day from the next in a list.
+/// Which bar a message sits under in a list sorted by date, the way
+/// Outlook groups one: today and yesterday, each day earlier this week, then
+/// last week, two and three weeks ago, earlier this month, last month, and
+/// everything older.
 ///
-/// "Today", "Yesterday", then the weekday and date. The two words carry
-/// more than a date does: most of what anyone is looking for is in them,
-/// and a row of numbers makes that a thing to work out rather than read.
-String formatDateBar(DateTime date, {DateTime? now}) {
-  final n = (now ?? DateTime.now()).toLocal();
-  final d = date.toLocal();
-  // Calendar days, counted in UTC where every day is 24 hours. Between
-  // local midnights the night the clocks go forward is 23, which made
-  // yesterday a second "Today" the day after.
-  final today = DateTime.utc(n.year, n.month, n.day);
-  final day = DateTime.utc(d.year, d.month, d.day);
-  final difference = today.difference(day).inDays;
-  final written = '${_weekdays[d.weekday - 1]} ${d.day} ${_months[d.month - 1]}'
-      '${d.year == n.year ? '' : ' ${d.year}'}';
-  if (difference == 0) return 'Today \u00b7 $written';
-  if (difference == 1) return 'Yesterday \u00b7 $written';
-  return written;
+/// The days keep their dates ("Today · Tue 29 Sep", "Sun 27 Sep"); past
+/// this week a date is a thing to work out rather than read, and the span
+/// says what is wanted: how long ago.
+///
+/// The week starts on Sunday, as Ron's Outlook starts it. [firstDayOfWeek]
+/// (0 for Sunday, 1 for Monday) is there so the arithmetic can be tested
+/// for other starts; the app has no localizations that could say the
+/// phone's own.
+@immutable
+class DateGroup {
+  const DateGroup._(this.key, this.label);
+
+  /// Equal for two messages under the same bar.
+  final String key;
+
+  /// What the bar says.
+  final String label;
+
+  factory DateGroup.of(DateTime date, {DateTime? now, int firstDayOfWeek = 0}) {
+    final n = (now ?? DateTime.now()).toLocal();
+    final d = date.toLocal();
+    // Calendar days, counted in UTC where every day is 24 hours. Between
+    // local midnights the night the clocks go forward is 23, which made
+    // yesterday a second "Today" the day after.
+    final today = DateTime.utc(n.year, n.month, n.day);
+    final day = DateTime.utc(d.year, d.month, d.day);
+    final ago = today.difference(day).inDays;
+    final written = '${_weekdays[d.weekday - 1]} ${d.day} ${_months[d.month - 1]}'
+        '${d.year == n.year ? '' : ' ${d.year}'}';
+    // A clock ahead on the sender's side is still today's mail, and the bar
+    // says today's date: labelled by the first row under it, a message
+    // stamped tomorrow told the whole Inbox that today was tomorrow.
+    if (ago <= 0) {
+      return DateGroup._('today', 'Today · ${formatDay(n, now: n)}');
+    }
+    if (ago == 1) return DateGroup._('yesterday', 'Yesterday · $written');
+
+    final intoWeek = (today.weekday % 7 - firstDayOfWeek + 7) % 7;
+    final thisWeek = today.subtract(Duration(days: intoWeek));
+    if (!day.isBefore(thisWeek)) {
+      return DateGroup._('day:${day.toIso8601String()}', written);
+    }
+    const spans = ['Last Week', 'Two Weeks Ago', 'Three Weeks Ago'];
+    for (var i = 0; i < spans.length; i++) {
+      if (!day.isBefore(thisWeek.subtract(Duration(days: 7 * (i + 1))))) {
+        return DateGroup._('week:$i', spans[i]);
+      }
+    }
+    if (day.year == today.year && day.month == today.month) {
+      return const DateGroup._('thisMonth', 'Earlier this Month');
+    }
+    final lastMonth = DateTime.utc(today.year, today.month - 1);
+    if (day.year == lastMonth.year && day.month == lastMonth.month) {
+      return const DateGroup._('lastMonth', 'Last Month');
+    }
+    return const DateGroup._('older', 'Older');
+  }
+
+  @override
+  bool operator ==(Object other) => other is DateGroup && other.key == key;
+
+  @override
+  int get hashCode => key.hashCode;
 }
 
-/// Whether two moments fall on different days, in the reader's own zone.
-bool startsNewDay(DateTime a, DateTime b) {
-  final x = a.toLocal();
-  final y = b.toLocal();
-  return x.year != y.year || x.month != y.month || x.day != y.day;
-}
+/// What the bar above [date]'s group says: see [DateGroup].
+String formatDateBar(DateTime date, {DateTime? now, int firstDayOfWeek = 0}) =>
+    DateGroup.of(date, now: now, firstDayOfWeek: firstDayOfWeek).label;
 
 /// The reading pane's fuller form, e.g. "Mon 14 Sep 2026, 09:41", or
 /// "Mon 14 Sep 2026, 9:41 AM" on a phone set to a 12-hour clock.

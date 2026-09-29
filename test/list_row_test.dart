@@ -37,9 +37,71 @@ void main() {
           startsWith('Yesterday'));
     });
 
-    test('dates anything older, and adds the year once it matters', () {
-      expect(formatDateBar(DateTime(2026, 9, 18), now: now), 'Fri 18 Sep');
-      expect(formatDateBar(DateTime(2025, 12, 1), now: now), 'Mon 1 Dec 2025');
+    test('dates the rest of this week, and groups the weeks before as '
+        'Outlook does', () {
+      // Ron, with Outlook beside the phone: the date is good for the last
+      // few days, and past them "Last Week", "Three Weeks Ago", "Last
+      // Month" and "Older" say more than a date does. His week starts on
+      // Sunday; this is Tuesday 29 September.
+      final tuesday = DateTime(2026, 9, 29, 11);
+      String bar(DateTime d) => formatDateBar(d, now: tuesday);
+
+      expect(bar(DateTime(2026, 9, 29, 9)), 'Today \u00b7 Tue 29 Sep');
+      expect(bar(DateTime(2026, 9, 28, 16)), 'Yesterday \u00b7 Mon 28 Sep');
+      expect(bar(DateTime(2026, 9, 27, 19)), 'Sun 27 Sep');
+      expect(bar(DateTime(2026, 9, 26, 9)), 'Last Week');
+      expect(bar(DateTime(2026, 9, 22, 16)), 'Last Week');
+      expect(bar(DateTime(2026, 9, 15)), 'Two Weeks Ago');
+      expect(bar(DateTime(2026, 9, 8, 9)), 'Three Weeks Ago');
+      expect(bar(DateTime(2026, 9, 4, 9)), 'Earlier this Month');
+      expect(bar(DateTime(2026, 9, 2, 15)), 'Earlier this Month');
+      expect(bar(DateTime(2026, 8, 10)), 'Last Month');
+      expect(bar(DateTime(2026, 6, 7)), 'Older');
+      expect(bar(DateTime(2025, 12, 1)), 'Older');
+    });
+
+    test('a week starting on Monday puts Sunday in last week', () {
+      // The app's weeks start on Sunday, as Ron's Outlook does; this is
+      // the arithmetic for another start.
+      final tuesday = DateTime(2026, 9, 29, 11);
+      expect(
+        formatDateBar(DateTime(2026, 9, 27), now: tuesday, firstDayOfWeek: 1),
+        'Last Week',
+      );
+      expect(
+        formatDateBar(DateTime(2026, 9, 27), now: tuesday),
+        'Sun 27 Sep',
+      );
+    });
+
+    test('yesterday stays yesterday on the first day of a week', () {
+      final sunday = DateTime(2026, 9, 27, 9);
+      expect(formatDateBar(DateTime(2026, 9, 26), now: sunday),
+          startsWith('Yesterday'));
+      expect(formatDateBar(DateTime(2026, 9, 25), now: sunday), 'Last Week');
+    });
+
+    test('three weeks back may reach into last month, and wins', () {
+      final friday = DateTime(2026, 10, 2, 9);
+      expect(formatDateBar(DateTime(2026, 9, 14), now: friday),
+          'Two Weeks Ago');
+      expect(formatDateBar(DateTime(2026, 9, 1), now: friday), 'Last Month');
+    });
+
+    test('mail stamped ahead is today\'s, under today\'s date', () {
+      // The bar took the date of the first row under it, and a message
+      // stamped tomorrow said today was tomorrow.
+      expect(formatDateBar(DateTime(2026, 9, 23, 1), now: now),
+          'Today · Tue 22 Sep');
+      expect(formatDateBar(DateTime(2099, 1, 1), now: now),
+          'Today · Tue 22 Sep');
+    });
+
+    test('in January, last month is last year\'s December', () {
+      final january = DateTime(2027, 1, 30, 9);
+      expect(formatDateBar(DateTime(2026, 12, 20), now: january),
+          'Last Month');
+      expect(formatDateBar(DateTime(2026, 11, 20), now: january), 'Older');
     });
 
     test('yesterday is yesterday the day after the clocks change', () {
@@ -61,15 +123,17 @@ void main() {
       }
     });
 
-    test('a new day is a new day in the reader\'s own zone', () {
-      expect(
-        startsNewDay(DateTime(2026, 9, 22, 23, 59), DateTime(2026, 9, 23, 0, 1)),
-        isTrue,
-      );
-      expect(
-        startsNewDay(DateTime(2026, 9, 22, 0, 1), DateTime(2026, 9, 22, 23, 59)),
-        isFalse,
-      );
+    test('a new day is a new bar in the reader\'s own zone', () {
+      final thursday = DateTime(2026, 9, 24, 10);
+      DateGroup of(DateTime d) => DateGroup.of(d, now: thursday);
+      // Earlier this week, where the bar is the day's own.
+      expect(of(DateTime(2026, 9, 21, 23, 59)),
+          isNot(of(DateTime(2026, 9, 22, 0, 1))));
+      expect(of(DateTime(2026, 9, 21, 0, 1)), of(DateTime(2026, 9, 21, 23, 59)));
+      expect(of(DateTime(2026, 9, 23, 23, 59)).key, 'yesterday');
+      expect(of(DateTime(2026, 9, 24, 0, 1)).key, 'today');
+      // And a span is one bar, whichever of its days.
+      expect(of(DateTime(2026, 9, 14)), of(DateTime(2026, 9, 19)));
     });
   });
 

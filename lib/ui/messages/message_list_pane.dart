@@ -417,6 +417,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             // there.
             final byDate = display.sort == MessageSort.dateNewest ||
                 display.sort == MessageSort.dateOldest;
+            // Grouped as Outlook groups them; see DateGroup.
+            final now = DateTime.now();
+            DateGroup groupOf(DateTime date) => DateGroup.of(date, now: now);
             final hasMore = ref.watch(listHasMoreProvider(folderId));
             return RefreshIndicator(
               onRefresh: () => _pullToSync(context, folderId),
@@ -447,11 +450,11 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                   while (above >= 0 && rows[above].indented) {
                     above--;
                   }
+                  final group = groupOf(row.date);
                   final bar = byDate &&
                           !row.indented &&
-                          (above < 0 ||
-                              startsNewDay(rows[above].date, row.date))
-                      ? _DateBar(date: row.date)
+                          (above < 0 || groupOf(rows[above].date) != group)
+                      ? _DateBar(label: group.label)
                       : null;
                   final conversation = row.conversation;
                   if (conversation != null) {
@@ -1199,17 +1202,17 @@ class _Row {
 /// rows are not in date order at all, and a date bar over them would be
 /// describing a grouping that is not there.
 class _DateBar extends StatelessWidget {
-  const _DateBar({required this.date});
+  const _DateBar({required this.label});
 
-  final DateTime date;
+  final String label;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Container(
       width: double.infinity,
-      // Underlined in the accent colour, so the bar reads as a heading and
-      // not as one more read row, which sit on a shade of their own.
+      // Shaded and underlined in the accent colour, so the bar reads as a
+      // heading and not as one more row.
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
         border: Border(
@@ -1221,7 +1224,7 @@ class _DateBar extends StatelessWidget {
       ),
       padding: const EdgeInsets.fromLTRB(16, 5, 16, 5),
       child: Text(
-        formatDateBar(date),
+        label,
         style: theme.textTheme.labelSmall?.copyWith(
           color: theme.colorScheme.onSurfaceVariant,
           fontWeight: FontWeight.w600,

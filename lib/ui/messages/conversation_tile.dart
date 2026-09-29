@@ -9,9 +9,12 @@ import 'message_tile.dart';
 /// The collapsed row for a conversation of more than one message.
 ///
 /// Shaped like [MessageTile] on purpose, so a list with conversations on does
-/// not look like a different app: the same sender line, shade for a thread
-/// with nothing unread, and flag. Two differences, each earning its place:
-/// the count says how many messages are inside, and a chevron says it opens.
+/// not look like a different app: the same lines, the same bold first line
+/// while anything in it is unread, the same flag, and the replied or
+/// forwarded mark of the message the row is headed by (a thread you had
+/// answered showed no arrow until it was opened). Two differences, each
+/// earning its place: the count says how many messages are inside, and a
+/// chevron says it opens.
 ///
 /// The sender is the newest one who is not you, name and address, as it is
 /// on a message row. A thread you answered last would otherwise be headed
@@ -73,12 +76,151 @@ class ConversationTile extends StatelessWidget {
   bool get isSelecting => tickedCount != null;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, box) => _buildFor(context, box.maxWidth),
+      );
+
+  Widget _buildFor(BuildContext context, double width) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final unread = conversation.hasUnread;
     final weight = unread ? FontWeight.w700 : FontWeight.w400;
-    final line = listLineStyle(theme)?.copyWith(fontWeight: weight);
+    final first = listLineStyle(theme)?.copyWith(fontWeight: weight);
+    final rest = listLineStyle(theme);
+    final previews = density.previewLines > 0;
+    final lead = leadMessage;
+
+    final dateText = formatMessageDate(
+      conversation.newest.date,
+      use24h: MediaQuery.alwaysUse24HourFormatOf(context),
+    );
+    final dateStyle = theme.textTheme.labelSmall?.copyWith(
+      color: unread ? scheme.primary : scheme.onSurfaceVariant,
+      fontWeight: weight,
+    );
+    final date = Text(dateText, style: dateStyle);
+    // The mark of the message the row is headed by, so the arrow and the
+    // name beside it are about the same mail.
+    final marks = actionMarks(lead, scheme);
+    final fixed = rowEdges +
+        marks.length * markWidth +
+        12 +
+        textWidth(context, '${conversation.length}', theme.textTheme.labelSmall) +
+        12 +
+        6 +
+        8 +
+        textWidth(context, dateText, dateStyle) +
+        (previews
+            ? 6
+            : (conversation.hasAttachments ? 20 : 0) + flagWidth + 18);
+    final oneLine = rowsOnOneLine(context, width: width, fixed: fixed);
+    final singleLine = oneLine && !previews;
+    Widget badge({required bool bold}) => _CountBadge(
+          count: conversation.length,
+          unread: conversation.unreadCount,
+          theme: theme,
+          bold: bold,
+        );
+    final ends = <Widget>[
+      if (conversation.hasAttachments) ...[
+        const SizedBox(width: 6),
+        Icon(Icons.attach_file, size: 14, color: scheme.onSurfaceVariant),
+      ],
+      RowFlag(flagged: conversation.isFlagged, onToggle: onToggleFlag),
+      Icon(
+        isExpanded ? Icons.expand_less : Icons.expand_more,
+        size: 18,
+        color: scheme.onSurfaceVariant,
+      ),
+    ];
+    final preview = Text(
+      conversation.newest.preview,
+      maxLines: density.previewLines,
+      overflow: TextOverflow.ellipsis,
+      style: listPreviewStyle(theme),
+    );
+
+    final List<Widget> lines;
+    if (oneLine) {
+      lines = [
+        Row(
+          children: [
+            ...marks,
+            Expanded(
+              flex: 2,
+              child: Text(
+                leadSender.display,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: first,
+              ),
+            ),
+            const SizedBox(width: 12),
+            badge(bold: unread),
+            const SizedBox(width: 6),
+            Expanded(
+              flex: 3,
+              child: Text(
+                conversation.subject,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: first,
+              ),
+            ),
+            const SizedBox(width: 8),
+            date,
+            if (previews) const SizedBox(width: 6) else ...ends,
+          ],
+        ),
+        if (previews) ...[
+          SizedBox(height: density.lineGap),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [Expanded(child: preview), ...ends],
+          ),
+        ],
+      ];
+    } else {
+      lines = [
+        Row(
+          children: [
+            ...marks,
+            Expanded(
+              child: Text(
+                senderLine(leadSender),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: first,
+              ),
+            ),
+            const SizedBox(width: 8),
+            date,
+            const SizedBox(width: 6),
+          ],
+        ),
+        SizedBox(height: density.lineGap),
+        Row(
+          children: [
+            // Not bold on the second line: only the first line is.
+            badge(bold: false),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                conversation.subject,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: rest,
+              ),
+            ),
+            ...ends,
+          ],
+        ),
+        if (previews) ...[
+          SizedBox(height: density.lineGap),
+          preview,
+        ],
+      ];
+    }
 
     return Semantics(
       expanded: isExpanded,
@@ -87,9 +229,7 @@ class ConversationTile extends StatelessWidget {
       child: Material(
         color: isSelected
             ? scheme.secondaryContainer.withValues(alpha: 0.7)
-            : unread
-                ? Colors.transparent
-                : readRowColour(scheme),
+            : Colors.transparent,
         child: InkWell(
           onTap: onTap,
           onLongPress: onLongPress,
@@ -109,7 +249,7 @@ class ConversationTile extends StatelessWidget {
                 if (isSelecting)
                   Padding(
                     padding: const EdgeInsets.only(right: 4),
-                    child: Checkbox(
+                    child: RowCheckbox(
                       tristate: true,
                       value: tickedCount == conversation.length
                           ? true
@@ -121,112 +261,25 @@ class ConversationTile extends StatelessWidget {
                       onChanged: (_) => onTicked?.call(
                         tickedCount != conversation.length,
                       ),
-                      visualDensity: VisualDensity.compact,
+                      singleLine: singleLine,
                     ),
                   ),
-                SizedBox(
-                  width: 14,
-                  child: Column(
-                    children: [
-                      const SizedBox(height: 5),
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: unread ? scheme.primary : Colors.transparent,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      if (accountColor != null) ...[
-                        const SizedBox(height: 6),
-                        Container(
-                          width: 3,
-                          height: 22,
-                          decoration: BoxDecoration(
-                            color: accountColor,
-                            borderRadius: BorderRadius.circular(2),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
+                RowGutter(
+                  unread: unread,
+                  accountColor: accountColor,
+                  singleLine: singleLine,
                 ),
                 const SizedBox(width: 6),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              senderLine(leadSender),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: line,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            formatMessageDate(
-                              conversation.newest.date,
-                              use24h: MediaQuery.alwaysUse24HourFormatOf(
-                                context,
-                              ),
-                            ),
-                            style: theme.textTheme.labelSmall?.copyWith(
-                              color: unread
-                                  ? scheme.primary
-                                  : scheme.onSurfaceVariant,
-                              fontWeight: weight,
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                        ],
-                      ),
-                      SizedBox(height: density.lineGap),
-                      Row(
-                        children: [
-                          _CountBadge(
-                            count: conversation.length,
-                            unread: conversation.unreadCount,
-                            theme: theme,
-                          ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              conversation.subject,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: line,
-                            ),
-                          ),
-                          if (conversation.hasAttachments) ...[
-                            const SizedBox(width: 6),
-                            Icon(Icons.attach_file,
-                                size: 14, color: scheme.onSurfaceVariant),
-                          ],
-                          RowFlag(
-                            flagged: conversation.isFlagged,
-                            onToggle: onToggleFlag,
-                          ),
-                          Icon(
-                            isExpanded ? Icons.expand_less : Icons.expand_more,
-                            size: 18,
-                            color: scheme.onSurfaceVariant,
-                          ),
-                        ],
-                      ),
-                      if (density.previewLines > 0) ...[
-                        SizedBox(height: density.lineGap),
-                        Text(
-                          conversation.newest.preview,
-                          maxLines: density.previewLines,
-                          overflow: TextOverflow.ellipsis,
-                          style: listPreviewStyle(theme),
-                        ),
-                      ],
-                    ],
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      minHeight: singleLine ? RowCheckbox.singleLineSize : 0,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: lines,
+                    ),
                   ),
                 ),
               ],
@@ -237,18 +290,21 @@ class ConversationTile extends StatelessWidget {
     );
   }
 
-  /// Who heads the row: the newest sender who is not you, or the newest
-  /// sender where everyone in it is you.
-  MailAddress get leadSender {
+  /// The message that heads the row: the newest one not from you, or the
+  /// newest where everyone in it is you.
+  MailMessage get leadMessage {
     final newestFirst = [...conversation.messages]
       ..sort((a, b) => b.date.compareTo(a.date));
     for (final m in newestFirst) {
       if (!ownAddresses.contains(m.from.email.trim().toLowerCase())) {
-        return m.from;
+        return m;
       }
     }
-    return conversation.newest.from;
+    return conversation.newest;
   }
+
+  /// Who heads the row: see [leadMessage].
+  MailAddress get leadSender => leadMessage.from;
 }
 
 /// How many messages, and how many of them are unread.
@@ -257,11 +313,15 @@ class _CountBadge extends StatelessWidget {
     required this.count,
     required this.unread,
     required this.theme,
+    this.bold = true,
   });
 
   final int count;
   final int unread;
   final ThemeData theme;
+
+  /// Bold while anything is unread, on a first line only.
+  final bool bold;
 
   @override
   Widget build(BuildContext context) {
@@ -281,7 +341,7 @@ class _CountBadge extends StatelessWidget {
         '$count',
         style: theme.textTheme.labelSmall?.copyWith(
           color: hasUnread ? scheme.primary : scheme.onSurfaceVariant,
-          fontWeight: hasUnread ? FontWeight.w700 : FontWeight.w500,
+          fontWeight: hasUnread && bold ? FontWeight.w700 : FontWeight.w500,
         ),
       ),
     );

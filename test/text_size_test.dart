@@ -9,6 +9,7 @@ import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/common/text_size.dart';
 import 'package:myemail/ui/compose/html_editor.dart';
+import 'package:myemail/ui/messages/conversation_tile.dart';
 import 'package:myemail/ui/messages/html_body_view.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/reading_pane.dart';
@@ -242,6 +243,30 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.byType(ReadingPane), findsOneWidget);
       });
+    }
+
+    for (final (where, size) in [
+      ('a phone', const Size(412, 915)),
+      ('a tablet', const Size(1280, 800)),
+    ]) {
+      for (final density in ListDensity.values) {
+        testWidgets('fits on $where, threads, ${density.label}',
+            (tester) async {
+          // A thread's row carries the most on its first line, the more so
+          // on a tablet, where the subject shares it.
+          androidFontScale(tester, 1.15);
+          store.writeString(
+            UiStateKeys.display,
+            jsonEncode(DisplaySettings(
+              textSize: TextSize.extraLarge,
+              conversations: true,
+              density: density,
+            ).toJson()),
+          );
+          await pumpApp(tester, const AppShell(), size: size);
+          expect(find.byType(ConversationTile), findsWidgets);
+        });
+      }
     }
 
     void largest(WidgetTester tester) {

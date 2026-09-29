@@ -12,9 +12,10 @@ import 'date_format.dart';
 /// the last visible line rather than living on the preview line, or setting
 /// the list to Compact would hide the fact that a message has an attachment.
 ///
-/// Read and unread differ by more than weight: an unread row sits on the
-/// list's own ground and a read one on a shade of it, so what is new can be
-/// picked out from across a screen, the way it can in Outlook.
+/// Read and unread sit on the same ground, as they do in Outlook. What is
+/// unread says so on its first line alone: bold, with a dot and a blue time.
+/// A tablet puts the subject on that first line too, beside the sender, so
+/// the row reads across like Outlook's (see [rowsOnOneLine]).
 class MessageTile extends StatelessWidget {
   const MessageTile({
     super.key,
@@ -63,21 +64,156 @@ class MessageTile extends StatelessWidget {
   final Color? accountColor;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, box) => _buildFor(context, box.maxWidth),
+      );
+
+  Widget _buildFor(BuildContext context, double width) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final unread = !message.isRead;
     final weight = unread ? FontWeight.w700 : FontWeight.w400;
-    final line = listLineStyle(theme)?.copyWith(fontWeight: weight);
+    // Only the first line is bold when unread; the rest are the same either
+    // way.
+    final first = listLineStyle(theme)?.copyWith(fontWeight: weight);
+    final rest = listLineStyle(theme);
+
+    final dateText = formatMessageDate(
+      message.date,
+      use24h: MediaQuery.alwaysUse24HourFormatOf(context),
+    );
+    final dateStyle = theme.textTheme.labelSmall?.copyWith(
+      color: unread ? scheme.primary : scheme.onSurfaceVariant,
+      fontWeight: weight,
+    );
+    final date = Text(dateText, style: dateStyle);
+
+    // What the first line would hold besides the sender and the subject,
+    // were they on it: the row's edges, the marks, the date, and with no
+    // preview line the attachment and the flag as well.
+    final marks = actionMarks(message, scheme);
+    final fixed = rowEdges +
+        marks.length * markWidth +
+        12 +
+        8 +
+        textWidth(context, dateText, dateStyle) +
+        (showsPreview
+            ? 6
+            : flagWidth +
+                (message.isMeeting ? 20 : 0) +
+                (message.hasAttachments
+                    ? 20 +
+                        (message.attachmentBytes > 0
+                            ? textWidth(
+                                context,
+                                formatFileSize(message.attachmentBytes),
+                                theme.textTheme.labelSmall,
+                              )
+                            : 0)
+                    : 0));
+    final oneLine = rowsOnOneLine(context, width: width, fixed: fixed);
+    final singleLine = oneLine && !showsPreview;
+    final chipWidth = width * 0.35;
+    final flag = RowFlag(flagged: message.isFlagged, onToggle: onToggleFlag);
+
+    final List<Widget> lines;
+    if (oneLine) {
+      lines = [
+        Row(
+          children: [
+            ...marks,
+            // Name only: beside the subject there is no room for the address
+            // as well, and Outlook's own list names the sender the same way.
+            Expanded(
+              flex: 2,
+              child: Text(
+                message.from.display,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: first,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              flex: 3,
+              child: Text(
+                message.subject,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: first,
+              ),
+            ),
+            if (!showsPreview) ..._marks(theme, scheme),
+            const SizedBox(width: 8),
+            date,
+            if (showsPreview) const SizedBox(width: 6) else flag,
+          ],
+        ),
+        if (showsPreview) ...[
+          SizedBox(height: density.lineGap),
+          _previewLine(theme, scheme, trailing: flag, chipWidth: chipWidth),
+        ],
+      ];
+    } else {
+      lines = [
+        Row(
+          children: [
+            // What has been done with it, before who it is from: a mail
+            // already answered is the first thing worth knowing about it
+            // when scanning.
+            ...marks,
+            // Name and address together, at the name's size, in every
+            // density. Small and grey after the name, the address was the
+            // first thing cut off, and Compact left it out altogether.
+            Expanded(
+              child: Text(
+                senderLine(message.from),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: first,
+              ),
+            ),
+            const SizedBox(width: 8),
+            date,
+            const SizedBox(width: 6),
+          ],
+        ),
+        SizedBox(height: density.lineGap),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                message.subject,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: rest,
+              ),
+            ),
+            // With no preview line there is nowhere else for these to go,
+            // and a hidden attachment mark is worse than a slightly busier
+            // subject line.
+            if (showsPreview == false) ..._marks(theme, scheme),
+            flag,
+          ],
+        ),
+        if (showsPreview) ...[
+          SizedBox(height: density.lineGap),
+          _previewLine(
+            theme,
+            scheme,
+            trailing: const SizedBox(width: 6),
+            chipWidth: chipWidth,
+          ),
+        ],
+      ];
+    }
 
     return Semantics(
       selected: isSelecting ? isTicked : isSelected,
       child: Material(
         color: isSelected
             ? scheme.secondaryContainer.withValues(alpha: 0.7)
-            : unread
-                ? Colors.transparent
-                : readRowColour(scheme),
+            : Colors.transparent,
         child: InkWell(
           // While selecting, a tap ticks rather than opens. Opening a message
           // mid-selection would take the list off screen and lose the ticks
@@ -100,148 +236,30 @@ class MessageTile extends StatelessWidget {
                 if (isSelecting)
                   Padding(
                     padding: const EdgeInsets.only(right: 4),
-                    child: Checkbox(
+                    child: RowCheckbox(
                       value: isTicked,
                       onChanged: (v) => onTicked?.call(v ?? false),
-                      visualDensity: VisualDensity.compact,
+                      singleLine: singleLine,
                     ),
                   ),
-                SizedBox(
-                  width: 14,
-                  child: Column(
-                    children: [
-                      const SizedBox(height: 5),
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: unread ? scheme.primary : Colors.transparent,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      if (accountColor != null) ...[
-                        const SizedBox(height: 6),
-                        Container(
-                          width: 3,
-                          height: 22,
-                          decoration: BoxDecoration(
-                            color: accountColor,
-                            borderRadius: BorderRadius.circular(2),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
+                RowGutter(
+                  unread: unread,
+                  accountColor: accountColor,
+                  singleLine: singleLine,
                 ),
                 const SizedBox(width: 6),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          // What has been done with it, before who it is
-                          // from: a mail already answered is the first
-                          // thing worth knowing about it when scanning.
-                          if (message.isAnswered)
-                            _Mark(
-                              icon: Icons.reply,
-                              label: 'Replied',
-                              colour: scheme.onSurfaceVariant,
-                            ),
-                          if (message.isForwarded)
-                            _Mark(
-                              icon: Icons.forward,
-                              label: 'Forwarded',
-                              colour: scheme.onSurfaceVariant,
-                            ),
-                          // Name and address together, at the name's size,
-                          // in every density. Small and grey after the name,
-                          // the address was the first thing cut off, and
-                          // Compact left it out altogether.
-                          Expanded(
-                            child: Text(
-                              senderLine(message.from),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: line,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            formatMessageDate(
-                              message.date,
-                              use24h: MediaQuery.alwaysUse24HourFormatOf(
-                                context,
-                              ),
-                            ),
-                            style: theme.textTheme.labelSmall?.copyWith(
-                              color: unread
-                                  ? scheme.primary
-                                  : scheme.onSurfaceVariant,
-                              fontWeight: weight,
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                        ],
-                      ),
-                      SizedBox(height: density.lineGap),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              message.subject,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: line,
-                            ),
-                          ),
-                          // With no preview line there is nowhere else for
-                          // these to go, and a hidden attachment mark is worse
-                          // than a slightly busier subject line.
-                          if (showsPreview == false) ..._marks(theme, scheme),
-                          RowFlag(
-                            flagged: message.isFlagged,
-                            onToggle: onToggleFlag,
-                          ),
-                        ],
-                      ),
-                      if (showsPreview) ...[
-                        SizedBox(height: density.lineGap),
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (folderLabel != null) ...[
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 6, vertical: 1),
-                                decoration: BoxDecoration(
-                                  color: scheme.surfaceContainerHighest,
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Text(
-                                  folderLabel!,
-                                  style: theme.textTheme.labelSmall?.copyWith(
-                                    color: scheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                            ],
-                            Expanded(
-                              child: Text(
-                                message.preview,
-                                maxLines: density.previewLines,
-                                overflow: TextOverflow.ellipsis,
-                                style: listPreviewStyle(theme),
-                              ),
-                            ),
-                            ..._marks(theme, scheme),
-                            const SizedBox(width: 6),
-                          ],
-                        ),
-                      ],
-                    ],
+                  child: ConstrainedBox(
+                    // One line tall, whether or not the checkbox is up, so
+                    // starting a selection does not make every row jump.
+                    constraints: BoxConstraints(
+                      minHeight: singleLine ? RowCheckbox.singleLineSize : 0,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: lines,
+                    ),
                   ),
                 ),
               ],
@@ -251,6 +269,55 @@ class MessageTile extends StatelessWidget {
       ),
     );
   }
+
+  /// The preview, after the folder a search hit is in, with the marks and
+  /// [trailing] at the end.
+  Widget _previewLine(
+    ThemeData theme,
+    ColorScheme scheme, {
+    required Widget trailing,
+    required double chipWidth,
+  }) =>
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (folderLabel != null) ...[
+            // At most a third of the line: a long folder name took all of
+            // it, and the preview, marks and flag went off the edge.
+            ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: chipWidth),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  folderLabel!,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+          ],
+          Expanded(
+            child: Text(
+              message.preview,
+              maxLines: density.previewLines,
+              overflow: TextOverflow.ellipsis,
+              style: listPreviewStyle(theme),
+            ),
+          ),
+          ..._marks(theme, scheme),
+          trailing,
+        ],
+      );
 
   bool get showsPreview => density.previewLines > 0;
 
@@ -283,6 +350,170 @@ class MessageTile extends StatelessWidget {
       ];
 }
 
+/// Whether a row [width] wide puts the subject on its first line, beside
+/// the sender, when everything else on that line takes [fixed].
+///
+/// On a tablet, where Ron asked for it. The device decides, not the width
+/// alone: beside the reading pane a tablet's list is barely wider than a
+/// phone. But only where the sender and subject keep [minTextRoom] between
+/// them; with the list at its narrowest, the text large or Compact putting
+/// every mark on that line, both came down to "…" and then the row
+/// overflowed, so there the row keeps two lines.
+bool rowsOnOneLine(
+  BuildContext context, {
+  required double width,
+  required double fixed,
+}) =>
+    MediaQuery.sizeOf(context).shortestSide >= 600 &&
+    width - fixed >= minTextRoom;
+
+/// The least room for the sender and subject together on one line.
+const double minTextRoom = 150;
+
+/// A row's edges: its padding, the unread gutter, and the gap after it.
+/// The selection checkbox is left out on purpose, so ticking a row never
+/// changes how it is laid out.
+const double rowEdges = 8 + 6 + 14 + 6;
+
+/// A replied or forwarded mark, with its gap.
+const double markWidth = 19;
+
+/// The flag at the end of a line, with its padding.
+const double flagWidth = 30;
+
+/// How wide [text] is drawn in [style], at the reader's text size.
+double textWidth(BuildContext context, String text, TextStyle? style) {
+  final painter = TextPainter(
+    text: TextSpan(text: text, style: style),
+    textDirection: TextDirection.ltr,
+    textScaler: MediaQuery.textScalerOf(context),
+    maxLines: 1,
+  )..layout();
+  final width = painter.width;
+  painter.dispose();
+  return width;
+}
+
+/// The selection checkbox, held to one line's height in a row of one line:
+/// at its usual size it made every Compact row nearly twice as tall the
+/// moment a selection began.
+class RowCheckbox extends StatelessWidget {
+  const RowCheckbox({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.singleLine = false,
+    this.tristate = false,
+  });
+
+  final bool? value;
+  final ValueChanged<bool?> onChanged;
+  final bool singleLine;
+  final bool tristate;
+
+  /// The height of a row of one line.
+  static const double singleLineSize = 24;
+
+  @override
+  Widget build(BuildContext context) {
+    final box = Checkbox(
+      value: value,
+      tristate: tristate,
+      onChanged: onChanged,
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize:
+          singleLine ? MaterialTapTargetSize.shrinkWrap : null,
+    );
+    return singleLine
+        ? SizedBox(height: singleLineSize, child: box)
+        : box;
+  }
+}
+
+/// Replied and forwarded, as marks before the sender.
+List<Widget> actionMarks(MailMessage message, ColorScheme scheme) => [
+      if (message.isAnswered)
+        _Mark(
+          icon: Icons.reply,
+          label: 'Replied',
+          colour: scheme.onSurfaceVariant,
+        ),
+      if (message.isForwarded)
+        _Mark(
+          icon: Icons.forward,
+          label: 'Forwarded',
+          colour: scheme.onSurfaceVariant,
+        ),
+    ];
+
+/// The strip down a row's left edge: the unread dot, and in the unified
+/// Inbox and search the bar in the account's colour.
+///
+/// In a row of one line the bar stands beside the dot rather than under it:
+/// stacked, it made those rows twice the height of the line.
+class RowGutter extends StatelessWidget {
+  const RowGutter({
+    super.key,
+    required this.unread,
+    this.accountColor,
+    this.singleLine = false,
+  });
+
+  final bool unread;
+  final Color? accountColor;
+  final bool singleLine;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final dot = Container(
+      width: 8,
+      height: 8,
+      decoration: BoxDecoration(
+        color: unread ? scheme.primary : Colors.transparent,
+        shape: BoxShape.circle,
+      ),
+    );
+    Widget bar(double height) => Container(
+          width: 3,
+          height: height,
+          decoration: BoxDecoration(
+            color: accountColor,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        );
+    if (singleLine) {
+      return SizedBox(
+        width: 14,
+        child: Padding(
+          padding: const EdgeInsets.only(top: 3),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(padding: const EdgeInsets.only(top: 2), child: dot),
+              const SizedBox(width: 3),
+              if (accountColor != null) bar(12),
+            ],
+          ),
+        ),
+      );
+    }
+    return SizedBox(
+      width: 14,
+      child: Column(
+        children: [
+          const SizedBox(height: 5),
+          dot,
+          if (accountColor != null) ...[
+            const SizedBox(height: 6),
+            bar(22),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 /// A small mark before the sender: replied, or forwarded.
 class _Mark extends StatelessWidget {
   const _Mark({required this.icon, required this.label, required this.colour});
@@ -310,9 +541,6 @@ String senderLine(MailAddress from) {
   if (name.toLowerCase() == email.toLowerCase()) return email;
   return '$name <$email>';
 }
-
-/// The shade a read row sits on; an unread one sits on the list itself.
-Color readRowColour(ColorScheme scheme) => scheme.surfaceContainerHigh;
 
 /// The sender and subject lines of a list row: the body size, set tight.
 /// Material's line height is meant for paragraphs, and between one-line
