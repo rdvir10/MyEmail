@@ -1,4 +1,5 @@
 import '../common/bottom_message.dart';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -161,13 +162,16 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     if (!mounted || listId == null) return;
     final message = widget.message;
     try {
-      final held = ref
+      final held =
+          ref
               .read(messagesProvider(listId))
               .value
               ?.any((m) => m.id == message.id) ??
           false;
       if (held) {
-        await ref.read(messagesProvider(listId).notifier).setRead(message.id, true);
+        await ref
+            .read(messagesProvider(listId).notifier)
+            .setRead(message.id, true);
         return;
       }
       // A search hit from another folder, or from further back than the list
@@ -176,7 +180,9 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
       // and the list it does belong to is re-read.
       await ref.read(mailEngineProvider).setRead(message.id, true);
       ref.invalidate(messagesProvider(message.folderId));
-      await ref.read(foldersProvider.notifier).refreshAccount(message.accountId);
+      await ref
+          .read(foldersProvider.notifier)
+          .refreshAccount(message.accountId);
     } catch (_) {
       // Offline or refused: the message simply stays unread. Nothing to tell
       // the user about an action they did not take.
@@ -224,7 +230,10 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (!await ref.read(windowOpenerProvider).open(MessageWindow(message))) {
       messenger?.showSnackBar(
-        const SnackBar(duration: kBottomMessage, content: Text('Could not open a window.')),
+        const SnackBar(
+          duration: kBottomMessage,
+          content: Text('Could not open a window.'),
+        ),
       );
     }
   }
@@ -238,7 +247,12 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not update: $e')));
+        ..showSnackBar(
+          SnackBar(
+            duration: kBottomMessage,
+            content: Text('Could not update: $e'),
+          ),
+        );
     }
   }
 
@@ -249,10 +263,10 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     final live = _listId == null
         ? null
         : ref
-            .watch(messagesProvider(_listId!))
-            .value
-            ?.where((m) => m.id == widget.message.id)
-            .firstOrNull;
+              .watch(messagesProvider(_listId!))
+              .value
+              ?.where((m) => m.id == widget.message.id)
+              .firstOrNull;
     final message = live ?? widget.message;
     final body = ref.watch(messageBodyProvider(message.id));
 
@@ -262,83 +276,82 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
       child: PaneFocusFrame(
         node: _node,
         child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          child: _Header(
-            message: message,
-            onPopOut: widget.onPopOut,
-            onDelete: _delete,
-            onMove: _move,
-            onOpenWindow: (ref.watch(windowsAvailableProvider).value ?? false) &&
-                    widget.onPopOut != null
-                ? () => _openWindow(message)
-                : null,
-            // A phone's width, the shell's medium breakpoint: the header
-            // has room for one of Flag and Delete, and Delete is the one
-            // reached for more.
-            compact: MediaQuery.sizeOf(context).width < 600,
-            onToggleFlag: () =>
-                _act((n) => n.setFlagged(message.id, !message.isFlagged)),
-            onToggleRead: () =>
-                _act((n) => n.setRead(message.id, !message.isRead)),
-            onCompose: (kind) => openCompose(
-              context,
-              ref,
-              kind: kind,
-              original: message,
-            ),
-            // Only once the body is here: there is nothing to save until it
-            // has loaded, and a menu item that does nothing is worse than
-            // one that is not there yet.
-            onSaveSource:
-                body.value == null ? null : () => _saveSource(body.value!),
-            onPrint: body.value == null ||
-                    !(ref.watch(printingAvailableProvider).value ?? false)
-                ? null
-                : () => _print(message, body.value!),
-            onFullScreen: body.value == null
-                ? null
-                : () => FullScreenMessage.open(context, message),
-            // Whatever the phone has: the account's own calendar takes it,
-            // and the calendar app is only the way out for an account
-            // without one.
-            onCreateEvent: body.value == null
-                ? null
-                : () => openNewMeetingFromMessage(
-                      context,
-                      ref,
-                      message,
-                      body.value!,
-                    ),
-          ),
-        ),
-        // The invitation, when the message carries one, before the body:
-        // the answer is the point of the message.
-        if (ref.watch(messageInviteProvider(message.id)) case final invite?)
-          InviteCard(message: message, invite: invite),
-        const Divider(height: 1),
-        Expanded(
-          child: body.when(
-            loading: () => const Center(
-              child: SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(strokeWidth: 2),
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
+              child: _Header(
+                message: message,
+                onPopOut: widget.onPopOut,
+                onDelete: _delete,
+                onMove: _move,
+                onOpenWindow:
+                    (ref.watch(windowsAvailableProvider).value ?? false) &&
+                        widget.onPopOut != null
+                    ? () => _openWindow(message)
+                    : null,
+                // A phone's width, the shell's medium breakpoint: the header
+                // has room for one of Flag and Delete, and Delete is the one
+                // reached for more.
+                compact: MediaQuery.sizeOf(context).width < 600,
+                onToggleFlag: () =>
+                    _act((n) => n.setFlagged(message.id, !message.isFlagged)),
+                onToggleRead: () =>
+                    _act((n) => n.setRead(message.id, !message.isRead)),
+                onCompose: (kind) =>
+                    openCompose(context, ref, kind: kind, original: message),
+                // Only once the body is here: there is nothing to save until it
+                // has loaded, and a menu item that does nothing is worse than
+                // one that is not there yet.
+                onSaveSource: body.value == null
+                    ? null
+                    : () => _saveSource(body.value!),
+                onPrint:
+                    body.value == null ||
+                        !(ref.watch(printingAvailableProvider).value ?? false)
+                    ? null
+                    : () => _print(message, body.value!),
+                onFullScreen: body.value == null
+                    ? null
+                    : () => FullScreenMessage.open(context, message),
+                // Whatever the phone has: the account's own calendar takes it,
+                // and the calendar app is only the way out for an account
+                // without one.
+                onCreateEvent: body.value == null
+                    ? null
+                    : () => openNewMeetingFromMessage(
+                        context,
+                        ref,
+                        message,
+                        body.value!,
+                      ),
               ),
             ),
-            error: (e, _) => Padding(
-              padding: const EdgeInsets.all(20),
-              child: Text(
-                'Could not load the message.\n$e',
-                style: theme.textTheme.bodySmall,
+            // The invitation, when the message carries one, before the body:
+            // the answer is the point of the message.
+            if (ref.watch(messageInviteProvider(message.id)) case final invite?)
+              InviteCard(message: message, invite: invite),
+            const Divider(height: 1),
+            Expanded(
+              child: body.when(
+                loading: () => const Center(
+                  child: SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+                error: (e, _) => Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Text(
+                    'Could not load the message.\n$e',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+                data: (b) => _bodyView(theme, b),
               ),
             ),
-            data: (b) => _bodyView(theme, b),
-          ),
-        ),
-      ],
+          ],
         ),
       ),
     );
@@ -355,7 +368,9 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     // already loaded, and the rest stay out of the paper too.
     final shown = _showsImages ? html : stripRemoteContent(html);
     try {
-      final ok = await ref.read(messagePrinterProvider).print(
+      final ok = await ref
+          .read(messagePrinterProvider)
+          .print(
             title: message.subject.trim().isEmpty ? 'Message' : message.subject,
             html: printableMessage(
               message,
@@ -366,11 +381,19 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
           );
       if (!ok) {
         messenger?.showSnackBar(
-          const SnackBar(duration: kBottomMessage, content: Text('Printing is not available here.')),
+          const SnackBar(
+            duration: kBottomMessage,
+            content: Text('Printing is not available here.'),
+          ),
         );
       }
     } catch (e) {
-      messenger?.showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not print. $e')));
+      messenger?.showSnackBar(
+        SnackBar(
+          duration: kBottomMessage,
+          content: Text('Could not print. $e'),
+        ),
+      );
     }
   }
 
@@ -380,11 +403,17 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
       final saved = await saveMessageSource(widget.message, body);
       if (!saved) return; // They changed their mind in the file picker.
       messenger?.showSnackBar(
-        const SnackBar(duration: kBottomMessage, content: Text('Message source saved')),
+        const SnackBar(
+          duration: kBottomMessage,
+          content: Text('Message source saved'),
+        ),
       );
     } catch (e) {
       messenger?.showSnackBar(
-        SnackBar(duration: kBottomMessage, content: Text('Could not save the source. $e')),
+        SnackBar(
+          duration: kBottomMessage,
+          content: Text('Could not save the source. $e'),
+        ),
       );
     }
   }
@@ -413,14 +442,20 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
           ref.read(trustedSendersProvider.notifier).trust(entry);
           ScaffoldMessenger.maybeOf(context)
             ?..hideCurrentSnackBar()
-            ..showSnackBar(SnackBar(duration: kBottomMessage, persist: false,
-              content: Text('Pictures will load from ${describeTrustEntry(entry).toLowerCase()}'),
-              action: SnackBarAction(
-                label: 'Undo',
-                onPressed: () =>
-                    ref.read(trustedSendersProvider.notifier).forget(entry),
+            ..showSnackBar(
+              SnackBar(
+                duration: kBottomMessage,
+                persist: false,
+                content: Text(
+                  'Pictures will load from ${describeTrustEntry(entry).toLowerCase()}',
+                ),
+                action: SnackBarAction(
+                  label: 'Undo',
+                  onPressed: () =>
+                      ref.read(trustedSendersProvider.notifier).forget(entry),
+                ),
               ),
-            ));
+            );
         },
       );
     }
@@ -509,113 +544,139 @@ class _Header extends StatelessWidget {
         ],
         // Seven buttons on a narrow phone are wider than the phone; they
         // slide rather than being clipped at the delete.
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // First, not last. These two change where you are rather than
-            // what the message is, and grouping them with the three compose
-            // actions would invite mis-taps.
-            if (onPopOut != null)
-              IconButton(
-                tooltip: 'Open on its own screen',
-                icon: const Icon(Icons.open_in_full),
-                onPressed: onPopOut,
-              ),
-            IconButton(
-              tooltip: 'Full screen (F11)',
-              icon: const Icon(Icons.fullscreen),
-              onPressed: onFullScreen,
-            ),
-            IconButton(
-              tooltip: 'Reply',
-              icon: const Icon(Icons.reply),
-              onPressed: () => onCompose(ComposeKind.reply),
-            ),
-            IconButton(
-              tooltip: 'Reply all',
-              icon: const Icon(Icons.reply_all),
-              onPressed: () => onCompose(ComposeKind.replyAll),
-            ),
-            IconButton(
-              tooltip: 'Forward',
-              icon: const Icon(Icons.forward),
-              onPressed: () => onCompose(ComposeKind.forward),
-            ),
-            if (!compact)
-              IconButton(
-                tooltip: message.isFlagged ? 'Remove flag' : 'Flag',
-                icon: Icon(
-                  message.isFlagged ? Icons.flag : Icons.flag_outlined,
-                  color: message.isFlagged ? scheme.error : null,
-                ),
-                onPressed: onToggleFlag,
-              ),
-            IconButton(
-              tooltip: message.isRead ? 'Mark as unread' : 'Mark as read',
-              icon: Icon(
-                message.isRead
-                    ? Icons.mark_email_unread_outlined
-                    : Icons.mark_email_read_outlined,
-              ),
-              onPressed: onToggleRead,
-            ),
-            // The ribbon's icon for the same thing, beside Delete: the two
-            // ways a message leaves the folder it is in.
-            IconButton(
-              tooltip: 'Move to folder',
-              icon: const Icon(Icons.drive_file_move_outline),
-              onPressed: onMove,
-            ),
-            IconButton(
-              tooltip: 'Delete',
-              icon: const Icon(Icons.delete_outline),
-              onPressed: onDelete,
-            ),
-            // The things that are neither reading nor replying live behind
-            // one button, rather than adding another icon to a row that is
-            // already the width of the pane.
-            PopupMenuButton<String>(
-              tooltip: 'More',
-              icon: const Icon(Icons.more_vert),
-              onSelected: (value) => switch (value) {
-                'flag' => onToggleFlag(),
-                'window' => onOpenWindow?.call(),
-                'print' => onPrint?.call(),
-                'event' => onCreateEvent?.call(),
-                _ => onSaveSource?.call(),
-              },
-              itemBuilder: (context) => [
-                if (onOpenWindow != null)
-                  const PopupMenuItem(
-                    value: 'window',
-                    child: Text('Open in new window'),
+        LayoutBuilder(
+          builder: (context, box) {
+            // The meeting button only where the whole row fits with it: on a
+            // tablet standing up, with the pane at the bottom, it pushed More,
+            // and Print and Save source with it, off the end. Where it does not
+            // fit it is in More instead.
+            final meetingOnBar =
+                !compact &&
+                box.maxWidth >=
+                    kMinInteractiveDimension *
+                        ((onPopOut != null ? 1 : 0) + 10);
+            return SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // First, not last. These two change where you are rather than
+                  // what the message is, and grouping them with the three compose
+                  // actions would invite mis-taps.
+                  if (onPopOut != null)
+                    IconButton(
+                      tooltip: 'Open on its own screen',
+                      icon: const Icon(Icons.open_in_full),
+                      onPressed: onPopOut,
+                    ),
+                  IconButton(
+                    tooltip: 'Full screen (F11)',
+                    icon: const Icon(Icons.fullscreen),
+                    onPressed: onFullScreen,
                   ),
-                PopupMenuItem(
-                  value: 'print',
-                  enabled: onPrint != null,
-                  child: const Text('Print or save as PDF…'),
-                ),
-                PopupMenuItem(
-                  value: 'event',
-                  enabled: onCreateEvent != null,
-                  child: const Text('Create calendar event…'),
-                ),
-                if (compact)
-                  PopupMenuItem(
-                    value: 'flag',
-                    child: Text(message.isFlagged ? 'Remove flag' : 'Flag'),
+                  IconButton(
+                    tooltip: 'Reply',
+                    icon: const Icon(Icons.reply),
+                    onPressed: () => onCompose(ComposeKind.reply),
                   ),
-                PopupMenuItem(
-                  value: 'source',
-                  enabled: onSaveSource != null,
-                  child: const Text('Save source…'),
-                ),
-              ],
-            ),
-          ],
-          ),
+                  IconButton(
+                    tooltip: 'Reply all',
+                    icon: const Icon(Icons.reply_all),
+                    onPressed: () => onCompose(ComposeKind.replyAll),
+                  ),
+                  IconButton(
+                    tooltip: 'Forward',
+                    icon: const Icon(Icons.forward),
+                    onPressed: () => onCompose(ComposeKind.forward),
+                  ),
+                  // On a tablet, beside the other ways of answering, as Outlook
+                  // has Reply with Meeting: a phone's row has no room, and there
+                  // it is in the menu.
+                  if (meetingOnBar)
+                    IconButton(
+                      key: const ValueKey('meeting-from-message'),
+                      tooltip: 'Meeting from this message',
+                      icon: const Icon(Icons.event_outlined),
+                      onPressed: onCreateEvent,
+                    ),
+                  if (!compact)
+                    IconButton(
+                      tooltip: message.isFlagged ? 'Remove flag' : 'Flag',
+                      icon: Icon(
+                        message.isFlagged ? Icons.flag : Icons.flag_outlined,
+                        color: message.isFlagged ? scheme.error : null,
+                      ),
+                      onPressed: onToggleFlag,
+                    ),
+                  IconButton(
+                    tooltip: message.isRead ? 'Mark as unread' : 'Mark as read',
+                    icon: Icon(
+                      message.isRead
+                          ? Icons.mark_email_unread_outlined
+                          : Icons.mark_email_read_outlined,
+                    ),
+                    onPressed: onToggleRead,
+                  ),
+                  // The ribbon's icon for the same thing, beside Delete: the two
+                  // ways a message leaves the folder it is in.
+                  IconButton(
+                    tooltip: 'Move to folder',
+                    icon: const Icon(Icons.drive_file_move_outline),
+                    onPressed: onMove,
+                  ),
+                  IconButton(
+                    tooltip: 'Delete',
+                    icon: const Icon(Icons.delete_outline),
+                    onPressed: onDelete,
+                  ),
+                  // The things that are neither reading nor replying live behind
+                  // one button, rather than adding another icon to a row that is
+                  // already the width of the pane.
+                  PopupMenuButton<String>(
+                    tooltip: 'More',
+                    icon: const Icon(Icons.more_vert),
+                    onSelected: (value) => switch (value) {
+                      'flag' => onToggleFlag(),
+                      'window' => onOpenWindow?.call(),
+                      'print' => onPrint?.call(),
+                      'event' => onCreateEvent?.call(),
+                      _ => onSaveSource?.call(),
+                    },
+                    itemBuilder: (context) => [
+                      if (onOpenWindow != null)
+                        const PopupMenuItem(
+                          value: 'window',
+                          child: Text('Open in new window'),
+                        ),
+                      PopupMenuItem(
+                        value: 'print',
+                        enabled: onPrint != null,
+                        child: const Text('Print or save as PDF…'),
+                      ),
+                      if (!meetingOnBar)
+                        PopupMenuItem(
+                          value: 'event',
+                          enabled: onCreateEvent != null,
+                          child: const Text('Meeting from this message…'),
+                        ),
+                      if (compact)
+                        PopupMenuItem(
+                          value: 'flag',
+                          child: Text(
+                            message.isFlagged ? 'Remove flag' : 'Flag',
+                          ),
+                        ),
+                      PopupMenuItem(
+                        value: 'source',
+                        enabled: onSaveSource != null,
+                        child: const Text('Save source…'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
         ),
         const SizedBox(height: 10),
         Row(
@@ -648,16 +709,18 @@ class _Header extends StatelessWidget {
                         message.from.display,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodyMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                       Text(
                         formatMessageDateLong(
                           message.date,
                           use24h: MediaQuery.alwaysUse24HourFormatOf(context),
                         ),
-                        style: theme.textTheme.labelSmall
-                            ?.copyWith(color: scheme.onSurfaceVariant),
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
                       ),
                     ],
                   ),
@@ -666,8 +729,9 @@ class _Header extends StatelessWidget {
                       message.from.email,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall
-                          ?.copyWith(color: scheme.onSurfaceVariant),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
                     ),
                   const SizedBox(height: 2),
                   // Keyed by the message, so the next one opens folded
@@ -734,8 +798,9 @@ class _RecipientsState extends State<_Recipients> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final style = theme.textTheme.bodySmall
-        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final style = theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
     final link = style?.copyWith(
       color: theme.colorScheme.primary,
       fontWeight: FontWeight.w600,
@@ -860,9 +925,7 @@ class _RecipientsState extends State<_Recipients> {
             padding: const EdgeInsets.only(bottom: 2),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                for (final a in people) _person(a, style),
-              ],
+              children: [for (final a in people) _person(a, style)],
             ),
           ),
         ],

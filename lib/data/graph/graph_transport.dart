@@ -307,9 +307,18 @@ class GraphTransport implements ImapTransport {
             isFlagged: m.isFlagged,
             isAnswered: _answered(m),
             isForwarded: _forwarded(m),
+            // So mail already on the phone gets its size at the next sync,
+            // not only mail that arrives from now on.
+            attachmentBytes: _sizeBeside(m),
           ),
     ];
   }
+
+  /// What a Microsoft row shows beside its paperclip: the whole message's
+  /// size, which for mail with files is mostly the files. None without a
+  /// paperclip, as on a Gmail row.
+  static int _sizeBeside(GraphMessage m) =>
+      m.hasAttachments ? (m.sizeBytes ?? 0) : 0;
 
   /// Exchange's last verb as the two marks, and where it has none, the
   /// icon: Outlook on a desktop draws its own arrow from the icon and, for a
@@ -934,6 +943,7 @@ class GraphTransport implements ImapTransport {
             isAnswered: _answered(m),
             isForwarded: _forwarded(m),
             hasAttachments: m.hasAttachments,
+            attachmentBytes: _sizeBeside(m),
             preview: m.preview,
             messageId: m.internetMessageId,
             // Graph does not return In-Reply-To with a list row, and asking

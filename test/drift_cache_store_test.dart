@@ -130,6 +130,17 @@ Future<void> _repliedAndForwarded(CacheStore store) async {
   ]);
   expect((await row(2)).isAnswered, isTrue);
   expect((await row(2)).isForwarded, isTrue);
+
+  // A size the server sends with the flags (Microsoft does) is kept; a
+  // message not cached is left alone.
+  await store.updateAttachmentBytes('a', 'INBOX', {1: 2048, 99: 5});
+  expect((await row(1)).attachmentBytes, 2048);
+  expect(
+    (await row(1)).toMailMessage(accountId: 'a', folderId: 'a:INBOX')
+        .attachmentBytes,
+    2048,
+  );
+  expect(await store.readMessage('a', 'INBOX', 99), isNull);
 }
 
 /// Every query a database runs, to see what it reads.

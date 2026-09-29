@@ -814,7 +814,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         ),
       if (steps.isNotEmpty) const PopupMenuDivider(),
       _item('copy', Icons.copy_outlined, 'Copy'),
-      _item('event', Icons.event_outlined, 'Create calendar event…'),
+      _item('event', Icons.event_outlined, 'Meeting from this message…'),
       _item('select', Icons.checklist, 'Select'),
       _item('move', Icons.drive_file_move_outline, 'Move to…'),
       _item(

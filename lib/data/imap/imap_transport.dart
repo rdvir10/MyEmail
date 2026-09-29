@@ -366,11 +366,16 @@ class RemoteFlags {
     required this.isFlagged,
     required this.isAnswered,
     required this.isForwarded,
+    this.attachmentBytes,
   });
 
   final int uid;
   final bool isRead;
   final bool isFlagged;
+
+  /// What the row shows beside its paperclip, where the server sends it with
+  /// the flags (Microsoft does); null leaves the cached one as it is.
+  final int? attachmentBytes;
 
   /// Read with the others, so a reply or forward marked from another device
   /// comes through at the next sync the way a message read there does.

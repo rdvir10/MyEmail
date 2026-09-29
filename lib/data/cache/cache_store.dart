@@ -132,6 +132,7 @@ class CachedMessage {
     bool? isFlagged,
     bool? isAnswered,
     bool? isForwarded,
+    int? attachmentBytes,
     String? preview,
     String? bodyText,
     String? bodyHtml,
@@ -151,7 +152,7 @@ class CachedMessage {
       isAnswered: isAnswered ?? this.isAnswered,
       isForwarded: isForwarded ?? this.isForwarded,
       hasAttachments: hasAttachments,
-      attachmentBytes: attachmentBytes,
+      attachmentBytes: attachmentBytes ?? this.attachmentBytes,
       isMeeting: isMeeting,
       preview: preview ?? this.preview,
       bodyText: bodyText ?? this.bodyText,
@@ -256,6 +257,14 @@ abstract class CacheStore {
     String accountId,
     String path,
     Map<int, CachedFlags> flagsByUid,
+  );
+
+  /// What rows show beside their paperclip, as the server now says it
+  /// (Microsoft sends it with the flags).
+  Future<void> updateAttachmentBytes(
+    String accountId,
+    String path,
+    Map<int, int> bytesByUid,
   );
 
   Future<void> deleteUids(String accountId, String path, Set<int> uids);
@@ -449,6 +458,19 @@ class MemoryCacheStore implements CacheStore {
           isForwarded: e.value.isForwarded,
         );
       }
+    }
+  }
+
+  @override
+  Future<void> updateAttachmentBytes(
+    String accountId,
+    String path,
+    Map<int, int> bytesByUid,
+  ) async {
+    final folder = _folder(accountId, path);
+    for (final e in bytesByUid.entries) {
+      final m = folder[e.key];
+      if (m != null) folder[e.key] = m.copyWith(attachmentBytes: e.value);
     }
   }
 

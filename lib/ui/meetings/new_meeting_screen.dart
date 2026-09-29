@@ -11,7 +11,7 @@ import '../../domain/meeting.dart';
 import '../../domain/text_direction.dart';
 import '../../state/calendar_providers.dart';
 import '../../state/compose_providers.dart'
-    show addressesLookValid, parseAddresses;
+    show addressesLookValid, formatAddresses, parseAddresses;
 import '../../state/meeting_providers.dart';
 import '../../state/providers.dart';
 import '../accounts/google_sign_in_screen.dart';
@@ -24,14 +24,16 @@ import '../messages/date_format.dart' show formatClock, formatDay;
 /// Open the new-meeting screen.
 ///
 /// [accountId] presets From. Without one it is the account of the folder on
-/// screen, or the first account where that is the unified Inbox. [title]
-/// and [notes] prefill the rest, for a meeting made out of a message.
+/// screen, or the first account where that is the unified Inbox. [title],
+/// [notes] and [attendees] prefill the rest, for a meeting made out of a
+/// message.
 Future<void> openNewMeeting(
   BuildContext context,
   WidgetRef ref, {
   String? accountId,
   String title = '',
   String notes = '',
+  List<MailAddress> attendees = const [],
 }) async {
   final resolved = accountId ??
       ref.read(accountOnScreenProvider) ??
@@ -51,14 +53,16 @@ Future<void> openNewMeeting(
         accountId: resolved,
         title: title,
         notes: notes,
+        attendees: attendees,
       ),
     ),
   );
 }
 
 /// The new-meeting screen filled in from a message: its subject as the
-/// title, its text as the notes, from the account it came to. For the mail
-/// that says "let's meet Thursday" without sending an invitation.
+/// title, its text as the notes, everyone on it as the attendees, from the
+/// account it came to. For the mail that says "let's meet Thursday" without
+/// sending an invitation; Outlook's Reply with Meeting.
 Future<void> openNewMeetingFromMessage(
   BuildContext context,
   WidgetRef ref,
@@ -74,7 +78,43 @@ Future<void> openNewMeetingFromMessage(
     accountId: message.accountId,
     title: message.subject,
     notes: '$notes\n\nFrom: ${message.from.display}',
+    attendees: meetingAttendeesFor(
+      message,
+      own: {
+        for (final a in ref.read(accountsProvider).value ?? const <Account>[])
+          a.emailAddress.trim().toLowerCase(),
+      },
+    ),
   );
+}
+
+/// Who a meeting made out of [message] invites: whoever a reply goes to
+/// (Reply-To over From, as a reply has it, or a contact form's no-reply
+/// sender is asked instead of the customer), then everyone it went to and
+/// was copied to, each once, and never yourself ([own] is every address of
+/// yours, in lower case).
+///
+/// Only what looks like an address: "undisclosed-recipients", a group's
+/// name or an Exchange path left the invitation unsendable, with nothing
+/// to say which entry was wrong.
+@visibleForTesting
+List<MailAddress> meetingAttendeesFor(
+  MailMessage message, {
+  required Set<String> own,
+}) {
+  final answer = replyToBesidesSender(message.replyTo, message.from);
+  final seen = <String>{...own};
+  return [
+    for (final a in [
+      ...(answer.isEmpty ? [message.from] : answer),
+      ...message.to,
+      ...message.cc,
+    ])
+      if (addressesLookValid(
+              [MailAddress(email: a.email.trim(), name: a.name)]) &&
+          seen.add(a.email.trim().toLowerCase()))
+        a,
+  ];
 }
 
 /// Set up a meeting: from which account, what, who is asked, and when.
@@ -96,12 +136,16 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
     required this.accountId,
     this.title = '',
     this.notes = '',
+    this.attendees = const [],
     this.start,
   });
 
   final String accountId;
   final String title;
   final String notes;
+
+  /// Who is asked, to begin with: everyone on the message it was made from.
+  final List<MailAddress> attendees;
 
   /// When it starts. The next whole hour when null; the end is an hour on.
   final DateTime? start;
@@ -118,7 +162,14 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
   late String _accountId = widget.accountId;
 
   late final _title = TextEditingController(text: widget.title);
-  final _attendees = TextEditingController();
+  late final _attendees =
+      TextEditingController(text: _attendeesToBegin);
+
+  /// The attendees as the field starts, with a separator after them so the
+  /// next address can be typed straight on.
+  late final String _attendeesToBegin = widget.attendees.isEmpty
+      ? ''
+      : '${formatAddresses(widget.attendees)}, ';
   final _location = TextEditingController();
   late final _notes = TextEditingController(text: widget.notes);
 
@@ -221,7 +272,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
   /// opened with can be had again.
   bool get _untouched =>
       _title.text == widget.title &&
-      _attendees.text.isEmpty &&
+      _attendees.text == _attendeesToBegin &&
       _location.text.isEmpty &&
       _notes.text == widget.notes;
 

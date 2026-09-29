@@ -134,11 +134,15 @@ class MailMessage {
   final bool isAnswered;
   final bool isForwarded;
 
-  /// What the files on it add up to, or 0 where the server did not say.
+  /// What the row shows beside its paperclip, or 0 where the server did not
+  /// say.
   ///
-  /// Free over IMAP: the structure the header fetch already asks for
-  /// carries a size per part. Microsoft sends no size with a list row, so
-  /// this is 0 there unless the sizes were asked for separately.
+  /// Over IMAP, what the files on it add up to: the structure the header
+  /// fetch already asks for carries a size per part. On a Microsoft
+  /// account, the whole message's size, which for mail with files is mostly
+  /// the files: Graph sends no per-file size with a list row, but reads
+  /// Exchange's own size of the message with the reply marks it already
+  /// asks for (PidTagMessageSize), at no extra request.
   final int attachmentBytes;
 
   /// This message's own `Message-ID`, and the id of the one it answers.

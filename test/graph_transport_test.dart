@@ -361,7 +361,7 @@ void main() {
         expect(
           uri.queryParameters[r'$expand'],
           r"singleValueExtendedProperties($filter=id eq 'Integer 0x1081' "
-          r"or id eq 'Integer 0x1080')",
+          r"or id eq 'Integer 0x1080' or id eq 'Integer 0x0E08')",
         );
       }
     });
@@ -1221,6 +1221,55 @@ void main() {
       );
     });
 
+    test('a property is found however Graph writes its id', () {
+      // Asked for as 'Integer 0x0E08', it comes back as 'Integer 0xe08'.
+      expect(GraphMailApi.propertyKey('Integer 0x0E08'),
+          GraphMailApi.propertyKey('Integer 0xe08'));
+      expect(GraphMailApi.propertyKey('Integer 0x1081'),
+          GraphMailApi.propertyKey('integer 0x1081'));
+      expect(GraphMailApi.propertyKey('Integer 0x0E08'),
+          isNot(GraphMailApi.propertyKey('Long 0x0E08')));
+    });
+
+    test('a row with files says what the message weighs', () async {
+      // Microsoft sends no size with a row, so the paperclip on a Microsoft
+      // row stood alone where Gmail's said what it weighed. Exchange's own
+      // size of the message comes with the marks it already asks for.
+      server
+        ..message('f-inbox',
+            id: 'm1',
+            subject: 'Drawings',
+            minutesAgo: 5,
+            hasAttachments: true,
+            sizeBytes: 1843200)
+        ..message('f-inbox',
+            id: 'm2', subject: 'Plain', minutesAgo: 4, sizeBytes: 9000);
+
+      final rows = {
+        for (final h in await transport.fetchHeadersFromUid('Inbox', 1))
+          h.subject: h,
+      };
+
+      expect(rows['Drawings']!.attachmentBytes, 1843200);
+      expect(rows['Plain']!.attachmentBytes, 0,
+          reason: 'no paperclip, nothing beside it');
+    });
+
+    test('and mail already on the phone gets its size at the next sync',
+        () async {
+      server.message('f-inbox',
+          id: 'm1',
+          subject: 'Drawings',
+          minutesAgo: 5,
+          hasAttachments: true,
+          sizeBytes: 1843200);
+      final uid = (await transport.fetchHeadersFromUid('Inbox', 1)).single.uid;
+
+      final flags = await transport.fetchFlags('Inbox', uid, uid);
+
+      expect(flags.single.attachmentBytes, 1843200);
+    });
+
     test('a move that fails part way says which went', () async {
       // One request per message: the second failing left the first moved,
       // and nothing said so.
@@ -1701,6 +1750,7 @@ class _FakeGraph {
     int? lastVerb,
     int? iconIndex,
     String? conversationId,
+    int? sizeBytes,
   }) {
     messages[id] = {
       'id': id,
@@ -1728,10 +1778,13 @@ class _FakeGraph {
       'conversationId': ?conversationId,
       // What Outlook, or anything else, last did to it, and the icon it
       // draws for it.
-      if (lastVerb != null || iconIndex != null)
+      // and, as every message has one, its size.
+      if (lastVerb != null || iconIndex != null || sizeBytes != null)
         'singleValueExtendedProperties': [
           if (lastVerb != null) {'id': 'Integer 0x1081', 'value': '$lastVerb'},
           if (iconIndex != null) {'id': 'Integer 0x1080', 'value': '$iconIndex'},
+          // Written back as Graph writes it, without the leading zero.
+          if (sizeBytes != null) {'id': 'Integer 0xe08', 'value': '$sizeBytes'},
         ],
     };
     _recount(folderId);
@@ -1779,7 +1832,10 @@ class _FakeGraph {
     final kept = [
       for (final p in (message['singleValueExtendedProperties'] as List?) ??
           const [])
-        if (asked.contains((p as Map)['id'])) p,
+        if (asked
+            .map(GraphMailApi.propertyKey)
+            .contains(GraphMailApi.propertyKey('${(p as Map)['id']}')))
+          p,
     ];
     if (kept.isNotEmpty) row['singleValueExtendedProperties'] = kept;
     return row;

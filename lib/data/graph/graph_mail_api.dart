@@ -4,7 +4,7 @@ import 'dart:convert';
 import '../../domain/calendar_invite.dart';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 
 import 'package:http/http.dart' as http;
 
@@ -107,6 +107,12 @@ class GraphMailApi {
   /// here went unmarked there.
   static const iconIndexProperty = 'Integer 0x1080';
 
+  /// PidTagMessageSize: the size of the whole message, files and all, as
+  /// Outlook shows it in its Size column. Graph has no property of its own
+  /// for it, and a list row carries no size otherwise, so the paperclip on a
+  /// Microsoft row stood alone where Gmail's said what it weighed.
+  static const messageSizeProperty = 'Integer 0x0E08';
+
   /// The last verb's values for a reply, a reply to all and a forward.
   /// Other values stand for other things done to a message, and are neither.
   static const verbReply = 102;
@@ -120,11 +126,29 @@ class GraphMailApi {
   /// so the arrow shown there was not shown here.
   static const lastVerbExpand =
       "singleValueExtendedProperties(\$filter=id eq '$lastVerbProperty' "
-      "or id eq '$iconIndexProperty')";
+      "or id eq '$iconIndexProperty' or id eq '$messageSizeProperty')";
 
   /// The icon's values for a reply and a forward; see [iconIndexProperty].
   static const iconReplied = 261;
   static const iconForwarded = 262;
+
+  /// An extended property's id as its type and tag number, or the id in
+  /// lower case where it is not in that form.
+  @visibleForTesting
+  static String propertyKey(String id) {
+    final trimmed = id.trim();
+    final space = trimmed.lastIndexOf(' ');
+    if (space > 0) {
+      final tag = trimmed.substring(space + 1).toLowerCase();
+      if (tag.startsWith('0x')) {
+        final number = int.tryParse(tag.substring(2), radix: 16);
+        if (number != null) {
+          return '${trimmed.substring(0, space).toLowerCase()} $number';
+        }
+      }
+    }
+    return trimmed.toLowerCase();
+  }
 
   // --- folders ---------------------------------------------------------------
 
@@ -1014,6 +1038,7 @@ class GraphMessage {
     this.lastVerb,
     this.iconIndex,
     this.conversationId,
+    this.sizeBytes,
   });
 
   final String id;
@@ -1053,6 +1078,10 @@ class GraphMessage {
   /// Exchange's conversation, on every row. See
   /// [MailMessage.conversationId].
   final String? conversationId;
+
+  /// The whole message's size in bytes: see [GraphMailApi.messageSizeProperty].
+  /// Null where Graph did not send it.
+  final int? sizeBytes;
 
   static GraphMessage? fromJson(Map<String, Object?> json) {
     final id = json['id'];
@@ -1105,22 +1134,32 @@ class GraphMessage {
               (json['conversationId'] as String).isNotEmpty
           ? json['conversationId'] as String
           : null,
+      sizeBytes: _property(
+        json['singleValueExtendedProperties'],
+        GraphMailApi.messageSizeProperty,
+      ),
     );
   }
 
   /// One of a row's extended properties, by id, as a number. Absent
   /// altogether on a message nothing has been done to, and sent as a
   /// string, as Graph sends every extended property's value.
+  ///
+  /// Matched by meaning, not spelling: Graph writes the id back in a form
+  /// of its own, the tag without its leading zeros ('Integer 0xe08' for
+  /// 'Integer 0x0E08' asked), so a message size compared as text was never
+  /// found.
   static int? _property(Object? properties, String wanted) {
     if (properties is! List) return null;
+    final key = GraphMailApi.propertyKey(wanted);
     for (final p in properties) {
       if (p is! Map) continue;
-      final id = '${p['id']}'.toLowerCase();
-      if (id != wanted.toLowerCase()) continue;
+      if (GraphMailApi.propertyKey('${p['id']}') != key) continue;
       return int.tryParse('${p['value']}'.trim());
     }
     return null;
   }
+
 
   static ({String email, String? name})? _address(Object? value) {
     if (value is! Map) return null;

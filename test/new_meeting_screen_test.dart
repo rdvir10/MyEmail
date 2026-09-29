@@ -14,7 +14,10 @@ import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/meeting.dart';
+import 'package:myemail/state/display_providers.dart';
+import 'package:myemail/domain/display_settings.dart';
 import 'package:myemail/state/calendar_providers.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
@@ -22,6 +25,7 @@ import 'package:myemail/ui/accounts/google_sign_in_screen.dart';
 import 'package:myemail/ui/accounts/microsoft_sign_in_screen.dart';
 import 'package:myemail/ui/meetings/new_meeting_screen.dart';
 import 'package:myemail/ui/messages/date_format.dart';
+import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
@@ -749,8 +753,80 @@ void main() {
       expect(find.byType(NewMeetingScreen), findsOneWidget);
     });
 
-    testWidgets('Create calendar event from a message opens it filled in',
+    testWidgets("on a phone it is in the reading pane's menu, not the bar",
         (tester) async {
+      final c = await pumpShell(tester, size: const Size(400, 900));
+      await tester.tap(find.byType(MessageTile).first);
+      await tester.pumpAndSettle();
+      final open = c.read(selectedMessageProvider)!;
+      final pane = find.byType(ReadingPane);
+
+      expect(
+        find.descendant(
+            of: pane,
+            matching: find.byKey(const ValueKey('meeting-from-message'))),
+        findsNothing,
+      );
+      await tester.tap(find.descendant(of: pane, matching: find.byTooltip('More')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Meeting from this message…'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(NewMeetingScreen), findsOneWidget);
+      expect(
+        tester.widget<TextField>(field('meeting-attendees')).controller!.text,
+        contains(open.from.email),
+      );
+    });
+
+    testWidgets('on a tablet it is on the bar, and not in the menu too',
+        (tester) async {
+      await pumpShell(tester);
+      final pane = find.byType(ReadingPane);
+      expect(
+        find.descendant(
+            of: pane,
+            matching: find.byKey(const ValueKey('meeting-from-message'))),
+        findsOneWidget,
+      );
+      await tester.tap(find.descendant(of: pane, matching: find.byTooltip('More')));
+      await tester.pumpAndSettle();
+      expect(find.text('Meeting from this message…'), findsNothing);
+    });
+
+    testWidgets('on a tablet standing up, with the pane below, it goes in '
+        'the menu so More stays on the bar', (tester) async {
+      // 824 wide, the tree beside the list and the message under it: with
+      // the meeting button the row was wider than the pane, and More, with
+      // Print and Save source in it, went off the end.
+      final c = await pumpShell(tester, size: const Size(824, 1200));
+      c.read(displayProvider.notifier)
+          .setReadingPane(ReadingPanePosition.bottom);
+      await tester.pumpAndSettle();
+      final pane = find.byType(ReadingPane);
+      if (pane.evaluate().isEmpty) {
+        await tester.tap(find.byType(MessageTile).first);
+        await tester.pumpAndSettle();
+      }
+
+      final more = tester.getRect(
+          find.descendant(of: pane, matching: find.byTooltip('More')).first);
+      expect(more.right, lessThanOrEqualTo(tester.getRect(pane.first).right),
+          reason: 'More is on screen');
+      if (find
+          .descendant(
+              of: pane,
+              matching: find.byKey(const ValueKey('meeting-from-message')))
+          .evaluate()
+          .isEmpty) {
+        await tester.tap(
+            find.descendant(of: pane, matching: find.byTooltip('More')).first);
+        await tester.pumpAndSettle();
+        expect(find.text('Meeting from this message…'), findsOneWidget);
+      }
+    });
+
+    testWidgets('a meeting from a message opens filled in', (tester) async {
       final c = await pumpShell(tester);
       final open = c.read(selectedMessageProvider)!;
       final account = c
@@ -758,12 +834,11 @@ void main() {
           .value!
           .firstWhere((a) => a.id == open.accountId);
 
+      // On a tablet it is on the reading pane's bar, beside Forward.
       await tester.tap(find.descendant(
         of: find.byType(ReadingPane),
-        matching: find.byTooltip('More'),
+        matching: find.byTooltip('Meeting from this message'),
       ));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Create calendar event…'));
       await tester.pumpAndSettle();
 
       expect(find.byType(NewMeetingScreen), findsOneWidget);
@@ -774,8 +849,73 @@ void main() {
       expect(notes.controller!.text, contains('From: ${open.from.display}'));
       expect(find.text(account.emailAddress), findsOneWidget,
           reason: 'from the account the message came to');
+      expect(
+        tester.widget<TextField>(field('meeting-attendees')).controller!.text,
+        contains(open.from.email),
+        reason: 'everyone on the message, as Reply with Meeting has them',
+      );
       expect(calendar.inserted, isEmpty,
           reason: 'the calendar app is no longer the first stop');
+    });
+  });
+
+  group('who a meeting from a message asks', () {
+    MailMessage mail() => MailMessage(
+          id: 'a:INBOX#1',
+          accountId: 'a',
+          folderId: 'a:INBOX',
+          uid: 1,
+          subject: 'Visit',
+          preview: '',
+          from: const MailAddress(email: 'don@hadco-metal.com', name: 'Don'),
+          to: const [
+            MailAddress(email: 'RDvir@hadco-metal.com', name: 'Ron'),
+            MailAddress(email: 'gary@hadco-metal.com', name: 'Gary'),
+          ],
+          cc: const [
+            MailAddress(email: 'Don@hadco-metal.com'),
+            MailAddress(email: 'nz@example.com'),
+          ],
+          date: DateTime(2026, 9, 28),
+        );
+
+    test('whoever a reply goes to, and only addresses', () {
+      final form = MailMessage(
+        id: 'a:INBOX#2',
+        accountId: 'a',
+        folderId: 'a:INBOX',
+        uid: 2,
+        subject: 'Can we meet Thursday?',
+        preview: '',
+        from: const MailAddress(email: 'noreply@hadco-metal.com'),
+        replyTo: const [MailAddress(email: 'customer@client.com')],
+        to: const [
+          MailAddress(email: 'undisclosed-recipients'),
+          MailAddress(email: 'Hadco Team'),
+        ],
+        cc: const [
+          MailAddress(
+              email: '/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP '
+                  '(FYDIBOHF23SPDLT)/CN=RECIPIENTS/CN=abc'),
+        ],
+        date: DateTime(2026, 9, 28),
+      );
+
+      expect(
+        [for (final a in meetingAttendeesFor(form, own: const {})) a.email],
+        ['customer@client.com'],
+      );
+    });
+
+    test('the sender, then everyone it went to, once each, never you', () {
+      expect(
+        [
+          for (final a in meetingAttendeesFor(mail(),
+              own: const {'rdvir@hadco-metal.com'}))
+            a.email,
+        ],
+        ['don@hadco-metal.com', 'gary@hadco-metal.com', 'nz@example.com'],
+      );
     });
   });
 }

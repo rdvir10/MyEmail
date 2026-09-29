@@ -108,6 +108,10 @@ class FolderSync {
           isForwarded: f.isForwarded,
         ),
     });
+    await store.updateAttachmentBytes(accountId, path, {
+      for (final f in flags)
+        f.uid: ?f.attachmentBytes,
+    });
 
     // Deletions.
     final existing = await transport.existingUids(

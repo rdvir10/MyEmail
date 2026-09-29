@@ -231,17 +231,15 @@ void main() {
       expect(find.text('Add to calendar'), findsNothing);
     });
 
-    testWidgets('any message can become a meeting from the menu',
+    testWidgets('any message can become a meeting, from the tablet\'s bar',
         (tester) async {
       final c = await pump(tester);
       final open = c.read(selectedMessageProvider)!;
 
       await tester.tap(find.descendant(
         of: find.byType(ReadingPane),
-        matching: find.byTooltip('More'),
+        matching: find.byTooltip('Meeting from this message'),
       ));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Create calendar event…'));
       await tester.pumpAndSettle();
 
       // On the new-meeting screen, filled in from the message, and sent
@@ -255,6 +253,8 @@ void main() {
       expect(meeting.title, open.subject);
       expect(meeting.notes, contains('From: '));
       expect(meeting.accountId, open.accountId);
+      expect(meeting.attendees.map((a) => a.email), contains(open.from.email),
+          reason: 'the sender is asked, as Reply with Meeting asks them');
       expect(calendar.inserted, isEmpty);
       expect(find.byType(MessageTile), findsWidgets);
     });

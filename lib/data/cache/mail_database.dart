@@ -667,6 +667,27 @@ class DriftCacheStore implements CacheStore {
   }
 
   @override
+  Future<void> updateAttachmentBytes(
+    String accountId,
+    String path,
+    Map<int, int> bytesByUid,
+  ) async {
+    if (bytesByUid.isEmpty) return;
+    await db.batch((b) {
+      for (final e in bytesByUid.entries) {
+        b.update(
+          db.messages,
+          MessagesCompanion(attachmentBytes: Value(e.value)),
+          where: (m) =>
+              _folder(m, accountId, path) &
+              m.uid.equals(e.key) &
+              m.attachmentBytes.equals(e.value).not(),
+        );
+      }
+    });
+  }
+
+  @override
   Future<void> deleteUids(String accountId, String path, Set<int> uids) async {
     if (uids.isEmpty) return;
     await (db.delete(db.messages)
