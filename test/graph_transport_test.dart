@@ -1141,6 +1141,86 @@ void main() {
       expect(existing, containsAll([for (var i = 20; i < 150; i++) uidOf['M$i']]));
     });
 
+    test('a message already gone from Microsoft counts as moved', () async {
+      // Deleted in Outlook while its notification was up: Delete in the
+      // shade failed five times over, then said it was where it was.
+      server.message('f-inbox', id: 'm1', subject: 'A', minutesAgo: 5);
+      final uid = (await transport.fetchHeadersFromUid('Inbox', 1)).single.uid;
+      server.remove('m1');
+
+      final moved = await transport.moveMessages('Inbox', [uid], 'Archive');
+
+      expect(moved, isNull, reason: 'nothing landed');
+    });
+
+    test('and deleting one already gone has nothing left to do', () async {
+      server.message('f-inbox', id: 'm1', subject: 'A', minutesAgo: 5);
+      final uid = (await transport.fetchHeadersFromUid('Inbox', 1)).single.uid;
+      server.remove('m1');
+
+      await expectLater(
+        transport.storeFlag('Inbox',
+            uids: [uid], flag: MessageFlag.deleted, set: true),
+        completes,
+      );
+    });
+
+    test('but a delete refused for a message still there is a failure',
+        () async {
+      server.message('f-inbox', id: 'm1', subject: 'A', minutesAgo: 5);
+      final uid = (await transport.fetchHeadersFromUid('Inbox', 1)).single.uid;
+      server.refuseDeleteOf.add('m1');
+
+      await expectLater(
+        transport.storeFlag('Inbox',
+            uids: [uid], flag: MessageFlag.deleted, set: true),
+        throwsA(isA<GraphNotFound>()),
+      );
+    });
+
+    test('and anything else on a message gone is still a failure', () async {
+      server.message('f-inbox', id: 'm1', subject: 'A', minutesAgo: 5);
+      final uid = (await transport.fetchHeadersFromUid('Inbox', 1)).single.uid;
+      server.remove('m1');
+
+      await expectLater(
+        transport.storeFlag('Inbox',
+            uids: [uid], flag: MessageFlag.seen, set: true),
+        throwsA(isA<GraphNotFound>()),
+      );
+    });
+
+    test('a move to a folder deleted since is not taken for done', () async {
+      // Without the check that the message itself is gone, a move into a
+      // folder deleted elsewhere would drop the message from the list while
+      // it stayed in the Inbox.
+      server
+        ..folder(id: 'f-old', name: 'Old')
+        ..message('f-inbox', id: 'm1', subject: 'A', minutesAgo: 5);
+      await transport.listFolders();
+      final uid = (await transport.fetchHeadersFromUid('Inbox', 1)).single.uid;
+      server.folders.remove('f-old');
+
+      await expectLater(
+        transport.moveMessages('Inbox', [uid], 'Old'),
+        throwsA(isA<GraphNotFound>()),
+      );
+      expect(server.messages.containsKey('m1'), isTrue);
+    });
+
+    test('a draft that was created is saved, marked read or not', () async {
+      // Failing to mark it read threw, and a reply from the shade took that
+      // for "not saved" and saved another copy each time round.
+      server.folder(id: 'f-drafts', name: 'Drafts', wellKnown: 'drafts');
+      server.refuseAllPatches = true;
+
+      await expectLater(
+        transport.appendMessage('Drafts', 'Subject: Hi\r\n\r\nHello',
+            draft: true),
+        completes,
+      );
+    });
+
     test('a move that fails part way says which went', () async {
       // One request per message: the second failing left the first moved,
       // and nothing said so.
@@ -1486,6 +1566,15 @@ class _FakeGraph {
 
   /// Messages the server will not move.
   final Set<String> refuseMoveOf = {};
+
+  /// Messages whose delete is answered 404 although they are there.
+  final Set<String> refuseDeleteOf = {};
+
+  /// Messages whose PATCH is answered 500.
+  final Set<String> refusePatchOf = {};
+
+  /// Every message PATCH answered 500.
+  bool refuseAllPatches = false;
 
   /// Names whose lookup inside a batch is throttled, and how many times.
   final Map<String, int> throttledInBatch = {};
@@ -1984,6 +2073,10 @@ class _FakeGraph {
       final id = path.split('/me/messages/').last;
       final message = messages[id];
       if (message == null) return http.Response('{}', 404);
+      if (refusePatchOf.contains(id) || refuseAllPatches) {
+        return http.Response('{"error":{"code":"ErrorInternalServerError"}}',
+            500);
+      }
       patched.add(id);
       final body = jsonDecode(request.body) as Map<String, Object?>;
       // Extended properties are set one by one, by id, and the rest kept.
@@ -2002,8 +2095,25 @@ class _FakeGraph {
     }
 
     if (request.method == 'DELETE') {
-      remove(path.split('/me/messages/').last);
+      final id = path.split('/me/messages/').last;
+      // As Graph does: nothing there, or refused as if it were not.
+      if (!messages.containsKey(id) || refuseDeleteOf.contains(id)) {
+        return http.Response('{}', 404);
+      }
+      remove(id);
       return http.Response('', 204);
+    }
+
+    // A message made from MIME, as a draft is.
+    final creating =
+        RegExp(r'/me/mailFolders/([^/]+)/messages$').firstMatch(path);
+    if (request.method == 'POST' && creating != null) {
+      final folderId = wellKnown[creating.group(1)] ?? creating.group(1)!;
+      if (!folders.containsKey(folderId)) return http.Response('{}', 404);
+      final id = 'created-${messages.length}';
+      messages[id] = {'id': id, '_folder': folderId, 'isRead': false};
+      _recount(folderId);
+      return json({'id': id});
     }
 
     if (request.method == 'POST' && path.endsWith('/move')) {
@@ -2012,10 +2122,16 @@ class _FakeGraph {
         return http.Response('{"error":{"code":"ErrorInternalServerError"}}',
             500);
       }
-      final message = messages.remove(id);
-      if (message == null) return http.Response('{}', 404);
       final destination =
           (jsonDecode(request.body) as Map)['destinationId'] as String;
+      // A destination deleted since it was listed: not found, and the
+      // message stays where it was.
+      if (!folders.containsKey(destination) &&
+          !wellKnown.containsKey(destination)) {
+        return http.Response('{}', 404);
+      }
+      final message = messages.remove(id);
+      if (message == null) return http.Response('{}', 404);
       // Graph reissues the id on a move. Doing the same here is the point of
       // the test that follows it.
       final newId = '$id-moved';

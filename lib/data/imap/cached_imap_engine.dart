@@ -1387,13 +1387,22 @@ class CachedImapEngine implements MailEngine {
 
     // Resync so the new copy is in the cache, then find it: APPEND does not
     // reliably report the UID it landed on, and UIDPLUS is not universal.
-    await _sync(account.id, t).sync(draftsPath);
-    final newest = await cache.uidRange(account.id, draftsPath);
-    if (newest == null) return null;
-    return MailMessage.idFor(
-      MailFolder.idFor(account.id, draftsPath),
-      newest.max,
-    );
+    //
+    // Past the append the draft is saved, whatever happens here. A failure
+    // to find it used to throw, and a reply from the shade, taking that for
+    // "not saved", went round again and left a copy in Drafts each time.
+    try {
+      await _sync(account.id, t).sync(draftsPath);
+      final newest = await cache.uidRange(account.id, draftsPath);
+      if (newest == null) return null;
+      return MailMessage.idFor(
+        MailFolder.idFor(account.id, draftsPath),
+        newest.max,
+      );
+    } catch (e) {
+      debugPrint('[myemail] draft saved, but not found again: $e');
+      return null;
+    }
   }
 
   @override

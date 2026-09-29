@@ -21,6 +21,7 @@ import '../widget/home_screen_surface.dart';
 import '../widget/mailbox_widgets.dart';
 import '../widget/widget_state_store.dart';
 import '../notifications/notification_action_isolate.dart';
+import '../notifications/pending_actions.dart';
 import 'background_sync.dart';
 import 'live_sync.dart';
 import 'sync_state_store.dart';
@@ -56,6 +57,12 @@ const _liveUniqueName = 'mailtree.live.foreground';
 /// not something to hold until the next scheduled pass.
 const _actionsTaskName = 'mailtree.notification-actions';
 const _actionsUniqueName = 'mailtree.notification-actions.pending';
+
+/// Another look at presses the first could not finish: offline, failing,
+/// or held by a drain that may yet die. Its own name, so its growing
+/// backoff never stands in front of a new press; see
+/// [runPendingNotificationActions].
+const _actionsRetryName = 'mailtree.notification-actions.retry';
 
 /// The ongoing notification the foreground service is legally required to
 /// show. Its own channel, set to the lowest importance Android allows for a
@@ -214,7 +221,15 @@ bool get _supported =>
 ///
 /// `append`, not `replace`: two presses in quick succession must both be
 /// done, and replacing the job would drop the first one's work on the floor
-/// even though its entry is still in the queue.
+/// even though its entry is still in the queue. (The plugin makes it
+/// APPEND_OR_REPLACE, which drops a job that had already failed when the
+/// next is added; one that fails while the next waits behind it takes that
+/// one down with it, which is why a press also schedules a retry.)
+///
+/// This job always succeeds, whatever it could not finish: what is left
+/// goes to the retry job instead. Retrying here put the chain into
+/// WorkManager's backoff, and every press made after it waited behind a
+/// gap that grew by half a minute a try, to five hours.
 Future<void> runPendingNotificationActions() async {
   if (!_supported) return;
   await Workmanager().initialize(backgroundCallbackDispatcher);
@@ -223,8 +238,25 @@ Future<void> runPendingNotificationActions() async {
     _actionsTaskName,
     existingWorkPolicy: ExistingWorkPolicy.append,
     constraints: Constraints(networkType: NetworkType.connected),
+  );
+}
+
+/// Look again in a minute, and then as WorkManager's backoff says: a minute
+/// more each time, not doubling, because a press left behind a retry that is
+/// already waiting waits as long as it does. `keep`: one retry waiting is
+/// enough, and replacing one that is running would cut it off mid-press; a
+/// running one looks at the whole queue again before it calls itself done.
+Future<void> scheduleNotificationActionsRetry() async {
+  if (!_supported) return;
+  await Workmanager().registerOneOffTask(
+    _actionsRetryName,
+    _actionsTaskName,
+    inputData: {'retry': true},
+    initialDelay: const Duration(minutes: 1),
+    existingWorkPolicy: ExistingWorkPolicy.keep,
+    constraints: Constraints(networkType: NetworkType.connected),
     backoffPolicy: BackoffPolicy.linear,
-    backoffPolicyDelay: const Duration(seconds: 30),
+    backoffPolicyDelay: const Duration(minutes: 1),
   );
 }
 
@@ -235,14 +267,42 @@ void backgroundCallbackDispatcher() {
       return switch (task) {
         _taskName => _runOnePass(),
         _liveTaskName => _runLive(inputData),
-        _actionsTaskName => _runPendingActions(),
+        _actionsTaskName =>
+          _runPendingActions(retry: inputData?['retry'] == true),
         _ => Future.value(true),
       };
     },
     onTaskStopped: (task, _) async {
       if (task == _liveTaskName) await _liveStop?.stop();
+      if (task == _actionsTaskName) await _actionsStop?.stop();
     },
   );
+}
+
+/// The running actions drain's stop, while there is one.
+_ActionsStop? _actionsStop;
+
+/// Android stopping the actions job: a lost connection, or its time up.
+///
+/// The drain finishes the press in hand, if it can within [grace], and
+/// claims no more; the rest stay in the queue, unclaimed, for the retry.
+/// Without this the engine was torn down mid-press and the presses it had
+/// claimed sat untouched.
+class _ActionsStop {
+  static const grace = Duration(seconds: 8);
+
+  var requested = false;
+  Future<void> _finished = Future<void>.value();
+
+  Future<T> guard<T>(Future<T> drain) {
+    _finished = drain.then<void>((_) {}, onError: (Object _) {});
+    return drain;
+  }
+
+  Future<void> stop() async {
+    requested = true;
+    await _finished.timeout(grace, onTimeout: () {});
+  }
 }
 
 /// The running live worker's stop, while there is one.
@@ -326,22 +386,49 @@ Future<bool> Function() foregroundCheck(
 
 /// Carry out the notification buttons that are waiting.
 ///
-/// False when something went back in the queue, so WorkManager tries again
-/// with backoff: what cannot be done now (offline, say) is kept for later
-/// rather than dropped.
-Future<bool> _runPendingActions() async {
+/// A press job ([retry] false) always succeeds and leaves what it could not
+/// finish to the retry job. The retry job returns false while anything is
+/// left, so WorkManager comes back with its backoff; see
+/// [runPendingNotificationActions] for why the two are kept apart.
+Future<bool> _runPendingActions({required bool retry}) async {
   DartPluginRegistrant.ensureInitialized();
+  final stop = _actionsStop = _ActionsStop();
   try {
-    final result = await drainPendingNotificationActions();
+    final result = await stop.guard(drainPendingNotificationActions(
+      shouldStop: () => stop.requested,
+    ));
     if (result.done > 0) {
       debugPrint('[myemail] carried out ${result.done} from the shade');
       announceActionsDone();
     }
-    return result.waiting == 0;
+    // A summary left over by a pressed row, should the press isolate not
+    // have caught it.
+    await AndroidMailNotifier().dropEmptySummaries();
+    if (retry) {
+      // The whole queue, not only what this run listed when it began: a
+      // press left over by a press job while this ran found this retry
+      // already there, and would otherwise be left with nobody to look.
+      final left = result.leftOver || (await PendingActions().waiting()).isNotEmpty;
+      if (left) debugPrint('[myemail] notification presses still waiting');
+      return !left;
+    }
+    if (!result.leftOver) return true;
+    debugPrint('[myemail] notification presses left: ${result.waiting} '
+        'waiting, ${result.held} held elsewhere');
+    await scheduleNotificationActionsRetry();
+    return true;
   } catch (e, stack) {
     debugPrint('[myemail] pending notification actions failed: $e');
     debugPrint('$stack');
+    // Something is still in the queue, most likely. The retry job comes
+    // back for it; a press job leaves one behind it.
+    if (retry) return false;
+    try {
+      await scheduleNotificationActionsRetry();
+    } catch (_) {}
     return true;
+  } finally {
+    if (identical(_actionsStop, stop)) _actionsStop = null;
   }
 }
 

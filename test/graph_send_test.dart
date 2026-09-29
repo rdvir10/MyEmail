@@ -215,6 +215,55 @@ void main() {
         throwsA(isA<ConnectionFailed>()),
       );
     });
+
+    test('a connection never made is a connection failure', () async {
+      // The phone's own limit on connecting: nothing can have left.
+      final sender = senderWith((_) async => throw const SocketLike(
+          'SocketException: HTTP connection timed out after 0:00:30.000000, '
+          'host: graph.microsoft.com, port: 443'));
+
+      await expectLater(
+        sender.send(message()),
+        throwsA(isA<ConnectionFailed>()),
+      );
+    });
+
+    test('a route lost on a connection already made may have sent it',
+        () async {
+      final sender = senderWith((_) async => throw const SocketLike(
+          'SocketException: Read failed (OS Error: No route to host)'));
+
+      await expectLater(
+        sender.send(message()),
+        throwsA(isA<SendMayHaveGone>()),
+      );
+    });
+
+    test('a gateway that gave up on the answer may have let it through',
+        () async {
+      // Exchange can queue a message behind a 504 from the gateway. Taken
+      // for a refusal, the reply went to Drafts, and sending that sent it
+      // twice.
+      final sender = senderWith((_) async => http.Response('', 504));
+
+      await expectLater(
+        sender.send(message()),
+        throwsA(isA<SendMayHaveGone>()),
+      );
+    });
+
+    test('a connection lost while sending may have sent it', () async {
+      // Taken for "offline", a reply from the shade was sent again when the
+      // network came back, and went twice.
+      final sender = senderWith((_) async => throw const SocketLike(
+          'ClientException: Connection closed before full header was '
+          'received'));
+
+      await expectLater(
+        sender.send(message()),
+        throwsA(isA<SendMayHaveGone>()),
+      );
+    });
   });
 
   group('a message too large to post in one request', () {
@@ -660,6 +709,17 @@ void main() {
   });
 }
 
+/// A network failure as the phone reports it. The words matter: a failure
+/// that can only have come before anything was sent is a connection
+/// failure; any other, on the request that sends, may be a message that
+/// went.
 class SocketLike implements Exception {
-  const SocketLike();
+  const SocketLike([
+    this.said = "SocketException: Failed host lookup: 'graph.microsoft.com'",
+  ]);
+
+  final String said;
+
+  @override
+  String toString() => said;
 }

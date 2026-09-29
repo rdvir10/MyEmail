@@ -330,6 +330,10 @@ class EnvelopeCommand extends SmtpCommand {
   var _step = _EnvelopeStep.mailFrom;
   var _index = 0;
 
+  /// Whether the message itself has been handed to the connection: from
+  /// here on a lost answer may be a message that went.
+  bool get textSent => _step == _EnvelopeStep.done;
+
   @override
   String? nextCommand(em.SmtpResponse response) {
     switch (_step) {
@@ -498,24 +502,37 @@ class SmtpSender {
       // Text of our own making, not sendMessage: see wireText for the two
       // things enough_mail's own framing gets wrong. And an envelope of our
       // own making: see EnvelopeCommand for what its envelope gets wrong.
+      final envelope = EnvelopeCommand(
+        text: wireText(message),
+        from: message.from!.first.email,
+        recipients: [
+          for (final a in envelopeRecipients(message)) a.email,
+        ],
+      );
       final em.SmtpResponse response;
       try {
-        response = await client
-            .sendCommand(EnvelopeCommand(
-              text: wireText(message),
-              from: message.from!.first.email,
-              recipients: [
-                for (final a in envelopeRecipients(message)) a.email,
-              ],
-            ))
-            .timeout(transferLimit);
-      } on TimeoutException {
-        // The message may be on the server already; only its answer is
-        // missing. Saying it failed outright could make someone send twice.
-        throw const SendFailed(
+        response =
+            await client.sendCommand(envelope).timeout(transferLimit);
+      } on SendFailed {
+        // Refused before anything was sent: the envelope's own words.
+        rethrow;
+      } on em.SmtpException {
+        // The server answered, and the answer was no.
+        rethrow;
+      } on Exception catch (e) {
+        // No answer, or the connection went. Before the message itself was
+        // handed over, nothing has gone. After, it may be on the server
+        // already with only its answer missing, and saying it failed
+        // outright could make someone send it twice.
+        if (!envelope.textSent) {
+          throw ConnectionFailed(
+              'The mail server stopped answering before the message was '
+              'sent, so nothing went. ($e)');
+        }
+        throw SendMayHaveGone(
           'The mail server stopped answering while the message was being '
           'handed over, so it may or may not have been sent. Check Sent '
-          'before sending it again.',
+          'before sending it again. ($e)',
         );
       }
       if (!response.isOkStatus) {

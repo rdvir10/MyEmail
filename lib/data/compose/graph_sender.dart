@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:io' show HttpClient;
 
 import 'package:enough_mail/enough_mail.dart' as em;
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart' show IOClient;
 
 import '../../domain/account.dart';
 import '../../domain/draft.dart';
@@ -81,7 +83,7 @@ class GraphSender {
         '${_mb(mime.length)} against ${_mb(maxMimeBytes)}.',
       );
     }
-    final client = _http ?? http.Client();
+    final client = _http ?? _defaultClient();
     try {
       await _postWholeMessage(client, mime);
     } finally {
@@ -108,7 +110,7 @@ class GraphSender {
     final whole = utf8.encode(
       buildMimeMessage(draft: draft, account: account).renderMessage(),
     );
-    final client = _http ?? http.Client();
+    final client = _http ?? _defaultClient();
     try {
       if (whole.length <= maxMimeBytes) {
         return await _postWholeMessage(client, whole);
@@ -120,22 +122,46 @@ class GraphSender {
   }
 
   Future<void> _postWholeMessage(http.Client client, List<int> mime) async {
-    final response = await _authorised((token) => client.post(
-          sendMailUri,
-          headers: {
-            'Authorization': 'Bearer $token',
-            // text/plain is what tells Graph the body is base64 MIME rather
-            // than its own JSON. application/json here is rejected as
-            // malformed JSON, which reads as a bug in the message.
-            'Content-Type': 'text/plain',
-          },
-          body: base64Encode(mime),
-        ));
+    final body = base64Encode(mime);
+    final response = await _authorised(
+      sending: true,
+      uploading: body.length,
+      (token) => client.post(
+        sendMailUri,
+        headers: {
+          'Authorization': 'Bearer $token',
+          // text/plain is what tells Graph the body is base64 MIME rather
+          // than its own JSON. application/json here is rejected as
+          // malformed JSON, which reads as a bug in the message.
+          'Content-Type': 'text/plain',
+        },
+        body: body,
+      ),
+    );
 
     // 202 means accepted for delivery, not delivered. Graph returns no body.
     if (response.statusCode == 202) return;
-    throw _failureFor(response);
+    throw _sendFailureFor(response);
   }
+
+  /// A refusal of the request that sends, except a gateway giving up on
+  /// the answer: Exchange may have queued the message behind it.
+  static Object _sendFailureFor(http.Response response) {
+    if (response.statusCode == 502 || response.statusCode == 504) {
+      return SendMayHaveGone(
+        'Microsoft did not answer in time (HTTP ${response.statusCode}), so '
+        'it may or may not have gone. Check Sent Items before sending it '
+        'again.',
+      );
+    }
+    return _failureFor(response);
+  }
+
+  /// With a limit on making the connection, so one that is never made fails
+  /// in a way that can only mean nothing left: see [_neverLeft].
+  static http.Client _defaultClient() => IOClient(
+        HttpClient()..connectionTimeout = const Duration(seconds: 30),
+      );
 
   /// The words first, then the files, then send it.
   ///
@@ -190,12 +216,12 @@ class GraphSender {
     }
     try {
       await _sendDraftOnServer(client, messageId);
-    } on ConnectionFailed catch (e) {
+    } on SendMayHaveGone catch (e) {
       // Lost with the send asked for and no answer: it may have gone.
       throw _withNote(
         e,
-        'It may or may not have gone. If it has not, it is in Drafts; check '
-        'Sent Items before sending it again.',
+        'If it has not, it is in Drafts; check Sent Items before sending it '
+        'again.',
       );
     } catch (e) {
       throw _withNote(e, _inDrafts);
@@ -210,24 +236,29 @@ class GraphSender {
         AuthenticationFailed(:final message) =>
           AuthenticationFailed('$message $note'),
         ConnectionFailed(:final message) => ConnectionFailed('$message $note'),
+        SendMayHaveGone(:final message) => SendMayHaveGone('$message $note'),
         SendFailed(:final message) => SendFailed('$message $note'),
         _ => error,
       };
 
   Future<String> _createDraft(http.Client client, List<int> mime) async {
-    final response = await _authorised((token) => client.post(
-          messagesUri,
-          headers: {
-            'Authorization': 'Bearer $token',
-            'Content-Type': 'text/plain',
-          },
-          body: base64Encode(mime),
-        ));
+    final body = base64Encode(mime);
+    final response = await _authorised(
+      uploading: body.length,
+      (token) => client.post(
+        messagesUri,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'text/plain',
+        },
+        body: body,
+      ),
+    );
     if (response.statusCode != 201 && response.statusCode != 200) {
       throw _failureFor(response);
     }
-    final body = jsonDecode(response.body);
-    final id = body is Map ? body['id'] : null;
+    final answer = jsonDecode(response.body);
+    final id = answer is Map ? answer['id'] : null;
     if (id is! String || id.isEmpty) {
       throw const SendFailed(
         'Microsoft accepted the message but did not say where it put it, so '
@@ -242,24 +273,28 @@ class GraphSender {
     String messageId,
     DraftAttachment attachment,
   ) async {
-    final response = await _authorised((token) => client.post(
-          Uri.parse('$base/me/messages/${Uri.encodeComponent(messageId)}'
-              '/attachments'),
-          headers: {
-            'Authorization': 'Bearer $token',
-            'Content-Type': 'application/json',
-          },
-          body: jsonEncode({
-            '@odata.type': '#microsoft.graph.fileAttachment',
-            'name': attachment.fileName,
-            'contentType': attachment.mimeType,
-            'contentBytes': base64Encode(attachment.bytes),
-            if (attachment.contentId != null) ...{
-              'isInline': true,
-              'contentId': attachment.contentId,
-            },
-          }),
-        ));
+    final body = jsonEncode({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      'name': attachment.fileName,
+      'contentType': attachment.mimeType,
+      'contentBytes': base64Encode(attachment.bytes),
+      if (attachment.contentId != null) ...{
+        'isInline': true,
+        'contentId': attachment.contentId,
+      },
+    });
+    final response = await _authorised(
+      uploading: body.length,
+      (token) => client.post(
+        Uri.parse('$base/me/messages/${Uri.encodeComponent(messageId)}'
+            '/attachments'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: body,
+      ),
+    );
     if (response.statusCode == 201 || response.statusCode == 200) return;
     throw _failureFor(response, attachment: attachment.fileName);
   }
@@ -312,7 +347,7 @@ class GraphSender {
       final end = (start + uploadChunkBytes < bytes.length)
           ? start + uploadChunkBytes
           : bytes.length;
-      final response = await _guarded(() async {
+      final response = await _guarded(uploading: end - start, () async {
         final request = http.Request('PUT', target)
           ..headers['Content-Length'] = '${end - start}'
           ..headers['Content-Range'] =
@@ -335,23 +370,27 @@ class GraphSender {
     http.Client client,
     String messageId,
   ) async {
-    final response = await _authorised((token) => client.post(
+    final response = await _authorised(sending: true, (token) => client.post(
           Uri.parse(
             '$base/me/messages/${Uri.encodeComponent(messageId)}/send',
           ),
           headers: {'Authorization': 'Bearer $token'},
         ));
     if (response.statusCode == 202 || response.statusCode == 200) return;
-    throw _failureFor(response);
+    throw _sendFailureFor(response);
   }
 
   /// With the account's token, and once more with a freshly refreshed one
   /// if Microsoft turns the first away: see GraphMailApi's own. A refresh
   /// that could not reach Microsoft, like any other network failure, reads
   /// as a connection problem rather than as a refusal.
+  ///
+  /// [sending] and [uploading] are for [_guarded].
   Future<http.Response> _authorised(
-    Future<http.Response> Function(String token) request,
-  ) async {
+    Future<http.Response> Function(String token) request, {
+    bool sending = false,
+    int uploading = 0,
+  }) async {
     for (var forced = false;; forced = true) {
       final String token;
       try {
@@ -359,20 +398,80 @@ class GraphSender {
       } on SignInUnreachable catch (e) {
         throw ConnectionFailed(e.message);
       }
-      final response = await _guarded(() => request(token));
+      final response = await _guarded(
+        () => request(token),
+        sending: sending,
+        uploading: uploading,
+      );
       if (response.statusCode != 401 || forced) return response;
     }
   }
 
+  /// How long Microsoft may take to answer the request that sends, once
+  /// what it carries has gone up: see [_allowing].
+  static const sendWithin = Duration(minutes: 2);
+
+  /// The same for any other request.
+  static const requestWithin = Duration(minutes: 5);
+
+  /// The slowest upload a request is allowed before it is given up on:
+  /// a weak signal, not a dead one. A whole message can be 4 MB of base64.
+  static const slowestUploadBytesPerSecond = 8 * 1024;
+
+  /// [answer], plus the time [uploading] bytes take at the slowest upload
+  /// allowed: a flat limit made a message with a photo unsendable on a weak
+  /// signal, and said it may have gone when it had not.
+  static Duration _allowing(Duration answer, int uploading) =>
+      answer + Duration(seconds: uploading ~/ slowestUploadBytesPerSecond);
+
   /// A network failure reads as a network failure rather than as a refusal.
+  ///
+  /// Except on the request that sends, once it may have left: a connection
+  /// lost there, or an answer that never comes, may be a message Microsoft
+  /// has already taken. That is [SendMayHaveGone], so nothing sends it
+  /// again by itself. Only a failure that happens before anything is sent
+  /// (no network, no such host, a refused connection) is plainly
+  /// [ConnectionFailed]. The limits stop a request on a network that has
+  /// gone away from waiting for ever, which held a reply pressed in the
+  /// shade, and everything queued behind it, for as long as the phone
+  /// stayed up.
   Future<http.Response> _guarded(
-    Future<http.Response> Function() request,
-  ) async {
+    Future<http.Response> Function() request, {
+    bool sending = false,
+    int uploading = 0,
+  }) async {
     try {
-      return await request();
+      return await request().timeout(
+        _allowing(sending ? sendWithin : requestWithin, uploading),
+      );
     } on Exception catch (e) {
+      if (sending && !_neverLeft(e)) {
+        throw SendMayHaveGone(
+          'The connection to Microsoft was lost while sending, so it may or '
+          'may not have gone. Check Sent Items before sending it again. ($e)',
+        );
+      }
       throw ConnectionFailed('Could not reach Microsoft to send. ($e)');
     }
+  }
+
+  /// Failures that come before a request can have been sent at all: no
+  /// such host, a connection refused or never made, no route to make it
+  /// by. A route lost on a connection already made says the same words
+  /// with a different beginning, so those two count only when the
+  /// connection itself failed.
+  static bool _neverLeft(Exception e) {
+    final said = e.toString();
+    if (const [
+      'Failed host lookup',
+      'Connection refused',
+      'HTTP connection timed out',
+      'HandshakeException',
+    ].any(said.contains)) {
+      return true;
+    }
+    return said.contains('Connection failed') &&
+        const ['Network is unreachable', 'No route to host'].any(said.contains);
   }
 
   static Object _failureFor(http.Response response, {String? attachment}) {

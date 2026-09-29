@@ -341,6 +341,7 @@ public class FlutterLocalNotificationsPlugin
             .putExtra(ACTION_ID, action.id)
             .putExtra(CANCEL_NOTIFICATION, action.cancelNotification)
             .putExtra(PAYLOAD, notificationDetails.payload);
+        uniqueButtonIntent(actionIntent, notificationDetails, action);
         int actionFlags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (action.actionInputs == null || action.actionInputs.isEmpty()) {
           if (VERSION.SDK_INT >= VERSION_CODES.M) {
@@ -510,6 +511,31 @@ public class FlutterLocalNotificationsPlugin
    * twice. Earlier versions keep it, since there it is the only place the
    * account's colour shows.
    */
+  /**
+   * MyEmail: each button's intent its own, by notification id, tag and action.
+   *
+   * <p>Android tells PendingIntents apart by request code and by the intent's
+   * action, data and component, never by its extras. The request code here is
+   * {@code id * 16}, which overflows and keeps only 28 bits of the id, and
+   * MyEmail's ids are hashes, so now and then two notifications share one. The
+   * second one's FLAG_UPDATE_CURRENT then rewrote the extras of the first one's
+   * buttons, and Delete on the older row deleted the newer message. The data
+   * URI takes part in the match, so no two notifications share a button. Not
+   * for buttons that open the app: MainActivity's intent filters would then
+   * have a say in whether the intent reaches it.
+   */
+  private static void uniqueButtonIntent(
+      Intent intent, NotificationDetails details, NotificationAction action) {
+    if (action.showsUserInterface != null && action.showsUserInterface) return;
+    intent.setData(
+        new Uri.Builder()
+            .scheme("myemail-button")
+            .appendPath(String.valueOf(details.id))
+            .appendPath(details.tag == null ? "" : details.tag)
+            .appendPath(action.id)
+            .build());
+  }
+
   private static void preferSmallIcon(NotificationCompat.Builder builder) {
     try {
       Object key = Notification.class.getField("EXTRA_PREFER_SMALL_ICON").get(null);

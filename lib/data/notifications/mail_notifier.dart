@@ -31,10 +31,11 @@ class MailNotification {
   final DateTime when;
 
   /// Android notification ids are 32-bit signed and there is no id registry to
-  /// allocate from, so the message id is hashed into that space. A collision
-  /// means one notification replaces another rather than anything worse, and
-  /// two unread messages colliding inside one mailbox is not a case worth
-  /// carrying a registry for.
+  /// allocate from, so the message id is hashed into that space. Each row is
+  /// posted with the message id as its tag as well, so two messages whose ids
+  /// collide still get a row each. Their buttons used to be shared too, so a
+  /// Delete on one could delete the other; the plugin now makes each button's
+  /// intent unique by tag (third_party/flutter_local_notifications/MYEMAIL.md).
   static int idForMessage(String messageId) => messageId.hashCode & 0x7fffffff;
 
   factory MailNotification.forMessage(MailMessage message) {
@@ -91,6 +92,18 @@ abstract class MailNotifier {
   /// reason for the delete that prompted it to fail.
   Future<void> withdraw(bool Function(String messageId) which);
 
+  /// Take down every account summary with nothing left under it, counting
+  /// the messages in [gone] as already down.
+  ///
+  /// A notification's button takes down its own row, natively, before any of
+  /// this app's code runs; Android then leaves the group's summary up on its
+  /// own, saying "1 new message" and naming the mail just deleted, which
+  /// looks exactly like a Delete that did nothing. [gone] is there because
+  /// that native cancel may not have landed yet when this looks.
+  ///
+  /// Never throws.
+  Future<void> dropEmptySummaries({Set<String> gone = const {}});
+
   /// The message id a notification tap launched the app with, if any. Consumed
   /// once: asking twice returns null, so a rebuild does not reopen it.
   Future<String?> takeLaunchPayload();
@@ -144,6 +157,13 @@ class FakeMailNotifier implements MailNotifier {
   @override
   Future<void> withdraw(bool Function(String messageId) which) async =>
       withdrawn.addAll((await shownMessageIds()).where(which));
+
+  /// What each call to [dropEmptySummaries] counted as gone.
+  final List<Set<String>> summaryDrops = [];
+
+  @override
+  Future<void> dropEmptySummaries({Set<String> gone = const {}}) async =>
+      summaryDrops.add(gone);
 
   /// How many times everything showing was taken down.
   int cancelAllCalls = 0;

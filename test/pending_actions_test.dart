@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +8,7 @@ import 'package:myemail/data/notifications/notification_actions.dart';
 import 'package:myemail/data/notifications/pending_actions.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/draft.dart';
+import 'package:myemail/domain/mail_message.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
@@ -158,6 +160,133 @@ void main() {
           reason: 'held by the first drain, which is still working on it');
     });
 
+    test('a drain still working keeps its claim fresh', () async {
+      await queue().add(delete(1));
+      final held = (await queue().take()).single;
+      for (final f in dir.listSync().whereType<File>()) {
+        f.setLastModifiedSync(
+            DateTime.now().subtract(const Duration(hours: 1)));
+      }
+
+      await queue().touch(held);
+
+      expect(await queue().take(), isEmpty,
+          reason: 'freshened, so not taken for a dead drain');
+    });
+
+    test('a drain that lost its claim while frozen sends and finishes nothing',
+        () async {
+      // Frozen mid-press long enough for its claim to look dead, it woke
+      // after another drain had taken the press and sent the reply, and
+      // sent it again.
+      await queue().add(PendingAction(
+        actionId: NotificationActions.replyId,
+        messageId: 'a:INBOX#1',
+        typed: 'Yes.',
+      ));
+      final frozen = (await queue().take()).single;
+      for (final f in dir.listSync().whereType<File>()) {
+        f.setLastModifiedSync(
+            DateTime.now().subtract(const Duration(minutes: 10)));
+      }
+      final other = (await queue().take()).single;
+
+      await expectLater(queue().markSending(frozen), throwsA(isA<LostClaim>()));
+      await queue().done(frozen);
+      await queue().putBack(frozen);
+
+      final marked = await queue().markSending(other);
+      expect(marked.action.sendStarted, isTrue,
+          reason: "still the other drain's to send");
+    });
+
+    test('a claim left by a process that has died is let go at once',
+        () async {
+      await queue().add(delete(1));
+      final press = dir.listSync().whereType<File>().single;
+      File('${press.path}.claim').writeAsStringSync('999999999:gone');
+
+      expect(await queue().take(), hasLength(1));
+    });
+
+    test('a press whose write was cut off is brought back', () async {
+      // Written aside and not yet renamed into place when the isolate died:
+      // nothing read the file, and the reply in it was gone.
+      final tmp = File('${dir.path}${Platform.pathSeparator}1-a.tmp')
+        ..writeAsStringSync(jsonEncode(const PendingAction(
+          actionId: NotificationActions.replyId,
+          messageId: 'a:INBOX#1',
+          typed: 'Ten works.',
+        ).toJson()))
+        ..setLastModifiedSync(
+            DateTime.now().subtract(const Duration(minutes: 5)));
+
+      expect((await queue().take()).single.action.typed, 'Ten works.');
+      expect(tmp.existsSync(), isFalse);
+    });
+
+    test('but one being written now is left alone', () async {
+      final tmp = File('${dir.path}${Platform.pathSeparator}1-a.tmp')
+        ..writeAsStringSync('{"action":"mailtree.del');
+
+      expect(await queue().take(), isEmpty);
+      expect(tmp.readAsStringSync(), '{"action":"mailtree.del',
+          reason: 'the writer still has to rename it');
+      expect(dir.listSync().where((f) => f.path.endsWith('.json')), isEmpty);
+    });
+
+    test('a write cut off before its contents does not replace the press',
+        () async {
+      // Killed between opening the file and writing it: the empty .tmp was
+      // put over the good press, which was then dropped as unreadable,
+      // typed reply and all.
+      await queue().add(const PendingAction(
+        actionId: NotificationActions.replyId,
+        messageId: 'a:INBOX#1',
+        typed: 'Ten works.',
+      ));
+      final json = dir.listSync().whereType<File>().single;
+      File('${json.path.substring(0, json.path.length - 5)}.tmp')
+        ..writeAsStringSync('')
+        ..setLastModifiedSync(
+            DateTime.now().subtract(const Duration(minutes: 5)));
+
+      expect((await queue().take()).single.action.typed, 'Ten works.');
+      expect(dir.listSync().where((f) => f.path.endsWith('.tmp')), isEmpty);
+    });
+
+    test('a press put back is replaced in place, never deleted first',
+        () async {
+      // Deleted and then written, a press was gone for good if the isolate
+      // died in between.
+      await queue().add(delete(1));
+      final claim = (await queue().take()).single;
+      final json = dir
+          .listSync()
+          .whereType<File>()
+          .singleWhere((f) => f.path.endsWith('.json'));
+      final base = json.path.substring(0, json.path.length - '.json'.length);
+      // Where the new copy would be written: the write fails part way.
+      Directory('$base.tmp').createSync();
+
+      await expectLater(
+          queue().putBack(claim), throwsA(isA<FileSystemException>()));
+
+      expect(json.existsSync(), isTrue,
+          reason: 'still there when its replacement never landed');
+      Directory('$base.tmp').deleteSync();
+    });
+
+    test('when it was pressed goes with it', () async {
+      final before = DateTime.now();
+      await queue().add(delete(1));
+
+      final queued = (await queue().take()).single.action.queuedAt;
+      expect(queued, isNotNull);
+      expect(queued!.isBefore(before.subtract(const Duration(seconds: 1))),
+          isFalse);
+    });
+
     test('an unreadable record is dropped, not carried around', () async {
       File('${dir.path}${Platform.pathSeparator}1-a.json')
           .writeAsStringSync('not json at all');
@@ -243,6 +372,75 @@ void main() {
       expect(reports, 2);
     });
 
+    test('a failure to open the mail keeps the mark a send left', () async {
+      // Cleared, the next drain sent a reply that may already have gone.
+      final id = await anInboxMessage();
+      await queue().add(PendingAction(
+        actionId: NotificationActions.replyId,
+        messageId: id,
+        typed: 'Yes.',
+        sendStarted: true,
+      ));
+
+      final result = await drainPendingNotificationActions(
+        queue: queue(),
+        open: () async => throw StateError('no database'),
+      );
+
+      expect(result.waiting, 1);
+      expect((await queue().take()).single.action.sendStarted, isTrue);
+    });
+
+    test('a reply that throws is said as a reply, with its words', () async {
+      // It was reported as a failed Delete: "the message is where it was",
+      // and what was typed nowhere.
+      await queue().add(PendingAction(
+        actionId: NotificationActions.replyId,
+        messageId: await anInboxMessage(),
+        typed: 'Thursday is fine.',
+      ));
+      final reported = <String>[];
+
+      for (var i = 0; i < maxActionAttempts; i++) {
+        await drainPendingNotificationActions(
+          queue: queue(),
+          open: () async => (_Throwing(engine), () async {}),
+          report: (outcome, action) async =>
+              reported.add('${outcome.name}:${action.typed}'),
+        );
+      }
+
+      expect(reported, ['notKept:Thursday is fine.']);
+    });
+
+    test('a stop asked for before a reply goes leaves it to be sent later',
+        () async {
+      // Sent inside the stop's grace and cut off, it came back as "may or
+      // may not have gone" though nothing had been sent when the stop came.
+      await queue().add(PendingAction(
+        actionId: NotificationActions.replyId,
+        messageId: await anInboxMessage(),
+        typed: 'Yes.',
+      ));
+      var stopping = false;
+
+      final result = await drainPendingNotificationActions(
+        queue: queue(),
+        open: () async => (
+          NotificationActions(engine: _StopDuring(engine, () => stopping = true)),
+          () async {},
+        ),
+        report: (_, _) async {},
+        shouldStop: () => stopping,
+      );
+
+      expect(engine.sends, 0);
+      expect(result.waiting, 1);
+      final kept = (await queue().take()).single.action;
+      expect(kept.sendStarted, isFalse);
+      expect(kept.attempts, 0, reason: 'a stop is not a failed try');
+    });
+
     test('a failure to open the mail puts every press back', () async {
       await queue().add(delete(1));
       await queue().add(delete(2));
@@ -254,6 +452,144 @@ void main() {
 
       expect(result.waiting, 2);
       expect(await queue().take(), hasLength(2));
+    });
+
+    test('presses are claimed one at a time, so a stop strands none',
+        () async {
+      // All were claimed up front. A drain Android stopped left every one
+      // claimed for half an hour, while the job that ran next found
+      // nothing it could take and called that success.
+      final id = await anInboxMessage();
+      for (var i = 0; i < 3; i++) {
+        await queue().add(PendingAction(
+          actionId: NotificationActions.replyId,
+          messageId: id,
+          typed: 'Reply $i',
+        ));
+      }
+      var stopping = false;
+
+      final result = await drainPendingNotificationActions(
+        queue: queue(),
+        open: () async => (NotificationActions(engine: engine), () async {}),
+        // Android asks to stop once the first is done.
+        report: (_, _) async => stopping = true,
+        shouldStop: () => stopping,
+      );
+
+      expect(result.done, 1);
+      expect(result.waiting, 2);
+      expect(await queue().take(), hasLength(2),
+          reason: 'unclaimed, for whoever looks next');
+    });
+
+    test('a press another drain is working on is counted, so someone looks '
+        'again', () async {
+      // That drain may die before it finishes; a queue it held used to
+      // look empty, and nothing came back for it.
+      await queue().add(delete(1));
+      await queue().take(); // another drain, still at it
+
+      final result = await drain();
+
+      expect(result.held, 1);
+      expect(result.leftOver, isTrue);
+    });
+
+    test('a reply is marked as being sent before it goes', () async {
+      final id = await anInboxMessage();
+      await queue().add(PendingAction(
+        actionId: NotificationActions.replyId,
+        messageId: id,
+        typed: 'Yes.',
+      ));
+      String? onDisk;
+      engine.onSend = () => onDisk = dir
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.json'))
+          .single
+          .readAsStringSync();
+
+      await drain();
+
+      expect(onDisk, contains('"sending":true'));
+    });
+
+    test('a reply put back after a send that did not go loses the mark',
+        () async {
+      final id = await anInboxMessage();
+      engine.offline = true;
+      await queue().add(PendingAction(
+        actionId: NotificationActions.replyId,
+        messageId: id,
+        typed: 'Yes.',
+      ));
+
+      expect((await drain()).waiting, 1);
+      expect((await queue().take()).single.action.sendStarted, isFalse,
+          reason: 'it did not go, so it may be sent next time');
+    });
+
+    test('a reply marked as being sent is never sent again', () async {
+      final id = await anInboxMessage();
+      await queue().add(PendingAction(
+        actionId: NotificationActions.replyId,
+        messageId: id,
+        typed: 'Yes, ten.',
+        sendStarted: true,
+      ));
+      final reported = <String>[];
+
+      await drain(report: (outcome, action) async {
+        reported.add('${outcome.name}:${action.typed}');
+      });
+
+      expect(engine.sends, 0);
+      expect(reported, ['maybeSent:Yes, ten.']);
+      expect(await queue().take(), isEmpty);
+    });
+
+    test('a press that has waited a day for a connection is given up on',
+        () async {
+      // Offline was retried for ever: a Microsoft refusal read as offline
+      // kept one press, and everything behind it, going round.
+      final id = await anInboxMessage();
+      engine.offline = true;
+      await queue().add(PendingAction(
+        actionId: NotificationActions.replyId,
+        messageId: id,
+        typed: 'Thursday is fine.',
+        queuedAt: DateTime.now().subtract(const Duration(hours: 25)),
+      ));
+      final reported = <String>[];
+
+      final result = await drain(report: (outcome, action) async {
+        reported.add('${outcome.name}:${action.typed}');
+      });
+
+      expect(result.waiting, 0);
+      expect(reported, ['notKept:Thursday is fine.']);
+    });
+
+    test('a report that alone holds what was typed keeps it queued if it '
+        'cannot be posted', () async {
+      final id = await anInboxMessage();
+      await queue().add(PendingAction(
+        actionId: NotificationActions.replyId,
+        messageId: id,
+        typed: 'Yes, ten.',
+        sendStarted: true,
+      ));
+
+      final result = await drain(report: (_, _) async {
+        throw StateError('the notification could not be posted');
+      });
+
+      expect(result.waiting, 1);
+      final kept = (await queue().take()).single.action;
+      expect(kept.typed, 'Yes, ten.');
+      expect(kept.sendStarted, isTrue, reason: 'still never sent again');
     });
 
     test('a reply typed while offline waits for a connection', () async {
@@ -308,11 +644,47 @@ void main() {
   });
 }
 
+/// Actions whose every press throws, as a broken original can make a
+/// reply do.
+class _Throwing extends NotificationActions {
+  _Throwing(MailEngine engine) : super(engine: engine);
+
+  @override
+  Future<ActionOutcome> perform(
+    String actionId,
+    String messageId,
+    String? typed, {
+    bool sendStarted = false,
+    Future<void> Function()? beforeSend,
+  }) =>
+      throw StateError('could not quote the original');
+}
+
+/// The engine, with Android asking the job to stop while the original is
+/// being read, before the reply is sent.
+class _StopDuring extends SampleMailEngine {
+  _StopDuring(this._inner, this._stop);
+
+  final _Failing _inner;
+  final void Function() _stop;
+
+  @override
+  Future<MailMessage?> cachedMessage(String messageId) async {
+    _stop();
+    return _inner.cachedMessage(messageId);
+  }
+
+  @override
+  Future<void> sendDraft(Draft draft) => _inner.sendDraft(draft);
+}
+
 class _Failing extends SampleMailEngine {
   bool offline = false;
   bool broken = false;
   bool sendFails = false;
   bool noDraftsFolder = false;
+  void Function()? onSend;
+  int sends = 0;
 
   void _check() {
     if (offline) throw const ConnectionFailed('offline');
@@ -321,6 +693,8 @@ class _Failing extends SampleMailEngine {
 
   @override
   Future<void> sendDraft(Draft draft) async {
+    sends++;
+    onSend?.call();
     _check();
     if (sendFails) throw const SendFailed('refused');
     return super.sendDraft(draft);

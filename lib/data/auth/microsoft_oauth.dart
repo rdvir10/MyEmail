@@ -370,7 +370,10 @@ class MicrosoftOAuth implements OAuthRefresher {
         uri,
         headers: const {'Content-Type': 'application/x-www-form-urlencoded'},
         body: form,
-      );
+      ).timeout(const Duration(seconds: 60));
+      // Bounded: a refresh on a connection gone half-open waited for ever,
+      // and whatever needed the token (a Delete pressed in the shade, a
+      // pass of the live worker) waited with it.
     } catch (e) {
       throw SignInUnreachable('Could not reach Microsoft to sign in. ($e)');
     }

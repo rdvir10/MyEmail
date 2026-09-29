@@ -90,6 +90,9 @@ class _AppShellState extends ConsumerState<AppShell>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _openLaunchMessage();
       _askToRunInBackgroundOnce();
+      // A cold start is not a resume, so presses waiting from before the
+      // app opened were left until it next came back to the front.
+      _carryOutPressedButtons();
     });
     _listenForPressesDone();
   }
@@ -199,8 +202,10 @@ class _AppShellState extends ConsumerState<AppShell>
         report: (outcome, action) =>
             reportOutcome(outcome, action, pluginReady: true),
       );
-      // Kept for later: WorkManager waits for a connection, and retries.
-      if (result.waiting > 0) await runPendingNotificationActions();
+      // Kept for later, or being done elsewhere by a drain that may not
+      // finish: WorkManager waits for a connection, and looks again.
+      if (result.leftOver) await runPendingNotificationActions();
+      await ref.read(mailNotifierProvider).dropEmptySummaries();
       if (result.done == 0 || !mounted) return;
       ref.invalidate(messagesProvider);
       ref.invalidate(foldersProvider);

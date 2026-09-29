@@ -195,3 +195,10 @@ class SendFailed implements Exception, ReadableError {
   @override
   String toString() => message;
 }
+
+/// A send that may or may not have gone: the message was handed over and
+/// the answer never came. Never to be sent again by itself, because the
+/// one thing worse than a reply that did not go is the same reply twice.
+class SendMayHaveGone extends SendFailed {
+  const SendMayHaveGone(super.message);
+}

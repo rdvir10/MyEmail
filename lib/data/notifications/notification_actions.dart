@@ -3,6 +3,7 @@ import '../../domain/draft.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/signature.dart';
 import '../compose/reply_draft.dart';
+import '../imap/imap_mapping.dart' show splitFolderId, splitMessageId;
 import '../mail_engine.dart';
 
 /// What the buttons on a new-mail notification do.
@@ -43,15 +44,25 @@ class NotificationActions {
 
   /// Carry out [actionId] on [messageId], with whatever was typed into the
   /// shade. Never throws: this runs where there is nobody to catch it.
+  ///
+  /// For a reply, [beforeSend] is called just before the send, so the queue
+  /// can write down that a send was begun, and [sendStarted] says one was
+  /// begun on an earlier try and never heard back from: see
+  /// [ActionOutcome.maybeSent]. Whatever [beforeSend] throws is not caught
+  /// here: it means the send must not happen, and nothing else either.
   Future<ActionOutcome> perform(
     String actionId,
     String messageId,
-    String? typed,
-  ) async =>
+    String? typed, {
+    bool sendStarted = false,
+    Future<void> Function()? beforeSend,
+  }) async =>
       switch (actionId) {
         deleteId => _delete(messageId),
-        replyId => _reply(messageId, typed, all: false),
-        replyAllId => _reply(messageId, typed, all: true),
+        replyId => _reply(messageId, typed,
+            all: false, sendStarted: sendStarted, beforeSend: beforeSend),
+        replyAllId => _reply(messageId, typed,
+            all: true, sendStarted: sendStarted, beforeSend: beforeSend),
         _ => Future.value(ActionOutcome.unknown),
       };
 
@@ -76,9 +87,15 @@ class NotificationActions {
     String messageId,
     String? typed, {
     required bool all,
+    bool sendStarted = false,
+    Future<void> Function()? beforeSend,
   }) async {
     final text = (typed ?? '').trim();
     if (text.isEmpty) return ActionOutcome.nothingTyped;
+
+    // Begun on an earlier try by a drain that never came back: it may have
+    // gone. Not again; the person is told, with what they wrote.
+    if (sendStarted) return ActionOutcome.maybeSent;
 
     final MailMessage? original;
     try {
@@ -86,8 +103,9 @@ class NotificationActions {
     } catch (_) {
       return ActionOutcome.notKept;
     }
-    // Deleted from another device between the notification and the reply.
-    if (original == null) return ActionOutcome.gone;
+    // Moved or deleted elsewhere between the notification and the reply.
+    // What was typed is kept as a draft of its own rather than dropped.
+    if (original == null) return _keepWithoutOriginal(messageId, text);
 
     MailBody? body;
     try {
@@ -113,8 +131,14 @@ class NotificationActions {
       typedText: text,
     );
 
+    await beforeSend?.call();
     try {
       await engine.sendDraft(draft);
+    } on SendMayHaveGone {
+      // Handed over and never answered. Sending again could make two, and
+      // saving a draft could lead to a second by hand; the report says to
+      // check Sent, with the words.
+      return ActionOutcome.maybeSent;
     } catch (sending) {
       try {
         // An account with no Drafts folder throws, so reaching the return
@@ -139,6 +163,33 @@ class NotificationActions {
     }
     return ActionOutcome.sent;
   }
+
+  /// A reply whose message is no longer on the device: the words go to
+  /// Drafts as a message of their own, since there is nothing left to
+  /// answer.
+  Future<ActionOutcome> _keepWithoutOriginal(
+    String messageId,
+    String text,
+  ) async {
+    final String accountId;
+    try {
+      accountId = splitFolderId(splitMessageId(messageId).$1).$1;
+    } catch (_) {
+      return ActionOutcome.gone;
+    }
+    try {
+      await engine.saveDraft(Draft(
+        accountId: accountId,
+        kind: ComposeKind.newMessage,
+        htmlBody: asParagraphs(text),
+      ));
+      return ActionOutcome.goneKeptAsDraft;
+    } on ConnectionFailed {
+      return ActionOutcome.offline;
+    } catch (_) {
+      return ActionOutcome.gone;
+    }
+  }
 }
 
 /// What happened, in the terms the shade has to report back.
@@ -153,6 +204,13 @@ enum ActionOutcome {
 
   /// The message is no longer on this device: answered or deleted elsewhere.
   gone,
+
+  /// A reply to a message no longer on this device, kept in Drafts.
+  goneKeptAsDraft,
+
+  /// A reply that was handed over and never answered, or whose drain died
+  /// mid-send. It may have gone, so it is not sent again.
+  maybeSent,
   failed,
 
   /// No connection. Nothing is wrong with the press: it waits for one.
@@ -166,6 +224,10 @@ enum ActionOutcome {
   /// Whether the press should go back in the queue rather than be dropped.
   bool get worthRetrying => this == failed || this == offline || this == notKept;
 
+  /// Whether the report has to carry what was typed, because it is kept
+  /// nowhere else: the reply neither went for certain nor was saved.
+  bool get keepsWords => this == notKept || this == gone || this == maybeSent;
+
   /// What to tell the person, or null where silence is the right answer.
   ///
   /// Success is silent for a reply and a delete alike: the notification goes
@@ -178,6 +240,10 @@ enum ActionOutcome {
         unknown => null,
         savedAsDraft => 'Your reply could not be sent. It is in Drafts.',
         gone => 'That message is no longer here.',
+        goneKeptAsDraft =>
+          'That message is no longer here, so your reply is in Drafts.',
+        maybeSent => 'Your reply may or may not have gone. Check Sent before '
+            'sending it again.',
         failed => 'That did not work. The message is where it was.',
         offline => null,
         notKept => 'Your reply could not be sent, or kept in Drafts.',

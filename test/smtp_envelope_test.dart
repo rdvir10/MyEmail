@@ -78,10 +78,28 @@ void main() {
     expect(server.commands.where((c) => c.startsWith('RCPT')), isEmpty);
   });
 
+  test('a refusal is known to come before the message went', () async {
+    // What tells "refused" from "may have gone" when the answer is lost:
+    // every refusal read as a message that may have gone, and a reply from
+    // the shade that certainly had not was neither retried nor saved.
+    server.refuse('bob@example');
+    final refused = envelope(['alice@example.com', 'bob@example']);
+
+    await expectLater(
+      client.sendCommand(refused).timeout(const Duration(seconds: 10)),
+      throwsA(isA<RecipientsRefused>()),
+    );
+    expect(refused.textSent, isFalse);
+  });
+
   test('when everyone is taken, the message is handed over', () async {
+    final taken = envelope(['alice@example.com', 'carol@example.com']);
+    expect(taken.textSent, isFalse);
     final response = await client
-        .sendCommand(envelope(['alice@example.com', 'carol@example.com']))
+        .sendCommand(taken)
         .timeout(const Duration(seconds: 10));
+    expect(taken.textSent, isTrue,
+        reason: 'from here a lost answer may be a message that went');
 
     expect(response.isOkStatus, isTrue);
     expect(server.commands, [

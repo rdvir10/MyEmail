@@ -231,6 +231,48 @@ void main() {
           reason: 'a summary saying "1 new message" over nothing');
     });
 
+    test("a button's own row gone, its summary goes too", () async {
+      // Delete on a notification takes its row down natively, before any
+      // of this code runs. The summary stayed, saying "1 new message" and
+      // naming the mail just deleted: a Delete that looked like nothing.
+      await notifier.showNewMail(
+        account: account,
+        folder: inbox,
+        notifications: [one('a:INBOX#1')],
+      );
+      plugin.showing.remove(('a:INBOX#1', MailNotification.idForMessage('a:INBOX#1')));
+
+      await notifier.dropEmptySummaries();
+
+      expect(plugin.showing, isEmpty);
+    });
+
+    test('counting the pressed one as gone, before Android has caught up',
+        () async {
+      await notifier.showNewMail(
+        account: account,
+        folder: inbox,
+        notifications: [one('a:INBOX#1')],
+      );
+
+      await notifier.dropEmptySummaries(gone: {'a:INBOX#1'});
+
+      expect(plugin.showing.keys.where((k) => k.$1 == null), isEmpty,
+          reason: 'the summary is down');
+    });
+
+    test('a summary with mail still under it stays', () async {
+      await notifier.showNewMail(
+        account: account,
+        folder: inbox,
+        notifications: [one('a:INBOX#1'), one('a:INBOX#2')],
+      );
+
+      await notifier.dropEmptySummaries(gone: {'a:INBOX#1'});
+
+      expect(plugin.showing.keys.where((k) => k.$1 == null), hasLength(1));
+    });
+
     test('a list Android will not give is nothing to take down', () async {
       plugin.listFails = true;
 

@@ -527,7 +527,14 @@ class GraphTransport implements ImapTransport {
     for (final uid in uids) {
       final id = remoteIds[uid];
       if (id == null) continue;
-      await _applyFlag(id, flag, set);
+      try {
+        await _applyFlag(id, flag, set);
+      } on GraphNotFound {
+        // A delete of mail already gone has nothing left to do. Anything
+        // else on a message that is not there is still a failure.
+        if (flag != MessageFlag.deleted || !set) rethrow;
+        if (await api.message(id) != null) rethrow;
+      }
     }
   }
 
@@ -584,7 +591,12 @@ class GraphTransport implements ImapTransport {
         );
       }
       for (final m in fresh) {
-        await _applyFlag(m.id, MessageFlag.deleted, true);
+        try {
+          await _applyFlag(m.id, MessageFlag.deleted, true);
+        } on GraphNotFound {
+          // Gone since the page was listed (Outlook, a rule, another
+          // device): the delete asked for has already happened.
+        }
       }
     }
   }
@@ -654,7 +666,20 @@ class GraphTransport implements ImapTransport {
         // Graph reissues the id on a move, and the old one stops resolving at
         // once. Taking the new one is what lets the destination folder be
         // numbered without a resync.
-        final newId = await api.move(id, destination);
+        final String? newId;
+        try {
+          newId = await api.move(id, destination);
+        } on GraphNotFound {
+          // Deleted or moved already, from Outlook, a rule, another device.
+          // Where it was asked to leave, it has left: counted as moved, so
+          // its number is spent and its row goes. A Delete from the shade
+          // otherwise failed five times over and then said the message was
+          // where it was. Unless the message is still there, in which case
+          // what was not found is the destination.
+          if (await api.message(id) != null) rethrow;
+          moved.add(uid);
+          continue;
+        }
         moved.add(uid);
         if (newId != null) movedIds.add(newId);
       }
@@ -694,8 +719,15 @@ class GraphTransport implements ImapTransport {
     final id = await api.createMessage(await _folderId(path), mimeText);
     // A message created from MIME arrives unread. Everything the app appends
     // is something the person wrote, so leaving it bold in Drafts would be
-    // wrong.
-    if (id != null && seen) await api.setRead(id, true);
+    // wrong. But it exists by now: failing to mark it must not read as not
+    // saved, or the caller saves another copy.
+    if (id != null && seen) {
+      try {
+        await api.setRead(id, true);
+      } catch (e) {
+        debugPrint('[myemail] appended, but not marked read: $e');
+      }
+    }
   }
 
   @override

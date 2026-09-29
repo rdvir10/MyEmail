@@ -156,6 +156,16 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/mailbox_count_widget_info"/>
         </receiver>
+        <!-- Where a notification's buttons (Reply, Reply all, Delete) are
+             delivered. flutter_local_notifications builds each button as a
+             broadcast to this class, but its own manifest does not declare
+             it: its README asks the app to. Without it Android had nowhere
+             to deliver a press, and from 2.30.0 to 2.65.0 every button did
+             nothing at all. Not exported: only the notification's own
+             PendingIntent reaches it. -->
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver"
+            android:exported="false"/>
         <!-- Hands the downloaded APK to the installer as a content:// URI.
              A bare file:// URI to this app's private storage is unreadable by
              the installer and throws FileUriExposedException on anything

@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' show Color;
 
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../domain/account.dart';
 import '../../domain/mail_folder.dart';
@@ -27,9 +29,62 @@ class AndroidMailNotifier implements MailNotifier {
     FlutterLocalNotificationsPlugin? plugin,
     Future<void> Function(PendingAction action)? queueAction,
     Future<Uint8List?> Function(int colorValue)? drawBadge,
+    Future<Directory?> Function()? postingMarks,
   })  : _plugin = plugin ?? FlutterLocalNotificationsPlugin(),
         _queue = queueAction ?? queueNotificationAction,
-        _draw = drawBadge ?? drawAccountBadge;
+        _draw = drawBadge ?? drawAccountBadge,
+        _marks = postingMarks ?? _defaultMarks;
+
+  /// Where [showNewMail] notes that it is posting under an account's group,
+  /// so [dropEmptySummaries] in another isolate leaves that group alone:
+  /// cancelling a summary cancels every row under it, the new one included.
+  /// A file, because the isolates share nothing else. Null where there is
+  /// nowhere to put one (a test), and then nothing is noted.
+  final Future<Directory?> Function() _marks;
+
+  static Future<Directory?> _defaultMarks() async {
+    try {
+      final dir = Directory(
+        '${(await getApplicationSupportDirectory()).path}'
+        '${Platform.pathSeparator}notify-posting',
+      );
+      await dir.create(recursive: true);
+      return dir;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// How long after a post began its group is left alone. Android takes a
+  /// moment to show what it was given, and a cancel in that moment still
+  /// takes the new row with the summary.
+  static const postingQuiet = Duration(seconds: 3);
+
+  Future<File?> _markFor(String group) async {
+    final dir = await _marks();
+    return dir == null
+        ? null
+        : File('${dir.path}${Platform.pathSeparator}$group');
+  }
+
+  Future<void> _notePosting(String group) async {
+    try {
+      await (await _markFor(group))?.writeAsString('', flush: true);
+    } catch (_) {
+      // Unnoted, the race is only as it was before.
+    }
+  }
+
+  Future<bool> _postingNow(String group) async {
+    try {
+      final mark = await _markFor(group);
+      if (mark == null || !await mark.exists()) return false;
+      return DateTime.now().difference(await mark.lastModified()) <
+          postingQuiet;
+    } catch (_) {
+      return false;
+    }
+  }
 
   final FlutterLocalNotificationsPlugin _plugin;
 
@@ -160,6 +215,8 @@ class AndroidMailNotifier implements MailNotifier {
     _badgesFailed = false;
 
     final groupKey = '$_groupPrefix${account.id}';
+    // Before the first row goes up: see [_marks].
+    await _notePosting(groupKey);
 
     // Three, because Android shows three and hides the rest behind nothing.
     //
@@ -315,24 +372,47 @@ class AndroidMailNotifier implements MailNotifier {
   Future<void> withdraw(bool Function(String messageId) which) async {
     try {
       await ensureReady();
-      final active = await _active();
-      final emptied = <String>{};
-      for (final n in active) {
+      final gone = <String>{};
+      for (final n in await _active()) {
         if (!_isMessage(n) || !which(n.tag!)) continue;
         await _plugin.cancel(id: n.id!, tag: n.tag);
-        emptied.add(n.groupKey!);
+        gone.add(n.tag!);
       }
       // Android leaves a summary up when the last thing under it goes,
-      // saying "2 new messages" over nothing.
-      for (final group in emptied) {
-        final left = active.any(
-            (n) => _isMessage(n) && n.groupKey == group && !which(n.tag!));
-        if (left) continue;
-        await _plugin.cancel(
-            id: _summaryId(group.substring(_groupPrefix.length)));
-      }
+      // saying "2 new messages" over nothing. Worked out from what is
+      // showing rather than from what this call took down, so a summary a
+      // notification's own button left behind goes too.
+      await dropEmptySummaries(gone: gone);
     } catch (e) {
       debugPrint('[myemail] could not take notifications down: $e');
+    }
+  }
+
+  /// Without [ensureReady]: listing and cancelling need no set-up, and this
+  /// runs in the isolate Android starts for a button, where setting the
+  /// plugin up again is not wanted.
+  @override
+  Future<void> dropEmptySummaries({Set<String> gone = const {}}) async {
+    try {
+      final active = await _active();
+      final occupied = {
+        for (final n in active)
+          if (_isMessage(n) && !gone.contains(n.tag)) n.groupKey,
+      };
+      for (final n in active) {
+        final group = n.groupKey;
+        if (n.tag != null || n.id == null || group == null) continue;
+        if (!group.startsWith(_groupPrefix) || occupied.contains(group)) {
+          continue;
+        }
+        if (n.id != _summaryId(group.substring(_groupPrefix.length))) continue;
+        // Looked at as late as it can be: new mail going up under it now
+        // would go down with it.
+        if (await _postingNow(group)) continue;
+        await _plugin.cancel(id: n.id!);
+      }
+    } catch (e) {
+      debugPrint('[myemail] could not take an empty summary down: $e');
     }
   }
 

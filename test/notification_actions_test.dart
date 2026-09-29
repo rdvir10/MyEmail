@@ -229,8 +229,10 @@ void main() {
           reason: 'not answered, so not read either');
     });
 
-    test('a message already gone says so rather than failing quietly',
+    test('a reply to a message gone since is kept in Drafts, not dropped',
         () async {
+      // Moved on the laptop between the press and the job: the words were
+      // thrown away with a report that did not carry them.
       final (account, _) = await arrival();
 
       final outcome = await actionsFor(account).perform(
@@ -239,8 +241,61 @@ void main() {
         'Ten works.',
       );
 
-      expect(outcome, ActionOutcome.gone);
+      expect(outcome, ActionOutcome.goneKeptAsDraft);
+      expect(outcome.message, contains('Drafts'));
       expect(sender.sent, isEmpty);
+      final draft = em.MimeMessage.parseFromText(server.appended.single);
+      expect(
+        '${draft.decodeTextPlainPart()}${draft.decodeTextHtmlPart()}',
+        contains('Ten works.'),
+      );
+    });
+
+    test('a send handed over and never answered is not tried again',
+        () async {
+      // Sent once, answer lost, sent again when the network came back: the
+      // person got the reply twice.
+      final (account, message) = await arrival();
+      sender.mayHaveGone = true;
+
+      final outcome = await actionsFor(account)
+          .perform(NotificationActions.replyId, message.id, 'Ten works.');
+
+      expect(outcome, ActionOutcome.maybeSent);
+      expect(outcome.worthRetrying, isFalse);
+      expect(outcome.keepsWords, isTrue, reason: 'the report shows them');
+      expect(server.appended, isEmpty,
+          reason: 'a draft of it could be sent a second time by hand');
+    });
+
+    test('a reply whose send was begun by a drain that died is not sent',
+        () async {
+      final (account, message) = await arrival();
+
+      final outcome = await actionsFor(account).perform(
+        NotificationActions.replyId,
+        message.id,
+        'Ten works.',
+        sendStarted: true,
+      );
+
+      expect(outcome, ActionOutcome.maybeSent);
+      expect(sender.sent, isEmpty);
+    });
+
+    test('the send is written down before it is made', () async {
+      final (account, message) = await arrival();
+      final order = <String>[];
+      sender.onSend = () => order.add('send');
+
+      await actionsFor(account).perform(
+        NotificationActions.replyId,
+        message.id,
+        'Ten works.',
+        beforeSend: () async => order.add('written down'),
+      );
+
+      expect(order, ['written down', 'send']);
     });
   });
 
@@ -322,10 +377,14 @@ class _RecordingSender extends SmtpSender {
 
   final List<String> sent = [];
   bool refuse = false;
+  bool mayHaveGone = false;
+  void Function()? onSend;
 
   @override
   Future<void> send(em.MimeMessage message) async {
+    onSend?.call();
     if (refuse) throw const SendFailed('no network');
+    if (mayHaveGone) throw const SendMayHaveGone('no answer');
     sent.add(message.renderMessage());
   }
 }

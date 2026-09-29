@@ -146,7 +146,10 @@ Future<Draft> saveDraft(WidgetRef ref, Draft draft) async {
     // The copy it replaced was in the same folder, so one invalidation covers
     // both the arrival and the removal.
   }
-  return draft.copyWith(savedAs: savedAs);
+  // withSavedAs, not copyWith: a save that could not say where it landed
+  // returns null, and the old copy it names has been deleted by then, so
+  // keeping its name would point the next save at nothing.
+  return draft.withSavedAs(savedAs);
 }
 
 /// The folder tree brought up to date after a send or a save that has
