@@ -9,6 +9,7 @@ import '../../data/imap/imap_mapping.dart';
 import '../../domain/mail_message.dart';
 import '../../data/notifications/notification_action_isolate.dart';
 import '../../data/notifications/notification_actions.dart';
+import '../../data/sync/pass_signal.dart';
 import '../../state/compose_providers.dart' show signaturesProvider;
 import '../../data/sync/background_worker.dart'
     show runPendingNotificationActions;
@@ -51,6 +52,13 @@ import 'ribbon.dart';
 /// is derived in [effectiveSelectedFolderIdProvider], so nothing has to be
 /// listening at the right moment for the default to take.
 class AppShell extends ConsumerStatefulWidget {
+  /// How often the lists and the tree on screen ask the server again while
+  /// the app is in front; see [listRefreshProvider]. Every account's
+  /// Inbox is also checked by the background sync, whose passes say so as
+  /// they finish; this is for everything else, and for when that sync is
+  /// off or Android has stopped it.
+  static const askEvery = Duration(minutes: 2);
+
   /// Whether a message opens beside or under the list rather than on its own
   /// screen.
   ///
@@ -101,6 +109,8 @@ class _AppShellState extends ConsumerState<AppShell>
           .dropLeftovers(ref.read(mailEngineProvider)));
     });
     _listenForPressesDone();
+    _listenForPassesDone();
+    _keepAsking();
   }
 
   /// See [SyncSettings.askToRunInBackgroundOnce].
@@ -121,6 +131,12 @@ class _AppShellState extends ConsumerState<AppShell>
       IsolateNameServer.removePortNameMapping(actionsDonePortName);
     }
     _pressesDone.close();
+    if (IsolateNameServer.lookupPortByName(backgroundPassDonePortName) ==
+        _passesDone.sendPort) {
+      IsolateNameServer.removePortNameMapping(backgroundPassDonePortName);
+    }
+    _passesDone.close();
+    _asking?.cancel();
     super.dispose();
   }
 
@@ -157,7 +173,16 @@ class _AppShellState extends ConsumerState<AppShell>
   /// so it is looked for again here rather than only at startup.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Asked only while it can be seen: in the background the background
+    // sync has the mail, and a timer here would only keep a radio awake.
+    if (state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused) {
+      _asking?.cancel();
+      _asking = null;
+      return;
+    }
     if (state != AppLifecycleState.resumed) return;
+    _keepAsking();
     ref.read(multiWindowModeProvider.notifier).refresh();
     ref.invalidate(messagesProvider);
     ref.invalidate(foldersProvider);
@@ -179,6 +204,33 @@ class _AppShellState extends ConsumerState<AppShell>
     } catch (e) {
       debugPrint('[myemail] could not restart background sync: $e');
     }
+  }
+
+  Timer? _asking;
+
+  /// Ask every [AppShell.askEvery], from now.
+  void _keepAsking() {
+    _asking?.cancel();
+    _asking = Timer.periodic(AppShell.askEvery, (_) => _askAgain());
+  }
+
+  void _askAgain() {
+    if (!mounted) return;
+    ref.read(listRefreshProvider.notifier).ping();
+  }
+
+  final _passesDone = ReceivePort();
+
+  /// A background pass has written what it found: the lists on screen ask
+  /// again, and see it. With push on, that is within seconds of the mail
+  /// arriving, rather than at the next [AppShell.askEvery].
+  void _listenForPassesDone() {
+    IsolateNameServer.removePortNameMapping(backgroundPassDonePortName);
+    IsolateNameServer.registerPortWithName(
+      _passesDone.sendPort,
+      backgroundPassDonePortName,
+    );
+    _passesDone.listen((_) => _askAgain());
   }
 
   /// Anything pressed on a notification and not yet done.

@@ -243,12 +243,19 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
   /// already on its way does not undo a rename or a new folder.
   int _changes = 0;
 
+  /// Whether the tree is being asked again for [listRefreshProvider], so
+  /// a second ask does not pile on the first.
+  bool _asking = false;
+
   @override
   Future<Map<String, List<MailFolder>>> build() async {
     final engine = ref.watch(mailEngineProvider);
-    final accounts = await ref.watch(accountsProvider.future);
     var current = true;
     ref.onDispose(() => current = false);
+    // The counts with the lists: a list with new mail beside a tree whose
+    // unread count had not moved looks broken.
+    ref.listen(listRefreshProvider, (_, _) => _askAgain(() => current));
+    final accounts = await ref.watch(accountsProvider.future);
 
     // The tree as it was last seen, which costs nothing. Listing a work
     // mailbox is several requests to Microsoft and everything waits on it:
@@ -263,6 +270,8 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     if (known.values.any((folders) => folders.isNotEmpty)) {
       final changes = _changes;
       unawaited(() async {
+        // Thrown away while the stored tree was read: nothing to ask for.
+        if (!current) return;
         final (fresh, errors) = await _list(accounts);
         if (!current || changes != _changes) return;
         ref.read(folderLoadErrorsProvider.notifier).replace(errors);
@@ -274,6 +283,25 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     final (fresh, errors) = await _list(accounts);
     ref.read(folderLoadErrorsProvider.notifier).replace(errors);
     return fresh;
+  }
+
+  /// Every account's folders again, from its server, in place; see
+  /// [listRefreshProvider]. Dropped if the tree changes meanwhile.
+  Future<void> _askAgain(bool Function() current) async {
+    final accounts = ref.read(accountsProvider).value;
+    if (_asking || !current() || accounts == null || state.value == null) {
+      return;
+    }
+    _asking = true;
+    try {
+      final changes = _changes;
+      final (fresh, errors) = await _list(accounts);
+      if (!current() || changes != _changes) return;
+      ref.read(folderLoadErrorsProvider.notifier).replace(errors);
+      state = AsyncData(fresh);
+    } finally {
+      _asking = false;
+    }
   }
 
   /// Every account's folders, from its server.
@@ -463,6 +491,26 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     if (latest == null || !stillThere) return;
     state = AsyncData({...latest, accountId: fresh});
   }
+}
+
+/// Changed to have every list and the folder tree on screen ask the server
+/// again, in place: by the shell, every couple of minutes while the app is
+/// in front and whenever a background pass says it has written new mail.
+///
+/// A list asked the server only when it was built (opened, or the app
+/// brought back to the front), so one left open never changed: new mail
+/// waited for the next time Ron left the app and came back. Not an
+/// invalidation, which throws the list's own state away (a delete on its
+/// way, a page being loaded) and draws it afresh.
+final listRefreshProvider =
+    NotifierProvider<ListRefresh, int>(ListRefresh.new);
+
+class ListRefresh extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  /// Ask every list on screen again.
+  void ping() => state++;
 }
 
 final foldersProvider =

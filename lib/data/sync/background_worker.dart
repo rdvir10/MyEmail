@@ -17,6 +17,7 @@ import '../folder_list_store.dart';
 import '../imap/cached_imap_engine.dart';
 import '../notifications/android_mail_notifier.dart';
 import '../secure_credential_store.dart';
+import 'pass_signal.dart';
 import '../widget/home_screen_surface.dart';
 import '../widget/mailbox_widgets.dart';
 import '../widget/widget_state_store.dart';
@@ -485,6 +486,7 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
         await prefs.reloadCache();
         await liveEngine.releaseRemovedAccounts();
         final report = await sync.run();
+        announceBackgroundPassDone();
         await widgets.refresh(liveEngine);
         await state.writeLastLivePass(DateTime.now());
         return report;
@@ -609,6 +611,7 @@ Future<bool> _runOnePass() async {
       notifier: AndroidMailNotifier(),
       state: PrefsSyncStateStore(),
     ).run();
+    announceBackgroundPassDone();
 
     // After the sync, so the numbers it writes are the ones just fetched.
     // It never throws; see MailboxWidgets.refresh.

@@ -48,6 +48,10 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
   /// must not put them back.
   final Set<String> _removing = {};
 
+  /// Whether the list is being asked again for [listRefreshProvider], so a
+  /// second ask does not pile on the first.
+  bool _asking = false;
+
   @override
   Future<List<MailMessage>> build() async {
     final engine = ref.watch(mailEngineProvider);
@@ -56,6 +60,10 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     // useful left to say, and writing to a provider that is gone throws.
     var current = true;
     ref.onDispose(() => current = false);
+    // While the app is in front, now and then and after a background pass:
+    // asked again in place rather than rebuilt, so a delete or a page on
+    // its way is not lost to it.
+    ref.listen(listRefreshProvider, (_, _) => _askAgain(() => current));
     // Read, not watched: paging appends in place, and the depth is only
     // here so a refresh comes back as deep as the list had been scrolled
     // rather than snapping back to the first page.
@@ -91,17 +99,49 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     int changes,
     bool Function() current,
   ) {
-    unawaited(() async {
-      final List<MailMessage> fresh;
-      try {
-        final (lists, _) = await _loadEach({for (final id in ids) id: limit});
-        fresh = _merged(lists);
-      } catch (_) {
-        return;
-      }
-      if (!current() || changes != _changes) return;
-      if (!_sameList(state.value, fresh)) state = AsyncData(fresh);
-    }());
+    unawaited(_askServer(ids, limit, changes, current));
+  }
+
+  Future<void> _askServer(
+    List<String> ids,
+    int limit,
+    int changes,
+    bool Function() current,
+  ) async {
+    final List<MailMessage> fresh;
+    try {
+      final (lists, _) = await _loadEach({for (final id in ids) id: limit});
+      // Not what is on its way out, which the server still has.
+      fresh = [
+        for (final m in _merged(lists))
+          if (!_removing.contains(m.id)) m,
+      ];
+    } catch (_) {
+      return;
+    }
+    if (!current() || changes != _changes) return;
+    if (!_sameList(state.value, fresh)) state = AsyncData(fresh);
+  }
+
+  /// Ask the server again for the list as it stands, as deep as it has
+  /// been scrolled; see [listRefreshProvider]. Quiet, as a refresh on
+  /// opening is, and dropped if the list changes meanwhile.
+  Future<void> _askAgain(bool Function() current) async {
+    if (_asking || state.value == null) return;
+    _asking = true;
+    try {
+      final changes = _changes;
+      final ids = folderId == kUnifiedInboxId
+          ? inboxIdsOf(await ref.read(foldersProvider.future))
+          : [folderId];
+      if (!current()) return;
+      final limit = pageSize * ref.read(listDepthProvider(folderId)).pages;
+      await _askServer(ids, limit, changes, current);
+    } catch (_) {
+      // As any refresh: the list on screen is still worth showing.
+    } finally {
+      _asking = false;
+    }
   }
 
   /// Each folder's messages from the server, down to its limit, or what
