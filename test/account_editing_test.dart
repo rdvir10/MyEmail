@@ -58,6 +58,26 @@ void main() {
       expect(updated.colorValue, account.colorValue);
     });
 
+    test('new accounts take eight colours in turn before any repeats',
+        () async {
+      // Four, and Ron's fifth account came out the first one's blue.
+      final colours = [
+        for (var i = 0; i < 9; i++)
+          (await engine.addAccount(
+            displayName: 'Box $i',
+            emailAddress: 'box$i@example.com',
+            provider: MailProvider.gmail,
+            secret: 'abcdabcdabcdabcd',
+          ))
+              .colorValue,
+      ];
+
+      expect(colours.take(8).toSet(), hasLength(8));
+      expect(colours[8], colours[0]);
+      expect(accountPalette, containsAll(colours.toSet()),
+          reason: "each one also offered on the account's own screen");
+    });
+
     test('the change is written, not just returned', () async {
       final account = await add();
 
@@ -152,6 +172,89 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
     }
+
+    /// The colour swatches, in the order shown.
+    List<int> swatches(WidgetTester tester) => [
+          for (final c in tester.widgetList<Container>(find.byWidgetPredicate(
+            (w) =>
+                w is Container &&
+                w.decoration is BoxDecoration &&
+                (w.decoration! as BoxDecoration).shape == BoxShape.circle,
+          )))
+            (c.decoration! as BoxDecoration).color!.toARGB32(),
+        ];
+
+    test('the palette has 24 colours, each once, the old eight among them',
+        () {
+      expect(accountPalette, hasLength(24));
+      expect(accountPalette.toSet(), hasLength(24));
+      expect(accountPalette, containsAll(const [
+        0xFF0F6CBD,
+        0xFF107C41,
+        0xFFB4009E,
+        0xFFCA5010,
+        0xFF8764B8,
+        0xFF00838F,
+        0xFFB3261E,
+        0xFF5B5FC7,
+      ]));
+    });
+
+    testWidgets('offers every colour in the palette', (tester) async {
+      // Eight were too few to tell Ron's accounts apart.
+      useTallView(tester);
+      await tester.pumpWidget(app());
+
+      expect(swatches(tester), accountPalette);
+    });
+
+    testWidgets('a light colour chosen wears a dark tick', (tester) async {
+      // White on amber is lost.
+      useTallView(tester);
+      await tester.pumpWidget(app());
+
+      await tester.tap(find.byWidgetPredicate((w) =>
+          w is Container &&
+          w.decoration is BoxDecoration &&
+          (w.decoration! as BoxDecoration).color == const Color(0xFFFFB900)));
+      await tester.pump();
+
+      final tick = tester.widget<Icon>(find.byIcon(Icons.check));
+      expect(tick.color, Colors.black);
+    });
+
+    testWidgets('a dark colour chosen wears a white one', (tester) async {
+      useTallView(tester);
+      await tester.pumpWidget(app());
+
+      expect(tester.widget<Icon>(find.byIcon(Icons.check)).color,
+          Colors.white);
+    });
+
+    testWidgets('a colour from outside the palette is shown first, chosen',
+        (tester) async {
+      // From a backup made by another version, say: it must not look as
+      // though the account had no colour at all.
+      useTallView(tester);
+      await tester.pumpWidget(const ProviderScope(
+        child: MaterialApp(
+          home: EditAccountScreen(
+            account: Account(
+              id: 'acct-3',
+              displayName: 'Odd',
+              emailAddress: 'odd@example.com',
+              provider: MailProvider.gmail,
+              authMethod: AuthMethod.appPassword,
+              colorValue: 0xFF123456,
+            ),
+          ),
+        ),
+      ));
+
+      expect(swatches(tester).first, 0xFF123456);
+      expect(swatches(tester), hasLength(25));
+      expect(find.byIcon(Icons.check), findsOneWidget);
+    });
 
     testWidgets('starts from the current name', (tester) async {
       await tester.pumpWidget(app());

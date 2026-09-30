@@ -9,6 +9,37 @@ import '../../state/providers.dart';
 import '../accounts/google_sign_in_screen.dart';
 import '../accounts/microsoft_sign_in_screen.dart';
 
+/// Every colour an account can have, by shade: blues, teals, greens,
+/// yellows, oranges, browns, reds, pinks, purples, greys. It was eight, and
+/// Ron asked for more; the eight are all still here, so no account's
+/// colour went missing from the choice.
+const accountPalette = [
+  0xFF003966, // navy
+  0xFF0F6CBD, // blue
+  0xFF4F9FE0, // sky
+  0xFF5B5FC7, // indigo
+  0xFF00B7C3, // cyan
+  0xFF00838F, // teal
+  0xFF00B294, // mint
+  0xFF107C41, // green
+  0xFF13A10E, // bright green
+  0xFF498205, // olive
+  0xFFC19C00, // gold
+  0xFFFFB900, // amber
+  0xFFF7630C, // orange
+  0xFFCA5010, // burnt orange
+  0xFF8E562E, // brown
+  0xFFE81123, // red
+  0xFFB3261E, // dark red
+  0xFFEA005E, // raspberry
+  0xFFE3008C, // pink
+  0xFFB4009E, // magenta
+  0xFF8764B8, // lavender
+  0xFF5C2E91, // purple
+  0xFF69797E, // slate
+  0xFF393939, // charcoal
+];
+
 /// Rename an account, recolour it, or sign it in again.
 ///
 /// The address stays fixed, and is shown greyed with the reason: it is what
@@ -42,18 +73,6 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
   ProblemReport? _problem;
   String? _signInResult;
 
-  /// The same four the app assigns to new accounts, plus enough more to tell
-  /// several mailboxes apart at a glance.
-  static const _palette = [
-    0xFF0F6CBD,
-    0xFF107C41,
-    0xFFB4009E,
-    0xFFCA5010,
-    0xFF8764B8,
-    0xFF00838F,
-    0xFFB3261E,
-    0xFF5B5FC7,
-  ];
 
   @override
   void dispose() {
@@ -233,7 +252,13 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
             spacing: 12,
             runSpacing: 12,
             children: [
-              for (final value in _palette)
+              // One the account has from elsewhere (a backup from another
+              // version, say) is shown first, so it can still be seen chosen.
+              for (final value in [
+                if (!accountPalette.contains(widget.account.colorValue))
+                  widget.account.colorValue,
+                ...accountPalette,
+              ])
                 _ColorDot(
                   value: value,
                   selected: value == _color,
@@ -422,8 +447,16 @@ class _ColorDot extends StatelessWidget {
                 ? Border.all(color: theme.colorScheme.onSurface, width: 3)
                 : null,
           ),
+          // Dark on the light swatches, amber and sky, where white is lost.
           child: selected
-              ? const Icon(Icons.check, color: Colors.white, size: 20)
+              ? Icon(
+                  Icons.check,
+                  color: ThemeData.estimateBrightnessForColor(Color(value)) ==
+                          Brightness.light
+                      ? Colors.black
+                      : Colors.white,
+                  size: 20,
+                )
               : null,
         ),
       ),

@@ -149,7 +149,19 @@ class CachedImapEngine implements MailEngine {
   final Map<String, Future<ImapTransport>> _opening = {};
   final Map<String, FolderSync> _syncs = {};
 
-  static const _palette = [0xFF0F6CBD, 0xFF107C41, 0xFFB4009E, 0xFFCA5010];
+  /// What new accounts are given, in turn: eight far apart, so a fifth
+  /// account no longer came out the first one's blue. Any of the choice on
+  /// the account's own screen can replace it.
+  static const _palette = [
+    0xFF0F6CBD,
+    0xFF107C41,
+    0xFFB4009E,
+    0xFFCA5010,
+    0xFF00838F,
+    0xFF8764B8,
+    0xFFB3261E,
+    0xFFC19C00,
+  ];
 
   late final GraphIdMap _graphIds = graphIdMap ?? MemoryGraphIdMap();
 
