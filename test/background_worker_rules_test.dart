@@ -42,10 +42,57 @@ void main() {
       expect(liveWaitFor([gmail]), idleRenewInterval);
     });
 
-    test('no longer than the five-minute mode once Microsoft is watched', () {
+    test('a minute once Microsoft is watched', () {
       // Graph has no IDLE, so Microsoft mail waited for Gmail to speak or
-      // the renewal to come round: up to 24 minutes.
-      expect(liveWaitFor([gmail, work]), frequentSyncInterval);
+      // the renewal to come round: up to 24 minutes, then five. Ron asked
+      // for every minute.
+      expect(liveWaitFor([gmail, work]), pushPollInterval);
+      expect(pushPollInterval, const Duration(minutes: 1));
+    });
+  });
+
+  group('which pass push runs', () {
+    late DateTime now;
+    late PushPassPlan plan;
+
+    setUp(() {
+      now = DateTime(2026, 9, 30, 9);
+      plan = PushPassPlan(clock: () => now);
+    });
+
+    test('everything first', () {
+      expect(plan.nextIsFull(), isTrue);
+    });
+
+    test('then, while no server speaks, only the minute check', () {
+      plan.nextIsFull();
+      for (var minute = 1; minute < 5; minute++) {
+        now = now.add(pushPollInterval);
+        plan.waited(spoke: false);
+        expect(plan.nextIsFull(), isFalse, reason: 'minute $minute');
+      }
+    });
+
+    test('everything when a server says there is mail', () {
+      // Gmail's IDLE: its account is synced only in a full pass.
+      plan.nextIsFull();
+      now = now.add(const Duration(seconds: 20));
+      plan.waited(spoke: true);
+
+      expect(plan.nextIsFull(), isTrue);
+    });
+
+    test('and everything every five minutes, whatever', () {
+      // Should Gmail's word be missed, in a reconnect say, its mail still
+      // comes within five minutes, and new folders are found.
+      plan.nextIsFull();
+      now = now.add(pushFullPassInterval);
+      plan.waited(spoke: false);
+
+      expect(plan.nextIsFull(), isTrue);
+      now = now.add(pushPollInterval);
+      plan.waited(spoke: false);
+      expect(plan.nextIsFull(), isFalse, reason: 'counted from that one');
     });
   });
 

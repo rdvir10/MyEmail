@@ -475,6 +475,7 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
     );
 
     final stop = _liveStop = LiveWorkerStop();
+    final plan = PushPassPlan();
     final outcome = await stop.guard(LiveSyncLoop(
       // The widgets are brought up to date after every pass rather than when
       // the worker finishes, because this worker runs for hours.
@@ -485,13 +486,21 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
         // not watched until the next worker.
         await prefs.reloadCache();
         await liveEngine.releaseRemovedAccounts();
-        final report = await sync.run();
+        // Every minute the accounts that cannot say when mail arrives;
+        // everything when one that can has spoken, and every five minutes.
+        final report = mode != SyncMode.realtime || plan.nextIsFull()
+            ? await sync.run()
+            : await sync.run(
+                only: (a) => !CachedImapEngine.hearsNewMail(a),
+                listFolders: false,
+              );
         announceBackgroundPassDone();
         await widgets.refresh(liveEngine);
         await state.writeLastLivePass(DateTime.now());
         return report;
       },
-      waitForNext: () => _waitForNext(mode, liveEngine),
+      waitForNext: () async =>
+          plan.waited(spoke: await _waitForNext(mode, liveEngine)),
       stopSignal: stop.signal,
       stillForeground:
           foregroundCheck(const MyEmailPower().foregroundServiceRunning),
@@ -533,10 +542,12 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
 }
 
 /// What the loop waits on between passes, per mode.
-Future<void> _waitForNext(SyncMode mode, CachedImapEngine engine) async {
+/// Whether a server said there was something new, rather than the wait
+/// simply running out.
+Future<bool> _waitForNext(SyncMode mode, CachedImapEngine engine) async {
   if (mode != SyncMode.realtime) {
     await Future<void>.delayed(frequentSyncInterval);
-    return;
+    return false;
   }
   // Push: hold an IDLE on every watched inbox and return the moment one of
   // them speaks. The renew interval caps it, because a server drops an IDLE
@@ -556,7 +567,7 @@ Future<void> _waitForNext(SyncMode mode, CachedImapEngine engine) async {
       watched.add(account);
     }
   }
-  await engine.awaitNewMail(inboxes, timeout: liveWaitFor(watched));
+  return engine.awaitNewMail(inboxes, timeout: liveWaitFor(watched));
 }
 
 /// How long the push worker waits for news before looking anyway.
@@ -564,12 +575,11 @@ Future<void> _waitForNext(SyncMode mode, CachedImapEngine engine) async {
 /// The IDLE renewal, unless a watched account cannot IDLE. Microsoft's
 /// mail comes over Graph, where waiting is a plain sleep, so its new mail
 /// was found only when Gmail spoke or the renewal came round: up to 24
-/// minutes, slower than the five-minute mode. With one watched, the wait
-/// is the five-minute mode's.
+/// minutes. With one watched, the wait is [pushPollInterval], a minute.
 Duration liveWaitFor(Iterable<Account> watched) =>
     watched.every(CachedImapEngine.hearsNewMail)
         ? idleRenewInterval
-        : frequentSyncInterval;
+        : pushPollInterval;
 
 /// The account's folders as last saved, asking the server only when nothing
 /// has been saved yet, and never letting one account's trouble out.

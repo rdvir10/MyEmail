@@ -49,10 +49,11 @@ enum SyncMode {
               'battery. Android allows this about six hours a day unless '
               'MyEmail is opened.',
         SyncMode.realtime =>
-          'Mail arrives in seconds. MyEmail shows a permanent notification '
-              'and holds a connection open, which costs the most battery. '
-              'Android allows this about six hours a day unless MyEmail is '
-              'opened.',
+          'Mail arrives in seconds; Microsoft accounts, which cannot say '
+              'when it does, are checked every minute. MyEmail shows a '
+              'permanent notification and holds a connection open, which '
+              'costs the most battery. Android allows this about six hours '
+              'a day unless MyEmail is opened.',
       };
 }
 
@@ -78,6 +79,46 @@ bool liveSyncStalled(SyncPrefs prefs, DateTime? lastPass, DateTime now) =>
 /// the whole reason that mode needs a foreground service is that this number
 /// is below Android's fifteen-minute floor for scheduled work.
 const frequentSyncInterval = Duration(minutes: 5);
+
+/// How often push checks the accounts that cannot be told when mail
+/// arrives: Microsoft's, over Graph, whose own push goes only to a server
+/// on the internet. It was the five-minute mode's five; Ron asked for every
+/// minute, in the background and in the app alike. The IMAP that could
+/// have told the app at once needs Hadco's administrator to allow it.
+const pushPollInterval = Duration(minutes: 1);
+
+/// How often push goes over everything, every account and its folder list,
+/// between the times a server says there is mail: see [PushPassPlan].
+const pushFullPassInterval = Duration(minutes: 5);
+
+/// Which kind of pass push runs next. Checked every [pushPollInterval] for
+/// the accounts that cannot be told of new mail, a pass over everything
+/// took 17 to 35 seconds; the Gmail account, which says when mail arrives,
+/// and the folder lists, which seldom change, were fetched every time for
+/// nothing. So everything only when a server spoke, on the first pass, and
+/// every [pushFullPassInterval]; otherwise only the accounts that cannot be
+/// told, with their folder lists as last saved.
+class PushPassPlan {
+  PushPassPlan({DateTime Function()? clock}) : _clock = clock ?? DateTime.now;
+
+  final DateTime Function() _clock;
+  DateTime? _lastFull;
+  bool _spoke = true;
+
+  /// The wait before the next pass ended because a server said there was
+  /// something new (true), or ran out (false).
+  void waited({required bool spoke}) => _spoke = spoke;
+
+  /// Whether the next pass goes over everything. Asking counts it as run.
+  bool nextIsFull() {
+    final now = _clock();
+    final last = _lastFull;
+    final full =
+        _spoke || last == null || now.difference(last) >= pushFullPassInterval;
+    if (full) _lastFull = now;
+    return full;
+  }
+}
 
 /// An IDLE connection has to be renewed or the server drops it. RFC 2177 says
 /// clients must re-issue at least every 29 minutes; 24 leaves room for a slow

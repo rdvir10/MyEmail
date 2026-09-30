@@ -55,9 +55,10 @@ class AppShell extends ConsumerStatefulWidget {
   /// How often the lists and the tree on screen ask the server again while
   /// the app is in front; see [listRefreshProvider]. Every account's
   /// Inbox is also checked by the background sync, whose passes say so as
-  /// they finish; this is for everything else, and for when that sync is
-  /// off or Android has stopped it.
-  static const askEvery = Duration(minutes: 2);
+  /// they finish, and the count starts again from each of those; this is
+  /// for everything else, and for when that sync is off or Android has
+  /// stopped it. A minute, as push checks Microsoft (`pushPollInterval`).
+  static const askEvery = Duration(minutes: 1);
 
   /// Whether a message opens beside or under the list rather than on its own
   /// screen.
@@ -230,7 +231,12 @@ class _AppShellState extends ConsumerState<AppShell>
       _passesDone.sendPort,
       backgroundPassDonePortName,
     );
-    _passesDone.listen((_) => _askAgain());
+    _passesDone.listen((_) {
+      _askAgain();
+      // Just asked: the next of the app's own asks is a whole interval on,
+      // not moments after this one.
+      if (_asking != null) _keepAsking();
+    });
   }
 
   /// Anything pressed on a notification and not yet done.

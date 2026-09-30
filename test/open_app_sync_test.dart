@@ -181,8 +181,8 @@ void main() {
       }
     }
 
-    testWidgets('asks again every two minutes while in front, and not in '
-        'the background', (tester) async {
+    testWidgets('asks again every minute while in front, and not in the '
+        'background', (tester) async {
       final c = await pumpShell(tester);
       final start = c.read(listRefreshProvider);
 
@@ -222,6 +222,28 @@ void main() {
 
       expect(c.read(listRefreshProvider), start + 1);
       // The asking it set off, let finish.
+      await tester.pump(const Duration(seconds: 1));
+    });
+
+    testWidgets('counts its minute again from a background pass, rather than '
+        'asking moments after it', (tester) async {
+      final c = await pumpShell(tester);
+      final start = c.read(listRefreshProvider);
+
+      await tester.pump(const Duration(seconds: 50));
+      announceBackgroundPassDone();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await tester.pump();
+      expect(c.read(listRefreshProvider), start + 1);
+
+      await tester.pump(const Duration(seconds: 20));
+      expect(c.read(listRefreshProvider), start + 1,
+          reason: 'a minute from the pass, not from the start');
+
+      await tester.pump(const Duration(seconds: 45));
+      expect(c.read(listRefreshProvider), start + 2);
       await tester.pump(const Duration(seconds: 1));
     });
 

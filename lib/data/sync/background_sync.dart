@@ -49,13 +49,23 @@ class BackgroundSync {
   /// Returns how many notifications were posted. Never throws: this runs where
   /// nobody is watching, and a thrown exception is a pass that stops silently
   /// part-way through, leaving some accounts synced and others not.
-  Future<BackgroundSyncReport> run() async {
+  ///
+  /// [only] narrows it to some accounts, and [listFolders] false takes each
+  /// account's folders as last saved rather than asking its server, where
+  /// any were saved: push's minute-by-minute pass (see `PushPassPlan`).
+  Future<BackgroundSyncReport> run({
+    bool Function(Account account)? only,
+    bool listFolders = true,
+  }) async {
     final prefs = await state.readPrefs();
     if (!prefs.syncs) return const BackgroundSyncReport();
 
     final List<Account> accounts;
     try {
-      accounts = await engine.loadAccounts();
+      accounts = [
+        for (final a in await engine.loadAccounts())
+          if (only == null || only(a)) a,
+      ];
     } catch (e) {
       return BackgroundSyncReport(failures: ['accounts: $e']);
     }
@@ -74,6 +84,7 @@ class BackgroundSync {
         final result = await _runAccount(
           account,
           announce: prefs.notifiesFor(account.id),
+          listFolders: listFolders,
         );
         posted += result.posted;
         scanned += result.scanned;
@@ -97,8 +108,12 @@ class BackgroundSync {
   Future<({int posted, int scanned})> _runAccount(
     Account account, {
     required bool announce,
+    required bool listFolders,
   }) async {
-    final folders = await engine.loadFolders(account.id);
+    final saved =
+        listFolders ? const <MailFolder>[] : await engine.cachedFolders(account.id);
+    final folders =
+        saved.isNotEmpty ? saved : await engine.loadFolders(account.id);
     final inboxes = [
       for (final f in folders)
         if (f.role == FolderRole.inbox) f,

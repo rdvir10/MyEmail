@@ -182,6 +182,49 @@ void main() {
           );
     }
 
+    test('narrowed to some accounts, passes the others by', () async {
+      // Push's minute-by-minute pass: the accounts that cannot say when
+      // mail arrives, and not the one that can.
+      await addAccount();
+      await engine.addAccount(
+        displayName: 'Side',
+        emailAddress: 'side@example.com',
+        provider: MailProvider.gmail,
+        secret: 'abcdabcdabcdabcd',
+      );
+
+      final report =
+          await sync().run(only: (a) => a.displayName == 'Personal');
+
+      expect(report.accounts, 1);
+      expect(report.foldersScanned, 1);
+    });
+
+    test('with the folder list as saved, its server is not asked for it',
+        () async {
+      // A work mailbox's listing is several requests; asked every minute
+      // for folders that seldom change, it was most of the pass.
+      final account = await addAccount();
+      await sync().run();
+      server.calls.clear();
+      deliver(subject: 'Between listings');
+
+      final report = await sync().run(listFolders: false);
+
+      expect(server.calls, isNot(contains('LIST')));
+      expect(report.foldersScanned, 1, reason: 'the Inbox, as saved');
+      expect(await cache.countMessages(account.id, 'INBOX'), 1);
+    });
+
+    test('with no folder list saved yet, asks for one all the same', () async {
+      await addAccount();
+
+      final report = await sync().run(listFolders: false);
+
+      expect(server.calls, contains('LIST'));
+      expect(report.foldersScanned, 1);
+    });
+
     test('does nothing at all while sync is off', () async {
       state = MemorySyncStateStore(); // off is the default
       await addAccount();
