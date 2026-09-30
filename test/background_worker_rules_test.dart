@@ -51,6 +51,28 @@ void main() {
     });
   });
 
+  group('what is left of the wait', () {
+    final start = DateTime(2026, 9, 30, 9);
+
+    test('counted from when the pass began', () {
+      // A pass of twenty seconds and then a minute's wait made the minute
+      // eighty seconds.
+      expect(
+        liveWaitLeft(pushPollInterval,
+            since: start, now: start.add(const Duration(seconds: 20))),
+        const Duration(seconds: 40),
+      );
+    });
+
+    test('never less than a breath', () {
+      expect(
+        liveWaitLeft(pushPollInterval,
+            since: start, now: start.add(const Duration(seconds: 75))),
+        const Duration(seconds: 10),
+      );
+    });
+  });
+
   group('which pass push runs', () {
     late DateTime now;
     late PushPassPlan plan;

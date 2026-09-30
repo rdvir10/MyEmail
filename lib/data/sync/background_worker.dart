@@ -476,6 +476,9 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
 
     final stop = _liveStop = LiveWorkerStop();
     final plan = PushPassPlan();
+    // When the last pass began: push's minute is counted from there, not
+    // from its end, or a pass of twenty seconds made it eighty.
+    var passStarted = DateTime.now();
     final outcome = await stop.guard(LiveSyncLoop(
       // The widgets are brought up to date after every pass rather than when
       // the worker finishes, because this worker runs for hours.
@@ -484,6 +487,7 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
         // hour, and read it once at the start: an account removed in the
         // app went on being synced and announced here, and one added was
         // not watched until the next worker.
+        passStarted = DateTime.now();
         await prefs.reloadCache();
         await liveEngine.releaseRemovedAccounts();
         // Every minute the accounts that cannot say when mail arrives;
@@ -499,8 +503,9 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
         await state.writeLastLivePass(DateTime.now());
         return report;
       },
-      waitForNext: () async =>
-          plan.waited(spoke: await _waitForNext(mode, liveEngine)),
+      waitForNext: () async => plan.waited(
+        spoke: await _waitForNext(mode, liveEngine, since: passStarted),
+      ),
       stopSignal: stop.signal,
       stillForeground:
           foregroundCheck(const MyEmailPower().foregroundServiceRunning),
@@ -543,8 +548,13 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
 
 /// What the loop waits on between passes, per mode.
 /// Whether a server said there was something new, rather than the wait
-/// simply running out.
-Future<bool> _waitForNext(SyncMode mode, CachedImapEngine engine) async {
+/// simply running out. Push's wait is counted from [since], when the pass
+/// before it began.
+Future<bool> _waitForNext(
+  SyncMode mode,
+  CachedImapEngine engine, {
+  required DateTime since,
+}) async {
   if (mode != SyncMode.realtime) {
     await Future<void>.delayed(frequentSyncInterval);
     return false;
@@ -567,7 +577,23 @@ Future<bool> _waitForNext(SyncMode mode, CachedImapEngine engine) async {
       watched.add(account);
     }
   }
-  return engine.awaitNewMail(inboxes, timeout: liveWaitFor(watched));
+  return engine.awaitNewMail(
+    inboxes,
+    timeout: liveWaitLeft(liveWaitFor(watched), since: since),
+  );
+}
+
+/// What is left of [wait], counted from [since], and never under ten
+/// seconds: a pass that took longer than the wait is followed by a short
+/// breath rather than straight by the next.
+Duration liveWaitLeft(
+  Duration wait, {
+  required DateTime since,
+  DateTime? now,
+}) {
+  final left = wait - (now ?? DateTime.now()).difference(since);
+  const least = Duration(seconds: 10);
+  return left < least ? least : left;
 }
 
 /// How long the push worker waits for news before looking anyway.
