@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import 'account.dart';
+import 'account_colours.dart';
 
 /// Everything about how this app is set up, in one file.
 ///
@@ -174,7 +175,9 @@ Account? accountFromBackupJson(Map<String, Object?> j) {
     provider: _byName(MailProvider.values, j['provider'], MailProvider.gmail),
     authMethod:
         _byName(AuthMethod.values, j['authMethod'], AuthMethod.appPassword),
-    colorValue: j['colorValue'] is int ? j['colorValue'] as int : 0xFF0F6CBD,
+    colorValue: j['colorValue'] is int
+        ? currentAccountColour(j['colorValue'] as int)
+        : 0xFF0F6CBD,
     chosenSenderName: j['senderName'] is String ? j['senderName'] as String : null,
   );
 }

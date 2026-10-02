@@ -6,6 +6,7 @@ import 'package:collection/collection.dart';
 import 'package:enough_mail/enough_mail.dart' as em;
 
 import '../../domain/account.dart';
+import '../../domain/account_colours.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_credentials.dart';
 import '../../domain/mail_folder.dart';
@@ -148,20 +149,6 @@ class CachedImapEngine implements MailEngine {
   /// Connections being made, for [_transport] to hand to a second caller.
   final Map<String, Future<ImapTransport>> _opening = {};
   final Map<String, FolderSync> _syncs = {};
-
-  /// What new accounts are given, in turn: eight far apart, so a fifth
-  /// account no longer came out the first one's blue. Any of the choice on
-  /// the account's own screen can replace it.
-  static const _palette = [
-    0xFF0F6CBD,
-    0xFF107C41,
-    0xFFB4009E,
-    0xFFCA5010,
-    0xFF00838F,
-    0xFF8764B8,
-    0xFFB3261E,
-    0xFFC19C00,
-  ];
 
   late final GraphIdMap _graphIds = graphIdMap ?? MemoryGraphIdMap();
 
@@ -314,7 +301,7 @@ class CachedImapEngine implements MailEngine {
       emailAddress: email,
       provider: provider,
       authMethod: authMethod,
-      colorValue: _palette[existing.length % _palette.length],
+      colorValue: newAccountColours[existing.length % newAccountColours.length],
     );
     // The secret goes in before the probe, not after.
     //

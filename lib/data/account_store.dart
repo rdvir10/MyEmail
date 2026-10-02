@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../domain/account.dart';
+import '../domain/account_colours.dart';
 
 /// Where the configured accounts live. Only the non-secret half: address,
 /// display name, provider, auth method. Passwords go to [CredentialStore].
@@ -71,5 +72,7 @@ Account accountFromJson(Map<String, dynamic> j) => Account(
       emailAddress: j['emailAddress'] as String,
       provider: MailProvider.values.byName(j['provider'] as String),
       authMethod: AuthMethod.values.byName(j['authMethod'] as String),
-      colorValue: j['colorValue'] as int,
+      // A colour Android redrew becomes the one it drew; see
+      // [currentAccountColour].
+      colorValue: currentAccountColour(j['colorValue'] as int),
     );

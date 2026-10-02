@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import '../../domain/account.dart';
+import '../../domain/account_colours.dart';
 import '../../domain/draft.dart';
 import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
@@ -37,8 +38,6 @@ class SampleMailEngine implements MailEngine {
   }
 
   final List<Account> _accounts = List.of(_seedAccounts);
-
-  static const _palette = [0xFF0F6CBD, 0xFF107C41, 0xFFB4009E, 0xFFCA5010];
 
   @override
   Future<Account> addAccount({
@@ -168,7 +167,7 @@ class SampleMailEngine implements MailEngine {
       emailAddress: emailAddress,
       provider: provider,
       authMethod: authMethod,
-      colorValue: _palette[_accounts.length % _palette.length],
+      colorValue: newAccountColours[_accounts.length % newAccountColours.length],
     );
     _accounts.add(account);
     _folders[account.id] = _buildFolders(account.id, _freshAccountSpecs);

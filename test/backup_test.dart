@@ -317,6 +317,32 @@ void main() {
       expect(fresh.read().single.senderName, 'Ron Dvir');
     });
 
+    test('a colour from before 2.75.1 comes back as the one it is now',
+        () async {
+      // A backup made with mint in it, which Android drew a dark green.
+      final minted = MemoryAccountStore([
+        const Account(
+          id: 'acct-aaa',
+          displayName: 'Personal',
+          emailAddress: 'me@example.com',
+          provider: MailProvider.gmail,
+          authMethod: AuthMethod.appPassword,
+          colorValue: 0xFF00B294,
+        ),
+      ]);
+      final file = (await BackupService(
+        accountStore: minted,
+        uiState: MemoryUiStateStore(),
+      ).export())
+          .toJsonString();
+      final fresh = MemoryAccountStore();
+
+      await BackupService(accountStore: fresh, uiState: MemoryUiStateStore())
+          .import(SettingsBackup.parse(file));
+
+      expect(fresh.read().single.colorValue, 0xFF007258);
+    });
+
     test('every setting a restore writes is read again on screen', () {
       // A restore writes under the notifiers, which read once and write
       // their whole state back on any change: the old favourites went on

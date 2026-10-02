@@ -24,6 +24,12 @@ void main() {
       expect(back.colorValue, _acct.colorValue);
     });
 
+    test('a colour Android redrew comes back as the one it drew', () {
+      // Gmail on Ron's phone was mint, and its notifications a dark green.
+      final json = accountToJson(_acct)..['colorValue'] = 0xFF00B294;
+      expect(accountFromJson(json).colorValue, 0xFF007258);
+    });
+
     test('never carries a secret', () {
       final json = accountToJson(_acct);
       expect(json.keys, isNot(contains('password')));

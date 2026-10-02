@@ -10,6 +10,7 @@ import 'package:myemail/data/imap/cached_imap_engine.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/account_colours.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/providers.dart';
@@ -90,9 +91,9 @@ void main() {
       final account = await add();
 
       final updated =
-          await engine.updateAccount(accountId: account.id, colorValue: 0xFF00838F);
+          await engine.updateAccount(accountId: account.id, colorValue: 0xFF0A6576);
 
-      expect(updated.colorValue, 0xFF00838F);
+      expect(updated.colorValue, 0xFF0A6576);
       expect(updated.displayName, 'Personal');
     });
 
@@ -184,22 +185,6 @@ void main() {
             (c.decoration! as BoxDecoration).color!.toARGB32(),
         ];
 
-    test('the palette has 24 colours, each once, the old eight among them',
-        () {
-      expect(accountPalette, hasLength(24));
-      expect(accountPalette.toSet(), hasLength(24));
-      expect(accountPalette, containsAll(const [
-        0xFF0F6CBD,
-        0xFF107C41,
-        0xFFB4009E,
-        0xFFCA5010,
-        0xFF8764B8,
-        0xFF00838F,
-        0xFFB3261E,
-        0xFF5B5FC7,
-      ]));
-    });
-
     testWidgets('offers every colour in the palette', (tester) async {
       // Eight were too few to tell Ron's accounts apart.
       useTallView(tester);
@@ -208,16 +193,24 @@ void main() {
       expect(swatches(tester), accountPalette);
     });
 
-    testWidgets('a light colour chosen wears a dark tick', (tester) async {
-      // White on amber is lost.
+    testWidgets('a light colour wears a dark tick', (tester) async {
+      // White on amber is lost. The palette has no light colours since
+      // 2.75.1, but an account can still bring one from outside it.
       useTallView(tester);
-      await tester.pumpWidget(app());
-
-      await tester.tap(find.byWidgetPredicate((w) =>
-          w is Container &&
-          w.decoration is BoxDecoration &&
-          (w.decoration! as BoxDecoration).color == const Color(0xFFFFB900)));
-      await tester.pump();
+      await tester.pumpWidget(const ProviderScope(
+        child: MaterialApp(
+          home: EditAccountScreen(
+            account: Account(
+              id: 'acct-4',
+              displayName: 'Light',
+              emailAddress: 'light@example.com',
+              provider: MailProvider.gmail,
+              authMethod: AuthMethod.appPassword,
+              colorValue: 0xFFFFE066,
+            ),
+          ),
+        ),
+      ));
 
       final tick = tester.widget<Icon>(find.byIcon(Icons.check));
       expect(tick.color, Colors.black);
