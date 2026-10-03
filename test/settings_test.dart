@@ -169,6 +169,8 @@ void main() {
       _useSize(tester, const Size(400, 900));
       await tester.pumpWidget(app(const ViewSettingsScreen()));
       await tester.pumpAndSettle();
+      // Below the Theme choice, off the first screen of the list.
+      await tester.scrollUntilVisible(find.textContaining('too narrow'), 200);
 
       expect(find.textContaining('too narrow'), findsOneWidget);
     });
@@ -331,6 +333,8 @@ void main() {
       _useSize(tester, const Size(900, 1600));
       await tester.pumpWidget(app(const ViewSettingsScreen()));
       await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+          find.text('Group into conversations'), 200);
 
       expect(find.text('Group into conversations'), findsOneWidget);
     });

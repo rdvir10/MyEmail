@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/domain/html_safety.dart';
+import 'package:myemail/theme/app_theme.dart';
 import 'package:myemail/ui/messages/html_body_view.dart';
 
 void main() {
@@ -369,18 +370,19 @@ void main() {
         '<p>Just some words.</p>',
         brightness: Brightness.dark,
       );
-      expect(out, contains('background:#1c1b1f'));
+      expect(out, contains('background:#111318'));
       expect(out, contains('color-scheme:dark'));
     });
 
-    test('a message that styles itself keeps the light sheet it was written for',
-        () {
-      // Darkening underneath a sender who set their own black text makes it
-      // invisible, and there is no way to know which declarations to keep.
-      const styled = '<div style="color:#000">Black on their own white</div>';
+    test('a message that styles itself goes dark with the app too', () {
+      // It used to stay on a white sheet in the middle of a dark app.
+      const styled = '<html><body bgcolor="#ffffff">'
+          '<div style="color:#000">Black on their own white</div>'
+          '</body></html>';
       final out = wrapHtmlForDisplay(styled, brightness: Brightness.dark);
-      expect(out, contains('background:#fff'));
-      expect(out, isNot(contains('color-scheme:dark')));
+      expect(out, contains('color-scheme:dark'));
+      expect(out, contains('<body style="background:#111318">'));
+      expect(out, contains('style="color:#e1e2e9"'));
     });
 
     test('the light theme is never darkened, whatever the message says', () {
@@ -388,39 +390,25 @@ void main() {
         wrapHtmlForDisplay('<p>Plain</p>', brightness: Brightness.light),
         contains('background:#fff'),
       );
-    });
-
-    test('every way a message declares a colour counts', () {
-      for (final html in [
-        '<td bgcolor="#ffffff">x</td>',
-        '<p style="color:#111">x</p>',
-        '<div style="background-color:#fff">x</div>',
-        '<div style="background:#eee">x</div>',
-        '<font color="red">x</font>',
-        '<style>p{color:#333}</style><p>x</p>',
-      ]) {
-        expect(messageBringsItsOwnColours(html), isTrue, reason: html);
-      }
-    });
-
-    test('a hyphenated property is not mistaken for a colour declaration', () {
-      // `border-color` and `outline-color` are not the text colour, and
-      // treating them as one would keep ordinary messages on a light sheet.
       expect(
-        messageBringsItsOwnColours('<p style="border-color:red">x</p>'),
-        isFalse,
+        wrapHtmlForDisplay('<p style="color:#000;background:#fff">x</p>'),
+        contains('<p style="color:#000;background:#fff">'),
       );
-      expect(messageBringsItsOwnColours('<p>plain text</p>'), isFalse);
-      expect(messageBringsItsOwnColours('<b>bold</b> and <i>italic</i>'), isFalse);
     });
 
-    test('readsAsDark needs both a dark app and an unstyled message', () {
-      expect(readsAsDark('<p>x</p>', Brightness.dark), isTrue);
-      expect(readsAsDark('<p>x</p>', Brightness.light), isFalse);
-      expect(
-        readsAsDark('<p style="color:#000">x</p>', Brightness.dark),
-        isFalse,
-      );
+    test("a message's own dark design follows the app, not Android", () {
+      const html = '<html><head><style>'
+          '@media (prefers-color-scheme: dark){p{color:#eee}}'
+          '</style></head><body><p>x</p></body></html>';
+      expect(wrapHtmlForDisplay(html, brightness: Brightness.dark),
+          contains('@media (color)'));
+      expect(wrapHtmlForDisplay(html), contains('@media (monochrome)'));
+    });
+
+    test("the dark page is the app's own surface and text", () {
+      final scheme = buildTheme(Brightness.dark).colorScheme;
+      expect(darkPageColour, scheme.surface);
+      expect(darkTextColour, scheme.onSurface);
     });
   });
 }

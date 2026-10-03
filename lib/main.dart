@@ -29,6 +29,7 @@ import 'data/files/attachment_files.dart';
 import 'data/files/file_bridge.dart';
 import 'data/widget/widget_setup_channel.dart';
 import 'data/widget/widget_state_store.dart';
+import 'state/display_providers.dart';
 import 'state/sync_providers.dart';
 import 'state/update_providers.dart';
 import 'state/providers.dart';
@@ -186,7 +187,7 @@ Future<void> main() async {
   );
 }
 
-class MyEmailApp extends StatefulWidget {
+class MyEmailApp extends ConsumerStatefulWidget {
   const MyEmailApp({super.key, this.widgetToSetUp, this.window});
 
   /// The home-screen widget Android is waiting to hear about, if the app was
@@ -197,10 +198,10 @@ class MyEmailApp extends StatefulWidget {
   final WindowRequest? window;
 
   @override
-  State<MyEmailApp> createState() => _MyEmailAppState();
+  ConsumerState<MyEmailApp> createState() => _MyEmailAppState();
 }
 
-class _MyEmailAppState extends State<MyEmailApp> {
+class _MyEmailAppState extends ConsumerState<MyEmailApp> {
   /// So a widget placed while the app was already running can be set up
   /// without main() running again. See listenForWidgetSetup.
   final _navigator = GlobalKey<NavigatorState>();
@@ -226,8 +227,8 @@ class _MyEmailAppState extends State<MyEmailApp> {
       debugShowCheckedModeBanner: false,
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),
-      // Light and dark follow the system, as planned.
-      themeMode: ThemeMode.system,
+      // Settings, View, Theme: as Android is unless chosen otherwise.
+      themeMode: ref.watch(displayProvider.select((d) => d.theme.mode)),
       // Above the navigator, so dialogs and sheets are sized with the rest.
       builder: (context, child) =>
           AppTextSize(child: child ?? const SizedBox.shrink()),

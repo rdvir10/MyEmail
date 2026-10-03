@@ -4,6 +4,8 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../../domain/message_colours.dart';
+
 /// The two documents that came with the app: how to use it, and what it
 /// can do.
 ///
@@ -75,6 +77,18 @@ class _HelpScreenState extends State<HelpScreen> {
           },
         ),
       );
+    // Loading waits for didChangeDependencies, where the theme is.
+  }
+
+  /// The app's theme as the page was last loaded in.
+  Brightness? _brightness;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = Theme.of(context).brightness;
+    if (next == _brightness) return;
+    _brightness = next;
     _show(_page);
   }
 
@@ -82,7 +96,12 @@ class _HelpScreenState extends State<HelpScreen> {
     final html = await rootBundle.loadString(page.asset);
     if (!mounted) return;
     setState(() => _page = page);
-    await _web.loadHtmlString(html);
+    // Light or dark as the app is: the page asks prefers-color-scheme,
+    // which the WebView answers from Android's setting.
+    await _web.loadHtmlString(answerColourSchemeQueries(
+      html,
+      dark: _brightness == Brightness.dark,
+    ));
   }
 
   @override

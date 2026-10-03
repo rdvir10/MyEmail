@@ -119,6 +119,24 @@ enum TextSize {
   final String description;
 }
 
+/// Light or dark, or whichever Android is in.
+///
+/// System is the default, which is how the app always was: Android's own
+/// dark theme, and its schedule if it has one, decide. Messages follow
+/// whichever is in force; see darkenMessageColours.
+enum ThemeChoice {
+  light('Light', 'Always light', ThemeMode.light),
+  dark('Dark', 'Always dark, messages included', ThemeMode.dark),
+  system('System default', "Light or dark as Android's own setting is",
+      ThemeMode.system);
+
+  const ThemeChoice(this.label, this.description, this.mode);
+
+  final String label;
+  final String description;
+  final ThemeMode mode;
+}
+
 /// What a swipe across a message row does.
 ///
 /// Deliberately a small set. A swipe is one gesture with no confirmation step
@@ -161,7 +179,11 @@ class DisplaySettings {
     this.sort = MessageSort.dateNewest,
     this.textSize = TextSize.standard,
     this.showAllInboxes = true,
+    this.theme = ThemeChoice.system,
   });
+
+  /// Light, dark, or as Android is.
+  final ThemeChoice theme;
 
   /// What the list is ordered by. The default is what every list did
   /// before this was a choice.
@@ -209,6 +231,7 @@ class DisplaySettings {
     MessageSort? sort,
     TextSize? textSize,
     bool? showAllInboxes,
+    ThemeChoice? theme,
   }) {
     return DisplaySettings(
       readingPane: readingPane ?? this.readingPane,
@@ -220,6 +243,7 @@ class DisplaySettings {
       sort: sort ?? this.sort,
       textSize: textSize ?? this.textSize,
       showAllInboxes: showAllInboxes ?? this.showAllInboxes,
+      theme: theme ?? this.theme,
     );
   }
 
@@ -233,6 +257,7 @@ class DisplaySettings {
         'sort': sort.name,
         'textSize': textSize.name,
         'showAllInboxes': showAllInboxes,
+        'theme': theme.name,
       };
 
   /// Tolerant of anything: a value written by a newer build, or a corrupted
@@ -259,6 +284,9 @@ class DisplaySettings {
       // 'showRecipientDetails', written up to 2.44.0, is left unread: every
       // message now opens with its recipients folded to one line.
       textSize: _byName(TextSize.values, json['textSize'], TextSize.standard),
+      // A record from before there was a choice follows Android, as the
+      // app did.
+      theme: _byName(ThemeChoice.values, json['theme'], ThemeChoice.system),
       // A record written before sorting existed has no key at all, and one
       // written by 2.23.0 has the field and direction it used to keep as
       // two. Either way it lands on an order that was already being shown.
@@ -307,7 +335,8 @@ class DisplaySettings {
       other.alwaysShowImages == alwaysShowImages &&
       other.sort == sort &&
       other.textSize == textSize &&
-      other.showAllInboxes == showAllInboxes;
+      other.showAllInboxes == showAllInboxes &&
+      other.theme == theme;
 
   // Every field, without exception: Riverpod skips notifying when the new
   // state equals the old, so a field left out here is a setting that can
@@ -323,6 +352,7 @@ class DisplaySettings {
         sort,
         textSize,
         showAllInboxes,
+        theme,
       );
 
   @override
@@ -332,5 +362,6 @@ class DisplaySettings {
       'images: $alwaysShowImages, '
       'sort: ${sort.name}, '
       'text: ${textSize.name}, '
-      'all inboxes: $showAllInboxes)';
+      'all inboxes: $showAllInboxes, '
+      'theme: ${theme.name})';
 }

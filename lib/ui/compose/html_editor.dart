@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../domain/error_report.dart';
+import '../../theme/app_theme.dart';
 import '../common/text_size.dart';
 
 /// A rich-text editor backed by a `contenteditable` WebView.
@@ -105,7 +106,7 @@ class _HtmlEditorState extends State<HtmlEditor> {
     }
     final next = Theme.of(context).brightness;
     final dark = next == Brightness.dark;
-    _web.setBackgroundColor(dark ? const Color(0xFF1C1B1F) : Colors.white);
+    _web.setBackgroundColor(dark ? darkPageColour : Colors.white);
     if (!_loaded) {
       _loaded = true;
       _brightness = next;
@@ -279,7 +280,7 @@ String editorDocument(String bodyHtml,
   }
   html[data-theme="dark"]{
     color-scheme:dark;
-    --fg:#e6e1e5; --bg:#1c1b1f; --muted:#b6b0b6; --rule:#5a585c;
+    --fg:${cssHex(darkTextColour)}; --bg:${cssHex(darkPageColour)}; --muted:#b6b0b6; --rule:#5a585c;
     /* The quote holds the sender's own HTML, authored against a light
        background. Darkening underneath it turns their black text invisible,
        so in dark mode it keeps a light sheet of its own and the text you are

@@ -38,6 +38,8 @@ class Display extends Notifier<DisplaySettings> {
 
   void setTextSize(TextSize size) => state = state.copyWith(textSize: size);
 
+  void setTheme(ThemeChoice theme) => state = state.copyWith(theme: theme);
+
   void setSort(MessageSort sort) => state = state.copyWith(sort: sort);
 
   void setAlwaysShowImages(bool on) =>

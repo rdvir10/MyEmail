@@ -5,7 +5,9 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../domain/html_safety.dart';
+import '../../domain/message_colours.dart';
 import '../../domain/trusted_senders.dart';
+import '../../theme/app_theme.dart';
 import '../common/text_size.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
@@ -212,7 +214,7 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
     _loading = true;
     _controller
       ..setBackgroundColor(
-        readsAsDark(source, _brightness) ? const Color(0xFF1C1B1F) : Colors.white,
+        _brightness == Brightness.dark ? darkPageColour : Colors.white,
       )
       ..loadHtmlString(wrapHtmlForDisplay(
         source,
@@ -383,27 +385,6 @@ String stripRemoteContent(String html) {
   return s;
 }
 
-/// Whether a message can safely be shown on a dark background.
-///
-/// Only when the app is dark *and* the message brings no colours of its own.
-/// A sender who set `color:#000` on their own white background is invisible
-/// the moment the background is darkened underneath them, and there is no way
-/// to know which of their declarations to keep. So a message that styles
-/// itself stays on the light sheet it was written for, exactly as Outlook and
-/// Gmail do it, and only an unstyled one follows the app.
-bool readsAsDark(String html, Brightness brightness) =>
-    brightness == Brightness.dark && !messageBringsItsOwnColours(html);
-
-/// Does this HTML set any colour or background of its own?
-///
-/// Deliberately generous about what counts. A false positive costs a light
-/// message on a dark screen, which is merely unfashionable; a false negative
-/// costs black text on a near-black background, which is unreadable.
-bool messageBringsItsOwnColours(String html) => RegExp(
-      r'''(\bbgcolor\s*=|(?<![-\w])color\s*:|background(-color)?\s*:|<font\b)''',
-      caseSensitive: false,
-    ).hasMatch(html);
-
 /// The width a message was laid out for, if it says so.
 ///
 /// Marketing mail is built on tables of a fixed pixel width — 600 and 640 are
@@ -462,23 +443,37 @@ String wrapHtmlForDisplay(
   bool remoteAllowed = false,
   double? viewWidth,
 }) {
+  final dark = brightness == Brightness.dark;
+  // The message in the app's theme. In the dark its own colours are turned
+  // dark too, rather than leaving it as a white sheet in a dark app; and a
+  // dark design of its own shows when the app is dark, not when Android is.
+  final source = answerColourSchemeQueries(
+    dark
+        ? darkenMessageColours(
+            html,
+            page: darkPageColour.toARGB32() & 0xFFFFFF,
+            text: darkTextColour.toARGB32() & 0xFFFFFF,
+          )
+        : html,
+    dark: dark,
+  );
   final isDocument =
-      RegExp(r'<(html|body)[\s>]', caseSensitive: false).hasMatch(html);
-  final body = removeDocumentDirectives(isDocument ? _extractBody(html) : html);
+      RegExp(r'<(html|body)[\s>]', caseSensitive: false).hasMatch(source);
+  final body =
+      removeDocumentDirectives(isDocument ? _extractBody(source) : source);
   // The message's own look, which only the inside of its <body> used to
   // survive: the stylesheets in its head, and the body's colours, style,
   // direction and language. A newsletter styled from its head came out as
   // bare text, and a right-to-left message came out left to right.
-  final sheets = isDocument ? _headStyles(html) : '';
-  final bodyTag = isDocument ? _bodyTag(html) : '<body>';
-  final dark = readsAsDark(html, brightness);
+  final sheets = isDocument ? _headStyles(source) : '';
+  final bodyTag = isDocument ? _bodyTag(source) : '<body>';
   final declared = declaredLayoutWidth(body);
   final laidOutFor =
       declared != null && (viewWidth == null || declared > viewWidth)
           ? declared
           : null;
-  final fg = dark ? '#e6e1e5' : '#1c1b1f';
-  final bg = dark ? '#1c1b1f' : '#fff';
+  final fg = dark ? cssHex(darkTextColour) : '#1c1b1f';
+  final bg = dark ? cssHex(darkPageColour) : '#fff';
   final rule = dark ? '#5a585c' : '#ccc';
   final quoted = dark ? '#b6b0b6' : '#444';
   return '<!doctype html><html><head>'

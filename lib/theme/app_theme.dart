@@ -4,6 +4,18 @@ import 'package:flutter/material.dart';
 /// from it rather than being hand-picked per surface.
 const outlookBlue = Color(0xFF0F6CBD);
 
+/// The dark theme's surface and text, for the WebViews (a message, what is
+/// being written) whose pages are drawn in CSS rather than from the theme.
+/// Anything else sits on the screen as a panel of another dark; a message
+/// used to, on a lighter and purplish page of its own. A test holds these
+/// to [buildTheme].
+const darkPageColour = Color(0xFF111318);
+const darkTextColour = Color(0xFFE1E2E9);
+
+/// A colour as CSS writes it, without its alpha.
+String cssHex(Color c) =>
+    '#${(c.toARGB32() & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}';
+
 /// Compact by intent: a mail client lives or dies on how many rows fit on
 /// screen, and Material's default density wastes a lot of vertical space.
 ThemeData buildTheme(Brightness brightness) {

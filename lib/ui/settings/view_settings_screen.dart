@@ -9,8 +9,8 @@ import 'trusted_senders_screen.dart';
 import '../../state/trusted_senders.dart';
 import '../../state/window_providers.dart';
 
-/// Settings, View: how large the text is, where the message being read goes,
-/// and how much room each row in the list gets.
+/// Settings, View: light or dark, how large the text is, where the message
+/// being read goes, and how much room each row in the list gets.
 class ViewSettingsScreen extends ConsumerWidget {
   const ViewSettingsScreen({super.key});
 
@@ -25,6 +25,28 @@ class ViewSettingsScreen extends ConsumerWidget {
       appBar: AppBar(title: const Text('View'), centerTitle: false),
       body: ListView(
         children: [
+          const _Heading('Theme'),
+          RadioGroup<ThemeChoice>(
+            groupValue: display.theme,
+            onChanged: (v) => v == null ? null : notifier.setTheme(v),
+            child: Column(
+              children: [
+                for (final choice in ThemeChoice.values)
+                  RadioListTile<ThemeChoice>(
+                    value: choice,
+                    title: Text(choice.label),
+                    subtitle: Text(choice.description),
+                  ),
+              ],
+            ),
+          ),
+          _Note(
+            'Messages follow it. In the dark, the colours a message brings '
+            'are turned dark as well: light backgrounds darken and dark text '
+            'lightens. Pictures are left as they are.',
+            theme: theme,
+          ),
+          const Divider(height: 1),
           const _Heading('Text size'),
           // This screen is drawn at the size being chosen, so picking one
           // shows it straight away, on these very words.
@@ -304,11 +326,17 @@ class ViewSummary {
 
   String text(WidgetRef ref) {
     final d = ref.watch(displayProvider);
-    return 'Reading pane ${d.readingPane.label.toLowerCase()}, '
-        '${d.density.label.toLowerCase()} list, '
-        '${d.textSize == TextSize.standard ? '' : '${d.textSize.label.toLowerCase()} text, '}'
-        'swipe ${d.swipeRight.label.toLowerCase()} / '
-        '${d.swipeLeft.label.toLowerCase()}';
+    final line = [
+      // Left unsaid at their defaults.
+      if (d.theme != ThemeChoice.system) '${d.theme.label} theme',
+      'reading pane ${d.readingPane.label.toLowerCase()}',
+      '${d.density.label.toLowerCase()} list',
+      if (d.textSize != TextSize.standard)
+        '${d.textSize.label.toLowerCase()} text',
+      'swipe ${d.swipeRight.label.toLowerCase()} / '
+          '${d.swipeLeft.label.toLowerCase()}',
+    ].join(', ');
+    return '${line[0].toUpperCase()}${line.substring(1)}';
   }
 }
 
