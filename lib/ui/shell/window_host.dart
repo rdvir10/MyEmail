@@ -1,11 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/window_handoff.dart';
 import '../../state/providers.dart';
+import '../../state/put_away_providers.dart';
 import '../compose/compose_screen.dart';
 import 'app_shell.dart';
+import 'put_away.dart';
 
 /// The whole of a second window: one message being written, or one being
 /// read, and nothing behind it.
@@ -29,6 +33,21 @@ class _WindowHostState extends ConsumerState<WindowHost> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _show());
+    // Put away, the window closes as the main one comes back to the mail:
+    // a message being written goes to Drafts, one being read just closes,
+    // and the window goes with it.
+    _putAways = ref.read(appPutAwayProvider).listen((_) {
+      if (!mounted) return;
+      closeForPutAway(Navigator.of(context), ref.read(putAwayGuardsProvider));
+    });
+  }
+
+  StreamSubscription<void>? _putAways;
+
+  @override
+  void dispose() {
+    _putAways?.cancel();
+    super.dispose();
   }
 
   Future<void> _show() async {

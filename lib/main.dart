@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'data/app_put_away.dart';
 import 'data/recent_log.dart';
 import 'data/account_store.dart';
 import 'data/cache/mail_database.dart';
@@ -30,6 +31,7 @@ import 'data/files/file_bridge.dart';
 import 'data/widget/widget_setup_channel.dart';
 import 'data/widget/widget_state_store.dart';
 import 'state/display_providers.dart';
+import 'state/put_away_providers.dart';
 import 'state/sync_providers.dart';
 import 'state/update_providers.dart';
 import 'state/providers.dart';
@@ -166,6 +168,7 @@ Future<void> main() async {
         installedVersionProvider
             .overrideWithValue(const PackageInstalledVersion()),
         if (onAndroid) ...[
+          appPutAwayProvider.overrideWithValue(appPutAwayEvents()),
           windowOpenerProvider.overrideWithValue(const AndroidWindowOpener()),
           messageFilesProvider.overrideWithValue(const DiskMessageFiles()),
           messagePrinterProvider.overrideWithValue(const AndroidMessagePrinter()),

@@ -9,6 +9,7 @@ import '../../data/auth/microsoft_oauth.dart'
     show SignInDeclined, SignInExpired, SignInFailed, SignInNeedsConsent;
 import '../../data/auth/pkce.dart';
 import '../../state/providers.dart';
+import '../shell/put_away.dart';
 
 /// Signing in to Google, in the phone's own browser.
 ///
@@ -46,7 +47,13 @@ class GoogleSignInScreen extends ConsumerStatefulWidget {
   ConsumerState<GoogleSignInScreen> createState() => _GoogleSignInScreenState();
 }
 
-class _GoogleSignInScreenState extends ConsumerState<GoogleSignInScreen> {
+class _GoogleSignInScreenState extends ConsumerState<GoogleSignInScreen>
+    with GuardsPutAway<GoogleSignInScreen> {
+  /// A sign-in is finished in another app (the Authenticator, the
+  /// browser), so the screen stays when the app is put away.
+  @override
+  Future<bool> whenPutAway() async => false;
+
   String? _error;
 
   /// Between the browser opening and the redirect arriving.

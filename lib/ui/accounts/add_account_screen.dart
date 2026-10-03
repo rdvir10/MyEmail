@@ -9,6 +9,7 @@ import '../../state/providers.dart';
 import '../settings/backup_screen.dart';
 import 'google_sign_in_screen.dart';
 import 'microsoft_sign_in_screen.dart';
+import '../shell/put_away.dart';
 
 /// Add a mailbox: Gmail with Google sign-in or an app password, or a
 /// Microsoft one with Microsoft sign-in.
@@ -42,7 +43,13 @@ class AddAccountScreen extends ConsumerStatefulWidget {
   ConsumerState<AddAccountScreen> createState() => _AddAccountScreenState();
 }
 
-class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
+class _AddAccountScreenState extends ConsumerState<AddAccountScreen>
+    with GuardsPutAway<AddAccountScreen> {
+  /// A sign-in is finished in another app (the Authenticator, the
+  /// browser), so the screen stays when the app is put away.
+  @override
+  Future<bool> whenPutAway() async => false;
+
   final _formKey = GlobalKey<FormState>();
   final _name = TextEditingController();
   final _email = TextEditingController();

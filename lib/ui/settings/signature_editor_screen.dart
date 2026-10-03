@@ -7,6 +7,7 @@ import '../../domain/account.dart';
 import '../../domain/signature.dart';
 import '../../state/compose_providers.dart';
 import '../compose/html_editor.dart';
+import '../shell/put_away.dart';
 
 /// One account's signature, in the same editor a message is written in.
 ///
@@ -35,7 +36,28 @@ class SignatureEditorScreen extends ConsumerStatefulWidget {
       _SignatureEditorScreenState();
 }
 
-class _SignatureEditorScreenState extends ConsumerState<SignatureEditorScreen> {
+class _SignatureEditorScreenState extends ConsumerState<SignatureEditorScreen>
+    with GuardsPutAway<SignatureEditorScreen> {
+  /// Put away with a change made: kept, as the tick keeps it, and the
+  /// screen may close. One that cannot be kept stays open with it.
+  @override
+  Future<bool> whenPutAway() async {
+    if (_saving) return false;
+    try {
+      final now = await _editor.getHtml();
+      if (now == _initial.html || (_isBlank(now) && _isBlank(_initial.html))) {
+        return true;
+      }
+      final html = await widget.inlineImages(now);
+      ref
+          .read(signaturesProvider.notifier)
+          .set(_initial.copyWith(html: _isBlank(html) ? '' : html));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   late final Signature _initial =
       ref.read(signaturesProvider.notifier).forAccount(widget.account.id);
   late final HtmlEditorController _editor =

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Intent
+import android.content.IntentSender
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -32,9 +33,25 @@ open class MainActivity : FlutterActivity() {
     private val channelName = "mailtree/installer"
     private val widgetChannelName = "mailtree/widget"
     private val oauthChannelName = "mailtree/oauth"
+    private val leavingChannelName = "mailtree/leaving"
 
     private var widgetChannel: MethodChannel? = null
     private var oauthChannel: MethodChannel? = null
+    private var leavingChannel: MethodChannel? = null
+
+    /**
+     * The app itself has sent the person somewhere since it was last in
+     * front: the file picker, the browser for a sign-in or a link, an
+     * attachment opened in another app, the print sheet. Android calls
+     * onUserLeaveHint for those just as it does for Home, and only Home (or
+     * Recents, or another app) is the app being put away. Every launch goes
+     * through startActivityForResult or startIntentSenderForResult below,
+     * whichever plugin or bridge makes it.
+     */
+    private var sentAway = false
+
+    /** Put away by the person, from onUserLeaveHint; acted on in onStop. */
+    private var putAway = false
 
     private var files: FilesBridge? = null
     private var contacts: ContactsBridge? = null
@@ -133,6 +150,11 @@ open class MainActivity : FlutterActivity() {
             passOAuthRedirect(intent)
         }
 
+        leavingChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            leavingChannelName,
+        )
+
         widgetChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             widgetChannelName,
@@ -189,8 +211,51 @@ open class MainActivity : FlutterActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
     }
 
+    override fun startActivityForResult(intent: Intent, requestCode: Int, options: Bundle?) {
+        sentAway = true
+        super.startActivityForResult(intent, requestCode, options)
+    }
+
+    override fun startIntentSenderForResult(
+        intent: IntentSender,
+        requestCode: Int,
+        fillInIntent: Intent?,
+        flagsMask: Int,
+        flagsValues: Int,
+        extraFlags: Int,
+        options: Bundle?,
+    ) {
+        sentAway = true
+        super.startIntentSenderForResult(
+            intent, requestCode, fillInIntent, flagsMask, flagsValues, extraFlags, options,
+        )
+    }
+
+    /**
+     * Home, Recents, or another app chosen. Not called for the screen going
+     * off, a call coming in, or a permission dialog, none of which is the
+     * app being put away.
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        putAway = !sentAway
+    }
+
+    /**
+     * Told only once the app is out of sight: a hint that is followed by
+     * nothing (a gesture abandoned halfway) changes nothing. Dart closes
+     * what was open, so the app comes back to the mail.
+     */
+    override fun onStop() {
+        super.onStop()
+        if (putAway) leavingChannel?.invokeMethod("putAway", null)
+        putAway = false
+    }
+
     override fun onResume() {
         super.onResume()
+        sentAway = false
+        putAway = false
         // Anything Flutter adds — the web view a message body renders in —
         // goes above what was there, so the drop catcher is put back on top.
         files?.keepOnTop()

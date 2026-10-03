@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../data/auth/microsoft_oauth.dart';
 import '../../data/auth/oauth_token.dart';
 import '../../state/providers.dart';
+import '../shell/put_away.dart';
 
 /// The Microsoft half of adding an Outlook.com account.
 ///
@@ -36,7 +37,13 @@ class MicrosoftSignInSheet extends ConsumerStatefulWidget {
       _MicrosoftSignInSheetState();
 }
 
-class _MicrosoftSignInSheetState extends ConsumerState<MicrosoftSignInSheet> {
+class _MicrosoftSignInSheetState extends ConsumerState<MicrosoftSignInSheet>
+    with GuardsPutAway<MicrosoftSignInSheet> {
+  /// A sign-in is finished in another app (the Authenticator, the
+  /// browser), so the screen stays when the app is put away.
+  @override
+  Future<bool> whenPutAway() async => false;
+
   /// Resolved on dispose, which is what stops the poll when the sheet closes.
   /// Without it the loop would keep asking Microsoft for a token on behalf of
   /// a screen nobody is looking at, until the code expired a quarter of an

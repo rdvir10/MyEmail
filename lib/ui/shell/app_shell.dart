@@ -21,6 +21,7 @@ import '../../state/display_providers.dart';
 import '../../state/meeting_providers.dart';
 import '../../state/pane_widths.dart';
 import '../../state/providers.dart';
+import '../../state/put_away_providers.dart';
 import '../../state/search_providers.dart';
 import '../../domain/draft.dart';
 import '../accounts/add_account_screen.dart';
@@ -33,6 +34,7 @@ import '../messages/view_options_sheet.dart';
 import 'app_shortcuts.dart';
 import 'folder_heading.dart';
 import 'pane_focus.dart';
+import 'put_away.dart';
 import 'ribbon.dart';
 
 /// Three shapes, chosen on width alone so rotating a tablet moves between
@@ -112,6 +114,31 @@ class _AppShellState extends ConsumerState<AppShell>
     _listenForPressesDone();
     _listenForPassesDone();
     _keepAsking();
+    _putAways = ref.read(appPutAwayProvider).listen((_) => _backToTheMail());
+  }
+
+  StreamSubscription<void>? _putAways;
+
+  /// Put away by the person (Home, another app): whatever was open over
+  /// the mail closes, a message being written going to Drafts first, and
+  /// the list goes back to the Inbox at its newest. The app then reopens on
+  /// the mail; a tapped widget or notification takes it on from there.
+  Future<void> _backToTheMail() async {
+    await closeForPutAway(
+      Navigator.of(context),
+      ref.read(putAwayGuardsProvider),
+    );
+    if (!mounted) return;
+    ref.read(searchOpenProvider.notifier).close();
+    ref.read(folderSearchQueryProvider.notifier).clear();
+    ref.read(selectedMessageIdsProvider.notifier).clear();
+    ref.read(expandedConversationsProvider.notifier).collapseAll();
+    final inbox = inboxToComeBackTo(
+      ref.read(effectiveSelectedFolderIdProvider),
+      ref.read(folderIndexProvider),
+    );
+    if (inbox != null) ref.read(selectedFolderIdProvider.notifier).select(inbox);
+    ref.read(listToTopProvider.notifier).request();
   }
 
   /// See [SyncSettings.askToRunInBackgroundOnce].
@@ -126,6 +153,7 @@ class _AppShellState extends ConsumerState<AppShell>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _putAways?.cancel();
     // Only if it is still ours: a later window may have taken the name.
     if (IsolateNameServer.lookupPortByName(actionsDonePortName) ==
         _pressesDone.sendPort) {

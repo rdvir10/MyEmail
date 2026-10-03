@@ -28,6 +28,7 @@ import '../meetings/new_meeting_screen.dart';
 import 'conversation_tile.dart';
 import '../shell/app_shell.dart';
 import '../shell/pane_focus.dart';
+import '../../state/put_away_providers.dart';
 import 'list_keyboard.dart';
 import 'message_tile.dart';
 import 'rows_on_screen.dart';
@@ -155,6 +156,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
 
   @override
   Widget build(BuildContext context) {
+    // Back from being put away: newest first, at the top.
+    ref.listen(listToTopProvider, (_, _) {
+      if (_scroll.hasClients) _scroll.jumpTo(0);
+    });
     final theme = Theme.of(context);
     final folderId = ref.watch(effectiveSelectedFolderIdProvider);
     if (folderId == null) {

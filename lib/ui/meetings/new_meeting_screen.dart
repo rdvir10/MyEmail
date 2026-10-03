@@ -22,6 +22,7 @@ import '../accounts/microsoft_sign_in_screen.dart';
 import '../common/bottom_message.dart';
 import '../common/problem_view.dart';
 import '../compose/header_fields.dart';
+import '../shell/put_away.dart';
 import '../messages/date_format.dart' show formatClock, formatDay;
 
 /// Open the new-meeting screen.
@@ -163,7 +164,13 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
   ConsumerState<NewMeetingScreen> createState() => _NewMeetingScreenState();
 }
 
-class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen> {
+class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
+    with GuardsPutAway<NewMeetingScreen> {
+  /// A meeting has nowhere to be saved, so one with anything typed in it
+  /// stays when the app is put away; an untouched one closes.
+  @override
+  Future<bool> whenPutAway() async => _untouched;
+
   /// Which account the meeting is from. Starts as the one it was opened
   /// for, and can be changed from the header: Ron asked to choose the
   /// account before anything else about an invitation, and the calendar

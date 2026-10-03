@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/app_put_away.dart';
 import 'package:myemail/data/calendar/device_calendar.dart';
 import 'package:myemail/data/contacts/device_contacts.dart';
 import 'package:myemail/data/files/file_bridge.dart';
@@ -202,6 +203,7 @@ void main() {
         'mailtree/widget': {'configure'},
         // OAuthRedirects, which google_redirect_contract_test holds to it.
         'mailtree/oauth': {'redirect'},
+        'mailtree/leaving': {'putAway'},
       };
       for (final MapEntry(key: channel, value: methods)
           in kotlin.invoked.entries) {
@@ -210,6 +212,19 @@ void main() {
       expect(kotlin.invoked['mailtree/files'], {'dropped', 'shared'});
       expect(kotlin.invoked['mailtree/widget'], {'configure'});
       expect(kotlin.invoked['mailtree/oauth'], {'redirect'});
+      expect(kotlin.invoked['mailtree/leaving'], {'putAway'});
+    });
+
+    test('the app put away by the person reaches Dart', () async {
+      final events = appPutAwayEvents();
+      var heard = 0;
+      final listening = events.listen((_) => heard++);
+      addTearDown(listening.cancel);
+
+      await fromAndroid('mailtree/leaving', 'putAway', null);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(heard, 1);
     });
 
     // Each payload built from the keys the Kotlin puts in it, so a key

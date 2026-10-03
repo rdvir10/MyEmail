@@ -9,6 +9,7 @@ import '../../data/auth/oauth_token.dart';
 import '../../data/auth/pkce.dart';
 import '../../state/providers.dart';
 import 'microsoft_sign_in_sheet.dart';
+import '../shell/put_away.dart';
 
 /// Signing in to Microsoft on a real Microsoft page, shown inside the app.
 ///
@@ -59,7 +60,13 @@ class MicrosoftSignInScreen extends ConsumerStatefulWidget {
       _MicrosoftSignInScreenState();
 }
 
-class _MicrosoftSignInScreenState extends ConsumerState<MicrosoftSignInScreen> {
+class _MicrosoftSignInScreenState extends ConsumerState<MicrosoftSignInScreen>
+    with GuardsPutAway<MicrosoftSignInScreen> {
+  /// A sign-in is finished in another app (the Authenticator, the
+  /// browser), so the screen stays when the app is put away.
+  @override
+  Future<bool> whenPutAway() async => false;
+
   WebViewController? _controller;
   String? _error;
   bool _loading = true;

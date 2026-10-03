@@ -21,6 +21,7 @@ import '../../state/window_providers.dart';
 import '../../domain/window_handoff.dart';
 import 'header_fields.dart';
 import 'html_editor.dart';
+import '../shell/put_away.dart';
 
 /// Write, reply to or forward a message.
 ///
@@ -45,7 +46,7 @@ class ComposeScreen extends ConsumerStatefulWidget {
 }
 
 class _ComposeScreenState extends ConsumerState<ComposeScreen>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, GuardsPutAway<ComposeScreen> {
   late final HtmlEditorController _editor =
       HtmlEditorController(initialHtml: widget.draft.htmlBody)
         ..onKey = _onEditorKey;
@@ -90,7 +91,13 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// What [_backgroundCopy] holds, so an unchanged message is not saved
   /// again every time the app is put away.
   String? _backgroundCopyOf;
-  bool _backgroundSaving = false;
+
+  /// The background copy being saved, while it is.
+  Future<void>? _backgroundSaving;
+
+  /// Being saved and closed because the app was put away; no background
+  /// copy is started meanwhile.
+  bool _closingForPutAway = false;
 
   @override
   void initState() {
@@ -155,9 +162,13 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// Put what is written in Drafts as the app goes into the background.
   /// Quietly: nothing on screen changes, and a failure changes nothing
   /// either, because the window is still open with everything in it.
-  Future<void> _saveInBackground() async {
-    if (_sending || _backgroundSaving) return;
-    _backgroundSaving = true;
+  void _saveInBackground() {
+    if (_sending || _closingForPutAway) return;
+    _backgroundSaving ??=
+        _copyToDrafts().whenComplete(() => _backgroundSaving = null);
+  }
+
+  Future<void> _copyToDrafts() async {
     try {
       final now = await _currentDraft();
       if (!now.isWorthSaving || _unchanged(now)) return;
@@ -168,8 +179,48 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       _backgroundCopyOf = holds;
     } catch (_) {
       // Offline, most likely. The message is still on screen.
+    }
+  }
+
+  /// Put away by the person (Home, another app): saved to Drafts as Save
+  /// draft would save it, and the screen may close, so the app comes back
+  /// to the mail rather than to a message half written. A message as it
+  /// opened, untouched, just closes.
+  ///
+  /// Stays open while it is being sent, and when it cannot be saved:
+  /// closing then would lose it.
+  @override
+  Future<bool> whenPutAway() async {
+    if (_sending) return false;
+    _closingForPutAway = true;
+    try {
+      // The background copy started a moment ago, as the app went out of
+      // sight; it is dropped below once the real one is saved.
+      await _backgroundSaving;
+      final Draft now;
+      try {
+        now = await _currentDraft();
+      } on EditorUnreadable {
+        return false;
+      }
+      if (now.isWorthSaving && !_unchanged(now)) {
+        // A message with no draft of its own yet is saved over that copy:
+        // one draft in Drafts, not a second beside it.
+        final into = widget.draft.savedAs ?? _backgroundCopy;
+        try {
+          await saveDraft(ref, now.withSavedAs(into));
+        } catch (_) {
+          return false;
+        }
+        if (into != null && into == _backgroundCopy) {
+          _backgroundCopy = null;
+          _backgroundCopyOf = null;
+        }
+      }
+      if (mounted) _dropBackgroundCopy();
+      return true;
     } finally {
-      _backgroundSaving = false;
+      _closingForPutAway = false;
     }
   }
 

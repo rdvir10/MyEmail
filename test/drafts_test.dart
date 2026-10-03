@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show SocketException;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -17,6 +18,8 @@ import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/put_away_providers.dart';
+import 'package:myemail/ui/shell/put_away.dart';
 import 'package:myemail/data/compose/quote_builder.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
@@ -447,6 +450,115 @@ void main() {
       expect(await drafts(), unorderedEquals(before));
     });
 
+    group('put away (Home, another app)', () {
+      /// What Android does: the lifecycle first, then MainActivity's word
+      /// that it was the person who left.
+      Future<bool> putAway(WidgetTester tester) async {
+        for (final state in [
+          AppLifecycleState.inactive,
+          AppLifecycleState.hidden,
+          AppLifecycleState.paused,
+        ]) {
+          tester.binding.handleAppLifecycleStateChanged(state);
+        }
+        final guards = ProviderScope.containerOf(
+          tester.element(find.byType(ComposeScreen)),
+        ).read(putAwayGuardsProvider);
+        bool? closed;
+        unawaited(closeForPutAway(
+          tester.state<NavigatorState>(find.byType(Navigator)),
+          guards,
+        ).then((all) => closed = all));
+        for (var i = 0; i < 20 && closed == null; i++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        // And back, which is when anything is drawn again.
+        for (final state in [
+          AppLifecycleState.hidden,
+          AppLifecycleState.inactive,
+          AppLifecycleState.resumed,
+        ]) {
+          tester.binding.handleAppLifecycleStateChanged(state);
+        }
+        await tester.pumpAndSettle(const Duration(milliseconds: 50));
+        return closed!;
+      }
+
+      testWidgets('a written message goes to Drafts once, and closes',
+          (tester) async {
+        final engine = SampleMailEngine();
+        const draftsId = 'acct-personal:[Gmail]/Drafts';
+        Future<List<String>> drafts() async =>
+            (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                .map((m) => m.subject)
+                .toList();
+        final before = await drafts();
+        await open(tester, _draft(accountId: 'acct-personal'), engine: engine);
+
+        expect(await putAway(tester), isTrue);
+
+        expect(find.byType(ComposeScreen), findsNothing);
+        expect(find.text('open compose'), findsOneWidget);
+        expect(await drafts(), unorderedEquals([...before, 'Half written']),
+            reason: 'the copy saved on the way out is not left beside it');
+      });
+
+      testWidgets('a reopened draft is updated in place, not copied',
+          (tester) async {
+        final engine = SampleMailEngine();
+        const draftsId = 'acct-personal:[Gmail]/Drafts';
+        Future<List<String>> drafts() async =>
+            (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                .map((m) => m.subject)
+                .toList();
+        final saved =
+            (await tester.runAsync(() => engine.loadMessages(draftsId)))!.first;
+        final others = (await drafts())..remove(saved.subject);
+        await open(
+          tester,
+          _draft(accountId: 'acct-personal', savedAs: saved.id),
+          engine: engine,
+        );
+
+        expect(await putAway(tester), isTrue);
+
+        expect(await drafts(), unorderedEquals([...others, 'Half written']));
+      });
+
+      testWidgets('an untouched one just closes, and saves nothing',
+          (tester) async {
+        final engine = SampleMailEngine();
+        const draftsId = 'acct-personal:[Gmail]/Drafts';
+        final before =
+            (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                .length;
+        await open(
+          tester,
+          const Draft(accountId: 'acct-personal', kind: ComposeKind.newMessage),
+          disposable: true,
+          engine: engine,
+        );
+
+        expect(await putAway(tester), isTrue);
+
+        expect(find.byType(ComposeScreen), findsNothing);
+        expect(
+          (await tester.runAsync(() => engine.loadMessages(draftsId)))!.length,
+          before,
+        );
+      });
+
+      testWidgets('one that cannot be saved stays open', (tester) async {
+        // Closing it then would lose it, which is the thing to avoid.
+        await open(tester, _draft(accountId: 'acct-personal'),
+            engine: _NoDrafts());
+
+        expect(await putAway(tester), isFalse);
+
+        expect(find.byType(ComposeScreen), findsOneWidget);
+      });
+    });
+
     testWidgets('a draft whose body cannot be read is not opened',
         (tester) async {
       // It used to open with its one-line preview standing in for the
@@ -610,4 +722,11 @@ class _SilentSender extends SmtpSender {
 
   @override
   Future<void> send(em.MimeMessage message) async {}
+}
+
+/// Drafts cannot be saved: offline, say.
+class _NoDrafts extends SampleMailEngine {
+  @override
+  Future<String?> saveDraft(Draft draft) async =>
+      throw const SocketException('offline');
 }

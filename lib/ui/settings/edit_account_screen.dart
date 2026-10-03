@@ -9,6 +9,7 @@ import '../../domain/account_colours.dart';
 import '../../state/providers.dart';
 import '../accounts/google_sign_in_screen.dart';
 import '../accounts/microsoft_sign_in_screen.dart';
+import '../shell/put_away.dart';
 
 /// Rename an account, recolour it, or sign it in again.
 ///
@@ -30,7 +31,19 @@ class EditAccountScreen extends ConsumerStatefulWidget {
   ConsumerState<EditAccountScreen> createState() => _EditAccountScreenState();
 }
 
-class _EditAccountScreenState extends ConsumerState<EditAccountScreen> {
+class _EditAccountScreenState extends ConsumerState<EditAccountScreen>
+    with GuardsPutAway<EditAccountScreen> {
+  /// Stays when the app is put away with anything changed and not saved,
+  /// a new app password above all, which is copied from the browser.
+  @override
+  Future<bool> whenPutAway() async =>
+      !_busy &&
+      _password.text.isEmpty &&
+      _name.text == widget.account.displayName &&
+      _sender.text ==
+          (widget.account.hasOwnSenderName ? widget.account.senderName : '') &&
+      _color == widget.account.colorValue;
+
   late final TextEditingController _name =
       TextEditingController(text: widget.account.displayName);
   late final TextEditingController _sender = TextEditingController(
