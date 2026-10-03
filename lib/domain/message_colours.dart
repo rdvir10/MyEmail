@@ -38,6 +38,59 @@ String darkenMessageColours(
       );
 }
 
+/// [html] ready to show either way: wherever [darkenMessageColours] would
+/// change a colour, the element is marked `data-mt-colours` and carries the
+/// dark version beside the original, as `data-mt-dark-<attribute>`, or
+/// `data-mt-dark-css` on a `<style>` for its text. With [dark] the dark
+/// version is the one in place and the original waits in
+/// `data-mt-light-<attribute>`; without, the original is in place.
+///
+/// For the compose editor. Its document is what gets sent, so the quote
+/// cannot simply be recoloured: the editor's script swaps the two as the
+/// theme changes, and puts the originals back in what it hands over.
+String markDarkColours(
+  String html, {
+  required int page,
+  required int text,
+  required bool dark,
+}) {
+  final palette = _Palette(page: page, text: text);
+  String marks(String name, String light, String turned,
+          String Function(String) escape) =>
+      ' data-mt-dark-$name="${escape(turned)}"'
+      '${dark ? ' data-mt-light-$name="${escape(light)}"' : ''}';
+  return html
+      .replaceAllMapped(_styleElement, (m) {
+        final css = m[2]!;
+        final turned = _darkenCss(css, palette);
+        if (turned == css) return m[0]!;
+        // `<style` is six characters, whatever its case.
+        return '<style data-mt-colours${marks('css', css, turned, _escapeCss)}'
+            '${m[1]!.substring(6)}${dark ? turned : css}${m[3]}';
+      })
+      .replaceAllMapped(_tag, (m) {
+        // Done above, and its marks hold CSS that is no attribute's.
+        if (m[1]!.toLowerCase() == 'style') return m[0]!;
+        final added = StringBuffer();
+        final turned = _darkenAttributes(
+          m[2]!,
+          palette,
+          (name, light, darkened) =>
+              added.write(marks(name, light, darkened, _escapeQuotes)),
+        );
+        if (added.isEmpty) return m[0]!;
+        return '<${m[1]} data-mt-colours$added${dark ? turned : m[2]}>';
+      });
+}
+
+/// An attribute's value as the source wrote it is already escaped, except
+/// for a double quote inside single ones.
+String _escapeQuotes(String value) => value.replaceAll('"', '&quot;');
+
+/// A style sheet's text is not escaped at all.
+String _escapeCss(String css) =>
+    css.replaceAll('&', '&amp;').replaceAll('"', '&quot;');
+
 /// A message's `prefers-color-scheme` queries, answered by the app.
 ///
 /// The WebView answers them from Android's dark theme setting, which is not
@@ -94,7 +147,13 @@ const _attributeRoles = {
   'bordercolor': _Role.line,
 };
 
-String _darkenAttributes(String attributes, _Palette palette) =>
+/// [attributes] with their colours darkened, telling [changed] of each one
+/// that differs: its name, its value as written, and darkened.
+String _darkenAttributes(
+  String attributes,
+  _Palette palette, [
+  void Function(String name, String light, String dark)? changed,
+]) =>
     attributes.replaceAllMapped(_attribute, (m) {
       final name = m[1]!.toLowerCase();
       final role = _attributeRoles[name];
@@ -108,6 +167,7 @@ String _darkenAttributes(String attributes, _Palette palette) =>
       final turned = role == null
           ? _darkenCss(value, palette)
           : _darkenValue(value, role, palette);
+      if (turned != value) changed?.call(name, value, turned);
       return '${m[1]}${m[2]}$quote$turned$quote';
     });
 
@@ -164,7 +224,10 @@ final _colourWord = RegExp(
 String _darkenColours(String text, _Role role, _Palette palette) =>
     text.replaceAllMapped(_colourWord, (m) {
       final colour = _Colour.parse(m[0]!);
-      return colour == null ? m[0]! : palette.turn(colour, role).css;
+      if (colour == null) return m[0]!;
+      final turned = palette.turn(colour, role);
+      // One left as it was keeps the way it was written, too.
+      return identical(turned, colour) ? m[0]! : turned.css;
     });
 
 /// The dark page and its text, in OKLab: a space where lightness is what

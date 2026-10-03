@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../domain/error_report.dart';
+import '../../domain/message_colours.dart';
 import '../../theme/app_theme.dart';
 import '../common/text_size.dart';
 
@@ -207,7 +208,7 @@ class HtmlEditorController extends ChangeNotifier {
   Future<void> setSignature(String html) async {
     await ready;
     await _web?.runJavaScript(
-        'window.mailtreeSetSignature(${jsonEncode(html)});');
+        'window.mailtreeSetSignature(${jsonEncode(bothWays(html, dark: false))});');
   }
 
   /// Switch palettes in place. Safe before the page has loaded: the document
@@ -254,6 +255,15 @@ bool editorAllowsNavigation(String url, {required bool loaded}) {
   return scheme == 'about' || scheme == 'data';
 }
 
+/// [html] able to show in either theme, with its own colours turned in the
+/// dark and put back in what is sent; see markDarkColours.
+String bothWays(String html, {required bool dark}) => markDarkColours(
+      html,
+      page: darkPageColour.toARGB32() & 0xFFFFFF,
+      text: darkTextColour.toARGB32() & 0xFFFFFF,
+      dark: dark,
+    );
+
 /// The editor document: the body is the editable surface, and a small script
 /// exposes the three things Dart needs.
 ///
@@ -275,18 +285,15 @@ String editorDocument(String bodyHtml,
   :root{
     color-scheme:light;
     --fg:#1c1b1f; --bg:#fff; --muted:#555; --rule:#ccc;
-    --quote-fg:#1c1b1f; --quote-bg:transparent; --quote-pad:0;
     --blocked-bg:#eee; --blocked-rule:#bbb; --link:#0f6cbd;
   }
+  /* The quote goes dark with the rest. It used to keep a light sheet of its
+     own, because darkening under the sender's black text hid it; now its
+     colours are turned instead, and put back in what is sent. */
   html[data-theme="dark"]{
     color-scheme:dark;
     --fg:${cssHex(darkTextColour)}; --bg:${cssHex(darkPageColour)}; --muted:#b6b0b6; --rule:#5a585c;
-    /* The quote holds the sender's own HTML, authored against a light
-       background. Darkening underneath it turns their black text invisible,
-       so in dark mode it keeps a light sheet of its own and the text you are
-       actually writing is the part that goes dark. */
-    --quote-fg:#1c1b1f; --quote-bg:#f4f2f5; --quote-pad:10px;
-    --blocked-bg:#ddd; --blocked-rule:#aaa; --link:#a8c8ff;
+    --blocked-bg:#2b2930; --blocked-rule:#5a585c; --link:#a8c8ff;
   }
   html,body{margin:0;padding:0;height:100%}
   body{
@@ -300,11 +307,7 @@ String editorDocument(String bodyHtml,
   img{max-width:100%;height:auto}
   blockquote{margin:8px 0;padding-left:12px;border-left:2px solid var(--rule)}
   .mailtree-signature{color:var(--muted)}
-  .mailtree-quote{
-    color:var(--quote-fg);background:var(--quote-bg);
-    padding:var(--quote-pad);border-radius:6px;margin-top:8px;
-  }
-  .mailtree-quote a{color:#0f6cbd}
+  .mailtree-quote{margin-top:8px}
   /* A blocked remote image still needs to occupy space, or the quote
      reflows as the user types and the layout jumps. */
   img[data-blocked-src],img[data-blocked-srcset]{
@@ -312,7 +315,7 @@ String editorDocument(String bodyHtml,
     background:var(--blocked-bg);border:1px dashed var(--blocked-rule);
   }
 </style></head>
-<body contenteditable="true">$bodyHtml</body>
+<body contenteditable="true">${bothWays(bodyHtml, dark: dark)}</body>
 <script nonce="$nonce">
 (function () {
   function post(payload) {
@@ -330,6 +333,9 @@ String editorDocument(String bodyHtml,
     var copy = document.body.cloneNode(true);
     var scripts = copy.querySelectorAll('script');
     for (var i = 0; i < scripts.length; i++) scripts[i].remove();
+    // The colours as they came, and none of the marks that carry them.
+    paintColours(copy, false);
+    unmark(copy);
     return copy.innerHTML;
   };
 
@@ -337,7 +343,64 @@ String editorDocument(String bodyHtml,
   // discard what has been written.
   window.mailtreeSetTheme = function (name) {
     document.documentElement.setAttribute('data-theme', name);
+    paintColours(document.body, name === 'dark');
   };
+
+  // The colours the quote (or a signature) brought. Where they differ in
+  // the dark, an element is marked and carries the dark one beside its own
+  // (markDarkColours); in the dark its own waits aside, under LIGHT.
+  var MARKED = 'data-mt-colours', DARK = 'data-mt-dark-',
+      LIGHT = 'data-mt-light-';
+
+  function valueOf(el, name) {
+    return name === 'css' ? el.textContent : el.getAttribute(name);
+  }
+
+  function setValue(el, name, value) {
+    if (name === 'css') el.textContent = value;
+    else el.setAttribute(name, value);
+  }
+
+  // Each marked colour to the theme's. One that has changed while the dark
+  // one showed, by formatting or typing, is left as it now is: that is
+  // what was written. A new line takes its paragraph's marks with it, so
+  // it turns with the rest.
+  function paintColours(root, dark) {
+    var marked = root.querySelectorAll('[' + MARKED + ']');
+    for (var i = 0; i < marked.length; i++) {
+      var el = marked[i];
+      var names = el.getAttributeNames();
+      for (var j = 0; j < names.length; j++) {
+        if (names[j].indexOf(DARK) !== 0) continue;
+        var name = names[j].substring(DARK.length);
+        var darkValue = el.getAttribute(names[j]);
+        var showing = valueOf(el, name);
+        if (dark) {
+          if (el.hasAttribute(LIGHT + name) || showing === null) continue;
+          el.setAttribute(LIGHT + name, showing);
+          setValue(el, name, darkValue);
+        } else if (el.hasAttribute(LIGHT + name)) {
+          if (showing === darkValue) {
+            setValue(el, name, el.getAttribute(LIGHT + name));
+          }
+          el.removeAttribute(LIGHT + name);
+        }
+      }
+    }
+  }
+
+  function unmark(root) {
+    var marked = root.querySelectorAll('[' + MARKED + ']');
+    for (var i = 0; i < marked.length; i++) {
+      var names = marked[i].getAttributeNames();
+      for (var j = 0; j < names.length; j++) {
+        if (names[j] === MARKED || names[j].indexOf(DARK) === 0 ||
+            names[j].indexOf(LIGHT) === 0) {
+          marked[i].removeAttribute(names[j]);
+        }
+      }
+    }
+  }
 
   window.mailtreeFormat = function (command, value) {
     document.execCommand(command, false, value);
@@ -369,6 +432,8 @@ String editorDocument(String bodyHtml,
           sig, document.querySelector('body > .mailtree-quote'));
     }
     sig.innerHTML = html;
+    paintColours(sig,
+        document.documentElement.getAttribute('data-theme') === 'dark');
     orientAll();
   };
 

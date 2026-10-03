@@ -171,6 +171,48 @@ void main() {
     });
   });
 
+  group('both ways, for the editor', () {
+    String mark(String html, {required bool dark}) =>
+        markDarkColours(html, page: page, text: text, dark: dark);
+
+    test('light: the original in place, the dark one beside it', () {
+      expect(mark('<p style="color:#000">', dark: false),
+          '<p data-mt-colours data-mt-dark-style="color:#e1e2e9" '
+          'style="color:#000">');
+    });
+
+    test('dark: the dark one in place, the original put aside', () {
+      expect(mark('<td bgcolor=white>', dark: true),
+          '<td data-mt-colours data-mt-dark-bgcolor="#111318" '
+          'data-mt-light-bgcolor="white" bgcolor=#111318>');
+    });
+
+    test("a style sheet's text, escaped to sit in an attribute", () {
+      expect(
+        mark('<style>p{color:#000;font-family:"A&B"}</style>', dark: false),
+        '<style data-mt-colours data-mt-dark-css='
+        '"p{color:#e1e2e9;font-family:&quot;A&amp;B&quot;}">'
+        'p{color:#000;font-family:"A&B"}</style>',
+      );
+    });
+
+    test('a double quote inside single ones', () {
+      expect(mark("<p style='color:#000;font-family:\"A\"'>", dark: false),
+          contains('data-mt-dark-style="color:#e1e2e9;font-family:&quot;A&quot;"'));
+    });
+
+    test('nothing to turn, nothing marked', () {
+      for (final html in [
+        '<p style="color:#fff">',
+        '<p>',
+        '<style>p{margin:0}</style>',
+        '<img src="data:image/png;base64,AAAA">',
+      ]) {
+        expect(mark(html, dark: true), html);
+      }
+    });
+  });
+
   group('prefers-color-scheme, answered by the app', () {
     const styles = '<style>@media (prefers-color-scheme: dark){p{x:1}}'
         '@media (prefers-color-scheme:light){p{y:1}}</style>';

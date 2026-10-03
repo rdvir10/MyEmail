@@ -90,6 +90,45 @@ void main() {
       expect(getHtml, isNot(contains('return document.body.innerHTML')));
     });
 
+    test('in the dark the quote goes dark too, and is sent as it came', () {
+      const quote = '<div class="mailtree-quote">'
+          '<p style="color:#000">Black on white</p></div>';
+      final dark = editorDocument(quote, dark: true, nonce: 'n0nce');
+      // It used to sit on a light sheet of its own in a dark editor.
+      expect(dark, isNot(contains('--quote-bg')));
+      expect(dark, contains('data-mt-light-style="color:#000"'));
+      expect(dark, contains('style="color:#e1e2e9">Black on white'));
+
+      final light = editorDocument(quote, dark: false, nonce: 'n0nce');
+      expect(light, contains('style="color:#000">Black on white'));
+
+      final getHtml = dark.substring(
+        dark.indexOf('window.mailtreeGetHtml = function'),
+        dark.indexOf('window.mailtreeSetTheme'),
+      );
+      expect(getHtml, contains('paintColours(copy, false);'),
+          reason: 'the colours as they came');
+      expect(getHtml, contains('unmark(copy);'), reason: 'and no marks');
+      expect(
+        RegExp(r'window\.mailtreeSetTheme = function \(name\) \{[^}]*'
+                r"paintColours\(document\.body, name === 'dark'\);")
+            .hasMatch(dark),
+        isTrue,
+        reason: 'a theme change repaints the quote in place',
+      );
+    });
+
+    test('a new signature turns with the theme, and goes out as written', () {
+      // Marked on the way in, and painted where it lands.
+      expect(bothWays('<p style="color:#000">Ron</p>', dark: false),
+          contains('data-mt-dark-style="color:#e1e2e9"'));
+      final setSignature = doc.substring(
+        doc.indexOf('window.mailtreeSetSignature = function'),
+        doc.indexOf('window.mailtreeFocus'),
+      );
+      expect(setSignature, contains('paintColours(sig,'));
+    });
+
     test("a change of From replaces this message's signature only", () {
       // A quoted message sent from here has a signature div of its own,
       // which is the sender's and stays.
