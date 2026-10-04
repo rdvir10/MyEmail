@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/files/file_bridge.dart' show DefaultApp;
 import '../../data/files/message_files.dart' show emlMimeType;
 import '../../domain/mail_attachment.dart';
 import '../../state/attachment_providers.dart';
@@ -276,6 +277,24 @@ class AttachmentActions {
     }
   }
 
+  /// Choose the app for this once, from every one that opens it.
+  Future<void> openWith(BuildContext context) async {
+    final file = await _file(context);
+    if (file == null || !context.mounted) return;
+    try {
+      await ref
+          .read(fileBridgeProvider)
+          .openWith(file.path, mimeType: attachment.openAs);
+    } catch (e) {
+      if (context.mounted) {
+        _say(context, 'Nothing here opens that sort of file.');
+      }
+    }
+  }
+
+  Future<void> defaultApp(BuildContext context) =>
+      showDefaultApp(context, ref, attachment, onOpen: () => open(context));
+
   Future<void> drag(BuildContext context) async {
     final file = await _file(context);
     if (file == null || !context.mounted) return;
@@ -342,15 +361,21 @@ class AttachmentActions {
       position: position,
       items: const [
         PopupMenuItem(value: 'open', child: Text('Open')),
+        PopupMenuItem(value: 'openWith', child: Text('Open with…')),
         PopupMenuItem(value: 'save', child: Text('Save as…')),
         PopupMenuItem(value: 'copy', child: Text('Copy')),
         PopupMenuItem(value: 'share', child: Text('Share…')),
+        PopupMenuItem(value: 'default', child: Text('Default app…')),
       ],
     );
     if (choice == null || !context.mounted) return;
     switch (choice) {
       case 'open':
         await open(context);
+      case 'openWith':
+        await openWith(context);
+      case 'default':
+        await defaultApp(context);
       case 'save':
         await save(context);
       case 'copy':
@@ -364,3 +389,80 @@ class AttachmentActions {
       ScaffoldMessenger.maybeOf(context)
           ?.showSnackBar(SnackBar(duration: kBottomMessage, content: Text(message)));
 }
+
+/// What a file like [file] opens in without asking, and how to choose
+/// another.
+///
+/// No app may change another's default, so this says which it is and
+/// takes the person to Android's page for that app, where "Clear default
+/// preferences" undoes an "Always". The next open then asks, and the app
+/// chosen there with Always is the new default.
+Future<void> showDefaultApp(
+  BuildContext context,
+  WidgetRef ref,
+  MailAttachment file, {
+  required VoidCallback onOpen,
+}) async {
+  final bridge = ref.read(fileBridgeProvider);
+  DefaultApp? app;
+  try {
+    app = await bridge.defaultAppFor(file.name, mimeType: file.openAs);
+  } catch (_) {
+    app = null;
+  }
+  if (!context.mounted) return;
+  final kind = filesLike(file.name);
+  final settings = app != null && !app.only ? app : null;
+  await showDialog<void>(
+    context: context,
+    builder: (dialog) => AlertDialog(
+      title: const Text('Default app'),
+      content: Text(switch (app) {
+        null => 'Nothing is set for $kind, so Android asks which app each '
+            'time. Open the file, choose the app, and tap Always.',
+        DefaultApp(only: true, :final label) => '$label is the only app on '
+            'this device that opens $kind.',
+        DefaultApp(:final label) => '${_capitalised(kind)} open in $label.\n\n'
+            'To use another app:\n'
+            '1. Tap Open settings.\n'
+            '2. Tap Clear default preferences.\n'
+            '3. Come back and open the file.\n'
+            '4. Choose the app and tap Always.',
+      }),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialog).pop(),
+          child: const Text('Close'),
+        ),
+        if (app == null)
+          FilledButton(
+            onPressed: () {
+              Navigator.of(dialog).pop();
+              onOpen();
+            },
+            child: const Text('Open'),
+          ),
+        if (settings != null)
+          FilledButton(
+            onPressed: () {
+              Navigator.of(dialog).pop();
+              bridge.showDefaultsOf(settings);
+            },
+            child: const Text('Open settings'),
+          ),
+      ],
+    ),
+  );
+}
+
+/// "PDF files", from a file's name: what Android's defaults are by.
+String filesLike(String name) {
+  final dot = name.lastIndexOf('.');
+  final extension = dot <= 0 ? '' : name.substring(dot + 1).trim();
+  return extension.isEmpty || extension.length > 6
+      ? 'files like this'
+      : '${extension.toUpperCase()} files';
+}
+
+String _capitalised(String s) =>
+    s.isEmpty ? s : '${s[0].toUpperCase()}${s.substring(1)}';

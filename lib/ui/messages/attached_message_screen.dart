@@ -12,7 +12,7 @@ import '../../domain/mail_message.dart';
 import '../../state/attachment_providers.dart';
 import '../../state/display_providers.dart';
 import '../common/bottom_message.dart';
-import 'attachment_bar.dart' show attachmentIcon;
+import 'attachment_bar.dart' show attachmentIcon, showDefaultApp;
 import 'attachment_save.dart';
 import 'date_format.dart';
 import 'html_body_view.dart';
@@ -235,6 +235,23 @@ class _FileActions {
         .share(onDisk.path, mimeType: file.openAs);
   }
 
+  Future<void> openWith(BuildContext context) async {
+    final onDisk = await _onDisk(context);
+    if (onDisk == null || !context.mounted) return;
+    try {
+      await ref
+          .read(fileBridgeProvider)
+          .openWith(onDisk.path, mimeType: file.openAs);
+    } catch (_) {
+      if (context.mounted) {
+        _say(context, 'Nothing here opens that sort of file.');
+      }
+    }
+  }
+
+  Future<void> defaultApp(BuildContext context) =>
+      showDefaultApp(context, ref, file, onOpen: () => open(context));
+
   void _say(BuildContext context, String text) => ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
     ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text(text)));
@@ -292,14 +309,18 @@ class _FileChip extends StatelessWidget {
                 tooltip: 'More',
                 icon: const Icon(Icons.more_vert, size: 18),
                 onSelected: (choice) => switch (choice) {
+                  'openWith' => actions.openWith(context),
                   'save' => actions.save(context),
                   'share' => actions.share(context),
+                  'default' => actions.defaultApp(context),
                   _ => actions.open(context),
                 },
                 itemBuilder: (_) => const [
                   PopupMenuItem(value: 'open', child: Text('Open')),
+                  PopupMenuItem(value: 'openWith', child: Text('Open with…')),
                   PopupMenuItem(value: 'save', child: Text('Save as…')),
                   PopupMenuItem(value: 'share', child: Text('Share…')),
+                  PopupMenuItem(value: 'default', child: Text('Default app…')),
                 ],
               ),
             ],

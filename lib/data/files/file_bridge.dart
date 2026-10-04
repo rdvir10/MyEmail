@@ -123,9 +123,37 @@ class DroppedFiles {
   final Offset at;
 }
 
+/// The app Android opens a sort of file in without asking.
+class DefaultApp {
+  const DefaultApp({
+    required this.packageName,
+    required this.label,
+    this.only = false,
+  });
+
+  final String packageName;
+
+  /// Its name as the launcher shows it.
+  final String label;
+
+  /// The only app installed that opens it, chosen by nobody.
+  final bool only;
+}
+
 abstract class FileBridge {
   /// Hand the file to whatever app opens that sort of thing.
   Future<void> open(String path, {String? mimeType});
+
+  /// Every app that opens this sort of file, to choose one from this once.
+  Future<void> openWith(String path, {String? mimeType});
+
+  /// The app a file called [name] opens in without asking, or null where
+  /// Android asks which.
+  Future<DefaultApp?> defaultAppFor(String name, {String? mimeType});
+
+  /// Android's page for [app]'s defaults, where an "Always" is undone. No
+  /// app may change another's default itself.
+  Future<void> showDefaultsOf(DefaultApp app);
 
   /// The share sheet.
   Future<void> share(String path, {String? mimeType});
@@ -220,6 +248,30 @@ class AndroidFileBridge implements FileBridge {
       _channel.invokeMethod<void>('open', {'path': path, 'mime': mimeType});
 
   @override
+  Future<void> openWith(String path, {String? mimeType}) => _channel
+      .invokeMethod<void>('openWith', {'path': path, 'mime': mimeType});
+
+  @override
+  Future<DefaultApp?> defaultAppFor(String name, {String? mimeType}) async {
+    final found = await _channel.invokeMethod<Object?>(
+      'defaultApp',
+      {'name': name, 'mime': mimeType},
+    );
+    if (found is! Map) return null;
+    final packageName = found['package'];
+    if (packageName is! String) return null;
+    return DefaultApp(
+      packageName: packageName,
+      label: '${found['label'] ?? packageName}',
+      only: found['only'] == true,
+    );
+  }
+
+  @override
+  Future<void> showDefaultsOf(DefaultApp app) => _channel
+      .invokeMethod<void>('showDefaults', {'package': app.packageName});
+
+  @override
   Future<void> share(String path, {String? mimeType}) =>
       _channel.invokeMethod<void>('share', {'path': path, 'mime': mimeType});
 
@@ -286,6 +338,25 @@ class FakeFileBridge implements FileBridge {
 
   @override
   Future<void> open(String path, {String? mimeType}) async => opened.add(path);
+
+  /// Opened with a choice of app; see [openWith].
+  final List<String> chosenFor = [];
+  final List<String> defaultsShown = [];
+
+  /// What [defaultAppFor] answers.
+  DefaultApp? defaultApp;
+
+  @override
+  Future<void> openWith(String path, {String? mimeType}) async =>
+      chosenFor.add(path);
+
+  @override
+  Future<DefaultApp?> defaultAppFor(String name, {String? mimeType}) async =>
+      defaultApp;
+
+  @override
+  Future<void> showDefaultsOf(DefaultApp app) async =>
+      defaultsShown.add(app.packageName);
 
   @override
   Future<void> share(String path, {String? mimeType}) async =>

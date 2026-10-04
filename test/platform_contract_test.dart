@@ -112,6 +112,11 @@ void main() {
 
       final files = AndroidFileBridge();
       await files.open('/f/a.pdf', mimeType: 'application/pdf');
+      await files.openWith('/f/a.pdf', mimeType: 'application/pdf');
+      await files.defaultAppFor('a.pdf', mimeType: 'application/pdf');
+      await files.showDefaultsOf(
+        const DefaultApp(packageName: 'com.example.reader', label: 'Reader'),
+      );
       await files.share('/f/a.pdf', mimeType: 'application/pdf');
       await files.copyToClipboard('/f/a.pdf', mimeType: null, name: 'a.pdf');
       await files.pasteFiles();
@@ -178,6 +183,9 @@ void main() {
           'mailtree/calendar insert',
           'mailtree/calendar timeZone',
           'mailtree/files startDragMany',
+          'mailtree/files openWith',
+          'mailtree/files defaultApp',
+          'mailtree/files showDefaults',
           'mailtree/installer install',
           'mailtree/widget placedWidgets',
           'mailtree/windows open',

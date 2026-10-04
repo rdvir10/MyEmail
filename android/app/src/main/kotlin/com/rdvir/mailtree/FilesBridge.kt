@@ -7,6 +7,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -16,6 +17,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.TypedValue
 import android.view.DragEvent
 import android.view.View
@@ -240,6 +242,17 @@ class FilesBridge(
                     view(call.argument<String>("path")!!, call.argument<String>("mime"))
                     result.success(null)
                 }
+                "openWith" -> {
+                    viewWith(call.argument<String>("path")!!, call.argument<String>("mime"))
+                    result.success(null)
+                }
+                "defaultApp" -> result.success(
+                    defaultApp(call.argument<String>("name")!!, call.argument<String>("mime")),
+                )
+                "showDefaults" -> {
+                    showDefaults(call.argument<String>("package")!!)
+                    result.success(null)
+                }
                 "share" -> {
                     share(call.argument<String>("path")!!, call.argument<String>("mime"))
                     result.success(null)
@@ -290,13 +303,77 @@ class FilesBridge(
     private fun uriFor(path: String): Uri =
         FileProvider.getUriForFile(activity, authority, File(path))
 
-    private fun view(path: String, mime: String?) {
-        val type = typeFor(mime, File(path).name)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uriFor(path), type)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    private fun viewIntent(uri: Uri, type: String) = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, type)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
+    /**
+     * Every app that opens this sort of file, to choose from this once.
+     * Android's own chooser, which has no "Always": changing the default
+     * is [showDefaults].
+     */
+    private fun viewWith(path: String, mime: String?) {
+        val intent = viewIntent(uriFor(path), typeFor(mime, File(path).name))
+        activity.startActivity(Intent.createChooser(intent, "Open with"))
+    }
+
+    /**
+     * The app Android opens a file called [name] in without asking: its
+     * package, its name, and whether it is the only one that can. Null
+     * when Android would ask. Asked of a file that need not be on the
+     * device yet: only its type matters.
+     */
+    private fun defaultApp(name: String, mime: String?): Map<String, Any>? {
+        val intent = viewIntent(
+            Uri.parse("content://$authority/probe/${Uri.encode(name)}"),
+            typeFor(mime, name),
+        )
+        val pm = activity.packageManager
+        val resolved = pm.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            ?: return null
+        val info = resolved.activityInfo ?: return null
+        // With several apps and none chosen, the answer is Android's own
+        // "Open with" screen rather than an app.
+        if (info.packageName == "android" ||
+            info.packageName == "com.android.intentresolver" ||
+            info.name.endsWith("ResolverActivity")
+        ) {
+            return null
         }
+        val all = pm.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+        return mapOf(
+            "package" to info.packageName,
+            "label" to resolved.loadLabel(pm).toString(),
+            "only" to (all.size <= 1),
+        )
+    }
+
+    /**
+     * Android's page for [packageName]'s defaults, where "Clear default
+     * preferences" undoes an "Always". No app may change another's default
+     * itself; this is as close as Android lets one come.
+     */
+    private fun showDefaults(packageName: String) {
+        val app = Uri.parse("package:$packageName")
+        val page = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Intent(Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS, app)
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, app)
+        }.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            activity.startActivity(page)
+        } catch (e: ActivityNotFoundException) {
+            activity.startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, app)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+    }
+
+    private fun view(path: String, mime: String?) {
+        val intent = viewIntent(uriFor(path), typeFor(mime, File(path).name))
         // The plain intent first, so a PDF goes straight to whatever the
         // person chose to read PDFs with. Wrapping every open in a chooser
         // means being asked every time and never being able to answer:
