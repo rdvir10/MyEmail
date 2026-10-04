@@ -731,6 +731,27 @@ void main() {
       expect(server.wholeAttachmentLookups, isEmpty);
     });
 
+    test('an email dragged into the message is listed as one', () async {
+      // Outlook items come with their subject for a name and no type, and
+      // were offered to Android as unknown data: Google Pay, the launcher.
+      server
+        ..message('f-inbox',
+            id: 'm1', subject: 'Memo', minutesAgo: 5, hasAttachments: true)
+        ..attachments['m1'] = [
+          ('a-1', 'Extrusion shape pictures', '', 'the item as MIME'),
+          ('a-2', 'Memo.docx', 'application/octet-stream', 'docx bytes'),
+        ]
+        ..itemAttachments.add('a-1');
+      final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
+
+      final files = await transport.listAttachments('Inbox', header.uid);
+
+      expect(files.first.name, 'Extrusion shape pictures.eml');
+      expect(files.first.mimeType, 'message/rfc822');
+      expect(files.first.openAs, 'message/rfc822');
+      expect(files.last.name, 'Memo.docx', reason: 'a file stays as it was');
+    });
+
     group('a meeting request', () {
       Future<MailBody> fetch() async {
         final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
@@ -1715,6 +1736,10 @@ class _FakeGraph {
   /// Files on a message: id to (name, contentType, bytes).
   final Map<String, List<(String, String, String, String)>> attachments = {};
 
+  /// Attachment ids that are Outlook items (an email dragged into the
+  /// message) rather than files: no media type, a subject for a name.
+  final Set<String> itemAttachments = {};
+
   /// Which attachment bodies were actually downloaded.
   final List<String> fetchedAttachments = [];
 
@@ -2081,9 +2106,14 @@ class _FakeGraph {
         'value': [
           for (final a in attachments[id] ?? const [])
             {
+              // Always there, as Graph sends it: the listing is of the
+              // base type, and each item says which kind it is.
+              '@odata.type': itemAttachments.contains(a.$1)
+                  ? '#microsoft.graph.itemAttachment'
+                  : '#microsoft.graph.fileAttachment',
               'id': a.$1,
               'name': a.$2,
-              'contentType': a.$3,
+              'contentType': itemAttachments.contains(a.$1) ? null : a.$3,
               'size': a.$4.length,
               'isInline': contentIds.containsKey(a.$1),
             },

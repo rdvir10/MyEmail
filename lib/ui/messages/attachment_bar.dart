@@ -4,8 +4,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/files/message_files.dart' show emlMimeType;
 import '../../domain/mail_attachment.dart';
 import '../../state/attachment_providers.dart';
+import 'attached_message_screen.dart';
 import 'attachment_save.dart';
 
 /// The files on a message, under its header.
@@ -161,7 +163,7 @@ class _AttachmentChip extends ConsumerWidget {
                   Icon(
                     state?.error != null
                         ? Icons.error_outline
-                        : _iconFor(attachment.openAs),
+                        : attachmentIcon(attachment.openAs),
                     size: 18,
                     color: state?.error != null
                         ? scheme.error
@@ -206,18 +208,21 @@ class _AttachmentChip extends ConsumerWidget {
       ),
     );
   }
+}
 
-  static IconData _iconFor(String mime) {
-    if (mime.startsWith('image/')) return Icons.image_outlined;
-    if (mime.startsWith('video/')) return Icons.movie_outlined;
-    if (mime.startsWith('audio/')) return Icons.audiotrack_outlined;
-    if (mime.contains('pdf')) return Icons.picture_as_pdf_outlined;
-    if (mime.contains('zip') || mime.contains('compressed')) {
-      return Icons.folder_zip_outlined;
-    }
-    if (mime.startsWith('text/')) return Icons.description_outlined;
-    return Icons.insert_drive_file_outlined;
+/// The icon for a file of type [mime].
+IconData attachmentIcon(String mime) {
+  // An email attached to this one, which opens here as one.
+  if (mime == emlMimeType) return Icons.mail_outline;
+  if (mime.startsWith('image/')) return Icons.image_outlined;
+  if (mime.startsWith('video/')) return Icons.movie_outlined;
+  if (mime.startsWith('audio/')) return Icons.audiotrack_outlined;
+  if (mime.contains('pdf')) return Icons.picture_as_pdf_outlined;
+  if (mime.contains('zip') || mime.contains('compressed')) {
+    return Icons.folder_zip_outlined;
   }
+  if (mime.startsWith('text/')) return Icons.description_outlined;
+  return Icons.insert_drive_file_outlined;
 }
 
 /// Everything that can be done with one attachment, in one place, so the
@@ -246,6 +251,22 @@ class AttachmentActions {
   Future<void> open(BuildContext context) async {
     final file = await _file(context);
     if (file == null || !context.mounted) return;
+    // An email attached to this one opens here, as an email, with its own
+    // pictures and files. Handed to Android, the choices for it were a
+    // browser and another mail app, or for an Outlook item with no type at
+    // all, Google Pay.
+    if (attachment.openAs == emlMimeType) {
+      final bytes = await file.readAsBytes();
+      if (!context.mounted) return;
+      if (await openAttachedMessage(
+        context,
+        bytes,
+        key: AttachmentDownloads.keyFor(messageId, attachment),
+      )) {
+        return;
+      }
+      if (!context.mounted) return;
+    }
     try {
       await ref
           .read(fileBridgeProvider)

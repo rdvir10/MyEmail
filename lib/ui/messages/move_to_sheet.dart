@@ -99,89 +99,95 @@ class _MoveToSheetState extends ConsumerState<_MoveToSheet> {
           ];
     final tree = query.isEmpty ? _treeRows(all, compare) : const <_TreeEntry>[];
 
-    return SafeArea(
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.sizeOf(context).height * 0.85,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-              child: Text(
-                messageCount == 1
-                    ? 'Move to'
-                    : 'Move $messageCount messages to',
-                style: theme.textTheme.titleMedium,
+    // The same height whatever is listed, so the search box stays near the
+    // top of the screen and what it finds is listed under it. Sized to its
+    // list, the sheet shrank to a handful of matches and sat them at the
+    // bottom of the screen. Above the keyboard, not under it, and with its
+    // top where it was before the keyboard came up.
+    final media = MediaQuery.of(context);
+    final keyboard = media.viewInsets.bottom;
+    return Padding(
+      padding: EdgeInsets.only(bottom: keyboard),
+      child: SafeArea(
+        child: SizedBox(
+          height: media.size.height * 0.85 - keyboard,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+                child: Text(
+                  messageCount == 1
+                      ? 'Move to'
+                      : 'Move $messageCount messages to',
+                  style: theme.textTheme.titleMedium,
+                ),
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-              child: TextField(
-                onChanged: (value) => setState(() => _query = value),
-                textInputAction: TextInputAction.search,
-                decoration: InputDecoration(
-                  isDense: true,
-                  filled: true,
-                  hintText: 'Search folders',
-                  prefixIcon: const Icon(Icons.search, size: 20),
-                  suffixIcon: _query.isEmpty
-                      ? null
-                      : IconButton(
-                          tooltip: 'Clear',
-                          icon: const Icon(Icons.close, size: 18),
-                          onPressed: () => setState(() => _query = ''),
-                        ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: BorderSide.none,
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                child: TextField(
+                  onChanged: (value) => setState(() => _query = value),
+                  textInputAction: TextInputAction.search,
+                  decoration: InputDecoration(
+                    isDense: true,
+                    filled: true,
+                    hintText: 'Search folders',
+                    prefixIcon: const Icon(Icons.search, size: 20),
+                    suffixIcon: _query.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Clear',
+                            icon: const Icon(Icons.close, size: 18),
+                            onPressed: () => setState(() => _query = ''),
+                          ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide.none,
+                    ),
                   ),
                 ),
               ),
-            ),
-            const Divider(height: 1),
-            Flexible(
-              child: ListView(
-                shrinkWrap: true,
-                children: [
-                  if (query.isNotEmpty) ...[
-                    for (final f in matches)
-                      _FolderOption(folder: f, path: _pathOf(f, index)),
-                    if (matches.isEmpty)
-                      ListTile(
-                        enabled: false,
-                        title: Text('No folder matches “$_query”.'),
-                      ),
-                  ] else ...[
-                    // Recents are the answer most of the time, so they stay
-                    // at the top, each with where it lives.
-                    if (recents.isNotEmpty) ...[
-                      _SheetHeading(text: 'Recent', theme: theme),
-                      for (final f in recents)
+              const Divider(height: 1),
+              Expanded(
+                child: ListView(
+                  children: [
+                    if (query.isNotEmpty) ...[
+                      for (final f in matches)
                         _FolderOption(folder: f, path: _pathOf(f, index)),
-                      const Divider(height: 1),
-                      _SheetHeading(text: 'All folders', theme: theme),
+                      if (matches.isEmpty)
+                        ListTile(
+                          enabled: false,
+                          title: Text('No folder matches “$_query”.'),
+                        ),
+                    ] else ...[
+                      // Recents are the answer most of the time, so they stay
+                      // at the top, each with where it lives.
+                      if (recents.isNotEmpty) ...[
+                        _SheetHeading(text: 'Recent', theme: theme),
+                        for (final f in recents)
+                          _FolderOption(folder: f, path: _pathOf(f, index)),
+                        const Divider(height: 1),
+                        _SheetHeading(text: 'All folders', theme: theme),
+                      ],
+                      for (final entry in tree)
+                        _TreeRow(
+                          entry: entry,
+                          open: _open.contains(entry.folder.id),
+                          here: entry.folder.id == fromFolderId,
+                          onToggle: () => _toggle(entry.folder.id),
+                        ),
+                      if (!all.any(_takes))
+                        const ListTile(
+                          enabled: false,
+                          title: Text('Nowhere to move it to.'),
+                        ),
                     ],
-                    for (final entry in tree)
-                      _TreeRow(
-                        entry: entry,
-                        open: _open.contains(entry.folder.id),
-                        here: entry.folder.id == fromFolderId,
-                        onToggle: () => _toggle(entry.folder.id),
-                      ),
-                    if (!all.any(_takes))
-                      const ListTile(
-                        enabled: false,
-                        title: Text('Nowhere to move it to.'),
-                      ),
                   ],
-                ],
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
-          ],
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );

@@ -442,6 +442,11 @@ class GraphTransport implements ImapTransport {
   Future<List<MailAttachment>> listAttachments(String path, int uid) async {
     final remoteId = await _remoteId(path, uid);
     final listed = await api.attachments(remoteId);
+    final items = listed.where((a) => a.isItem).length;
+    if (items > 0) {
+      debugPrint('[myemail] attachments: $items of ${listed.length} are '
+          'Outlook items, shown as attached emails');
+    }
     // Asked only of what the body could show: a part marked inline, or a
     // picture. A file nobody draws needs no second request.
     final contentIds = await Future.wait([
@@ -452,14 +457,17 @@ class GraphTransport implements ImapTransport {
     ]);
     return [
       for (final (i, a) in listed.indexed)
-        MailAttachment(
-          id: a.id,
-          name: safeFileName(a.name),
-          mimeType: a.mimeType,
-          sizeBytes: a.sizeBytes,
-          isInline: a.isInline,
-          contentId: contentIds[i],
-        ),
+        if (a.isItem)
+          attachedItem(a)
+        else
+          MailAttachment(
+            id: a.id,
+            name: safeFileName(a.name),
+            mimeType: a.mimeType,
+            sizeBytes: a.sizeBytes,
+            isInline: a.isInline,
+            contentId: contentIds[i],
+          ),
     ];
   }
 
@@ -962,4 +970,30 @@ class _Scan {
   final Map<String, int> uids;
 
   Iterable<GraphMessage> get reversed => messages.reversed;
+}
+
+/// An Outlook item attached to a message, as the file it downloads as.
+///
+/// Graph names it after the item's subject and gives it no media type, and
+/// what it downloads as is the item in MIME. Almost always it is an email
+/// dragged into the message, so it is called one (`.eml`): it shows as one,
+/// opens in the app as one, and goes to other apps as one. Offered as an
+/// unnamed file, Android's choices for it were Google Pay and the launcher.
+/// A calendar item or a contact is called that where Graph says so.
+MailAttachment attachedItem(GraphAttachment a) {
+  final type = a.mimeType.toLowerCase();
+  final (mime, extension) = type.startsWith('text/calendar')
+      ? ('text/calendar', 'ics')
+      : type.contains('vcard')
+          ? ('text/vcard', 'vcf')
+          : ('message/rfc822', 'eml');
+  final name = a.name.trim().isEmpty ? 'Attached item' : a.name.trim();
+  return MailAttachment(
+    id: a.id,
+    name: safeFileName(
+      name.toLowerCase().endsWith('.$extension') ? name : '$name.$extension',
+    ),
+    mimeType: mime,
+    sizeBytes: a.sizeBytes,
+  );
 }

@@ -171,6 +171,46 @@ void main() {
     expect(find.textContaining('No folder matches'), findsOneWidget);
   });
 
+  testWidgets('what a search finds is listed at the top, not the bottom',
+      (tester) async {
+    // Sized to its list, the sheet shrank to the one or two folders found
+    // and sat them at the bottom of the screen.
+    final (_, folders) = await open(tester);
+    final search = find.widgetWithText(TextField, 'Search folders');
+    final before = tester.getTopLeft(search).dy;
+    final target = folders.firstWhere(
+      (f) => f.capabilities.canAcceptMessages && f.displayName.length > 4,
+    );
+
+    await tester.enterText(search, target.displayName);
+    await tester.pumpAndSettle();
+
+    expect(tester.getTopLeft(search).dy, before, reason: 'the box stays put');
+    expect(before, lessThan(1400 * 0.25), reason: 'near the top');
+    final found = find.text(target.displayName).first;
+    expect(tester.getTopLeft(found).dy - tester.getBottomLeft(search).dy,
+        lessThan(80),
+        reason: 'right under the box');
+  });
+
+  testWidgets('and the keyboard does not cover them', (tester) async {
+    await open(tester);
+    final search = find.widgetWithText(TextField, 'Search folders');
+    final before = tester.getTopLeft(search).dy;
+
+    tester.view.viewInsets = const FakeViewPadding(bottom: 600);
+    addTearDown(tester.view.resetViewInsets);
+    await tester.pumpAndSettle();
+
+    expect(tester.getTopLeft(search).dy, before,
+        reason: 'the sheet ends at the keyboard, its top where it was');
+    final list = tester.getRect(find.descendant(
+      of: find.byType(BottomSheet),
+      matching: find.byType(ListView),
+    ));
+    expect(list.bottom, lessThanOrEqualTo(1400 - 600));
+  });
+
   testWidgets('choosing one closes the sheet with that folder', (tester) async {
     final (_, folders) = await open(tester);
     final (parent, _) = branch(folders);

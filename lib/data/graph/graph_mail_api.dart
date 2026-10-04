@@ -427,6 +427,9 @@ class GraphMailApi {
             mimeType: '${item['contentType'] ?? 'application/octet-stream'}',
             sizeBytes: item['size'] is int ? item['size'] as int : 0,
             isInline: item['isInline'] == true,
+            // Always on an item of this collection: the base type has
+            // subtypes, and Graph names which one each item is.
+            isItem: item['@odata.type'] == '#microsoft.graph.itemAttachment',
           ),
     ];
   }
@@ -969,6 +972,7 @@ class GraphAttachment {
     required this.mimeType,
     required this.sizeBytes,
     required this.isInline,
+    this.isItem = false,
   });
 
   final String id;
@@ -976,6 +980,11 @@ class GraphAttachment {
   final String mimeType;
   final int sizeBytes;
   final bool isInline;
+
+  /// An Outlook item rather than a file: most often an email dragged into
+  /// the message. Its name is the item's subject, with no extension, and
+  /// it has no media type; its `$value` is the item as MIME.
+  final bool isItem;
 }
 
 /// The message or folder is not there. Usually means deleted elsewhere.
