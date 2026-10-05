@@ -176,7 +176,7 @@ TEMPLATE = """<!doctype html>
     .cover-inner, .layout, footer {{ max-width: none; padding: 0; }}
     nav.contents {{ display: none; }}
     .layout {{ display: block; }}
-    article > h2 {{ break-after: avoid; }}
+    article > h2, article > h3 {{ break-after: avoid; }}
     table, ul, ol {{ break-inside: avoid; }}
     table {{ box-shadow: none; }}
     a {{ color: inherit; text-decoration: none; }}

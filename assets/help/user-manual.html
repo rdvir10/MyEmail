@@ -157,7 +157,7 @@
     .cover-inner, .layout, footer { max-width: none; padding: 0; }
     nav.contents { display: none; }
     .layout { display: block; }
-    article > h2 { break-after: avoid; }
+    article > h2, article > h3 { break-after: avoid; }
     table, ul, ol { break-inside: avoid; }
     table { box-shadow: none; }
     a { color: inherit; text-decoration: none; }
@@ -174,18 +174,34 @@
   </div>
 </header>
 <div class="layout sidebar">
-<nav class="contents"><h2>Contents</h2><ol><li><a href="#1-getting-started">Getting started</a></li><li><a href="#2-what-is-on-screen">What is on screen</a></li><li><a href="#3-reading-mail">Reading mail</a></li><li><a href="#4-writing-mail">Writing mail</a></li><li><a href="#5-sorting-and-finding">Sorting and finding</a></li><li><a href="#6-tidying-up">Tidying up</a></li><li><a href="#7-folders">Folders</a></li><li><a href="#8-being-told-about-new-mail">Being told about new mail</a></li><li><a href="#9-home-screen-widgets">Home screen widgets</a></li><li><a href="#10-windows-and-split-screen">Windows and split screen</a></li><li><a href="#11-the-keyboard">The keyboard</a></li><li><a href="#12-settings-screen-by-screen">Settings, screen by screen</a></li><li><a href="#13-backup-and-updates">Backup and updates</a></li><li><a href="#14-when-something-looks-wrong">When something looks wrong</a></li></ol></nav>
+<nav class="contents"><h2>Contents</h2><ol><li><a href="#1-installing-and-getting-started">Installing and getting started</a></li><li><a href="#2-what-is-on-screen">What is on screen</a></li><li><a href="#3-reading-mail">Reading mail</a></li><li><a href="#4-writing-mail">Writing mail</a></li><li><a href="#5-sorting-and-finding">Sorting and finding</a></li><li><a href="#6-tidying-up">Tidying up</a></li><li><a href="#7-folders">Folders</a></li><li><a href="#8-being-told-about-new-mail">Being told about new mail</a></li><li><a href="#9-home-screen-widgets">Home screen widgets</a></li><li><a href="#10-windows-and-split-screen">Windows and split screen</a></li><li><a href="#11-the-keyboard">The keyboard</a></li><li><a href="#12-settings-screen-by-screen">Settings, screen by screen</a></li><li><a href="#13-backup-and-updates">Backup and updates</a></li><li><a href="#14-when-something-looks-wrong">When something looks wrong</a></li></ol></nav>
 <article>
 <p>For the phone and the tablet. Version 2.80.0.</p>
 <p>Where the two differ, it says so. Everything else works the same on both.</p>
 <hr>
 <hr>
-<h2 id="1-getting-started"><span>1. Getting started</span></h2>
+<h2 id="1-installing-and-getting-started"><span>1. Installing and getting started</span></h2>
+<h3 id="what-it-runs-on">What it runs on</h3>
+<p>Android 7.0 or later, on a 64-bit phone or tablet, which every phone and tablet of the last several years is. MyEmail is not in the Play Store: it is installed once from its download page, and from then on it updates itself (see <em>Updates</em> in section 13).</p>
+<h3 id="installing">Installing</h3>
+<ol><li>On the phone or tablet, open <a href="https://github.com/rdvir10/MyEmail/releases/latest">github.com/rdvir10/MyEmail/releases/latest</a> in the browser.</li><li>Under <strong>Assets</strong>, tap <strong>myemail-arm64.apk</strong>. If the browser warns that this kind of file can harm the device, download it anyway.</li><li>Open the download, from the download notification or from <strong>Files → Downloads</strong>.</li><li>Android says the browser is not allowed to install unknown apps: tap <strong>Settings</strong>, turn on <strong>Allow from this source</strong>, go back, and tap <strong>Install</strong>.</li><li>If Google Play Protect offers to scan the app first, let it, then tap <strong>Install</strong>.</li><li>Open MyEmail and allow notifications when it asks. Without them, nothing announces new mail.</li></ol>
+<p>It then asks for an account, or offers <strong>Restore from a backup</strong> if this device is replacing another (see <em>Moving to a new device</em> below).</p>
+<p>Installing a newer download over MyEmail keeps every account and every message, because every version is signed the same way.</p>
 <h3 id="adding-an-account">Adding an account</h3>
 <p><strong>Settings → Accounts → Add</strong>, or the app asks on first run.</p>
-<ul><li><strong>Gmail</strong> signs in with Google: tap <strong>Sign in with Google</strong>, choose the account in the browser that opens, and you are brought back with the account added. Google warns that the app is not verified (it is not in an app store); tap <strong>Advanced</strong>, then <strong>Go to MyEmail</strong>. An <em>app password</em> still works instead: <code>docs/gmail-app-password.md</code> walks through making one.</li><li><strong>Outlook / Microsoft 365</strong> signs you in the normal way, in a browser window, and no password is stored here.</li></ul>
-<p>Passwords and tokens go into the Android Keystore. They are never written to a file, and they are not in the settings backup unless you ask for that and set a passphrase.</p>
-<h3 id="removing-one">Removing one</h3>
+<p><strong>Gmail</strong></p>
+<ol><li>Tap <strong>Gmail</strong>, then <strong>Sign in with Google</strong>.</li><li>Choose the account in the browser that opens.</li><li>Google says <em>Google hasn't verified this app</em>: tap <strong>Advanced</strong>, then <strong>Go to MyEmail (unsafe)</strong>. The wording is Google's, because MyEmail is not in the Play Store.</li><li>Tick every permission (mail, calendar, Meet) and tap <strong>Continue</strong>. MyEmail comes back with the account added.</li></ol>
+<p>An app password still works instead of Google sign-in, but only Google sign-in lets a meeting made in MyEmail go on the Google calendar.</p>
+<p><strong>Outlook.com, Microsoft 365, or a work account</strong></p>
+<ol><li>Tap <strong>Outlook</strong> and sign in on Microsoft's page. If the account uses the Authenticator app, approve the sign-in there and come back: the sign-in waits for you.</li><li>A work account may say the app needs an administrator's approval: tap <strong>Request approval</strong>, and sign in again once it has been approved. Making meetings may need a second approval the same way; the New meeting screen offers it when it does.</li></ol>
+<p>No Microsoft password is stored here. Passwords and tokens go into the Android Keystore. They are never written to a file, and they are not in the settings backup unless you ask for that and set a passphrase.</p>
+<p>Each account's page, <strong>Settings → Accounts → the account</strong>, sets the name it is shown under and its colour, which is also the colour of its notifications.</p>
+<h3 id="what-android-asks-for">What Android asks for</h3>
+<div class="scroller"><table><thead><tr><th>Permission</th><th>When it is asked</th><th>What it is for</th></tr></thead><tbody><tr><td>Notifications</td><td>The first time MyEmail opens</td><td>Announcing new mail.</td></tr><tr><td>Contacts</td><td>The first time you tap a To, Cc or Bcc field</td><td>Suggesting people from your contacts. Refuse it, and suggestions still come from your mail.</td></tr><tr><td>Run in the background</td><td>When you choose <strong>Every 5 minutes</strong> or <strong>Push, as it arrives</strong> in <strong>Settings → Sync</strong></td><td>Keeping those running. Refuse it, and mail is checked about every 15 minutes until the app is opened.</td></tr><tr><td>Install unknown apps (from MyEmail)</td><td>The first update from <strong>Settings → About</strong></td><td>Installing the updates MyEmail downloads.</td></tr></tbody></table></div>
+<h3 id="moving-to-a-new-device">Moving to a new device</h3>
+<ol><li>On the old device: <strong>Settings → Backup → Save to a file</strong>, tick <strong>Include sign-in details</strong>, and choose a passphrase.</li><li>Send the file to the new device: share it, or put it in OneDrive.</li><li>On the new device: install MyEmail as above, then tap <strong>Restore from a backup</strong> on its first screen (or <strong>Settings → Backup → Restore from a file</strong> later), pick the file, and give the passphrase.</li></ol>
+<p>The accounts arrive signed in, with the folder tree's shape, favourites, hidden folders, Quick Steps, signatures, swipe actions, sort and trusted senders. Each device keeps its own mail and settings from then on; restoring the same backup on both is the quick way to set a second one up.</p>
+<h3 id="removing-an-account">Removing an account</h3>
 <p><strong>Settings → Accounts → Remove</strong>. It says what goes with it — the cached mail for that account — and asks before doing it.</p>
 <hr>
 <h2 id="2-what-is-on-screen"><span>2. What is on screen</span></h2>
