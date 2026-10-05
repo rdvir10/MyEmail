@@ -48,7 +48,7 @@ void main() {
     test('a reply from the notification says which way it reads', () {
       expect(
         asParagraphs('תודה רבה\n\nThanks'),
-        '<p dir="rtl">תודה רבה</p><p>Thanks</p>',
+        '<div dir="rtl">תודה רבה</div><div><br></div><div>Thanks</div>',
       );
     });
 

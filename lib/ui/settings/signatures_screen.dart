@@ -138,7 +138,8 @@ String signatureTextToHtml(String text) {
       .replaceAll('&', '&amp;')
       .replaceAll('<', '&lt;')
       .replaceAll('>', '&gt;');
-  return '<p>${escaped.split('\n').join('<br>')}</p>';
+  // A div, not a paragraph, which every mail program spaces out.
+  return '<div>${escaped.split('\n').join('<br>')}</div>';
 }
 
 /// The reverse, so the box shows what was typed rather than the markup.

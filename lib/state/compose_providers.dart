@@ -237,11 +237,12 @@ class DraftNotLoaded implements Exception, ReadableError {
   String toString() => message;
 }
 
+/// One line each, with no gap between them, as the editor writes lines.
 String _asHtml(String text) => text.isEmpty
-    ? '<p><br></p>'
+    ? '<div><br></div>'
     : text
         .split('\n')
-        .map((line) => '<p>${line.isEmpty ? '<br>' : _escape(line)}</p>')
+        .map((line) => '<div>${line.isEmpty ? '<br>' : _escape(line)}</div>')
         .join();
 
 String _escape(String s) => s

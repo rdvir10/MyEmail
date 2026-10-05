@@ -128,10 +128,12 @@ bool _hasPrefix(String subject, String prefix) =>
 /// from the right, as one written in the editor does.
 String asParagraphs(String text) {
   final paragraphs = text.replaceAll('\r\n', '\n').trim().split('\n\n');
+  // Lines with no gap between them, as the editor writes them, and a blank
+  // line where the text had one.
   return [
     for (final p in paragraphs)
-      '<p${dirAttribute(p)}>${escapeHtml(p).replaceAll('\n', '<br>')}</p>',
-  ].join();
+      '<div${dirAttribute(p)}>${escapeHtml(p).replaceAll('\n', '<br>')}</div>',
+  ].join(blankLine);
 }
 
 String escapeHtml(String s) => s

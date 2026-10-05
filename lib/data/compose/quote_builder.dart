@@ -22,8 +22,14 @@ import '../imap/imap_mapping.dart';
 /// Where the caret should start, marked so the editor can find it.
 const caretMarker = '<span id="mailtree-caret"></span>';
 
+/// One line, empty. Lines are `<div>`s with no gap between them, as Outlook
+/// and Gmail write them, so a blank line is one of these: typed with Enter
+/// twice, or put here where the shape of a message wants one.
+const blankLine = '<div><br></div>';
+
 /// An empty line to type into, the caret marker, then the signature, then the
-/// quoted original. Outlook's shape: you write above the quote.
+/// quoted original, a blank line between each. Outlook's shape: you write
+/// above the quote.
 /// [typedHtml] is for a reply written where there is no editor — the
 /// notification shade — and takes the place of the empty line the caret
 /// would have gone on. Everything under it is the same either way.
@@ -37,18 +43,25 @@ String buildComposeHtml({
   String typedHtml = '',
 }) {
   final buffer = StringBuffer(
-    typedHtml.isEmpty ? '<p>$caretMarker<br></p>' : typedHtml,
+    typedHtml.isEmpty ? '<div>$caretMarker<br></div>' : typedHtml,
   );
+  final signed =
+      carriesSignature(kind, signatureHtml, onReply: signatureOnReply);
+  final quoted = kind != ComposeKind.newMessage && original != null;
 
-  if (carriesSignature(kind, signatureHtml, onReply: signatureOnReply)) {
+  if (signed || quoted) buffer.write(blankLine);
+  if (signed) {
     buffer.write('<div class="mailtree-signature">$signatureHtml</div>');
+    // Goes with the signature: a change of From that takes the signature
+    // out takes this with it. See mailtreeSetSignature.
+    if (quoted) buffer.write(blankLine);
   }
 
-  if (kind != ComposeKind.newMessage && original != null) {
+  if (quoted) {
     buffer
       ..write('<div class="mailtree-quote">')
-      ..write('<p>${_attributionLine(kind, original)}</p>')
-      ..write('<blockquote style="margin:0 0 0 8px;padding-left:12px;'
+      ..write('<div>${_attributionLine(kind, original)}</div>')
+      ..write('<blockquote style="margin:4px 0 0 0;padding-left:12px;'
           'border-left:2px solid #ccc">')
       ..write(quotedOriginal(html: originalHtml, text: originalText))
       ..write('</blockquote></div>');
@@ -273,7 +286,14 @@ String _neutraliseStyle(String style) => style
 /// as well as by url(). No `<` survives, because a style element's text is
 /// written out as it is: taking something out of the middle must not be able
 /// to leave a `</style>` behind that ends it early.
+///
+/// Outlook wraps every style sheet in `<!-- -->`, which CSS ignores. Escaped
+/// with the rest, the opening one became part of the first rule's selector
+/// and that rule was dropped: the one that takes the gap off Outlook's
+/// paragraphs, so every quote of an Outlook message came out double-spaced.
 String _neutraliseStyleSheet(String css) => _neutraliseStyle(css)
+    .replaceAll('<!--', '')
+    .replaceAll('-->', '')
     .replaceAll(RegExp(r'@import[^;]*;?', caseSensitive: false), '')
     .replaceAll('<', r'\3c ');
 

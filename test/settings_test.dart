@@ -432,7 +432,7 @@ void main() {
     test('a typed signature becomes HTML and comes back unchanged', () {
       const typed = 'Ron Dvir\nrdvir@example.com';
       final html = signatureTextToHtml(typed);
-      expect(html, '<p>Ron Dvir<br>rdvir@example.com</p>');
+      expect(html, '<div>Ron Dvir<br>rdvir@example.com</div>');
       expect(htmlToSignatureText(html), typed);
     });
 

@@ -202,6 +202,13 @@ class HtmlEditorController extends ChangeNotifier {
     await _web?.runJavaScript('window.mailtreeFocus();');
   }
 
+  /// Line spacing for the lines selected, or for all that is written when
+  /// nothing is: null for single, else a CSS line height such as `150%`.
+  Future<void> setLineSpacing(String? lineHeight) async {
+    await _web?.runJavaScript(
+        'window.mailtreeLineSpacing(${jsonEncode(lineHeight ?? '')});');
+  }
+
   /// Put [html] in place of the signature, or take the signature out when
   /// it is empty. Waits for the page, so a From changed while the editor is
   /// still loading is not lost.
@@ -296,9 +303,14 @@ String editorDocument(String bodyHtml,
     --blocked-bg:#2b2930; --blocked-rule:#5a585c; --link:#a8c8ff;
   }
   html,body{margin:0;padding:0;height:100%}
+  /* The first line close under the header, and lines a little apart but
+     with no gap between them: each Enter is a new line, as in Outlook and
+     Gmail, and a blank line is Enter twice. It was 12px and 1.45, with a
+     paragraph's gap under every line, which made a note double-spaced
+     before a word of it was sent. */
   body{
-    box-sizing:border-box;padding:12px 16px;
-    font:15px/1.45 -apple-system,Roboto,sans-serif;
+    box-sizing:border-box;padding:6px 16px;
+    font:15px/1.35 -apple-system,Roboto,sans-serif;
     color:var(--fg);background:var(--bg);
     outline:none;word-wrap:break-word;overflow-wrap:anywhere;
     -webkit-tap-highlight-color:transparent;
@@ -307,7 +319,9 @@ String editorDocument(String bodyHtml,
   img{max-width:100%;height:auto}
   blockquote{margin:8px 0;padding-left:12px;border-left:2px solid var(--rule)}
   .mailtree-signature{color:var(--muted)}
-  .mailtree-quote{margin-top:8px}
+  /* Paragraphs from before lines were lines: an old draft, a signature
+     saved then. They go out with no gap as well; see mailtreeGetHtml. */
+  body > p, .mailtree-signature p{margin:0}
   /* A blocked remote image still needs to occupy space, or the quote
      reflows as the user types and the layout jumps. */
   img[data-blocked-src],img[data-blocked-srcset]{
@@ -336,8 +350,67 @@ String editorDocument(String bodyHtml,
     // The colours as they came, and none of the marks that carry them.
     paintColours(copy, false);
     unmark(copy);
+    // A paragraph of this message's own (an old draft's, a signature's)
+    // goes out with no gap under it, as it shows here. Every mail program
+    // puts one under a paragraph that does not say otherwise. The quote's
+    // are left as the sender wrote them.
+    var paragraphs = copy.querySelectorAll('p');
+    for (var p = 0; p < paragraphs.length; p++) {
+      if (!paragraphs[p].closest('.mailtree-quote') &&
+          !paragraphs[p].style.margin) {
+        paragraphs[p].style.margin = '0';
+      }
+    }
     return copy.innerHTML;
   };
+
+  // Line spacing, written the way Outlook writes it (a line height in
+  // percent), so it arrives looking as it does here. On the lines
+  // selected, or with nothing selected on all that has been written; never
+  // on the signature or the quote, which are not this message's text. An
+  // empty value is single spacing.
+  window.mailtreeLineSpacing = function (value) {
+    var sel = window.getSelection();
+    var range = sel.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0) : null;
+    var lines = document.body.querySelectorAll(BLOCKS);
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (line.closest('.mailtree-quote') ||
+          line.closest('.mailtree-signature')) {
+        continue;
+      }
+      if (range ? !range.intersectsNode(line)
+                : line.parentElement !== document.body) {
+        continue;
+      }
+      respace(line, 'style', value);
+      // The colours' stored versions too, so a line whose colours are
+      // turned for the dark still swaps back as it should.
+      respace(line, LIGHT + 'style', value);
+      respace(line, DARK + 'style', value);
+    }
+    reportFormats();
+  };
+
+  // The style in [name] with its line height set to [value], or taken off.
+  function respace(el, name, value) {
+    if (name !== 'style' && !el.hasAttribute(name)) return;
+    var probe = document.createElement('div');
+    probe.setAttribute('style', el.getAttribute(name) || '');
+    if (value) {
+      probe.style.lineHeight = value;
+    } else {
+      probe.style.removeProperty('line-height');
+    }
+    var style = probe.getAttribute('style') || '';
+    if (style) {
+      el.setAttribute(name, style);
+    } else if (name === 'style') {
+      el.removeAttribute('style');
+    } else {
+      el.setAttribute(name, '');
+    }
+  }
 
   // Repainting rather than reloading: a theme change mid-message must not
   // discard what has been written.
@@ -420,22 +493,45 @@ String editorDocument(String bodyHtml,
   // message sent from here carries a signature div of its own.
   window.mailtreeSetSignature = function (html) {
     var sig = document.querySelector('body > .mailtree-signature');
+    var quote = document.querySelector('body > .mailtree-quote');
     if (!html) {
-      if (sig) sig.remove();
+      if (sig) {
+        // With the blank line that kept it apart from the quote.
+        var after = sig.nextElementSibling;
+        if (quote && after !== quote && isBlankLine(after)) after.remove();
+        sig.remove();
+      }
       return;
     }
     if (!sig) {
       sig = document.createElement('div');
       sig.className = 'mailtree-signature';
       // Above the quote, where the builder puts it; at the end without one.
-      document.body.insertBefore(
-          sig, document.querySelector('body > .mailtree-quote'));
+      // A blank line above it and one between it and the quote, as the
+      // builder writes them.
+      document.body.insertBefore(sig, quote);
+      if (quote) document.body.insertBefore(blankLine(), quote);
+      if (!isBlankLine(sig.previousElementSibling)) {
+        document.body.insertBefore(blankLine(), sig);
+      }
     }
     sig.innerHTML = html;
     paintColours(sig,
         document.documentElement.getAttribute('data-theme') === 'dark');
     orientAll();
   };
+
+  // A line with nothing on it, which is how a blank line is written.
+  function isBlankLine(el) {
+    return !!el && el.tagName === 'DIV' && !el.className &&
+        el.textContent.trim() === '' && !el.querySelector('img');
+  }
+
+  function blankLine() {
+    var line = document.createElement('div');
+    line.appendChild(document.createElement('br'));
+    return line;
+  }
 
   window.mailtreeFocus = function () {
     document.body.focus();
@@ -556,11 +652,16 @@ String editorDocument(String bodyHtml,
     window.visualViewport.addEventListener('resize', keepCaretVisible);
   }
 
-  // An empty document, a signature not yet written, is given a paragraph
-  // to type into: text typed straight into the body belongs to no
-  // paragraph, and would have no direction of its own.
+  // Enter starts a line, not a paragraph: a div, which no mail program
+  // puts a gap under. Inside a line Enter copies it anyway; this is for
+  // the places that are not in one.
+  document.execCommand('defaultParagraphSeparator', false, 'div');
+
+  // An empty document, a signature not yet written, is given a line to
+  // type into: text typed straight into the body belongs to no line, and
+  // would have no direction of its own.
   if (!document.body.innerHTML.trim()) {
-    document.body.innerHTML = '<p><br></p>';
+    document.body.innerHTML = '<div><br></div>';
   }
   orientAll();
   placeCaret();
@@ -571,8 +672,8 @@ String editorDocument(String bodyHtml,
 ''';
 }
 
-/// Bold, italic, underline, lists, clear: the formatting a message or a
-/// signature needs, driving the editor's document.
+/// Bold, italic, underline, lists, line spacing, clear: the formatting a
+/// message or a signature needs, driving the editor's document.
 class EditorToolbar extends StatelessWidget {
   const EditorToolbar({super.key, required this.controller, required this.enabled});
 
@@ -607,6 +708,20 @@ class EditorToolbar extends StatelessWidget {
             const VerticalDivider(width: 8, indent: 10, endIndent: 10),
             button('insertUnorderedList', Icons.format_list_bulleted, 'Bullets'),
             button('insertOrderedList', Icons.format_list_numbered, 'Numbers'),
+            // Outlook's three. For the lines selected, or with nothing
+            // selected, for everything written so far.
+            PopupMenuButton<String>(
+              tooltip: 'Line spacing',
+              enabled: enabled,
+              icon: const Icon(Icons.format_line_spacing),
+              onSelected: (value) =>
+                  controller.setLineSpacing(value.isEmpty ? null : value),
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: '', child: Text('Single')),
+                PopupMenuItem(value: '150%', child: Text('1.5 lines')),
+                PopupMenuItem(value: '200%', child: Text('Double')),
+              ],
+            ),
             const Spacer(),
             IconButton(
               tooltip: 'Remove formatting',
