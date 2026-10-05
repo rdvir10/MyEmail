@@ -326,17 +326,28 @@ class _FolderSearchFieldState extends ConsumerState<_FolderSearchField> {
   @override
   Widget build(BuildContext context) {
     final query = ref.watch(folderSearchQueryProvider);
+    // Slimmer than a text field likes to be, for the folders' sake.
+    const iconRoom = BoxConstraints(minWidth: 36, minHeight: 32);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
       child: TextField(
         controller: _controller,
         decoration: InputDecoration(
           hintText: 'Search folders',
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
           prefixIcon: const Icon(Icons.search, size: 18),
+          prefixIconConstraints: iconRoom,
+          suffixIconConstraints: iconRoom,
           suffixIcon: query.isEmpty
               ? null
               : IconButton(
                   icon: const Icon(Icons.close, size: 18),
+                  style: const ButtonStyle(
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  constraints: iconRoom,
+                  padding: EdgeInsets.zero,
                   tooltip: 'Clear',
                   onPressed: () {
                     _controller.clear();
@@ -439,7 +450,7 @@ class _SectionHeaderState extends ConsumerState<_SectionHeader> {
     final isCollapsed = row.isCollapsed ?? false;
 
     Widget header = Padding(
-      padding: EdgeInsets.fromLTRB(collapsible ? 4 : 12, 16, 12, 6),
+      padding: EdgeInsets.fromLTRB(collapsible ? 4 : 12, 10, 12, 4),
       child: Row(
         children: [
           if (collapsible) ...[
@@ -462,28 +473,40 @@ class _SectionHeaderState extends ConsumerState<_SectionHeader> {
             ),
             const SizedBox(width: 8),
           ],
+          // The address after the account's name, on one line: on its own
+          // line it took a folder's room for every account.
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
               children: [
-                Text(
-                  row.title.toUpperCase(),
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.6,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                if (row.subtitle != null)
-                  Text(
-                    row.subtitle!,
+                Flexible(
+                  child: Text(
+                    row.title.toUpperCase(),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant
-                          .withValues(alpha: 0.7),
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.6,
+                      color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
+                ),
+                if (row.subtitle != null) ...[
+                  const SizedBox(width: 8),
+                  Flexible(
+                    flex: 2,
+                    child: Text(
+                      row.subtitle!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant
+                            .withValues(alpha: 0.7),
+                      ),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

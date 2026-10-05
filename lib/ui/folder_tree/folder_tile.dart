@@ -67,7 +67,10 @@ class FolderTile extends StatefulWidget {
 
   static const double indentPerLevel = 16;
   static const double twistyWidth = 28;
-  static const double minHeight = 36;
+  /// Compact, as Outlook's folder pane is: Ron asked to see more of the
+  /// tree at once. It was 36, with a second line on every favourite and an
+  /// expand arrow that padded its row out to 48.
+  static const double minHeight = 30;
   static const Duration autoExpandDelay = Duration(milliseconds: 600);
 
   @override
@@ -353,8 +356,6 @@ class _FolderTileState extends State<FolderTile> {
         child: Padding(
           padding: EdgeInsets.only(
             left: 4 + row.depth * FolderTile.indentPerLevel,
-            top: row.subtitle == null ? 0 : 4,
-            bottom: row.subtitle == null ? 0 : 4,
           ),
           child: ConstrainedBox(
             constraints: const BoxConstraints(minHeight: FolderTile.minHeight),
@@ -367,7 +368,13 @@ class _FolderTileState extends State<FolderTile> {
                           padding: EdgeInsets.zero,
                           constraints: const BoxConstraints.tightFor(
                             width: FolderTile.twistyWidth,
-                            height: 32,
+                            height: FolderTile.minHeight,
+                          ),
+                          // No padding out to a 48 touch area: that made
+                          // every folder with folders inside it a taller
+                          // row than the rest.
+                          style: const ButtonStyle(
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
                           iconSize: 18,
                           icon: AnimatedRotation(
@@ -425,18 +432,24 @@ class _FolderTileState extends State<FolderTile> {
     final subtitle = row.subtitle;
     if (subtitle == null) return name;
 
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
+    // Whose it is (a favourite) or where it is (a search), after the name
+    // on the same line, and the part cut short when there is no room. On a
+    // second line it made each favourite as tall as two folders.
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.baseline,
+      textBaseline: TextBaseline.alphabetic,
       children: [
-        name,
-        Text(
-          subtitle,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
+        Flexible(flex: 3, child: name),
+        const SizedBox(width: 6),
+        Flexible(
+          flex: 2,
+          child: Text(
+            subtitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
         ),
       ],
