@@ -167,14 +167,6 @@ void main() {
       );
       expect(ranked.map((s) => s.email), ['daniel@example.com']);
     });
-
-    test('an empty field offers the people written to, and only them', () {
-      final usual = frequentRecipients(
-        const [newsletter, daniel, david, dahlia],
-        exclude: {'daniel@example.com'},
-      );
-      expect(usual.map((s) => s.email), ['david@example.com']);
-    });
   });
 
   group('the field as written so far', () {

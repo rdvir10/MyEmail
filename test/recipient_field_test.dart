@@ -189,15 +189,35 @@ void main() {
     });
   });
 
-  group('the people written to', () {
-    testWidgets('are offered on tapping into an empty field', (tester) async {
-      // A new message puts the cursor in To on opening.
+  group('the list', () {
+    testWidgets('waits for a letter to be typed', (tester) async {
+      // A new message puts the cursor in To on opening. A list that came
+      // up on its own covered Cc and Subject (2.83.0).
       await open(tester, engine: _Known());
 
+      expect(find.text('Dana Levi'), findsNothing);
+      expect(find.text('Omer Tal'), findsNothing);
+    });
+
+    testWidgets('closes at a tap anywhere else', (tester) async {
+      await open(tester, engine: _Known());
+      await type(tester, 'da');
       expect(find.text('Dana Levi'), findsOneWidget);
-      expect(find.text('Omer Tal'), findsOneWidget);
-      expect(find.text('deals@shop.example'), findsNothing,
-          reason: 'only people written to, until a letter is typed');
+
+      // The field's own label, which takes no focus: the list closes for
+      // the tap, not because the cursor went somewhere else.
+      await tester.tap(find.text('To'));
+      await tester.pumpAndSettle();
+      expect(find.text('Dana Levi'), findsNothing);
+
+      // And comes back with the next letter.
+      await type(tester, 'dan');
+      expect(find.text('Dana Levi'), findsOneWidget);
+
+      // Low on the screen, in the body, well clear of the list.
+      await tester.tapAt(const Offset(450, 1100));
+      await tester.pumpAndSettle();
+      expect(find.text('Dana Levi'), findsNothing);
     });
 
     testWidgets('but not straight after one is chosen', (tester) async {

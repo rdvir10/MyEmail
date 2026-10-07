@@ -167,8 +167,7 @@ class RecipientSuggester {
 
   /// Who could be meant by [query], best first, as it becomes known.
   ///
-  /// Nothing typed: the people written to most, lately. Something typed:
-  /// the phone's address book, if it may be read, and everyone in the mail
+  /// The phone's address book, if it may be read, and everyone in the mail
   /// history who matches, at once; then, after [onlineDelay] and once the
   /// accounts' address books online have answered, the same with theirs
   /// added, if they found anyone. Cancelling stops it, the online search
@@ -190,14 +189,12 @@ class RecipientSuggester {
     );
 
     Future<void> run() async {
+      // Nothing typed is nobody: the list waits for a letter.
+      if (query.trim().isEmpty) return;
       final history = _ref
           .read(sentThisSessionProvider)
           .over(await _ref.read(addressHistoryProvider.future), DateTime.now());
       if (cancelled) return;
-      if (query.trim().isEmpty) {
-        out.add(frequentRecipients(history, exclude: exclude));
-        return;
-      }
 
       final allowed = _ref.read(contactsAccessProvider).value ?? false;
       final contacts = allowed

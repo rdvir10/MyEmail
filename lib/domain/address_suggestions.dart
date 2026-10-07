@@ -218,21 +218,6 @@ List<AddressSuggestion> rankSuggestions(
   return ranked.take(limit).toList();
 }
 
-/// The people written to most, lately, for a field with nothing typed in
-/// it yet: tap into To and the usual people are there. Only people written
-/// to; everyone else waits for a letter to be typed.
-List<AddressSuggestion> frequentRecipients(
-  List<AddressSuggestion> history, {
-  Set<String> exclude = const {},
-  int limit = 6,
-}) {
-  final written = [
-    for (final h in history)
-      if (h.timesSent > 0 && !exclude.contains(h.email.toLowerCase())) h,
-  ]..sort(_bestFirst);
-  return written.take(limit).toList();
-}
-
 int _bestFirst(AddressSuggestion a, AddressSuggestion b) {
   final aWritten = a.timesSent > 0;
   final bWritten = b.timesSent > 0;

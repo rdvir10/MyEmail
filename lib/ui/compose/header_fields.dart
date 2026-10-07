@@ -91,15 +91,12 @@ class HeaderField extends StatelessWidget {
 /// another — and choosing one writes it in the form the rest of the app
 /// reads back, with a comma ready for the next.
 ///
-/// Tapped into with nothing after the last comma, it offers the people
-/// written to most lately, before a letter is typed. Not straight after a
-/// suggestion is chosen: the list would cover Subject just as the next
-/// thing to do is often to go there.
+/// The list opens only once something is typed, never on a tap into the
+/// field, and a tap anywhere else closes it: Ron found a list that came up
+/// on its own, covering Cc and Subject, in the way (2.83.1).
 ///
-/// Its own list rather than [RawAutocomplete]'s, which asks for options
-/// only when the text changes: it could neither open on a tap into an
-/// empty field nor take in the online answers that arrive after the
-/// first ones.
+/// Its own list rather than [RawAutocomplete]'s, which cannot take in the
+/// online answers that arrive after the first ones.
 ///
 /// The address book's permission is asked for the first time a recipient
 /// field takes focus, once. Refused, the field goes on working without it.
@@ -170,7 +167,8 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
     if (_focus.hasFocus) {
       ref.read(contactsAccessProvider.notifier).askOnce();
       ref.read(recipientSuggesterProvider).fieldUsed();
-      _lookUp(tappedIn: true);
+      // Nothing is offered for the text already there: only for typing.
+      _lookedUp = widget.controller.text;
     } else {
       _answers?.cancel();
       _lookedUp = null;
@@ -180,20 +178,19 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
 
   void _onText() {
     if (!_focus.hasFocus || widget.controller.text == _lookedUp) return;
-    _lookUp(tappedIn: false);
+    _lookUp();
   }
 
   /// Ask for the people [the field's text] could mean, and show them as
   /// they come. The last answer to an earlier text is dropped with it.
-  void _lookUp({required bool tappedIn}) {
+  void _lookUp() {
     _answers?.cancel();
     final text = widget.controller.text;
     _lookedUp = text;
     final token = lastRecipientToken(text);
-    // Nothing after the last comma: the usual people, on a tap into the
-    // field or while it is empty, but not just after one was chosen.
-    if (!widget.enabled ||
-        (token.isEmpty && !tappedIn && text.trim().isNotEmpty)) {
+    // Nothing after the last comma, as just after one was chosen: nothing
+    // to look up.
+    if (!widget.enabled || token.isEmpty) {
       _put(const []);
       return;
     }
@@ -267,11 +264,13 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
 
   bool get _showing => _list.isShowing && _people.isNotEmpty;
 
-  /// On show for letters typed, not just for tapping in. Only then does Esc
-  /// close the list: the usual people come up on their own in an empty new
-  /// message, and Esc there still closes the message.
-  bool get _showingForTyped =>
-      _showing && lastRecipientToken(widget.controller.text).isNotEmpty;
+  /// A tap anywhere but the field and the list closes the list. The field
+  /// keeps the cursor; the next letter typed opens it again.
+  void _tappedElsewhere(PointerDownEvent _) {
+    if (!_list.isShowing) return;
+    _answers?.cancel();
+    _put(const []);
+  }
 
   /// While the list is on show, the arrow keys move through it and Esc
   /// closes it. Otherwise every key goes on: the arrows to the field, Esc
@@ -291,7 +290,7 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
       _move(-1);
       return KeyEventResult.handled;
     }
-    if (_showingForTyped && key == LogicalKeyboardKey.escape) {
+    if (_showing && key == LogicalKeyboardKey.escape) {
       _put(const []);
       return KeyEventResult.handled;
     }
@@ -340,12 +339,18 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
             child: OverlayPortal.overlayChildLayoutBuilder(
               controller: _list,
               overlayChildBuilder: _buildList,
-              child: TextFieldTapRegion(
-                child: Focus(
-                  canRequestFocus: false,
-                  skipTraversal: true,
-                  onKeyEvent: _onKey,
-                  child: field,
+              // The field and the list are one region: a tap outside both
+              // closes the list.
+              child: TapRegion(
+                groupId: this,
+                onTapOutside: _tappedElsewhere,
+                child: TextFieldTapRegion(
+                  child: Focus(
+                    canRequestFocus: false,
+                    skipTraversal: true,
+                    onKeyEvent: _onKey,
+                    child: field,
+                  ),
                 ),
               ),
             ),
@@ -390,38 +395,41 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
             alignment: up
                 ? AlignmentDirectional.bottomStart
                 : AlignmentDirectional.topStart,
-            child: TextFieldTapRegion(
-              child: ExcludeFocus(
-                child: Material(
-                  elevation: 4,
-                  borderRadius: BorderRadius.circular(8),
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(
-                      maxHeight: 320,
-                      maxWidth: 480,
-                    ),
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      padding: EdgeInsets.zero,
-                      itemCount: _people.length,
-                      itemBuilder: (context, i) {
-                        final s = _people[i];
-                        return ListTile(
-                          dense: true,
-                          selected: _arrowed && i == _highlight,
-                          selectedTileColor:
-                              theme.colorScheme.secondaryContainer,
-                          leading: Icon(
-                            s.fromContacts
-                                ? Icons.person_outline
-                                : Icons.history,
-                            size: 20,
-                          ),
-                          title: Text(s.name ?? s.email),
-                          subtitle: s.name == null ? null : Text(s.email),
-                          onTap: () => _choose(s),
-                        );
-                      },
+            child: TapRegion(
+              groupId: this,
+              child: TextFieldTapRegion(
+                child: ExcludeFocus(
+                  child: Material(
+                    elevation: 4,
+                    borderRadius: BorderRadius.circular(8),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxHeight: 320,
+                        maxWidth: 480,
+                      ),
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        padding: EdgeInsets.zero,
+                        itemCount: _people.length,
+                        itemBuilder: (context, i) {
+                          final s = _people[i];
+                          return ListTile(
+                            dense: true,
+                            selected: _arrowed && i == _highlight,
+                            selectedTileColor:
+                                theme.colorScheme.secondaryContainer,
+                            leading: Icon(
+                              s.fromContacts
+                                  ? Icons.person_outline
+                                  : Icons.history,
+                              size: 20,
+                            ),
+                            title: Text(s.name ?? s.email),
+                            subtitle: s.name == null ? null : Text(s.email),
+                            onTap: () => _choose(s),
+                          );
+                        },
+                      ),
                     ),
                   ),
                 ),
