@@ -383,7 +383,6 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
     final transform = layout.childPaintTransform.clone()
       ..translateByDouble(0.0, top, 0, 1);
 
-    final theme = Theme.of(context);
     return Transform(
       transform: transform,
       child: Align(
@@ -409,26 +408,13 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
                       ),
                       child: ListView.builder(
                         shrinkWrap: true,
-                        padding: EdgeInsets.zero,
+                        padding: const EdgeInsets.symmetric(vertical: 4),
                         itemCount: _people.length,
-                        itemBuilder: (context, i) {
-                          final s = _people[i];
-                          return ListTile(
-                            dense: true,
-                            selected: _arrowed && i == _highlight,
-                            selectedTileColor:
-                                theme.colorScheme.secondaryContainer,
-                            leading: Icon(
-                              s.fromContacts
-                                  ? Icons.person_outline
-                                  : Icons.history,
-                              size: 20,
-                            ),
-                            title: Text(s.name ?? s.email),
-                            subtitle: s.name == null ? null : Text(s.email),
-                            onTap: () => _choose(s),
-                          );
-                        },
+                        itemBuilder: (context, i) => _SuggestionRow(
+                          person: _people[i],
+                          highlighted: _arrowed && i == _highlight,
+                          onTap: () => _choose(_people[i]),
+                        ),
                       ),
                     ),
                   ),
@@ -436,6 +422,80 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One person in the list, on one line: the name, then the address in
+/// lighter, smaller type. Two lines a person, as ListTile has it, showed
+/// five people in the space of nine (2.83.2).
+///
+/// The name takes what it needs, up to most of the row, and the address
+/// the rest; each is cut short with an ellipsis rather than wrapped.
+class _SuggestionRow extends StatelessWidget {
+  const _SuggestionRow({
+    required this.person,
+    required this.highlighted,
+    required this.onTap,
+  });
+
+  final AddressSuggestion person;
+
+  /// The one the arrow keys are on.
+  final bool highlighted;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurfaceVariant;
+    final name = person.name;
+    return InkWell(
+      onTap: onTap,
+      child: Ink(
+        color: highlighted ? theme.colorScheme.secondaryContainer : null,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        child: Row(
+          children: [
+            Icon(
+              person.fromContacts ? Icons.person_outline : Icons.history,
+              size: 16,
+              color: muted,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, room) => Row(
+                  children: [
+                    ConstrainedBox(
+                      constraints:
+                          BoxConstraints(maxWidth: room.maxWidth * 0.6),
+                      child: Text(
+                        name ?? person.email,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium,
+                      ),
+                    ),
+                    if (name != null) ...[
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          person.email,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style:
+                              theme.textTheme.bodySmall?.copyWith(color: muted),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

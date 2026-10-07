@@ -199,6 +199,19 @@ void main() {
       expect(find.text('Omer Tal'), findsNothing);
     });
 
+    testWidgets('gives each person one short line', (tester) async {
+      await open(tester, engine: _Known());
+      await type(tester, 'da');
+
+      final name = find.text('Dana Levi');
+      final address = find.text('dana@example.com');
+      expect(tester.getCenter(name).dy,
+          closeTo(tester.getCenter(address).dy, 2),
+          reason: 'the address beside the name, not under it');
+      final row = find.ancestor(of: name, matching: find.byType(InkWell));
+      expect(tester.getSize(row.first).height, lessThanOrEqualTo(40));
+    });
+
     testWidgets('closes at a tap anywhere else', (tester) async {
       await open(tester, engine: _Known());
       await type(tester, 'da');
