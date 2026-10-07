@@ -6,7 +6,9 @@ import '../domain/error_report.dart';
 import '../domain/search_field.dart';
 
 export '../domain/search_field.dart';
+export 'contacts/account_people.dart' show PeopleSearchAccess, PeopleSearchState;
 import 'auth/oauth_token.dart';
+import 'contacts/account_people.dart' show PeopleSearchAccess;
 import '../domain/draft.dart';
 import '../domain/address_suggestions.dart';
 import '../domain/calendar_invite.dart';
@@ -178,8 +180,23 @@ abstract class MailEngine {
   Future<MailBody> loadMessageBody(String messageId);
 
   /// Everyone the cached mail has been to or from, each address once, with
-  /// how often it appeared. For suggesting recipients as they are typed.
+  /// how often it appeared and how often, and how lately, it was written
+  /// to from one of the accounts. For suggesting recipients as they are
+  /// typed. The whole cache: see `CacheStore.addressHistory`.
   Future<List<AddressSuggestion>> recentAddresses();
+
+  /// Everyone the accounts' own address books online find for [query]:
+  /// Microsoft's people and directory, Google's contacts. Only accounts
+  /// that have allowed it; empty, never an error, when none has or none
+  /// answers. See `AccountPeople`.
+  Future<List<AddressSuggestion>> searchPeople(String query);
+
+  /// Ready the online address books for [searchPeople]; called when a
+  /// recipient field is first used. Never throws.
+  Future<void> warmPeopleSearch();
+
+  /// Whether [accountId]'s address book can be searched online, asked now.
+  Future<PeopleSearchAccess> peopleSearchAccess(String accountId);
 
   /// What is attached to a message. Cheap: no file is downloaded.
   Future<List<MailAttachment>> listAttachments(String messageId);

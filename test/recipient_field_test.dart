@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/contacts/device_contacts.dart';
@@ -41,7 +42,11 @@ void main() {
         attachments: const [],
       );
 
-  Future<ProviderContainer> open(WidgetTester tester, {bool reply = false}) async {
+  Future<ProviderContainer> open(
+    WidgetTester tester, {
+    bool reply = false,
+    SampleMailEngine? engine,
+  }) async {
     tester.view.physicalSize = const Size(900, 1200);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -49,7 +54,7 @@ void main() {
 
     final c = ProviderContainer(
       overrides: [
-        mailEngineProvider.overrideWithValue(SampleMailEngine()),
+        mailEngineProvider.overrideWithValue(engine ?? SampleMailEngine()),
         deviceContactsProvider.overrideWithValue(contacts),
         uiStateStoreProvider.overrideWithValue(uiState),
       ],
@@ -171,7 +176,9 @@ void main() {
         }
         return engine.recentAddresses();
       }))!
-          .first;
+          .firstWhere((p) => !isNoReplyAddress(p.email));
+      // The field read the history, empty, when it took focus on opening.
+      c.invalidate(addressHistoryProvider);
 
       await type(tester, someone.email.substring(0, 3));
 
@@ -181,4 +188,138 @@ void main() {
           reason: 'people already mailed are still offered');
     });
   });
+
+  group('the people written to', () {
+    testWidgets('are offered on tapping into an empty field', (tester) async {
+      // A new message puts the cursor in To on opening.
+      await open(tester, engine: _Known());
+
+      expect(find.text('Dana Levi'), findsOneWidget);
+      expect(find.text('Omer Tal'), findsOneWidget);
+      expect(find.text('deals@shop.example'), findsNothing,
+          reason: 'only people written to, until a letter is typed');
+    });
+
+    testWidgets('but not straight after one is chosen', (tester) async {
+      // The list would cover Subject just as that is where to go next.
+      await open(tester, engine: _Known());
+      await type(tester, 'da');
+
+      await tester.tap(find.text('Dana Levi'));
+      await tester.pumpAndSettle();
+
+      final field = tester.widget<TextField>(toField());
+      expect(field.controller?.text, 'Dana Levi <dana@example.com>, ');
+      expect(find.text('Omer Tal'), findsNothing);
+    });
+
+    testWidgets('the arrow keys move through the list, Next takes it',
+        (tester) async {
+      await open(tester, engine: _Known());
+      await type(tester, 'example');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.testTextInput.receiveAction(TextInputAction.next);
+      await tester.pumpAndSettle();
+
+      final field = tester.widget<TextField>(toField());
+      expect(field.controller?.text, 'Omer Tal <omer@example.com>, ');
+    });
+
+    testWidgets('Esc closes the list and leaves the message open',
+        (tester) async {
+      await open(tester, engine: _Known());
+      await type(tester, 'da');
+      expect(find.text('Dana Levi'), findsOneWidget);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Dana Levi'), findsNothing);
+      expect(find.byType(ComposeScreen), findsOneWidget);
+    });
+
+    testWidgets('nobody already in the field is offered again',
+        (tester) async {
+      await open(tester, engine: _Known());
+
+      await type(tester, 'Dana Levi <dana@example.com>, d');
+
+      expect(find.text('Dana Levi'), findsNothing);
+      expect(find.text('deals@shop.example'), findsOneWidget);
+    });
+  });
+
+  group("the accounts' address books online", () {
+    testWidgets('add who they find once typing pauses', (tester) async {
+      final engine = _Known(online: const [
+        AddressSuggestion(
+          email: 'tyler@hadco.example',
+          name: 'Tyler Lee',
+          fromContacts: true,
+        ),
+      ]);
+      await open(tester, engine: engine);
+
+      await type(tester, 'ty');
+      expect(find.text('Tyler Lee'), findsNothing, reason: 'not asked yet');
+
+      await tester.pump(RecipientSuggester.onlineDelay);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Tyler Lee'), findsOneWidget);
+      expect(engine.searched, ['ty']);
+    });
+
+    testWidgets('are not asked for letters typed over', (tester) async {
+      final engine = _Known();
+      await open(tester, engine: engine);
+
+      await tester.enterText(toField(), 't');
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.enterText(toField(), 'ty');
+      await tester.pump(RecipientSuggester.onlineDelay);
+      await tester.pumpAndSettle();
+
+      expect(engine.searched, ['ty']);
+    });
+  });
+}
+
+/// A mail history with two people written to and a shop that only writes,
+/// and online address books that find whoever [online] holds.
+class _Known extends SampleMailEngine {
+  _Known({this.online = const []});
+
+  final List<AddressSuggestion> online;
+  final searched = <String>[];
+
+  @override
+  Future<List<AddressSuggestion>> recentAddresses() async => const [
+        AddressSuggestion(
+          email: 'dana@example.com',
+          name: 'Dana Levi',
+          timesSeen: 5,
+          timesSent: 3,
+          weight: 2,
+        ),
+        AddressSuggestion(
+          email: 'omer@example.com',
+          name: 'Omer Tal',
+          timesSeen: 2,
+          timesSent: 1,
+          weight: 1,
+        ),
+        AddressSuggestion(email: 'deals@shop.example', timesSeen: 90),
+      ];
+
+  @override
+  Future<List<AddressSuggestion>> searchPeople(String query) async {
+    searched.add(query);
+    return [
+      for (final p in online)
+        if (suggestionMatches(p, query.toLowerCase())) p,
+    ];
+  }
 }

@@ -340,6 +340,24 @@ void main() {
     });
   });
 
+  group("each account's address book online", () {
+    testWidgets('says how it stands, and offers to allow it', (tester) async {
+      // The sample accounts sign in with app passwords, which reach mail
+      // and nothing else; a sign-in with Google is what would allow it.
+      _useSize(tester, const Size(900, 1600));
+      await tester.pumpWidget(app(const ViewSettingsScreen()));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+          find.text('personal@example.com'), 200,
+          scrollable: find.byType(Scrollable).first);
+
+      expect(find.text('Suggest recipients from each account online'),
+          findsOneWidget);
+      expect(find.textContaining('Uses an app password'), findsWidgets);
+      expect(find.widgetWithText(TextButton, 'Allow'), findsWidgets);
+    });
+  });
+
   group('Settings hub', () {
     testWidgets('one entry in the tree replaces the loose ones',
         (tester) async {

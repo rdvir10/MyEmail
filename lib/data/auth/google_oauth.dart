@@ -65,14 +65,26 @@ class GoogleOAuth implements OAuthRefresher {
   /// `https://mail.google.com/` is the only scope Gmail's IMAP and SMTP
   /// servers accept for XOAUTH2; the narrower Gmail API scopes do not
   /// work there. `calendar.events` is for meetings created in the app.
-  /// [meetScopes] is for Meet links made for other accounts' meetings.
+  /// [meetScopes] is for Meet links made for other accounts' meetings, and
+  /// [contactsScopes] for suggesting recipients from Google's contacts.
   /// `openid` and `email` bring back an ID token naming the account.
   static const scopes = [
     'https://mail.google.com/',
     'https://www.googleapis.com/auth/calendar.events',
     ...meetScopes,
+    ...contactsScopes,
     'openid',
     'email',
+  ];
+
+  /// The account's contacts, and its "other contacts" (everyone Gmail
+  /// keeps from mail answered), read only, for suggesting recipients. Named
+  /// on its own when a token is asked for them, as [meetScopes] is, so a
+  /// sign-in from before reads as needing consent, not as a dead sign-in.
+  /// The People API has to be enabled in the app's Google Cloud project.
+  static const contactsScopes = [
+    'https://www.googleapis.com/auth/contacts.readonly',
+    'https://www.googleapis.com/auth/contacts.other.readonly',
   ];
 
   /// The Meet REST API, for a link made with no event on the Google
@@ -235,8 +247,11 @@ class GoogleOAuth implements OAuthRefresher {
           if (!granted.contains(s)) s,
       ];
       if (missing.isNotEmpty) {
-        final wanted =
-            missing.any(meetScopes.contains) ? 'Google Meet' : 'the calendar';
+        final wanted = missing.any(meetScopes.contains)
+            ? 'Google Meet'
+            : missing.any(contactsScopes.contains)
+                ? 'your contacts'
+                : 'the calendar';
         throw SignInNeedsConsent(
           'This Google account needs signing in again: it was set up before '
           'the app asked permission for $wanted. Open Settings, then '

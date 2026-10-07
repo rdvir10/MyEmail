@@ -87,23 +87,154 @@ void main() {
     });
   });
 
+  group('more of an address matches', () {
+    const dana = AddressSuggestion(email: 'dana.levi@mail.hadco.com');
+
+    test('any part before the @', () {
+      expect(suggestionMatches(dana, 'levi'), isTrue);
+    });
+
+    test('the domain, and each name in it but the last', () {
+      expect(suggestionMatches(dana, 'hadco'), isTrue);
+      expect(suggestionMatches(dana, 'mail.had'), isTrue);
+      expect(suggestionMatches(dana, 'co'), isFalse,
+          reason: 'every address in .com would match');
+    });
+  });
+
+  group('who is written to comes first', () {
+    const newsletter = AddressSuggestion(
+      email: 'deals@shop.example',
+      timesSeen: 300,
+    );
+    const daniel = AddressSuggestion(
+      email: 'daniel@example.com',
+      name: 'Daniel',
+      timesSeen: 4,
+      timesSent: 2,
+      weight: 0.4,
+    );
+    const david = AddressSuggestion(
+      email: 'david@example.com',
+      name: 'David',
+      timesSeen: 3,
+      timesSent: 1,
+      weight: 0.9,
+    );
+    const dahlia = AddressSuggestion(
+      email: 'dahlia@example.com',
+      name: 'Dahlia',
+      fromContacts: true,
+    );
+
+    test('lately before often, then the address book, then the rest', () {
+      final ranked = rankSuggestions(
+        'd',
+        contacts: const [dahlia],
+        history: const [newsletter, daniel, david],
+      );
+
+      expect(ranked.map((s) => s.name ?? s.email).toList(),
+          ['David', 'Daniel', 'Dahlia', 'deals@shop.example']);
+    });
+
+    test('a no-reply address only if it was written to', () {
+      const noReply = AddressSuggestion(email: 'no-reply@bank.example');
+      const support = AddressSuggestion(
+        email: 'do_not_reply@help.example',
+        timesSent: 1,
+        weight: 1,
+      );
+      final ranked = rankSuggestions(
+        'n',
+        contacts: const [],
+        history: const [noReply],
+      );
+      expect(ranked, isEmpty);
+      expect(isNoReplyAddress('Mailer-Daemon@x.example'), isTrue);
+      expect(
+        rankSuggestions('do', contacts: const [], history: const [support]),
+        hasLength(1),
+      );
+    });
+
+    test('nobody already in the field', () {
+      final ranked = rankSuggestions(
+        'da',
+        contacts: const [],
+        history: const [daniel, david],
+        exclude: {'david@example.com'},
+      );
+      expect(ranked.map((s) => s.email), ['daniel@example.com']);
+    });
+
+    test('an empty field offers the people written to, and only them', () {
+      final usual = frequentRecipients(
+        const [newsletter, daniel, david, dahlia],
+        exclude: {'daniel@example.com'},
+      );
+      expect(usual.map((s) => s.email), ['david@example.com']);
+    });
+  });
+
+  group('the field as written so far', () {
+    test('who is in it, without the one being typed', () {
+      expect(
+        recipientsAlreadyIn(
+          '"Levi, Dana" <Dana@example.com>, ron@example.com, ro',
+        ),
+        {'dana@example.com', 'ron@example.com'},
+      );
+      expect(recipientsAlreadyIn('ro'), isEmpty);
+    });
+  });
+
   group('the mail history', () {
+    final now = DateTime.utc(2026, 10, 1);
+    AddressSeen seen(
+      String email, {
+      String? name,
+      int daysAgo = 0,
+      bool sent = false,
+    }) =>
+        (
+          address: MailAddress(email: email, name: name),
+          date: now.subtract(Duration(days: daysAgo)),
+          sent: sent,
+        );
+
     test('each address once, counted, with the newest name for it', () {
-      // Newest first, as the cache hands messages over.
-      final history = historyFrom(const [
-        MailAddress(email: 'rosa@example.com', name: 'Rosa L.'),
-        MailAddress(email: 'Rosa@example.com', name: 'Rosa Lind'),
-        MailAddress(email: 'rosa@example.com'),
-      ]);
+      final history = historyFrom([
+        seen('rosa@example.com', name: 'Rosa L.', daysAgo: 1),
+        seen('Rosa@example.com', name: 'Rosa Lind', daysAgo: 9),
+        seen('rosa@example.com', daysAgo: 0),
+      ], now: now);
 
       expect(history, hasLength(1));
       expect(history.single.timesSeen, 3);
       expect(history.single.name, 'Rosa L.');
     });
 
+    test('mail written to someone counts toward them, weighed by age', () {
+      final history = historyFrom([
+        seen('rosa@example.com', sent: true),
+        seen('rosa@example.com', sent: true, daysAgo: 30),
+        seen('rosa@example.com', daysAgo: 2),
+      ], now: now);
+
+      expect(history.single.timesSeen, 3);
+      expect(history.single.timesSent, 2);
+      expect(history.single.weight, closeTo(1.5, 1e-9));
+    });
+
+    test('older mail weighs less', () {
+      expect(recencyWeight(now.subtract(const Duration(days: 30)), now), 0.5);
+      expect(recencyWeight(now.add(const Duration(days: 2)), now), 1,
+          reason: 'a clock that is behind is not the future');
+    });
+
     test('something that is not an address is not a person', () {
-      expect(historyFrom(const [MailAddress(email: 'undisclosed-recipients')]),
-          isEmpty);
+      expect(historyFrom([seen('undisclosed-recipients')], now: now), isEmpty);
     });
   });
 

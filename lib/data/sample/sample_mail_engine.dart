@@ -17,6 +17,7 @@ import '../../domain/message_move.dart';
 import '../compose/quote_builder.dart';
 import '../imap/imap_mapping.dart';
 import '../auth/oauth_token.dart';
+import '../contacts/account_people.dart' show AccountPeople;
 import '../mail_engine.dart';
 import 'sample_messages.dart';
 
@@ -580,12 +581,47 @@ class SampleMailEngine implements MailEngine {
   Future<List<AddressSuggestion>> recentAddresses() async {
     await _latency();
     // Every message the sample data has generated so far, so the people in
-    // the inbox are the people suggested.
-    final seen = <MailAddress>[
-      for (final folder in _messages.values)
-        for (final m in folder) ...[m.from, ...m.to],
-    ];
-    return historyFrom(seen);
+    // the inbox are the people suggested. What is in a Sent folder counts
+    // as written from here whoever the sample data made its sender.
+    final mine = {for (final a in _accounts) a.emailAddress.toLowerCase()};
+    final sentFolders = {
+      for (final folders in _folders.values)
+        for (final f in folders)
+          if (f.role == FolderRole.sent) f.id,
+    };
+    return historyFrom(
+      [
+        for (final MapEntry(key: folderId, value: messages)
+            in _messages.entries)
+          for (final m in messages)
+            for (final (i, a) in [m.from, ...m.to, ...m.cc].indexed)
+              (
+                address: a,
+                date: m.date,
+                sent: i > 0 &&
+                    (sentFolders.contains(folderId) ||
+                        mine.contains(m.from.email.toLowerCase())),
+              ),
+      ],
+      now: DateTime.now(),
+    );
+  }
+
+  @override
+  Future<List<AddressSuggestion>> searchPeople(String query) async =>
+      const [];
+
+  @override
+  Future<void> warmPeopleSearch() async {}
+
+  @override
+  Future<PeopleSearchAccess> peopleSearchAccess(String accountId) async {
+    final account = _accounts.where((a) => a.id == accountId).firstOrNull;
+    return PeopleSearchAccess(
+      account != null && AccountPeople.canSearch(account)
+          ? PeopleSearchState.on
+          : PeopleSearchState.notPossible,
+    );
   }
 
   @override

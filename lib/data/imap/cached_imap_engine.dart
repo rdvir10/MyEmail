@@ -27,6 +27,7 @@ import '../auth/oauth_token_repository.dart';
 import '../cache/cache_store.dart';
 import '../cache/folder_sync.dart';
 import '../calendar/account_calendar.dart';
+import '../contacts/account_people.dart';
 import '../compose/graph_sender.dart';
 import '../compose/smtp_sender.dart';
 import '../compose/reply_draft.dart' show escapeHtml;
@@ -433,6 +434,8 @@ class CachedImapEngine implements MailEngine {
           a.id == accountId ? a.copyWith(authMethod: AuthMethod.oauth) : a,
       ]);
     }
+    // What this account would not allow before, it may have allowed now.
+    _people.forget(accountId);
   }
 
   Future<void> _replaceSecret({
@@ -838,8 +841,38 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
-  Future<List<AddressSuggestion>> recentAddresses() async =>
-      historyFrom(await cache.recentAddresses());
+  Future<List<AddressSuggestion>> recentAddresses() => cache.addressHistory(
+        mine: {
+          for (final a in accountStore.read())
+            a.emailAddress.trim().toLowerCase(),
+        },
+        now: DateTime.now(),
+      );
+
+  /// The accounts' address books online, held for the engine's life: which
+  /// accounts have not allowed a search is remembered there, and recent
+  /// answers.
+  late final AccountPeople _people = AccountPeople(
+    accessToken: oauthTokens.accessToken,
+    accounts: accountStore.read,
+  );
+
+  @override
+  Future<List<AddressSuggestion>> searchPeople(String query) =>
+      _people.search(query);
+
+  @override
+  Future<void> warmPeopleSearch() => _people.warm();
+
+  @override
+  Future<PeopleSearchAccess> peopleSearchAccess(String accountId) async {
+    final account =
+        accountStore.read().where((a) => a.id == accountId).firstOrNull;
+    if (account == null) {
+      return const PeopleSearchAccess(PeopleSearchState.notPossible);
+    }
+    return _people.access(account);
+  }
 
   @override
   Future<void> respondToInvite(

@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/cache/folder_sync.dart';
 import 'package:myemail/data/cache/mail_database.dart';
+import 'package:myemail/domain/address_suggestions.dart';
 import 'package:myemail/domain/mail_message.dart';
 
 import 'fakes/fake_imap_transport.dart';
@@ -96,11 +97,116 @@ Future<void> _copiedAreSuggested(CacheStore store) async {
     ),
   ]);
 
-  final addresses = await store.recentAddresses();
+  final addresses =
+      await store.addressHistory(mine: const {}, now: DateTime(2026, 10));
 
-  expect(addresses.map((a) => a.email),
+  expect(addresses.map((a) => a.email).toList()..sort(),
       ['dana@example.com', 'me@example.com', 'omer@example.com']);
-  expect(addresses.last.name, 'Omer');
+  expect(addresses.firstWhere((a) => a.email == 'omer@example.com').name,
+      'Omer');
+}
+
+/// Who has been written to, how often and how lately, counted the same in
+/// SQL as in Dart: one message once however many folders hold it, a
+/// message from one of the accounts making its recipients people written
+/// to, the newest name and spelling for each address.
+Future<void> _historyCounted(CacheStore store) async {
+  CachedMessage message(
+    int uid, {
+    required MailAddress from,
+    required List<MailAddress> to,
+    List<MailAddress> cc = const [],
+    required DateTime date,
+    String? messageId,
+  }) =>
+      CachedMessage(
+        uid: uid,
+        subject: 'S',
+        from: from,
+        to: to,
+        cc: cc,
+        date: date,
+        isRead: true,
+        isFlagged: false,
+        hasAttachments: false,
+        messageId: messageId,
+      );
+  const me = MailAddress(email: 'me@example.com');
+  final dana = message(
+    1,
+    from: const MailAddress(email: 'dana@example.com', name: 'Dana L.'),
+    to: const [me],
+    date: DateTime.utc(2026, 9, 1),
+    messageId: '<a@example.com>',
+  );
+  // Gmail's All Mail holds the same message again.
+  await store.upsertMessages('a', 'INBOX', [dana]);
+  await store.upsertMessages('a', '[Gmail]/All Mail', [
+    message(
+      7,
+      from: dana.from,
+      to: dana.to,
+      date: dana.date,
+      messageId: dana.messageId,
+    ),
+  ]);
+  await store.upsertMessages('a', 'Sent', [
+    message(
+      2,
+      from: const MailAddress(email: 'me@example.com', name: 'Me'),
+      to: const [MailAddress(email: 'Dana@Example.com', name: 'Dana Levi')],
+      cc: const [MailAddress(email: 'omer@example.com')],
+      date: DateTime.utc(2026, 9, 30),
+      messageId: '<b@example.com>',
+    ),
+  ]);
+  // From the other account, ninety days back, with no Message-ID.
+  await store.upsertMessages('b', 'Sent', [
+    message(
+      3,
+      from: const MailAddress(email: 'ME@example.com'),
+      to: const [MailAddress(email: 'dana@example.com')],
+      date: DateTime.utc(2026, 7, 3),
+    ),
+  ]);
+  await store.upsertMessages('a', 'INBOX', [
+    message(
+      4,
+      from: const MailAddress(email: 'news@shop.example'),
+      to: const [MailAddress(email: 'undisclosed-recipients')],
+      date: DateTime.utc(2026, 9, 15),
+    ),
+  ]);
+
+  final history = await store.addressHistory(
+    mine: const {'me@example.com'},
+    now: DateTime.utc(2026, 10, 1),
+  );
+  AddressSuggestion person(String email) =>
+      history.singleWhere((h) => h.email.toLowerCase() == email);
+
+  expect(history.map((h) => h.email.toLowerCase()).toSet(), {
+    'dana@example.com',
+    'me@example.com',
+    'omer@example.com',
+    'news@shop.example',
+  }, reason: 'something without an @ is nobody');
+
+  final d = person('dana@example.com');
+  expect(d.timesSeen, 3, reason: 'the copy in All Mail is the same message');
+  expect(d.timesSent, 2);
+  expect(d.weight, closeTo(30 / 31 + 30 / 120, 1e-6));
+  expect(d.name, 'Dana Levi', reason: 'the newest name');
+  expect(d.email, 'Dana@Example.com', reason: 'the newest spelling');
+
+  final m = person('me@example.com');
+  expect(m.timesSeen, 3);
+  expect(m.timesSent, 0, reason: 'sending is not being written to');
+  expect(m.name, 'Me');
+
+  expect(person('omer@example.com').timesSent, 1,
+      reason: 'copied is written to');
+  expect(person('news@shop.example').timesSent, 0);
 }
 
 /// Replied to and forwarded are kept with the row, replaced by the flags a
@@ -177,6 +283,9 @@ void main() {
 
   test('MemoryCacheStore suggests the copied as the database does',
       () => _copiedAreSuggested(MemoryCacheStore()));
+
+  test('MemoryCacheStore counts who was written to as the database does',
+      () => _historyCounted(MemoryCacheStore()));
 
   test('MemoryCacheStore keeps replies and forwards as the database does',
       () => _repliedAndForwarded(MemoryCacheStore()));
@@ -300,7 +409,10 @@ void main() {
         seen.statements.clear();
 
         await watchedStore.readSyncRows('a', 'INBOX');
-        await watchedStore.recentAddresses();
+        await watchedStore.addressHistory(
+          mine: const {'me@example.com'},
+          now: DateTime(2026, 10),
+        );
 
         expect(seen.statements, hasLength(2));
         for (final sql in seen.statements) {
@@ -312,6 +424,9 @@ void main() {
 
       test('address suggestions include the copied',
           () => _copiedAreSuggested(store));
+
+      test('who was written to is counted across the whole cache',
+          () => _historyCounted(store));
 
       test('replied to and forwarded are kept, and a sync replaces them',
           () => _repliedAndForwarded(store));

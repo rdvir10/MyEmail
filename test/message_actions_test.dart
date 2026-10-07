@@ -149,6 +149,17 @@ class _RefusingEngine implements MailEngine {
       _inner.recentAddresses();
 
   @override
+  Future<List<AddressSuggestion>> searchPeople(String query) =>
+      _inner.searchPeople(query);
+
+  @override
+  Future<void> warmPeopleSearch() => _inner.warmPeopleSearch();
+
+  @override
+  Future<PeopleSearchAccess> peopleSearchAccess(String accountId) =>
+      _inner.peopleSearchAccess(accountId);
+
+  @override
   Future<Uint8List> fetchAttachment(String messageId, String attachmentId) =>
       _inner.fetchAttachment(messageId, attachmentId);
 

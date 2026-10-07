@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../../domain/address_suggestions.dart';
 import '../../domain/mail_message.dart';
 
 /// Per-folder bookkeeping the sync needs between runs.
@@ -221,11 +222,20 @@ abstract class CacheStore {
 
   Future<int> countMessages(String accountId, String path);
 
-  /// Every sender, recipient and copied address on the newest [limit]
-  /// cached messages, in message order, newest first. Duplicates included:
-  /// the caller counts them, which is how "the person you write to most"
-  /// is known.
-  Future<List<MailAddress>> recentAddresses({int limit = 2000});
+  /// Everyone on any cached message, as sender, recipient or copied, each
+  /// address once: see [historyFrom], which says what is counted and how.
+  ///
+  /// [mine] is the accounts' own addresses, lower-cased: a message from one
+  /// of them is one written from here, and its recipients are people
+  /// written to. [now] is what each message's age is reckoned from.
+  ///
+  /// The whole cache, not its newest messages: someone last written to in
+  /// the spring is still someone to suggest. The drift store counts in SQL,
+  /// so what crosses to Dart is one row per person, not one per message.
+  Future<List<AddressSuggestion>> addressHistory({
+    required Set<String> mine,
+    required DateTime now,
+  });
   Future<({int min, int max})?> uidRange(String accountId, String path);
   Future<CachedMessage?> readMessage(String accountId, String path, int uid);
 
@@ -363,13 +373,33 @@ class MemoryCacheStore implements CacheStore {
       ]..sort((a, b) => b.uid.compareTo(a.uid));
 
   @override
-  Future<List<MailAddress>> recentAddresses({int limit = 2000}) async {
-    final all = <CachedMessage>[
-      for (final folder in _messages.values) ...folder.values,
-    ]..sort((a, b) => b.date.compareTo(a.date));
-    return [
-      for (final m in all.take(limit)) ...[m.from, ...m.to, ...m.cc],
-    ];
+  Future<List<AddressSuggestion>> addressHistory({
+    required Set<String> mine,
+    required DateTime now,
+  }) async {
+    // Each message once, as the database has it: by Message-ID where there
+    // is one, the newest copy.
+    final messages = <String, CachedMessage>{};
+    for (final folder in _messages.entries) {
+      for (final m in folder.value.values) {
+        final key = m.messageId ?? '${folder.key}#${m.uid}';
+        final kept = messages[key];
+        if (kept == null || m.date.isAfter(kept.date)) messages[key] = m;
+      }
+    }
+    return historyFrom(
+      [
+        for (final m in messages.values)
+          for (final (i, a) in [m.from, ...m.to, ...m.cc].indexed)
+            (
+              address: a,
+              date: m.date,
+              // The sender is not someone written to, even by themselves.
+              sent: i > 0 && mine.contains(m.from.email.trim().toLowerCase()),
+            ),
+      ],
+      now: now,
+    );
   }
 
   @override

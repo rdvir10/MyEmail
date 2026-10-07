@@ -4,6 +4,7 @@ import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 import 'package:sqlite3/common.dart' show CommonDatabase;
 
+import '../../domain/address_suggestions.dart';
 import '../../domain/mail_message.dart';
 import 'cache_store.dart';
 
@@ -471,24 +472,84 @@ class DriftCacheStore implements CacheStore {
   }
 
   @override
-  Future<List<MailAddress>> recentAddresses({int limit = 2000}) async {
+  Future<List<AddressSuggestion>> addressHistory({
+    required Set<String> mine,
+    required DateTime now,
+  }) async {
     // Across every account and folder: the person you write to from one
-    // account is a person you might write to from another. Newest first,
-    // so the name most recently used for an address is the one met first.
-    // Only the address columns: the rest of a row is mostly its body.
-    final m = db.messages;
-    final rows = await (db.selectOnly(m)
-          ..addColumns([m.fromEmail, m.fromName, m.recipientsJson, m.copiedJson])
-          ..orderBy([OrderingTerm.desc(m.date)])
-          ..limit(limit))
-        .get();
-    return [
-      for (final r in rows) ...[
-        MailAddress(email: r.read(m.fromEmail)!, name: r.read(m.fromName)),
-        ..._decodeAddresses(r.read(m.recipientsJson)!),
-        if (r.read(m.copiedJson) case final copied?)
-          ..._decodeAddresses(copied),
+    // account is a person you might write to from another. Counted here, in
+    // SQL, the way historyFrom counts in Dart, so what comes back is a row
+    // per person rather than every address on every message. Only the
+    // address columns: the rest of a row is mostly its body.
+    //
+    // `one` is each message once. A message is its Message-ID where it has
+    // one, so the copy in Inbox, in All Mail and under a label is one
+    // message; else its own place in the cache. Deduplicated before its
+    // addresses are taken out rather than after, which halved the time on
+    // a cache of 40,000. `seen` is each address on each of those, `latest`
+    // the spelling most lately seen, and `named` the name most lately seen,
+    // by SQLite's rule that the other columns of a max() query come from
+    // the row that had the maximum. The weight is recencyWeight, written
+    // out: 1 today, a half at 30 days.
+    final ours = List.filled(mine.length, '?').join(', ');
+    String recipients(String column) =>
+        "SELECT lower(trim(json_extract(j.value, '\$.email'))), "
+        "trim(json_extract(j.value, '\$.email')), "
+        "trim(json_extract(j.value, '\$.name')), o.date, "
+        'lower(trim(o.from_email)) IN ($ours) '
+        'FROM one o, json_each(o.$column) j '
+        'WHERE o.$column IS NOT NULL';
+    final rows = await db.customSelect(
+      'WITH one AS MATERIALIZED ('
+      '  SELECT from_email, from_name, recipients_json, copied_json, '
+      '  max(date) AS date FROM messages '
+      "  GROUP BY COALESCE(message_id, account_id || char(0) || path || '#' "
+      '  || uid)'
+      '), '
+      'seen(address, email, name, date, sent) AS MATERIALIZED ('
+      '  SELECT lower(trim(from_email)), trim(from_email), trim(from_name), '
+      '  date, 0 FROM one '
+      '  UNION ALL ${recipients('recipients_json')} '
+      '  UNION ALL ${recipients('copied_json')}'
+      '), '
+      'counted(address, times_seen, times_sent, weight) AS ('
+      '  SELECT address, count(date), sum(sent), '
+      '  total(CASE WHEN sent THEN '
+      '    30.0 / (30.0 + max(0, ? - date) / 86400.0) END) '
+      "  FROM seen WHERE instr(address, '@') > 0 GROUP BY address"
+      '), '
+      'latest(address, email, newest) AS ('
+      '  SELECT address, email, max(date) FROM seen '
+      "  WHERE instr(address, '@') > 0 GROUP BY address"
+      '), '
+      'named(address, name, newest) AS ('
+      '  SELECT address, name, max(date) FROM seen '
+      "  WHERE instr(address, '@') > 0 AND name <> '' GROUP BY address"
+      ') '
+      'SELECT latest.email AS email, named.name AS name, '
+      '  counted.times_seen AS times_seen, counted.times_sent AS times_sent, '
+      '  counted.weight AS weight '
+      'FROM counted '
+      'JOIN latest ON latest.address = counted.address '
+      'LEFT JOIN named ON named.address = counted.address',
+      variables: [
+        // The recipients' two halves each ask whether the sender is one of
+        // ours, so the addresses go in twice, then the clock.
+        for (var i = 0; i < 2; i++)
+          for (final a in mine) Variable.withString(a),
+        Variable.withInt(now.millisecondsSinceEpoch ~/ 1000),
       ],
+      readsFrom: {db.messages},
+    ).get();
+    return [
+      for (final r in rows)
+        AddressSuggestion(
+          email: r.read<String>('email'),
+          name: r.readNullable<String>('name'),
+          timesSeen: r.read<int>('times_seen'),
+          timesSent: r.read<int>('times_sent'),
+          weight: r.read<double>('weight'),
+        ),
     ];
   }
 

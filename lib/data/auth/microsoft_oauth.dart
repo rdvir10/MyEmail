@@ -103,6 +103,14 @@ class MicrosoftOAuth implements OAuthRefresher {
     'https://graph.microsoft.com/Calendars.ReadWrite',
   ];
 
+  /// The people the account has to do with, and its organisation's
+  /// directory, searched as recipients are typed. On its own for the same
+  /// reason as [calendarScopes]: Hadco's administrator approved mail, and
+  /// this needs approving separately there.
+  static const peopleScopes = [
+    'https://graph.microsoft.com/People.Read',
+  ];
+
   static Future<void> _realSleep(Duration d) => Future<void>.delayed(d);
 
   /// Where the redirect lands after a successful sign-in.

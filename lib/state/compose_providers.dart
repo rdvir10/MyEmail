@@ -14,6 +14,7 @@ import '../domain/error_report.dart' show ReadableError;
 import '../domain/mail_message.dart';
 import '../domain/signature.dart';
 import '../domain/html_safety.dart';
+import 'contact_providers.dart' show sentThisSessionProvider;
 import 'folder_tree.dart' show kUnifiedInboxId;
 import 'message_providers.dart';
 import 'providers.dart';
@@ -253,6 +254,10 @@ String _escape(String s) => s
 /// Send a draft and, on success, refresh what the result touched.
 Future<void> sendDraft(WidgetRef ref, Draft draft) async {
   await ref.read(mailEngineProvider).sendDraft(draft);
+  // Suggested first from now on, before the Sent folder syncs them in.
+  ref
+      .read(sentThisSessionProvider)
+      .note([...draft.to, ...draft.cc, ...draft.bcc], DateTime.now());
   await _refreshAfter(ref, draft.accountId, 'send');
   // What it replied to or forwarded is marked now, in the cache too, so
   // every list that shows one of them reads it again: its own folder's, and

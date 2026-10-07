@@ -2,9 +2,16 @@ import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/auth/microsoft_oauth.dart' show MicrosoftOAuth;
+import '../../data/mail_engine.dart' show PeopleSearchState;
+import '../../domain/account.dart';
 import '../../domain/display_settings.dart';
+import '../../domain/error_report.dart' show ReadableError;
 import '../../state/contact_providers.dart';
 import '../../state/display_providers.dart';
+import '../../state/providers.dart' show accountsProvider;
+import '../accounts/google_sign_in_screen.dart';
+import '../accounts/microsoft_sign_in_screen.dart';
 import 'trusted_senders_screen.dart';
 import '../../state/trusted_senders.dart';
 import '../../state/window_providers.dart';
@@ -177,6 +184,7 @@ class ViewSettingsScreen extends ConsumerWidget {
             'and nothing about them leaves the tablet.',
             theme: theme,
           ),
+          const _OnlineAddressBooks(),
           const Divider(height: 1),
           const _Heading('Pictures in messages'),
           SwitchListTile(
@@ -374,6 +382,155 @@ class _Note extends StatelessWidget {
         style: theme.textTheme.bodySmall
             ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
       ),
+    );
+  }
+}
+
+/// Each account's own address book online, and whether recipients are
+/// searched in it: Microsoft's people and directory for a Microsoft
+/// account, Google's contacts for a Gmail one. A row per account, saying
+/// how it stands and, where it is not yet allowed, a button that signs in
+/// asking for it.
+class _OnlineAddressBooks extends ConsumerWidget {
+  const _OnlineAddressBooks();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
+    if (accounts.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const ListTile(
+          title: Text('Suggest recipients from each account online'),
+          subtitle: Text(
+            "Microsoft's people and directory, and Google's contacts, "
+            'searched as you type.',
+          ),
+        ),
+        for (final account in accounts) _OnlineAddressBook(account: account),
+        _Note(
+          'What you type in To, Cc or Bcc goes to Google or Microsoft to be '
+          "looked up, as it does in their own apps. A work account's "
+          'organisation may have to approve this first: Allow sends them '
+          'the request.',
+          theme: theme,
+        ),
+      ],
+    );
+  }
+}
+
+class _OnlineAddressBook extends ConsumerStatefulWidget {
+  const _OnlineAddressBook({required this.account});
+
+  final Account account;
+
+  @override
+  ConsumerState<_OnlineAddressBook> createState() => _OnlineAddressBookState();
+}
+
+class _OnlineAddressBookState extends ConsumerState<_OnlineAddressBook> {
+  bool _busy = false;
+
+  Account get account => widget.account;
+
+  /// A sign-in that asks for the address book beside the mail. The account
+  /// keeps everything cached: it is the same sign-in again Settings,
+  /// Accounts offers. A Gmail account on an app password moves to Google
+  /// sign-in by it, which is the only way its contacts can be reached.
+  Future<void> _allow() async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      switch (account.provider) {
+        case MailProvider.outlook:
+          final token = await MicrosoftSignInScreen.show(
+            context,
+            loginHint: account.emailAddress,
+            scopes: [...MicrosoftOAuth.scopes, ...MicrosoftOAuth.peopleScopes],
+          );
+          if (token == null) return;
+          await ref
+              .read(accountsProvider.notifier)
+              .signInAgain(accountId: account.id, token: token);
+        case MailProvider.gmail:
+          final result = await GoogleSignInScreen.show(
+            context,
+            loginHint: account.emailAddress,
+          );
+          if (result == null) return;
+          await ref.read(accountsProvider.notifier).signInAgain(
+                accountId: account.id,
+                token: result.token,
+                signedInAs: result.identity?.email,
+              );
+      }
+    } catch (e) {
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          duration: kBottomMessage,
+          content: Text(e is ReadableError ? e.message : '$e'),
+        ));
+    } finally {
+      ref.invalidate(peopleSearchAccessProvider(account.id));
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final access = ref.watch(peopleSearchAccessProvider(account.id));
+    final state = access.value?.state;
+    final (String line, bool offer) = switch (state) {
+      null => ('Checking…', false),
+      PeopleSearchState.on => ('Searched as you type.', false),
+      PeopleSearchState.needsSignIn => (
+          'Not allowed yet. Allow, then sign in to allow it.',
+          true,
+        ),
+      // Microsoft gives the same refusal whether the person or only their
+      // organisation can allow it, so the line says both.
+      PeopleSearchState.needsAdministrator => (
+          'Not allowed yet. Allow, then sign in to allow it. Where your '
+              'organisation has to approve it, the sign-in sends them the '
+              'request, and once they have it starts on its own.',
+          true,
+        ),
+      PeopleSearchState.notPossible => account.provider == MailProvider.gmail
+          ? (
+              'Uses an app password, which reaches mail only. Allow signs '
+                  'it in with Google instead.',
+              true,
+            )
+          : ('Not possible for this account.', false),
+      PeopleSearchState.switchedOff => (
+          access.value?.message ?? 'Switched off where the app is registered.',
+          false,
+        ),
+      PeopleSearchState.unknown => (
+          'Could not check just now. ${access.value?.message ?? ''}'.trim(),
+          false,
+        ),
+    };
+    return ListTile(
+      leading: Icon(
+        state == PeopleSearchState.on
+            ? Icons.cloud_done_outlined
+            : Icons.cloud_off_outlined,
+      ),
+      title: Text(account.emailAddress),
+      subtitle: Text(line),
+      trailing: _busy
+          ? const SizedBox.square(
+              dimension: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : offer
+              ? TextButton(onPressed: _allow, child: const Text('Allow'))
+              : null,
     );
   }
 }
