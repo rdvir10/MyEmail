@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/cache/cache_store.dart';
@@ -263,6 +263,43 @@ void main() {
       await tester.tap(find.text('Expand'));
       await tester.pumpAndSettle();
       expect(tile(2), findsOneWidget);
+    });
+
+    testWidgets('a day all ticked offers Unselect, which takes the boxes away',
+        (tester) async {
+      final c = await showInbox(tester, _TwoDaysEngine());
+      final ids = {_TwoDaysEngine.id(2), _TwoDaysEngine.id(1)};
+      final ticks = c.read(selectedMessageIdsProvider.notifier);
+
+      // Part ticked is not all: the item ticks the rest.
+      ticks.addAll([_TwoDaysEngine.id(2)]);
+      await tester.pumpAndSettle();
+      await tester.longPress(yesterday);
+      await tester.pumpAndSettle();
+      expect(find.text('Unselect all 2'), findsNothing);
+      await tester.tap(find.text('Select all 2'));
+      await tester.pumpAndSettle();
+      expect(c.read(selectedMessageIdsProvider), ids);
+      expect(find.byType(Checkbox), findsWidgets);
+
+      await tester.longPress(yesterday);
+      await tester.pumpAndSettle();
+      expect(find.text('Select all 2'), findsNothing);
+      await tester.tap(find.text('Unselect all 2'));
+      await tester.pumpAndSettle();
+      expect(c.read(selectedMessageIdsProvider), isEmpty);
+      expect(find.byType(Checkbox), findsNothing,
+          reason: 'nothing ticked is no longer selecting');
+
+      // A tick outside the day is not the day's to take.
+      final lunch = _TwoDaysEngine.id(3);
+      ticks.addAll([lunch, ...ids]);
+      await tester.pumpAndSettle();
+      await tester.longPress(yesterday);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Unselect all 2'));
+      await tester.pumpAndSettle();
+      expect(c.read(selectedMessageIdsProvider), {lunch});
     });
 
     testWidgets('closing the day being read leaves it open, and the arrows '

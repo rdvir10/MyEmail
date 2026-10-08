@@ -716,14 +716,22 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     Offset at,
   ) async {
     final messages = section.messages;
+    final ids = [for (final m in messages) m.id];
     // "Select all 1" is not English; one message is just the message.
     final all = messages.length == 1 ? '' : ' all ${messages.length}';
     final unread = anyUnread(messages);
+    // A toggle, as read and unread are: all ticked, the item unticks them,
+    // and with nothing else ticked the boxes go with them. Only part
+    // ticked, it ticks the rest.
+    final ticked = ref.read(selectedMessageIdsProvider);
+    final allTicked = ids.every(ticked.contains);
     final choice = await _menuAt(context, at, [
       section.collapsed
           ? _item('fold', Icons.unfold_more, 'Expand')
           : _item('fold', Icons.unfold_less, 'Collapse'),
-      _item('select', Icons.checklist, 'Select$all'),
+      allTicked
+          ? _item('unselect', Icons.remove_done, 'Unselect$all')
+          : _item('select', Icons.checklist, 'Select$all'),
       _item(
         'read',
         unread
@@ -739,9 +747,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             .read(collapsedDateGroupsProvider.notifier)
             .toggle(folderId, section.group.key);
       case 'select':
-        ref.read(selectedMessageIdsProvider.notifier).addAll([
-          for (final m in messages) m.id,
-        ]);
+        ref.read(selectedMessageIdsProvider.notifier).addAll(ids);
+      case 'unselect':
+        ref.read(selectedMessageIdsProvider.notifier).removeAll(ids);
       case 'read':
         await actions.setRead(context, messages, unread);
     }
