@@ -21,6 +21,9 @@ enum MessageSort {
 
   /// Only dates are ever read backwards; names and subjects run A to Z.
   bool get ascending => this != MessageSort.dateNewest;
+
+  /// In date order, where the list has its date bars.
+  bool get byDate => this == dateNewest || this == dateOldest;
 }
 
 /// The order of two messages under one choice.

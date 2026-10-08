@@ -80,16 +80,27 @@ class Conversation {
 /// [sort] orders the threads, as the rows are drawn. The keys used to walk
 /// them newest first whatever was chosen, so with oldest first Home went to
 /// the bottom of the screen and Down went up.
+///
+/// [folded] says whether a row is under a closed date bar, and those rows
+/// are left out too. It is asked about the message that stands for the
+/// row, a thread's newest, because that is what the bar is decided by: an
+/// open thread's older replies sit under the thread's bar, not their own.
 List<MailMessage> visibleMessages(
   List<MailMessage> messages, {
   required bool conversations,
   required Set<String> expandedIds,
   required MessageSort sort,
+  bool Function(MailMessage row)? folded,
 }) {
-  if (!conversations) return messages;
+  if (!conversations) {
+    if (folded == null) return messages;
+    return [for (final m in messages) if (!folded(m)) m];
+  }
   return [
     for (final c in conversationsInOrder(messages, sort))
-      if (!c.isThread || !expandedIds.contains(c.id))
+      if (folded != null && folded(c.newest))
+        ...const <MailMessage>[]
+      else if (!c.isThread || !expandedIds.contains(c.id))
         c.newest
       else
         ...c.messages.reversed,

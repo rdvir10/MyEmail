@@ -111,3 +111,31 @@ final expandedConversationsProvider =
     NotifierProvider<ExpandedConversations, Set<String>>(
   ExpandedConversations.new,
 );
+
+/// Which date bars are closed, by folder: the keys of the groups whose rows
+/// are folded away under them.
+///
+/// Not persisted, for the same reason open threads are not: the keys are
+/// relative. "today" is a different day tomorrow, and a Today closed
+/// yesterday would greet the morning's mail with a shut bar.
+class CollapsedDateGroups extends Notifier<Map<String, Set<String>>> {
+  @override
+  Map<String, Set<String>> build() => const {};
+
+  void toggle(String folderId, String key) {
+    final closed = state[folderId] ?? const <String>{};
+    state = {
+      ...state,
+      folderId: closed.contains(key)
+          ? {for (final k in closed) if (k != key) k}
+          : {...closed, key},
+    };
+  }
+
+  void openAll() => state = const {};
+}
+
+final collapsedDateGroupsProvider =
+    NotifierProvider<CollapsedDateGroups, Map<String, Set<String>>>(
+  CollapsedDateGroups.new,
+);

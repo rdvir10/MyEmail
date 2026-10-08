@@ -9,6 +9,7 @@ import '../../state/list_navigation.dart';
 import '../../state/message_providers.dart';
 import '../../state/message_transfer.dart';
 import '../shell/pane_focus.dart';
+import 'date_format.dart';
 import 'message_actions.dart';
 
 /// Keyboard control of the message list, and landing somewhere sensible when
@@ -65,16 +66,16 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
       widget.rows?.call() ?? ref.read(sortedMessagesProvider(widget.listId));
 
   /// The rows on screen, in order: what the arrows move through. A message
-  /// folded into a closed thread is not one of them. Search results are
-  /// never threaded.
-  List<MailMessage> get _messages => widget.rows != null
+  /// folded into a closed thread is not one of them, nor one under a
+  /// closed date bar. Search results are never threaded.
+  List<MailMessage> get _messages =>
+      widget.rows != null ? _all : folderRows(ref, widget.listId);
+
+  /// [_messages] with the rows under closed date bars put back: still in
+  /// the folder, only out of sight.
+  List<MailMessage> get _rows => widget.rows != null
       ? _all
-      : visibleMessages(
-          _all,
-          conversations: ref.read(displayProvider).conversations,
-          expandedIds: ref.read(expandedConversationsProvider),
-          sort: ref.read(displayProvider).sort,
-        );
+      : folderRows(ref, widget.listId, unfolding: true);
 
   /// Where the selection is, as a row: itself, or the row of the thread
   /// it is folded into, so closing a thread and pressing Down moves on
@@ -83,7 +84,7 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
 
   String? _rowOf(String? id) {
     if (id == null) return null;
-    final rows = _messages;
+    final rows = _rows;
     if (rows.any((m) => m.id == id)) return id;
     if (widget.rows == null) {
       for (final c in groupIntoConversations(_all)) {
@@ -101,9 +102,11 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
     if (messages.isEmpty) return;
 
     // A selection folded into a thread just closed is still here, as that
-    // thread's row. Taken for gone, it moved to the top of the folder.
+    // thread's row. Taken for gone, it moved to the top of the folder. So
+    // is one under a date bar just closed: closing Today over the message
+    // being read swapped the reading pane for one of yesterday's.
     final row = _selectedRow;
-    if (row != null && messages.any((m) => m.id == row)) return;
+    if (row != null && _rows.any((m) => m.id == row)) return;
     final target = messageToLandOn(
       messages: messages,
       lastOpened:
@@ -117,7 +120,12 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
   }
 
   void _move(int delta) {
-    final next = neighbourOf(_messages, _selectedRow, delta);
+    final next = neighbourOf(
+      _rows,
+      _selectedRow,
+      delta,
+      shown: {for (final m in _messages) m.id},
+    );
     if (next == null) return;
     _goTo(next);
   }
@@ -273,4 +281,27 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
       child: widget.child,
     );
   }
+}
+
+/// A folder's rows as the list draws them, top to bottom: see
+/// [visibleMessages]. With [unfolding], the rows under closed date bars as
+/// well, which are still in the folder and only out of sight.
+List<MailMessage> folderRows(
+  WidgetRef ref,
+  String listId, {
+  bool unfolding = false,
+}) {
+  final display = ref.read(displayProvider);
+  return visibleMessages(
+    ref.read(sortedMessagesProvider(listId)),
+    conversations: display.conversations,
+    expandedIds: ref.read(expandedConversationsProvider),
+    sort: display.sort,
+    folded: unfolding
+        ? null
+        : foldedUnder(
+            ref.read(collapsedDateGroupsProvider)[listId],
+            display.sort,
+          ),
+  );
 }

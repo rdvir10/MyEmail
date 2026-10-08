@@ -133,6 +133,7 @@ class _AppShellState extends ConsumerState<AppShell>
     ref.read(folderSearchQueryProvider.notifier).clear();
     ref.read(selectedMessageIdsProvider.notifier).clear();
     ref.read(expandedConversationsProvider.notifier).collapseAll();
+    ref.read(collapsedDateGroupsProvider.notifier).openAll();
     final inbox = inboxToComeBackTo(
       ref.read(effectiveSelectedFolderIdProvider),
       ref.read(folderIndexProvider),

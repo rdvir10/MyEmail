@@ -1,5 +1,8 @@
 import 'package:flutter/foundation.dart' show immutable;
 
+import '../../domain/mail_message.dart';
+import '../../domain/message_sort.dart';
+
 /// The date column of a message list, Outlook style: the time for today, day
 /// and month within the current year, the full date otherwise.
 ///
@@ -92,6 +95,19 @@ class DateGroup {
 
   @override
   int get hashCode => key.hashCode;
+}
+
+/// Whether a row sits under one of the [closed] bars, as `visibleMessages`
+/// asks it. Null when none can: nothing closed, or a list sorted by sender
+/// or subject, which has no bars to close.
+bool Function(MailMessage row)? foldedUnder(
+  Set<String>? closed,
+  MessageSort sort, {
+  DateTime? now,
+}) {
+  if (closed == null || closed.isEmpty || !sort.byDate) return null;
+  final n = now ?? DateTime.now();
+  return (row) => closed.contains(DateGroup.of(row.date, now: n).key);
 }
 
 /// What the bar above [date]'s group says: see [DateGroup].

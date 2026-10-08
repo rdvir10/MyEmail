@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/cache/cache_store.dart';
@@ -13,6 +15,7 @@ import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/conversations.dart';
 import 'package:myemail/state/display_providers.dart';
+import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/messages/date_format.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
@@ -170,6 +173,139 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.textContaining('Today'), findsOneWidget);
+    });
+
+    Future<ProviderContainer> showInbox(
+      WidgetTester tester,
+      _TwoDaysEngine engine,
+    ) async {
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        mailEngineProvider.overrideWithValue(engine),
+      ]);
+      addTearDown(c.dispose);
+      c.read(displayProvider.notifier).setConversations(false);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: const MaterialApp(home: AppShell()),
+      ));
+      await tester.pumpAndSettle();
+      c.read(selectedFolderIdProvider.notifier).select(_TwoDaysEngine.inbox);
+      await tester.pumpAndSettle();
+      return c;
+    }
+
+    Finder tile(int uid) =>
+        find.byKey(ValueKey('tile:${_TwoDaysEngine.id(uid)}'));
+    final today = find.byKey(const ValueKey('bar:today'));
+    final yesterday = find.byKey(const ValueKey('bar:yesterday'));
+
+    testWidgets('a tap on a bar folds its day away, and another brings it back',
+        (tester) async {
+      await showInbox(tester, _TwoDaysEngine());
+      expect(tile(2), findsOneWidget);
+      expect(tile(1), findsOneWidget);
+
+      await tester.tap(yesterday);
+      await tester.pumpAndSettle();
+      expect(tile(2), findsNothing);
+      expect(tile(1), findsNothing);
+      expect(tile(4), findsOneWidget, reason: 'today is still open');
+      expect(find.descendant(of: yesterday, matching: find.text('2')),
+          findsOneWidget,
+          reason: 'a closed bar says how much is under it');
+
+      await tester.tap(yesterday);
+      await tester.pumpAndSettle();
+      expect(tile(2), findsOneWidget);
+      expect(tile(1), findsOneWidget);
+    });
+
+    testWidgets('a closed bar counts the unread under it', (tester) async {
+      // A closed Today still takes the morning's mail.
+      await showInbox(tester, _TwoDaysEngine(unread: {2}));
+      await tester.tap(yesterday);
+      await tester.pumpAndSettle();
+      expect(find.descendant(of: yesterday, matching: find.text('1 unread · 2')),
+          findsOneWidget);
+    });
+
+    testWidgets('a long press or a right click on a bar is its menu',
+        (tester) async {
+      final engine = _TwoDaysEngine();
+      final c = await showInbox(tester, engine);
+      final ids = {_TwoDaysEngine.id(2), _TwoDaysEngine.id(1)};
+
+      await tester.longPress(yesterday);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Select all 2'));
+      await tester.pumpAndSettle();
+      expect(c.read(selectedMessageIdsProvider), ids);
+
+      await tester.tap(yesterday, buttons: kSecondaryButton);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Mark all 2 as unread'));
+      await tester.pumpAndSettle();
+      expect(engine.marked, {for (final id in ids) id: false});
+
+      await tester.longPress(yesterday);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Collapse'));
+      await tester.pumpAndSettle();
+      expect(tile(2), findsNothing);
+
+      await tester.longPress(yesterday);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Expand'));
+      await tester.pumpAndSettle();
+      expect(tile(2), findsOneWidget);
+    });
+
+    testWidgets('closing the day being read leaves it open, and the arrows '
+        'step over the closed day', (tester) async {
+      final c = await showInbox(tester, _TwoDaysEngine());
+      final lunch = _TwoDaysEngine.id(3);
+      c.read(selectedMessageIdProvider.notifier).select(lunch);
+      await tester.pumpAndSettle();
+
+      await tester.tap(today);
+      await tester.pumpAndSettle();
+      expect(c.read(selectedMessageIdProvider), lunch,
+          reason: 'the reading pane stays where it was');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      expect(c.read(selectedMessageIdProvider), _TwoDaysEngine.id(2));
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pumpAndSettle();
+      expect(c.read(selectedMessageIdProvider), _TwoDaysEngine.id(2),
+          reason: 'nothing is open above it');
+    });
+
+    testWidgets('a closed bar at the bottom waits for a tap to load more',
+        (tester) async {
+      // Left to load on its own, the paging row would sit on screen under
+      // the bar and every page would vanish beneath it.
+      final c = await showInbox(tester, _TwoDaysEngine(yesterday: 60));
+      List<MailMessage> shown() =>
+          c.read(messagesProvider(_TwoDaysEngine.inbox)).value!;
+      expect(shown(), hasLength(Messages.pageSize));
+
+      await tester.tap(yesterday);
+      await tester.pumpAndSettle();
+      expect(shown(), hasLength(Messages.pageSize));
+      expect(find.text('Load older messages'), findsOneWidget);
+
+      await tester.tap(find.text('Load older messages'));
+      await tester.pumpAndSettle();
+      expect(shown(), hasLength(62));
+      expect(find.text('Load older messages'), findsOneWidget,
+          reason: 'waiting to be asked again, not spinning');
     });
   });
 
@@ -360,4 +496,67 @@ class _OneInboxEngine extends SampleMailEngine {
     int limit = 50,
   }) =>
       loadMessages(folderId, offset: offset, limit: limit);
+}
+
+/// An Inbox of two days, with conversations nowhere in it: today's two
+/// messages just after midnight, and [yesterday] more from yesterday noon
+/// back, uids counting down from the newest. Read unless in [unread].
+/// Marks are kept rather than refused, as the sample store refuses
+/// messages it did not make.
+class _TwoDaysEngine extends SampleMailEngine {
+  _TwoDaysEngine({this.yesterday = 2, this.unread = const {}});
+
+  static const inbox = 'acct-personal:INBOX';
+  static String id(int uid) => MailMessage.idFor(inbox, uid);
+
+  final int yesterday;
+  final Set<int> unread;
+  final marked = <String, bool>{};
+
+  List<MailMessage> _mail() {
+    final now = DateTime.now();
+    final midnight = DateTime(now.year, now.month, now.day);
+    final noon = DateTime(now.year, now.month, now.day - 1, 12);
+    final newest = yesterday + 2;
+    MailMessage m(int uid, DateTime date) => MailMessage(
+          id: id(uid),
+          accountId: 'acct-personal',
+          folderId: inbox,
+          uid: uid,
+          subject: 'Message $uid',
+          preview: '',
+          from: const MailAddress(email: 'dana@example.com'),
+          to: const [],
+          date: date,
+          isRead: !unread.contains(uid),
+        );
+    return [
+      m(newest, midnight.add(const Duration(minutes: 3))),
+      m(newest - 1, midnight.add(const Duration(minutes: 1))),
+      for (var uid = yesterday; uid >= 1; uid--)
+        m(uid, noon.subtract(Duration(minutes: yesterday - uid))),
+    ];
+  }
+
+  @override
+  Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) async =>
+      folderId == inbox
+          ? _mail().skip(offset).take(limit).toList()
+          : const [];
+
+  @override
+  Future<List<MailMessage>> cachedMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) =>
+      loadMessages(folderId, offset: offset, limit: limit);
+
+  @override
+  Future<void> setRead(String messageId, bool isRead) async =>
+      marked[messageId] = isRead;
 }

@@ -92,14 +92,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       if (secondLook) return;
       final folderId = ref.read(effectiveSelectedFolderIdProvider);
       if (folderId == null) return;
-      final rows = _searching
-          ? _searchRows()
-          : visibleMessages(
-              ref.read(sortedMessagesProvider(folderId)),
-              conversations: ref.read(displayProvider).conversations,
-              expandedIds: ref.read(expandedConversationsProvider),
-              sort: ref.read(displayProvider).sort,
-            );
+      final rows = _searching ? _searchRows() : folderRows(ref, folderId);
       final at = rows.indexWhere((m) => m.id == id);
       if (at < 0 || rows.length < 2) return;
       final position = _scroll.position;
@@ -418,47 +411,62 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             // Sorted by sender or subject the rows are not in date order
             // at all, and a bar over them would name a grouping that is not
             // there.
-            final byDate = display.sort == MessageSort.dateNewest ||
-                display.sort == MessageSort.dateOldest;
             // Grouped as Outlook groups them; see DateGroup.
-            final now = DateTime.now();
-            DateGroup groupOf(DateTime date) => DateGroup.of(date, now: now);
+            final items = display.sort.byDate
+                ? _underBars(
+                    rows,
+                    DateTime.now(),
+                    ref.watch(collapsedDateGroupsProvider)[folderId] ??
+                        const {},
+                  )
+                : [for (final r in rows) _Item(r)];
             final hasMore = ref.watch(listHasMoreProvider(folderId));
+            // A closed bar at the bottom leaves the paging row on screen
+            // however far the folder goes, and every page it fetched would
+            // vanish under the bar: older mail waits for a tap there.
+            final pageOnTap = items.isNotEmpty && items.last.row == null;
             return RefreshIndicator(
               onRefresh: () => _pullToSync(context, folderId),
               child: ListView.separated(
                 key: _listKey,
                 controller: _scroll,
-                itemCount: rows.length + (hasMore ? 1 : 0),
-                separatorBuilder: (_, _) =>
-                    const Divider(height: 1, indent: 28),
+                itemCount: items.length + (hasMore ? 1 : 0),
+                // None under a closed bar: the next thing down is another
+                // bar, and a line between two bars reads as a row of nothing.
+                separatorBuilder: (_, i) => items[i].row == null
+                    ? const SizedBox.shrink()
+                    : const Divider(height: 1, indent: 28),
                 itemBuilder: (context, i) {
-                  if (i == rows.length) {
+                  if (i == items.length) {
                     return _LoadMoreRow(
-                      key: ValueKey('more:$folderId'),
+                      key: ValueKey('more${pageOnTap ? '-on-tap' : ''}:'
+                          '$folderId'),
                       folderId: folderId,
+                      onTap: pageOnTap,
                     );
                   }
-                  final row = rows[i];
-                  // A bar above the first row of each day, drawn as part of
-                  // that row rather than as one of its own: the list's
-                  // indices are load-bearing — paging, the keyboard's
-                  // cursor, scrolling a selection into view — and slipping
-                  // extra items between them would move every one of them.
-                  // Compared with the row above it at its own level: under
-                  // an open thread that is the thread, not its oldest
-                  // message, which could be from days before and put a
-                  // second "Today" in the middle of today's mail.
-                  var above = i - 1;
-                  while (above >= 0 && rows[above].indented) {
-                    above--;
-                  }
-                  final group = groupOf(row.date);
-                  final bar = byDate &&
-                          !row.indented &&
-                          (above < 0 || groupOf(rows[above].date) != group)
-                      ? _DateBar(label: group.label)
-                      : null;
+                  final section = items[i].bar;
+                  final bar = section == null
+                      ? null
+                      : _DateBar(
+                          key: ValueKey('bar:${section.group.key}'),
+                          label: section.group.label,
+                          collapsed: section.collapsed,
+                          messages: section.messages,
+                          onToggle: () => ref
+                              .read(collapsedDateGroupsProvider.notifier)
+                              .toggle(folderId, section.group.key),
+                          onMenu: (at) => _showDateBarMenu(
+                            context,
+                            ref,
+                            actions,
+                            folderId,
+                            section,
+                            at,
+                          ),
+                        );
+                  final row = items[i].row;
+                  if (row == null) return _under(bar, null);
                   final conversation = row.conversation;
                   if (conversation != null) {
                     final ids = [for (final m in conversation.messages) m.id];
@@ -650,12 +658,94 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
   /// Part of the row rather than an item of its own: the list's indices are
   /// load-bearing — paging, the keyboard's cursor, scrolling a selection
   /// into view — and slipping extra items between them would move every one.
-  static Widget _under(Widget? bar, Widget row) => bar == null
-      ? row
+  /// A closed bar is the exception, an item with no row, standing in for
+  /// all the rows it has folded away.
+  ///
+  /// A column even then, so closing and opening a bar keeps the bar itself
+  /// and its arrow turns rather than jumping.
+  static Widget _under(Widget? bar, Widget? row) => bar == null
+      ? row!
       : Column(
           mainAxisSize: MainAxisSize.min,
-          children: [bar, row],
+          children: [bar, ?row],
         );
+
+  /// [rows] under their date bars, as the list's items.
+  ///
+  /// A row's bar is decided at its own level: under an open thread that is
+  /// the thread, not its oldest message, which could be from days before
+  /// and put a second "Today" in the middle of today's mail. A group in
+  /// [collapsed] is one item, its bar alone.
+  static List<_Item> _underBars(
+    List<_Row> rows,
+    DateTime now,
+    Set<String> collapsed,
+  ) {
+    final sections = <_Section>[];
+    for (final row in rows) {
+      if (row.indented && sections.isNotEmpty) {
+        sections.last.rows.add(row);
+        continue;
+      }
+      final group = DateGroup.of(row.date, now: now);
+      if (sections.isEmpty || sections.last.group != group) {
+        sections.add(
+          _Section(group, collapsed: collapsed.contains(group.key)),
+        );
+      }
+      sections.last.rows.add(row);
+    }
+    return [
+      for (final s in sections)
+        if (s.collapsed)
+          _Item(null, bar: s)
+        else
+          for (var i = 0; i < s.rows.length; i++)
+            _Item(s.rows[i], bar: i == 0 ? s : null),
+    ];
+  }
+
+  /// The bar's own menu, for the group as a whole: from a long press, which
+  /// on a bar has no ticking to do, or a right click.
+  Future<void> _showDateBarMenu(
+    BuildContext context,
+    WidgetRef ref,
+    MessageActions actions,
+    String folderId,
+    _Section section,
+    Offset at,
+  ) async {
+    final messages = section.messages;
+    // "Select all 1" is not English; one message is just the message.
+    final all = messages.length == 1 ? '' : ' all ${messages.length}';
+    final unread = anyUnread(messages);
+    final choice = await _menuAt(context, at, [
+      section.collapsed
+          ? _item('fold', Icons.unfold_more, 'Expand')
+          : _item('fold', Icons.unfold_less, 'Collapse'),
+      _item('select', Icons.checklist, 'Select$all'),
+      _item(
+        'read',
+        unread
+            ? Icons.mark_email_read_outlined
+            : Icons.mark_email_unread_outlined,
+        unread ? 'Mark$all as read' : 'Mark$all as unread',
+      ),
+    ]);
+    if (choice == null || !context.mounted) return;
+    switch (choice) {
+      case 'fold':
+        ref
+            .read(collapsedDateGroupsProvider.notifier)
+            .toggle(folderId, section.group.key);
+      case 'select':
+        ref.read(selectedMessageIdsProvider.notifier).addAll([
+          for (final m in messages) m.id,
+        ]);
+      case 'read':
+        await actions.setRead(context, messages, unread);
+    }
+  }
 
   /// A menu at the pointer, which is where a right click puts one.
   Future<String?> _menuAt(
@@ -1190,6 +1280,34 @@ class _Row {
 
   /// When this row happened, whichever kind it is.
   DateTime get date => message?.date ?? conversation!.newest.date;
+
+  /// What the row stands for: a thread's row, every message in it.
+  List<MailMessage> get messages => conversation?.messages ?? [message!];
+}
+
+/// The rows under one date bar.
+class _Section {
+  _Section(this.group, {required this.collapsed});
+
+  final DateGroup group;
+  final bool collapsed;
+  final rows = <_Row>[];
+
+  /// Every message under the bar, once each: an open thread's own rows are
+  /// the thread's messages again.
+  List<MailMessage> get messages => [
+        for (final r in rows)
+          if (!r.indented) ...r.messages,
+      ];
+}
+
+/// One item of the list: a row, with its group's bar over it when it is the
+/// group's first; or, for a closed group, the bar on its own.
+class _Item {
+  const _Item(this.row, {this.bar});
+
+  final _Row? row;
+  final _Section? bar;
 }
 
 /// The bar that separates one day from the next.
@@ -1197,33 +1315,110 @@ class _Row {
 /// Only where the list is in date order. Sorted by sender or subject the
 /// rows are not in date order at all, and a date bar over them would be
 /// describing a grouping that is not there.
+///
+/// A tap anywhere on it closes the group, as the arrow says; the arrow
+/// alone would be a target the size of a letter. A long press or a right
+/// click is the menu. Closed, it says how many messages are folded away
+/// and how many of those are unread: a closed Today still takes the
+/// morning's mail, and a bar that said nothing would hide it.
 class _DateBar extends StatelessWidget {
-  const _DateBar({required this.label});
+  const _DateBar({
+    super.key,
+    required this.label,
+    required this.collapsed,
+    required this.messages,
+    required this.onToggle,
+    required this.onMenu,
+  });
 
   final String label;
+  final bool collapsed;
+
+  /// Everything under the bar.
+  final List<MailMessage> messages;
+
+  final VoidCallback onToggle;
+  final void Function(Offset at) onMenu;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final style = theme.textTheme.labelSmall?.copyWith(
+      color: scheme.onSurfaceVariant,
+      fontWeight: FontWeight.w600,
+    );
+    final unread = collapsed ? messages.where((m) => !m.isRead).length : 0;
     return Container(
       width: double.infinity,
       // Shaded and underlined in the accent colour, so the bar reads as a
       // heading and not as one more row.
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
         border: Border(
           bottom: BorderSide(
-            color: theme.colorScheme.primary.withValues(alpha: 0.7),
+            color: scheme.primary.withValues(alpha: 0.7),
             width: 1.5,
           ),
         ),
       ),
-      padding: const EdgeInsets.fromLTRB(16, 5, 16, 5),
-      child: Text(
-        label,
-        style: theme.textTheme.labelSmall?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-          fontWeight: FontWeight.w600,
+      // Its own see-through Material, so the ripple shows over the shading
+      // rather than under it.
+      child: Material(
+        type: MaterialType.transparency,
+        // The long press from outside the ink: InkWell's own does not say
+        // where the finger is, and the menu belongs under it.
+        child: GestureDetector(
+          onLongPressStart: (d) {
+            Feedback.forLongPress(context);
+            onMenu(d.globalPosition);
+          },
+          child: InkWell(
+            onTap: onToggle,
+            onSecondaryTapUp: (d) => onMenu(d.globalPosition),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 5, 16, 5),
+              child: Row(
+                children: [
+                  AnimatedRotation(
+                    turns: collapsed ? -0.25 : 0,
+                    duration: const Duration(milliseconds: 150),
+                    child: Icon(
+                      Icons.expand_more,
+                      size: 16,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: style,
+                    ),
+                  ),
+                  if (collapsed)
+                    Text.rich(
+                      TextSpan(
+                        children: [
+                          if (unread > 0)
+                            TextSpan(
+                              text: '$unread unread · ',
+                              style: TextStyle(
+                                color: scheme.primary,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          TextSpan(text: '${messages.length}'),
+                        ],
+                      ),
+                      style: style,
+                    ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -1236,10 +1431,18 @@ class _DateBar extends StatelessWidget {
 ///
 /// A failed fetch stays on screen as something to tap. Retrying on its own
 /// while the network is down would spin for ever under the list.
+///
+/// With [onTap] it waits to be asked from the start: see where the list
+/// passes it.
 class _LoadMoreRow extends ConsumerStatefulWidget {
-  const _LoadMoreRow({super.key, required this.folderId});
+  const _LoadMoreRow({
+    super.key,
+    required this.folderId,
+    this.onTap = false,
+  });
 
   final String folderId;
+  final bool onTap;
 
   @override
   ConsumerState<_LoadMoreRow> createState() => _LoadMoreRowState();
@@ -1247,11 +1450,12 @@ class _LoadMoreRow extends ConsumerStatefulWidget {
 
 class _LoadMoreRowState extends ConsumerState<_LoadMoreRow> {
   Object? _error;
+  late bool _waiting = widget.onTap;
 
   @override
   void initState() {
     super.initState();
-    _fetch();
+    if (!_waiting) _fetch();
   }
 
   void _fetch() {
@@ -1262,6 +1466,9 @@ class _LoadMoreRowState extends ConsumerState<_LoadMoreRow> {
       setState(() => _error = null);
       try {
         await ref.read(messagesProvider(widget.folderId).notifier).loadMore();
+        // A page that went under the closed bar leaves this row where it
+        // was, and it would spin there for good.
+        if (mounted && widget.onTap) setState(() => _waiting = true);
       } catch (e) {
         if (mounted) setState(() => _error = e);
       }
@@ -1271,6 +1478,22 @@ class _LoadMoreRowState extends ConsumerState<_LoadMoreRow> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    if (_waiting) {
+      return InkWell(
+        onTap: () {
+          setState(() => _waiting = false);
+          _fetch();
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            'Load older messages',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodySmall,
+          ),
+        ),
+      );
+    }
     if (_error != null) {
       return InkWell(
         onTap: _fetch,

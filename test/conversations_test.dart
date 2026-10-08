@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/imap/imap_mapping.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/message_sort.dart';
 import 'package:myemail/state/conversations.dart';
 
 int _uid = 0;
@@ -245,6 +246,45 @@ void main() {
 
     test('an empty list yields nothing rather than throwing', () {
       expect(groupIntoConversations(const []), isEmpty);
+    });
+  });
+
+  group('visibleMessages under closed date bars', () {
+    test('a thread goes with the bar its newest message is under', () {
+      // The bar over an open thread is decided by its newest message, so
+      // that is the one asked: an older reply from a closed day stays with
+      // the thread, and the whole thread goes when its own bar is closed.
+      final a = _m(subject: 'T', messageId: 'a@x');
+      final b = _m(subject: 'Re: T', messageId: 'b@x', inReplyTo: 'a@x',
+          minute: 1);
+      final loose = _m(subject: 'Other', minute: 2);
+      final thread = groupIntoConversations([a, b]).single;
+      List<String> rows(bool Function(MailMessage) folded) => visibleMessages(
+            [loose, b, a],
+            conversations: true,
+            expandedIds: {thread.id},
+            sort: MessageSort.dateNewest,
+            folded: folded,
+          ).map((m) => m.id).toList();
+
+      expect(rows((m) => m.id == a.id), [loose.id, b.id, a.id]);
+      expect(rows((m) => m.id == b.id), [loose.id]);
+      expect(rows((m) => m.id == loose.id), [b.id, a.id]);
+    });
+
+    test('with conversations off, each message is its own row', () {
+      final a = _m(subject: 'A');
+      final b = _m(subject: 'B', minute: 1);
+      expect(
+        visibleMessages(
+          [b, a],
+          conversations: false,
+          expandedIds: const {},
+          sort: MessageSort.dateNewest,
+          folded: (m) => m.id == b.id,
+        ),
+        [a],
+      );
     });
   });
 

@@ -84,4 +84,35 @@ void main() {
       expect(neighbourOf(const [], 'm1', 1), isNull);
     });
   });
+
+  group('the arrow keys past a closed date bar', () {
+    // m2 and m3 are under a closed bar.
+    final five = [m('m1'), m('m2'), m('m3'), m('m4'), m('m5')];
+    const shown = {'m1', 'm4', 'm5'};
+
+    test('step over the rows folded away', () {
+      expect(neighbourOf(five, 'm1', 1, shown: shown), 'm4');
+      expect(neighbourOf(five, 'm4', -1, shown: shown), 'm1');
+      expect(neighbourOf(five, 'm1', 2, shown: shown), 'm5');
+    });
+
+    test('from a selection closed in with its group, go on either side', () {
+      // Closing Today over the message being read leaves it selected. Down
+      // from there went to the top of the list.
+      expect(neighbourOf(five, 'm2', 1, shown: shown), 'm4');
+      expect(neighbourOf(five, 'm3', 1, shown: shown), 'm4');
+      expect(neighbourOf(five, 'm3', -1, shown: shown), 'm1');
+      expect(neighbourOf(five, 'm2', 10, shown: shown), 'm5');
+      expect(neighbourOf(five, 'm2', -10, shown: shown), 'm1');
+    });
+
+    test('with nothing above or below, stay at the end', () {
+      expect(neighbourOf(five, 'm2', -1, shown: const {'m4', 'm5'}), 'm4');
+      expect(neighbourOf(five, 'm5', 1, shown: shown), 'm5');
+    });
+
+    test('everything closed goes nowhere', () {
+      expect(neighbourOf(five, 'm2', 1, shown: const {}), isNull);
+    });
+  });
 }
