@@ -497,6 +497,35 @@ String imapCommandPath(
   ].join(delimiter);
 }
 
+/// The line of an APPEND that files a message from another account
+/// (RFC 3501 6.3.11), up to the literal that carries it: the folder as the
+/// server named it in its list, the flags, and the time it arrived, so it
+/// is listed where it was rather than at the top as if it came today.
+String appendCommand(
+  String encodedMailbox, {
+  required List<String> flags,
+  DateTime? arrived,
+  required int length,
+}) {
+  final line = StringBuffer('APPEND ')..write(_quote(encodedMailbox));
+  if (flags.isNotEmpty) line.write(' (${flags.join(' ')})');
+  if (arrived != null) line.write(' "${imapDateTime(arrived)}"');
+  line.write(' {$length}');
+  return line.toString();
+}
+
+/// An IMAP date-time, `05-Oct-2026 14:03:09 +0000`, in UTC.
+String imapDateTime(DateTime when) {
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+  final t = when.toUtc();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${two(t.day)}-${months[t.month - 1]}-${t.year} '
+      '${two(t.hour)}:${two(t.minute)}:${two(t.second)} +0000';
+}
+
 String _quote(String value) =>
     '"${value.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}"';
 

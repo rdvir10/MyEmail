@@ -320,7 +320,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
           for (final m in removed)
             if (went.contains(m.id)) m,
         ],
-        [...touchedFolderIds, for (final m in part.done) m.toFolderId],
+        [...touchedFolderIds, for (final m in part.done) ...m.landedIn],
       );
       rethrow;
     } catch (_) {
@@ -334,7 +334,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     // its count in the tree had already gone up.
     _afterRemoval(
       removed,
-      [...touchedFolderIds, for (final m in moves) m.toFolderId],
+      [...touchedFolderIds, for (final m in moves) ...m.landedIn],
     );
     return moves;
   }
@@ -369,7 +369,13 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     // The folder counts follow, but nothing on screen is waiting for them:
     // refreshing an account is another folder listing over the network, and
     // awaiting it here is why a delete took seconds to finish.
-    for (final accountId in removed.map((m) => m.accountId).toSet()) {
+    // Where they went as well, which is another account's after a move
+    // into it.
+    final index = ref.read(folderIndexProvider);
+    for (final accountId in {
+      ...removed.map((m) => m.accountId),
+      for (final id in touchedFolderIds) ?index[id]?.accountId,
+    }) {
       unawaited(ref
           .read(foldersProvider.notifier)
           .refreshAccount(accountId)

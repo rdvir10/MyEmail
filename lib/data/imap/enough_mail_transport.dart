@@ -3,6 +3,16 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:enough_mail/enough_mail.dart' as em;
+// Command, GenericParser and ImapResponse are how ImapClient lets a caller
+// send a command of its own; the package uses them for every command but
+// does not export them. Needed for an APPEND enough_mail cannot write: see
+// EnoughMailTransport.fileMessage.
+// ignore: implementation_imports
+import 'package:enough_mail/src/private/imap/command.dart';
+// ignore: implementation_imports
+import 'package:enough_mail/src/private/imap/generic_parser.dart';
+// ignore: implementation_imports
+import 'package:enough_mail/src/private/imap/imap_response.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../../domain/mail_attachment.dart';
@@ -379,6 +389,38 @@ class EnoughMailTransport implements ImapTransport {
         );
       });
 
+  /// APPEND written here rather than by enough_mail, which has no way to
+  /// give the time the message arrived and writes the message as UTF-8: a
+  /// message sent in 8-bit, Hebrew from Thunderbird say, would land with
+  /// every such byte doubled. This writes it byte for byte.
+  @override
+  Future<int?> fileMessage(
+    String path,
+    String mimeText, {
+    required bool seen,
+    bool flagged = false,
+    DateTime? arrived,
+  }) =>
+      _run(limit: transferLimit, (c) async {
+        final box = await _box(c, path);
+        final bytes = rawMessageBytes(mimeText);
+        final line = appendCommand(
+          box.encodedPath,
+          flags: [
+            if (seen) em.MessageFlags.seen,
+            if (flagged) em.MessageFlags.flagged,
+          ],
+          arrived: arrived,
+          length: bytes.length,
+        );
+        final result = await c.sendCommand<em.GenericImapResult>(
+          _AppendBytes(line, c, bytes),
+          GenericParser(c, null),
+        );
+        final uids = result.responseCodeAppendUid?.targetSequence.toList();
+        return uids == null || uids.isEmpty ? null : uids.last;
+      });
+
   @override
   Future<void> expunge(String path) => _run((c) async {
         await _ensureSelected(c, path);
@@ -731,4 +773,29 @@ class EnoughMailTransport implements ImapTransport {
 /// The client announced its connection was lost while a command waited.
 class _ConnectionLost implements Exception {
   const _ConnectionLost();
+}
+
+/// An APPEND whose literal goes out as the bytes given.
+///
+/// The client writes a command's next part when the server asks for it,
+/// as text, through the socket's UTF-8. The message goes first, as bytes,
+/// and the empty part after it is the line end that closes the command.
+class _AppendBytes extends Command {
+  _AppendBytes(super.commandText, this.client, this.bytes)
+      : super(parts: [commandText, ''], logText: commandText);
+
+  final em.ImapClient client;
+  final List<int> bytes;
+
+  @override
+  String? getContinuationResponse(ImapResponse imapResponse) {
+    final next = super.getContinuationResponse(imapResponse);
+    // Not awaited: the client's own write of [next] waits for this one,
+    // which is what keeps the two in order. A write that fails is a lost
+    // connection, which the command itself then fails with.
+    if (next != null) {
+      unawaited(client.writeData(bytes).then((_) {}, onError: (Object _) {}));
+    }
+    return next;
+  }
 }

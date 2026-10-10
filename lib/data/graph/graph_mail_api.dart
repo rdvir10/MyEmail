@@ -703,6 +703,124 @@ class GraphMailApi {
     return id is String ? id : null;
   }
 
+  /// PidTagMessageFlags, PidTagMessageDeliveryTime and PidTagClientSubmitTime:
+  /// whether a message is a draft, and when it arrived and was sent. Graph
+  /// has no writable property of its own for any of them.
+  static const messageFlagsProperty = 'Integer 0x0E07';
+  static const deliveryTimeProperty = 'SystemTime 0x0E06';
+  static const submitTimeProperty = 'SystemTime 0x0039';
+
+  /// File a message that came from another account into a folder, as the
+  /// received mail it is, and answer with its id.
+  ///
+  /// [message] is Graph's JSON, not MIME. Graph makes a draft of anything
+  /// created from MIME and has no way to unmake one, so a message moved in
+  /// that way showed as a draft, opened for editing, and could be sent
+  /// again. In JSON, [messageFlagsProperty] can be set as the message is
+  /// created, which is the one moment Exchange lets it be.
+  ///
+  /// Its Message-ID goes with it where Graph will take one. If Graph turns
+  /// the message away with it, it is filed without: the message matters
+  /// more than the header.
+  Future<String> fileMessage(
+    String folderId,
+    Map<String, Object?> message,
+  ) async {
+    final uri = Uri.parse('$base/me/mailFolders/${_id(folderId)}/messages');
+    http.Request post(Map<String, Object?> body) => http.Request('POST', uri)
+      ..headers['Content-Type'] = 'application/json'
+      ..body = jsonEncode(body);
+
+    var response = await _exchange(post(message));
+    if (response.statusCode == 400 &&
+        message.containsKey('internetMessageId')) {
+      debugPrint('[myemail] filed without its Message-ID: '
+          '${_errorOf(response)}');
+      response = await _exchange(
+        post({...message}..remove('internetMessageId')),
+      );
+    }
+    final id = _json(response)['id'];
+    if (id is! String || id.isEmpty) {
+      throw const ConnectionFailed(
+        'Microsoft took the message but did not say where it put it.',
+      );
+    }
+    return id;
+  }
+
+  /// What one request carries of a file before it goes up in pieces
+  /// instead: base64 adds a third, and Graph takes 4 MB a request.
+  static const maxPostedAttachmentBytes = 3 * 1024 * 1024;
+
+  /// What one PUT of an upload session carries: ten of the 320 KiB pieces
+  /// Microsoft wants every chunk but the last to be a multiple of.
+  static const uploadChunkBytes = 327680 * 10;
+
+  /// Put a file on a message already in the mailbox: in one request where
+  /// it fits, and through an upload session where it does not. A picture
+  /// shown in the body keeps its [contentId], so the body still finds it.
+  Future<void> attach(
+    String messageId, {
+    required String name,
+    required String contentType,
+    required Uint8List bytes,
+    String? contentId,
+  }) async {
+    final attachments = '$base/me/messages/${_id(messageId)}/attachments';
+    final inline = {
+      if (contentId != null) ...{'isInline': true, 'contentId': contentId},
+    };
+    if (bytes.length <= maxPostedAttachmentBytes) {
+      await _post(Uri.parse(attachments), {
+        '@odata.type': '#microsoft.graph.fileAttachment',
+        'name': name,
+        'contentType': contentType,
+        'contentBytes': base64Encode(bytes),
+        ...inline,
+      });
+      return;
+    }
+
+    final session = await _post(
+      Uri.parse('$attachments/createUploadSession'),
+      {
+        'AttachmentItem': {
+          'attachmentType': 'file',
+          'name': name,
+          'size': bytes.length,
+          'contentType': contentType,
+          ...inline,
+        },
+      },
+    );
+    final url = session['uploadUrl'];
+    if (url is! String || url.isEmpty) {
+      throw ConnectionFailed('Microsoft would not take $name.');
+    }
+    // The upload URL carries its own authorisation, and a bearer token sent
+    // with it is refused.
+    final target = Uri.parse(url);
+    for (var start = 0; start < bytes.length; start += uploadChunkBytes) {
+      final end = start + uploadChunkBytes < bytes.length
+          ? start + uploadChunkBytes
+          : bytes.length;
+      final request = http.Request('PUT', target)
+        ..headers['Content-Range'] = 'bytes $start-${end - 1}/${bytes.length}'
+        ..bodyBytes = bytes.sublist(start, end);
+      final http.Response response;
+      try {
+        response = await _within(_client.send(request), uploading: end - start);
+      } on Exception catch (e) {
+        throw ConnectionFailed('Could not reach Microsoft. ($e)');
+      }
+      // 200 and 202 take a chunk and ask for the next; 201 is the last.
+      if (response.statusCode >= 400) {
+        throw _failureFor(response.statusCode, _errorOf(response));
+      }
+    }
+  }
+
   // --- plumbing --------------------------------------------------------------
 
   /// Graph ids are long, opaque and contain characters that mean something in
@@ -858,9 +976,11 @@ class GraphMailApi {
     }
   }
 
-  Future<Map<String, Object?>> _send(http.Request request) async {
-    final response = await _exchange(request);
+  Future<Map<String, Object?>> _send(http.Request request) async =>
+      _json(await _exchange(request));
 
+  /// What Graph answered, as JSON, or the failure it amounts to.
+  static Map<String, Object?> _json(http.Response response) {
     if (response.statusCode == 404) throw const GraphNotFound();
     if (response.statusCode == 204 || response.body.isEmpty) {
       return const {};

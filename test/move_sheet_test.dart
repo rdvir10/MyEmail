@@ -10,6 +10,9 @@ import 'package:myemail/ui/messages/move_to_sheet.dart';
 
 /// Finding the destination in a mailbox that has hundreds of folders.
 void main() {
+  /// What the sheet closed with, once it has.
+  String? chosen;
+
   Future<(ProviderContainer, List<MailFolder>)> open(
     WidgetTester tester, {
     MemoryUiStateStore? store,
@@ -25,6 +28,7 @@ void main() {
       ],
     );
     addTearDown(c.dispose);
+    chosen = null;
     // The sample engine answers after a short delay, which a widget test's
     // fake clock never reaches: these two have to run in real time.
     final (account, folders) = (await tester.runAsync(() async {
@@ -40,7 +44,7 @@ void main() {
             builder: (context) => Scaffold(
               body: Center(
                 child: TextButton(
-                  onPressed: () => showMoveToSheet(
+                  onPressed: () async => chosen = await showMoveToSheet(
                     context,
                     accountId: account.id,
                     fromFolderId: '${account.id}:INBOX',
@@ -219,5 +223,65 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Move to'), findsNothing, reason: 'the sheet closed');
+  });
+
+  group('with another mailbox', () {
+    const projects = 'acct-side';
+    const invoices = '$projects:Invoices';
+    Finder mailbox(String id) => find.byKey(ValueKey('move-mailbox-$id'));
+    Finder folder(String id) => find.byKey(ValueKey('move-tree-$id'));
+
+    testWidgets('each mailbox has its heading; the others start shut',
+        (tester) async {
+      final (_, folders) = await open(tester);
+      final (parent, _) = branch(folders);
+
+      expect(mailbox(folders.first.accountId), findsOneWidget);
+      expect(row(parent), findsOneWidget, reason: 'its own mailbox is open');
+      expect(mailbox(projects), findsOneWidget);
+      expect(folder(invoices), findsNothing);
+
+      await tester.tap(mailbox(projects));
+      await tester.pumpAndSettle();
+      expect(folder(invoices), findsOneWidget);
+    });
+
+    testWidgets("choosing a folder in another mailbox closes with that folder",
+        (tester) async {
+      await open(tester);
+      await tester.tap(mailbox(projects));
+      await tester.pumpAndSettle();
+
+      await tester.tap(folder(invoices));
+      await tester.pumpAndSettle();
+
+      expect(chosen, invoices);
+    });
+
+    testWidgets("a search looks in every mailbox, and says which",
+        (tester) async {
+      await open(tester);
+
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Search folders'),
+        'Invoices',
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('move-option-$invoices')),
+          findsOneWidget);
+      expect(find.text('Projects › Invoices'), findsOneWidget);
+    });
+
+    testWidgets('a folder moved to in another mailbox comes back as recent',
+        (tester) async {
+      final (c, _) = await open(tester);
+      c.read(recentMoveTargetsProvider.notifier).record(invoices);
+      await tester.pumpAndSettle();
+
+      expect(find.text('RECENT'), findsOneWidget);
+      expect(find.byKey(const ValueKey('move-option-$invoices')),
+          findsOneWidget);
+    });
   });
 }

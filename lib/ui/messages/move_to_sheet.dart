@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/account.dart';
 import '../../domain/mail_folder.dart';
 import '../../state/folder_tree.dart';
 import '../../state/providers.dart';
@@ -9,11 +10,17 @@ import '../folder_tree/folder_tile.dart' show folderIconFor;
 /// Pick a destination for a message move.
 ///
 /// Recent destinations come first, as in Outlook, because that is what gets
-/// used; the account's folders follow as a tree, drawn the way the folder
-/// pane draws them and opened where the pane has them open. Only folders
-/// that can actually take a message can be chosen, which rules out Gmail's
-/// Drafts, Sent and All Mail; a parent that cannot is still drawn, greyed,
-/// so what is inside it keeps its place.
+/// used; the folders follow as a tree, drawn the way the folder pane draws
+/// them and opened where the pane has them open. Only folders that can
+/// actually take a message can be chosen, which rules out Gmail's Drafts,
+/// Sent and All Mail; a parent that cannot is still drawn, greyed, so what
+/// is inside it keeps its place.
+///
+/// With more than one account, every mailbox is there under its own
+/// heading, as in the pane: [accountId]'s, the one the message is in, open,
+/// and the others shut until tapped, so a long list of another mailbox's
+/// folders does not push its own off the screen. A recent folder or a
+/// search's match in another mailbox says which.
 ///
 /// Returns the chosen folder id, or null if dismissed.
 Future<String?> showMoveToSheet(
@@ -60,6 +67,10 @@ class _MoveToSheetState extends ConsumerState<_MoveToSheet> {
   /// Opening one here opens it here only.
   late final Set<String> _open = {...ref.read(expandedFoldersProvider)};
 
+  /// The mailboxes open in the tree, starting with the one the message is
+  /// in.
+  late final Set<String> _openMailboxes = {widget.accountId};
+
   String get accountId => widget.accountId;
   String get fromFolderId => widget.fromFolderId;
   int get messageCount => widget.messageCount;
@@ -71,18 +82,52 @@ class _MoveToSheetState extends ConsumerState<_MoveToSheet> {
         if (!_open.remove(folderId)) _open.add(folderId);
       });
 
+  void _toggleMailbox(String id) => setState(() {
+        if (!_openMailboxes.remove(id)) _openMailboxes.add(id);
+      });
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final index = ref.watch(folderIndexProvider);
-    final all = ref.watch(foldersProvider).value?[accountId] ?? const [];
+    final byAccount = ref.watch(foldersProvider).value ?? const {};
+    final all = byAccount[accountId] ?? const <MailFolder>[];
     final compare = folderComparator(ref.watch(folderOrderProvider));
 
-    // Recents, filtered to this account and to folders that still exist.
+    // In the pane's order, and only those with folders to show: one still
+    // loading, or that failed to, has nowhere to put anything yet.
+    final mailboxes = [
+      for (final a in ref.watch(accountsProvider).value ?? const <Account>[])
+        if ((byAccount[a.id] ?? const <MailFolder>[]).isNotEmpty) a,
+    ];
+    // One mailbox is drawn as it always was, with no heading over it.
+    final several =
+        mailboxes.length > 1 && mailboxes.any((a) => a.id == accountId);
+    final names = {for (final a in mailboxes) a.id: a.displayName};
+
+    // Every folder a message could go to, the message's own mailbox first.
+    final everywhere = [
+      ..._inTreeOrder(all, compare),
+      if (several)
+        for (final a in mailboxes)
+          if (a.id != accountId) ..._inTreeOrder(byAccount[a.id]!, compare),
+    ];
+
+    // Where a folder lives, with its mailbox in front where it is not the
+    // message's own: "Gmail › Receipts".
+    String where(MailFolder f) => f.accountId == accountId
+        ? _pathOf(f, index)
+        : '${names[f.accountId] ?? ''} › ${_pathOf(f, index)}';
+
+    // Recents, filtered to folders that still exist, in mailboxes on the
+    // sheet.
     final recents = <MailFolder>[
       for (final id in ref.watch(recentMoveTargetsProvider))
         if (index[id] case final f?)
-          if (f.accountId == accountId && _takes(f)) f,
+          if ((f.accountId == accountId ||
+                  (several && names.containsKey(f.accountId))) &&
+              _takes(f))
+            f,
     ];
 
     final query = _query.trim().toLowerCase();
@@ -91,13 +136,19 @@ class _MoveToSheetState extends ConsumerState<_MoveToSheet> {
     final matches = query.isEmpty
         ? const <MailFolder>[]
         : [
-            for (final f in _inTreeOrder(all, compare))
+            for (final f in everywhere)
               if (_takes(f) &&
                   (f.displayName.toLowerCase().contains(query) ||
-                      _pathOf(f, index).toLowerCase().contains(query)))
+                      where(f).toLowerCase().contains(query)))
                 f,
           ];
-    final tree = query.isEmpty ? _treeRows(all, compare) : const <_TreeEntry>[];
+
+    _TreeRow treeRow(_TreeEntry entry) => _TreeRow(
+          entry: entry,
+          open: _open.contains(entry.folder.id),
+          here: entry.folder.id == fromFolderId,
+          onToggle: () => _toggle(entry.folder.id),
+        );
 
     // The same height whatever is listed, so the search box stays near the
     // top of the screen and what it finds is listed under it. Sized to its
@@ -153,7 +204,7 @@ class _MoveToSheetState extends ConsumerState<_MoveToSheet> {
                   children: [
                     if (query.isNotEmpty) ...[
                       for (final f in matches)
-                        _FolderOption(folder: f, path: _pathOf(f, index)),
+                        _FolderOption(folder: f, path: where(f)),
                       if (matches.isEmpty)
                         ListTile(
                           enabled: false,
@@ -165,18 +216,26 @@ class _MoveToSheetState extends ConsumerState<_MoveToSheet> {
                       if (recents.isNotEmpty) ...[
                         _SheetHeading(text: 'Recent', theme: theme),
                         for (final f in recents)
-                          _FolderOption(folder: f, path: _pathOf(f, index)),
+                          _FolderOption(folder: f, path: where(f)),
                         const Divider(height: 1),
                         _SheetHeading(text: 'All folders', theme: theme),
                       ],
-                      for (final entry in tree)
-                        _TreeRow(
-                          entry: entry,
-                          open: _open.contains(entry.folder.id),
-                          here: entry.folder.id == fromFolderId,
-                          onToggle: () => _toggle(entry.folder.id),
-                        ),
-                      if (!all.any(_takes))
+                      if (!several)
+                        for (final entry in _treeRows(all, compare))
+                          treeRow(entry)
+                      else
+                        for (final a in mailboxes) ...[
+                          _MailboxRow(
+                            account: a,
+                            open: _openMailboxes.contains(a.id),
+                            onToggle: () => _toggleMailbox(a.id),
+                          ),
+                          if (_openMailboxes.contains(a.id))
+                            for (final entry
+                                in _treeRows(byAccount[a.id]!, compare))
+                              treeRow(entry),
+                        ],
+                      if (!everywhere.any(_takes))
                         const ListTile(
                           enabled: false,
                           title: Text('Nowhere to move it to.'),
@@ -331,6 +390,87 @@ class _SheetHeading extends StatelessWidget {
           fontWeight: FontWeight.w700,
           letterSpacing: 0.6,
           color: theme.colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+}
+
+/// A mailbox's heading in the tree, as the folder pane draws one: the arrow
+/// that opens it, its colour, its name and address.
+class _MailboxRow extends StatelessWidget {
+  const _MailboxRow({
+    required this.account,
+    required this.open,
+    required this.onToggle,
+  });
+
+  final Account account;
+  final bool open;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurfaceVariant;
+    return InkWell(
+      key: ValueKey('move-mailbox-${account.id}'),
+      onTap: onToggle,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 44),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: Row(
+            children: [
+              Icon(
+                open ? Icons.expand_more : Icons.chevron_right,
+                size: 20,
+                color: muted,
+                semanticLabel: open ? 'Collapse' : 'Expand',
+              ),
+              const SizedBox(width: 6),
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: Color(account.colorValue),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        account.displayName.toUpperCase(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.6,
+                          color: muted,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      flex: 2,
+                      child: Text(
+                        account.emailAddress,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall
+                            ?.copyWith(color: muted.withValues(alpha: 0.7)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

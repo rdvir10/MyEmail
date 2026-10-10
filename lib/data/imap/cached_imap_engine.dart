@@ -17,6 +17,7 @@ import '../../domain/mail_message.dart';
 import '../../domain/meeting.dart';
 import '../../domain/message_move.dart';
 import '../../domain/draft.dart';
+import '../../domain/error_report.dart' show ReadableError;
 import '../account_store.dart';
 import '../auth/google_oauth.dart';
 import '../auth/google_oauth_config.dart';
@@ -1013,10 +1014,9 @@ class CachedImapEngine implements MailEngine {
     for (final group in _groupByFolder(messageIds).entries) {
       final (accountId, fromPath) = splitFolderId(group.key);
       if (accountId != toAccount) {
-        throw FolderOperationNotSupported(
-          group.key,
-          'move messages between accounts',
-        );
+        await _moveAcross(group.key, group.value, toFolderId,
+            done: moves, went: went);
+        continue;
       }
       if (fromPath == toPath) continue;
       final (:landed, :moved, :stopped) = await _moveGroup(
@@ -1042,6 +1042,99 @@ class CachedImapEngine implements MailEngine {
       }
     }
     return moves;
+  }
+
+  /// One folder's part of a move into another account, which no server
+  /// does: each message is copied across as it is, read or not, flagged or
+  /// not, and dated when it arrived, and then the ones that made it are
+  /// deleted here the way any delete is, into this account's Trash.
+  ///
+  /// Copies first, so a failure part way leaves a message in both places
+  /// and never in neither. The ones copied before a failure are still
+  /// deleted here and reported, as a [PartialMove], with the failure; so is
+  /// a delete here that would not go, since the copies are there by then.
+  Future<void> _moveAcross(
+    String fromFolderId,
+    List<int> uids,
+    String toFolderId, {
+    required List<MessageMove> done,
+    required List<String> went,
+  }) async {
+    final (fromAccount, fromPath) = splitFolderId(fromFolderId);
+    final (toAccount, toPath) = splitFolderId(toFolderId);
+    final from = await _transport(fromAccount);
+    final to = await _transport(toAccount);
+
+    // Each original's copy there, by the original's uid; null where the
+    // server did not say what it called it. And each one's Message-ID, read
+    // now, because the delete is about to make the cache forget it.
+    final copies = <int, String?>{};
+    final headers = <int, String>{};
+    Object? stopped;
+    for (final uid in uids) {
+      try {
+        final cached = await cache.readMessage(fromAccount, fromPath, uid);
+        final copy = await to.fileMessage(
+          toPath,
+          await from.fetchRaw(fromPath, uid),
+          seen: cached?.isRead ?? true,
+          flagged: cached?.isFlagged ?? false,
+          arrived: cached?.arrived ?? cached?.date,
+        );
+        copies[uid] = copy == null ? null : MailMessage.idFor(toFolderId, copy);
+        if (cached?.messageId case final id? when id.isNotEmpty) {
+          headers[uid] = id;
+        }
+      } catch (e) {
+        stopped = e;
+        break;
+      }
+    }
+    if (copies.isEmpty) {
+      if (done.isEmpty) throw stopped!;
+      throw PartialMove(done: done, moved: went, cause: stopped!);
+    }
+    try {
+      await _syncIfCached(toAccount, to, toPath);
+    } catch (_) {
+      // The destination catches up on its next sync.
+    }
+
+    final originals = [
+      for (final uid in copies.keys) MailMessage.idFor(fromFolderId, uid),
+    ];
+    MessageMove? binned;
+    List<String> removed;
+    try {
+      binned = (await deleteMessages(originals)).firstOrNull;
+      removed = originals;
+    } catch (e) {
+      binned = e is PartialMove ? e.done.firstOrNull : null;
+      removed = e is PartialMove ? e.moved : const [];
+      final kept = originals.length - removed.length;
+      stopped = ConnectionFailed(
+        '${kept == 1 ? 'One message was' : '$kept messages were'} copied to '
+        'the other account but could not be taken out of this one, so '
+        '${kept == 1 ? 'it is' : 'they are'} in both. '
+        '(${e is ReadableError ? e.message : e})',
+      );
+    }
+    if (removed.isNotEmpty) {
+      final gone = [for (final id in removed) splitMessageId(id).$2];
+      final landed = [for (final uid in gone) copies[uid]];
+      done.add(MessageMove(
+        fromFolderId: fromFolderId,
+        toFolderId: toFolderId,
+        movedIds: landed.contains(null) ? const [] : landed.cast<String>(),
+        messageIds: [for (final uid in gone) ?headers[uid]],
+        originals: binned,
+      ));
+      went.addAll(removed);
+    }
+    if (stopped != null) {
+      if (done.isEmpty) throw stopped;
+      throw PartialMove(done: done, moved: went, cause: stopped);
+    }
   }
 
   /// One folder's part of a batch move, into [toPath] in the same account.
@@ -1170,7 +1263,37 @@ class CachedImapEngine implements MailEngine {
           'Those messages could not be found to put back.',
         );
       }
-      await moveMessages(ids, move.fromFolderId);
+      final originals = move.originals;
+      if (originals == null) {
+        await moveMessages(ids, move.fromFolderId);
+        continue;
+      }
+      // From another account: the originals come back out of Trash, and
+      // only then do the copies go, so a failure leaves a message in both
+      // accounts and never in neither.
+      await undoMoves([originals]);
+      await _takeOut(ids);
+    }
+  }
+
+  /// Take the copies a move into another account made back out of the
+  /// folder they went to, where they are, without Trash.
+  ///
+  /// Not into Trash and out again, which deletes a message everywhere.
+  /// Gmail keeps one message per Message-ID, so a copy filed into a Gmail
+  /// account that had the message already is that message, with the
+  /// folder's label added, and this way only the label goes. A copy Gmail
+  /// did not have before stays in All Mail; on Microsoft's servers, which
+  /// make a new message every time, it is deleted.
+  Future<void> _takeOut(List<String> messageIds) async {
+    for (final group in _groupByFolder(messageIds).entries) {
+      final (accountId, path) = splitFolderId(group.key);
+      final t = await _transport(accountId);
+      await t.storeFlag(path,
+          uids: group.value, flag: MessageFlag.deleted, set: true);
+      await t.expunge(path);
+      await cache.deleteUids(accountId, path, group.value.toSet());
+      _handled(_uidsIn(group.key, group.value));
     }
   }
 

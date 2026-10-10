@@ -11,6 +11,7 @@ import '../../domain/calendar_invite.dart';
 import 'package:enough_mail/enough_mail.dart' as em;
 import '../imap/imap_transport.dart';
 import '../mail_engine.dart';
+import 'filed_message.dart';
 import 'graph_id_map.dart';
 import 'graph_mail_api.dart';
 
@@ -740,6 +741,53 @@ class GraphTransport implements ImapTransport {
         debugPrint('[myemail] appended, but not marked read: $e');
       }
     }
+  }
+
+  /// As received mail, in Graph's JSON: see [filedMessageFromMime].
+  ///
+  /// The files go up one by one after the message. If one will not, the
+  /// message is taken back out and the failure thrown, so the move fails
+  /// whole and the original stays where it was: a copy without its files
+  /// is not the message.
+  @override
+  Future<int?> fileMessage(
+    String path,
+    String mimeText, {
+    required bool seen,
+    bool flagged = false,
+    DateTime? arrived,
+  }) async {
+    final filed =
+        filedMessageFromMime(mimeText, flagged: flagged, arrived: arrived);
+    final id = await api.fileMessage(await _folderId(path), filed.message);
+    try {
+      for (final a in filed.attachments) {
+        await api.attach(
+          id,
+          name: a.fileName,
+          contentType: a.mimeType,
+          bytes: a.bytes,
+          contentId: a.contentId,
+        );
+      }
+    } catch (_) {
+      try {
+        await api.delete(id);
+      } catch (e) {
+        debugPrint('[myemail] a half-filed message was left: $e');
+      }
+      rethrow;
+    }
+    if (!seen) {
+      // Filed read, as it has to be to be filed at all. Unread is a mark,
+      // and failing to set it must not undo a move that has happened.
+      try {
+        await api.setRead(id, false);
+      } catch (e) {
+        debugPrint('[myemail] filed, but not marked unread: $e');
+      }
+    }
+    return (await _numbered(path, [id]))?.firstOrNull;
   }
 
   @override

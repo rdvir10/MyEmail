@@ -278,8 +278,10 @@ abstract class MailEngine {
   /// Set or clear \Flagged.
   Future<void> setFlagged(String messageId, bool isFlagged);
 
-  /// Move messages into [toFolderId]. Every message must come from the same
-  /// account as the destination; IMAP cannot move between mailboxes.
+  /// Move messages into [toFolderId], from any account. Within one account
+  /// the server moves them. Into another, which no server does, each is
+  /// copied there as it is and then deleted here, into Trash: see
+  /// [MessageMove.originals].
   ///
   /// Answers with what moved where, one entry per source folder, so the
   /// caller can offer to put it back. See [MessageMove] for why the ids in

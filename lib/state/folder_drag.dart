@@ -40,13 +40,11 @@ class DraggedMessages {
 }
 
 /// Whether [messages] may be dropped onto [target]: the folder has to accept
-/// messages, belong to the same account, and not already hold them.
+/// messages and not already hold them. It can be in any account; a move
+/// into another is a copy there and a delete here.
 bool canDropMessagesOn(List<MailMessage> messages, MailFolder target) {
   if (messages.isEmpty) return false;
   if (!target.capabilities.canAcceptMessages) return false;
-  final accountId = messages.first.accountId;
-  if (messages.any((m) => m.accountId != accountId)) return false;
-  if (target.accountId != accountId) return false;
   return messages.any((m) => m.folderId != target.id);
 }
 

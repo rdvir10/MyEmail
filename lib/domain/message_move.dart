@@ -13,13 +13,23 @@ import 'error_report.dart';
 /// on a move: Graph hands back a new id outright, and IMAP gives the message
 /// a new UID in its new folder. The ids the caller passed in stopped meaning
 /// anything the moment the move went through.
+///
+/// A move to another account is a copy there and a delete here, since no
+/// server moves mail to another: [originals] is that delete, and undo puts
+/// them back and takes the copies away rather than copying them back.
 class MessageMove {
   const MessageMove({
     required this.fromFolderId,
     required this.toFolderId,
     required this.movedIds,
     this.messageIds = const [],
+    this.originals,
   });
+
+  /// Where the originals went, on a move to another account: into this
+  /// account's Trash, or nowhere where they were deleted for good, which
+  /// was in Trash already. Null for a move within one account.
+  final MessageMove? originals;
 
   /// The folder they came out of, and where undo puts them back.
   final String fromFolderId;
@@ -39,10 +49,17 @@ class MessageMove {
   /// why it is the second choice and not the first.
   final List<String> messageIds;
 
-  /// Whether this can be put back, by either route.
+  /// Whether this can be put back, by either route. A move to another
+  /// account only while the originals can be.
   bool get canUndo =>
       (movedIds.isNotEmpty || messageIds.isNotEmpty) &&
-      fromFolderId != toFolderId;
+      fromFolderId != toFolderId &&
+      (originals?.canUndo ?? true);
+
+  /// Every folder this put something in, whose list is out of date: where
+  /// they went, and on a move into another account, the Trash the originals
+  /// went to as well.
+  List<String> get landedIn => [toFolderId, ?originals?.toFolderId];
 
   /// How many messages this accounts for.
   int get count => movedIds.isNotEmpty ? movedIds.length : messageIds.length;

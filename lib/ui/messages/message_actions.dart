@@ -52,15 +52,11 @@ class MessageActions {
     List<MailMessage> messages,
   ) async {
     if (messages.isEmpty) return false;
-    final to = _reporterFor(context);
-    final accountId = messages.first.accountId;
-    if (messages.any((m) => m.accountId != accountId)) {
-      _say(to, 'Those messages are in different accounts.');
-      return false;
-    }
+    // Opened on the first one's mailbox. Messages from several accounts,
+    // ticked in the unified inbox, can go anywhere together all the same.
     final target = await showMoveToSheet(
       context,
-      accountId: accountId,
+      accountId: messages.first.accountId,
       fromFolderId: messages.first.folderId,
       messageCount: messages.length,
     );
@@ -76,7 +72,7 @@ class MessageActions {
   ) async {
     if (messages.isEmpty) return false;
     final to = _reporterFor(context);
-    final name = container.read(folderIndexProvider)[toFolderId]?.displayName ?? '';
+    final name = _destination(messages, toFolderId);
     final (held, elsewhere) = _split(messages);
     final moves = <MessageMove>[];
     try {
@@ -90,7 +86,10 @@ class MessageActions {
         moves.addAll(await container
             .read(mailEngineProvider)
             .moveMessages([for (final m in elsewhere) m.id], toFolderId));
-        await _afterEngineChange(elsewhere, touched: [toFolderId]);
+        await _afterEngineChange(elsewhere, touched: [
+          for (final m in moves) ...m.landedIn,
+          toFolderId,
+        ]);
       }
       container.read(recentMoveTargetsProvider.notifier).record(toFolderId);
       _say(
@@ -267,12 +266,32 @@ class MessageActions {
       container.invalidate(messagesProvider(folderId));
     }
     container.invalidate(searchResultsProvider);
-    for (final accountId in changed.map((m) => m.accountId).toSet()) {
+    final index = container.read(folderIndexProvider);
+    for (final accountId in {
+      ...changed.map((m) => m.accountId),
+      for (final id in touched) ?index[id]?.accountId,
+    }) {
       await container.read(foldersProvider.notifier).refreshAccount(accountId);
     }
   }
 
   static String _count(int n) => n == 1 ? 'Message' : '$n messages';
+
+  /// The folder's name, and its mailbox's after it where that is not where
+  /// the messages were: "Receipts in Gmail".
+  String _destination(List<MailMessage> messages, String toFolderId) {
+    final folder = container.read(folderIndexProvider)[toFolderId];
+    if (folder == null) return '';
+    if (messages.every((m) => m.accountId == folder.accountId)) {
+      return folder.displayName;
+    }
+    final account = (container.read(accountsProvider).value ?? const [])
+        .where((a) => a.id == folder.accountId)
+        .firstOrNull;
+    return account == null
+        ? folder.displayName
+        : '${folder.displayName} in ${account.displayName}';
+  }
 
   /// [undo] and [of] together decide whether the Undo link appears: the
   /// moves must cover every one of the [of] messages acted on.
@@ -345,13 +364,16 @@ Future<void> undoMoves(
       for (final folderId in {
         listId,
         kUnifiedInboxId,
-        for (final m in moves) ...[m.fromFolderId, m.toFolderId],
+        for (final m in moves) ...[m.fromFolderId, ...m.landedIn],
       }) {
         container.invalidate(messagesProvider(folderId));
       }
       container.invalidate(searchResultsProvider);
       for (final accountId in {
-        for (final m in moves) ?index[m.fromFolderId]?.accountId,
+        for (final m in moves) ...[
+          ?index[m.fromFolderId]?.accountId,
+          ?index[m.toFolderId]?.accountId,
+        ],
       }) {
         // Not allowed to hide why the undo itself failed.
         await container

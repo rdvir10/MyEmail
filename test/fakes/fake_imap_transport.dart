@@ -233,7 +233,8 @@ class FakeImapTransport implements ImapTransport {
     calls.add('UID FETCH $path $uid RAW');
     final m = _require(path).messages[uid];
     if (m == null) throw StateError('No message $uid in $path');
-    return 'Subject: ${m.subject}\r\n\r\n${m.body}';
+    return 'Subject: ${m.subject}\r\nMessage-ID: ${m.messageId}\r\n'
+        '\r\n${m.body}';
   }
 
   /// Files on a message, keyed by uid. Empty unless a test puts some there.
@@ -374,6 +375,44 @@ class FakeImapTransport implements ImapTransport {
     calls.add('APPEND $path${draft ? r' \Draft' : ''}');
     appended.add(mimeText);
     folder(path).deliver(subject: 'appended', isRead: seen);
+  }
+
+  /// What [fileMessage] was given, as it was given: messages moved in from
+  /// another account.
+  final List<String> filed = [];
+
+  /// Messages [fileMessage] will not take, by what it is given.
+  bool Function(String mimeText)? refuseFiling;
+
+  @override
+  Future<int?> fileMessage(
+    String path,
+    String mimeText, {
+    required bool seen,
+    bool flagged = false,
+    DateTime? arrived,
+  }) async {
+    _online();
+    if (refuseFiling?.call(mimeText) ?? false) {
+      throw const ConnectionFailed('the server would not take the message');
+    }
+    calls.add('FILE $path${seen ? r' \Seen' : ''}'
+        '${flagged ? r' \Flagged' : ''}');
+    filed.add(mimeText);
+    String? header(String name) =>
+        RegExp('^$name: (.*)\$', multiLine: true, caseSensitive: false)
+            .firstMatch(mimeText)
+            ?.group(1)
+            ?.trim();
+    final split = mimeText.indexOf('\r\n\r\n');
+    final m = _require(path).deliver(
+      subject: header('Subject') ?? 'filed',
+      date: arrived,
+      isRead: seen,
+      body: split < 0 ? '' : mimeText.substring(split + 4),
+      messageId: header('Message-ID'),
+    )..isFlagged = flagged;
+    return reportsCopyUids ? m.uid : null;
   }
 
   @override

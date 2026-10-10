@@ -185,6 +185,24 @@ abstract class ImapTransport {
     bool draft = false,
   });
 
+  /// Put a message from another account into [path] as the mail it is:
+  /// not a draft, read or not ([seen]) and flagged or not ([flagged]) as
+  /// it was, and dated when it first arrived ([arrived]) rather than now.
+  /// The landing half of a move between mailboxes, which no server does by
+  /// itself.
+  ///
+  /// [mimeText] is one character per byte, as [fetchRaw] gives it.
+  ///
+  /// Answers with the UID it was given there, where the server says: that
+  /// is what lets the move be undone without searching for it.
+  Future<int?> fileMessage(
+    String path,
+    String mimeText, {
+    required bool seen,
+    bool flagged = false,
+    DateTime? arrived,
+  });
+
   Future<void> expunge(String path);
 
   Future<void> createFolder(String path);

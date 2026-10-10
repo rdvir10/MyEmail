@@ -280,13 +280,9 @@ class SampleMailEngine implements MailEngine {
     for (final id in messageIds) {
       final fromId = id.substring(0, id.lastIndexOf('#'));
       if (fromId == toFolderId) continue;
+      // Into another account as into another folder: sample mail is only
+      // ever here, and has no Trash copy to leave behind.
       final source = _require(fromId);
-      if (source.accountId != target.accountId) {
-        throw FolderOperationNotSupported(
-          fromId,
-          'move messages between accounts',
-        );
-      }
       final list = _messages[fromId];
       final i = list?.indexWhere((m) => m.id == id) ?? -1;
       if (list == null || i < 0) continue;
@@ -303,7 +299,7 @@ class SampleMailEngine implements MailEngine {
         0,
         MailMessage(
           id: MailMessage.idFor(toFolderId, uid),
-          accountId: message.accountId,
+          accountId: target.accountId,
           folderId: toFolderId,
           uid: uid,
           subject: message.subject,

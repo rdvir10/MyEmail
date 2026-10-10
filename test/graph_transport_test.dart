@@ -1229,6 +1229,110 @@ void main() {
       expect(server.messages.containsKey('m1'), isTrue);
     });
 
+    group('a message from another account', () {
+      const raw = 'From: Dana Levi <dana@example.com>\r\n'
+          'To: ron@example.com\r\n'
+          'Cc: Avi Cohen <avi@example.com>\r\n'
+          'Subject: Invoice 12\r\n'
+          'Date: Wed, 04 Mar 2026 05:06:00 +0000\r\n'
+          'Message-ID: <inv12@example.com>\r\n'
+          'Importance: high\r\n'
+          'MIME-Version: 1.0\r\n'
+          'Content-Type: multipart/mixed; boundary="b"\r\n'
+          '\r\n'
+          '--b\r\n'
+          'Content-Type: text/html; charset=utf-8\r\n'
+          '\r\n'
+          '<p>Attached.</p>\r\n'
+          '--b\r\n'
+          'Content-Type: application/pdf; name="invoice.pdf"\r\n'
+          'Content-Disposition: attachment; filename="invoice.pdf"\r\n'
+          'Content-Transfer-Encoding: base64\r\n'
+          '\r\n'
+          'JVBERi0xLjQK\r\n'
+          '--b--\r\n';
+
+      Map<String, Object?> properties(Map<String, Object?> message) => {
+            for (final p
+                in message['singleValueExtendedProperties'] as List)
+              (p as Map)['id'] as String: p['value'],
+          };
+
+      setUp(() => server.folder(id: 'f-receipts', name: 'Receipts'));
+
+      test('is filed as received mail, not a draft, with its file', () async {
+        await transport.listFolders();
+
+        final uid = await transport.fileMessage(
+          'Receipts',
+          raw,
+          seen: true,
+          flagged: true,
+          arrived: DateTime.utc(2026, 3, 4, 5, 7),
+        );
+
+        expect(uid, isNotNull);
+        expect(server.createdAs.single, 'application/json',
+            reason: 'Graph makes a draft of anything created from MIME');
+        final (id, filed) = server.messages.entries
+            .map((e) => (e.key, e.value))
+            .single;
+        expect(filed['isDraft'], isFalse);
+        expect(filed['isRead'], isTrue);
+        expect(filed['_folder'], 'f-receipts');
+        expect(filed['subject'], 'Invoice 12');
+        expect((filed['body'] as Map)['contentType'], 'html');
+        expect((filed['body'] as Map)['content'], contains('Attached.'));
+        expect((filed['from'] as Map)['emailAddress'],
+            {'address': 'dana@example.com', 'name': 'Dana Levi'});
+        expect((filed['ccRecipients'] as List).single,
+            {'emailAddress': {'address': 'avi@example.com', 'name': 'Avi Cohen'}});
+        expect(filed['internetMessageId'], '<inv12@example.com>');
+        expect(filed['importance'], 'high');
+        expect(filed['flag'], {'flagStatus': 'flagged'});
+        expect(properties(filed), {
+          'Integer 0x0E07': '1',
+          'SystemTime 0x0E06': '2026-03-04T05:07:00.000Z',
+          'SystemTime 0x0039': '2026-03-04T05:06:00.000Z',
+        });
+        expect(server.attached[id]?.single['name'], 'invoice.pdf');
+        expect(server.attached[id]?.single['contentType'], 'application/pdf');
+      });
+
+      test('unread stays unread', () async {
+        await transport.listFolders();
+
+        await transport.fileMessage('Receipts', raw, seen: false);
+
+        expect(server.messages.values.single['isRead'], isFalse);
+      });
+
+      test('a Message-ID Graph will not take is left off, not the message',
+          () async {
+        server.refuseInternetMessageId = true;
+        await transport.listFolders();
+
+        final uid = await transport.fileMessage('Receipts', raw, seen: true);
+
+        expect(uid, isNotNull);
+        final filed = server.messages.values.single;
+        expect(filed.containsKey('internetMessageId'), isFalse);
+        expect(filed['subject'], 'Invoice 12');
+      });
+
+      test('a file that will not go takes the message back out', () async {
+        server.refuseAttachments = true;
+        await transport.listFolders();
+
+        await expectLater(
+          transport.fileMessage('Receipts', raw, seen: true),
+          throwsA(isA<ConnectionFailed>()),
+        );
+        expect(server.messages, isEmpty,
+            reason: 'a copy without its files is not the message');
+      });
+    });
+
     test('a draft that was created is saved, marked read or not', () async {
       // Failing to mark it read threw, and a reply from the shade took that
       // for "not saved" and saved another copy each time round.
@@ -1659,6 +1763,19 @@ class _FakeGraph {
 
   /// Every message PATCH answered 500.
   bool refuseAllPatches = false;
+
+  /// The Content-Type each message was created with: MIME (text/plain) or
+  /// Graph's own JSON.
+  final List<String> createdAs = [];
+
+  /// Refuse a message created with a Message-ID, as Graph may.
+  bool refuseInternetMessageId = false;
+
+  /// Files put on each message, by its id, as they were sent.
+  final Map<String, List<Map<String, Object?>>> attached = {};
+
+  /// Answer every file put on a message with a 500.
+  bool refuseAttachments = false;
 
   /// Names whose lookup inside a batch is throttled, and how many times.
   final Map<String, int> throttledInBatch = {};
@@ -2204,16 +2321,60 @@ class _FakeGraph {
       return http.Response('', 204);
     }
 
-    // A message made from MIME, as a draft is.
+    // A message made from MIME, as a draft is, or from Graph's JSON, which
+    // is a draft only without PidTagMessageFlags.
     final creating =
         RegExp(r'/me/mailFolders/([^/]+)/messages$').firstMatch(path);
     if (request.method == 'POST' && creating != null) {
       final folderId = wellKnown[creating.group(1)] ?? creating.group(1)!;
       if (!folders.containsKey(folderId)) return http.Response('{}', 404);
+      final type = (request.headers['content-type'] ?? '').split(';').first;
+      createdAs.add(type);
       final id = 'created-${messages.length}';
-      messages[id] = {'id': id, '_folder': folderId, 'isRead': false};
+      final message = <String, Object?>{
+        'id': id,
+        '_folder': folderId,
+        'isRead': false,
+        'isDraft': true,
+      };
+      if (type == 'application/json') {
+        final body = (jsonDecode(request.body) as Map).cast<String, Object?>();
+        if (refuseInternetMessageId && body.containsKey('internetMessageId')) {
+          return http.Response(
+            '{"error":{"code":"ErrorInvalidPropertySet"}}',
+            400,
+          );
+        }
+        message.addAll(body);
+        final flags = [
+          for (final p in (body['singleValueExtendedProperties'] as List?) ??
+              const [])
+            if ((p as Map)['id'] == 'Integer 0x0E07') int.parse('${p['value']}'),
+        ].firstOrNull;
+        message['isRead'] = flags != null && flags & 1 == 1;
+        message['isDraft'] = flags == null || flags & 8 == 8;
+      }
+      messages[id] = message;
       _recount(folderId);
       return json({'id': id});
+    }
+
+    final attaching =
+        RegExp(r'/me/messages/([^/]+)/attachments$').firstMatch(path);
+    if (request.method == 'POST' && attaching != null) {
+      if (refuseAttachments) {
+        return http.Response(
+            '{"error":{"code":"ErrorInternalServerError"}}', 500);
+      }
+      final id = Uri.decodeComponent(attaching.group(1)!);
+      if (!messages.containsKey(id)) return http.Response('{}', 404);
+      (attached[id] ??= [])
+          .add((jsonDecode(request.body) as Map).cast<String, Object?>());
+      return http.Response(
+        jsonEncode({'id': 'a-${attached[id]!.length}'}),
+        201,
+        headers: const {'content-type': 'application/json'},
+      );
     }
 
     if (request.method == 'POST' && path.endsWith('/move')) {

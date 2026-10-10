@@ -10,6 +10,7 @@ import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/state/folder_drag.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
@@ -54,13 +55,19 @@ void main() {
       expect(await unreadOf('acct-personal:Travel'), 1);
     });
 
-    test('moving between accounts is refused', () async {
+    test('a message moved into another account is in that account',
+        () async {
       await engine.loadFolders('acct-side');
       final inbox = await engine.loadMessages('acct-personal:INBOX');
-      expect(
-        () => engine.moveMessages([inbox.first.id], 'acct-side:Invoices'),
-        throwsA(isA<FolderOperationNotSupported>()),
-      );
+      final target = inbox.first;
+
+      await engine.moveMessages([target.id], 'acct-side:Invoices');
+
+      final after = await engine.loadMessages('acct-personal:INBOX');
+      expect(after.map((m) => m.id), isNot(contains(target.id)));
+      final invoices = await engine.loadMessages('acct-side:Invoices');
+      expect(invoices.first.subject, target.subject);
+      expect(invoices.first.accountId, 'acct-side');
     });
 
     test('moving into the same folder does nothing', () async {
@@ -191,21 +198,181 @@ void main() {
       expect(await cache.countMessages(account.id, 'INBOX'), 0);
     });
 
-    test('moving between accounts is refused before any server call',
-        () async {
-      server.folder('INBOX').deliver();
-      final inbox = await engine.loadMessages('${account.id}:INBOX');
-      server.calls.clear();
-      await expectLater(
-        engine.moveMessages([inbox.single.id], 'other-account:Work'),
-        throwsA(isA<FolderOperationNotSupported>()),
+  });
+
+  group('cached engine move into another account', () {
+    late FakeImapTransport home;
+    late FakeImapTransport away;
+    late CachedImapEngine engine;
+    late MemoryCacheStore cache;
+    late Account mine;
+    late Account work;
+
+    setUp(() async {
+      home = FakeImapTransport();
+      away = FakeImapTransport();
+      cache = MemoryCacheStore();
+      for (final server in [home, away]) {
+        server.folder('INBOX', role: FolderRole.inbox);
+        server.folder('[Gmail]/Trash', role: FolderRole.deleted);
+      }
+      away.folder('Receipts');
+      engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: cache,
+        transportFactory: (account, _) =>
+            account.emailAddress == 'p@example.com' ? home : away,
       );
-      expect(server.calls, isEmpty);
+      mine = await engine.addAccount(
+        displayName: 'Personal',
+        emailAddress: 'p@example.com',
+        provider: MailProvider.gmail,
+        secret: 'abcdabcdabcdabcd',
+      );
+      work = await engine.addAccount(
+        displayName: 'Work',
+        emailAddress: 'w@example.com',
+        provider: MailProvider.gmail,
+        secret: 'abcdabcdabcdabcd',
+      );
+    });
+
+    String receipts() => '${work.id}:Receipts';
+    String binHere() => '${mine.id}:[Gmail]/Trash';
+
+    test('it is copied there as it was, and the original goes to Trash here',
+        () async {
+      final sent = DateTime.utc(2026, 3, 4, 5, 6);
+      home.folder('INBOX').deliver(subject: 'Invoice 12', date: sent)
+          .isFlagged = true;
+      final inbox = await engine.loadMessages('${mine.id}:INBOX');
+
+      final moves = await engine.moveMessages([inbox.single.id], receipts());
+
+      expect(away.calls, contains(r'FILE Receipts \Flagged'),
+          reason: 'unread and flagged, as it was');
+      final there = away.folder('Receipts').messages.values.single;
+      expect(there.subject, 'Invoice 12');
+      expect(there.date, sent, reason: 'dated when it arrived, not now');
+      expect(home.folder('INBOX').messages, isEmpty);
+      expect(home.folder('[Gmail]/Trash').messages.values.single.subject,
+          'Invoice 12',
+          reason: 'deleted here the way a delete is, into Trash');
+      expect(await cache.countMessages(mine.id, 'INBOX'), 0);
+
+      final move = moves.single;
+      expect(move.toFolderId, receipts());
+      expect(move.movedIds.single, startsWith('${receipts()}#'));
+      expect(move.originals?.toFolderId, binHere());
+      expect(move.landedIn, containsAll([receipts(), binHere()]));
+      expect(canUndoAll(moves, 1), isTrue);
+    });
+
+    test('undo brings the original back and takes the copy out', () async {
+      home.folder('INBOX').deliver(subject: 'Invoice 12', isRead: true);
+      final inbox = await engine.loadMessages('${mine.id}:INBOX');
+      final moves = await engine.moveMessages([inbox.single.id], receipts());
+      away.calls.clear();
+
+      await engine.undoMoves(moves);
+
+      expect(home.folder('INBOX').messages.values.single.subject,
+          'Invoice 12');
+      expect(home.folder('[Gmail]/Trash').messages, isEmpty);
+      expect(away.folder('Receipts').messages, isEmpty);
+      // Out of the folder where it is, never through Trash: on Gmail a copy
+      // of mail it had already is that mail, and Trash would delete it.
+      expect(away.folder('[Gmail]/Trash').messages, isEmpty);
+      expect(away.calls.where((c) => c.startsWith('UID MOVE')), isEmpty);
+      expect(away.calls, contains('EXPUNGE Receipts'));
+    });
+
+    test('undo finds the copy by its Message-ID where the server gave no id',
+        () async {
+      away.reportsCopyUids = false;
+      home.folder('INBOX').deliver(subject: 'Invoice 12');
+      final inbox = await engine.loadMessages('${mine.id}:INBOX');
+      await engine.loadMessages(receipts());
+      final moves = await engine.moveMessages([inbox.single.id], receipts());
+      expect(moves.single.movedIds, isEmpty);
+      expect(canUndoAll(moves, 1), isTrue);
+
+      await engine.undoMoves(moves);
+
+      expect(home.folder('INBOX').messages, hasLength(1));
+      expect(away.folder('Receipts').messages, isEmpty);
+    });
+
+    test('a copy that will not go leaves the original where it was',
+        () async {
+      home.folder('INBOX').deliver(subject: 'Invoice 12');
+      final inbox = await engine.loadMessages('${mine.id}:INBOX');
+      away.refuseFiling = (_) => true;
+
+      await expectLater(
+        engine.moveMessages([inbox.single.id], receipts()),
+        throwsA(isA<ConnectionFailed>()),
+      );
+
+      expect(home.folder('INBOX').messages, hasLength(1));
+      expect(home.folder('[Gmail]/Trash').messages, isEmpty);
+      expect(away.folder('Receipts').messages, isEmpty);
+    });
+
+    test('stopping part way, the ones copied are moved and said to be',
+        () async {
+      home.folder('INBOX')
+        ..deliver(subject: 'One')
+        ..deliver(subject: 'Two');
+      final inbox = await engine.loadMessages('${mine.id}:INBOX');
+      final one = inbox.firstWhere((m) => m.subject == 'One');
+      final two = inbox.firstWhere((m) => m.subject == 'Two');
+      away.refuseFiling = (mime) => mime.contains('Subject: Two');
+
+      final part = await engine
+          .moveMessages([one.id, two.id], receipts())
+          .then<PartialMove?>((_) => null, onError: (Object e) => e as PartialMove);
+
+      expect(part?.moved, [one.id]);
+      expect(canUndoAll(part!.done, 1), isTrue);
+      expect(away.folder('Receipts').messages.values.single.subject, 'One');
+      expect(home.folder('INBOX').messages.values.single.subject, 'Two');
+      expect(home.folder('[Gmail]/Trash').messages.values.single.subject,
+          'One');
+    });
+
+    test('an original that cannot be taken out says it is in both', () async {
+      home.folder('INBOX').deliver(subject: 'Invoice 12');
+      final inbox = await engine.loadMessages('${mine.id}:INBOX');
+      home.refuseMovesFrom.add('INBOX');
+
+      await expectLater(
+        engine.moveMessages([inbox.single.id], receipts()),
+        throwsA(isA<ConnectionFailed>().having(
+            (e) => e.message, 'message', contains('in both'))),
+      );
+
+      expect(away.folder('Receipts').messages, hasLength(1));
+      expect(home.folder('INBOX').messages, hasLength(1));
+    });
+
+    test('out of Trash into another account cannot be undone', () async {
+      home.folder('[Gmail]/Trash').deliver(subject: 'Old');
+      final trash = await engine.loadMessages(binHere());
+
+      final moves = await engine.moveMessages([trash.single.id], receipts());
+
+      expect(away.folder('Receipts').messages, hasLength(1));
+      expect(home.folder('[Gmail]/Trash').messages, isEmpty,
+          reason: 'deleted for good, the way a delete in Trash is');
+      expect(canUndoAll(moves, 1), isFalse,
+          reason: 'there is no original left to put back');
     });
   });
 
   group('drop rules for messages', () {
-    test('only same-account folders that accept messages take a drop',
+    test('only folders that accept messages, in any account, take a drop',
         () async {
       final engine = SampleMailEngine();
       await engine.loadAccounts();
@@ -229,8 +396,8 @@ void main() {
       );
       expect(canDropMessagesOn(one, find(personal).byPath('INBOX')), isFalse,
           reason: 'already there');
-      expect(canDropMessagesOn(one, find(side).byPath('Invoices')), isFalse,
-          reason: 'different account');
+      expect(canDropMessagesOn(one, find(side).byPath('Invoices')), isTrue,
+          reason: 'another mailbox is somewhere to move it too');
       expect(canDropMessagesOn(const [], find(personal).byPath('Travel')),
           isFalse);
     });
