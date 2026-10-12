@@ -12,6 +12,7 @@ import '../../domain/mail_credentials.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/address_suggestions.dart';
 import '../../domain/calendar_invite.dart';
+import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/meeting.dart';
@@ -964,6 +965,46 @@ class CachedImapEngine implements MailEngine {
     if (account == null) return true;
     return _calendars.discardPreparedMeeting(account, prepared);
   }
+
+  @override
+  Future<CalendarMeeting?> meetingOnCalendar(
+    String messageId,
+    CalendarInvite invite,
+  ) async {
+    final (folderId, uid) = splitMessageId(messageId);
+    final (accountId, path) = splitFolderId(folderId);
+    final account = _accountFor(accountId);
+    // Exchange links its meeting mail to the event, and for one meeting of
+    // a series to that meeting: its own answer, asked first. Nothing else
+    // links one, and a Gmail account is not connected to for nothing.
+    String? linked;
+    if (account.provider == MailProvider.outlook) {
+      try {
+        linked = await (await _transport(accountId)).linkedEventId(path, uid);
+      } catch (_) {
+        linked = null;
+      }
+    }
+    return _calendars.meetingFor(account, invite, linkedEventId: linked);
+  }
+
+  @override
+  Future<void> removeFromCalendar(CalendarMeeting meeting) =>
+      _calendars.removeMeeting(_accountFor(meeting.accountId), meeting);
+
+  @override
+  Future<void> moveMeeting(CalendarMeeting meeting, CalendarInvite proposal) =>
+      _calendars.moveMeeting(
+        _accountFor(meeting.accountId),
+        meeting,
+        proposal,
+      );
+
+  /// The account by id, which the caller had from this engine.
+  Account _accountFor(String accountId) => accountStore.read().firstWhere(
+        (a) => a.id == accountId,
+        orElse: () => throw StateError('Unknown account $accountId'),
+      );
 
   @override
   Future<String> rawMessage(String messageId) async {

@@ -4,15 +4,19 @@ import 'dart:math';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
+import '../../domain/calendar_invite.dart';
+import '../../domain/calendar_meeting.dart';
 import '../../domain/meeting.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
 import '../mail_engine.dart';
 
 /// A thin client over the Google Calendar API: one call, to put a meeting
 /// on the account's calendar with its attendees invited, and a Meet link
-/// on it when it is held online; and three that make the Meet meeting
-/// ahead of Send and send it later ([createShell], [sendShell],
-/// [deleteShell]).
+/// on it when it is held online; three that make the Meet meeting ahead of
+/// Send and send it later ([createShell], [sendShell], [deleteShell]); and
+/// three for a meeting a message is about: find it ([meetingFor]), take a
+/// cancelled one off ([deleteEvent]), and move one to a time proposed
+/// ([moveEvent]).
 ///
 /// For a Gmail account signed in with Google, whose one token carries the
 /// calendar beside the mail. Google sends the invitations itself when asked
@@ -227,6 +231,178 @@ class GoogleCalendarApi {
       debugPrint('[myemail] could not delete the meeting made ahead: $e');
       return false;
     }
+  }
+
+  // --- meetings already on the calendar --------------------------------------
+
+  /// The meeting [invite] is about, as this calendar has it, or null where
+  /// it is not on it. One Google has as cancelled is not: Google hides it,
+  /// and it is gone from every view of the calendar.
+  ///
+  /// Found by the invitation's UID, which Google keeps as the event's
+  /// `iCalUID`. For one meeting of a series, the one set for
+  /// [CalendarInvite.recurrenceStart]: a meeting of a series changed before
+  /// is an event of its own, listed beside the series; any other is one of
+  /// the series' instances. Never the series in its place.
+  Future<CalendarMeeting?> meetingFor(
+    CalendarInvite invite, {
+    required String accountId,
+  }) async {
+    if (invite.uid.isEmpty) return null;
+    final listed = await _list(_eventsAt(null, {'iCalUID': invite.uid}));
+    if (invite.recurrenceId == null) {
+      final one = listed.where((e) => e['recurringEventId'] == null).firstOrNull;
+      return one == null ? null : meetingFromJson(one, accountId: accountId);
+    }
+    final at = invite.recurrenceStart;
+    if (at == null) return null;
+    Map<String, Object?>? found = occurrenceAt([
+      for (final e in listed)
+        if (e['recurringEventId'] != null)
+          if (_timeOf(e['originalStartTime']) case final original?)
+            (original, e),
+    ], at);
+    final series = listed.where((e) => e['recurrence'] is List).firstOrNull;
+    final seriesId = series?['id'];
+    if (found == null && seriesId is String && seriesId.isNotEmpty) {
+      // The day either side: a meeting moved since is listed by when it is
+      // now, and looked for by when it was set for.
+      final instances = await _list(
+        Uri.parse(
+          '$base/calendars/primary/events/'
+          '${Uri.encodeComponent(seriesId)}/instances',
+        ).replace(queryParameters: {
+          'timeMin': _utc(at.toUtc().subtract(const Duration(days: 2))),
+          'timeMax': _utc(at.toUtc().add(const Duration(days: 2))),
+        }),
+      );
+      found = occurrenceAt([
+        for (final e in instances)
+          if (_timeOf(e['originalStartTime']) case final original?)
+            (original, e),
+      ], at);
+    }
+    return found == null ? null : meetingFromJson(found, accountId: accountId);
+  }
+
+  /// Take an event off the calendar, telling nobody: the organiser of a
+  /// meeting cancelled already knows. One already gone is done.
+  Future<void> deleteEvent(String id) async {
+    final response = await _authorised(
+      () => http.Request('DELETE', _eventsAt(id, {'sendUpdates': 'none'})),
+    );
+    final status = response.statusCode;
+    if (status >= 400 && status != 404 && status != 410) {
+      throw _failureFor(response);
+    }
+  }
+
+  /// Move [meeting], which this account organised, to the time [proposal]
+  /// proposes, and have Google send everyone on it the new time.
+  Future<void> moveEvent(
+    CalendarMeeting meeting,
+    CalendarInvite proposal,
+  ) async {
+    final body = jsonEncode(movedTimes(meeting, proposal));
+    final response = await _authorised(
+      () => http.Request(
+        'PATCH',
+        _eventsAt(meeting.eventId, {'sendUpdates': 'all'}),
+      )
+        ..headers['Content-Type'] = 'application/json'
+        ..body = body,
+    );
+    if (response.statusCode >= 400) throw _failureFor(response);
+  }
+
+  /// The start and end a meeting moved to [proposal]'s time is patched
+  /// with, in the zone the event keeps (an instant in UTC carries its own
+  /// offset). The other way of giving a time is emptied, or an event moved
+  /// between a time and a whole day would hold both. Where the proposal has
+  /// no end, the meeting keeps its length.
+  static Map<String, Object?> movedTimes(
+    CalendarMeeting meeting,
+    CalendarInvite proposal,
+  ) {
+    final length = meeting.end?.difference(meeting.start);
+    if (proposal.isAllDay) {
+      final first = proposal.start;
+      final after = proposal.end ??
+          (length != null && length.inDays > 1
+              ? DateTime(first.year, first.month, first.day + length.inDays)
+              : dayAfter(first));
+      return {
+        'start': {'date': _date(first), 'dateTime': null, 'timeZone': null},
+        'end': {'date': _date(after), 'dateTime': null, 'timeZone': null},
+      };
+    }
+    final start = proposal.start.toUtc();
+    final end = proposal.end?.toUtc() ??
+        start.add(length ?? const Duration(minutes: 30));
+    return {
+      'start': {
+        'dateTime': _utc(start),
+        'timeZone': meeting.timeZone,
+        'date': null,
+      },
+      'end': {'dateTime': _utc(end), 'timeZone': meeting.timeZone, 'date': null},
+    };
+  }
+
+  /// A meeting as Google gives it; null for one with no id or no start.
+  static CalendarMeeting? meetingFromJson(
+    Map<String, Object?> json, {
+    required String accountId,
+  }) {
+    final id = json['id'];
+    if (id is! String || id.isEmpty) return null;
+    final start = json['start'];
+    final from = _timeOf(start);
+    if (from == null) return null;
+    final organizer = json['organizer'];
+    final recurrence = json['recurrence'];
+    final zone = start is Map ? start['timeZone'] : null;
+    return CalendarMeeting(
+      accountId: accountId,
+      eventId: id,
+      start: from,
+      end: _timeOf(json['end']),
+      isAllDay: start is Map && start['date'] is String,
+      isCancelled: json['status'] == 'cancelled',
+      isOrganizer: organizer is Map && organizer['self'] == true,
+      isSeries: recurrence is List && recurrence.isNotEmpty,
+      timeZone: zone is String && zone.isNotEmpty ? zone : null,
+    );
+  }
+
+  /// A start or end as Google gives one: an instant with its offset, or a
+  /// whole day's date, as that day at midnight UTC.
+  static DateTime? _timeOf(Object? value) {
+    if (value is! Map) return null;
+    final date = value['date'];
+    if (date is String) {
+      final m = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$').firstMatch(date);
+      if (m == null) return null;
+      return DateTime.utc(
+          int.parse(m[1]!), int.parse(m[2]!), int.parse(m[3]!));
+    }
+    final at = value['dateTime'];
+    return at is String ? DateTime.tryParse(at)?.toUtc() : null;
+  }
+
+  /// Every event a listing gives, less those Google has as cancelled.
+  Future<List<Map<String, Object?>>> _list(Uri uri) async {
+    final response = await _authorised(() => http.Request('GET', uri));
+    if (response.statusCode == 404 || response.statusCode == 410) {
+      return const [];
+    }
+    if (response.statusCode >= 400) throw _failureFor(response);
+    final items = _jsonOf(response)['items'];
+    return [
+      if (items is List)
+        for (final e in items.whereType<Map>())
+          if (e['status'] != 'cancelled') e.cast<String, Object?>(),
+    ];
   }
 
   /// The joining block of a Google invitation, as Google's own email writes
@@ -454,6 +630,12 @@ class GoogleCalendarApi {
 
   static String _date(DateTime d) =>
       '${d.year}-${_two(d.month)}-${_two(d.day)}';
+
+  /// An instant in RFC 3339's UTC form.
+  static String _utc(DateTime t) {
+    final u = t.toUtc();
+    return '${_date(u)}T${_two(u.hour)}:${_two(u.minute)}:${_two(u.second)}Z';
+  }
 
   /// A wall-clock time in RFC 3339's shape with no offset: the zone travels
   /// beside it.

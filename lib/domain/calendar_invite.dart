@@ -1,12 +1,14 @@
 import 'mail_message.dart';
 
 /// A meeting request, as it travels inside a message: the `text/calendar`
-/// part, iCalendar (RFC 5545) with METHOD:REQUEST, one VEVENT.
+/// part, iCalendar (RFC 5545) with METHOD:REQUEST, one VEVENT. Or any other
+/// meeting mail in the same form: a cancellation, an answer, a new time
+/// proposed (iTIP, RFC 5546).
 ///
 /// Parsed here from the text, once, into what the reading pane shows and
 /// what a reply needs to say. Not a calendar: the app keeps no events. It
-/// shows an invitation, answers it, and hands the event to the device's
-/// calendar to keep.
+/// shows the message, answers it, and acts on the account's own calendar,
+/// which keeps them.
 class CalendarInvite {
   const CalendarInvite({
     required this.method,
@@ -23,11 +25,20 @@ class CalendarInvite {
     this.sequence = 0,
     this.dtStamp,
     this.recurrenceId,
+    this.recurrenceStart,
     this.startAsWritten,
+    this.localStart,
+    this.localEnd,
+    this.responder,
+    this.responderAnswer,
+    this.originalStart,
+    this.originalEnd,
   });
 
   /// REQUEST for an invitation, CANCEL for one withdrawn, REPLY for an
-  /// answer, PUBLISH for an event with no reply wanted.
+  /// answer, COUNTER for a new time proposed to the organiser,
+  /// DECLINECOUNTER for the organiser's no to one, PUBLISH for an event
+  /// with no reply wanted.
   final String method;
   final String uid;
   final String summary;
@@ -59,9 +70,36 @@ class CalendarInvite {
   /// decline of one moved occurrence declined every one.
   final String? recurrenceId;
 
+  /// The same occurrence as the time it was set for in the series, UTC (a
+  /// date for a whole day): how it is found on a calendar, where the UID
+  /// alone finds the whole series. Null where there is none, or its zone
+  /// could not be worked out.
+  final DateTime? recurrenceStart;
+
   /// The DTSTART line as the sender wrote it, for a time whose zone could
   /// not be worked out: a reply echoes that rather than guessing.
   final String? startAsWritten;
+
+  /// [start] and [end] as the sender wrote them, on the clock of
+  /// [timeZone], where the event named one for both. What a calendar that
+  /// takes a zone by name is given back: a meeting moved to a time proposed
+  /// keeps its zone, rather than becoming a meeting in UTC.
+  final DateTime? localStart;
+  final DateTime? localEnd;
+
+  /// Who answers, in an answer or a new time proposed: the attendee whose
+  /// answer it carries. Null in an invitation.
+  final MailAddress? responder;
+
+  /// How [responder] answered, where it is one of the three: a new time is
+  /// proposed with a decline or a tentative.
+  final InviteResponse? responderAnswer;
+
+  /// In a new time proposed by Outlook, the time the meeting has now, as
+  /// the proposer saw it; the time proposed is [start] and [end]. UTC where
+  /// the zone was worked out.
+  final DateTime? originalStart;
+  final DateTime? originalEnd;
 
   /// Whether [start] is a real instant (or a whole day), rather than a time
   /// in a zone that could not be worked out.
@@ -69,6 +107,9 @@ class CalendarInvite {
 
   bool get isRequest => method == 'REQUEST';
   bool get isCancellation => method == 'CANCEL';
+  bool get isReply => method == 'REPLY';
+  bool get isCounter => method == 'COUNTER';
+  bool get isDeclineCounter => method == 'DECLINECOUNTER';
 
   /// Parse the part, or null if there is no VEVENT in it.
   static CalendarInvite? parse(String ics) {
@@ -86,10 +127,16 @@ class CalendarInvite {
     _Line? startLine;
     _Line? endLine;
     _Line? recurrenceLine;
+    _Line? originalStartLine;
+    _Line? originalEndLine;
     String? location;
     String? description;
     MailAddress? organizer;
     final attendees = <MailAddress>[];
+    // The first attendee to carry an answer, with it: in an answer or a new
+    // time proposed, the one answering.
+    MailAddress? responder;
+    String? responderStat;
     var sequence = 0;
     DateTime? stamp;
 
@@ -140,10 +187,20 @@ class CalendarInvite {
         case 'ATTENDEE':
           final a = _address(value, params);
           if (a != null) attendees.add(a);
+          final stat = params['PARTSTAT']?.trim().toUpperCase();
+          if (a != null && responder == null && stat != null) {
+            responder = a;
+            responderStat = stat;
+          }
         case 'SEQUENCE':
           sequence = int.tryParse(value.trim()) ?? 0;
         case 'DTSTAMP':
           stamp = _date(value, params, zones)?.$1;
+        // Outlook's, in a new time proposed: the time the meeting has now.
+        case 'X-MS-OLK-ORIGINALSTART':
+          originalStartLine = line;
+        case 'X-MS-OLK-ORIGINALEND':
+          originalEndLine = line;
       }
     }
     if (!seen || startLine == null) return null;
@@ -154,14 +211,27 @@ class CalendarInvite {
     final (start, allDay) = startsAt;
     final tz = startLine.params['TZID'];
     final known = allDay || start.isUtc || tz == null;
+    final end = endLine == null
+        ? null
+        : _date(endLine.value, endLine.params, zones)?.$1;
+    // A time in a named zone, as written, where both ends are in the same
+    // one and it was worked out: not for a zone this could not read, which
+    // has no instant to check a calendar's answer against.
+    final zoned = tz != null &&
+        !allDay &&
+        start.isUtc &&
+        (endLine == null || endLine.params['TZID'] == tz);
+    DateTime? instant(_Line? line) =>
+        line == null ? null : _date(line.value, line.params, zones)?.$1;
+    final occurrence = recurrenceLine == null
+        ? null
+        : _date(recurrenceLine.value, recurrenceLine.params, zones);
     return CalendarInvite(
       method: method,
       uid: uid ?? '',
       summary: summary ?? '(No title)',
       start: start,
-      end: endLine == null
-          ? null
-          : _date(endLine.value, endLine.params, zones)?.$1,
+      end: end,
       isAllDay: allDay,
       timeZone: tz,
       location: location,
@@ -173,9 +243,41 @@ class CalendarInvite {
       recurrenceId: recurrenceLine == null
           ? null
           : _asReplyLine(recurrenceLine, zones),
+      recurrenceStart: occurrence == null ||
+              (!occurrence.$2 &&
+                  !occurrence.$1.isUtc &&
+                  recurrenceLine!.params['TZID'] != null)
+          ? null
+          : occurrence.$1,
       startAsWritten: known ? null : startLine.raw,
+      localStart: zoned ? _wallClockOf(startLine.value) : null,
+      localEnd: zoned && endLine != null ? _wallClockOf(endLine.value) : null,
+      // An answer is about the meeting the organiser sent; a request or a
+      // cancellation lists everyone's answers so far, and none of them is
+      // the message's.
+      responder: method == 'REPLY' || method == 'COUNTER' ? responder : null,
+      responderAnswer: method == 'REPLY' || method == 'COUNTER'
+          ? switch (responderStat) {
+              'ACCEPTED' => InviteResponse.accepted,
+              'TENTATIVE' => InviteResponse.tentative,
+              'DECLINED' => InviteResponse.declined,
+              _ => null,
+            }
+          : null,
+      originalStart: method == 'COUNTER' ? instant(originalStartLine) : null,
+      originalEnd: method == 'COUNTER' ? instant(originalEndLine) : null,
     );
   }
+}
+
+/// A DATE-TIME value's wall clock, with no zone applied; null for one not in
+/// the form.
+DateTime? _wallClockOf(String value) {
+  final m = RegExp(r'^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?$')
+      .firstMatch(value.trim());
+  if (m == null) return null;
+  return DateTime(int.parse(m[1]!), int.parse(m[2]!), int.parse(m[3]!),
+      int.parse(m[4]!), int.parse(m[5]!), int.parse(m[6] ?? '0'));
 }
 
 /// One content line, split into its name, parameters and value.

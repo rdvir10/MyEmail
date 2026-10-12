@@ -440,6 +440,19 @@ class GraphTransport implements ImapTransport {
       );
 
   @override
+  Future<String?> linkedEventId(String path, int uid) async {
+    try {
+      return await api.linkedEventId(await _remoteId(path, uid));
+    } catch (e) {
+      // A message no longer here, or no connection: the calendar is still
+      // asked by the invitation's UID.
+      debugPrint('[myemail] could not follow a meeting message to its event: '
+          '$e');
+      return null;
+    }
+  }
+
+  @override
   Future<List<MailAttachment>> listAttachments(String path, int uid) async {
     final remoteId = await _remoteId(path, uid);
     final listed = await api.attachments(remoteId);

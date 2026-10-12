@@ -824,6 +824,29 @@ void main() {
             reason: '@odata.type still says what it is');
       });
 
+      // Graph types an invitation eventMessageRequest and an answer, or a
+      // new time proposed, eventMessageResponse. Read as ending in
+      // ".eventMessage", only a cancellation was known by its type, and
+      // with the cast refused the others showed no card.
+      for (final (kind, type) in const [
+        ('an invitation', '#microsoft.graph.eventMessageRequest'),
+        ('an answer', '#microsoft.graph.eventMessageResponse'),
+      ]) {
+        test('$kind is meeting mail by its own type too', () async {
+          server
+            ..message('f-inbox', id: 'm1', subject: 'Review', minutesAgo: 5)
+            ..bodies['m1'] = ('html', '<p>Please come.</p>')
+            ..mimes['m1'] = invitation
+            ..eventMessages.add('m1')
+            ..eventMessageType = type
+            ..castSelectRefused = true;
+
+          final body = await fetch();
+
+          expect(body.calendar, contains('BEGIN:VEVENT'));
+        });
+      }
+
       test('an ordinary message fetches no MIME at all', () async {
         server
           ..message('f-inbox', id: 'm1', subject: 'Hello', minutesAgo: 5)
@@ -938,6 +961,29 @@ void main() {
         server.eventNeedsCast = true;
 
         expect(await answer(), isFalse);
+        expect(server.responded, isEmpty);
+      });
+
+      test('the event a message links to is followed, the series\' or its '
+          'own', () async {
+        // What a cancellation or a new time proposed is checked against:
+        // the meeting the message is about, found the way Exchange links
+        // it, through the cast where the plain link is refused.
+        server
+          ..messageEvents['m1'] = 'e-1'
+          ..events['e-1'] = 'u-1'
+          ..eventNeedsCast = true;
+        final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
+
+        expect(await transport.linkedEventId('Inbox', header.uid), 'e-1');
+      });
+
+      test('and a message that links to none has none, not a failure',
+          () async {
+        server.eventNeedsCast = true;
+        final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
+
+        expect(await transport.linkedEventId('Inbox', header.uid), isNull);
         expect(server.responded, isEmpty);
       });
     });
@@ -1844,6 +1890,11 @@ class _FakeGraph {
   /// Messages this server treats as meeting requests.
   final Set<String> eventMessages = {};
 
+  /// What it types them as: Graph's own types are `eventMessage` for a
+  /// cancellation, `eventMessageRequest` for an invitation and
+  /// `eventMessageResponse` for an answer.
+  String eventMessageType = '#microsoft.graph.eventMessage';
+
   /// Some mailboxes leave `@odata.type` out of a selected answer.
   bool odataTypeOmitted = false;
 
@@ -2267,7 +2318,7 @@ class _FakeGraph {
           // only a meeting request has. A mailbox may answer with either,
           // or with just one of them.
           if (eventMessages.contains(id) && !odataTypeOmitted)
-            '@odata.type': '#microsoft.graph.eventMessage',
+            '@odata.type': eventMessageType,
           if (eventMessages.contains(id) &&
               select.contains('meetingMessageType'))
             'meetingMessageType': 'meetingRequest',

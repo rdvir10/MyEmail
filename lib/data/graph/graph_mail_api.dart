@@ -364,6 +364,18 @@ class GraphMailApi {
     }
   }
 
+  /// Whether Graph's [json] for a message says it is meeting mail: typed
+  /// as an event message, or carrying the meeting message type only one
+  /// has.
+  ///
+  /// The type is `eventMessage` for a cancellation, `eventMessageRequest`
+  /// for an invitation and `eventMessageResponse` for an answer or a new
+  /// time proposed. Read as ending in `.eventMessage`, only cancellations
+  /// were meetings by their type.
+  static bool isMeetingMessage(Map<String, Object?> json) =>
+      '${json['@odata.type']}'.startsWith('#microsoft.graph.eventMessage') ||
+      json['meetingMessageType'] != null;
+
   /// The body, in both forms the reading pane can show.
   ///
   /// Two ways of telling a meeting request from a message, because one is
@@ -396,8 +408,7 @@ class GraphMailApi {
         html: contentType == 'html' ? content : null,
         text: contentType == 'html' ? null : content,
         hasAttachments: json['hasAttachments'] == true,
-        isEventMessage: '${json['@odata.type']}'.endsWith('.eventMessage') ||
-            json['meetingMessageType'] != null,
+        isEventMessage: isMeetingMessage(json),
       );
     } on GraphNotFound {
       return null;
@@ -480,23 +491,16 @@ class GraphMailApi {
   /// The largest attachment asked for whole just to learn its Content-ID.
   static const wholeAttachmentLimit = 1024 * 1024;
 
-  /// The bytes of one attachment.
-  ///
-  /// `/$value` rather than the JSON with contentBytes in it: the same data
-  /// without a base64 round trip through a string, which for a 20MB file is
-  /// the difference between a download and an out-of-memory.
-  /// The event a meeting request is about, or null if this mailbox will
-  /// not say which one it is.
+  /// The event a meeting message links to, or null where it links to none
+  /// or the mailbox will not say: the meeting as the calendar has it, which
+  /// for one meeting of a series is that meeting rather than the series.
   ///
   /// `event` is a link on `eventMessage`, not on `message`. A mailbox that
   /// does not hand the message over as its derived type answers the plain
   /// path with "Resource not found for the segment 'event'", so the cast
   /// is asked first: it names the type in the path and always parses. The
-  /// plain path stays for mailboxes that refuse a cast, and the
-  /// invitation's own UID finds the event on the calendar when neither
-  /// works — automatic processing may have put it there without ever
-  /// linking it back to the message.
-  Future<String?> eventIdFor(String messageId, {String? iCalUid}) async {
+  /// plain path stays for mailboxes that refuse a cast.
+  Future<String?> linkedEventId(String messageId) async {
     final id = _id(messageId);
     for (final path in [
       '$base/me/messages/$id/microsoft.graph.eventMessage/event',
@@ -512,6 +516,17 @@ class GraphMailApi {
         // Ask the next way.
       }
     }
+    return null;
+  }
+
+  /// The event a meeting request is about, or null if this mailbox will
+  /// not say which one it is: the message's own link to it
+  /// ([linkedEventId]), and failing that the invitation's own UID, which
+  /// finds the event on the calendar when automatic processing put it there
+  /// without ever linking it back to the message.
+  Future<String?> eventIdFor(String messageId, {String? iCalUid}) async {
+    final linked = await linkedEventId(messageId);
+    if (linked != null) return linked;
     if (iCalUid == null || iCalUid.isEmpty) return null;
     try {
       final json = await _get(Uri.parse('$base/me/events').replace(
@@ -584,6 +599,11 @@ class GraphMailApi {
   Future<Uint8List> mimeBytes(String messageId) =>
       _bytes(Uri.parse('$base/me/messages/${_id(messageId)}/\$value'));
 
+  /// The bytes of one attachment.
+  ///
+  /// `/$value` rather than the JSON with contentBytes in it: the same data
+  /// without a base64 round trip through a string, which for a 20MB file is
+  /// the difference between a download and an out-of-memory.
   Future<Uint8List> attachmentBytes(String messageId, String attachmentId) =>
       _bytes(
         Uri.parse(
@@ -1236,8 +1256,7 @@ class GraphMessage {
         if (json['replyTo'] is List)
           for (final r in json['replyTo'] as List) ?_address(r),
       ],
-      isMeeting: '${json['@odata.type']}'.endsWith('.eventMessage') ||
-          json['meetingMessageType'] != null,
+      isMeeting: GraphMailApi.isMeetingMessage(json),
       received: DateTime.tryParse('${json['receivedDateTime']}')?.toUtc() ??
           DateTime.now().toUtc(),
       isRead: json['isRead'] == true,

@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
 import '../../domain/account.dart';
+import '../../domain/calendar_invite.dart';
+import '../../domain/calendar_meeting.dart';
 import '../../domain/meeting.dart';
 import '../auth/google_oauth.dart' show GoogleOAuth;
 import '../auth/microsoft_oauth.dart'
@@ -196,10 +198,7 @@ class AccountCalendar {
           api.close();
         }
       case MailProvider.gmail:
-        throw const CalendarUnavailable(
-          "The app cannot reach this account's calendar: an app password "
-          'covers its mail and nothing else.',
-        );
+        throw const CalendarUnavailable(_appPasswordOnly);
     }
   }
 
@@ -245,10 +244,7 @@ class AccountCalendar {
           api.close();
         }
       case MailProvider.gmail:
-        throw const CalendarUnavailable(
-          "The app cannot reach this account's calendar: an app password "
-          'covers its mail and nothing else.',
-        );
+        throw const CalendarUnavailable(_appPasswordOnly);
     }
   }
 
@@ -280,6 +276,108 @@ class AccountCalendar {
         return true;
     }
   }
+
+  /// The meeting [invite] is about, on [account]'s calendar; see
+  /// `MailEngine.meetingOnCalendar`. [linkedEventId] is the event the
+  /// message links to, which only Exchange gives.
+  Future<CalendarMeeting?> meetingFor(
+    Account account,
+    CalendarInvite invite, {
+    String? linkedEventId,
+  }) async {
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          return await api.meetingFor(
+            invite,
+            accountId: account.id,
+            linkedEventId: linkedEventId,
+          );
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          return await api.meetingFor(invite, accountId: account.id);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  /// Take [meeting] off [account]'s calendar; see
+  /// `MailEngine.removeFromCalendar`.
+  Future<void> removeMeeting(Account account, CalendarMeeting meeting) async {
+    // The screen offers it only for someone else's: on the organiser's own
+    // calendar, a delete cancels the meeting for everyone on it.
+    if (meeting.isOrganizer) {
+      throw ArgumentError('You organised this meeting: taking it off your '
+          'calendar would cancel it for everyone.');
+    }
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          await api.deleteEvent(meeting.eventId);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          await api.deleteEvent(meeting.eventId);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  /// Move [meeting] on [account]'s calendar to the time [proposal]
+  /// proposes; see `MailEngine.moveMeeting`.
+  Future<void> moveMeeting(
+    Account account,
+    CalendarMeeting meeting,
+    CalendarInvite proposal,
+  ) async {
+    // The screen offers neither: only the organiser's change reaches
+    // everyone, and one meeting's new time is not the whole series'.
+    if (!meeting.isOrganizer) {
+      throw ArgumentError('Only the organiser can move this meeting.');
+    }
+    if (meeting.isSeries) {
+      throw ArgumentError('This is a whole series, and a time proposed is '
+          'for one meeting.');
+    }
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          await api.moveEvent(meeting, proposal);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          await api.moveEvent(meeting, proposal);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  /// Why a Gmail account with an app password has no calendar here.
+  static const _appPasswordOnly =
+      "The app cannot reach this account's calendar: an app password covers "
+      'its mail and nothing else.';
 
   /// A Meet link from the Gmail account, on its token for Meet. What goes
   /// wrong with that sign-in is said in that account's name: it is not the

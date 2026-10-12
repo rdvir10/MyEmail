@@ -227,6 +227,13 @@ class FakeImapTransport implements ImapTransport {
     return false;
   }
 
+  /// IMAP's answer: no message links to an event.
+  @override
+  Future<String?> linkedEventId(String path, int uid) async {
+    calls.add('LINKED EVENT $path $uid');
+    return null;
+  }
+
   @override
   Future<String> fetchRaw(String path, int uid) async {
     _online();

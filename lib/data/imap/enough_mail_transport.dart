@@ -240,6 +240,10 @@ class EnoughMailTransport implements ImapTransport {
       false; // IMAP has no calendar; the reply goes as mail.
 
   @override
+  Future<String?> linkedEventId(String path, int uid) async =>
+      null; // Nor anything on a message pointing at one.
+
+  @override
   Future<String> fetchRaw(String path, int uid) => _run(limit: transferLimit, (c) async {
         await _ensureSelected(c, path);
         final result = await c.uidFetchMessage(uid, 'BODY.PEEK[]');

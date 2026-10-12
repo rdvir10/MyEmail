@@ -87,6 +87,12 @@ abstract class ImapTransport {
     String? iCalUid,
   });
 
+  /// The calendar's id for the meeting a message is about, where the server
+  /// links the two, or null: Graph links the meeting mail Exchange typed as
+  /// such to the event; IMAP has no calendar to link to. Never throws: a
+  /// link that cannot be followed leaves the meeting to be found by its UID.
+  Future<String?> linkedEventId(String path, int uid) async => null;
+
   /// Read the headers of messages already known, where the server gives
   /// them cheaply, and nothing otherwise.
   ///

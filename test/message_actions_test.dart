@@ -12,6 +12,7 @@ import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/address_suggestions.dart';
 import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/domain/calendar_invite.dart';
+import 'package:myemail/domain/calendar_meeting.dart';
 import 'package:myemail/domain/meeting.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/message_move.dart';
@@ -173,6 +174,21 @@ class _RefusingEngine implements MailEngine {
     InviteResponse response,
   ) =>
       _inner.respondToInvite(messageId, invite, response);
+
+  @override
+  Future<CalendarMeeting?> meetingOnCalendar(
+    String messageId,
+    CalendarInvite invite,
+  ) =>
+      _inner.meetingOnCalendar(messageId, invite);
+
+  @override
+  Future<void> removeFromCalendar(CalendarMeeting meeting) =>
+      _inner.removeFromCalendar(meeting);
+
+  @override
+  Future<void> moveMeeting(CalendarMeeting meeting, CalendarInvite proposal) =>
+      _inner.moveMeeting(meeting, proposal);
 
   @override
   Future<PreparedMeeting?> prepareOnlineMeeting(MeetingDraft meeting) =>

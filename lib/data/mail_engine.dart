@@ -12,6 +12,7 @@ import 'contacts/account_people.dart' show PeopleSearchAccess;
 import '../domain/draft.dart';
 import '../domain/address_suggestions.dart';
 import '../domain/calendar_invite.dart';
+import '../domain/calendar_meeting.dart';
 import '../domain/mail_attachment.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
@@ -221,6 +222,41 @@ abstract class MailEngine {
     CalendarInvite invite,
     InviteResponse response,
   );
+
+  /// The meeting [invite] is about, as the account's own calendar has it
+  /// now, or null where it is not on it: removed, or never put there. What
+  /// the card under an update, a cancellation or a new time proposed is
+  /// checked against, read again each time the message is opened.
+  ///
+  /// Found the way the account's calendar allows: through the message's own
+  /// link to it on Microsoft, then by the invitation's UID, and for one
+  /// meeting of a series, by when it was set for in the series.
+  ///
+  /// Throws [CalendarUnavailable] for an account whose calendar the app
+  /// cannot reach, `SignInNeedsConsent` for a Microsoft account that has
+  /// not allowed the app its calendar, and [AuthenticationFailed] or
+  /// [ConnectionFailed] as [sendDraft] does.
+  Future<CalendarMeeting?> meetingOnCalendar(
+    String messageId,
+    CalendarInvite invite,
+  );
+
+  /// Take [meeting] off its calendar, as Outlook's Remove from Calendar
+  /// does: one its organiser has cancelled. Nobody is told; the organiser
+  /// already knows. One gone already is done, not a failure.
+  ///
+  /// Refused with an [ArgumentError] for a meeting the account organised,
+  /// where deleting it would cancel it for everyone. Throws as
+  /// [meetingOnCalendar] does.
+  Future<void> removeFromCalendar(CalendarMeeting meeting);
+
+  /// Move [meeting], which the account organised, to the time [proposal]
+  /// proposes, as Outlook's Accept Proposal does: the calendar sends
+  /// everyone invited the new time.
+  ///
+  /// Refused with an [ArgumentError] for a meeting someone else organised,
+  /// or a whole series. Throws as [meetingOnCalendar] does.
+  Future<void> moveMeeting(CalendarMeeting meeting, CalendarInvite proposal);
 
   /// Put the meeting on the account's own calendar with everyone in it
   /// invited. The server sends the invitations and keeps the answers on the

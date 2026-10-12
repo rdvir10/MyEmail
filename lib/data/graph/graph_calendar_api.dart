@@ -4,6 +4,8 @@ import 'dart:math';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
+import '../../domain/calendar_invite.dart';
+import '../../domain/calendar_meeting.dart';
 import '../../domain/meeting.dart';
 import '../../domain/text_direction.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
@@ -12,9 +14,11 @@ import '../mail_engine.dart';
 
 /// A thin client over the Microsoft Graph calendar: a call to put a meeting
 /// on the account's calendar with its attendees invited, one to ask where
-/// that calendar holds a meeting online, and the three that make a Teams
+/// that calendar holds a meeting online, the three that make a Teams
 /// meeting ahead of Send and send it later ([createShell], [sendShell],
-/// [deleteShell]).
+/// [deleteShell]), and the three for a meeting a message is about: find it
+/// ([meetingFor]), take a cancelled one off ([deleteEvent]), and move one
+/// to a time proposed ([moveEvent]).
 ///
 /// Its own class rather than a method on GraphMailApi, which is the mail
 /// endpoints under the mail consent. The calendar is a consent of its own,
@@ -271,6 +275,224 @@ class GraphCalendarApi {
       debugPrint('[myemail] could not delete the meeting made ahead: $e');
       return false;
     }
+  }
+
+  // --- meetings already on the calendar --------------------------------------
+
+  /// What is read of a meeting a message is about: when, whether it is
+  /// cancelled, whose it is, and whether it is a whole series.
+  static const meetingFields =
+      'id,start,end,isAllDay,isCancelled,isOrganizer,type,originalStart';
+
+  /// Times in UTC, so they are instants without a zone to work out. Graph
+  /// otherwise answers in the zone each event was made in, by its Windows
+  /// name.
+  static const _inUtc = 'outlook.timezone="UTC"';
+
+  /// The meeting [invite] is about, as this calendar has it, or null where
+  /// it is not on it.
+  ///
+  /// [linkedEventId] is the event the message links to, where it does
+  /// (`GraphMailApi.linkedEventId`): Exchange's own answer, which for one
+  /// meeting of a series is that meeting. Failing that, the invitation's
+  /// UID, which finds a single meeting or a whole series; for one meeting
+  /// of a series ([CalendarInvite.recurrenceStart]) the series found is
+  /// searched for it. Never the series in its place: an action meant for
+  /// one meeting must not reach every one.
+  Future<CalendarMeeting?> meetingFor(
+    CalendarInvite invite, {
+    required String accountId,
+    String? linkedEventId,
+  }) async {
+    Map<String, Object?>? json;
+    if (linkedEventId != null) json = await _meeting(linkedEventId);
+    if (json == null && invite.uid.isNotEmpty) {
+      json = await _meetingByUid(invite.uid);
+    }
+    if (json == null) return null;
+    if (json['type'] == 'seriesMaster' && invite.recurrenceId != null) {
+      final id = json['id'];
+      final at = invite.recurrenceStart;
+      if (id is! String || at == null) return null;
+      json = await _occurrence(id, at);
+      if (json == null) return null;
+    }
+    return meetingFromJson(json, accountId: accountId);
+  }
+
+  /// Take an event off the calendar, into Deleted Items, where Outlook can
+  /// still bring it back. For a meeting someone else organised Exchange
+  /// tells nobody; one already gone is done.
+  Future<void> deleteEvent(String id) async {
+    final response = await _exchange(
+      () => http.Request('DELETE', _eventUri(id)),
+    );
+    if (response.statusCode == 404) return;
+    if (response.statusCode >= 400) throw _failureFor(response);
+  }
+
+  /// Move [meeting], which this account organised, to the time [proposal]
+  /// proposes. Exchange sends everyone on it the new time, as it does for
+  /// any change of time the organiser makes.
+  ///
+  /// The time goes in the zone the proposal was written in, by its name,
+  /// so the meeting keeps it; where Graph does not know that name, again in
+  /// UTC, which it always does.
+  Future<void> moveEvent(
+    CalendarMeeting meeting,
+    CalendarInvite proposal,
+  ) async {
+    Future<http.Response> patch(Map<String, Object?> times) => _exchange(
+          () => _patch(meeting.eventId, jsonEncode(times)),
+        );
+    var response = await patch(movedTimes(meeting, proposal));
+    if (response.statusCode == 400 && proposal.localStart != null) {
+      response = await patch(movedTimes(meeting, proposal, inUtc: true));
+    }
+    if (response.statusCode >= 400) throw _failureFor(response);
+  }
+
+  /// The start and end a meeting moved to [proposal]'s time is patched
+  /// with. Where the proposal has no end, the meeting keeps its length.
+  static Map<String, Object?> movedTimes(
+    CalendarMeeting meeting,
+    CalendarInvite proposal, {
+    bool inUtc = false,
+  }) {
+    final length = meeting.end?.difference(meeting.start);
+    if (proposal.isAllDay) {
+      final first = proposal.start;
+      final after = proposal.end ??
+          (length != null && length.inDays > 1
+              ? DateTime(first.year, first.month, first.day + length.inDays)
+              : dayAfter(first));
+      return {
+        'start': {'dateTime': _stamp(_midnight(first)), 'timeZone': 'UTC'},
+        'end': {'dateTime': _stamp(_midnight(after)), 'timeZone': 'UTC'},
+        'isAllDay': true,
+      };
+    }
+    final zone = proposal.timeZone;
+    final localStart = proposal.localStart;
+    final localEnd = proposal.localEnd;
+    if (!inUtc && zone != null && localStart != null && localEnd != null) {
+      return {
+        'start': {'dateTime': _stamp(localStart), 'timeZone': zone},
+        'end': {'dateTime': _stamp(localEnd), 'timeZone': zone},
+        'isAllDay': false,
+      };
+    }
+    final start = proposal.start.toUtc();
+    final end = proposal.end?.toUtc() ??
+        start.add(length ?? const Duration(minutes: 30));
+    return {
+      'start': {'dateTime': _stamp(start), 'timeZone': 'UTC'},
+      'end': {'dateTime': _stamp(end), 'timeZone': 'UTC'},
+      'isAllDay': false,
+    };
+  }
+
+  /// A meeting as Graph gives it, asked for with [meetingFields] in UTC; null
+  /// for one with no id or no start.
+  static CalendarMeeting? meetingFromJson(
+    Map<String, Object?> json, {
+    required String accountId,
+  }) {
+    final id = json['id'];
+    if (id is! String || id.isEmpty) return null;
+    final allDay = json['isAllDay'] == true;
+    final start = _utcTimeOf(json['start'], wholeDay: allDay);
+    if (start == null) return null;
+    return CalendarMeeting(
+      accountId: accountId,
+      eventId: id,
+      start: start,
+      end: _utcTimeOf(json['end'], wholeDay: allDay),
+      isAllDay: allDay,
+      isCancelled: json['isCancelled'] == true,
+      isOrganizer: json['isOrganizer'] == true,
+      isSeries: json['type'] == 'seriesMaster',
+    );
+  }
+
+  /// A time Graph gave in UTC, which it writes with no Z and seven places of
+  /// seconds: "2026-10-16T18:00:00.0000000". A whole day is its date.
+  static DateTime? _utcTimeOf(Object? value, {required bool wholeDay}) {
+    final text = value is Map ? value['dateTime'] : null;
+    if (text is! String) return null;
+    final m = RegExp(r'^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})')
+        .firstMatch(text);
+    if (m == null) return null;
+    final n = [for (var i = 1; i <= 6; i++) int.parse(m[i]!)];
+    return wholeDay
+        ? DateTime.utc(n[0], n[1], n[2])
+        : DateTime.utc(n[0], n[1], n[2], n[3], n[4], n[5]);
+  }
+
+  static DateTime _midnight(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  /// One event, for a meeting, in UTC; null where it is gone.
+  Future<Map<String, Object?>?> _meeting(String id) async {
+    final response = await _exchange(
+      () => http.Request(
+        'GET',
+        _eventUri(id).replace(queryParameters: {r'$select': meetingFields}),
+      )..headers['Prefer'] = _inUtc,
+    );
+    if (response.statusCode == 404) return null;
+    if (response.statusCode >= 400) throw _failureFor(response);
+    return _jsonOf(response);
+  }
+
+  /// The single meeting or series with this invitation UID. Graph gives a
+  /// series and a meeting not in one the UID their invitations carry; each
+  /// meeting of a series has one of its own, which is why it is looked for
+  /// in the series instead.
+  Future<Map<String, Object?>?> _meetingByUid(String uid) async {
+    final response = await _exchange(
+      () => http.Request(
+        'GET',
+        eventsUri.replace(queryParameters: {
+          r'$filter': "iCalUId eq '${uid.replaceAll("'", "''")}'",
+          r'$select': meetingFields,
+          r'$top': '1',
+        }),
+      )..headers['Prefer'] = _inUtc,
+    );
+    if (response.statusCode >= 400) throw _failureFor(response);
+    final value = _jsonOf(response)['value'];
+    if (value is! List || value.isEmpty || value.first is! Map) return null;
+    return (value.first as Map).cast<String, Object?>();
+  }
+
+  /// The meeting of series [seriesId] that was set for [at], moved or not,
+  /// cancelled or not; null where it is not on the calendar any more.
+  Future<Map<String, Object?>?> _occurrence(String seriesId, DateTime at) async {
+    // The day either side: a meeting moved since is still listed by when it
+    // is now, and the search is by when it was set for.
+    final from = at.toUtc().subtract(const Duration(days: 2));
+    final to = at.toUtc().add(const Duration(days: 2));
+    final response = await _exchange(
+      () => http.Request(
+        'GET',
+        Uri.parse('${_eventUri(seriesId)}/instances').replace(
+          queryParameters: {
+            'startDateTime': from.toIso8601String(),
+            'endDateTime': to.toIso8601String(),
+            r'$select': meetingFields,
+          },
+        ),
+      )..headers['Prefer'] = _inUtc,
+    );
+    if (response.statusCode == 404) return null;
+    if (response.statusCode >= 400) throw _failureFor(response);
+    final value = _jsonOf(response)['value'];
+    if (value is! List) return null;
+    return occurrenceAt([
+      for (final item in value.whereType<Map>())
+        if (DateTime.tryParse('${item['originalStart']}') case final original?)
+          (original, item.cast<String, Object?>()),
+    ], at);
   }
 
   /// The text of a Teams block for the screen: the lines as they read,

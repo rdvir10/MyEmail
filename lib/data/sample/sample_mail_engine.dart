@@ -9,6 +9,7 @@ import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/address_suggestions.dart';
 import '../../domain/calendar_invite.dart';
+import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
@@ -663,6 +664,52 @@ class SampleMailEngine implements MailEngine {
   ) async {
     await _latency();
     inviteResponses.add((messageId: messageId, response: response));
+  }
+
+  /// The sample calendar, by invitation UID: what [meetingOnCalendar]
+  /// finds, for tests to fill. Empty, so no meeting is on it.
+  final Map<String, CalendarMeeting> calendar = {};
+
+  /// Every meeting taken off the calendar, and every one moved with the
+  /// time proposed, for tests to look at.
+  final List<CalendarMeeting> removedFromCalendar = [];
+  final List<({CalendarMeeting meeting, CalendarInvite proposal})> moved = [];
+
+  @override
+  Future<CalendarMeeting?> meetingOnCalendar(
+    String messageId,
+    CalendarInvite invite,
+  ) async {
+    await _latency();
+    return calendar[invite.uid];
+  }
+
+  @override
+  Future<void> removeFromCalendar(CalendarMeeting meeting) async {
+    await _latency();
+    removedFromCalendar.add(meeting);
+    calendar.removeWhere((_, m) => m.eventId == meeting.eventId);
+  }
+
+  /// Moves it on the sample calendar too, as a real one would.
+  @override
+  Future<void> moveMeeting(
+    CalendarMeeting meeting,
+    CalendarInvite proposal,
+  ) async {
+    await _latency();
+    moved.add((meeting: meeting, proposal: proposal));
+    for (final entry in calendar.entries.toList()) {
+      if (entry.value.eventId != meeting.eventId) continue;
+      calendar[entry.key] = CalendarMeeting(
+        accountId: meeting.accountId,
+        eventId: meeting.eventId,
+        start: proposal.start.toUtc(),
+        end: proposal.end?.toUtc(),
+        isAllDay: proposal.isAllDay,
+        isOrganizer: meeting.isOrganizer,
+      );
+    }
   }
 
   /// Every meeting created, for tests to look at.
