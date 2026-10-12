@@ -15,6 +15,19 @@ import 'providers.dart';
 final deviceContactsProvider =
     Provider<DeviceContacts>((ref) => FakeDeviceContacts());
 
+/// The contact that holds an address, by the address, or null: what the
+/// card for someone on a message says, In your contacts with Open contact,
+/// or Add to contacts.
+///
+/// Asked again each time a card opens, since a contact added from one is
+/// saved in another app. Never asks for the permission: the recipient
+/// fields do that, once; without it the card offers Add.
+final deviceContactProvider =
+    FutureProvider.autoDispose.family<DeviceContact?, String>(
+  (ref, email) => ref.watch(deviceContactsProvider).find(email),
+  retry: (_, _) => null,
+);
+
 /// Whether the address book may be read, and whether we have asked.
 ///
 /// Asked once, the first time a recipient field is used, and not again on

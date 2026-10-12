@@ -30,6 +30,7 @@ import 'html_body_view.dart';
 import 'message_actions.dart';
 import 'message_source.dart';
 import 'move_to_sheet.dart';
+import 'person_card.dart';
 
 /// One open message: a fixed header with actions, then the body.
 ///
@@ -329,6 +330,14 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                         message,
                         body.value!,
                       ),
+                // A new message to them goes from the account this one came
+                // to, as a reply would.
+                onPerson: (person) => showPersonCard(
+                  context,
+                  ref,
+                  person,
+                  accountId: message.accountId,
+                ),
               ),
             ),
             // The invitation, when the message carries one, before the body:
@@ -488,8 +497,13 @@ class _Header extends StatelessWidget {
     this.onPrint,
     this.onCreateEvent,
     this.onFullScreen,
+    this.onPerson,
     this.compact = false,
   });
+
+  /// The card for someone on the message, from a tap on the sender or on
+  /// anyone it went to: Add to contacts and the rest.
+  final ValueChanged<MailAddress>? onPerson;
 
   /// The body alone, edge to edge, with the system bars out of the way.
   /// Null until the body is here: there would be nothing to fill it with.
@@ -686,11 +700,17 @@ class _Header extends StatelessWidget {
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: scheme.primaryContainer,
-              foregroundColor: scheme.onPrimaryContainer,
-              child: Text(_initial(message.from)),
+            // The sender's picture, name and address all open their card.
+            _PersonTap(
+              person: message.from,
+              onPerson: onPerson,
+              circle: true,
+              child: CircleAvatar(
+                radius: 18,
+                backgroundColor: scheme.primaryContainer,
+                foregroundColor: scheme.onPrimaryContainer,
+                child: Text(_initial(message.from)),
+              ),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -709,12 +729,16 @@ class _Header extends StatelessWidget {
                     children: [
                       // Addresses have no spaces, so an unnamed sender would
                       // otherwise wrap mid-word on a phone; clip instead.
-                      Text(
-                        message.from.display,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
+                      _PersonTap(
+                        person: message.from,
+                        onPerson: onPerson,
+                        child: Text(
+                          message.from.display,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
                       Text(
@@ -729,12 +753,16 @@ class _Header extends StatelessWidget {
                     ],
                   ),
                   if (message.from.name != null)
-                    Text(
-                      message.from.email,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
+                    _PersonTap(
+                      person: message.from,
+                      onPerson: onPerson,
+                      child: Text(
+                        message.from.email,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
                       ),
                     ),
                   const SizedBox(height: 2),
@@ -744,6 +772,7 @@ class _Header extends StatelessWidget {
                     key: ValueKey(message.id),
                     to: message.to,
                     cc: message.cc,
+                    onPerson: onPerson,
                   ),
                 ],
               ),
@@ -775,10 +804,18 @@ class _Header extends StatelessWidget {
 /// Folded or open belongs to this message, not to a setting. Remembered,
 /// opening one list to see who was copied left every message after it open.
 class _Recipients extends StatefulWidget {
-  const _Recipients({super.key, required this.to, required this.cc});
+  const _Recipients({
+    super.key,
+    required this.to,
+    required this.cc,
+    this.onPerson,
+  });
 
   final List<MailAddress> to;
   final List<MailAddress> cc;
+
+  /// The card for one of them, from a tap on their line in the open list.
+  final ValueChanged<MailAddress>? onPerson;
 
   @override
   State<_Recipients> createState() => _RecipientsState();
@@ -945,13 +982,48 @@ class _RecipientsState extends State<_Recipients> {
     final name = a.name?.trim() ?? '';
     return Padding(
       padding: const EdgeInsets.only(bottom: 1),
-      child: Wrap(
-        spacing: 8,
-        children: [
-          if (name.isNotEmpty) Text(name, style: style),
-          Text(a.email, style: style),
-        ],
+      child: _PersonTap(
+        person: a,
+        onPerson: widget.onPerson,
+        child: Wrap(
+          spacing: 8,
+          children: [
+            if (name.isNotEmpty) Text(name, style: style),
+            Text(a.email, style: style),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+/// Someone on a message, as a tap that opens their card: the sender's
+/// picture, name and address, and each line in the open list of who it
+/// went to. Just [child] where there is no card to open.
+class _PersonTap extends StatelessWidget {
+  const _PersonTap({
+    required this.person,
+    required this.onPerson,
+    required this.child,
+    this.circle = false,
+  });
+
+  final MailAddress person;
+  final ValueChanged<MailAddress>? onPerson;
+  final Widget child;
+
+  /// The ripple a circle, for the picture.
+  final bool circle;
+
+  @override
+  Widget build(BuildContext context) {
+    final open = onPerson;
+    if (open == null) return child;
+    return InkWell(
+      onTap: () => open(person),
+      customBorder: circle ? const CircleBorder() : null,
+      borderRadius: circle ? null : BorderRadius.circular(4),
+      child: child,
     );
   }
 }

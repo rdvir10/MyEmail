@@ -20,12 +20,16 @@ import 'compose_screen.dart';
 /// Building the draft needs the original's body for a reply or forward, which
 /// may mean a fetch, so this shows a brief blocking spinner rather than
 /// opening an editor that then rewrites itself under the user.
+///
+/// [to], where given, is who a new message is to: New email on the card for
+/// someone on a message.
 Future<void> openCompose(
   BuildContext context,
   WidgetRef ref, {
   required ComposeKind kind,
   MailMessage? original,
   String? accountId,
+  List<MailAddress> to = const [],
   List<DraftAttachment> attachments = const [],
   String? subject,
   String? bodyText,
@@ -54,6 +58,7 @@ Future<void> openCompose(
   final built = await _withSpinner(context, draftFuture);
   if (built == null || !context.mounted) return;
   var draft = built;
+  if (to.isNotEmpty) draft = draft.copyWith(to: to);
   if (attachments.isNotEmpty) {
     draft = draft.copyWith(attachments: [...draft.attachments, ...attachments]);
   }

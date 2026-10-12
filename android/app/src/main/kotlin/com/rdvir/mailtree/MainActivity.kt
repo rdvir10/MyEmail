@@ -103,7 +103,8 @@ open class MainActivity : FlutterActivity() {
         // Attachments in and out: opening, sharing, the clipboard and drag
         // and drop, all of which are content URIs underneath.
         // Recipients suggested from the address book, with the permission
-        // that needs asked through this activity.
+        // that needs asked through this activity; and the contacts app's
+        // screens for adding or seeing someone on a message.
         contacts = ContactsBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         // A second window: another copy of this activity, in its own task.
         WindowsBridge(this, flutterEngine.dartExecutor.binaryMessenger)
