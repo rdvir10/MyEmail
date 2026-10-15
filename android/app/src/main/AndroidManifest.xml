@@ -121,12 +121,16 @@
         <!-- A second window: the same app under another name, launched as
              a document with its own task affinity, so every start is a new
              task rather than a return to the one that is running. See
-             WindowActivity.kt. Not exported: only the app opens these. -->
+             WindowActivity.kt. Not exported: only the app opens these.
+             Out of Recents once closed: a closed window left there came
+             back from it as an empty second copy of the app, and Recents
+             keeps only eight, so the closed ones pushed out open ones. -->
         <activity
             android:name=".WindowActivity"
             android:exported="false"
             android:launchMode="standard"
             android:documentLaunchMode="always"
+            android:autoRemoveFromRecents="true"
             android:resizeableActivity="true"
             android:taskAffinity="com.rdvir.mailtree.window"
             android:theme="@style/LaunchTheme"

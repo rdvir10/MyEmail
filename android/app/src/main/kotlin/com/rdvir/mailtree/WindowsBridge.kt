@@ -1,10 +1,10 @@
 package com.rdvir.mailtree
 
 import android.app.Activity
-import android.app.ActivityManager
-import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -66,20 +66,31 @@ class WindowsBridge(
                             addFlags(Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT)
                         }
                     }
-                    val before = taskCount()
-                    activity.startActivity(intent)
                     // Say so only once the window exists. The caller closes
                     // its own copy of what it handed over, and must not do
-                    // that on the strength of an intent the system swallowed.
-                    var opened = false
-                    for (attempt in 0 until 10) {
-                        if (taskCount() > before) {
-                            opened = true
-                            break
-                        }
-                        Thread.sleep(50)
+                    // that on the strength of an intent the system swallowed;
+                    // nor give up on one that did open, because it then
+                    // deletes the hand-off and the window comes up empty.
+                    //
+                    // The window says so itself, from its onCreate. Counting
+                    // the app's tasks before and after was the old test, and
+                    // Recents keeps only eight documents of one activity: at
+                    // the eighth, each new window pushed the oldest out, the
+                    // count stayed where it was, and every window opened on
+                    // nothing while the draft opened behind it. The wait
+                    // also slept on the main thread, the one the new
+                    // window's onCreate has to run on.
+                    val timeout = Runnable {
+                        if (waiting.remove(route) != null) result.success(false)
                     }
-                    result.success(opened)
+                    waiting[route] = Waiting(result, timeout)
+                    try {
+                        activity.startActivity(intent)
+                    } catch (e: Exception) {
+                        waiting.remove(route)
+                        throw e
+                    }
+                    main.postDelayed(timeout, OPEN_TIMEOUT_MS)
                 }
                 else -> result.notImplemented()
             }
@@ -88,12 +99,31 @@ class WindowsBridge(
         }
     }
 
-    /** How many tasks this app has: one per window. */
-    private fun taskCount(): Int =
-        (activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)
-            ?.appTasks?.size ?: 0
+    private class Waiting(val result: MethodChannel.Result, val timeout: Runnable)
 
     companion object {
         const val CHANNEL = "mailtree/windows"
+
+        /**
+         * How long a window has to start before it counts as one the system
+         * did not open. Started, one has taken under a tenth of a second.
+         */
+        private const val OPEN_TIMEOUT_MS = 3000L
+
+        private val main = Handler(Looper.getMainLooper())
+
+        /**
+         * Windows asked for and not yet started, by route. Only touched on
+         * the main thread: channel calls, onCreate and the timeout all run
+         * there.
+         */
+        private val waiting = HashMap<String, Waiting>()
+
+        /** A window has started on [route]: tell whoever opened it. */
+        fun arrived(route: String?) {
+            val window = waiting.remove(route ?: return) ?: return
+            main.removeCallbacks(window.timeout)
+            window.result.success(true)
+        }
     }
 }

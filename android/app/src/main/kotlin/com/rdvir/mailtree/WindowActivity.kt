@@ -1,5 +1,7 @@
 package com.rdvir.mailtree
 
+import android.os.Bundle
+
 /**
  * The activity a second window runs in.
  *
@@ -11,4 +13,14 @@ package com.rdvir.mailtree
  * and launches as a document, so every start is a new task, which is what
  * a window is.
  */
-class WindowActivity : MainActivity()
+class WindowActivity : MainActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // The window that opened this one is waiting to hear it exists. Not
+        // a window rebuilt from saved state: nobody is waiting for that.
+        if (savedInstanceState == null) {
+            WindowsBridge.arrived(intent.getStringExtra("route"))
+        }
+    }
+}

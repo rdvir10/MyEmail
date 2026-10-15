@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -245,6 +247,33 @@ void main() {
 
       expect(find.byType(ComposeScreen), findsOneWidget);
       expect(find.text('From the other window'), findsOneWidget);
+    });
+  });
+
+  // The Android half, which no Dart test runs, read where it is written.
+  // Told "no window" about one that opened, the app deleted the hand-off
+  // and opened the draft behind it, and the window came up empty: on the
+  // tablet, Forward did nothing visible once Recents held eight windows.
+  group('on Android', () {
+    const kotlin = 'android/app/src/main/kotlin/com/rdvir/mailtree';
+    String read(String path) => File(path).readAsStringSync();
+
+    test('a window is known to be open because it says so', () {
+      final bridge = read('$kotlin/WindowsBridge.kt');
+      expect(bridge, isNot(contains('appTasks')),
+          reason: 'a new window can push an old one out of Recents, so the '
+              'count of tasks does not go up');
+      expect(bridge, isNot(contains('Thread.sleep')),
+          reason: "the new window's onCreate runs on the main thread");
+      expect(read('$kotlin/WindowActivity.kt'),
+          contains('WindowsBridge.arrived(intent.getStringExtra("route"))'));
+    });
+
+    test('a closed window leaves Recents', () {
+      final window = RegExp(
+        r'<activity\b[^>]*android:name="\.WindowActivity"[^>]*>',
+      ).firstMatch(read('android/app/src/main/AndroidManifest.xml'))!.group(0)!;
+      expect(window, contains('android:autoRemoveFromRecents="true"'));
     });
   });
 }
