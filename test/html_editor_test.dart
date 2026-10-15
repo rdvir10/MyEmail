@@ -135,5 +135,24 @@ void main() {
       expect(doc, contains('window.mailtreeSetSignature = function'));
       expect(doc, contains("querySelector('body > .mailtree-signature')"));
     });
+
+    // Tab in the body moves between the message's fields, as it does above
+    // it, and the compose screen says where to.
+    test('Tab is told to the screen, never typed or left to the browser', () {
+      final keys = doc.substring(
+        doc.indexOf("document.addEventListener('keydown'"),
+        doc.indexOf('function keepCaretVisible'),
+      );
+      final tab = keys.substring(keys.indexOf("e.key === 'Tab'"));
+      expect(tab, contains('e.preventDefault();'));
+      expect(tab, contains("e.shiftKey ? 'backTab' : 'tab'"));
+    });
+
+    test('coming back to the body puts the caret where it was', () {
+      final focus = doc.substring(doc.indexOf('window.mailtreeFocus = function'));
+      expect(focus.substring(0, focus.indexOf('};')),
+          contains('sel.addRange(lastCaret)'));
+      expect(doc, contains('lastCaret = sel.getRangeAt(0).cloneRange()'));
+    });
   });
 }

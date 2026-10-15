@@ -14,6 +14,7 @@ import 'package:myemail/data/windows/window_opener.dart';
 import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/mailbox_counts.dart';
 import 'package:myemail/domain/window_handoff.dart';
+import 'package:myemail/ui/compose/html_editor.dart';
 
 /// The names the two halves of the app agree on, checked from both sides.
 ///
@@ -39,6 +40,7 @@ void main() {
     expect(kotlin.handled.keys, containsAll([
       'mailtree/calendar',
       'mailtree/contacts',
+      'mailtree/editor',
       'mailtree/files',
       'mailtree/print',
       'mailtree/installer',
@@ -147,6 +149,8 @@ void main() {
         Draft(accountId: 'a', kind: ComposeKind.newMessage),
       ));
 
+      await focusEditorView(7);
+
       expect(calls, isNotEmpty);
       for (final (channel, call) in calls) {
         final where = '$channel ${call.method}';
@@ -182,6 +186,7 @@ void main() {
         containsAll([
           'mailtree/calendar insert',
           'mailtree/calendar timeZone',
+          'mailtree/editor focus',
           'mailtree/files startDragMany',
           'mailtree/files openWith',
           'mailtree/files defaultApp',

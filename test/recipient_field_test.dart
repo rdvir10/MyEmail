@@ -273,6 +273,21 @@ void main() {
       expect(find.byType(ComposeScreen), findsOneWidget);
     });
 
+    testWidgets('Tab takes the one Enter would, and goes on to Cc',
+        (tester) async {
+      await open(tester, engine: _Known());
+      await type(tester, 'da');
+      expect(find.text('Dana Levi'), findsOneWidget);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pumpAndSettle();
+
+      final to = tester.widget<TextField>(toField());
+      expect(to.controller?.text, 'Dana Levi <dana@example.com>, ');
+      expect(to.focusNode!.hasFocus, isFalse, reason: 'on to Cc');
+      expect(find.text('Dana Levi'), findsNothing);
+    });
+
     testWidgets('nobody already in the field is offered again',
         (tester) async {
       await open(tester, engine: _Known());

@@ -59,6 +59,16 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   late final TextEditingController _subject =
       TextEditingController(text: widget.draft.subject);
 
+  final _fromFocus = FocusNode();
+  final _toFocus = FocusNode();
+  final _ccFocus = FocusNode();
+  final _bccFocus = FocusNode();
+  final _subjectFocus = FocusNode();
+
+  /// The body has been given the cursor a reply starts with, or did not
+  /// need it.
+  bool _caretPlaced = false;
+
   late List<DraftAttachment> _attachments = List.of(widget.draft.attachments);
   /// Bcc is the one line that stays hidden until asked for: it is rare, and
   /// a row nobody uses on every message is a row between them and the body.
@@ -125,6 +135,15 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     _cc.dispose();
     _bcc.dispose();
     _subject.dispose();
+    for (final node in [
+      _fromFocus,
+      _toFocus,
+      _ccFocus,
+      _bccFocus,
+      _subjectFocus,
+    ]) {
+      node.dispose();
+    }
     super.dispose();
   }
 
@@ -135,6 +154,15 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       _openedHtml ??= await _editor.getHtml();
     } on EditorUnreadable {
       // Then nothing counts as unchanged, and leaving asks.
+    }
+    // A reply has its recipients already, so the cursor starts in the body,
+    // above the quote. Not if it has been put in a field meanwhile, and only
+    // the once: the page finishing again is no reason to take it back.
+    if (!mounted || _caretPlaced) return;
+    _caretPlaced = true;
+    if (widget.draft.to.isNotEmpty &&
+        !_tabStops().any((stop) => stop?.hasFocus ?? false)) {
+      await _editor.focus();
     }
   }
 
@@ -346,14 +374,22 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     unawaited(_editor.setSignature(carried ? signature.html : ''));
   }
 
-  /// Ctrl+Enter sends and Esc leaves, from the header fields. The body is a
-  /// WebView, whose keys never reach Flutter; the editor's page reports the
-  /// same two, and they come in through [_onEditorKey].
+  /// Ctrl+Enter sends, Esc leaves, and Tab moves between the fields, from
+  /// the header fields. The body is a WebView, whose keys never reach
+  /// Flutter; the editor's page reports the same ones, and they come in
+  /// through [_onEditorKey].
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
-    final control = HardwareKeyboard.instance.isControlPressed ||
-        HardwareKeyboard.instance.isMetaPressed;
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final keyboard = HardwareKeyboard.instance;
+    final control = keyboard.isControlPressed || keyboard.isMetaPressed;
     final key = event.logicalKey;
+    // Held down too, or the repeats went to Flutter's own Tab, which stops
+    // at every button.
+    if (key == LogicalKeyboardKey.tab && !control && !keyboard.isAltPressed) {
+      _tab(back: keyboard.isShiftPressed);
+      return KeyEventResult.handled;
+    }
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
     if (control &&
         (key == LogicalKeyboardKey.enter ||
             key == LogicalKeyboardKey.numpadEnter)) {
@@ -374,7 +410,63 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
         _send();
       case 'close':
         Navigator.of(context).maybePop();
+      // From the body, the last stop: on round to the first, or back to
+      // the one before it.
+      case 'tab':
+        _goTo(_tabStops().first);
+      case 'backTab':
+        final stops = _tabStops();
+        _goTo(stops[stops.length - 2]);
     }
+  }
+
+  /// Where Tab goes, in order, and Shift+Tab back: From where there is a
+  /// choice of account, To, Cc, Bcc once it is showing, Subject, and the
+  /// body, which is null here, being a WebView with no node of its own.
+  /// Then round again. Nothing else is a stop — not the buttons, the
+  /// toolbar or an attachment — so Tab only ever moves between the places
+  /// a message is written in.
+  List<FocusNode?> _tabStops() {
+    final accounts = ref.read(accountsProvider).value ?? const <Account>[];
+    return [
+      if (accounts.length > 1) _fromFocus,
+      _toFocus,
+      _ccFocus,
+      if (_showBcc) _bccFocus,
+      _subjectFocus,
+      null,
+    ];
+  }
+
+  /// One stop on, or back. From anywhere else, a button or nothing at all,
+  /// Tab starts at the first stop and Shift+Tab at the body.
+  void _tab({required bool back}) {
+    final stops = _tabStops();
+    final at = stops.indexWhere((stop) => stop?.hasFocus ?? false);
+    final next = at < 0
+        ? (back ? stops.length - 1 : 0)
+        : (at + (back ? -1 : 1)) % stops.length;
+    _goTo(stops[next]);
+  }
+
+  /// A field is entered with the cursor after what is in it, ready to add
+  /// to it; the body where its caret last was.
+  void _goTo(FocusNode? stop) {
+    if (stop == null) {
+      unawaited(_editor.focus());
+      return;
+    }
+    final text = switch (stop) {
+      _ when stop == _toFocus => _to,
+      _ when stop == _ccFocus => _cc,
+      _ when stop == _bccFocus => _bcc,
+      _ when stop == _subjectFocus => _subject,
+      _ => null,
+    };
+    if (text != null) {
+      text.selection = TextSelection.collapsed(offset: text.text.length);
+    }
+    stop.requestFocus();
   }
 
   Future<void> _send() async {
@@ -568,9 +660,10 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       },
       child: Focus(
         // Keys reach this only from a focused descendant, and a reply has
-        // none: its To is filled, so nothing takes the cursor. Then this
-        // takes the focus itself. A new message gives it to To instead,
-        // which is below here, so its keys pass through all the same.
+        // none until its body has loaded and taken the cursor: its To is
+        // filled. Until then this takes the focus itself. A new message
+        // gives it to To instead, which is below here, so its keys pass
+        // through all the same.
         autofocus: widget.draft.to.isNotEmpty,
         skipTraversal: true,
         onKeyEvent: _onKey,
@@ -635,6 +728,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
                     Expanded(
                       child: DropdownButton<String>(
                         key: const ValueKey('from-account'),
+                        focusNode: _fromFocus,
                         value: account?.id,
                         isExpanded: true,
                         underline: const SizedBox.shrink(),
@@ -676,6 +770,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
             RecipientField(
               label: 'To',
               controller: _to,
+              focusNode: _toFocus,
               enabled: !_sending,
               // A new message starts with the cursor here. A reply already
               // has its recipients, so the cursor is better off in the body.
@@ -684,6 +779,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
             RecipientField(
               label: 'Cc',
               controller: _cc,
+              focusNode: _ccFocus,
               enabled: !_sending,
               trailing: _showBcc
                   ? null
@@ -696,11 +792,13 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
               RecipientField(
                 label: 'Bcc',
                 controller: _bcc,
+                focusNode: _bccFocus,
                 enabled: !_sending,
               ),
             HeaderField(
               label: 'Subject',
               controller: _subject,
+              focusNode: _subjectFocus,
               enabled: !_sending,
             ),
             if (_attachments.isNotEmpty)

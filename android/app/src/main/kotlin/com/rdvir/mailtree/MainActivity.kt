@@ -108,6 +108,9 @@ open class MainActivity : FlutterActivity() {
         contacts = ContactsBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         // A second window: another copy of this activity, in its own task.
         WindowsBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        // The message editor's WebView given the keyboard, by Tab or on
+        // opening a reply.
+        EditorBridge(flutterEngine)
         // Print, and save as PDF, through the system's print sheet.
         PrintBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         // Events handed to the calendar app's own new-event screen.

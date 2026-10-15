@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import '../../domain/error_report.dart';
 import '../../domain/message_colours.dart';
@@ -126,6 +128,23 @@ class _HtmlEditorState extends State<HtmlEditor> {
   Widget build(BuildContext context) => WebViewWidget(controller: _web);
 }
 
+const _editorChannel = MethodChannel('mailtree/editor');
+
+/// Android's focus for the editor's WebView, which the WebView plugin knows
+/// by [webView]. False where there is no such view, and nothing is thrown:
+/// the caret is still put in the page.
+Future<bool> focusEditorView(int webView) async {
+  try {
+    return await _editorChannel
+            .invokeMethod<bool>('focus', {'webView': webView}) ??
+        false;
+  } on PlatformException {
+    return false;
+  } on MissingPluginException {
+    return false;
+  }
+}
+
 /// Drives the editor from Dart: read the document, apply formatting, learn
 /// what the caret is sitting in.
 class HtmlEditorController extends ChangeNotifier {
@@ -137,7 +156,8 @@ class HtmlEditorController extends ChangeNotifier {
   final _readyCompleter = Completer<void>();
 
   /// A key the page reports rather than handles: 'send' for Ctrl+Enter,
-  /// 'close' for Esc. The compose screen decides what they mean.
+  /// 'close' for Esc, 'tab' and 'backTab' for Tab and Shift+Tab. The
+  /// compose screen decides what they mean.
   void Function(String key)? onKey;
   Set<String> _activeFormats = const {};
 
@@ -198,8 +218,20 @@ class HtmlEditorController extends ChangeNotifier {
     await _web?.runJavaScript('window.mailtreeInsert(${jsonEncode(html)});');
   }
 
+  /// Give the body the keyboard, with the caret back where it last was,
+  /// or where writing starts (above the quote) if it has not been in yet.
+  ///
+  /// A WebView takes keys only once Android has given it focus, which
+  /// Flutter's own focus does not do, so that comes first: without it the
+  /// caret showed in the body and the keys went on to the field above.
   Future<void> focus() async {
-    await _web?.runJavaScript('window.mailtreeFocus();');
+    final web = _web;
+    if (web == null) return;
+    final platform = web.platform;
+    if (platform is AndroidWebViewController) {
+      await focusEditorView(platform.webViewIdentifier);
+    }
+    await web.runJavaScript('window.mailtreeFocus();');
   }
 
   /// Line spacing for the lines selected, or for all that is written when
@@ -533,9 +565,26 @@ String editorDocument(String bodyHtml,
     return line;
   }
 
+  // Where the caret last was in the body, so coming back to it from the
+  // fields above puts it back there rather than at the top.
+  var lastCaret = null;
+  document.addEventListener('selectionchange', function () {
+    var sel = window.getSelection();
+    if (sel.rangeCount && document.body.contains(sel.anchorNode)) {
+      lastCaret = sel.getRangeAt(0).cloneRange();
+    }
+  });
+
   window.mailtreeFocus = function () {
     document.body.focus();
-    placeCaret();
+    if (lastCaret && document.body.contains(lastCaret.startContainer)) {
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(lastCaret);
+    } else {
+      placeCaret();
+    }
+    keepCaretVisible();
   };
 
   var FORMATS = ['bold', 'italic', 'underline',
@@ -620,15 +669,20 @@ String editorDocument(String bodyHtml,
   document.body.addEventListener('input', orientAll);
   document.body.addEventListener('input', reportFormats);
 
-  // Keys pressed in here never reach Flutter, so the two the compose
+  // Keys pressed in here never reach Flutter, so the ones the compose
   // screen answers to are reported across. Ctrl+Enter is stopped from
-  // also putting a line break in.
+  // also putting a line break in. Tab moves between the message's fields,
+  // as it does above, and the screen says where to: never a tab in the
+  // text, and never the browser's own move to whatever else is on the page.
   document.addEventListener('keydown', function (e) {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
       post({ type: 'key', value: 'send' });
     } else if (e.key === 'Escape') {
       post({ type: 'key', value: 'close' });
+    } else if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      post({ type: 'key', value: e.shiftKey ? 'backTab' : 'tab' });
     }
   });
 

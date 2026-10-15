@@ -24,6 +24,7 @@ class HeaderField extends StatelessWidget {
     required this.enabled,
     this.autofocus = false,
     this.keyboardType = TextInputType.text,
+    this.focusNode,
   });
 
   final String label;
@@ -31,6 +32,9 @@ class HeaderField extends StatelessWidget {
   final bool enabled;
   final bool autofocus;
   final TextInputType keyboardType;
+
+  /// The field's own, for a screen that moves the cursor itself.
+  final FocusNode? focusNode;
 
   @override
   Widget build(BuildContext context) {
@@ -55,6 +59,7 @@ class HeaderField extends StatelessWidget {
               valueListenable: controller,
               builder: (context, value, _) => TextField(
                 controller: controller,
+                focusNode: focusNode,
                 enabled: enabled,
                 autofocus: autofocus,
                 style: theme.textTheme.bodyMedium,
@@ -108,6 +113,7 @@ class RecipientField extends ConsumerStatefulWidget {
     required this.enabled,
     this.trailing,
     this.autofocus = false,
+    this.focusNode,
   });
 
   final String label;
@@ -116,12 +122,16 @@ class RecipientField extends ConsumerStatefulWidget {
   final Widget? trailing;
   final bool autofocus;
 
+  /// The field's own, for a screen that moves the cursor itself. Left to
+  /// whoever made it to dispose.
+  final FocusNode? focusNode;
+
   @override
   ConsumerState<RecipientField> createState() => _RecipientFieldState();
 }
 
 class _RecipientFieldState extends ConsumerState<RecipientField> {
-  final _focus = FocusNode();
+  late final FocusNode _focus = widget.focusNode ?? FocusNode();
   final _list = OverlayPortalController();
 
   /// The people on show, best first.
@@ -157,9 +167,8 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
   void dispose() {
     _answers?.cancel();
     widget.controller.removeListener(_onText);
-    _focus
-      ..removeListener(_onFocus)
-      ..dispose();
+    _focus.removeListener(_onFocus);
+    if (widget.focusNode == null) _focus.dispose();
     super.dispose();
   }
 
@@ -272,9 +281,11 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
     _put(const []);
   }
 
-  /// While the list is on show, the arrow keys move through it and Esc
-  /// closes it. Otherwise every key goes on: the arrows to the field, Esc
-  /// to the screen, which closes the message. A key handler of its own
+  /// While the list is on show, the arrow keys move through it, Esc
+  /// closes it, and Tab takes the person Enter would before going on to
+  /// the screen, which moves the cursor to the next field. Otherwise every
+  /// key goes on: the arrows to the field, Esc to the screen, which closes
+  /// the message. A key handler of its own
   /// rather than a Shortcuts entry, which kept Esc even when it had
   /// nothing to do with it, and the message stayed open.
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
@@ -293,6 +304,10 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
     if (_showing && key == LogicalKeyboardKey.escape) {
       _put(const []);
       return KeyEventResult.handled;
+    }
+    if (_showing && key == LogicalKeyboardKey.tab) {
+      _submitted();
+      return KeyEventResult.ignored;
     }
     return KeyEventResult.ignored;
   }
