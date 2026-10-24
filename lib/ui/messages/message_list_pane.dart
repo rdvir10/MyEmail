@@ -92,7 +92,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       if (secondLook) return;
       final folderId = ref.read(effectiveSelectedFolderIdProvider);
       if (folderId == null) return;
-      final rows = _searching ? _searchRows() : folderRows(ref, folderId);
+      final rows = ListRows.onScreen(ref, folderId).shown;
       final at = rows.indexWhere((m) => m.id == id);
       if (at < 0 || rows.length < 2) return;
       final position = _scroll.position;
@@ -106,15 +106,8 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     });
   }
 
-  /// The built row showing [id]: its own tile, or the closed thread it is
-  /// folded into.
-  bool get _searching => ref.read(searchQueryProvider).trim().isNotEmpty;
-
   /// The search hits in the order they are drawn.
-  List<MailMessage> _searchRows() => sortMessages(
-        ref.read(searchResultsProvider).value ?? const [],
-        ref.read(displayProvider).sort,
-      );
+  List<MailMessage> _searchRows() => searchRows(ref) ?? const [];
 
   /// Whether [id]'s row is on screen now, not merely built.
   bool _isShowing(String id) {
@@ -127,6 +120,8 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     return rowRect.overlaps(listRect);
   }
 
+  /// The built row showing [id]: its own tile, or the closed thread it is
+  /// folded into.
   BuildContext? _rowFor(String id) {
     BuildContext? found;
     void visit(Element e) {
@@ -152,6 +147,24 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     // Back from being put away: newest first, at the top.
     ref.listen(listToTopProvider, (_, _) {
       if (_scroll.hasClients) _scroll.jumpTo(0);
+    });
+    // Another folder opens at its newest mail. The list is the same one from
+    // folder to folder, and a folder visited before has its mail at once,
+    // with no spinner between to drop the old position: on the phone Sent
+    // opened as far down as the Inbox had been scrolled. Beside a reading
+    // pane the list then goes to the message open in it, if this folder
+    // has it too.
+    ref.listen<String?>(effectiveSelectedFolderIdProvider, (before, now) {
+      if (before == now || !_scroll.hasClients) return;
+      _scroll.jumpTo(0);
+      final open = ref.read(selectedMessageIdProvider);
+      if (open != null &&
+          AppShell.hasReadingPane(
+            MediaQuery.sizeOf(context).width,
+            ref.read(displayProvider).readingPane,
+          )) {
+        _reveal(open);
+      }
     });
     final theme = Theme.of(context);
     final folderId = ref.watch(effectiveSelectedFolderIdProvider);
@@ -545,10 +558,13 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                       // again for a message the app had already landed on — so
                       // tapping the message the folder opened at would leave it
                       // unread, which is the one case this has to get right.
+                      // Quiet when it fails, as the pane is: the message stays
+                      // unread, and nobody asked to be told.
                       if (!m.isRead) {
                         ref
                             .read(messagesProvider(folderId).notifier)
-                            .setRead(m.id, true);
+                            .setRead(m.id, true)
+                            .catchError((Object _) {});
                       }
                       widget.onOpen(m);
                     },
@@ -834,7 +850,6 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     if (choice == null || !context.mounted) return;
 
     final messages = conversation.messages;
-    final notifier = ref.read(messagesProvider(actions.listId).notifier);
     switch (choice) {
       case 'select':
         ref.read(selectedMessageIdsProvider.notifier).addAll([
@@ -844,11 +859,13 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         await actions.moveWithPrompt(context, messages);
       case 'delete':
         await actions.delete(context, messages);
+      // Through the actions, as the date bar's menu and the swipe go: each
+      // message is tried and what failed is said. Looped here, the first
+      // that failed stopped the rest, and nothing said so.
       case 'read':
-        await notifier.setMessagesRead([for (final m in messages) m.id], unread);
+        await actions.setRead(context, messages, unread);
       case 'flag':
-        await notifier
-            .setMessagesFlagged([for (final m in messages) m.id], !flagged);
+        await actions.setFlagged(context, messages, !flagged);
     }
   }
 

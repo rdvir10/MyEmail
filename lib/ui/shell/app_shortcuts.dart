@@ -4,7 +4,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/draft.dart';
-import '../../state/list_navigation.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import '../../state/search_providers.dart';
@@ -17,6 +16,7 @@ import '../../state/print_providers.dart';
 import '../messages/forward_as_attachment.dart';
 import '../messages/full_screen_message.dart';
 import '../messages/html_body_view.dart';
+import '../messages/list_keyboard.dart';
 import '../messages/message_actions.dart';
 import 'pane_focus.dart';
 
@@ -158,11 +158,11 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
 
   /// The message after or before the open one, from wherever the focus is:
   /// reading one message and wanting the next should not mean finding the
-  /// list first.
+  /// list first. The next row on screen, as the list's own arrows go.
   void _step(String? listId, int delta) {
     if (listId == null) return;
-    final messages = ref.read(messagesProvider(listId)).value ?? const [];
-    final next = neighbourOf(messages, ref.read(selectedMessageIdProvider), delta);
+    final next = ListRows.onScreen(ref, listId)
+        .step(ref.read(selectedMessageIdProvider), delta);
     if (next == null) return;
     ref.read(selectedMessageIdProvider.notifier).select(next);
     ref.read(lastOpenedInFolderProvider.notifier).remember(listId, next);
@@ -301,7 +301,7 @@ const shortcutHelp = <String, List<ShortcutHelp>>{
     ShortcutHelp('Space', 'Tick or untick'),
     ShortcutHelp('Shift+↑  Shift+↓', 'Tick a run of messages'),
     ShortcutHelp('Ctrl+A', 'Tick everything on screen'),
-    ShortcutHelp('Delete  or  Backspace', 'Delete'),
+    ShortcutHelp('Delete  or  Backspace', 'Delete, or delete what is ticked'),
     ShortcutHelp('Esc', 'Untick everything'),
   ],
   'While writing': [

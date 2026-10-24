@@ -17,6 +17,10 @@ import '../domain/message_sort.dart';
 ///     threading existed, and because plenty of real mail answers a message
 ///     without saying so.
 ///
+/// All three within one account. A conversation's row is acted on whole,
+/// archived or moved or deleted, and one spanning two mailboxes carried
+/// one's mail into the other.
+///
 /// Deliberately not the full JWZ algorithm. That one reconstructs a tree from
 /// the whole `References` chain, and a tree is not what a mail list shows: a
 /// list shows a flat run of messages, newest last. What matters here is only
@@ -122,9 +126,14 @@ List<Conversation> conversationsInOrder(
 List<Conversation> groupIntoConversations(List<MailMessage> messages) {
   if (messages.isEmpty) return const [];
 
-  final byMessageId = <String, MailMessage>{
+  // Scoped to the account, as the server's conversation and the subject are
+  // below. A reply in the Gmail to a message in the work mailbox, written to
+  // both or copied, made one conversation of the two in the unified Inbox,
+  // and whatever was done to its row went across: Archive sent the Gmail
+  // mail into the work mailbox's Archive and out of Gmail.
+  final byMessageId = <(String, String), MailMessage>{
     for (final m in messages)
-      if (m.messageId != null) m.messageId!: m,
+      if (m.messageId != null) (m.accountId, m.messageId!): m,
   };
 
   // Union-find over message ids, so a chain A <- B <- C ends up as one group
@@ -160,7 +169,7 @@ List<Conversation> groupIntoConversations(List<MailMessage> messages) {
   for (final m in messages) {
     final answered = m.inReplyTo;
     if (answered == null) continue;
-    final parentMessage = byMessageId[answered];
+    final parentMessage = byMessageId[(m.accountId, answered)];
     if (parentMessage != null) union(m.id, parentMessage.id);
   }
 

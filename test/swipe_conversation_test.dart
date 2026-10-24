@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/display_settings.dart';
+import 'package:myemail/domain/folder_capabilities.dart';
+import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/state/conversations.dart';
 import 'package:myemail/state/display_providers.dart';
+import 'package:myemail/state/folder_tree.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/messages/conversation_tile.dart';
@@ -172,4 +178,144 @@ void main() {
       expect(listOf(c).any((x) => x.id == loose.id), isFalse);
     });
   });
+
+  testWidgets('Archive in the unified Inbox files only the row\'s own '
+      'account\'s mail', (tester) async {
+    // A Projects message answering a Personal one was one conversation
+    // there, and Archive sent both to the oldest one's Archive: the
+    // Projects mail was copied into the Personal mailbox and taken out of
+    // its own.
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final engine = _AnsweredAcross();
+    final c = ProviderContainer(
+      overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        mailEngineProvider.overrideWithValue(engine),
+      ],
+    );
+    addTearDown(c.dispose);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: c,
+        child: const MaterialApp(home: AppShell()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    c.read(displayProvider.notifier)
+      ..setConversations(true)
+      ..setSwipeLeft(SwipeAction.archive);
+    await tester.pumpAndSettle();
+    expect(c.read(effectiveSelectedFolderIdProvider), kUnifiedInboxId);
+
+    await tester.drag(
+      find.descendant(
+        of: find.byType(MessageListPane),
+        matching: find.text('Plans'),
+      ),
+      const Offset(-600, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(engine.filed, {
+      _AnsweredAcross.original.id: MailFolder.idFor('acct-personal', 'Archive'),
+    });
+  });
+}
+
+/// Both accounts' Inboxes and nothing else in them: a Personal message,
+/// and a Projects one answering it. Each account has an Archive that
+/// takes mail. Moves are written down rather than made, since the sample
+/// store moves only the messages it made itself.
+class _AnsweredAcross extends SampleMailEngine {
+  static final original = MailMessage(
+    id: MailMessage.idFor('acct-personal:INBOX', 1),
+    accountId: 'acct-personal',
+    folderId: 'acct-personal:INBOX',
+    uid: 1,
+    subject: 'Plans',
+    preview: '',
+    from: const MailAddress(email: 'dana@example.com'),
+    to: const [MailAddress(email: 'personal@example.com')],
+    date: DateTime.now().subtract(const Duration(minutes: 30)),
+    isRead: true,
+    messageId: 'plans@example.com',
+  );
+  static final answer = MailMessage(
+    id: MailMessage.idFor('acct-side:INBOX', 1),
+    accountId: 'acct-side',
+    folderId: 'acct-side:INBOX',
+    uid: 1,
+    subject: 'Re: Plans',
+    preview: '',
+    from: const MailAddress(email: 'lee@example.com'),
+    to: const [MailAddress(email: 'projects@example.com')],
+    date: DateTime.now().subtract(const Duration(minutes: 10)),
+    isRead: true,
+    messageId: 're-plans@example.com',
+    inReplyTo: 'plans@example.com',
+  );
+
+  /// Each message moved, and the folder it was moved to.
+  final filed = <String, String>{};
+
+  @override
+  Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) async =>
+      [
+        if (offset == 0)
+          for (final m in [original, answer])
+            if (m.folderId == folderId && !filed.containsKey(m.id)) m,
+      ];
+
+  @override
+  Future<List<MailMessage>> cachedMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) =>
+      loadMessages(folderId, offset: offset, limit: limit);
+
+  @override
+  Future<List<MessageMove>> moveMessages(
+    List<String> messageIds,
+    String toFolderId,
+  ) async {
+    for (final id in messageIds) {
+      filed[id] = toFolderId;
+    }
+    return [
+      for (final id in messageIds)
+        MessageMove(
+          fromFolderId: id.substring(0, id.lastIndexOf('#')),
+          toFolderId: toFolderId,
+          movedIds: ['$toFolderId#$id'],
+        ),
+    ];
+  }
+
+  List<MailFolder> _withArchive(String accountId, List<MailFolder> folders) =>
+      [
+        ...folders,
+        MailFolder.at(
+          accountId: accountId,
+          path: 'Archive',
+          role: FolderRole.archive,
+          capabilities: const FolderCapabilities.userFolder(),
+          sortIndex: folders.length,
+        ),
+      ];
+
+  @override
+  Future<List<MailFolder>> loadFolders(String accountId) async =>
+      _withArchive(accountId, await super.loadFolders(accountId));
+
+  @override
+  Future<List<MailFolder>> cachedFolders(String accountId) async =>
+      _withArchive(accountId, await super.cachedFolders(accountId));
 }

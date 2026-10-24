@@ -7,6 +7,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/conversations.dart';
 import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
@@ -472,6 +474,106 @@ void main() {
         contains(thread.conversation.id),
       );
     });
+
+    // From its right-click menu, with one message the server will not
+    // change. The menu stopped at that one, left the rest as they were, and
+    // the error went nowhere anyone could see.
+    Future<(ProviderContainer, _Refuses, Conversation)> withOneRefused(
+      WidgetTester tester,
+      bool Function(Conversation) which,
+    ) async {
+      final engine = _Refuses();
+      final c = await pump(tester, engine: engine);
+      c.read(displayProvider.notifier).setConversations(true);
+      await tester.pumpAndSettle();
+      final thread = tester
+          .widgetList<ConversationTile>(find.byType(ConversationTile))
+          .map((t) => t.conversation)
+          .firstWhere(which);
+      return (c, engine, thread);
+    }
+
+    Future<void> fromMenu(
+      WidgetTester tester,
+      Conversation thread,
+      String item,
+    ) async {
+      await tester.tap(
+        find.byKey(ValueKey('thread:${thread.id}')),
+        buttons: kSecondaryButton,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(PopupMenuItem<String>, item));
+      await tester.pumpAndSettle();
+    }
+
+    Map<String, MailMessage> listed(ProviderContainer c) => {
+          for (final m in c
+              .read(messagesProvider(c.read(effectiveSelectedFolderIdProvider)!))
+              .value!)
+            m.id: m,
+        };
+
+    testWidgets('its Mark all as read goes on past one that fails, and says so',
+        (tester) async {
+      final (c, engine, thread) = await withOneRefused(
+        tester,
+        (t) => t.unreadCount > 1,
+      );
+      final refused = thread.messages.firstWhere((m) => !m.isRead);
+      engine.refused = refused.id;
+
+      await fromMenu(tester, thread, 'Mark all ${thread.length} as read');
+
+      final now = listed(c);
+      for (final m in thread.messages) {
+        expect(now[m.id]!.isRead, m.id != refused.id, reason: m.id);
+      }
+      expect(find.textContaining('Could not mark read 1 of ${thread.length}'),
+          findsOneWidget);
+    });
+
+    testWidgets('its Flag all goes on past one that fails, and says so',
+        (tester) async {
+      final (c, engine, thread) = await withOneRefused(
+        tester,
+        (t) => t.isThread && !t.isFlagged,
+      );
+      engine.refused = thread.messages.first.id;
+
+      await fromMenu(tester, thread, 'Flag all ${thread.length}');
+
+      final now = listed(c);
+      for (final m in thread.messages) {
+        expect(now[m.id]!.isFlagged, m.id != engine.refused, reason: m.id);
+      }
+      expect(find.textContaining('Could not flag 1 of ${thread.length}'),
+          findsOneWidget);
+    });
+  });
+
+  testWidgets('a tap on an unread message the server will not mark leaves '
+      'it unread, quietly', (tester) async {
+    // As the reading pane does: nobody asked to be told. The error went
+    // unhandled instead.
+    final engine = _Refuses();
+    final c = await pump(tester, engine: engine);
+    final unread = tester
+        .widgetList<MessageTile>(find.byType(MessageTile))
+        .map((t) => t.message)
+        .where((m) => !m.isRead)
+        .elementAt(1);
+    engine.refused = unread.id;
+
+    await tester.tap(find.byKey(ValueKey('tile:${unread.id}')));
+    await tester.pumpAndSettle();
+
+    final folder = c.read(effectiveSelectedFolderIdProvider)!;
+    final after = c
+        .read(messagesProvider(folder))
+        .value!
+        .firstWhere((m) => m.id == unread.id);
+    expect(after.isRead, isFalse);
   });
 }
 
@@ -490,5 +592,23 @@ class _Together extends SampleMailEngine {
   Future<void> setMessagesFlagged(List<String> messageIds, bool isFlagged) {
     flagged.add(messageIds);
     return super.setMessagesFlagged(messageIds, isFlagged);
+  }
+}
+
+/// The sample engine with one message the server will not change, as with
+/// an expired token or a connection that dropped.
+class _Refuses extends SampleMailEngine {
+  String? refused;
+
+  @override
+  Future<void> setRead(String messageId, bool isRead) async {
+    if (messageId == refused) throw StateError('the server said no');
+    await super.setRead(messageId, isRead);
+  }
+
+  @override
+  Future<void> setFlagged(String messageId, bool isFlagged) async {
+    if (messageId == refused) throw StateError('the server said no');
+    await super.setFlagged(messageId, isFlagged);
   }
 }

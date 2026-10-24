@@ -48,6 +48,38 @@ void main() {
     });
   });
 
+  group('where the open message was, once it has gone', () {
+    // Deleted from the reading pane, moved, swiped: the list landed at the
+    // top of the folder, and the place in it was lost each time.
+    final five = [m('m1'), m('m2'), m('m3'), m('m4'), m('m5')];
+
+    test('on the row after it', () {
+      expect(rowInPlaceOf(five, 'm3', const {'m1', 'm2', 'm4', 'm5'}), 'm4');
+    });
+
+    test('on the row before it when it was the last', () {
+      expect(rowInPlaceOf(five, 'm5', const {'m1', 'm2', 'm3', 'm4'}), 'm4');
+    });
+
+    test('past the others that went with it', () {
+      // Ticked and deleted together: the first left after it, not the row
+      // that happens to be at its place now.
+      expect(rowInPlaceOf(five, 'm2', const {'m3', 'm5'}), 'm3');
+      expect(rowInPlaceOf(five, 'm4', const {'m1', 'm2'}), 'm2');
+    });
+
+    test('on its own row while that is still there', () {
+      // A message folded into a closed thread went; the thread is still
+      // where it was.
+      expect(rowInPlaceOf(five, 'm3', const {'m1', 'm3', 'm5'}), 'm3');
+    });
+
+    test('nowhere it was not', () {
+      expect(rowInPlaceOf(five, 'other', const {'m1'}), isNull);
+      expect(rowInPlaceOf(five, 'm3', const {}), isNull);
+    });
+  });
+
   group('the arrow keys', () {
     test('move down and up', () {
       expect(neighbourOf(messages, 'm1', 1), 'm2');

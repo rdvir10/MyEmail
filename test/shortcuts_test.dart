@@ -289,6 +289,114 @@ void main() {
       expect(selected(c), ids[2]);
     });
 
+    group('Delete on the last row', () {
+      // Delete moves on first, and from the last row there is nowhere to
+      // move on to. Staying put, the list landed at the top of the folder
+      // and a held key went on deleting the newest mail. Going up a row,
+      // a held key went on up through the mail above where the person
+      // started.
+      List<String> rows(ProviderContainer c) => [
+            for (final m in c.read(sortedMessagesProvider(
+                c.read(effectiveSelectedFolderIdProvider)!)))
+              m.id,
+          ];
+
+      Future<List<String>> toTheEnd(
+          WidgetTester tester, ProviderContainer c) async {
+        final folder = c.read(effectiveSelectedFolderIdProvider)!;
+        for (var i = 0; i < 10 && c.read(listHasMoreProvider(folder)); i++) {
+          await press(tester, LogicalKeyboardKey.end);
+        }
+        await press(tester, LogicalKeyboardKey.end);
+        return rows(c);
+      }
+
+      Future<void> hold(WidgetTester tester, {required int repeats}) async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.delete);
+        await tester.pump();
+        for (var i = 0; i < repeats; i++) {
+          await tester.sendKeyRepeatEvent(LogicalKeyboardKey.delete);
+          await tester.pump();
+        }
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.delete);
+        await tester.pump(const Duration(milliseconds: 200));
+        await tester.pumpAndSettle();
+      }
+
+      testWidgets('goes up to the row above', (tester) async {
+        final c = await pump(tester);
+        final ids = await toTheEnd(tester, c);
+        expect(selected(c), ids.last);
+
+        await press(tester, LogicalKeyboardKey.delete);
+
+        expect(rows(c), ids.take(ids.length - 1).toList());
+        expect(selected(c), ids[ids.length - 2]);
+      });
+
+      testWidgets('held down from above, stops there', (tester) async {
+        final c = await pump(tester);
+        final ids = await toTheEnd(tester, c);
+        await press(tester, LogicalKeyboardKey.arrowUp);
+        await press(tester, LogicalKeyboardKey.arrowUp);
+        final from = ids.length - 3;
+        expect(selected(c), ids[from]);
+
+        await hold(tester, repeats: 5);
+
+        expect(rows(c), ids.take(from).toList(),
+            reason: 'the rows above where it started left alone');
+        expect(selected(c), ids[from - 1]);
+
+        // A fresh press is a fresh delete, of the one being looked at.
+        await press(tester, LogicalKeyboardKey.delete);
+        expect(rows(c), ids.take(from - 1).toList());
+      });
+
+      testWidgets('held down on it, takes only that one', (tester) async {
+        final c = await pump(tester);
+        final ids = await toTheEnd(tester, c);
+
+        await hold(tester, repeats: 3);
+
+        expect(rows(c), ids.take(ids.length - 1).toList());
+        expect(selected(c), ids[ids.length - 2]);
+      });
+
+      testWidgets('held down at the end of what has loaded, stops there',
+          (tester) async {
+        // The last row is often only the end of the page loaded so far.
+        // When the next page arrived mid-hold there were rows below again,
+        // and the next repeat took the message above where the person
+        // started and jumped down into the new page.
+        final c = await pump(tester);
+        final folder = c.read(effectiveSelectedFolderIdProvider)!;
+        await tester.sendKeyEvent(LogicalKeyboardKey.end);
+        await tester.pump();
+        final ids = rows(c);
+        expect(selected(c), ids.last);
+        expect(c.read(listHasMoreProvider(folder)), isTrue);
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.delete);
+        await tester.pump();
+        await tester.pumpAndSettle();
+        final arrived = rows(c);
+        expect(arrived.length, greaterThan(ids.length - 1),
+            reason: 'the next page came while the key was down');
+        for (var i = 0; i < 3; i++) {
+          await tester.sendKeyRepeatEvent(LogicalKeyboardKey.delete);
+          await tester.pump();
+        }
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.delete);
+        await tester.pump(const Duration(milliseconds: 200));
+        await tester.pumpAndSettle();
+
+        expect(rows(c), arrived);
+        expect(rows(c), isNot(contains(ids.last)));
+        expect(selected(c), ids[ids.length - 2]);
+      });
+    });
+
     testWidgets('Ctrl+D from the open message deletes that one',
         (tester) async {
       final c = await pump(tester);
@@ -303,6 +411,9 @@ void main() {
 
       expect(listIds(c), isNot(contains(open)));
       expect(listIds(c), hasLength(ids.length - 1));
+      // On to the next, as the list's own Delete goes, rather than back
+      // to the top of the folder.
+      expect(selected(c), ids[2]);
     });
 
     testWidgets('End and Home go to the last and first message',
@@ -518,6 +629,79 @@ void main() {
       expect(selected(c), ids[2]);
     });
 
+    group('Delete with messages ticked', () {
+      // It took the message under the cursor, ticked or not, and left the
+      // ticked ones where they were with the bar still counting them.
+      List<String> rows(ProviderContainer c) => [
+            for (final m in c.read(sortedMessagesProvider(
+                c.read(effectiveSelectedFolderIdProvider)!)))
+              m.id,
+          ];
+
+      testWidgets('takes the ticked ones, not the one being looked at',
+          (tester) async {
+        final c = await pump(tester);
+        final ids = rows(c);
+        await press(tester, LogicalKeyboardKey.arrowDown, shift: true);
+        await press(tester, LogicalKeyboardKey.arrowDown, shift: true);
+        await press(tester, LogicalKeyboardKey.arrowDown);
+        expect(selected(c), ids[3]);
+
+        await press(tester, LogicalKeyboardKey.delete);
+
+        expect(rows(c), isNot(contains(ids[0])));
+        expect(rows(c), isNot(contains(ids[1])));
+        expect(rows(c), isNot(contains(ids[2])));
+        expect(rows(c), contains(ids[3]));
+        expect(c.read(selectedMessageIdsProvider), isEmpty);
+        expect(selected(c), ids[3]);
+        expect(find.text('3 messages deleted'), findsOneWidget);
+      });
+
+      testWidgets('moves on from the ticked run the cursor was in',
+          (tester) async {
+        final c = await pump(tester);
+        final ids = rows(c);
+        await press(tester, LogicalKeyboardKey.arrowDown, shift: true);
+        await press(tester, LogicalKeyboardKey.arrowDown, shift: true);
+
+        await press(tester, LogicalKeyboardKey.backspace);
+
+        expect(rows(c).toSet().intersection(ids.take(3).toSet()), isEmpty);
+        expect(selected(c), ids[3]);
+      });
+
+      testWidgets('held down, goes no further than the ticked ones',
+          (tester) async {
+        // Once they had gone there were no ticks left, and the repeats
+        // would have gone on to the message under the cursor.
+        final c = await pump(tester);
+        final ids = rows(c);
+        await press(tester, LogicalKeyboardKey.space);
+        await press(tester, LogicalKeyboardKey.arrowDown);
+        await press(tester, LogicalKeyboardKey.arrowDown);
+        expect(selected(c), ids[2]);
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.delete);
+        await tester.pump();
+        await tester.sendKeyRepeatEvent(LogicalKeyboardKey.delete);
+        await tester.pump();
+        await tester.sendKeyRepeatEvent(LogicalKeyboardKey.delete);
+        await tester.pump();
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.delete);
+        await tester.pump(const Duration(milliseconds: 200));
+        await tester.pumpAndSettle();
+
+        expect(rows(c), isNot(contains(ids[0])));
+        expect(rows(c), hasLength(ids.length - 1));
+        expect(find.text('Message deleted'), findsOneWidget);
+
+        // A fresh press is a fresh delete, of the one being looked at.
+        await press(tester, LogicalKeyboardKey.delete);
+        expect(rows(c), isNot(contains(ids[2])));
+      });
+    });
+
     testWidgets('Ctrl+A ticks what is on screen, not the folder',
         (tester) async {
       final c = await pump(tester);
@@ -630,6 +814,56 @@ void main() {
       expect(selected(c), ids[1]);
       await press(tester, LogicalKeyboardKey.comma, control: true);
       expect(selected(c), ids[0]);
+    });
+
+    testWidgets('Ctrl+. and Ctrl+, walk the rows the list shows', (tester) async {
+      // They walked the folder's own list, by date whatever the sort and
+      // into the messages folded inside threads, while the list's arrows
+      // walked the rows on screen.
+      final c = await pump(tester);
+      c.read(displayProvider.notifier)
+        ..setConversations(true)
+        ..setSort(MessageSort.sender);
+      await tester.pumpAndSettle();
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+      final rows = visibleMessages(
+        c.read(sortedMessagesProvider(folder)),
+        conversations: true,
+        expandedIds: const {},
+        sort: MessageSort.sender,
+      ).map((m) => m.id).toList();
+      await press(tester, LogicalKeyboardKey.home);
+      expect(selected(c), rows[0]);
+      await press(tester, LogicalKeyboardKey.f6);
+
+      for (var i = 1; i < 10; i++) {
+        await press(tester, LogicalKeyboardKey.period, control: true);
+        expect(selected(c), rows[i], reason: 'row $i');
+      }
+      await press(tester, LogicalKeyboardKey.comma, control: true);
+      expect(selected(c), rows[8]);
+    });
+
+    testWidgets('in search results, Ctrl+. walks the hits', (tester) async {
+      final c = await pump(tester);
+      final open = c.read(effectiveSelectedFolderIdProvider)!;
+      await openSearch(tester);
+      await tester.enterText(searchField, 'the');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+      final hits = sortMessages(
+        c.read(searchResultsProvider).value!,
+        c.read(displayProvider).sort,
+      );
+      final i = hits.indexWhere((m) => m.folderId != open);
+      expect(i, inInclusiveRange(0, hits.length - 2));
+      c.read(selectedMessageIdProvider.notifier).select(hits[i].id);
+      panes(c).reading.requestFocus();
+      await tester.pumpAndSettle();
+
+      await press(tester, LogicalKeyboardKey.period, control: true);
+
+      expect(selected(c), hits[i + 1].id);
     });
 
     testWidgets('Ctrl+Shift+I goes to the Inbox', (tester) async {

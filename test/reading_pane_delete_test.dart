@@ -71,6 +71,34 @@ void main() {
     }
   });
 
+  testWidgets('on a tablet, Delete moves on to the next message and the '
+      'list stays where it was', (tester) async {
+    // With the open message gone, the list landed at the top of the
+    // folder: the newest message took the pane and the list scrolled up to
+    // it, so Ron lost his place each time he dealt with one.
+    final c = await pump(tester, const Size(1400, 900));
+    final folder = c.read(effectiveSelectedFolderIdProvider)!;
+    final rows = [for (final m in c.read(sortedMessagesProvider(folder))) m.id];
+    c.read(selectedMessageIdProvider.notifier).select(rows[20]);
+    await tester.pumpAndSettle();
+    final list = tester.state<ScrollableState>(find
+        .ancestor(
+          of: find.byType(MessageTile).first,
+          matching: find.byType(Scrollable),
+        )
+        .first);
+    final scrolled = list.position.pixels;
+    expect(scrolled, greaterThan(0));
+
+    await tester.tap(inPane(find.byTooltip('Delete')));
+    await tester.pumpAndSettle();
+
+    expect(inList(c, rows[20]), isFalse);
+    expect(c.read(selectedMessageIdProvider), rows[21]);
+    expect(list.position.pixels, greaterThan(scrolled / 2),
+        reason: 'not back at the top');
+  });
+
   testWidgets('on a tablet, the bar says it was deleted, with Undo, though '
       'the pane that asked has gone by then', (tester) async {
     // The pane is keyed by its message, and the message leaves the list

@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/ui/messages/message_list_pane.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 
@@ -107,5 +109,74 @@ void main() {
     c.read(selectedFolderIdProvider.notifier).select(folders.first);
     await tester.pumpAndSettle();
     expect(c.read(selectedMessageIdProvider), third);
+  });
+
+  testWidgets('on a phone, a folder opened again starts at its newest mail',
+      (tester) async {
+    // The list kept its scroll from the folder before: Sent, visited
+    // earlier, opened as far down as the Inbox had been scrolled, and near
+    // its bottom it fetched a page of older mail nobody had asked for.
+    tester.view.physicalSize = const Size(400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final c = ProviderContainer(
+      overrides: [uiStateStoreProvider.overrideWithValue(MemoryUiStateStore())],
+    );
+    addTearDown(c.dispose);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: c,
+        child: const MaterialApp(home: AppShell()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final inbox = c.read(effectiveSelectedFolderIdProvider)!;
+    final sent = c
+        .read(folderIndexProvider)
+        .values
+        .firstWhere((f) => f.role == FolderRole.sent)
+        .id;
+    c.read(selectedFolderIdProvider.notifier).select(sent);
+    await tester.pumpAndSettle();
+    c.read(selectedFolderIdProvider.notifier).select(inbox);
+    await tester.pumpAndSettle();
+    ScrollPosition list() => tester
+        .state<ScrollableState>(find
+            .ancestor(
+              of: find.byType(MessageTile).first,
+              matching: find.byType(Scrollable),
+            )
+            .first)
+        .position;
+    await tester.drag(find.byType(MessageTile).first, const Offset(0, -2500));
+    await tester.pumpAndSettle();
+    expect(list().pixels, greaterThan(0));
+
+    c.read(selectedFolderIdProvider.notifier).select(sent);
+    await tester.pumpAndSettle();
+
+    expect(list().pixels, 0);
+  });
+
+  testWidgets('beside a reading pane, the list goes to the open message in '
+      'the folder it moves to', (tester) async {
+    // From the unified Inbox to the account's own: the open message is in
+    // both, and is still the one open, so that is where the list is.
+    final c = await pump(tester);
+    final unified = c.read(effectiveSelectedFolderIdProvider)!;
+    final rows = c.read(sortedMessagesProvider(unified));
+    final open = rows.skip(30).first;
+    c.read(selectedMessageIdProvider.notifier).select(open.id);
+    await tester.pumpAndSettle();
+
+    c.read(selectedFolderIdProvider.notifier).select(open.folderId);
+    await tester.pumpAndSettle();
+
+    expect(c.read(selectedMessageIdProvider), open.id);
+    final list = tester.getRect(find.byType(MessageListPane));
+    final row = tester.getRect(find.byKey(ValueKey('tile:${open.id}')));
+    expect(row.top, greaterThanOrEqualTo(list.top));
+    expect(row.bottom, lessThanOrEqualTo(list.bottom + 1));
   });
 }

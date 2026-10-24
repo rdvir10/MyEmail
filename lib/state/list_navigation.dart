@@ -22,6 +22,34 @@ String? messageToLandOn({
   return messages.first.id;
 }
 
+/// Where to land when the selected row has gone from under the list:
+/// deleted from the reading pane, moved, swiped, or gone from the server.
+///
+/// The row that was after it, or the one before where nothing after it is
+/// left, among the rows [shown] now. [before] is the list as it was, with
+/// [gone] in it. [gone] itself counts when it is still shown: a thread
+/// whose open message went is still where it was.
+///
+/// Not the top of the folder, which is for a folder just opened. Landing
+/// there after a delete put the newest message in the reading pane and
+/// scrolled the list up to it, so the place in the list was lost with
+/// every message dealt with.
+String? rowInPlaceOf(
+  List<MailMessage> before,
+  String gone,
+  Set<String> shown,
+) {
+  final at = before.indexWhere((m) => m.id == gone);
+  if (at < 0) return null;
+  for (final m in before.skip(at)) {
+    if (shown.contains(m.id)) return m.id;
+  }
+  for (final m in before.take(at).toList().reversed) {
+    if (shown.contains(m.id)) return m.id;
+  }
+  return null;
+}
+
 /// The message [delta] rows away, for the arrow keys and Page Up and Down.
 ///
 /// Stops at the ends rather than wrapping. Wrapping from the last message to

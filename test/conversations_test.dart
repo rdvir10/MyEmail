@@ -172,6 +172,34 @@ void main() {
       expect(grouped, hasLength(2));
     });
 
+    test('an answer in another account is a conversation of its own', () {
+      // Written to both addresses, or the Gmail copied on a work thread. As
+      // one conversation in the unified inbox, Archive on its row sent the
+      // Gmail mail into the work mailbox, and out of Gmail.
+      final work = _m(subject: 'Plans', messageId: 'one@x', accountId: 'a');
+      final copied = _m(
+        subject: 'Re: Plans',
+        messageId: 'two@x',
+        inReplyTo: 'one@x',
+        accountId: 'b',
+        minute: 5,
+      );
+      final answer = _m(
+        subject: 'Re: Plans',
+        messageId: 'three@x',
+        inReplyTo: 'two@x',
+        accountId: 'a',
+        minute: 9,
+      );
+
+      final grouped = groupIntoConversations([work, copied, answer]);
+
+      expect(grouped, hasLength(2));
+      for (final c in grouped) {
+        expect(c.messages.map((m) => m.accountId).toSet(), hasLength(1));
+      }
+    });
+
     test('an In-Reply-To pointing at nothing we have does not lose the message',
         () {
       // The parent is older than the cached window, which is the normal case.
