@@ -387,6 +387,23 @@ class GraphMailApi {
     }
   }
 
+  /// A message's place in its conversation, as base64: what a reply's
+  /// `Thread-Index` is made from (see `replyThreadIndex`). Null for a
+  /// message that is gone or has none.
+  Future<String?> conversationIndex(String messageId) async {
+    try {
+      final json = await _get(
+        Uri.parse('$base/me/messages/${_id(messageId)}').replace(
+          queryParameters: {'\$select': 'conversationIndex'},
+        ),
+      );
+      final index = json['conversationIndex'];
+      return index is String && index.isNotEmpty ? index : null;
+    } on GraphNotFound {
+      return null;
+    }
+  }
+
   /// Whether Graph's [json] for a message says it is meeting mail: typed
   /// as an event message, or carrying the meeting message type only one
   /// has.

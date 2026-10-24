@@ -103,22 +103,45 @@ class GraphSender {
   /// itself too big to post — and then the draft is sent. It is the route
   /// Microsoft documents for exactly this, and until now the app simply said
   /// it could not do it.
+  ///
+  /// [threadHeaders] are Outlook's `Thread-Index` and `Thread-Topic` for a
+  /// reply or forward, which is what keeps it in its conversation on
+  /// Exchange: In-Reply-To alone does not (see `replyThreadIndex`).
   Future<void> sendDraft({
     required Draft draft,
     required Account account,
+    Map<String, String> threadHeaders = const {},
   }) async {
     final whole = utf8.encode(
-      buildMimeMessage(draft: draft, account: account).renderMessage(),
+      _withHeaders(
+        buildMimeMessage(draft: draft, account: account),
+        threadHeaders,
+      ).renderMessage(),
     );
     final client = _http ?? _defaultClient();
     try {
       if (whole.length <= maxMimeBytes) {
         return await _postWholeMessage(client, whole);
       }
-      await _sendInPieces(client, draft: draft, account: account);
+      await _sendInPieces(
+        client,
+        draft: draft,
+        account: account,
+        threadHeaders: threadHeaders,
+      );
     } finally {
       if (_http == null) client.close();
     }
+  }
+
+  static em.MimeMessage _withHeaders(
+    em.MimeMessage message,
+    Map<String, String> headers,
+  ) {
+    for (final MapEntry(:key, :value) in headers.entries) {
+      message.setHeader(key, value);
+    }
+    return message;
   }
 
   Future<void> _postWholeMessage(http.Client client, List<int> mime) async {
@@ -175,6 +198,7 @@ class GraphSender {
     http.Client client, {
     required Draft draft,
     required Account account,
+    Map<String, String> threadHeaders = const {},
   }) async {
     final total = draft.attachments.fold<int>(0, (n, a) => n + a.size);
     if (total > maxTotalBytes) {
@@ -186,9 +210,12 @@ class GraphSender {
     }
 
     final words = utf8.encode(
-      buildMimeMessage(
-        draft: draft.copyWith(attachments: const []),
-        account: account,
+      _withHeaders(
+        buildMimeMessage(
+          draft: draft.copyWith(attachments: const []),
+          account: account,
+        ),
+        threadHeaders,
       ).renderMessage(),
     );
     if (words.length > maxMimeBytes) {

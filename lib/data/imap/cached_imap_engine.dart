@@ -32,6 +32,7 @@ import '../calendar/account_calendar.dart';
 import '../contacts/account_people.dart';
 import '../compose/graph_sender.dart';
 import '../compose/smtp_sender.dart';
+import '../compose/thread_index.dart';
 import '../compose/reply_draft.dart' show escapeHtml;
 import '../auth/token_identity.dart';
 import '../credential_store.dart';
@@ -1931,7 +1932,11 @@ class CachedImapEngine implements MailEngine {
       // and the parts are in the draft.
       return draft == null
           ? sender.send(message)
-          : sender.sendDraft(draft: draft, account: account);
+          : sender.sendDraft(
+              draft: draft,
+              account: account,
+              threadHeaders: await _threadHeaders(account, draft),
+            );
     }
 
     return SmtpSender.forProvider(
@@ -1939,6 +1944,41 @@ class CachedImapEngine implements MailEngine {
       user: account.emailAddress,
       credentials: credentials,
     ).send(message);
+  }
+
+  /// Outlook's `Thread-Index` and `Thread-Topic` for a reply or forward of
+  /// a message in the same Microsoft mailbox, made from the original's own
+  /// index, so Exchange files it in the original's conversation. Without
+  /// them every reply sent from here began a conversation of its own, in
+  /// Outlook too. Empty for a new message, a reply from another account,
+  /// and whenever the original cannot be asked: the message still goes,
+  /// only as it went before.
+  Future<Map<String, String>> _threadHeaders(
+    Account account,
+    Draft draft,
+  ) async {
+    final original = draft.originalMessageId;
+    if (original == null || draft.kind == ComposeKind.newMessage) {
+      return const {};
+    }
+    try {
+      final (folderId, uid) = splitMessageId(original);
+      final (accountId, path) = splitFolderId(folderId);
+      if (accountId != account.id) return const {};
+      final t = await _transport(accountId);
+      if (t is! GraphTransport) return const {};
+      final parent = await t.conversationIndexOf(path, uid);
+      final index =
+          parent == null ? null : replyThreadIndex(parent, DateTime.now());
+      if (index == null) return const {};
+      return {
+        'Thread-Index': index,
+        'Thread-Topic': threadTopic(draft.subject),
+      };
+    } catch (e) {
+      debugPrint('[myemail] could not keep the reply in its thread: $e');
+      return const {};
+    }
   }
 
   // --- plumbing --------------------------------------------------------------

@@ -500,6 +500,11 @@ class GraphTransport implements ImapTransport {
     }
   }
 
+  /// The conversation index of a message in [path], for a reply to it to
+  /// carry on its thread (see `replyThreadIndex`). Null where it has none.
+  Future<String?> conversationIndexOf(String path, int uid) async =>
+      api.conversationIndex(await _remoteId(path, uid));
+
   @override
   Future<List<MailAttachment>> listAttachments(String path, int uid) async {
     final remoteId = await _remoteId(path, uid);
