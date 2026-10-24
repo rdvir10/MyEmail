@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/account.dart';
+import '../../domain/follow_up.dart' show FollowUpChoice;
 import '../../domain/quick_step.dart';
 import '../../state/folder_tree.dart';
 import '../../state/providers.dart';
@@ -83,9 +84,8 @@ class QuickStepsScreen extends ConsumerWidget {
 String describeQuickStep(QuickStep step, Map<String, dynamic> folderIndex) {
   return [
     for (final a in step.effectiveActions)
-      a.type.needsFolder
-          ? '${a.type.label} ${folderIndex[a.folderId]?.displayName ?? '(missing folder)'}'
-          : a.type.label,
+      a.describe(
+          (id) => folderIndex[id]?.displayName as String? ?? '(missing folder)'),
   ].join(', then ');
 }
 
@@ -97,7 +97,15 @@ IconData iconForQuickStep(QuickStep step) {
   return switch (last) {
     QuickStepActionType.moveTo => Icons.drive_file_move_outline,
     QuickStepActionType.delete => Icons.delete_outline,
-    QuickStepActionType.flag || QuickStepActionType.unflag => Icons.flag_outlined,
+    QuickStepActionType.flag ||
+    QuickStepActionType.unflag ||
+    QuickStepActionType.flagFor =>
+      Icons.flag_outlined,
+    QuickStepActionType.archive => Icons.archive_outlined,
+    QuickStepActionType.forwardTo => Icons.forward,
+    QuickStepActionType.replyDelete => Icons.reply,
+    QuickStepActionType.newMessageTo => Icons.edit_outlined,
+    QuickStepActionType.meeting => Icons.event_outlined,
     _ => Icons.bolt_outlined,
   };
 }
@@ -155,7 +163,14 @@ class _EditQuickStepScreenState extends ConsumerState<_EditQuickStepScreen> {
             children: [
               for (final t in QuickStepActionType.values)
                 ListTile(
-                  title: Text(t.label),
+                  key: ValueKey('qs-type-${t.name}'),
+                  title: Text(switch (t) {
+                    QuickStepActionType.forwardTo ||
+                    QuickStepActionType.newMessageTo =>
+                      '${t.label}…',
+                    QuickStepActionType.flagFor => 'Flag with a day…',
+                    _ => t.label,
+                  }),
                   onTap: () => Navigator.of(context).pop(t),
                 ),
               const SizedBox(height: 8),
@@ -167,15 +182,54 @@ class _EditQuickStepScreenState extends ConsumerState<_EditQuickStepScreen> {
     if (type == null || !mounted) return;
 
     String? folderId;
+    String? address;
+    FollowUpChoice? when;
     if (type.needsFolder) {
       folderId = await _pickFolder();
       if (folderId == null || !mounted) return;
     }
+    if (type.needsAddress) {
+      address = await _askAddress(type);
+      if (address == null || !mounted) return;
+    }
+    if (type.needsWhen) {
+      when = await _pickWhen();
+      if (when == null || !mounted) return;
+    }
     setState(() {
-      _actions = [..._actions, QuickStepAction(type, folderId: folderId)];
+      _actions = [
+        ..._actions,
+        QuickStepAction(type, folderId: folderId, address: address, when: when),
+      ];
       _error = null;
     });
   }
+
+  /// Who Forward to or New message to writes to.
+  Future<String?> _askAddress(QuickStepActionType type) => showDialog<String>(
+        context: context,
+        builder: (_) => _AddressDialog(title: type.label),
+      );
+
+  /// When Flag for makes it due.
+  Future<FollowUpChoice?> _pickWhen() =>
+      showModalBottomSheet<FollowUpChoice>(
+        context: context,
+        showDragHandle: true,
+        builder: (sheet) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final c in FollowUpChoice.values)
+                ListTile(
+                  key: ValueKey('qs-when-${c.name}'),
+                  title: Text(c.label),
+                  onTap: () => Navigator.of(sheet).pop(c),
+                ),
+            ],
+          ),
+        ),
+      );
 
   Future<String?> _pickFolder() async {
     final folders = ref.read(foldersProvider).value ?? const {};
@@ -260,14 +314,11 @@ class _EditQuickStepScreenState extends ConsumerState<_EditQuickStepScreen> {
           const SizedBox(height: 8),
           for (final (i, a) in _actions.indexed)
             ListTile(
-              key: ValueKey('$i:${a.type}:${a.folderId}'),
+              key: ValueKey('$i:${a.type}:${a.folderId}:${a.address}'),
               dense: true,
               leading: Text('${i + 1}.'),
-              title: Text(
-                a.type.needsFolder
-                    ? '${a.type.label} ${index[a.folderId]?.displayName ?? '(missing folder)'}'
-                    : a.type.label,
-              ),
+              title: Text(a.describe(
+                  (id) => index[id]?.displayName ?? '(missing folder)')),
               subtitle: terminalAt >= 0 && i > terminalAt
                   ? Text(
                       'Never runs: the message has already left the list.',
@@ -292,4 +343,62 @@ class _EditQuickStepScreenState extends ConsumerState<_EditQuickStepScreen> {
       ),
     );
   }
+}
+
+/// An address to write to, for Forward to and New message to. Its own
+/// widget, so its field outlives the dialog's closing.
+class _AddressDialog extends StatefulWidget {
+  const _AddressDialog({required this.title});
+
+  final String title;
+
+  @override
+  State<_AddressDialog> createState() => _AddressDialogState();
+}
+
+class _AddressDialogState extends State<_AddressDialog> {
+  final _field = TextEditingController();
+  String? _problem;
+
+  @override
+  void dispose() {
+    _field.dispose();
+    super.dispose();
+  }
+
+  void _done() {
+    final text = _field.text.trim();
+    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(text)) {
+      setState(() => _problem = 'An email address');
+      return;
+    }
+    Navigator.of(context).pop(text);
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: Text(widget.title),
+        content: TextField(
+          key: const ValueKey('qs-address'),
+          controller: _field,
+          autofocus: true,
+          keyboardType: TextInputType.emailAddress,
+          decoration: InputDecoration(
+            hintText: 'name@example.com',
+            errorText: _problem,
+          ),
+          onSubmitted: (_) => _done(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const ValueKey('qs-address-ok'),
+            onPressed: _done,
+            child: const Text('OK'),
+          ),
+        ],
+      );
 }

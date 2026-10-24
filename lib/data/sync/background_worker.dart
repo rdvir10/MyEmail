@@ -67,6 +67,11 @@ const _actionsUniqueName = 'mailtree.notification-actions.pending';
 /// [runPendingNotificationActions].
 const _actionsRetryName = 'mailtree.notification-actions.retry';
 
+/// Bringing snoozed mail back at its time: one job, replaced by each
+/// snooze and each wake with the next time due.
+const _wakeTaskName = 'mailtree.wake-snoozed';
+const _wakeUniqueName = 'mailtree.wake-snoozed.next';
+
 /// The ongoing notification the foreground service is legally required to
 /// show. Its own channel, set to the lowest importance Android allows for a
 /// foreground service, so it sits silently at the bottom of the shade instead
@@ -81,6 +86,10 @@ const _serviceChannelName = 'Background sync';
 /// one talks to WorkManager; tests and the browser preview record instead.
 abstract class BackgroundScheduler {
   Future<void> apply(SyncPrefs prefs);
+
+  /// Snoozed mail due back at [at]: a job then, in place of any waiting.
+  /// Null takes it away, with nothing snoozed.
+  Future<void> scheduleWake(DateTime? at);
 }
 
 class WorkManagerScheduler implements BackgroundScheduler {
@@ -88,6 +97,9 @@ class WorkManagerScheduler implements BackgroundScheduler {
 
   @override
   Future<void> apply(SyncPrefs prefs) => applyBackgroundSchedule(prefs);
+
+  @override
+  Future<void> scheduleWake(DateTime? at) => scheduleSnoozeWake(at);
 }
 
 /// Records what it was asked to do. The default outside Android.
@@ -96,6 +108,12 @@ class FakeBackgroundScheduler implements BackgroundScheduler {
 
   @override
   Future<void> apply(SyncPrefs prefs) async => applied.add(prefs);
+
+  /// Every wake asked for, the last being what is waiting.
+  final List<DateTime?> wakes = [];
+
+  @override
+  Future<void> scheduleWake(DateTime? at) async => wakes.add(at);
 
   SyncPrefs? get last => applied.isEmpty ? null : applied.last;
 }
@@ -263,6 +281,62 @@ Future<void> scheduleNotificationActionsRetry() async {
   );
 }
 
+/// A job at [at] that brings snoozed mail back, in place of any waiting;
+/// null takes it away. WorkManager keeps to the time as Android lets it,
+/// which in deep sleep can be some minutes late; the regular passes, and
+/// the app coming to the front, bring it back too.
+Future<void> scheduleSnoozeWake(DateTime? at) async {
+  if (!_supported) return;
+  await Workmanager().initialize(backgroundCallbackDispatcher);
+  if (at == null) {
+    await Workmanager().cancelByUniqueName(_wakeUniqueName);
+    return;
+  }
+  final wait = at.difference(DateTime.now());
+  await Workmanager().registerOneOffTask(
+    _wakeUniqueName,
+    _wakeTaskName,
+    initialDelay: wait.isNegative ? Duration.zero : wait,
+    existingWorkPolicy: ExistingWorkPolicy.replace,
+    constraints: Constraints(networkType: NetworkType.connected),
+    backoffPolicy: BackoffPolicy.linear,
+    backoffPolicyDelay: const Duration(minutes: 5),
+  );
+}
+
+/// The wake job: what is due back, and the job again for the next.
+Future<bool> _runWake() async {
+  DartPluginRegistrant.ensureInitialized();
+  MailDatabase? database;
+  CachedImapEngine? engine;
+  try {
+    final prefs = await SharedPreferencesWithCache.create(
+      cacheOptions: const SharedPreferencesWithCacheOptions(),
+    );
+    database = MailDatabase.open();
+    engine = CachedImapEngine(
+      accountStore: PrefsAccountStore(prefs),
+      credentialStore: SecureCredentialStore(),
+      cache: DriftCacheStore(database),
+      folderLists: PrefsFolderListStore(prefs),
+      graphIdMap: DriftGraphIdMap(database),
+    );
+    final woken = await engine.wakeSnoozed();
+    if (woken > 0) {
+      debugPrint('[myemail] $woken snoozed back');
+      announceBackgroundPassDone();
+    }
+    await scheduleSnoozeWake(await engine.nextSnoozeWake());
+    return true;
+  } catch (e, stack) {
+    debugPrint('[myemail] snoozed mail not woken: $e\n$stack');
+    return false;
+  } finally {
+    await engine?.close();
+    await database?.close();
+  }
+}
+
 @pragma('vm:entry-point')
 void backgroundCallbackDispatcher() {
   Workmanager().executeTask(
@@ -272,6 +346,7 @@ void backgroundCallbackDispatcher() {
         _liveTaskName => _runLive(inputData),
         _actionsTaskName =>
           _runPendingActions(retry: inputData?['retry'] == true),
+        _wakeTaskName => _runWake(),
         _ => Future.value(true),
       };
     },

@@ -2,19 +2,32 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import 'follow_up.dart' show FollowUpChoice;
+
 /// One step in a Quick Step chain.
 ///
-/// [moveTo] carries the destination folder id; the rest carry nothing. A
-/// chain runs in order, so "mark read then move" and "move then mark read"
-/// are both expressible, and only the first is sensible once the message has
-/// left the folder.
+/// [moveTo] carries the destination folder id, [forwardTo] and
+/// [newMessageTo] an address, [flagFor] when it is due; the rest carry
+/// nothing. A chain runs in order, so "mark read then move" and "move then
+/// mark read" are both expressible, and only the first is sensible once the
+/// message has left the folder.
+///
+/// New types go at the end: a step is kept by its types' names, and a
+/// backup from a newer build that has types this one does not is skipped
+/// step by step rather than read wrong.
 enum QuickStepActionType {
   markRead('Mark as read'),
   markUnread('Mark as unread'),
   flag('Flag'),
   unflag('Remove flag'),
   moveTo('Move to'),
-  delete('Delete');
+  delete('Delete'),
+  archive('Archive'),
+  flagFor('Flag for'),
+  forwardTo('Forward to'),
+  replyDelete('Reply, then delete'),
+  newMessageTo('New message to'),
+  meeting('Meeting from it');
 
   const QuickStepActionType(this.label);
 
@@ -22,39 +35,89 @@ enum QuickStepActionType {
 
   bool get needsFolder => this == QuickStepActionType.moveTo;
 
+  /// Forward to, and New message to: someone to write to.
+  bool get needsAddress =>
+      this == QuickStepActionType.forwardTo ||
+      this == QuickStepActionType.newMessageTo;
+
+  /// Flag for: when it is due.
+  bool get needsWhen => this == QuickStepActionType.flagFor;
+
   /// After this action the message is no longer in the list, so anything
   /// after it in the chain would have nothing to act on.
   bool get isTerminal =>
-      this == QuickStepActionType.moveTo || this == QuickStepActionType.delete;
+      this == QuickStepActionType.moveTo ||
+      this == QuickStepActionType.delete ||
+      this == QuickStepActionType.archive ||
+      this == QuickStepActionType.replyDelete;
 }
 
 @immutable
 class QuickStepAction {
-  const QuickStepAction(this.type, {this.folderId});
+  const QuickStepAction(this.type, {this.folderId, this.address, this.when});
 
   final QuickStepActionType type;
 
   /// Only for [QuickStepActionType.moveTo].
   final String? folderId;
 
+  /// Only for [QuickStepActionType.forwardTo] and
+  /// [QuickStepActionType.newMessageTo].
+  final String? address;
+
+  /// Only for [QuickStepActionType.flagFor].
+  final FollowUpChoice? when;
+
+  /// Whether it has what it needs to run.
+  bool get isComplete =>
+      (!type.needsFolder || folderId != null) &&
+      (!type.needsAddress || (address?.contains('@') ?? false)) &&
+      (!type.needsWhen || when != null);
+
+  QuickStepAction withFolder(String folderId) =>
+      QuickStepAction(type, folderId: folderId, address: address, when: when);
+
+  /// What it does, as a step's list of them says it: "Move to Receipts",
+  /// "Forward to dana@example.com", "Flag for Tomorrow". [folderName]
+  /// names a folder by its id.
+  String describe(String Function(String folderId) folderName) => switch (
+          type) {
+        QuickStepActionType.moveTo =>
+          '${type.label} ${folderId == null ? '(missing folder)' : folderName(folderId!)}',
+        QuickStepActionType.forwardTo ||
+        QuickStepActionType.newMessageTo =>
+          '${type.label} ${address ?? '(nobody)'}',
+        QuickStepActionType.flagFor =>
+          '${type.label} ${when?.label ?? '(no day)'}',
+        _ => type.label,
+      };
+
   Map<String, dynamic> toJson() => {
         'type': type.name,
         if (folderId != null) 'folderId': folderId,
+        if (address != null) 'address': address,
+        if (when != null) 'when': when!.name,
       };
 
   static QuickStepAction fromJson(Map<String, dynamic> j) => QuickStepAction(
         QuickStepActionType.values.byName(j['type'] as String),
         folderId: j['folderId'] as String?,
+        address: j['address'] as String?,
+        when: j['when'] == null
+            ? null
+            : FollowUpChoice.values.byName(j['when'] as String),
       );
 
   @override
   bool operator ==(Object other) =>
       other is QuickStepAction &&
       other.type == type &&
-      other.folderId == folderId;
+      other.folderId == folderId &&
+      other.address == address &&
+      other.when == when;
 
   @override
-  int get hashCode => Object.hash(type, folderId);
+  int get hashCode => Object.hash(type, folderId, address, when);
 }
 
 /// A named chain of actions applied to a message in one tap.
@@ -73,7 +136,7 @@ class QuickStep {
   bool get isValid =>
       name.trim().isNotEmpty &&
       actions.isNotEmpty &&
-      actions.every((a) => !a.type.needsFolder || a.folderId != null);
+      actions.every((a) => a.isComplete);
 
   /// Everything up to and including the first terminal action; anything after
   /// it could never run.

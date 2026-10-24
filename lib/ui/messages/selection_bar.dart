@@ -5,6 +5,7 @@ import '../../domain/mail_message.dart';
 import '../../state/message_providers.dart';
 import 'forward_as_attachment.dart';
 import 'message_actions.dart';
+import 'snooze_sheet.dart';
 
 /// What replaces the list's own heading while messages are ticked.
 ///
@@ -131,12 +132,6 @@ class SelectionBar extends ConsumerWidget {
                       ),
                     ),
                     IconButton(
-                      tooltip: 'Forward as attachment',
-                      icon: const Icon(Icons.attach_email_outlined),
-                      onPressed: () =>
-                          then(() => forwardAsAttachment(context, ref, chosen)),
-                    ),
-                    IconButton(
                       tooltip: 'Move to…',
                       icon: const Icon(Icons.drive_file_move_outline),
                       // Cleared only when something moved: the sheet swiped
@@ -164,6 +159,35 @@ class SelectionBar extends ConsumerWidget {
                         await actions.delete(context, chosen);
                         ref.read(selectedMessageIdsProvider.notifier).clear();
                       },
+                    ),
+                    // The rest behind one button, so that on a phone the
+                    // bar still shows Select, Read and Flag with Move,
+                    // Archive and Delete.
+                    PopupMenuButton<String>(
+                      key: const ValueKey('selection-more'),
+                      tooltip: 'More',
+                      icon: const Icon(Icons.more_vert),
+                      onSelected: (choice) async {
+                        switch (choice) {
+                          case 'snooze':
+                            if (await showSnoozeSheet(context, ref,
+                                listId: listId, messages: chosen)) {
+                              ref
+                                  .read(selectedMessageIdsProvider.notifier)
+                                  .clear();
+                            }
+                          case 'forward':
+                            await then(
+                                () => forwardAsAttachment(context, ref, chosen));
+                        }
+                      },
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(value: 'snooze', child: Text('Snooze…')),
+                        PopupMenuItem(
+                          value: 'forward',
+                          child: Text('Forward as attachment'),
+                        ),
+                      ],
                     ),
                   ],
                 ),

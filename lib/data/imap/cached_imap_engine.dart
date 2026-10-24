@@ -1628,6 +1628,108 @@ class CachedImapEngine implements MailEngine {
     return t.recover(ids);
   }
 
+  /// The folder snoozed mail waits in, at the top of each account.
+  static const snoozedFolderName = 'Snoozed';
+
+  @override
+  Future<List<MessageMove>> snooze(
+    List<String> messageIds,
+    DateTime until,
+  ) async {
+    final moves = <MessageMove>[];
+    for (final group in _groupByFolder(messageIds).entries) {
+      final (accountId, fromPath) = splitFolderId(group.key);
+      if (fromPath == snoozedFolderName) continue;
+      final t = await _transport(accountId);
+      final remote = folderLists.read(accountId) ?? await t.listFolders();
+      if (!remote.any((f) => f.path == snoozedFolderName)) {
+        await t.createFolder(snoozedFolderName);
+        await loadFolders(accountId);
+      }
+      final entries = <SnoozedEntry>[];
+      final ids = <String>[];
+      for (final uid in group.value) {
+        final header =
+            (await cache.readMessage(accountId, fromPath, uid))?.messageId;
+        if (header == null || header.isEmpty) continue;
+        entries.add((
+          accountId: accountId,
+          messageId: header,
+          fromPath: fromPath,
+          snoozedPath: snoozedFolderName,
+          until: until,
+        ));
+        ids.add(MailMessage.idFor(group.key, uid));
+      }
+      if (ids.isEmpty) continue;
+      // Written down before the move: a move that went through with nothing
+      // to say when it comes back would leave it waiting for ever.
+      await cache.addSnoozed(entries);
+      moves.addAll(await moveMessages(
+        ids,
+        MailFolder.idFor(accountId, snoozedFolderName),
+      ));
+    }
+    return moves;
+  }
+
+  @override
+  Future<int> wakeSnoozed({DateTime? now}) async {
+    final at = now ?? DateTime.now();
+    List<SnoozedEntry> due;
+    try {
+      due = [
+        for (final e in await cache.readSnoozed())
+          if (!e.until.isAfter(at)) e,
+      ];
+    } catch (e) {
+      debugPrint('[myemail] could not read snoozed mail: $e');
+      return 0;
+    }
+    var woken = 0;
+    for (final e in due) {
+      try {
+        if (accountStore.read().every((a) => a.id != e.accountId)) {
+          await cache.removeSnoozed(e.accountId, e.messageId);
+          continue;
+        }
+        final waiting = MailFolder.idFor(e.accountId, e.snoozedPath);
+        final ids = await _locate(waiting, [e.messageId]);
+        if (ids.isEmpty) {
+          // Taken out of Snoozed by hand: nothing to bring back.
+          await cache.removeSnoozed(e.accountId, e.messageId);
+          continue;
+        }
+        final t = await _transport(e.accountId);
+        final remote = folderLists.read(e.accountId) ?? await t.listFolders();
+        final back = remote.any((f) => f.path == e.fromPath)
+            ? e.fromPath
+            : remote
+                    .where((f) => f.role == FolderRole.inbox)
+                    .firstOrNull
+                    ?.path ??
+                'INBOX';
+        final target = MailFolder.idFor(e.accountId, back);
+        final moves = await moveMessages(ids, target);
+        var landed = [for (final m in moves) ...m.movedIds];
+        if (landed.isEmpty) landed = await _locate(target, [e.messageId]);
+        if (landed.isNotEmpty) await setMessagesRead(landed, false);
+        await cache.removeSnoozed(e.accountId, e.messageId);
+        woken++;
+      } catch (error) {
+        debugPrint('[myemail] snoozed mail not back yet: $error');
+      }
+    }
+    return woken;
+  }
+
+  @override
+  Future<DateTime?> nextSnoozeWake() async {
+    final all = await cache.readSnoozed();
+    if (all.isEmpty) return null;
+    return all.map((e) => e.until).reduce((a, b) => a.isBefore(b) ? a : b);
+  }
+
   @override
   Future<List<MailMessage>> flaggedMessages(
     String accountId, {

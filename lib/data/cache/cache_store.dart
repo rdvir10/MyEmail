@@ -249,6 +249,16 @@ class CachedMessage {
 /// Where cached messages and sync state live. Keyed by account and folder
 /// path; the Drift implementation is the real one, the memory one is for
 /// tests and the browser preview.
+/// A message snoozed: by its own Message-ID, which finds it again in
+/// [snoozedPath], where it waits until [until], to go back to [fromPath].
+typedef SnoozedEntry = ({
+  String accountId,
+  String messageId,
+  String fromPath,
+  String snoozedPath,
+  DateTime until,
+});
+
 abstract class CacheStore {
   Future<FolderSyncState?> readFolderState(String accountId, String path);
   Future<void> writeFolderState(
@@ -275,6 +285,15 @@ abstract class CacheStore {
     int offset = 0,
     int limit = 50,
   });
+
+  /// Every snoozed message, as [addSnoozed] wrote it.
+  Future<List<SnoozedEntry>> readSnoozed();
+
+  /// Snoozed, or snoozed again to a new time.
+  Future<void> addSnoozed(List<SnoozedEntry> entries);
+
+  /// Back, or gone: no longer waited for.
+  Future<void> removeSnoozed(String accountId, String messageId);
 
   /// The newest [limit] flagged messages in all of [accountId]'s folders,
   /// each with the folder it is in, as [readMessages] reads them.
@@ -472,6 +491,22 @@ class MemoryCacheStore implements CacheStore {
         m.withoutBody(),
     ];
   }
+
+  final Map<String, SnoozedEntry> _snoozed = {};
+
+  @override
+  Future<List<SnoozedEntry>> readSnoozed() async => [..._snoozed.values];
+
+  @override
+  Future<void> addSnoozed(List<SnoozedEntry> entries) async {
+    for (final e in entries) {
+      _snoozed[_k(e.accountId, e.messageId)] = e;
+    }
+  }
+
+  @override
+  Future<void> removeSnoozed(String accountId, String messageId) async =>
+      _snoozed.remove(_k(accountId, messageId));
 
   @override
   Future<List<({String path, CachedMessage message})>> readFlagged(

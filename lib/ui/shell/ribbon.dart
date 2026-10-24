@@ -1,3 +1,5 @@
+import '../../domain/quick_step.dart';
+import '../quick_steps/apply_quick_step.dart';
 import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -5,7 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/draft.dart';
 import '../../domain/display_settings.dart';
 import '../../domain/mail_message.dart';
-import '../../state/folder_tree.dart' show kUnifiedInboxId;
 import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/sync_now.dart';
@@ -283,35 +284,12 @@ class _QuickStepsButton extends ConsumerWidget {
     );
   }
 
-  Future<void> _run(BuildContext context, WidgetRef ref, step) async {
+  Future<void> _run(BuildContext context, WidgetRef ref, QuickStep step) async {
     final target = message;
     final list = listId;
     if (target == null || list == null) return;
-    try {
-      await runQuickStep(
-        step: step,
-        notifier: ref.read(messagesProvider(list).notifier),
-        message: target,
-        engine: ref.read(mailEngineProvider),
-        onMoved: (folderId) =>
-            ref.read(recentMoveTargetsProvider.notifier).record(folderId),
-        onElsewhere: () {
-          ref.invalidate(messagesProvider(target.folderId));
-          ref.invalidate(messagesProvider(kUnifiedInboxId));
-        },
-      );
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-          ..hideCurrentSnackBar()
-          ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('${step.name} applied')));
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-          ..hideCurrentSnackBar()
-          ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not apply it: $e')));
-      }
-    }
+    await applyQuickStep(context, ref,
+        step: step, message: target, listId: list);
   }
 }
 

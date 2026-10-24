@@ -35,6 +35,7 @@ import '../../state/sender_blocks.dart';
 import 'message_actions.dart';
 import 'follow_up_sheet.dart';
 import 'junk_actions.dart';
+import 'snooze_sheet.dart';
 import 'message_source.dart';
 import 'print_message.dart';
 import 'read_aloud_bar.dart';
@@ -248,6 +249,17 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     }
   }
 
+  /// Snooze, from the header: like a delete, a screen of its own goes once
+  /// a time is chosen.
+  Future<void> _snooze(MailMessage message) async {
+    final listId = _listId;
+    if (listId == null) return;
+    final navigator = Navigator.of(context);
+    final went = await showSnoozeSheet(context, ref,
+        listId: listId, messages: [message]);
+    if (went && widget.onPopOut == null) navigator.maybePop();
+  }
+
   /// Move, from the header: the same folder picker the list and the ribbon
   /// use. Like a delete, a move takes a screen of its own with it, as soon
   /// as the folder is chosen; a picker closed without a choice leaves
@@ -371,6 +383,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                   showFollowUpSheet(context, ref,
                       listId: listId, messages: [message]);
                 },
+                onSnooze: () => _snooze(message),
                 onToggleRead: () => _act(
                   (a) => a.setRead(context, [message], !message.isRead),
                 ),
@@ -542,6 +555,7 @@ class _Header extends StatelessWidget {
     this.onSaveSource,
     required this.onToggleFlag,
     this.onFollowUp,
+    this.onSnooze,
     required this.onToggleRead,
     required this.onCompose,
     required this.onDelete,
@@ -597,6 +611,9 @@ class _Header extends StatelessWidget {
 
   /// Outlook's Follow Up: a day, a reminder, complete.
   final VoidCallback? onFollowUp;
+
+  /// Out of the list until a time chosen.
+  final VoidCallback? onSnooze;
   final VoidCallback onToggleRead;
   final VoidCallback onDelete;
 
@@ -771,6 +788,7 @@ class _Header extends StatelessWidget {
                     onSelected: (value) => switch (value) {
                       'flag' => onToggleFlag(),
                       'followUp' => onFollowUp?.call(),
+                      'snooze' => onSnooze?.call(),
                       'fullScreen' => onFullScreen?.call(),
                       'archive' => onArchive?.call(),
                       'pin' => onTogglePin?.call(),
@@ -836,6 +854,11 @@ class _Header extends StatelessWidget {
                         const PopupMenuItem(
                           value: 'followUp',
                           child: Text('Follow up…'),
+                        ),
+                      if (onSnooze != null)
+                        const PopupMenuItem(
+                          value: 'snooze',
+                          child: Text('Snooze…'),
                         ),
                       if (onTogglePin != null)
                         PopupMenuItem(

@@ -1075,6 +1075,58 @@ class SampleMailEngine implements MailEngine {
   Future<void> setMessagesFlagged(List<String> messageIds, bool isFlagged) =>
       _each(messageIds, (id) => setFlagged(id, isFlagged));
 
+  /// What is snoozed, by message id where it waits, for tests to look at.
+  final Map<String, ({String fromFolderId, DateTime until})> snoozed = {};
+
+  @override
+  Future<List<MessageMove>> snooze(
+    List<String> messageIds,
+    DateTime until,
+  ) async {
+    final moves = <MessageMove>[];
+    for (final accountId in {
+      for (final id in messageIds) id.substring(0, id.indexOf(':')),
+    }) {
+      final mine = [
+        for (final id in messageIds)
+          if (id.startsWith('$accountId:')) id,
+      ];
+      final waiting = '$accountId:Snoozed';
+      if (!(await loadFolders(accountId)).any((f) => f.id == waiting)) {
+        await createFolder(accountId: accountId, name: 'Snoozed');
+      }
+      final went = await moveMessages(mine, waiting);
+      for (final m in went) {
+        for (final id in m.movedIds) {
+          snoozed[id] = (fromFolderId: m.fromFolderId, until: until);
+        }
+      }
+      moves.addAll(went);
+    }
+    return moves;
+  }
+
+  @override
+  Future<int> wakeSnoozed({DateTime? now}) async {
+    final at = now ?? DateTime.now();
+    var woken = 0;
+    for (final MapEntry(key: id, value: s) in [...snoozed.entries]) {
+      if (s.until.isAfter(at)) continue;
+      snoozed.remove(id);
+      final moves = await moveMessages([id], s.fromFolderId);
+      await setMessagesRead([for (final m in moves) ...m.movedIds], false);
+      woken++;
+    }
+    return woken;
+  }
+
+  @override
+  Future<DateTime?> nextSnoozeWake() async => snoozed.isEmpty
+      ? null
+      : snoozed.values
+          .map((s) => s.until)
+          .reduce((a, b) => a.isBefore(b) ? a : b);
+
   /// Everything flagged in the account's folders, as they have been loaded
   /// so far, with the days set here.
   @override

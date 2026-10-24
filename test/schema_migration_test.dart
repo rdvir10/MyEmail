@@ -60,8 +60,15 @@ void main() {
   // and every test here would still have passed, while every device
   // upgrading from 2.35 or earlier failed on every cache read.
 
-  /// What schema 14 added: how important a message was marked.
+  /// What schema 15 added: the table of snoozed mail.
+  Future<void> dropSchema15(MailDatabase db) async {
+    await db.customStatement('DROP TABLE IF EXISTS snoozed_messages');
+  }
+
+  /// What schema 14 added: how important a message was marked. And
+  /// everything after it.
   Future<void> dropSchema14(MailDatabase db) async {
+    await dropSchema15(db);
     await db.customStatement('ALTER TABLE messages DROP COLUMN importance');
   }
 
@@ -266,8 +273,18 @@ void main() {
     await db.close();
   }
 
-  /// A database as it stood at schema 13, the release before this one: a
-  /// message whose importance was never read.
+  /// A database as it stood at schema 14, the release before this one: no
+  /// table for snoozed mail.
+  Future<void> buildVersion14() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await dropSchema15(db);
+    await db.customStatement('PRAGMA user_version = 14');
+    await db.close();
+  }
+
+  /// A database as it stood at schema 13: a message whose importance was
+  /// never read.
   Future<void> buildVersion13() async {
     final db = MailDatabase(NativeDatabase(file));
     await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
@@ -852,6 +869,32 @@ void main() {
       (await store.readSyncRows('acct-1', 'INBOX')).single.needsImportance,
       isTrue,
     );
+  });
+
+  test('a version 14 database gains somewhere to keep snoozed mail, and '
+      'keeps its rows', () async {
+    await buildVersion14();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    expect((await store.readMessages('acct-1', 'INBOX')).single.subject,
+        'Cached before the upgrade');
+    expect(await store.readSnoozed(), isEmpty);
+
+    final until = DateTime(2026, 10, 27, 8);
+    await store.addSnoozed([
+      (
+        accountId: 'acct-1',
+        messageId: '<m1@example.com>',
+        fromPath: 'INBOX',
+        snoozedPath: 'Snoozed',
+        until: until,
+      ),
+    ]);
+    expect((await store.readSnoozed()).single.until, until);
+    await store.removeSnoozed('acct-1', '<m1@example.com>');
+    expect(await store.readSnoozed(), isEmpty);
   });
 
   test('and so does one coming up from before arrival times were kept',

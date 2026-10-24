@@ -1,3 +1,5 @@
+import '../quick_steps/apply_quick_step.dart';
+import '../../state/quick_steps.dart';
 import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -54,6 +56,18 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
     // Seen from a text field too: what matters is that there is a keyboard.
     ref.read(keyboardInUseProvider.notifier).noticed();
     if (focusIsInTextField()) return KeyEventResult.ignored;
+    // Ctrl+Shift and 1 to 9: the Quick Steps, in their order, as Outlook
+    // numbers them. By the key's place, not its character, which Shift
+    // changes.
+    final control = HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed;
+    if (control && HardwareKeyboard.instance.isShiftPressed) {
+      final n = quickStepNumber(event.physicalKey);
+      if (n != null) {
+        _runQuickStep(n);
+        return KeyEventResult.handled;
+      }
+    }
     final command = commandFor(
       event.logicalKey,
       control: HardwareKeyboard.instance.isControlPressed ||
@@ -90,6 +104,26 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
     AppCommand.sync,
     AppCommand.help,
   };
+
+  /// The [n]th Quick Step on the message in front, as its menu would run it.
+  Future<void> _runQuickStep(int n) async {
+    final listId = ref.read(effectiveSelectedFolderIdProvider);
+    final message = _target(listId);
+    final steps = ref.read(quickStepsProvider);
+    if (message == null || listId == null || n > steps.length) return;
+    final step = steps[n - 1];
+    if (!step.appliesTo(message.accountId)) {
+      ScaffoldMessenger.maybeOf(context)
+        ?..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          duration: kBottomMessage,
+          content: Text('${step.name} files into another account.'),
+        ));
+      return;
+    }
+    await applyQuickStep(context, ref,
+        step: step, message: message, listId: listId);
+  }
 
   /// [AppShortcuts.message] as the list or the search has it now, so a flag
   /// set a moment ago is seen; or the one selected, in the shell.
@@ -280,6 +314,37 @@ enum AppCommand {
   inbox,
 }
 
+/// Which Quick Step a key is with Ctrl+Shift held: 1 to 9, on the row of
+/// numbers or the number pad, or null for any other key.
+int? quickStepNumber(PhysicalKeyboardKey key) {
+  const row = [
+    PhysicalKeyboardKey.digit1,
+    PhysicalKeyboardKey.digit2,
+    PhysicalKeyboardKey.digit3,
+    PhysicalKeyboardKey.digit4,
+    PhysicalKeyboardKey.digit5,
+    PhysicalKeyboardKey.digit6,
+    PhysicalKeyboardKey.digit7,
+    PhysicalKeyboardKey.digit8,
+    PhysicalKeyboardKey.digit9,
+  ];
+  const pad = [
+    PhysicalKeyboardKey.numpad1,
+    PhysicalKeyboardKey.numpad2,
+    PhysicalKeyboardKey.numpad3,
+    PhysicalKeyboardKey.numpad4,
+    PhysicalKeyboardKey.numpad5,
+    PhysicalKeyboardKey.numpad6,
+    PhysicalKeyboardKey.numpad7,
+    PhysicalKeyboardKey.numpad8,
+    PhysicalKeyboardKey.numpad9,
+  ];
+  final i = row.indexOf(key);
+  if (i >= 0) return i + 1;
+  final j = pad.indexOf(key);
+  return j >= 0 ? j + 1 : null;
+}
+
 /// The command a key press means, or null if it is not one.
 AppCommand? commandFor(
   LogicalKeyboardKey key, {
@@ -366,6 +431,7 @@ const shortcutHelp = <String, List<ShortcutHelp>>{
     ShortcutHelp('Ctrl+U', 'Mark as unread'),
     ShortcutHelp('Insert  or  Ctrl+Shift+G', 'Flag or unflag'),
     ShortcutHelp('Ctrl+Shift+V', 'Move to a folder'),
+    ShortcutHelp('Ctrl+Shift+1 … 9', 'Quick Steps, in their order'),
     ShortcutHelp('F9', 'Check for mail now'),
     ShortcutHelp('F1  or  Ctrl+/', 'This list'),
   ],

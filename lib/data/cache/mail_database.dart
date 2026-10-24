@@ -132,7 +132,25 @@ class GraphIds extends Table {
   Set<Column> get primaryKey => {accountId, path, uid};
 }
 
-@DriftDatabase(tables: [FolderStates, Messages, GraphIds])
+/// Mail snoozed: where it went from, where it waits, and when it comes
+/// back; see `MailEngine.snooze`. Kept in the database beside the cache
+/// because the background worker reads and writes it too, and one file
+/// both can open is what SQLite makes safe to share. Added in schema 15.
+@DataClassName('SnoozedRow')
+class SnoozedMessages extends Table {
+  TextColumn get accountId => text()();
+
+  /// The message's own Message-ID, which finds it again where it waits.
+  TextColumn get messageId => text()();
+  TextColumn get fromPath => text()();
+  TextColumn get snoozedPath => text()();
+  DateTimeColumn get until => dateTime()();
+
+  @override
+  Set<Column> get primaryKey => {accountId, messageId};
+}
+
+@DriftDatabase(tables: [FolderStates, Messages, GraphIds, SnoozedMessages])
 class MailDatabase extends _$MailDatabase {
   MailDatabase(super.executor);
 
@@ -200,7 +218,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 14;
+  int get schemaVersion => 15;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -385,6 +403,10 @@ class MailDatabase extends _$MailDatabase {
       // pass over IMAP.
       await _addColumnIfMissing(m, messages, messages.importance);
     }
+    if (from < 15) {
+      // Snooze. A table of its own, empty until something is snoozed.
+      await m.createTable(snoozedMessages);
+    }
   }
 
   /// Checked first: a database that already has the column (an upgrade
@@ -473,6 +495,38 @@ class DriftCacheStore implements CacheStore {
         .get();
     return rows.map(_fromHeader).toList();
   }
+
+  @override
+  Future<List<SnoozedEntry>> readSnoozed() async => [
+        for (final r in await db.select(db.snoozedMessages).get())
+          (
+            accountId: r.accountId,
+            messageId: r.messageId,
+            fromPath: r.fromPath,
+            snoozedPath: r.snoozedPath,
+            until: r.until,
+          ),
+      ];
+
+  @override
+  Future<void> addSnoozed(List<SnoozedEntry> entries) =>
+      db.batch((b) => b.insertAllOnConflictUpdate(db.snoozedMessages, [
+            for (final e in entries)
+              SnoozedMessagesCompanion.insert(
+                accountId: e.accountId,
+                messageId: e.messageId,
+                fromPath: e.fromPath,
+                snoozedPath: e.snoozedPath,
+                until: e.until,
+              ),
+          ]));
+
+  @override
+  Future<void> removeSnoozed(String accountId, String messageId) =>
+      (db.delete(db.snoozedMessages)
+            ..where((t) =>
+                t.accountId.equals(accountId) & t.messageId.equals(messageId)))
+          .go();
 
   @override
   Future<List<({String path, CachedMessage message})>> readFlagged(

@@ -15,6 +15,7 @@ import '../../state/list_filter.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import '../../state/search_providers.dart';
+import '../../state/sync_providers.dart' show backgroundSchedulerProvider;
 import 'move_to_sheet.dart';
 
 /// Move and delete, shared by the swipe gestures, the message menu and the
@@ -145,6 +146,56 @@ class MessageActions {
         nowhere: 'This account has no Archive folder.',
         already: 'Already in the archive.',
       );
+
+  /// Snooze [messages] until [until]: off the list now, back in its folder,
+  /// unread, then; see [MailEngine.snooze]. [said] is the report, with an
+  /// Undo that puts them back at once. True when anything went.
+  Future<bool> snooze(
+    BuildContext context,
+    List<MailMessage> messages,
+    DateTime until, {
+    required String said,
+  }) async {
+    if (messages.isEmpty) return false;
+    final to = _reporterFor(context);
+    final (held, elsewhere) = _split(messages);
+    final engine = container.read(mailEngineProvider);
+    final moves = <MessageMove>[];
+    try {
+      if (held.isNotEmpty) {
+        moves.addAll(await container
+            .read(messagesProvider(listId).notifier)
+            .snooze([for (final m in held) m.id], until));
+        _refreshSearch();
+      }
+      if (elsewhere.isNotEmpty) {
+        moves.addAll(
+            await engine.snooze([for (final m in elsewhere) m.id], until));
+        _afterEngineChange(elsewhere, touched: [
+          for (final m in moves) ...m.landedIn,
+        ]);
+      }
+    } catch (e) {
+      _say(to, 'Could not snooze: $e');
+      return moves.isNotEmpty;
+    }
+    // The background brings it back at its time, as the app does in front.
+    try {
+      await container
+          .read(backgroundSchedulerProvider)
+          .scheduleWake(await engine.nextSnoozeWake());
+    } catch (_) {
+      // The regular passes bring it back all the same.
+    }
+    final went = moves.fold(0, (int n, m) => n + m.count);
+    if (went == 0) {
+      _say(to, 'That has no Message-ID to find it by again, so it cannot be '
+          'snoozed.');
+      return false;
+    }
+    _say(to, said, undo: moves, of: went);
+    return true;
+  }
 
   /// Into each account's Junk folder: Block Sender's first half. [said] is
   /// what the report says when all went, and [alsoUndo] runs with its Undo.

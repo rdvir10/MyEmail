@@ -26,11 +26,13 @@ import '../../state/sync_now.dart';
 import '../../state/window_providers.dart';
 import '../../state/message_transfer.dart';
 import '../../domain/window_handoff.dart';
+import '../quick_steps/apply_quick_step.dart';
 import '../quick_steps/quick_steps_screen.dart';
 import 'forward_as_attachment.dart';
 import 'follow_up_sheet.dart';
 import 'junk_actions.dart';
 import 'message_actions.dart';
+import 'snooze_sheet.dart';
 import '../../state/sender_blocks.dart';
 import '../compose/open_compose.dart';
 import '../meetings/new_meeting_screen.dart';
@@ -1110,6 +1112,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         message.isFlagged ? 'Remove flag' : 'Flag',
       ),
       _item('followUp', Icons.alarm_outlined, 'Follow up…'),
+      _item('snooze', Icons.snooze_outlined, 'Snooze…'),
       if (ref.read(pinnedMessagesProvider).contains(message.id))
         _item('pin', Icons.push_pin, 'Unpin')
       else
@@ -1122,35 +1125,11 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       _item('delete', Icons.delete_outline, 'Delete', color: error),
     ]);
     if (choice == null || !context.mounted) return;
-    final notifier = ref.read(messagesProvider(actions.listId).notifier);
 
     if (choice.startsWith('qs:')) {
       final step = steps.firstWhere((s) => s.id == choice.substring(3));
-      try {
-        await runQuickStep(
-          step: step,
-          notifier: notifier,
-          message: message,
-          engine: ref.read(mailEngineProvider),
-          onMoved: (folderId) =>
-              ref.read(recentMoveTargetsProvider.notifier).record(folderId),
-          onElsewhere: () {
-            ref.invalidate(messagesProvider(message.folderId));
-            ref.invalidate(messagesProvider(kUnifiedInboxId));
-          },
-        );
-        if (context.mounted) {
-          ScaffoldMessenger.of(context)
-            ..hideCurrentSnackBar()
-            ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('${step.name} applied')));
-        }
-      } catch (e) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context)
-            ..hideCurrentSnackBar()
-            ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('${step.name} failed: $e')));
-        }
-      }
+      await applyQuickStep(context, ref,
+          step: step, message: message, listId: actions.listId);
       return;
     }
 
@@ -1211,6 +1190,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         await actions.setFlagged(context, [message], !message.isFlagged);
       case 'followUp':
         await showFollowUpSheet(context, ref,
+            listId: actions.listId, messages: [message]);
+      case 'snooze':
+        await showSnoozeSheet(context, ref,
             listId: actions.listId, messages: [message]);
       case 'pin':
         final pins = ref.read(pinnedMessagesProvider.notifier);
@@ -1305,6 +1287,9 @@ class _SwipeableRow extends ConsumerWidget {
       // archive at all is told so rather than the swipe doing nothing.
       case SwipeAction.archive:
         await actions.archive(context, messages);
+      case SwipeAction.snooze:
+        await showSnoozeSheet(context, ref,
+            listId: actions.listId, messages: messages);
     }
   }
 
@@ -1337,6 +1322,7 @@ IconData swipeActionIcon(SwipeAction action) => switch (action) {
   SwipeAction.toggleRead => Icons.mark_email_unread_outlined,
   SwipeAction.toggleFlag => Icons.flag_outlined,
   SwipeAction.archive => Icons.archive_outlined,
+  SwipeAction.snooze => Icons.snooze_outlined,
 };
 
 /// The label on the swipe background, which says what will happen to *this*
@@ -1352,6 +1338,7 @@ String swipeActionShortLabel(SwipeAction action, List<MailMessage> messages) {
     SwipeAction.toggleRead => anyUnread(messages) ? 'Read' : 'Unread',
     SwipeAction.toggleFlag => anyFlagged(messages) ? 'Unflag' : 'Flag',
     SwipeAction.archive => 'Archive',
+    SwipeAction.snooze => 'Snooze',
   };
   // "Delete 5" on a thread: what is about to go is not one message, and
   // the half-finished swipe is the last moment to notice.

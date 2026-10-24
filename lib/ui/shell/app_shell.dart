@@ -245,6 +245,7 @@ class _AppShellState extends ConsumerState<AppShell>
     ref.invalidate(messagesProvider);
     ref.invalidate(foldersProvider);
     _restartStalledSync();
+    unawaited(_wakeSnoozed());
   }
 
   /// Hidden or paused since the app was last in front; see
@@ -275,6 +276,24 @@ class _AppShellState extends ConsumerState<AppShell>
   void _askAgain() {
     if (!mounted) return;
     ref.read(listRefreshProvider.notifier).ping();
+    unawaited(_wakeSnoozed());
+  }
+
+  /// Snoozed mail whose time has come, back in its folder while the app is
+  /// in front, and the background job set for the next due.
+  Future<void> _wakeSnoozed() async {
+    try {
+      final engine = ref.read(mailEngineProvider);
+      final scheduler = ref.read(backgroundSchedulerProvider);
+      final woken = await engine.wakeSnoozed();
+      if (woken > 0 && mounted) {
+        ref.invalidate(messagesProvider);
+        ref.invalidate(foldersProvider);
+      }
+      await scheduler.scheduleWake(await engine.nextSnoozeWake());
+    } catch (e) {
+      debugPrint('[myemail] snoozed mail not woken: $e');
+    }
   }
 
   final _passesDone = ReceivePort();

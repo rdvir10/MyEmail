@@ -199,7 +199,8 @@ enum SwipeAction {
   move('Move to...', 'Ask which folder, then move'),
   toggleRead('Read / unread', 'Flip whether it has been read'),
   toggleFlag('Flag', 'Flag it, or take the flag off'),
-  archive('Archive', 'Move to the Archive folder');
+  archive('Archive', 'Move to the Archive folder'),
+  snooze('Snooze', 'Out of the list until a time you choose');
 
   const SwipeAction(this.label, this.description);
 

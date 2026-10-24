@@ -69,6 +69,9 @@ class BackgroundSync {
   }) async {
     final prefs = await state.readPrefs();
     if (!prefs.syncs) return const BackgroundSyncReport();
+    // Snoozed mail whose time has come, back in its folder first. Never
+    // throws; see MailEngine.wakeSnoozed.
+    await engine.wakeSnoozed();
 
     final List<Account> accounts;
     try {

@@ -500,6 +500,14 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
         () => ref.read(mailEngineProvider).deleteMessages(messageIds),
       );
 
+  /// Snooze this list's [messageIds] until [until]: off the list at once,
+  /// as a move is; see [MailEngine.snooze].
+  Future<List<MessageMove>> snooze(List<String> messageIds, DateTime until) =>
+      _removeThen(
+        messageIds,
+        () => ref.read(mailEngineProvider).snooze(messageIds, until),
+      );
+
   Future<List<MessageMove>> _removeThen(
     List<String> messageIds,
     Future<List<MessageMove>> Function() op, {

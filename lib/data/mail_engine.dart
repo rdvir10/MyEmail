@@ -457,6 +457,22 @@ abstract class MailEngine {
   /// Answers how many went back.
   Future<int> recoverMessages(String accountId, List<String> ids);
 
+  /// Snooze: [messageIds] out of sight until [until], waiting in a Snoozed
+  /// folder on the server (made the first time), and back in the folder
+  /// each came from, unread, once [wakeSnoozed] finds the time has come.
+  /// Answers the moves, for Undo. A message with no Message-ID could not be
+  /// found again, and is left where it is.
+  Future<List<MessageMove>> snooze(List<String> messageIds, DateTime until);
+
+  /// Every snoozed message whose time has come back where it was, unread,
+  /// and how many came back. Never throws: one that cannot go back yet is
+  /// tried again next time, and one no longer where it waited (moved from
+  /// there by hand) is let go.
+  Future<int> wakeSnoozed({DateTime? now});
+
+  /// When the next snoozed message is due back, or null for none.
+  Future<DateTime?> nextSnoozeWake();
+
   /// Everything flagged in [accountId], whatever folder it is in, newest
   /// first, as the server has it: Outlook's Flagged email. A Microsoft
   /// account's carry the day each is due. Junk and Deleted Items are left

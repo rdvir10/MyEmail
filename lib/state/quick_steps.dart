@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/mail_engine.dart';
 import '../data/ui_state_store.dart';
+import '../domain/draft.dart' show ComposeKind;
+import '../domain/follow_up.dart';
 import '../domain/mail_message.dart';
 import '../domain/quick_step.dart';
 import 'message_providers.dart';
@@ -59,9 +61,7 @@ class QuickSteps extends Notifier<List<QuickStep>> {
         for (final s in state)
           s.copyWith(actions: [
             for (final a in s.actions)
-              a.folderId == null
-                  ? a
-                  : QuickStepAction(a.type, folderId: r.remap(a.folderId!)),
+              a.folderId == null ? a : a.withFolder(r.remap(a.folderId!)),
           ]),
       ];
 
@@ -79,6 +79,33 @@ class QuickSteps extends Notifier<List<QuickStep>> {
 
 final quickStepsProvider =
     NotifierProvider<QuickSteps, List<QuickStep>>(QuickSteps.new);
+
+/// What a Quick Step needs from the screen it is run from, for the actions
+/// that open something or ask where: Forward to, Reply then delete, New
+/// message to and Meeting from it open their screens, and the chain goes on
+/// once each is closed; Archive asks where the account archives; Flag for
+/// reckons its day in [workWeek], and [rememberDue] keeps the day where the
+/// account keeps none. A step that needs one it was not given fails rather
+/// than skipping it.
+class QuickStepHooks {
+  const QuickStepHooks({
+    this.archiveTarget,
+    this.compose,
+    this.meeting,
+    this.workWeek = defaultWorkWeek,
+    this.rememberDue,
+  });
+
+  final String? Function(String accountId)? archiveTarget;
+  final Future<void> Function(
+    ComposeKind kind,
+    MailMessage? original,
+    List<MailAddress> to,
+  )? compose;
+  final Future<void> Function(MailMessage message)? meeting;
+  final Set<int> workWeek;
+  final void Function(MailMessage message, DateTime? due)? rememberDue;
+}
 
 /// Run a Quick Step against one message, in order, stopping after the action
 /// that removes it from the list.
@@ -99,6 +126,7 @@ Future<void> runQuickStep({
   required Messages notifier,
   required MailMessage message,
   MailEngine? engine,
+  QuickStepHooks hooks = const QuickStepHooks(),
   void Function(String folderId)? onMoved,
   void Function()? onElsewhere,
 }) async {
@@ -113,11 +141,12 @@ Future<void> runQuickStep({
     if (engine == null) {
       throw StateError('That message is not in this list any more.');
     }
-    await _runOnEngine(step, engine, message, onMoved);
+    await _runOnEngine(step, engine, message, hooks, onMoved);
     onElsewhere?.call();
     return;
   }
   for (final action in step.effectiveActions) {
+    if (await _opens(action, message, hooks)) continue;
     switch (action.type) {
       case QuickStepActionType.markRead:
         await notifier.setRead(message.id, true);
@@ -133,17 +162,75 @@ Future<void> runQuickStep({
         onMoved?.call(target);
       case QuickStepActionType.delete:
         await notifier.delete([message.id]);
+      case QuickStepActionType.archive:
+        final target = _archiveTarget(hooks, message);
+        if (target != null) await notifier.move([message.id], target);
+      case QuickStepActionType.flagFor:
+        final due =
+            dueFor(action.when!, DateTime.now(), workWeek: hooks.workWeek);
+        await notifier.setFollowUp([message.id], due: due);
+        hooks.rememberDue?.call(message, due);
+      case QuickStepActionType.replyDelete:
+        await notifier.delete([message.id]);
+      case QuickStepActionType.forwardTo ||
+            QuickStepActionType.newMessageTo ||
+            QuickStepActionType.meeting:
+        break; // Opened above.
     }
   }
+}
+
+/// The screen [action] opens, opened, and true; false for an action that
+/// opens none. Reply then delete opens its reply here, before the delete.
+Future<bool> _opens(
+  QuickStepAction action,
+  MailMessage message,
+  QuickStepHooks hooks,
+) async {
+  Future<void> Function(ComposeKind, MailMessage?, List<MailAddress>)
+      compose() =>
+          hooks.compose ??
+          (throw StateError('${action.type.label} cannot open from here.'));
+  switch (action.type) {
+    case QuickStepActionType.forwardTo:
+      await compose()(
+          ComposeKind.forward, message, [MailAddress(email: action.address!)]);
+      return true;
+    case QuickStepActionType.newMessageTo:
+      await compose()(
+          ComposeKind.newMessage, null, [MailAddress(email: action.address!)]);
+      return true;
+    case QuickStepActionType.replyDelete:
+      await compose()(ComposeKind.reply, message, const []);
+      return false;
+    case QuickStepActionType.meeting:
+      final meeting = hooks.meeting ??
+          (throw StateError('A meeting cannot open from here.'));
+      await meeting(message);
+      return true;
+    default:
+      return false;
+  }
+}
+
+/// Where Archive files [message], or null where it is there already.
+String? _archiveTarget(QuickStepHooks hooks, MailMessage message) {
+  final target = hooks.archiveTarget?.call(message.accountId);
+  if (target == null) {
+    throw StateError('This account has no Archive folder.');
+  }
+  return target == message.folderId ? null : target;
 }
 
 Future<void> _runOnEngine(
   QuickStep step,
   MailEngine engine,
   MailMessage message,
+  QuickStepHooks hooks,
   void Function(String folderId)? onMoved,
 ) async {
   for (final action in step.effectiveActions) {
+    if (await _opens(action, message, hooks)) continue;
     switch (action.type) {
       case QuickStepActionType.markRead:
         await engine.setRead(message.id, true);
@@ -159,6 +246,20 @@ Future<void> _runOnEngine(
         onMoved?.call(target);
       case QuickStepActionType.delete:
         await engine.deleteMessages([message.id]);
+      case QuickStepActionType.archive:
+        final target = _archiveTarget(hooks, message);
+        if (target != null) await engine.moveMessages([message.id], target);
+      case QuickStepActionType.flagFor:
+        final due =
+            dueFor(action.when!, DateTime.now(), workWeek: hooks.workWeek);
+        await engine.setFollowUp([message.id], due: due);
+        hooks.rememberDue?.call(message, due);
+      case QuickStepActionType.replyDelete:
+        await engine.deleteMessages([message.id]);
+      case QuickStepActionType.forwardTo ||
+            QuickStepActionType.newMessageTo ||
+            QuickStepActionType.meeting:
+        break; // Opened above.
     }
   }
 }

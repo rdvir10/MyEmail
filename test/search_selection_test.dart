@@ -177,7 +177,9 @@ void main() {
       c.read(selectedMessageIdsProvider.notifier).addAll(two.map((m) => m.id));
       await tester.pumpAndSettle();
 
-      await tester.tap(inBar(find.byTooltip('Forward as attachment')));
+      await tester.tap(inBar(find.byKey(const ValueKey('selection-more'))));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Forward as attachment'));
       await tester.pump(const Duration(milliseconds: 300));
       await tester.pumpAndSettle();
 
@@ -522,7 +524,9 @@ void main() {
       c.read(selectedMessageIdsProvider.notifier).addAll(two.map((m) => m.id));
       await tester.pumpAndSettle();
 
-      await tester.tap(inBar(find.byTooltip('Forward as attachment')));
+      await tester.tap(inBar(find.byKey(const ValueKey('selection-more'))));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Forward as attachment'));
       await tester.pump(const Duration(milliseconds: 300));
       await tester.pumpAndSettle();
 

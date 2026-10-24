@@ -209,6 +209,16 @@ class _RefusingEngine implements MailEngine {
       _inner.setFollowUp(messageIds, due: due, complete: complete);
 
   @override
+  Future<List<MessageMove>> snooze(List<String> messageIds, DateTime until) =>
+      _inner.snooze(messageIds, until);
+
+  @override
+  Future<int> wakeSnoozed({DateTime? now}) => _inner.wakeSnoozed(now: now);
+
+  @override
+  Future<DateTime?> nextSnoozeWake() => _inner.nextSnoozeWake();
+
+  @override
   Future<List<MailMessage>> flaggedMessages(
     String accountId, {
     int limit = 100,
