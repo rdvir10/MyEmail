@@ -799,8 +799,9 @@ class CachedImapEngine implements MailEngine {
       // As deep as the list asks for, so that what it shows is up to date.
       await sync.sync(path, reach: offset + limit);
       await sync.ensureCached(path, offset + limit);
-    } on ConnectionFailed {
+    } on ConnectionFailed catch (e) {
       // Offline: whatever is cached is what there is.
+      debugPrint('[myemail] sync $path failed, showing what is cached: $e');
     }
     return cachedMessages(folderId, offset: offset, limit: limit);
   }

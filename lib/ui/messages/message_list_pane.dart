@@ -419,10 +419,23 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           data: (fetched) {
             final messages = ref.watch(sortedMessagesProvider(folderId));
             if (messages.isEmpty) {
-              return Center(
-                child: Text(
-                  'Nothing in ${folder?.displayName ?? 'this folder'}',
-                  style: theme.textTheme.bodySmall,
+              // Pulled down like a list with mail in it: an empty folder is
+              // the one most likely to be waiting for some.
+              return RefreshIndicator(
+                onRefresh: () => _pullToSync(context, folderId),
+                child: CustomScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  slivers: [
+                    SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: Center(
+                        child: Text(
+                          'Nothing in ${folder?.displayName ?? 'this folder'}',
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               );
             }
@@ -468,6 +481,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
               child: ListView.separated(
                 key: _listKey,
                 controller: _scroll,
+                // A list with a controller of its own scrolls only when it is
+                // longer than the screen, and the pull is a scroll: thirteen
+                // messages on a tablet could not be pulled down at all.
+                physics: const AlwaysScrollableScrollPhysics(),
                 itemCount: items.length + (hasMore ? 1 : 0),
                 // None under a closed bar: the next thing down is another
                 // bar, and a line between two bars reads as a row of nothing.

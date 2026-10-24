@@ -171,6 +171,40 @@ void main() {
     });
   });
 
+  testWidgets('a list too short to fill the screen can still be pulled',
+      (tester) async {
+    // A list with a scroll controller of its own did not scroll at all while
+    // it fitted on screen, and the pull is a scroll: an inbox of thirteen on
+    // a tablet never checked for mail however hard it was pulled.
+    engine.keep = 2;
+    await pump(tester, const Size(1400, 900));
+    final before = engine.messageLoads;
+
+    await pullDown(tester);
+
+    expect(engine.messageLoads, greaterThan(before));
+  });
+
+  testWidgets('and so can an empty folder', (tester) async {
+    engine.keep = 0;
+    await pump(tester, const Size(400, 900));
+    final before = engine.messageLoads;
+
+    await tester.fling(
+      find.ancestor(
+        of: find.textContaining('Nothing in'),
+        matching: find.byType(Scrollable),
+      ),
+      const Offset(0, 400),
+      800,
+    );
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+
+    expect(engine.messageLoads, greaterThan(before));
+  });
+
   testWidgets('the indicator is there on a tablet too', (tester) async {
     // A tablet has the ribbon's Sync button, but a finger on a list still
     // expects the pull to work.
@@ -195,6 +229,9 @@ class _CountingEngine extends SampleMailEngine {
   /// Held open to keep the server's answer for a list on its way.
   Completer<void>? holdList;
 
+  /// How many messages each folder shows, where not all of them.
+  int? keep;
+
   @override
   Future<List<MailMessage>> loadMessages(
     String folderId, {
@@ -206,7 +243,19 @@ class _CountingEngine extends SampleMailEngine {
     if (folderId == listFails) {
       throw const AuthenticationFailed('The folder is not there.');
     }
-    return super.loadMessages(folderId, offset: offset, limit: limit);
+    final all = await super.loadMessages(folderId, offset: offset, limit: limit);
+    return [...all.take(keep ?? all.length)];
+  }
+
+  @override
+  Future<List<MailMessage>> cachedMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    final all =
+        await super.cachedMessages(folderId, offset: offset, limit: limit);
+    return [...all.take(keep ?? all.length)];
   }
 
   @override

@@ -1,5 +1,7 @@
 import 'dart:math';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../../domain/mail_message.dart';
 import '../imap/imap_mapping.dart';
 import '../imap/imap_transport.dart';
@@ -208,6 +210,16 @@ class FolderSync {
     }
 
     await _writeState(path, status);
+    // What the sync was asked about and what it found, for the log: a
+    // folder that stops showing new mail is either not looking far enough
+    // or not hearing back, and this tells the two apart.
+    debugPrint('[myemail] sync $path: ${cached.length} cached, newest '
+        '${cached.isEmpty ? '-' : cached.first.date.toIso8601String()}, '
+        'kept ${recent.length} back to ${recentStart?.toIso8601String()}, '
+        'new from ${min(range.max + 1, unclaimed)} of ${status.uidNext}'
+        '${lookBack ? ' looking back' : ''}, server ${status.exists}: '
+        '+${newHeaders.length} ~${flags.length} -${gone.length}'
+        '${existing == null ? ' (deletions unknown)' : ''}');
     return SyncResult(
       added: newHeaders.length,
       updated: flags.length,
