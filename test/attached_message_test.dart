@@ -190,6 +190,70 @@ void main() {
       expect(find.textContaining('Inside'), findsOneWidget);
     });
 
+    testWidgets('on a phone, many files and a long list of who it went to '
+        'leave the message room', (tester) async {
+      // Every name and every chip was printed in full above the message,
+      // which a company-wide mail with a dozen photos pushed off the screen.
+      tester.view.physicalSize = const Size(420, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final crowded = Uint8List.fromList(utf8.encode([
+        'From: Michael Reznik <michaelr@example.com>',
+        'To: ${[for (var i = 1; i <= 40; i++) 'Person $i <p$i@example.com>'].join(', ')}',
+        'Cc: ${[for (var i = 1; i <= 20; i++) 'Copied $i <c$i@example.com>'].join(', ')}',
+        'Subject: Site visit',
+        'MIME-Version: 1.0',
+        'Content-Type: multipart/mixed; boundary="outer"',
+        '',
+        '--outer',
+        'Content-Type: text/plain',
+        '',
+        'The photos from today',
+        for (var i = 1; i <= 14; i++) ...[
+          '--outer',
+          'Content-Type: image/jpeg; name="Photo $i.jpg"',
+          'Content-Disposition: attachment; filename="Photo $i.jpg"',
+          'Content-Transfer-Encoding: base64',
+          '',
+          '/9j/4AAQ',
+        ],
+        '--outer--',
+        '',
+      ].join('\r\n')));
+      await tester.pumpWidget(ProviderScope(
+        child: MaterialApp(
+          home: Builder(
+            builder: (context) => ElevatedButton(
+              onPressed: () =>
+                  openAttachedMessage(context, crowded, key: 'm1/a2'),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      final body = tester.getRect(find.textContaining('The photos from today'));
+      expect(body.top, lessThan(900 * 0.75),
+          reason: 'the message starts in the top three quarters');
+      expect(find.text('Photo 1.jpg'), findsOneWidget);
+
+      // Everyone it went to can still be reached: cut at a few lines, the
+      // rest could not be seen at all.
+      final recipients = find.byKey(const ValueKey('attached-recipients'));
+      final last = find.textContaining('Copied 20');
+      expect(tester.getRect(last).bottom,
+          greaterThan(tester.getRect(recipients).bottom),
+          reason: 'the names run on past their box');
+      await tester.drag(recipients, const Offset(0, -2000));
+      await tester.pumpAndSettle();
+      expect(tester.getRect(last).bottom,
+          lessThanOrEqualTo(tester.getRect(recipients).bottom + 0.5),
+          reason: 'and scroll up into it, the last one with them');
+    });
+
     testWidgets('from the message it is attached to, by a tap',
         (tester) async {
       final dir = Directory.systemTemp.createTempSync('attached');

@@ -13,7 +13,8 @@ import '../../state/attachment_providers.dart';
 import '../../state/display_providers.dart';
 import '../common/bottom_message.dart';
 import '../compose/open_compose.dart';
-import 'attachment_bar.dart' show attachmentIcon, showDefaultApp;
+import 'attachment_bar.dart'
+    show AttachmentChips, attachmentIcon, showDefaultApp;
 import 'attachment_save.dart';
 import 'date_format.dart';
 import 'html_body_view.dart';
@@ -121,10 +122,12 @@ class AttachedMessageScreen extends ConsumerWidget {
                           ),
                           if (m.from.name != null && m.from.email.isNotEmpty)
                             Text(m.from.email, style: muted),
-                          if (m.to.isNotEmpty)
-                            Text('To: ${_names(m.to)}', style: muted),
-                          if (m.cc.isNotEmpty)
-                            Text('Cc: ${_names(m.cc)}', style: muted),
+                          if (m.to.isNotEmpty || m.cc.isNotEmpty)
+                            _Recipients(
+                              to: m.to.isEmpty ? null : 'To: ${_names(m.to)}',
+                              cc: m.cc.isEmpty ? null : 'Cc: ${_names(m.cc)}',
+                              style: muted,
+                            ),
                         ],
                       ),
                     ),
@@ -132,9 +135,7 @@ class AttachedMessageScreen extends ConsumerWidget {
                 ),
                 if (files.isNotEmpty) ...[
                   const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
+                  AttachmentChips(
                     children: [
                       for (final f in files)
                         _FileChip(file: f, actions: _FileActions(ref, this, f)),
@@ -170,6 +171,54 @@ class AttachedMessageScreen extends ConsumerWidget {
 
   static String _names(List<MailAddress> list) =>
       list.map((a) => a.display).join(', ');
+}
+
+/// Who the attached message went to, no taller than a quarter of the screen
+/// and scrolling in its own right past that, as the files under it do.
+///
+/// Printed in full, a company-wide mail with a dozen photos left no room
+/// for the message. Cut at a few lines, everyone past them could not be
+/// seen at all, and nothing here unfolds them.
+class _Recipients extends StatefulWidget {
+  const _Recipients({required this.to, required this.cc, this.style});
+
+  final String? to;
+  final String? cc;
+  final TextStyle? style;
+
+  @override
+  State<_Recipients> createState() => _RecipientsState();
+}
+
+class _RecipientsState extends State<_Recipients> {
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ConstrainedBox(
+        key: const ValueKey('attached-recipients'),
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height / 4,
+        ),
+        child: Scrollbar(
+          controller: _scroll,
+          child: SingleChildScrollView(
+            controller: _scroll,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (widget.to != null) Text(widget.to!, style: widget.style),
+                if (widget.cc != null) Text(widget.cc!, style: widget.style),
+              ],
+            ),
+          ),
+        ),
+      );
 }
 
 /// Open, save or share one file from inside the attached message.

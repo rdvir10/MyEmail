@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/files/attachment_files.dart';
 import 'package:myemail/data/files/file_bridge.dart';
+import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/mail_attachment.dart';
@@ -292,6 +293,41 @@ void main() {
       expect(find.text('180 KB'), findsOneWidget);
     });
 
+    testWidgets('a list that could not be read offers Try again, which '
+        'reads it', (tester) async {
+      // Opened with no signal, the bar said it could not read what was
+      // attached until the app was restarted, and nothing on it asked again.
+      final engine = _UnlistedFiles();
+      final c = ProviderContainer(
+        overrides: [
+          uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+          mailEngineProvider.overrideWithValue(engine),
+        ],
+      );
+      addTearDown(c.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: const MaterialApp(
+            home: Scaffold(body: AttachmentBar(messageId: 'a:INBOX#1')),
+          ),
+        ),
+      );
+      // However long anything spends asking again by itself first.
+      for (var i = 0; i < 30; i++) {
+        if (find.text('Try again').evaluate().isNotEmpty) break;
+        await tester.pump(const Duration(seconds: 5));
+      }
+      expect(find.text('Could not read what is attached.'), findsOneWidget);
+
+      engine.offline = false;
+      await tester.tap(find.text('Try again'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('plan.pdf'), findsOneWidget);
+      expect(find.text('Could not read what is attached.'), findsNothing);
+    });
+
     testWidgets('a tap downloads it and hands it to another app',
         (tester) async {
       await pumpBar(tester);
@@ -403,5 +439,24 @@ class _Picker extends FilePickerPlatform {
     if (fails) throw const FileSystemException('No space left on device');
     saved.add(fileName);
     return Uri.parse('content://documents/$fileName');
+  }
+}
+
+/// The sample engine with no connection until told otherwise, and one file
+/// on every message once there is one.
+class _UnlistedFiles extends SampleMailEngine {
+  bool offline = true;
+
+  @override
+  Future<List<MailAttachment>> listAttachments(String messageId) async {
+    if (offline) throw const ConnectionFailed('No connection.');
+    return const [
+      MailAttachment(
+        id: '2',
+        name: 'plan.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 2048,
+      ),
+    ];
   }
 }

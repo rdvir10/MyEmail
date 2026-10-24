@@ -1,13 +1,19 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/print/message_printer.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/print_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/trusted_senders.dart';
 import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 
@@ -163,7 +169,10 @@ void main() {
     late FakeMessagePrinter printer;
     setUp(() => printer = FakeMessagePrinter());
 
-    Future<ProviderContainer> pump(WidgetTester tester) async {
+    Future<ProviderContainer> pump(
+      WidgetTester tester, {
+      MailEngine? engine,
+    }) async {
       tester.view.physicalSize = const Size(1400, 900);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
@@ -171,6 +180,7 @@ void main() {
       final c = ProviderContainer(overrides: [
         uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
         messagePrinterProvider.overrideWithValue(printer),
+        if (engine != null) mailEngineProvider.overrideWithValue(engine),
       ]);
       addTearDown(c.dispose);
       await tester.pumpWidget(
@@ -212,6 +222,66 @@ void main() {
       expect(printer.printed.single.title, open.subject);
     });
 
+    Future<void> printFromMenu(WidgetTester tester) async {
+      await tester.tap(find.descendant(
+        of: find.byType(ReadingPane),
+        matching: find.byTooltip('More'),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Print or save as PDF…'));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> printWithKeys(WidgetTester tester) async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyP);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+    }
+
+    for (final (how, print) in [
+      ('the menu', printFromMenu),
+      ('Ctrl+P', printWithKeys),
+    ]) {
+      testWidgets('from $how, pictures pasted into the message print in place',
+          (tester) async {
+        // The pane shows a screenshot or a signature's logo named by
+        // Content-ID; the paper had a broken box where each was.
+        await pump(tester, engine: _WithPictures());
+
+        await print(tester);
+
+        final page = printer.printed.single.html;
+        expect(page, contains('src="data:image/png;base64,${base64Encode(_logo)}"'));
+        expect(page, isNot(contains('cid:')));
+      });
+    }
+
+    testWidgets("Ctrl+P prints a trusted sender's pictures from the web, as "
+        'the menu does', (tester) async {
+      // The shortcut's copy of the printing read the setting alone, so a
+      // trusted sender's message printed without the pictures on screen.
+      final c = await pump(tester, engine: _WithPictures());
+      final open = c.read(selectedMessageProvider)!;
+      c.read(trustedSendersProvider.notifier).trust(open.from.email);
+      await tester.pumpAndSettle();
+
+      await printWithKeys(tester);
+
+      expect(printer.printed.single.html,
+          contains('<img src="https://pictures.example/banner.png">'));
+    });
+
+    testWidgets('Ctrl+P says so when it cannot print', (tester) async {
+      // The shortcut had no catch at all: the failure went nowhere.
+      printer = _BrokenPrinter();
+      await pump(tester);
+
+      await printWithKeys(tester);
+
+      expect(find.textContaining('Could not print.'), findsOneWidget);
+    });
+
     testWidgets('where there is no print sheet the entry is greyed',
         (tester) async {
       printer = FakeMessagePrinter(supported: false);
@@ -229,4 +299,39 @@ void main() {
       expect(item.enabled, isFalse);
     });
   });
+}
+
+final _logo = Uint8List.fromList([137, 80, 78, 71]);
+
+/// Every body with a logo named by Content-ID, and a picture from the web.
+class _WithPictures extends SampleMailEngine {
+  @override
+  Future<MailBody> loadMessageBody(String messageId) async => const MailBody(
+        text: 'Hi',
+        html: '<p>Hi</p><img src="cid:logo@x">'
+            '<img src="https://pictures.example/banner.png">',
+      );
+
+  @override
+  Future<List<MailAttachment>> listAttachments(String messageId) async => [
+        const MailAttachment(
+          id: 'p1',
+          name: 'logo.png',
+          mimeType: 'image/png',
+          sizeBytes: 4,
+          isInline: true,
+          contentId: 'logo@x',
+        ),
+      ];
+
+  @override
+  Future<Uint8List> fetchAttachment(String messageId, String id) async =>
+      _logo;
+}
+
+/// A print sheet that will not take the page.
+class _BrokenPrinter extends FakeMessagePrinter {
+  @override
+  Future<bool> print({required String title, required String html}) async =>
+      throw PlatformException(code: 'print', message: 'The print service stopped.');
 }

@@ -105,6 +105,11 @@ void main() {
       addTearDown(c.dispose);
       await tester.pumpWidget(
         UncontrolledProviderScope(
+          // A scope of its own for each container. Pumped into the last
+          // one, a second container is never told about frames, and what
+          // the bar lets go of at the end waits on a timer the test leaves
+          // running.
+          key: ObjectKey(c),
           container: c,
           child: MaterialApp(
             home: Scaffold(

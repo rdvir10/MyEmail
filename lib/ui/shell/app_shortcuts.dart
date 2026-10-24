@@ -10,14 +10,11 @@ import '../../state/search_providers.dart';
 import '../../state/sync_now.dart';
 import '../compose/open_compose.dart';
 import '../meetings/new_meeting_screen.dart';
-import '../../data/print/message_printer.dart';
-import '../../state/display_providers.dart';
-import '../../state/print_providers.dart';
 import '../messages/forward_as_attachment.dart';
 import '../messages/full_screen_message.dart';
-import '../messages/html_body_view.dart';
 import '../messages/list_keyboard.dart';
 import '../messages/message_actions.dart';
+import '../messages/print_message.dart';
 import 'pane_focus.dart';
 
 /// Keyboard commands that work anywhere in the shell.
@@ -95,17 +92,7 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
         if (message == null) return;
         final body = ref.read(messageBodyProvider(message.id)).value;
         if (body == null) return;
-        final html = body.html ?? '';
-        final showImages = ref.read(displayProvider).alwaysShowImages;
-        await ref.read(messagePrinterProvider).print(
-              title: message.subject.trim().isEmpty ? 'Message' : message.subject,
-              html: printableMessage(
-                message,
-                body,
-                bodyHtml: showImages ? html : stripRemoteContent(html),
-                remoteAllowed: showImages,
-              ),
-            );
+        await printMessage(context, ref, message, body);
       case AppCommand.delete:
         if (message != null && listId != null) {
           await MessageActions(ref, listId).delete(context, [message]);

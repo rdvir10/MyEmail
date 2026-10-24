@@ -49,6 +49,21 @@ class AttachmentBar extends ConsumerWidget {
                 style: theme.textTheme.labelSmall,
               ),
             ),
+            // Nothing else asks again while the message is open, and on a
+            // tablet the pane can stay on it all afternoon. The pictures in
+            // the body are found among the files, so they are asked for
+            // again with them.
+            TextButton(
+              onPressed: () => ref
+                ..invalidate(attachmentsProvider(messageId))
+                ..invalidate(inlinePicturesProvider(messageId)),
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 32),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('Try again'),
+            ),
           ],
         ),
       ),
@@ -103,9 +118,7 @@ class AttachmentBar extends ConsumerWidget {
               if (!folded)
                 Padding(
                   padding: const EdgeInsets.only(top: 6),
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
+                  child: AttachmentChips(
                     children: [
                       for (final file in files)
                         _AttachmentChip(messageId: messageId, attachment: file),
@@ -118,6 +131,46 @@ class AttachmentBar extends ConsumerWidget {
       },
     );
   }
+}
+
+/// The chips under a message, no taller than a quarter of the screen and
+/// scrolling in their own right past that.
+///
+/// A chip is a row of its own on a phone, and a dozen photos from a job
+/// site pushed the message off the bottom of the screen, or squeezed it to
+/// nothing, until the count line above them was found and folded. Who a
+/// message went to is held to a third of the screen for the same reason.
+class AttachmentChips extends StatefulWidget {
+  const AttachmentChips({super.key, required this.children});
+
+  final List<Widget> children;
+
+  @override
+  State<AttachmentChips> createState() => _AttachmentChipsState();
+}
+
+class _AttachmentChipsState extends State<AttachmentChips> {
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height / 4,
+        ),
+        child: Scrollbar(
+          controller: _scroll,
+          child: SingleChildScrollView(
+            controller: _scroll,
+            child: Wrap(spacing: 8, runSpacing: 8, children: widget.children),
+          ),
+        ),
+      );
 }
 
 class _AttachmentChip extends ConsumerWidget {

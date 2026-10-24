@@ -292,13 +292,25 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
               child: CircularProgressIndicator(strokeWidth: 2),
             ),
           ),
+          // A failed search is not run again by itself, so the first one
+          // after the radio wakes would otherwise mean retyping the words.
           error: (e, _) => Center(
             child: Padding(
               padding: const EdgeInsets.all(24),
-              child: Text(
-                'Search failed.\n$e',
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodySmall,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Search failed.\n$e',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: () => ref.invalidate(searchResultsProvider),
+                    child: const Text('Try again'),
+                  ),
+                ],
               ),
             ),
           ),

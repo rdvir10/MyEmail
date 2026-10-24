@@ -13,6 +13,7 @@ import '../../state/message_providers.dart';
 import '../../state/trusted_senders.dart';
 import '../compose/open_compose.dart';
 import 'html_body_view.dart';
+import 'load_failure.dart';
 
 /// One message, and nothing else: the body edge to edge, with Android's
 /// own bars out of the way.
@@ -176,10 +177,11 @@ class _FullScreenMessageState extends ConsumerState<FullScreenMessage> {
                   error: (e, _) => Center(
                     child: Padding(
                       padding: const EdgeInsets.all(24),
-                      child: Text(
-                        'Could not load the message.\n$e',
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.bodySmall,
+                      child: BodyLoadFailure(
+                        error: e,
+                        centered: true,
+                        onRetry: () =>
+                            ref.invalidate(messageBodyProvider(message.id)),
                       ),
                     ),
                   ),

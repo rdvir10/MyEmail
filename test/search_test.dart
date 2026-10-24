@@ -708,6 +708,37 @@ void main() {
       );
     });
 
+    testWidgets('a search no server could answer says so at once, is not '
+        'run again by itself, and runs again from Try again', (tester) async {
+      // Riverpod ran it ten times more over half a minute, every folder's
+      // search each time, with a spinner under the box until it gave up.
+      wide(tester);
+      final engine = _Unreachable();
+      await tester.pumpWidget(ProviderScope(
+        overrides: [mailEngineProvider.overrideWithValue(engine)],
+        child: const MaterialApp(home: AppShell()),
+      ));
+      await tester.pumpAndSettle();
+
+      await openSearch(tester);
+      await tester.enterText(searchField, 'invoice');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(find.textContaining('Search failed.'), findsOneWidget);
+      await tester.pump(const Duration(minutes: 1));
+      expect(engine.searches, 1);
+
+      // Back in signal, the same words are asked again without retyping
+      // them.
+      engine.down = false;
+      await tester.tap(find.text('Try again'));
+      await tester.pumpAndSettle();
+      expect(engine.searches, 2);
+      expect(find.textContaining('Search failed.'), findsNothing);
+      expect(find.byType(MessageTile), findsWidgets);
+    });
+
     testWidgets('the scope chooser appears in a real folder only',
         (tester) async {
       wide(tester);
@@ -727,6 +758,25 @@ void main() {
       expect(find.text('Account'), findsOneWidget);
     });
   });
+}
+
+/// The sample engine with no server to search while [down], counting each
+/// time it is asked to.
+class _Unreachable extends SampleMailEngine {
+  var searches = 0;
+  var down = true;
+
+  @override
+  Future<List<MailMessage>> searchMessages(
+    String query,
+    SearchScope scope, {
+    int limit = 100,
+    SearchField field = SearchField.all,
+  }) async {
+    searches++;
+    if (down) throw const ConnectionFailed('No server could be reached.');
+    return super.searchMessages(query, scope, limit: limit, field: field);
+  }
 }
 
 /// On the subway: every search fails to reach a server.

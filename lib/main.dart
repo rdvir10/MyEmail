@@ -152,6 +152,13 @@ Future<void> main() async {
 
   runApp(
     ProviderScope(
+      // Nothing is asked again by Riverpod itself. It asked ten times more
+      // over half a minute, a spinner on the screen throughout: a search
+      // that failed ran every folder's search again each time, and a list
+      // opened offline with nothing cached waited the whole half minute to
+      // say so. What can usefully be tried again offers Try again, and the
+      // lists and folders are asked again on their own schedule anyway.
+      retry: (_, _) => null,
       overrides: [
         uiStateStoreProvider.overrideWithValue(PrefsUiStateStore(prefs)),
         accountStoreProvider.overrideWithValue(accountStore),

@@ -9,6 +9,8 @@ import '../data/files/file_bridge.dart';
 import '../data/ui_state_store.dart';
 import '../domain/html_safety.dart';
 import '../domain/mail_attachment.dart';
+import '../domain/mail_message.dart' show MailBody;
+import 'message_keeping.dart';
 import 'message_providers.dart';
 import 'providers.dart';
 
@@ -24,10 +26,18 @@ final attachmentFilesProvider =
 /// Separate from the body: a list of names and sizes costs one small request
 /// and arrives while the body is still coming, and a message whose
 /// attachments cannot be listed is still a message worth reading.
-final attachmentsProvider =
-    FutureProvider.family<List<MailAttachment>, String>((ref, messageId) async {
-  return ref.watch(mailEngineProvider).listAttachments(messageId);
-});
+///
+/// Held, and not retried, as the body is; see [keptOnceLoaded] and
+/// [notRetried].
+final attachmentsProvider = FutureProvider.autoDispose
+    .family<List<MailAttachment>, String>(
+  (ref, messageId) => keptOnceLoaded(
+    ref,
+    messageId,
+    ref.watch(mailEngineProvider).listAttachments(messageId),
+  ),
+  retry: notRetried,
+);
 
 /// The pictures a message's HTML names by Content-ID, as data: URIs keyed
 /// by Content-ID in lower case, for [withInlinePictures] to put in place.
@@ -36,10 +46,26 @@ final attachmentsProvider =
 /// and only up to [maxInlinePictureBytes] between them: past that, the rest
 /// stay chips. A picture that cannot be fetched is left out; the body is
 /// still worth reading without it.
-final inlinePicturesProvider =
-    FutureProvider.family<Map<String, String>, String>((ref, messageId) async {
-  final attachments = await ref.watch(attachmentsProvider(messageId).future);
+///
+/// Held, and not retried, as the body is; see [keptOnceLoaded] and
+/// [notRetried]. Asked for again along with the files they are found among
+/// (the attachment bar's Try again).
+final inlinePicturesProvider = FutureProvider.autoDispose
+    .family<Map<String, String>, String>(
+  (ref, messageId) =>
+      keptOnceLoaded(ref, messageId, _inlinePictures(ref, messageId)),
+  retry: notRetried,
+);
+
+Future<Map<String, String>> _inlinePictures(Ref ref, String messageId) async {
+  // Read rather than watched. Watched, the files and the body were held by
+  // the pictures, and let go of only once the pictures had gone for good,
+  // which put the message back among the ones read last (RecentMessages)
+  // and pushed out one that had been read after it.
+  final listing = ref.read(attachmentsProvider(messageId).future);
+  final body = ref.read(messageBodyProvider(messageId).future);
   final engine = ref.watch(mailEngineProvider);
+  final attachments = await listing;
   final pictures = <String, String>{};
   var room = maxInlinePictureBytes;
 
@@ -77,7 +103,7 @@ final inlinePicturesProvider =
   // Content-ID is not known, and only once: one that is known and is
   // another is someone else's picture.
   var byName = 0;
-  final html = await _bodyHtml(ref, messageId);
+  final html = await _bodyHtml(body);
   final used = <String>{};
   for (final named in contentIdsNamedIn(html)) {
     if (pictures.containsKey(named)) continue;
@@ -97,13 +123,13 @@ final inlinePicturesProvider =
       '${attachments.where((a) => a.contentId != null).length} named, '
       '$byName by file name, ${attachments.length} attached');
   return pictures;
-});
+}
 
 /// The body's HTML, or nothing if it cannot be had: the pictures matched
 /// by name need it, and the ones matched by Content-ID do not.
-Future<String> _bodyHtml(Ref ref, String messageId) async {
+Future<String> _bodyHtml(Future<MailBody> body) async {
   try {
-    return (await ref.watch(messageBodyProvider(messageId).future)).html ?? '';
+    return (await body).html ?? '';
   } catch (_) {
     return '';
   }

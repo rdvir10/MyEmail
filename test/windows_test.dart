@@ -39,6 +39,11 @@ void main() {
     addTearDown(c.dispose);
     await tester.pumpWidget(
       UncontrolledProviderScope(
+        // A scope of its own for each container. Pumped into the last one,
+        // a second container is never told about frames, and what the open
+        // message lets go of at the end waits on a timer the test leaves
+        // running.
+        key: ObjectKey(c),
         container: c,
         child: MaterialApp(home: home ?? const AppShell()),
       ),
@@ -211,6 +216,7 @@ void main() {
 
       final app = containerOn(store);
       await tester.pumpWidget(UncontrolledProviderScope(
+        key: ObjectKey(app),
         container: app,
         child: const MaterialApp(home: AppShell()),
       ));
@@ -222,7 +228,9 @@ void main() {
       expect(message.folderId, isNot(kUnifiedInboxId));
 
       final window = containerOn(store);
+      // A scope of its own, as in pump().
       await tester.pumpWidget(UncontrolledProviderScope(
+        key: ObjectKey(window),
         container: window,
         child: MaterialApp(home: WindowHost(request: MessageWindow(message))),
       ));

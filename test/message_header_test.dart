@@ -3,9 +3,12 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/attachment_providers.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/ui/messages/attachment_bar.dart';
 import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 
@@ -18,6 +21,7 @@ void main() {
   MailMessage message({
     List<MailAddress> to = const [],
     List<MailAddress> cc = const [],
+    bool hasAttachments = false,
   }) =>
       MailMessage(
         id: 'a:INBOX#1',
@@ -31,6 +35,7 @@ void main() {
         cc: cc,
         date: DateTime(2026, 9, 21, 16, 26),
         isRead: true,
+        hasAttachments: hasAttachments,
       );
 
   Future<void> pump(
@@ -38,6 +43,7 @@ void main() {
     required Widget home,
     required MailMessage m,
     Size size = const Size(420, 900),
+    List<MailAttachment> files = const [],
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
@@ -48,10 +54,15 @@ void main() {
       messageBodyProvider(m.id).overrideWith((ref) async => const MailBody(
             text: 'Hello',
           )),
+      attachmentsProvider(m.id).overrideWith((ref) async => files),
     ]);
     addTearDown(c.dispose);
     await tester.pumpWidget(
       UncontrolledProviderScope(
+        // A scope of its own for each container. Pumped into the last one,
+        // a second container is never told about frames, and what the body
+        // lets go of at the end waits on a timer the test leaves running.
+        key: ObjectKey(c),
         container: c,
         child: MaterialApp(home: home),
       ),
@@ -320,6 +331,39 @@ void main() {
       await pump(tester, m: m, home: MessageScreen(message: m));
 
       expect(find.text('To: (nobody named)'), findsOneWidget);
+    });
+  });
+
+  group('what is attached', () {
+    testWidgets('a dozen photos leave the message room on a phone',
+        (tester) async {
+      // A chip a row on a phone: the chips alone took more than half the
+      // screen, and the body was squeezed to a sliver or to nothing.
+      final m = message(hasAttachments: true);
+      await pump(tester, m: m, home: MessageScreen(message: m), files: [
+        for (var i = 1; i <= 14; i++)
+          MailAttachment(
+            id: '$i',
+            name: 'Job site photo $i.jpg',
+            mimeType: 'image/jpeg',
+            sizeBytes: 2400000,
+          ),
+      ]);
+
+      expect(tester.getSize(find.byType(AttachmentBar)).height,
+          lessThanOrEqualTo(900 / 4 + 40),
+          reason: 'a quarter of the screen, and the count line above it');
+      final body = tester.getRect(find.text('Hello'));
+      expect(body.bottom, lessThan(900), reason: 'the message is on screen');
+      expect(find.text('Job site photo 1.jpg'), findsOneWidget);
+
+      // The rest are under it, scrolled to.
+      await tester.dragUntilVisible(
+        find.text('Job site photo 14.jpg'),
+        find.text('Job site photo 1.jpg'),
+        const Offset(0, -100),
+      );
+      expect(find.text('Job site photo 14.jpg').hitTestable(), findsOneWidget);
     });
   });
 }

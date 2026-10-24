@@ -21,14 +21,15 @@ import '../meetings/new_meeting_screen.dart';
 import 'attachment_bar.dart';
 import 'date_format.dart';
 import '../shell/pane_focus.dart';
-import '../../data/print/message_printer.dart';
 import '../../state/print_providers.dart';
 import '../../state/search_providers.dart';
 import '../../state/attachment_providers.dart';
 import 'full_screen_message.dart';
 import 'html_body_view.dart';
+import 'load_failure.dart';
 import 'message_actions.dart';
 import 'message_source.dart';
+import 'print_message.dart';
 import 'move_to_sheet.dart';
 import 'person_card.dart';
 
@@ -159,36 +160,13 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
   /// The list this message was opened from: the unified inbox or a folder.
   String? get _listId => ref.read(effectiveSelectedFolderIdProvider);
 
+  /// Through the list's actions, as the Read button is, so a search hit
+  /// from another folder, or from further back than the list has loaded,
+  /// goes to the engine, and the search shows it read.
   Future<void> _markRead() async {
     final listId = _listId;
     if (!mounted || listId == null) return;
-    final message = widget.message;
-    try {
-      final held =
-          ref
-              .read(messagesProvider(listId))
-              .value
-              ?.any((m) => m.id == message.id) ??
-          false;
-      if (held) {
-        await ref
-            .read(messagesProvider(listId).notifier)
-            .setRead(message.id, true);
-        return;
-      }
-      // A search hit from another folder, or from further back than the list
-      // has loaded. The list quietly ignores a message it does not hold, so
-      // opening one used to leave it unread; it goes to the engine instead,
-      // and the list it does belong to is re-read.
-      await ref.read(mailEngineProvider).setRead(message.id, true);
-      ref.invalidate(messagesProvider(message.folderId));
-      await ref
-          .read(foldersProvider.notifier)
-          .refreshAccount(message.accountId);
-    } catch (_) {
-      // Offline or refused: the message simply stays unread. Nothing to tell
-      // the user about an action they did not take.
-    }
+    await MessageActions(ref, listId).markOpened(widget.message);
   }
 
   /// Delete, from the header. On a screen of its own the screen goes too:
@@ -315,7 +293,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                     body.value == null ||
                         !(ref.watch(printingAvailableProvider).value ?? false)
                     ? null
-                    : () => _print(message, body.value!),
+                    : () => printMessage(context, ref, message, body.value!),
                 onFullScreen: body.value == null
                     ? null
                     : () => FullScreenMessage.open(context, message),
@@ -356,9 +334,10 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                 ),
                 error: (e, _) => Padding(
                   padding: const EdgeInsets.all(20),
-                  child: Text(
-                    'Could not load the message.\n$e',
-                    style: theme.textTheme.bodySmall,
+                  child: BodyLoadFailure(
+                    error: e,
+                    onRetry: () =>
+                        ref.invalidate(messageBodyProvider(message.id)),
                   ),
                 ),
                 data: (b) => _bodyView(theme, b),
@@ -368,46 +347,6 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
         ),
       ),
     );
-  }
-
-  /// The system's print sheet, which is also where "Save as PDF" lives.
-  /// Pictures from the web are left out unless the setting shows them,
-  /// the same rule the pane itself follows: printing a message must not
-  /// tell its sender it was read.
-  Future<void> _print(MailMessage message, MailBody body) async {
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    final html = body.html ?? '';
-    // What is on screen is what prints: a trusted sender's pictures are
-    // already loaded, and the rest stay out of the paper too.
-    final shown = _showsImages ? html : stripRemoteContent(html);
-    try {
-      final ok = await ref
-          .read(messagePrinterProvider)
-          .print(
-            title: message.subject.trim().isEmpty ? 'Message' : message.subject,
-            html: printableMessage(
-              message,
-              body,
-              bodyHtml: shown,
-              remoteAllowed: _showsImages,
-            ),
-          );
-      if (!ok) {
-        messenger?.showSnackBar(
-          const SnackBar(
-            duration: kBottomMessage,
-            content: Text('Printing is not available here.'),
-          ),
-        );
-      }
-    } catch (e) {
-      messenger?.showSnackBar(
-        SnackBar(
-          duration: kBottomMessage,
-          content: Text('Could not print. $e'),
-        ),
-      );
-    }
   }
 
   Future<void> _saveSource(MailBody body) async {

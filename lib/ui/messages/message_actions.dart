@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -86,7 +88,7 @@ class MessageActions {
         moves.addAll(await container
             .read(mailEngineProvider)
             .moveMessages([for (final m in elsewhere) m.id], toFolderId));
-        await _afterEngineChange(elsewhere, touched: [
+        _afterEngineChange(elsewhere, touched: [
           for (final m in moves) ...m.landedIn,
           toFolderId,
         ]);
@@ -132,7 +134,7 @@ class MessageActions {
             .read(mailEngineProvider)
             .deleteMessages([for (final m in elsewhere) m.id]);
         moves.addAll(gone);
-        await _afterEngineChange(
+        _afterEngineChange(
           elsewhere,
           touched: [for (final m in gone) m.toFolderId],
         );
@@ -181,6 +183,32 @@ class MessageActions {
         what: isFlagged ? 'flag' : 'unflag',
       );
 
+  /// Read, because it was opened, as Outlook does: [setRead] without a word
+  /// said, whatever happens, since it is not something the person did.
+  ///
+  /// The reading pane did this on its own, through the list alone or the
+  /// engine alone, and a search hit opened stayed bold in the results with
+  /// the pane offering "Mark as read". It also used the pane's ref after
+  /// the server answered, by when the pane may have gone to the next
+  /// message, so the folder the hit lives in was not read again either.
+  Future<void> markOpened(MailMessage message) async {
+    final (held, elsewhere) = _split([message]);
+    try {
+      if (held.isNotEmpty) {
+        await container
+            .read(messagesProvider(listId).notifier)
+            .setRead(message.id, true);
+        _refreshSearch();
+      } else {
+        await container.read(mailEngineProvider).setRead(message.id, true);
+        _afterEngineChange(elsewhere);
+      }
+    } catch (_) {
+      // Offline or refused: the message simply stays unread. Nothing to tell
+      // the user about an action they did not take.
+    }
+  }
+
   /// One change, on every message, whatever happens to any one of them.
   ///
   /// It stopped at the first that failed and said nothing, leaving the rest
@@ -224,7 +252,7 @@ class MessageActions {
     if (elsewhere.isNotEmpty) {
       final mail = container.read(mailEngineProvider);
       await change(elsewhere, (ids) => engine(mail, ids));
-      await _afterEngineChange(elsewhere);
+      _afterEngineChange(elsewhere);
     } else {
       _refreshSearch();
     }
@@ -261,10 +289,19 @@ class MessageActions {
     );
   }
 
-  Future<void> _afterEngineChange(
+  /// Every list that might show [changed] read again, and the folder counts
+  /// of every account they touched.
+  ///
+  /// The counts follow without anything waiting for them, as they do after
+  /// the list's own delete: refreshing an account is a full folder listing
+  /// over the network, two for a move across accounts. Awaited, the report
+  /// and its Undo came only after those, and a listing that failed (a
+  /// sign-in to renew, a server's NO) made a delete that had gone through
+  /// read "Could not delete", with no Undo, and escaped a flag altogether.
+  void _afterEngineChange(
     List<MailMessage> changed, {
     List<String> touched = const [],
-  }) async {
+  }) {
     for (final folderId in {
       ...changed.map((m) => m.folderId),
       ...touched,
@@ -278,7 +315,10 @@ class MessageActions {
       ...changed.map((m) => m.accountId),
       for (final id in touched) ?index[id]?.accountId,
     }) {
-      await container.read(foldersProvider.notifier).refreshAccount(accountId);
+      unawaited(container
+          .read(foldersProvider.notifier)
+          .refreshAccount(accountId)
+          .catchError((Object _) {}));
     }
   }
 

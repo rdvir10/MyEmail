@@ -48,10 +48,16 @@ Future<void> forwardAsAttachment(
     return;
   }
   if (!context.mounted) return;
+  // From the account they came to, as a forward of one is. Left to the
+  // open folder, the unified Inbox and a search gave the first account, or
+  // the folder's, and a work message went out from a personal address.
+  // Messages from several accounts have no one account to go from.
+  final accountIds = {for (final m in messages) m.accountId};
   await openCompose(
     context,
     ref,
     kind: ComposeKind.newMessage,
+    accountId: accountIds.length == 1 ? accountIds.single : null,
     attachments: attachments,
     subject: messages.length == 1
         ? 'FW: ${messages.single.subject}'

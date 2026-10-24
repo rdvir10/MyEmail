@@ -11,6 +11,7 @@ import '../domain/message_move.dart';
 import 'display_providers.dart';
 import '../domain/message_sort.dart';
 import 'folder_tree.dart';
+import 'message_keeping.dart';
 import 'providers.dart';
 import 'search_providers.dart';
 
@@ -835,27 +836,39 @@ final selectedMessageIdsProvider =
 final isSelectingProvider =
     Provider<bool>((ref) => ref.watch(selectedMessageIdsProvider).isNotEmpty);
 
-final messageBodyProvider =
-    FutureProvider.family<MailBody, String>((ref, messageId) async {
-  final body = await ref.watch(mailEngineProvider).loadMessageBody(messageId);
-  // Its invitation could not be fetched just now. The words stay on screen
-  // as they are, and the message is asked for again when it is next opened,
-  // which is when its card can come. Held as a whole body is, it would not
-  // be asked again while the app stayed open. Just after the opening, not
-  // in it: Riverpod allows nothing to change from inside its own callbacks.
-  if (body.calendarPending && ref.mounted) {
-    ref.onResume(() => scheduleMicrotask(() {
-          if (ref.mounted) ref.invalidateSelf();
-        }));
-  }
-  return body;
-});
+/// A message's body. See [keptOnceLoaded] for how long it is held, and
+/// [notRetried] for why a failure is not asked again by itself.
+final messageBodyProvider = FutureProvider.autoDispose.family<MailBody, String>(
+  (ref, messageId) async {
+    final body = await keptOnceLoaded(
+      ref,
+      messageId,
+      ref.watch(mailEngineProvider).loadMessageBody(messageId),
+    );
+    // Its invitation could not be fetched just now. The words stay on
+    // screen as they are, and the message is asked for again when it is
+    // next opened, which is when its card can come. Kept for the last few
+    // messages read, it would not be asked again on the way back to it.
+    // Just after the opening, not in it: Riverpod allows nothing to change
+    // from inside its own callbacks.
+    if (body.calendarPending && ref.mounted) {
+      ref.onResume(() => scheduleMicrotask(() {
+            if (ref.mounted) ref.invalidateSelf();
+          }));
+    }
+    return body;
+  },
+  retry: notRetried,
+);
 
 /// The invitation a message carries, read once when its body arrives rather
 /// than on every rebuild of the reading pane. Null when there is none, or
 /// when the part cannot be read as one.
+///
+/// Gone with the screen showing it: held, it would hold the body it is read
+/// from, failure and all.
 final messageInviteProvider =
-    Provider.family<CalendarInvite?, String>((ref, messageId) {
+    Provider.autoDispose.family<CalendarInvite?, String>((ref, messageId) {
   final ics = ref.watch(messageBodyProvider(messageId)).value?.calendar;
   return ics == null ? null : CalendarInvite.parse(ics);
 });

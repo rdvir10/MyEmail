@@ -1,9 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/draft.dart';
+import 'package:myemail/domain/mail_folder.dart';
+import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/folder_tree.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/search_providers.dart';
@@ -154,6 +161,10 @@ void main() {
 
       expect(engine.markedRead, {hits[0].id, hits[2].id});
       expect(find.textContaining('Could not mark read 1 of 3'), findsOneWidget);
+      // The search is asked again after its pause, which is not over yet:
+      // the report no longer waits for the folder counts.
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
     });
 
     testWidgets('Forward as attachment starts a message carrying them whole',
@@ -286,6 +297,163 @@ void main() {
       expect(stored?.isRead, isTrue,
           reason: 'opened, so read, like any other message');
     });
+
+    Finder inPane(Finder f) =>
+        find.descendant(of: find.byType(ReadingPane), matching: f);
+
+    /// An unread hit the open list holds, or one it does not.
+    MailMessage unreadHit(
+      ProviderContainer c,
+      List<MessageTile> hits, {
+      required bool listed,
+    }) {
+      final listId = c.read(effectiveSelectedFolderIdProvider)!;
+      final ids = {
+        for (final m in c.read(messagesProvider(listId)).value ?? const [])
+          m.id,
+      };
+      final hit = hits
+          .map((t) => t.message)
+          .where((m) => ids.contains(m.id) == listed && !m.isRead)
+          .firstOrNull;
+      expect(hit, isNotNull, reason: 'the sample data needs such a hit');
+      return hit!;
+    }
+
+    /// [hit] opened by a tap on its row. Away from it first if the list
+    /// landed on it, which is open already, and opened by nobody.
+    Future<void> open(
+      WidgetTester tester,
+      ProviderContainer c,
+      MailMessage hit,
+      List<MessageTile> hits,
+    ) async {
+      if (c.read(selectedMessageIdProvider) == hit.id) {
+        final other = hits.firstWhere((t) => t.message.isRead).message;
+        await tester.tap(find.byKey(ValueKey('search:${other.id}')));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.byKey(ValueKey('search:${hit.id}')));
+      await tester.pumpAndSettle();
+    }
+
+    bool readInResults(ProviderContainer c, String id) => c
+        .read(searchResultsProvider)
+        .value!
+        .firstWhere((m) => m.id == id)
+        .isRead;
+
+    for (final listed in [false, true]) {
+      testWidgets(
+          'an unread hit ${listed ? 'the open list also holds' : 'from a folder that is not open'} '
+          'reads as read once opened, in its row and in the pane',
+          (tester) async {
+        // The server had it read and the row stayed bold, with the pane
+        // offering Mark as read: marking it unread again took two taps.
+        final c = await pump(tester);
+        final hits = await search(tester, 'the');
+        final hit = unreadHit(c, hits, listed: listed);
+
+        await open(tester, c, hit, hits);
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pumpAndSettle();
+
+        expect(readInResults(c, hit.id), isTrue,
+            reason: 'what the row is drawn from');
+        expect(inPane(find.byTooltip('Mark as unread')), findsOneWidget);
+      });
+    }
+
+    testWidgets('a hit left before the server answers is still shown read',
+        (tester) async {
+      // The pane that marked it had gone by then, and reading through its
+      // ref threw, quietly, before anything was asked again.
+      final engine = _SlowToRead();
+      final c = await pump(tester, engine: engine);
+      final hits = await search(tester, 'the');
+      final hit = unreadHit(c, hits, listed: false);
+      final next = hits
+          .map((t) => t.message)
+          .firstWhere((m) => m.isRead && m.id != hit.id);
+      engine.slow = hit.id;
+
+      await open(tester, c, hit, hits);
+      await tester.tap(find.byKey(ValueKey('search:${next.id}')));
+      await tester.pumpAndSettle();
+      engine.answer.complete();
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+
+      expect(readInResults(c, hit.id), isTrue);
+    });
+
+    /// A read hit from a folder that is not open, open in the pane.
+    Future<MailMessage> openElsewhere(
+      WidgetTester tester,
+      ProviderContainer c,
+    ) async {
+      final hits = await search(tester, 'the');
+      final listId = c.read(effectiveSelectedFolderIdProvider)!;
+      final listed = {
+        for (final m in c.read(messagesProvider(listId)).value ?? const [])
+          m.id,
+      };
+      final hit = hits
+          .map((t) => t.message)
+          .firstWhere((m) => !listed.contains(m.id) && m.isRead);
+      await open(tester, c, hit, hits);
+      return hit;
+    }
+
+    testWidgets('deleting a hit from another folder says so at once, with '
+        'Undo, while the folders are still being listed', (tester) async {
+      // The report waited for a full folder listing of every account the
+      // message touched, the screen already closed.
+      final engine = _ListsFolders();
+      final c = await pump(tester, engine: engine);
+      await openElsewhere(tester, c);
+      engine.hold = Completer<void>();
+
+      await tester.tap(inPane(find.byTooltip('Delete')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Message deleted'), findsOneWidget);
+      expect(find.text('Undo'), findsOneWidget);
+      engine.hold!.complete();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('a folder listing that fails afterwards does not make the '
+        'delete read as failed', (tester) async {
+      // "Could not delete", with no Undo, for a message already in Trash.
+      final engine = _ListsFolders();
+      final c = await pump(tester, engine: engine);
+      await openElsewhere(tester, c);
+      engine.refuse = const AuthenticationFailed('Sign in again.');
+
+      await tester.tap(inPane(find.byTooltip('Delete')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Message deleted'), findsOneWidget);
+      expect(find.textContaining('Could not delete'), findsNothing);
+    });
+
+    testWidgets('nor is flagging a hit thrown away by it', (tester) async {
+      // The failure escaped the flag altogether, past its own report.
+      final engine = _ListsFolders();
+      final c = await pump(tester, engine: engine);
+      final hit = await openElsewhere(tester, c);
+      engine.refuse = const AuthenticationFailed('Sign in again.');
+
+      await tester.tap(
+          inPane(find.byTooltip(hit.isFlagged ? 'Remove flag' : 'Flag')));
+      await tester.pumpAndSettle();
+
+      final stored = await c.read(mailEngineProvider).cachedMessage(hit.id);
+      expect(stored?.isFlagged, !hit.isFlagged);
+      expect(find.textContaining('Could not'), findsNothing);
+    });
   });
 
   group('in a folder', () {
@@ -305,6 +473,60 @@ void main() {
       expect(find.textContaining('.eml'), findsOneWidget);
     });
   });
+
+  group('in the unified Inbox', () {
+    /// A message from an account that is not the first, which is where a
+    /// new message goes from when nothing says otherwise.
+    Future<(ProviderContainer, List<MailMessage>)> secondAccount(
+      WidgetTester tester,
+    ) async {
+      final c = await pump(tester);
+      expect(c.read(effectiveSelectedFolderIdProvider), kUnifiedInboxId);
+      final first = c.read(accountsProvider).value!.first.id;
+      final theirs = [
+        for (final t in tester.widgetList<MessageTile>(find.byType(MessageTile)))
+          if (t.message.accountId != first) t.message,
+      ];
+      expect(theirs.length, greaterThan(1),
+          reason: 'the sample data has two accounts near the top');
+      return (c, theirs);
+    }
+
+    Draft composing(WidgetTester tester) =>
+        tester.widget<ComposeScreen>(find.byType(ComposeScreen)).draft;
+
+    testWidgets('a message forwarded as a file goes from the account it '
+        'came to', (tester) async {
+      // From was the first account's, so work mail went out from Ron's
+      // personal address unless he noticed.
+      final (_, theirs) = await secondAccount(tester);
+      final m = theirs.first;
+
+      await tester.tap(find.byKey(ValueKey('tile:${m.id}')),
+          buttons: kSecondaryButton);
+      await tester.pumpAndSettle();
+      await tester.tap(
+          find.widgetWithText(PopupMenuItem<String>, 'Forward as attachment'));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pumpAndSettle();
+
+      expect(composing(tester).accountId, m.accountId);
+    });
+
+    testWidgets('and so do several, when they all came to the same one',
+        (tester) async {
+      final (c, theirs) = await secondAccount(tester);
+      final two = theirs.take(2).toList();
+      c.read(selectedMessageIdsProvider.notifier).addAll(two.map((m) => m.id));
+      await tester.pumpAndSettle();
+
+      await tester.tap(inBar(find.byTooltip('Forward as attachment')));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pumpAndSettle();
+
+      expect(composing(tester).accountId, two.first.accountId);
+    });
+  });
 }
 
 /// The sample engine, refusing to change one message.
@@ -317,5 +539,31 @@ class _RefusesOne extends SampleMailEngine {
     if (messageId == refused) throw StateError('the server said no');
     await super.setRead(messageId, isRead);
     if (isRead) markedRead.add(messageId);
+  }
+}
+
+/// The sample engine, slow to mark one message read: it answers when told.
+class _SlowToRead extends SampleMailEngine {
+  String? slow;
+  final answer = Completer<void>();
+
+  @override
+  Future<void> setRead(String messageId, bool isRead) async {
+    if (messageId == slow) await answer.future;
+    await super.setRead(messageId, isRead);
+  }
+}
+
+/// The sample engine, whose folder listings can be held up or refused
+/// once a test says so.
+class _ListsFolders extends SampleMailEngine {
+  Completer<void>? hold;
+  Object? refuse;
+
+  @override
+  Future<List<MailFolder>> loadFolders(String accountId) async {
+    if (refuse case final error?) throw error;
+    if (hold case final wait?) await wait.future;
+    return super.loadFolders(accountId);
   }
 }
