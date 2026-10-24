@@ -502,7 +502,8 @@ class MemoryCacheStore implements CacheStore {
     return MailBody(text: text, html: m.bodyHtml, calendar: m.calendar);
   }
 
-  /// Whole rows: in memory nothing is saved by leaving the body out.
+  /// Without their bodies, as the database reads them, so that nothing
+  /// tested against this store can come to rely on a body being there.
   @override
   Future<List<CachedMessage>> readHeaders(
     String accountId,
@@ -510,7 +511,7 @@ class MemoryCacheStore implements CacheStore {
     List<int> uids,
   ) async {
     final folder = _folder(accountId, path);
-    return [for (final uid in uids) ?folder[uid]];
+    return [for (final uid in uids) ?folder[uid]?.withoutBody()];
   }
 
   @override

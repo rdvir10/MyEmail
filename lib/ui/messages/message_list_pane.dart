@@ -393,13 +393,26 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
               child: CircularProgressIndicator(strokeWidth: 2),
             ),
           ),
+          // Not loaded again by itself until the minute's ask, so there is a
+          // way to ask now, once the signal is back.
           error: (e, _) => Center(
             child: Padding(
               padding: const EdgeInsets.all(24),
-              child: Text(
-                'Could not load messages.\n$e',
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodySmall,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Could not load messages.\n$e',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: () =>
+                        ref.invalidate(messagesProvider(folderId)),
+                    child: const Text('Try again'),
+                  ),
+                ],
               ),
             ),
           ),

@@ -897,6 +897,63 @@ void main() {
               await drafts(), unorderedEquals([...before, 'Typed while back']));
         });
 
+        testWidgets('back to stay, it goes on keeping a background copy',
+            (tester) async {
+          // The save on the way out took the background copy's place and
+          // marked the window ended, so a screen the person had come back
+          // to never saved another: typed on, the screen turned off, and an
+          // Android that ended the app meanwhile lost all of it.
+          final engine = _HeldSaves(holdFrom: 2, holdTo: 2);
+          final saved =
+              (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                  .first;
+          await open(
+            tester,
+            _draft(accountId: 'acct-personal', savedAs: saved.id),
+            engine: engine,
+          );
+
+          expect(await putAwayAndBack(tester, engine), isFalse);
+          expect(engine.saves, 2, reason: 'saved on the way out, and back');
+          await tester.enterText(subjectField(), 'Typed after');
+          leave(tester);
+          await tester.pump(const Duration(milliseconds: 100));
+
+          expect(engine.saves, 3, reason: 'a background copy, as before');
+        });
+
+        testWidgets('Send waits for a put-away still waiting on its copy',
+            (tester) async {
+          // Back before the copy saved as the app went out of sight had
+          // landed, and Send: the put-away, waiting on that copy, went on
+          // once it had, and saved a copy of the message just sent, or
+          // closed a screen showing that its send had failed.
+          final engine = _HeldSaves(holdFrom: 1, holdTo: 1);
+          Future<List<String>> subjectsIn(String folderId) async =>
+              (await tester.runAsync(() => engine.loadMessages(folderId)))!
+                  .map((m) => m.subject)
+                  .toList();
+          const sentId = 'acct-personal:[Gmail]/Sent Mail';
+          final before = await subjectsIn(draftsId);
+          await open(tester, _draft(accountId: 'acct-personal'),
+              engine: engine);
+
+          await putAwayAndComeBack(tester);
+          await tester.tap(find.byTooltip('Send'));
+          for (var i = 0; i < 10; i++) {
+            await tester.pump(const Duration(milliseconds: 50));
+          }
+          expect(await subjectsIn(sentId), isNot(contains('Half written')),
+              reason: 'held until the put-away has finished');
+
+          await letGo(tester, engine);
+
+          expect(closed, isFalse, reason: 'the put-away left it to Send');
+          expect(find.byType(ComposeScreen), findsNothing);
+          expect(await subjectsIn(sentId), contains('Half written'));
+          expect(await subjectsIn(draftsId), unorderedEquals(before));
+        });
+
         group('and done with before it has finished', () {
           // The screen is there to use while the save goes on, and what it
           // saved is only known once it has. Left meanwhile, its copy was

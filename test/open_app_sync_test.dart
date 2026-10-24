@@ -135,6 +135,33 @@ void main() {
           reason: 'not snapped back to the first page');
     });
 
+    test('a list that could not load is built again at the next ask',
+        () async {
+      // Riverpod's own retry is off in the app, and an ask only corrected a
+      // list in place: one whose first load failed, with nothing stored,
+      // said so until the app was put away and brought back.
+      final engine = _GrowingEngine(inbox)
+        ..arrive(3)
+        ..fail = StateError('the server said no');
+      final c = ProviderContainer(
+        overrides: [
+          uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+          mailEngineProvider.overrideWithValue(engine),
+        ],
+        retry: (_, _) => null,
+      );
+      addTearDown(c.dispose);
+      c.listen(messagesProvider(inbox), (_, _) {});
+      await expectLater(
+          c.read(messagesProvider(inbox).future), throwsStateError);
+      engine.fail = null;
+
+      c.read(listRefreshProvider.notifier).ping();
+      await pumpEventQueue();
+
+      expect(subjects(c).first, 'Message 3');
+    });
+
     test('a list nobody is looking at is not asked', () async {
       // Kept once opened, every folder visited since the app last came
       // back asked its server every minute: other folders, All inboxes,
@@ -379,6 +406,9 @@ class _GrowingEngine extends SampleMailEngine {
   Completer<void>? holdDelete;
   Completer<void>? holdLoad;
 
+  /// Thrown by every ask of the server while set.
+  Object? fail;
+
   /// [count] messages arrive, each newer than anything already there.
   void arrive(int count) {
     for (var i = 0; i < count; i++) {
@@ -426,6 +456,7 @@ class _GrowingEngine extends SampleMailEngine {
   }) async {
     loads++;
     await holdLoad?.future;
+    if (fail case final e?) throw e;
     return _page(server, offset, limit);
   }
 

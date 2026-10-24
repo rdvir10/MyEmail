@@ -1460,7 +1460,7 @@ class CachedImapEngine implements MailEngine {
     if (hits.isEmpty) return const [];
     final folderId = MailFolder.idFor(accountId, path);
 
-    MailMessage row(RemoteHeader h) => MailMessage(
+    MailMessage row(RemoteHeader h, {String? preview}) => MailMessage(
           id: MailMessage.idFor(folderId, h.uid),
           accountId: accountId,
           folderId: folderId,
@@ -1472,7 +1472,7 @@ class CachedImapEngine implements MailEngine {
           replyTo: h.replyTo,
           date: h.date,
           arrived: h.arrived,
-          preview: h.preview,
+          preview: preview ?? h.preview,
           isRead: h.isRead,
           isFlagged: h.isFlagged,
           isAnswered: h.isAnswered,
@@ -1498,13 +1498,38 @@ class CachedImapEngine implements MailEngine {
     };
     final rows = <MailMessage>[];
     final missing = <int>[];
+    final caughtUp = <int, CachedFlags>{};
     for (final hit in hits) {
-      if (cached[hit.uid] case final c?) {
+      final c = cached[hit.uid];
+      if (hit.header case final h?) {
+        // The server's word, just given, over the cached row's: a Microsoft
+        // sync keeps only the newest rows' flags current, so an older one
+        // read in Outlook still showed bold here. The cached row is brought
+        // up to date with it, so a move or an open from the results agrees.
+        rows.add(row(h,
+            preview: c != null && h.preview.isEmpty ? c.preview : null));
+        if (c != null &&
+            (c.isRead, c.isFlagged, c.isAnswered, c.isForwarded) !=
+                (h.isRead, h.isFlagged, h.isAnswered, h.isForwarded)) {
+          caughtUp[h.uid] = (
+            isRead: h.isRead,
+            isFlagged: h.isFlagged,
+            isAnswered: h.isAnswered,
+            isForwarded: h.isForwarded,
+          );
+        }
+      } else if (c != null) {
         rows.add(c.toMailMessage(accountId: accountId, folderId: folderId));
-      } else if (hit.header case final h?) {
-        rows.add(row(h));
       } else {
         missing.add(hit.uid);
+      }
+    }
+    if (caughtUp.isNotEmpty) {
+      try {
+        await cache.updateFlags(accountId, path, caughtUp);
+      } catch (_) {
+        // The results are right either way; the next sync that reaches
+        // the rows puts them right too.
       }
     }
     if (missing.isNotEmpty) {

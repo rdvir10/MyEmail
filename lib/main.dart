@@ -156,8 +156,9 @@ Future<void> main() async {
       // over half a minute, a spinner on the screen throughout: a search
       // that failed ran every folder's search again each time, and a list
       // opened offline with nothing cached waited the whole half minute to
-      // say so. What can usefully be tried again offers Try again, and the
-      // lists and folders are asked again on their own schedule anyway.
+      // say so. What can usefully be tried again offers Try again; a list
+      // that failed is also built again at the next minute's ask while it
+      // is on screen, and everything is read again when the app comes back.
       retry: (_, _) => null,
       overrides: [
         uiStateStoreProvider.overrideWithValue(PrefsUiStateStore(prefs)),

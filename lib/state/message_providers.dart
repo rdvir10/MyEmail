@@ -175,7 +175,18 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     bool Function() current, {
     bool storedFirst = false,
   }) async {
-    if (_asking || state.value == null) return;
+    if (_asking) return;
+    if (state.value == null) {
+      // A list whose first load failed has nothing to correct in place, so
+      // it is built again. Riverpod's own retry is off, and the minute's ask
+      // is the only thing still asking while the app is in front: skipped,
+      // the folder said "Could not load messages" until the app was put
+      // away and brought back, long after the signal had returned.
+      if (state.hasError && !state.isLoading && current()) {
+        ref.invalidateSelf();
+      }
+      return;
+    }
     _asking = true;
     try {
       final changes = _changes;

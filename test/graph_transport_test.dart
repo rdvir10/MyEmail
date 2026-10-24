@@ -2603,6 +2603,44 @@ void main() {
         await searching.searchUids('Inbox', 'acme'),
       );
     });
+
+    test('shows a cached hit as the search found it, and keeps that',
+        () async {
+      // A sync keeps only the newest rows' flags current, so a message read
+      // in Outlook a month back stayed bold in the cache, and the search,
+      // preferring the cached row, showed it bold too.
+      server.folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox');
+      final store = MemoryCacheStore();
+      final engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: store,
+        transportFactory: (_, _) => transport,
+      );
+      final account = await engine.addAccount(
+        displayName: 'Work',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      server.message('f-inbox',
+          id: 'm1', subject: 'Acme quote', minutesAgo: 30);
+      final inbox = '${account.id}:Inbox';
+      final listed = (await engine.loadMessages(inbox)).single;
+      expect(listed.isRead, isFalse);
+      server.messages['m1']!['isRead'] = true;
+
+      final hit =
+          (await engine.searchMessages('acme', SearchScope.folder(inbox)))
+              .single;
+
+      expect(hit.isRead, isTrue);
+      expect(
+        (await store.readMessage(account.id, 'Inbox', hit.uid))!.isRead,
+        isTrue,
+        reason: 'the cached row brought up to date with it',
+      );
+    });
   });
 
   // Saving through the engine, which is where a save that did not happen

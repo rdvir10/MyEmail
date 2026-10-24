@@ -117,6 +117,10 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// front of them, before it has finished.
   Future<bool>? _puttingAway;
 
+  /// The whole of [whenPutAway] while it runs, its wait for a background
+  /// copy still going up included, which is before [_puttingAway] starts.
+  Future<bool>? _pendingPutAway;
+
   /// How many times the app has come back to the front, so a save on the
   /// way out can tell whether the person was back while it ran, even if
   /// they are away again by the time it ends.
@@ -240,13 +244,25 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// closing then would lose it.
   @override
   Future<bool> whenPutAway() async {
+    final whole = _putAway();
+    _pendingPutAway = whole;
+    try {
+      return await whole;
+    } finally {
+      if (identical(_pendingPutAway, whole)) _pendingPutAway = null;
+    }
+  }
+
+  Future<bool> _putAway() async {
     if (_sending) return false;
     // The background copy started a moment ago, as the app went out of
     // sight; it is dropped below once the real one is saved. Or the last
     // put-away's save, the person having been back and away again before
     // it had finished: this one saves over what that one saved.
     await _quietSavesDone();
-    if (!mounted) return true;
+    // Sent, saved or thrown away meanwhile, the screen merely not gone yet
+    // with the app out of sight: there is nothing left to save.
+    if (!mounted || _ended) return true;
     // Back already, or leaving some other way: the screen stays, so there
     // is nothing to save it for.
     if (_sending || isInFront()) return false;
@@ -297,7 +313,10 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       }
       _savedAs = savedAs;
     }
-    if (mounted) _dropBackgroundCopy();
+    // Back meanwhile, the screen stays, and goes on keeping a background
+    // copy against the app being ended: the one saved over is taken out,
+    // but the window has not ended.
+    if (mounted) _dropBackgroundCopy(ending: !backMeanwhile());
     return !backMeanwhile();
   }
 
@@ -317,20 +336,26 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     }
   }
 
-  /// Waits for the save of putting the app away, where one is under way,
-  /// before the screen is left by Send, Save, Discard or a window of its
+  /// Waits for a put-away under way, its save included, before the screen
+  /// is left by Send, Save, Discard or a window of its
   /// own, with its buttons held meanwhile, so it is not left twice over.
   /// False if it has gone in the meantime.
   ///
-  /// Not for the background copy: [_dropBackgroundCopy] takes that out once
-  /// it has landed, and Save draft saves over it ([_saveForGood]), so a
-  /// message is sent or thrown away at once rather than after an upload.
+  /// The whole put-away, its wait for a background copy included: held for
+  /// meanwhile, that put-away finds the screen busy and leaves it alone,
+  /// where it otherwise saved a copy of a message just sent, or closed a
+  /// screen showing that its send had failed. A background copy on its own
+  /// is not waited for: [_dropBackgroundCopy] takes it out once it has
+  /// landed, and Save draft saves over it ([_saveForGood]), so a message is
+  /// sent or thrown away at once rather than after an upload.
   Future<bool> _readyToLeave() async {
     if (!mounted) return false;
-    if (_puttingAway == null) return true;
+    if (_pendingPutAway == null) return true;
     setState(() => _sending = true);
     try {
-      for (var saving = _puttingAway; saving != null; saving = _puttingAway) {
+      for (var saving = _pendingPutAway;
+          saving != null;
+          saving = _pendingPutAway) {
         try {
           await saving;
         } catch (_) {
@@ -380,8 +405,11 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// it was not there yet, so nothing was taken out: a message sent or
   /// thrown away while the file picker's copy was going up stayed in
   /// Drafts, and one saved and closed was there twice.
-  void _dropBackgroundCopy() {
-    _ended = true;
+  ///
+  /// Not [ending] when a put-away has saved over it but the person is back:
+  /// the screen stays, and goes on keeping a background copy.
+  void _dropBackgroundCopy({bool ending = true}) {
+    if (ending) _ended = true;
     final engine = ref.read(mailEngineProvider);
     final saving = _backgroundSaving;
     unawaited(() async {
