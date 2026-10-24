@@ -345,6 +345,47 @@ class EnoughMailTransport implements ImapTransport {
       });
 
   @override
+  Future<Map<String, String>> headerValues(
+    String path,
+    int uid,
+    List<String> names,
+  ) =>
+      _run((c) async {
+        if (names.isEmpty) return const {};
+        await _ensureSelected(c, path);
+        // PEEK, so asking does not mark the message read.
+        final fields = [for (final n in names) n.toUpperCase()].join(' ');
+        final result =
+            await c.uidFetchMessage(uid, 'BODY.PEEK[HEADER.FIELDS ($fields)]');
+        if (result.messages.isEmpty) return const {};
+        final message = result.messages.first;
+        return {
+          for (final name in names)
+            if (message.getHeaderValue(name) case final value?
+                when value.trim().isNotEmpty)
+              name.toLowerCase(): value.trim(),
+        };
+      });
+
+  @override
+  Future<Map<int, List<String>>> attachmentNames(
+    String path,
+    List<int> uids,
+  ) =>
+      _run((c) async {
+        if (uids.isEmpty) return const {};
+        await _ensureSelected(c, path);
+        final result = await c.uidFetchMessages(
+          em.MessageSequence.fromIds(uids, isUid: true),
+          '(UID BODYSTRUCTURE)',
+        );
+        return {
+          for (final m in result.messages)
+            ?m.uid: attachmentNamesOf(m),
+        };
+      });
+
+  @override
   Future<Uint8List> fetchAttachment(String path, int uid, String attachmentId) =>
       _run(limit: transferLimit, (c) async {
         await _ensureSelected(c, path);

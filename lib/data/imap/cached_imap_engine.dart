@@ -1024,6 +1024,22 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
+  Future<UnsubscribeOptions?> unsubscribeOptions(String messageId) async {
+    final (folderId, uid) = splitMessageId(messageId);
+    final (accountId, path) = splitFolderId(folderId);
+    final t = await _transport(accountId);
+    final headers = await t.headerValues(
+      path,
+      uid,
+      const ['List-Unsubscribe', 'List-Unsubscribe-Post'],
+    );
+    return UnsubscribeOptions.parse(
+      headers['list-unsubscribe'],
+      headers['list-unsubscribe-post'],
+    );
+  }
+
+  @override
   Future<Uint8List> fetchAttachment(
     String messageId,
     String attachmentId,
@@ -1445,6 +1461,39 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
+  bool canRecoverDeleted(String accountId) {
+    final account =
+        accountStore.read().where((a) => a.id == accountId).firstOrNull;
+    return account != null &&
+        account.provider == MailProvider.outlook &&
+        account.authMethod == AuthMethod.oauth;
+  }
+
+  @override
+  Future<List<RecoverableMessage>> recoverableMessages(
+    String accountId, {
+    String query = '',
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    final t = await _transport(accountId);
+    if (t is! GraphTransport) {
+      throw FolderOperationNotSupported(accountId, 'recover deleted items');
+    }
+    return t.recoverable(skip: offset, top: limit, query: query);
+  }
+
+  @override
+  Future<int> recoverMessages(String accountId, List<String> ids) async {
+    final t = await _transport(accountId);
+    if (t is! GraphTransport) {
+      throw FolderOperationNotSupported(accountId, 'recover deleted items');
+    }
+    // The Inbox's next sync finds what came back, and numbers it.
+    return t.recover(ids);
+  }
+
+  @override
   Future<List<MailMessage>> filterMessages(
     String folderId,
     MessageFilter filter, {
@@ -1493,7 +1542,8 @@ class CachedImapEngine implements MailEngine {
     if (hits.isEmpty) return const [];
     final folderId = MailFolder.idFor(accountId, path);
 
-    MailMessage row(RemoteHeader h, {String? preview}) => MailMessage(
+    MailMessage row(RemoteHeader h, {String? preview, List<String>? names}) =>
+        MailMessage(
           id: MailMessage.idFor(folderId, h.uid),
           accountId: accountId,
           folderId: folderId,
@@ -1511,6 +1561,9 @@ class CachedImapEngine implements MailEngine {
           isAnswered: h.isAnswered,
           isForwarded: h.isForwarded,
           hasAttachments: h.hasAttachments,
+          // A Microsoft hit says only that it has files; the cached row may
+          // know what they are called.
+          attachmentNames: h.attachmentNames ?? names ?? const [],
           sizeBytes: h.sizeBytes,
           isMeeting: h.isMeeting,
           messageId: h.messageId,
@@ -1539,8 +1592,11 @@ class CachedImapEngine implements MailEngine {
         // sync keeps only the newest rows' flags current, so an older one
         // read in Outlook still showed bold here. The cached row is brought
         // up to date with it, so a move or an open from the results agrees.
-        rows.add(row(h,
-            preview: c != null && h.preview.isEmpty ? c.preview : null));
+        rows.add(row(
+          h,
+          preview: c != null && h.preview.isEmpty ? c.preview : null,
+          names: c?.attachmentNames,
+        ));
         if (c != null &&
             (c.isRead, c.isFlagged, c.isAnswered, c.isForwarded) !=
                 (h.isRead, h.isFlagged, h.isAnswered, h.isForwarded)) {

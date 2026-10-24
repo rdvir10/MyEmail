@@ -7,6 +7,7 @@ import '../../domain/draft.dart';
 import '../../domain/mail_message.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
+import '../../state/read_aloud.dart';
 import '../../state/search_providers.dart';
 import '../../state/sync_now.dart';
 import '../compose/open_compose.dart';
@@ -80,6 +81,7 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
     AppCommand.forwardAsAttachment,
     AppCommand.print,
     AppCommand.fullScreen,
+    AppCommand.readAloud,
     AppCommand.delete,
     AppCommand.markRead,
     AppCommand.markUnread,
@@ -149,6 +151,15 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
         final body = ref.read(messageBodyProvider(message.id)).value;
         if (body == null) return;
         await printMessage(context, ref, message, body);
+      case AppCommand.readAloud:
+        if (message == null) return;
+        final reader = ref.read(readAloudProvider.notifier);
+        if (reader.readingMessage(message.id)) {
+          reader.stop();
+          return;
+        }
+        final body = ref.read(messageBodyProvider(message.id)).value;
+        if (body != null) await reader.start(message, body);
       case AppCommand.delete:
         if (message != null && listId != null) {
           final done = MessageActions(ref, listId).delete(context, [message]);
@@ -253,6 +264,7 @@ enum AppCommand {
   forwardAsAttachment,
   print,
   fullScreen,
+  readAloud,
   delete,
   markRead,
   markUnread,
@@ -294,6 +306,8 @@ AppCommand? commandFor(
       LogicalKeyboardKey.period => AppCommand.nextMessage,
       LogicalKeyboardKey.comma => AppCommand.previousMessage,
       LogicalKeyboardKey.keyI when shift => AppCommand.inbox,
+      // Outlook's own key for Read Aloud.
+      LogicalKeyboardKey.space when alt => AppCommand.readAloud,
       _ => null,
     };
   }
@@ -336,6 +350,7 @@ const shortcutHelp = <String, List<ShortcutHelp>>{
     ShortcutHelp('Space  Page Down  /  Shift+Space  Page Up', 'A screen at a time'),
     ShortcutHelp('Home  End', 'Top or bottom'),
     ShortcutHelp('F11', 'Full screen, and Esc or F11 to leave'),
+    ShortcutHelp('Ctrl+Alt+Space', 'Read aloud, or stop reading'),
     ShortcutHelp('Esc', 'Back to the list'),
   ],
   'Anywhere': [

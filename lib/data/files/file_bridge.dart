@@ -288,6 +288,21 @@ abstract class FileBridge {
 
   /// Called when something is shared to the app while it is running.
   void onShared(void Function(SharedContent) handler);
+
+  /// Android's folder picker, opened where it was last left: the folder
+  /// chosen, to hand to [saveIntoFolder], or null if none was. For Save
+  /// all, which puts every file in one place with one choice.
+  Future<String?> pickFolder();
+
+  /// Write the file at [path] into [folder], from [pickFolder], as [name].
+  /// A name already there gets a number from the folder rather than
+  /// replacing what is there. False if the folder would not take it.
+  Future<bool> saveIntoFolder(
+    String folder,
+    String path, {
+    required String name,
+    String? mimeType,
+  });
 }
 
 class AndroidFileBridge implements FileBridge {
@@ -399,6 +414,24 @@ class AndroidFileBridge implements FileBridge {
         'startDrag',
         {'path': path, 'mime': mimeType, 'name': name},
       ) ??
+      false;
+
+  @override
+  Future<String?> pickFolder() => _channel.invokeMethod<String>('pickFolder');
+
+  @override
+  Future<bool> saveIntoFolder(
+    String folder,
+    String path, {
+    required String name,
+    String? mimeType,
+  }) async =>
+      await _channel.invokeMethod<bool>('saveIntoFolder', {
+        'folder': folder,
+        'path': path,
+        'name': name,
+        'mime': mimeType,
+      }) ??
       false;
 
   @override
@@ -526,6 +559,30 @@ class FakeFileBridge implements FileBridge {
 
   /// Pretend something was shared to the running app.
   void receiveShare(SharedContent content) => shareHandler?.call(content);
+
+  /// What [pickFolder] answers: null, as though the picker were closed,
+  /// unless a test chooses one.
+  String? folderToPick;
+
+  /// Every file [saveIntoFolder] was given, by the name it was saved as,
+  /// and the names it is to refuse.
+  final List<({String folder, String path, String name})> savedIntoFolder = [];
+  final Set<String> refuseNames = {};
+
+  @override
+  Future<String?> pickFolder() async => folderToPick;
+
+  @override
+  Future<bool> saveIntoFolder(
+    String folder,
+    String path, {
+    required String name,
+    String? mimeType,
+  }) async {
+    if (refuseNames.contains(name)) return false;
+    savedIntoFolder.add((folder: folder, path: path, name: name));
+    return true;
+  }
 }
 
 FileBridge platformFileBridge() {

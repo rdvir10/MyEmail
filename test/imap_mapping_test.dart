@@ -381,6 +381,38 @@ void main() {
     });
   });
 
+  group('attachmentNamesOf', () {
+    test("the files a row names: the attached ones, not the body's pictures",
+        () {
+      final root = em.BodyPart()
+        ..contentType = em.ContentTypeHeader('multipart/mixed');
+      root
+        ..addPart(
+          em.BodyPart()..contentType = em.ContentTypeHeader('text/html'),
+        )
+        ..addPart(
+          em.BodyPart()
+            ..contentType = em.ContentTypeHeader('image/png; name=logo.png')
+            ..contentDisposition =
+                em.ContentDispositionHeader('inline; filename=logo.png')
+            ..cid = '<logo@x>',
+        )
+        ..addPart(
+          em.BodyPart()
+            ..contentType = em.ContentTypeHeader('application/pdf')
+            ..contentDisposition = em.ContentDispositionHeader(
+              'attachment; filename="Quote 2026/10.pdf"',
+            ),
+        );
+      final message = em.MimeMessage()..body = root;
+
+      // Named as the message's own list of files names them, so the chip
+      // finds its file: the slash is not let through into a file name.
+      expect(attachmentNamesOf(message), ['Quote 2026_10.pdf']);
+      expect(message.hasAttachments(), isTrue);
+    });
+  });
+
   group('bodyPartsOf', () {
     test("an attached file's text, or an attached message's, is not the body",
         () {

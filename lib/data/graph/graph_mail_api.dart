@@ -478,6 +478,10 @@ class GraphMailApi {
         },
       ),
     );
+    return _attachmentsFrom(json);
+  }
+
+  static List<GraphAttachment> _attachmentsFrom(Map<String, Object?> json) {
     final value = json['value'];
     if (value is! List) return const [];
     return [
@@ -494,6 +498,117 @@ class GraphMailApi {
             isItem: item['@odata.type'] == '#microsoft.graph.itemAttachment',
           ),
     ];
+  }
+
+  /// A message's internet headers, as it arrived, in order. Empty for one
+  /// made in the mailbox, a draft say, which has none.
+  Future<List<({String name, String value})>> internetHeaders(
+    String messageId,
+  ) async {
+    final json = await _get(
+      Uri.parse('$base/me/messages/${_id(messageId)}').replace(
+        queryParameters: {'\$select': 'internetMessageHeaders'},
+      ),
+    );
+    final headers = json['internetMessageHeaders'];
+    if (headers is! List) return const [];
+    return [
+      for (final h in headers)
+        if (h is Map && h['name'] is String)
+          (name: h['name'] as String, value: '${h['value'] ?? ''}'),
+    ];
+  }
+
+  // --- recover deleted items -------------------------------------------------
+
+  /// The hidden folder Exchange keeps mail in once it is emptied out of
+  /// Deleted Items, or deleted with Shift+Delete in Outlook: what Recover
+  /// Deleted Items lists. Reached with the mail permission the app already
+  /// has.
+  static const recoverableFolder = 'recoverableitemsdeletions';
+
+  /// PidTagDeletedOn: when a message left Deleted Items.
+  static const deletedOnProperty = 'SystemTime 0x668F';
+
+  /// Mail in [recoverableFolder], newest received first, [top] from
+  /// [skip]; with a [query], what Graph's search finds there instead, in
+  /// its own order and not paged, since a search takes no offset.
+  Future<List<({GraphMessage message, DateTime? deletedOn})>> recoverable({
+    int skip = 0,
+    int top = 50,
+    String query = '',
+  }) async {
+    final search = query.trim().replaceAll('"', '');
+    final json = await _get(
+      Uri.parse('$base/me/mailFolders/$recoverableFolder/messages').replace(
+        queryParameters: {
+          '\$select':
+              'id,subject,from,receivedDateTime,hasAttachments,bodyPreview',
+          '\$expand': "singleValueExtendedProperties(\$filter=id eq "
+              "'$deletedOnProperty')",
+          '\$top': '$top',
+          if (search.isEmpty) '\$orderby': 'receivedDateTime desc',
+          if (search.isEmpty && skip > 0) '\$skip': '$skip',
+          if (search.isNotEmpty) '\$search': '"$search"',
+        },
+      ),
+    );
+    final values = json['value'];
+    if (values is! List) return const [];
+    return [
+      for (final entry in values)
+        if (entry is Map)
+          if (GraphMessage.fromJson(entry.cast<String, Object?>())
+              case final message?)
+            (
+              message: message,
+              deletedOn: _dateProperty(
+                entry['singleValueExtendedProperties'],
+                deletedOnProperty,
+              ),
+            ),
+    ];
+  }
+
+  /// Put [messageIds] from [recoverableFolder] back in the Inbox, twenty
+  /// to a request, as Outlook on the web puts back mail whose folder it
+  /// cannot tell. Answers the ids that went.
+  Future<List<String>> recover(List<String> messageIds) async {
+    if (messageIds.isEmpty) return const [];
+    final answers = await batch([
+      for (final id in messageIds) GraphRequest.move(id, 'inbox'),
+    ]);
+    return [
+      for (final (i, answer) in answers.indexed)
+        if (answer.failure == null) messageIds[i],
+    ];
+  }
+
+  static DateTime? _dateProperty(Object? properties, String wanted) {
+    if (properties is! List) return null;
+    final key = propertyKey(wanted);
+    for (final p in properties) {
+      if (p is! Map || propertyKey('${p['id']}') != key) continue;
+      return DateTime.tryParse('${p['value']}'.trim())?.toLocal();
+    }
+    return null;
+  }
+
+  /// What is attached to each of [messageIds], twenty messages to a
+  /// request: the names a list row shows under its message. A message
+  /// that could not be asked about, gone or refused, is left out.
+  Future<Map<String, List<GraphAttachment>>> attachmentsOf(
+    List<String> messageIds,
+  ) async {
+    if (messageIds.isEmpty) return const {};
+    final answers = await batch([
+      for (final id in messageIds) GraphRequest.attachments(id),
+    ]);
+    return {
+      for (final (i, answer) in answers.indexed)
+        if (answer.failure == null)
+          messageIds[i]: _attachmentsFrom(answer.json),
+    };
   }
 
   /// The name the message's HTML gives one attachment in a `cid:` link, or
@@ -1374,6 +1489,12 @@ class GraphRequest {
 
   GraphRequest.delete(String messageId)
       : this('DELETE', _messagePath(messageId));
+
+  /// The files on a message, described and not downloaded: see
+  /// [GraphMailApi.attachments] for why the selection matters.
+  GraphRequest.attachments(String messageId)
+      : this('GET', '${_messagePath(messageId)}/attachments'
+            '?\$select=id,name,contentType,size,isInline');
 
   final String method;
   final String path;

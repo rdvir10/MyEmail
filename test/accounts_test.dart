@@ -297,6 +297,32 @@ class _EmptyEngine implements MailEngine {
       _inner.filterMessages(folderId, filter, limit: limit);
 
   @override
+  Future<UnsubscribeOptions?> unsubscribeOptions(String messageId) =>
+      _inner.unsubscribeOptions(messageId);
+
+  @override
+  bool canRecoverDeleted(String accountId) =>
+      _inner.canRecoverDeleted(accountId);
+
+  @override
+  Future<List<RecoverableMessage>> recoverableMessages(
+    String accountId, {
+    String query = '',
+    int offset = 0,
+    int limit = 50,
+  }) =>
+      _inner.recoverableMessages(
+        accountId,
+        query: query,
+        offset: offset,
+        limit: limit,
+      );
+
+  @override
+  Future<int> recoverMessages(String accountId, List<String> ids) =>
+      _inner.recoverMessages(accountId, ids);
+
+  @override
   Future<void> sendDraft(Draft draft) => _inner.sendDraft(draft);
 
   @override

@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/folder_role.dart';
 import '../../domain/message_filter.dart';
 import '../../state/list_filter.dart';
+import '../../state/providers.dart';
+import '../folder_tree/recover_deleted_screen.dart';
 
 /// Outlook's All and Unread over the list, and its Filter menu beside them
 /// for flagged mail, mail with files, and mail sent to you directly.
@@ -28,6 +31,14 @@ class ListFilterBar extends ConsumerWidget {
     final fromMenu = _inMenu.contains(filter);
     final asking = filter != MessageFilter.all &&
         ref.watch(filterHitsProvider((listId, filter))).isLoading;
+    // A Microsoft account's Deleted Items: the way to what emptying it
+    // took, where Outlook on the web puts it, over the list.
+    final folder = ref.watch(folderIndexProvider)[listId];
+    final recoverFrom = folder != null &&
+            folder.role == FolderRole.deleted &&
+            ref.watch(mailEngineProvider).canRecoverDeleted(folder.accountId)
+        ? folder.accountId
+        : null;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6),
       child: Row(
@@ -80,6 +91,20 @@ class ListFilterBar extends ConsumerWidget {
               child: SizedBox.square(
                 dimension: 14,
                 child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          if (recoverFrom != null)
+            Tooltip(
+              message: 'Recover items deleted from this folder',
+              child: TextButton.icon(
+                key: const ValueKey('recover-deleted'),
+                onPressed: () => openRecoverDeleted(context, recoverFrom),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  visualDensity: VisualDensity.compact,
+                ),
+                icon: const Icon(Icons.restore_from_trash_outlined, size: 18),
+                label: const Text('Recover'),
               ),
             ),
         ],

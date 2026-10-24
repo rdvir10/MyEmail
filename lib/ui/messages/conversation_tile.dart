@@ -6,6 +6,7 @@ import '../../domain/row_format.dart';
 import '../../state/conversations.dart';
 import 'date_format.dart';
 import 'message_tile.dart';
+import 'row_attachments.dart';
 
 /// The collapsed row for a conversation of more than one message.
 ///
@@ -41,7 +42,12 @@ class ConversationTile extends StatelessWidget {
     this.showRecipients = false,
     this.format,
     this.pinned = false,
+    this.showAttachments = false,
   });
+
+  /// The thread's files under it, newest first, as on a message row: see
+  /// [MessageTile.showAttachments].
+  final bool showAttachments;
 
   /// Who the newest message went to, in place of who it is from: Sent and
   /// Drafts, where everyone writing is you.
@@ -240,6 +246,18 @@ class ConversationTile extends StatelessWidget {
           preview,
         ],
       ];
+    }
+    final files = showAttachments && previews
+        ? rowFilesOfAll(conversation.messages)
+        : const <RowFile>[];
+    if (files.isNotEmpty) {
+      lines.addAll([
+        SizedBox(height: density.lineGap + 3),
+        Padding(
+          padding: const EdgeInsets.only(right: 6),
+          child: RowAttachments(files: files),
+        ),
+      ]);
     }
 
     return Semantics(

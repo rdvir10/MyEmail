@@ -17,6 +17,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.DocumentsContract
 import android.provider.Settings
 import android.util.TypedValue
 import android.view.DragEvent
@@ -68,6 +69,10 @@ class FilesBridge(
     /// for it if the ask came first: answered when the copy is done.
     private var shareCopying = false
     private var shareAsked: MethodChannel.Result? = null
+
+    /// Dart's ask for a folder while the picker is open: answered from
+    /// [onActivityResult].
+    private var folderAsked: MethodChannel.Result? = null
 
     /**
      * Something shared to this app from another: files under EXTRA_STREAM,
@@ -313,6 +318,14 @@ class FilesBridge(
                         call.argument<String>("name") ?: "Attachment",
                     ),
                 )
+                "pickFolder" -> pickFolder(result)
+                "saveIntoFolder" -> saveIntoFolder(
+                    call.argument<String>("folder")!!,
+                    call.argument<String>("path")!!,
+                    call.argument<String>("name") ?: "Attachment",
+                    call.argument<String>("mime"),
+                    result,
+                )
                 "startDragMany" -> result.success(
                     startDragMany(
                         call.argument<List<String>>("paths") ?: emptyList(),
@@ -331,6 +344,95 @@ class FilesBridge(
 
     private fun uriFor(path: String): Uri =
         FileProvider.getUriForFile(activity, authority, File(path))
+
+    /**
+     * Android's own folder picker, for Save all. Answered with the folder
+     * chosen, a tree this activity may write into while it lives, or null
+     * when the picker is closed. It opens where it was left last time, which
+     * is kept in the app's own settings, not a grant: only the place.
+     */
+    private fun pickFolder(result: MethodChannel.Result) {
+        folderAsked?.success(null)
+        folderAsked = result
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+            val last = places.getString(LAST_FOLDER, null)
+            if (last != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(last))
+            }
+        }
+        try {
+            activity.startActivityForResult(intent, PICK_FOLDER)
+        } catch (e: ActivityNotFoundException) {
+            folderAsked = null
+            result.error("no-picker", "Nothing on this device picks a folder.", null)
+        }
+    }
+
+    /** The picker's answer, from MainActivity. True when it was ours. */
+    fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
+        if (requestCode != PICK_FOLDER) return false
+        val asked = folderAsked ?: return true
+        folderAsked = null
+        val tree = if (resultCode == Activity.RESULT_OK) data?.data else null
+        if (tree != null) {
+            try {
+                val folder = DocumentsContract.buildDocumentUriUsingTree(
+                    tree,
+                    DocumentsContract.getTreeDocumentId(tree),
+                )
+                places.edit().putString(LAST_FOLDER, folder.toString()).apply()
+            } catch (e: Exception) {
+                // Only where the picker opens next time.
+            }
+        }
+        asked.success(tree?.toString())
+        return true
+    }
+
+    /**
+     * One file into the folder [pickFolder] gave. Off the main thread: a
+     * folder in Drive or on a card can take its time, and a video is a lot
+     * of bytes. The folder's provider numbers a name that is taken.
+     */
+    private fun saveIntoFolder(
+        folder: String,
+        path: String,
+        name: String,
+        mime: String?,
+        result: MethodChannel.Result,
+    ) {
+        val tree = Uri.parse(folder)
+        copier.execute {
+            val saved = try {
+                val parent = DocumentsContract.buildDocumentUriUsingTree(
+                    tree,
+                    DocumentsContract.getTreeDocumentId(tree),
+                )
+                val resolver = activity.contentResolver
+                val document = DocumentsContract.createDocument(
+                    resolver,
+                    parent,
+                    typeFor(mime, name),
+                    name,
+                ) ?: throw IllegalStateException("the folder made no file")
+                val out = resolver.openOutputStream(document)
+                    ?: throw IllegalStateException("the file would not open")
+                out.use { sink -> File(path).inputStream().use { it.copyTo(sink) } }
+                true
+            } catch (e: Exception) {
+                android.util.Log.e("MyEmail", "could not save into the folder", e)
+                false
+            }
+            main.post { result.success(saved) }
+        }
+    }
+
+    private val places
+        get() = activity.getSharedPreferences("files", Context.MODE_PRIVATE)
 
     private fun viewIntent(uri: Uri, type: String) = Intent(Intent.ACTION_VIEW).apply {
         setDataAndType(uri, type)
@@ -738,6 +840,10 @@ class FilesBridge(
         const val CHANNEL = "mailtree/files"
 
         const val ANDROID_PACKAGE = "application/vnd.android.package-archive"
+
+        /** The folder picker's request, and where it was left. */
+        private const val PICK_FOLDER = 4128
+        private const val LAST_FOLDER = "lastFolder"
 
         /// Where files coming in are copied: one batch at a time, in the
         /// order they came, and never on the main thread. One for the app

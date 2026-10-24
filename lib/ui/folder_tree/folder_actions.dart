@@ -12,6 +12,7 @@ import '../../state/folder_tree.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import '../../state/search_providers.dart';
+import 'recover_deleted_screen.dart';
 
 /// The long-press menu for a folder: an Outlook-style bottom sheet whose
 /// entries are exactly the operations the provider allows on that folder.
@@ -31,6 +32,8 @@ Future<void> showFolderActionsSheet(
     folder,
     isFavorite: isFavorite,
     isHidden: isHidden,
+    canRecover: folder.role == FolderRole.deleted &&
+        ref.read(mailEngineProvider).canRecoverDeleted(folder.accountId),
   );
   if (actions.isEmpty) return;
 
@@ -72,6 +75,8 @@ Future<void> showFolderActionsSheet(
     case _FolderAction.markAllRead:
       await _guarded(context, () => folders.markAllRead(folder.id));
       _rereadLists(container, folder);
+    case _FolderAction.recover:
+      await openRecoverDeleted(context, folder.accountId);
     case _FolderAction.rename:
       await _promptForName(
         context,
@@ -198,6 +203,7 @@ enum _FolderAction {
   favorite('Add to Favourites', Icons.star_outline),
   markAllRead('Mark all as read', Icons.mark_email_read_outlined),
   empty('Empty folder', Icons.delete_sweep_outlined),
+  recover('Recover deleted items', Icons.restore_from_trash_outlined),
   delete('Delete', Icons.delete_outline);
 
   const _FolderAction(this.label, this.icon);
@@ -210,6 +216,7 @@ List<_FolderAction> _availableActions(
   MailFolder folder, {
   required bool isFavorite,
   required bool isHidden,
+  bool canRecover = false,
 }) {
   // Not a folder: nothing below applies, and the one thing to do with it
   // is put it away.
@@ -227,6 +234,8 @@ List<_FolderAction> _availableActions(
     if (canHideFolder(folder)) _FolderAction.hide,
     if (c.canMarkAllRead && folder.unreadCount > 0) _FolderAction.markAllRead,
     if (c.canEmpty && folder.totalCount > 0) _FolderAction.empty,
+    // What emptying it took away, kept a few weeks on a Microsoft account.
+    if (canRecover) _FolderAction.recover,
     if (c.canDelete) _FolderAction.delete,
   ];
 }

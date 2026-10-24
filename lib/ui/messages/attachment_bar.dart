@@ -10,6 +10,7 @@ import '../../domain/mail_attachment.dart';
 import '../../state/attachment_providers.dart';
 import 'attached_message_screen.dart';
 import 'attachment_save.dart';
+import 'save_all.dart';
 
 /// The files on a message, under its header.
 ///
@@ -19,7 +20,8 @@ import 'attachment_save.dart';
 /// split screen. The menu has the rest — save, copy, share.
 ///
 /// Above the chips, a line with how many there are and their size, which
-/// folds them away and brings them back ([attachmentsFoldedProvider]).
+/// folds them away and brings them back ([attachmentsFoldedProvider]), and
+/// with two or more, Save all.
 /// Pictures the body is already showing get no chip at all; see
 /// [attachmentsShownInBody].
 class AttachmentBar extends ConsumerWidget {
@@ -86,34 +88,64 @@ class AttachmentBar extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Tooltip(
-                message: folded ? 'Show attachments' : 'Hide attachments',
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(6),
-                  onTap: () =>
-                      ref.read(attachmentsFoldedProvider.notifier).toggle(),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 3),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.attach_file, size: 16, color: muted),
-                        const SizedBox(width: 4),
-                        Text(
-                          count,
-                          style: theme.textTheme.labelMedium
-                              ?.copyWith(color: muted),
+              Row(
+                children: [
+                  Flexible(
+                    child: Tooltip(
+                      message:
+                          folded ? 'Show attachments' : 'Hide attachments',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () => ref
+                            .read(attachmentsFoldedProvider.notifier)
+                            .toggle(),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 3),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.attach_file, size: 16, color: muted),
+                              const SizedBox(width: 4),
+                              Flexible(
+                                child: Text(
+                                  count,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.labelMedium
+                                      ?.copyWith(color: muted),
+                                ),
+                              ),
+                              const SizedBox(width: 2),
+                              Icon(
+                                folded ? Icons.expand_more : Icons.expand_less,
+                                size: 18,
+                                color: muted,
+                              ),
+                            ],
+                          ),
                         ),
-                        const SizedBox(width: 2),
-                        Icon(
-                          folded ? Icons.expand_more : Icons.expand_less,
-                          size: 18,
-                          color: muted,
-                        ),
-                      ],
+                      ),
                     ),
                   ),
-                ),
+                  // Every file into one folder, chosen once: Outlook's Save
+                  // All Attachments. One file has its own Save as.
+                  if (files.length > 1) ...[
+                    const SizedBox(width: 8),
+                    TextButton.icon(
+                      key: const ValueKey('save-all-attachments'),
+                      onPressed: () =>
+                          saveAllAttachments(context, ref, messageId, files),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        minimumSize: const Size(0, 32),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      icon: const Icon(Icons.download_outlined, size: 18),
+                      label: const Text('Save all'),
+                    ),
+                  ],
+                ],
               ),
               if (!folded)
                 Padding(

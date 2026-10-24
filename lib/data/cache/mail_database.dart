@@ -59,6 +59,11 @@ class Messages extends Table {
   BoolColumn get isRead => boolean()();
   BoolColumn get isFlagged => boolean()();
   BoolColumn get hasAttachments => boolean()();
+
+  /// JSON list of the files' names: see [CachedMessage.attachmentNames].
+  /// Added in schema 13; null where they are not known yet, which the sync
+  /// fills in for the rows it keeps up to date.
+  TextColumn get attachmentNamesJson => text().nullable()();
   TextColumn get preview => text().withDefault(const Constant(''))();
 
   /// The message's size: see [MailMessage.sizeBytes]. Added in schema 6,
@@ -191,7 +196,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 12;
+  int get schemaVersion => 13;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -364,6 +369,12 @@ class MailDatabase extends _$MailDatabase {
       // added.
       await m.createIndex(messagesByArrival);
     }
+    if (from < 13) {
+      // The files' names, for the row. Null on every row until the sync
+      // asks: it does so for the rows it keeps up to date, a few dozen a
+      // pass, so nothing has to be read again all at once.
+      await _addColumnIfMissing(m, messages, messages.attachmentNamesJson);
+    }
   }
 
   /// Checked first: a database that already has the column (an upgrade
@@ -477,6 +488,7 @@ class DriftCacheStore implements CacheStore {
       m.isAnswered,
       m.isForwarded,
       m.hasAttachments,
+      m.attachmentNamesJson,
       m.sizeBytes,
       m.isMeeting,
       m.preview,
@@ -542,8 +554,16 @@ class DriftCacheStore implements CacheStore {
     final hasPreview = m.preview.equals('').not();
     final hasConversation = m.conversationId.isNotNull();
     final hasSize = m.sizeBytes.isBiggerThanValue(0);
+    final needsNames = m.hasAttachments & m.attachmentNamesJson.isNull();
     final rows = await (db.selectOnly(m)
-          ..addColumns([m.uid, m.date, hasPreview, hasConversation, hasSize])
+          ..addColumns([
+            m.uid,
+            m.date,
+            hasPreview,
+            hasConversation,
+            hasSize,
+            needsNames,
+          ])
           ..where(_folder(m, accountId, path))
           ..orderBy(_newestArrivalFirst(m)))
         .get();
@@ -555,6 +575,7 @@ class DriftCacheStore implements CacheStore {
           hasPreview: r.read(hasPreview)!,
           hasConversation: r.read(hasConversation)!,
           hasSize: r.read(hasSize)!,
+          needsAttachmentNames: r.read(needsNames)!,
         ),
     ];
   }
@@ -741,6 +762,7 @@ class DriftCacheStore implements CacheStore {
             isAnswered: Value(m.isAnswered),
             isForwarded: Value(m.isForwarded),
             hasAttachments: m.hasAttachments,
+            attachmentNamesJson: Value(_encodeNames(m.attachmentNames)),
             sizeBytes: Value(m.sizeBytes),
             isMeeting: Value(m.isMeeting),
             preview: Value(m.preview),
@@ -777,6 +799,11 @@ class DriftCacheStore implements CacheStore {
               isAnswered: Value(m.isAnswered),
               isForwarded: Value(m.isForwarded),
               hasAttachments: Value(m.hasAttachments),
+              // Only when the header named them: a Microsoft header read
+              // again does not, and must not erase the names found.
+              attachmentNamesJson: m.attachmentNames == null
+                  ? const Value.absent()
+                  : Value(_encodeNames(m.attachmentNames)),
               isMeeting: Value(m.isMeeting),
               // Only when the server said. A re-read header that carries no
               // size must not erase one that was found.
@@ -879,6 +906,24 @@ class DriftCacheStore implements CacheStore {
               _folder(m, accountId, path) &
               m.uid.equals(e.key) &
               m.sizeBytes.equals(e.value).not(),
+        );
+      }
+    });
+  }
+
+  @override
+  Future<void> updateAttachmentNames(
+    String accountId,
+    String path,
+    Map<int, List<String>> namesByUid,
+  ) async {
+    if (namesByUid.isEmpty) return;
+    await db.batch((b) {
+      for (final e in namesByUid.entries) {
+        b.update(
+          db.messages,
+          MessagesCompanion(attachmentNamesJson: Value(_encodeNames(e.value))),
+          where: (m) => _folder(m, accountId, path) & m.uid.equals(e.key),
         );
       }
     });
@@ -999,6 +1044,7 @@ class DriftCacheStore implements CacheStore {
     final m = db.messages;
     final copied = r.read(m.copiedJson);
     final replyTo = r.read(m.replyToJson);
+    final names = r.read(m.attachmentNamesJson);
     return CachedMessage(
       uid: r.read(m.uid)!,
       subject: r.read(m.subject)!,
@@ -1013,6 +1059,7 @@ class DriftCacheStore implements CacheStore {
       isAnswered: r.read(m.isAnswered)!,
       isForwarded: r.read(m.isForwarded)!,
       hasAttachments: r.read(m.hasAttachments)!,
+      attachmentNames: names == null ? null : _decodeNames(names),
       sizeBytes: r.read(m.sizeBytes)!,
       isMeeting: r.read(m.isMeeting)!,
       preview: r.read(m.preview)!,
@@ -1032,6 +1079,21 @@ class DriftCacheStore implements CacheStore {
       for (final e in list.cast<Map<String, dynamic>>())
         MailAddress(email: e['email'] as String, name: e['name'] as String?),
     ];
+  }
+
+  static String? _encodeNames(List<String>? names) =>
+      names == null ? null : jsonEncode(names);
+
+  /// Tolerant: a value that is not a list of names reads as none known,
+  /// and the sync asks again.
+  static List<String>? _decodeNames(String json) {
+    try {
+      final list = jsonDecode(json);
+      if (list is! List) return null;
+      return [for (final n in list) if (n is String) n];
+    } on FormatException {
+      return null;
+    }
   }
 
   static List<Variable> _variables(List<Object> values) => [

@@ -45,12 +45,15 @@ class FolderSyncState {
 /// What the sync needs of a cached row: its number and date, and whether
 /// the row has what a header read again would bring, a preview and the
 /// server's conversation.
+///
+/// [needsAttachmentNames]: it has files and their names are not known yet.
 typedef SyncRow = ({
   int uid,
   DateTime date,
   bool hasPreview,
   bool hasConversation,
   bool hasSize,
+  bool needsAttachmentNames,
 });
 
 /// A cached row's flags, all of them, as [CacheStore.updateFlags] writes
@@ -77,6 +80,7 @@ class CachedMessage {
     required this.isRead,
     required this.isFlagged,
     required this.hasAttachments,
+    this.attachmentNames,
     this.isAnswered = false,
     this.isForwarded = false,
     this.arrived,
@@ -112,6 +116,11 @@ class CachedMessage {
   final bool isAnswered;
   final bool isForwarded;
   final bool hasAttachments;
+
+  /// See [MailMessage.attachmentNames]. Null where they are not known yet:
+  /// a Microsoft row with files, until they are asked for, and every row
+  /// cached before schema 13.
+  final List<String>? attachmentNames;
 
   /// See [MailMessage.sizeBytes].
   final int sizeBytes;
@@ -149,6 +158,7 @@ class CachedMessage {
         isAnswered: isAnswered,
         isForwarded: isForwarded,
         hasAttachments: hasAttachments,
+        attachmentNames: attachmentNames,
         sizeBytes: sizeBytes,
         isMeeting: isMeeting,
         preview: preview,
@@ -163,6 +173,7 @@ class CachedMessage {
     bool? isAnswered,
     bool? isForwarded,
     int? sizeBytes,
+    List<String>? attachmentNames,
     String? preview,
     String? bodyText,
     String? bodyHtml,
@@ -182,6 +193,7 @@ class CachedMessage {
       isAnswered: isAnswered ?? this.isAnswered,
       isForwarded: isForwarded ?? this.isForwarded,
       hasAttachments: hasAttachments,
+      attachmentNames: attachmentNames ?? this.attachmentNames,
       sizeBytes: sizeBytes ?? this.sizeBytes,
       isMeeting: isMeeting,
       preview: preview ?? this.preview,
@@ -213,6 +225,7 @@ class CachedMessage {
       isAnswered: isAnswered,
       isForwarded: isForwarded,
       hasAttachments: hasAttachments,
+      attachmentNames: attachmentNames ?? const [],
       sizeBytes: sizeBytes,
       isMeeting: isMeeting,
       messageId: messageId,
@@ -333,6 +346,14 @@ abstract class CacheStore {
     Map<int, int> bytesByUid,
   );
 
+  /// Each row's file names, as [ImapTransport.attachmentNames] found them:
+  /// see [CachedMessage.attachmentNames].
+  Future<void> updateAttachmentNames(
+    String accountId,
+    String path,
+    Map<int, List<String>> namesByUid,
+  );
+
   Future<void> deleteUids(String accountId, String path, Set<int> uids);
 
   Future<void> writeBody(
@@ -436,6 +457,8 @@ class MemoryCacheStore implements CacheStore {
             hasPreview: m.preview.isNotEmpty,
             hasConversation: m.conversationId != null,
             hasSize: m.sizeBytes > 0,
+            needsAttachmentNames:
+                m.hasAttachments && m.attachmentNames == null,
           ),
       ];
 
@@ -557,6 +580,8 @@ class MemoryCacheStore implements CacheStore {
               preview: m.preview.isEmpty ? existing.preview : m.preview,
               // And a size the new row does not know leaves the old one.
               sizeBytes: m.sizeBytes > 0 ? m.sizeBytes : existing.sizeBytes,
+              // So do file names: a Microsoft header read again has none.
+              attachmentNames: m.attachmentNames ?? existing.attachmentNames,
               bodyText: existing.bodyText,
               bodyHtml: existing.bodyHtml,
               calendar: existing.calendar,
@@ -594,6 +619,19 @@ class MemoryCacheStore implements CacheStore {
     for (final e in bytesByUid.entries) {
       final m = folder[e.key];
       if (m != null) folder[e.key] = m.copyWith(sizeBytes: e.value);
+    }
+  }
+
+  @override
+  Future<void> updateAttachmentNames(
+    String accountId,
+    String path,
+    Map<int, List<String>> namesByUid,
+  ) async {
+    final folder = _folder(accountId, path);
+    for (final e in namesByUid.entries) {
+      final m = folder[e.key];
+      if (m != null) folder[e.key] = m.copyWith(attachmentNames: e.value);
     }
   }
 

@@ -67,6 +67,7 @@ class MailMessage {
     this.isRead = false,
     this.isFlagged = false,
     this.hasAttachments = false,
+    this.attachmentNames = const [],
     this.sizeBytes = 0,
     this.isMeeting = false,
     this.isAnswered = false,
@@ -115,6 +116,17 @@ class MailMessage {
   final bool isRead;
   final bool isFlagged;
   final bool hasAttachments;
+
+  /// The names of the files attached, as the message's own list of them
+  /// names them, for the row to show under the message as Outlook does.
+  /// Files only: a picture the body shows is not among them.
+  ///
+  /// Empty where there are none, and where they are not known yet: over
+  /// IMAP they come with the header, but a Microsoft row says only that it
+  /// has files, and their names are asked for after (see
+  /// `ImapTransport.attachmentNames`). A row with [hasAttachments] and no
+  /// names shows the paperclip alone, as every row did before.
+  final List<String> attachmentNames;
 
   /// An invitation, a change to one, or a cancellation.
   ///
@@ -182,6 +194,7 @@ class MailMessage {
       isRead: isRead ?? this.isRead,
       isFlagged: isFlagged ?? this.isFlagged,
       hasAttachments: hasAttachments,
+      attachmentNames: attachmentNames,
       sizeBytes: sizeBytes,
       isMeeting: isMeeting,
       isAnswered: isAnswered ?? this.isAnswered,
@@ -224,6 +237,7 @@ class MailMessage {
       other.arrived == arrived &&
       other.preview == preview &&
       other.hasAttachments == hasAttachments &&
+      listEquals(other.attachmentNames, attachmentNames) &&
       other.sizeBytes == sizeBytes &&
       other.isMeeting == isMeeting &&
       other.isAnswered == isAnswered &&

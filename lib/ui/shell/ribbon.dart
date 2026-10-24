@@ -11,6 +11,7 @@ import '../../state/message_providers.dart';
 import '../../state/sync_now.dart';
 import '../../state/providers.dart';
 import '../../state/quick_steps.dart';
+import '../../state/read_aloud.dart';
 import '../../state/search_providers.dart';
 import '../compose/open_compose.dart';
 import '../meetings/new_meeting_screen.dart';
@@ -159,6 +160,9 @@ class _RibbonState extends ConsumerState<Ribbon> {
                     .setRead(context, [message], !message.isRead)
               : null,
         ),
+        // Outlook's Read Aloud, on its Home tab too: the open message read
+        // out, or stopped where it is being read.
+        _ReadAloudButton(message: has ? message : null),
         const Spacer(),
         const _Separator(),
         _Button(
@@ -369,4 +373,34 @@ class _Separator extends StatelessWidget {
     endIndent: 8,
     color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.5),
   );
+}
+
+class _ReadAloudButton extends ConsumerWidget {
+  const _ReadAloudButton({required this.message});
+
+  final MailMessage? message;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final open = message;
+    final reading = open != null &&
+        ref.watch(readAloudProvider.select((s) => s?.messageId == open.id));
+    return _Button(
+      icon: reading ? Icons.stop_circle_outlined : Icons.record_voice_over_outlined,
+      label: reading ? 'Stop reading' : 'Read aloud',
+      // The body as the pane has it, as Print takes it: read, not watched,
+      // so the ribbon fetches nothing of its own.
+      onPressed: open == null
+          ? null
+          : () {
+              final reader = ref.read(readAloudProvider.notifier);
+              if (reading) {
+                reader.stop();
+                return;
+              }
+              final body = ref.read(messageBodyProvider(open.id)).value;
+              if (body != null) reader.start(open, body);
+            },
+    );
+  }
 }

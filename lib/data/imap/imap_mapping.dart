@@ -93,6 +93,7 @@ RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
     isAnswered: m.isAnswered,
     isForwarded: markedForwarded(m),
     hasAttachments: m.hasAttachments(),
+    attachmentNames: attachmentNamesOf(m),
     sizeBytes: m.size ?? 0,
     isMeeting: carriesInvitation(m),
     messageId: normaliseMessageId(
@@ -502,6 +503,14 @@ List<MailAttachment> attachmentsOf(em.MimeMessage message) {
   if (body != null) walk(body);
   return found;
 }
+
+/// The files a row names under the message: [attachmentsOf] less what is
+/// inline, so the same parts the paperclip stands for, by the same names
+/// the message's own list gives them. See [MailMessage.attachmentNames].
+List<String> attachmentNamesOf(em.MimeMessage message) => [
+      for (final a in attachmentsOf(message))
+        if (!a.isInline) a.name,
+    ];
 
 /// A part fetched on its own, `BODY[n]`, decoded from the
 /// Content-Transfer-Encoding its BODYSTRUCTURE gives ([encoding]).

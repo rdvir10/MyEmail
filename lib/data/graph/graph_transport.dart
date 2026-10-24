@@ -539,6 +539,48 @@ class GraphTransport implements ImapTransport {
   }
 
   @override
+  Future<Map<String, String>> headerValues(
+    String path,
+    int uid,
+    List<String> names,
+  ) async {
+    if (names.isEmpty) return const {};
+    final wanted = {for (final n in names) n.toLowerCase()};
+    final found = <String, String>{};
+    for (final h in await api.internetHeaders(await _remoteId(path, uid))) {
+      final name = h.name.toLowerCase();
+      if (wanted.contains(name) && h.value.trim().isNotEmpty) {
+        found.putIfAbsent(name, () => h.value.trim());
+      }
+    }
+    return found;
+  }
+
+  /// Twenty messages to a request; see [GraphMailApi.attachmentsOf].
+  /// Named as [listAttachments] names them, so a name tapped on a row is
+  /// the file of that name on the message.
+  @override
+  Future<Map<int, List<String>>> attachmentNames(
+    String path,
+    List<int> uids,
+  ) async {
+    if (uids.isEmpty) return const {};
+    final remoteIds = await idMap.remoteIdsFor(accountId, path, uids);
+    final byRemote = {
+      for (final uid in uids)
+        if (remoteIds[uid] case final id? when id.isNotEmpty) id: uid,
+    };
+    final listed = await api.attachmentsOf(byRemote.keys.toList());
+    return {
+      for (final MapEntry(key: id, value: files) in listed.entries)
+        byRemote[id]!: [
+          for (final a in files)
+            if (!a.isInline) a.isItem ? attachedItem(a).name : safeFileName(a.name),
+        ],
+    };
+  }
+
+  @override
   Future<Uint8List> fetchAttachment(
     String path,
     int uid,
@@ -638,6 +680,34 @@ class GraphTransport implements ImapTransport {
     }
     return _headers(path, messages);
   }
+
+  // --- recover deleted items -------------------------------------------------
+
+  /// Mail emptied out of Deleted Items: see [GraphMailApi.recoverable].
+  /// Not part of [ImapTransport]: only Exchange keeps it.
+  Future<List<RecoverableMessage>> recoverable({
+    int skip = 0,
+    int top = 50,
+    String query = '',
+  }) async {
+    final found = await api.recoverable(skip: skip, top: top, query: query);
+    return [
+      for (final (:message, :deletedOn) in found)
+        RecoverableMessage(
+          id: message.id,
+          subject: message.subject,
+          from: MailAddress(email: message.fromEmail, name: message.fromName),
+          received: message.received.toLocal(),
+          deletedOn: deletedOn,
+          preview: message.preview,
+          hasAttachments: message.hasAttachments,
+        ),
+    ];
+  }
+
+  /// Back into the Inbox; answers how many went.
+  Future<int> recover(List<String> ids) async =>
+      (await api.recover(ids)).length;
 
   // --- writing ---------------------------------------------------------------
 
@@ -1257,6 +1327,9 @@ class GraphTransport implements ImapTransport {
             isAnswered: _answered(m),
             isForwarded: _forwarded(m),
             hasAttachments: m.hasAttachments,
+            // Graph says only that there are files, not what they are
+            // called: asked for after, for the rows that need them.
+            attachmentNames: m.hasAttachments ? null : const [],
             sizeBytes: m.sizeBytes ?? 0,
             preview: m.preview,
             messageId: m.internetMessageId,

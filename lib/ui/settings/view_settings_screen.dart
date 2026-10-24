@@ -286,6 +286,15 @@ class ViewSettingsScreen extends ConsumerWidget {
               ],
             ),
           ),
+          SwitchListTile(
+            title: const Text('Attachments on the row'),
+            subtitle: const Text(
+              "The names of a message's files under it, each opened with a "
+              'tap. Not in Compact.',
+            ),
+            value: display.attachmentsOnRow,
+            onChanged: notifier.setAttachmentsOnRow,
+          ),
           Consumer(
             builder: (context, ref, _) {
               final rules = ref.watch(rowFormatsProvider);

@@ -55,6 +55,9 @@ class Display extends Notifier<DisplaySettings> {
       state = state.copyWith(showAllInboxes: on);
 
   void setMarkRead(MarkReadWhen when) => state = state.copyWith(markRead: when);
+
+  void setAttachmentsOnRow(bool on) =>
+      state = state.copyWith(attachmentsOnRow: on);
 }
 
 final displayProvider =

@@ -372,6 +372,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     _ => false,
                   },
                   format: rowFormatFor(m, formats, own),
+                  showAttachments: ref.watch(displayProvider).attachmentsOnRow,
                   onTap: () {
                     ref.read(selectedMessageIdProvider.notifier).select(m.id);
                     widget.onOpen(m);
@@ -472,6 +473,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             final ownAddresses = ref.watch(ownAddressesProvider);
             final pinned = ref.watch(pinnedMessagesProvider);
             final formats = ref.watch(rowFormatsProvider);
+            final filesOnRows = display.attachmentsOnRow;
             final index = ref.watch(folderIndexProvider);
             bool outgoing(String folderId) => switch (index[folderId]?.role) {
                   FolderRole.sent || FolderRole.drafts => true,
@@ -628,6 +630,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                           ownAddresses,
                         ),
                         pinned: isPinned(conversation.messages),
+                        showAttachments: filesOnRows,
                       ),
                     ));
                   }
@@ -649,6 +652,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                           density: density,
                           folderLabel: index[m.folderId]?.displayName,
                           showRecipients: true,
+                          showAttachments: filesOnRows,
                           accountColor:
                               isUnified ? accountColors[m.accountId] : null,
                           onTap: () {
@@ -675,6 +679,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     showRecipients: outgoing(m.folderId),
                     format: rowFormatFor(m, formats, ownAddresses),
                     pinned: pinned.contains(m.id),
+                    showAttachments: filesOnRows,
                     onTap: () {
                       // A message in Drafts is something you were writing, so a
                       // tap continues it rather than opening a reading pane on

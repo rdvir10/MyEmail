@@ -5,6 +5,7 @@ import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/row_format.dart';
 import 'date_format.dart';
+import 'row_attachments.dart';
 
 /// One row of the message list: sender, subject, preview, date, and the
 /// unread / flagged / attachment marks.
@@ -33,7 +34,12 @@ class MessageTile extends StatelessWidget {
     this.showRecipients = false,
     this.format,
     this.pinned = false,
+    this.showAttachments = false,
   });
+
+  /// The files' names under the message, each opened with a tap (Settings,
+  /// View). Only with a preview line: a Compact row stays its two lines.
+  final bool showAttachments;
 
   /// Who it went to, in place of who it is from: Sent and Drafts, where
   /// the sender is always you, as Outlook's To column has it there.
@@ -222,6 +228,17 @@ class MessageTile extends StatelessWidget {
           ),
         ],
       ];
+    }
+    final files =
+        showAttachments && showsPreview ? rowFilesOf(message) : const <RowFile>[];
+    if (files.isNotEmpty) {
+      lines.addAll([
+        SizedBox(height: density.lineGap + 3),
+        Padding(
+          padding: const EdgeInsets.only(right: 6),
+          child: RowAttachments(files: files),
+        ),
+      ]);
     }
 
     return Semantics(

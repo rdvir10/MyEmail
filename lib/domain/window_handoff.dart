@@ -143,6 +143,7 @@ Map<String, Object?> _messageToJson(MailMessage m) => {
       'isRead': m.isRead,
       'isFlagged': m.isFlagged,
       'hasAttachments': m.hasAttachments,
+      if (m.attachmentNames.isNotEmpty) 'attachmentNames': m.attachmentNames,
       'sizeBytes': m.sizeBytes,
       'isMeeting': m.isMeeting,
       'isAnswered': m.isAnswered,
@@ -174,6 +175,10 @@ MailMessage _messageFromJson(Map json) => MailMessage(
       isRead: json['isRead'] as bool,
       isFlagged: json['isFlagged'] as bool,
       hasAttachments: json['hasAttachments'] as bool,
+      attachmentNames: [
+        for (final n in (json['attachmentNames'] as List?) ?? const [])
+          if (n is String) n,
+      ],
       sizeBytes: (json['sizeBytes'] as int?) ?? 0,
       isMeeting: (json['isMeeting'] as bool?) ?? false,
       isAnswered: (json['isAnswered'] as bool?) ?? false,

@@ -940,7 +940,9 @@ void main() {
           ..attachments['m1'] = [
             ('a-1', 'meeting.ics', 'application/octet-stream', ics),
           ]
-          ..attachmentListingAnswers.add(500);
+          // Twice: the sync asks the files' names for the row first, and
+          // the body asks for the files themselves after.
+          ..attachmentListingAnswers.addAll([500, 500]);
 
         final (first, second) = await openTwice();
 

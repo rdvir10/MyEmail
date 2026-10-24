@@ -130,8 +130,32 @@ abstract class ImapTransport {
   /// costs no more than opening any other.
   Future<List<MailAttachment>> listAttachments(String path, int uid);
 
+  /// The names of the files on each of [uids] that is still there, as
+  /// [listAttachments] would name them, the files the body shows left out:
+  /// what a list row shows under a message. Messages that could not be
+  /// asked about are left out of the answer, to be asked again.
+  ///
+  /// For rows whose header did not name them (see
+  /// [RemoteHeader.attachmentNames]), and rows cached before names were
+  /// kept. One request over IMAP whatever the number; over Graph, one for
+  /// every twenty messages.
+  Future<Map<int, List<String>>> attachmentNames(
+    String path,
+    List<int> uids,
+  );
+
   /// The bytes of one attachment, by the id [listAttachments] gave it.
   Future<Uint8List> fetchAttachment(String path, int uid, String attachmentId);
+
+  /// The values of the headers [names] on one message, keyed by name in
+  /// lower case, the absent ones left out. A header given twice answers
+  /// with its first. For what the list rows do not carry: how a mailing
+  /// list says to leave it (see `UnsubscribeOptions`).
+  Future<Map<String, String>> headerValues(
+    String path,
+    int uid,
+    List<String> names,
+  );
 
   /// UIDs in the folder whose subject, sender or body contain [query], or
   /// only the one of them [field] names.
@@ -379,6 +403,7 @@ class RemoteHeader {
     required this.isAnswered,
     required this.isForwarded,
     required this.hasAttachments,
+    this.attachmentNames,
     this.arrived,
     this.cc = const [],
     this.replyTo = const [],
@@ -411,6 +436,12 @@ class RemoteHeader {
   final bool isAnswered;
   final bool isForwarded;
   final bool hasAttachments;
+
+  /// The files' names, as [MailMessage.attachmentNames] has them, where the
+  /// header said: over IMAP the structure fetched with it names them. Null
+  /// where it did not, which is a Microsoft row with files: Graph says only
+  /// that there are some, and [ImapTransport.attachmentNames] asks after.
+  final List<String>? attachmentNames;
 
   /// The whole message's size in bytes (IMAP RFC822.SIZE, Exchange
   /// PidTagMessageSize), or 0 where the server did not say. See

@@ -24,7 +24,9 @@ import 'cache_store.dart';
 ///     our HIGHESTMODSEQ; without it, all of them.
 ///  5. Deletions: `UID SEARCH` the cached range and drop what is gone; on
 ///     Graph, from the newest rows only, the ones a list is showing.
-///  6. Record the new state.
+///  6. The names of the files on rows that have some and do not know them
+///     yet: new Microsoft mail, and rows cached before names were kept.
+///  7. Record the new state.
 ///
 /// [ensureCached] extends the window downward on demand as the user pages.
 class FolderSync {
@@ -43,6 +45,12 @@ class FolderSync {
   /// How many of the newest messages the first sync of a folder fetches,
   /// and how many every sync keeps up to date at the least.
   final int windowSize;
+
+  /// The most rows one pass asks the files' names of: see
+  /// [_nameAttachments]. Rows cached before names were kept fill in over a
+  /// few syncs, not all in the first, which on a Microsoft account is a
+  /// request for every twenty.
+  static const attachmentNamesPerPass = 60;
 
   final DateTime Function() _clock;
 
@@ -174,6 +182,14 @@ class FolderSync {
     };
     await store.deleteUids(accountId, path, gone);
 
+    // File names: the new mail's that came without them, then the rows kept
+    // up to date that have never had theirs.
+    await _nameAttachments(path, [
+      ...unnamed(newHeaders),
+      for (final m in recent)
+        if (m.needsAttachmentNames && !gone.contains(m.uid)) m.uid,
+    ]);
+
     // Rows that have no preview line.
     //
     // Three reasons a row has none. It was cached by a version that dropped
@@ -254,10 +270,12 @@ class FolderSync {
     final cachedUids = {
       for (final m in await store.readSyncRows(accountId, path)) m.uid,
     };
-    await store.upsertMessages(accountId, path, [
+    final added = [
       for (final h in headers)
-        if (!cachedUids.contains(h.uid)) _cached(h),
-    ]);
+        if (!cachedUids.contains(h.uid)) h,
+    ];
+    await store.upsertMessages(accountId, path, added.map(_cached).toList());
+    await _nameAttachments(path, unnamed(added.reversed));
     have = await store.countMessages(accountId, path);
     return have;
   }
@@ -290,7 +308,33 @@ class FolderSync {
     final headers =
         await transport.fetchHeadersBySequence(path, start, status.exists);
     await store.upsertMessages(accountId, path, headers.map(_cached).toList());
+    // Newest first, as the list shows them, for the pass's limit to fall
+    // on the oldest.
+    await _nameAttachments(path, unnamed(headers.reversed));
     return headers.length;
+  }
+
+  /// The headers among [headers] that have files and did not name them.
+  static List<int> unnamed(Iterable<RemoteHeader> headers) => [
+        for (final h in headers)
+          if (h.hasAttachments && h.attachmentNames == null) h.uid,
+      ];
+
+  /// Ask the server for the files' names on the first
+  /// [attachmentNamesPerPass] of [uids], in the order given, and keep them.
+  ///
+  /// Never fails the sync. The names are for the row, which shows the
+  /// paperclip without them, and a row that did not get them is asked
+  /// about again by the next pass that keeps it up to date.
+  Future<void> _nameAttachments(String path, List<int> uids) async {
+    final wanted = uids.toSet().take(attachmentNamesPerPass).toList();
+    if (wanted.isEmpty) return;
+    try {
+      final names = await transport.attachmentNames(path, wanted);
+      await store.updateAttachmentNames(accountId, path, names);
+    } catch (e) {
+      debugPrint('[myemail] file names for $path not read: $e');
+    }
   }
 
   /// Every sync that gets this far has seen to the previews, where the
@@ -325,6 +369,7 @@ class FolderSync {
         isAnswered: h.isAnswered,
         isForwarded: h.isForwarded,
         hasAttachments: h.hasAttachments,
+        attachmentNames: h.attachmentNames,
         cc: h.cc,
         replyTo: h.replyTo,
         sizeBytes: h.sizeBytes,

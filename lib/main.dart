@@ -47,6 +47,8 @@ import 'state/window_providers.dart';
 import 'state/message_transfer.dart';
 import 'data/files/message_files.dart';
 import 'data/print/message_printer.dart';
+import 'data/speech/speech_engine.dart';
+import 'state/read_aloud.dart';
 import 'state/print_providers.dart';
 import 'state/calendar_providers.dart';
 import 'data/calendar/device_calendar.dart';
@@ -180,6 +182,7 @@ Future<void> main() async {
           windowOpenerProvider.overrideWithValue(const AndroidWindowOpener()),
           messageFilesProvider.overrideWithValue(const DiskMessageFiles()),
           messagePrinterProvider.overrideWithValue(const AndroidMessagePrinter()),
+          speechEngineProvider.overrideWithValue(AndroidSpeechEngine()),
           deviceCalendarProvider.overrideWithValue(const AndroidDeviceCalendar()),
           fileBridgeProvider.overrideWithValue(platformFileBridge()),
           deviceContactsProvider.overrideWithValue(platformDeviceContacts()),

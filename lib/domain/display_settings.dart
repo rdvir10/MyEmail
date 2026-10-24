@@ -201,6 +201,7 @@ class DisplaySettings {
     this.showAllInboxes = true,
     this.theme = ThemeChoice.system,
     this.markRead = MarkReadWhen.opened,
+    this.attachmentsOnRow = true,
   });
 
   /// Light, dark, or as Android is.
@@ -208,6 +209,11 @@ class DisplaySettings {
 
   /// When an opened message counts as read.
   final MarkReadWhen markRead;
+
+  /// The names of a message's files under it in the list, as Outlook
+  /// shows them, each opened with a tap. Only in a list with a preview
+  /// line: Compact is for as many messages as the screen holds.
+  final bool attachmentsOnRow;
 
   /// What the list is ordered by. The default is what every list did
   /// before this was a choice.
@@ -257,6 +263,7 @@ class DisplaySettings {
     bool? showAllInboxes,
     ThemeChoice? theme,
     MarkReadWhen? markRead,
+    bool? attachmentsOnRow,
   }) {
     return DisplaySettings(
       readingPane: readingPane ?? this.readingPane,
@@ -270,6 +277,7 @@ class DisplaySettings {
       showAllInboxes: showAllInboxes ?? this.showAllInboxes,
       theme: theme ?? this.theme,
       markRead: markRead ?? this.markRead,
+      attachmentsOnRow: attachmentsOnRow ?? this.attachmentsOnRow,
     );
   }
 
@@ -285,6 +293,7 @@ class DisplaySettings {
         'showAllInboxes': showAllInboxes,
         'theme': theme.name,
         'markRead': markRead.name,
+        'attachmentsOnRow': attachmentsOnRow,
       };
 
   /// Tolerant of anything: a value written by a newer build, or a corrupted
@@ -320,6 +329,10 @@ class DisplaySettings {
         json['markRead'],
         MarkReadWhen.opened,
       ),
+      // On, as Outlook has it, until put away.
+      attachmentsOnRow: json['attachmentsOnRow'] is bool
+          ? json['attachmentsOnRow'] as bool
+          : true,
       // A record written before sorting existed has no key at all, and one
       // written by 2.23.0 has the field and direction it used to keep as
       // two. Either way it lands on an order that was already being shown.
@@ -370,7 +383,8 @@ class DisplaySettings {
       other.textSize == textSize &&
       other.showAllInboxes == showAllInboxes &&
       other.theme == theme &&
-      other.markRead == markRead;
+      other.markRead == markRead &&
+      other.attachmentsOnRow == attachmentsOnRow;
 
   // Every field, without exception: Riverpod skips notifying when the new
   // state equals the old, so a field left out here is a setting that can
@@ -388,11 +402,13 @@ class DisplaySettings {
         showAllInboxes,
         theme,
         markRead,
+        attachmentsOnRow,
       );
 
   @override
   String toString() => 'DisplaySettings(${readingPane.name}, ${density.name}, '
       'mark read: ${markRead.name}, '
+      'files on rows: $attachmentsOnRow, '
       'conversations: $conversations, '
       'swipe: ${swipeRight.name}/${swipeLeft.name}, '
       'images: $alwaysShowImages, '

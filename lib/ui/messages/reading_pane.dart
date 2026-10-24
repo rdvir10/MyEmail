@@ -15,6 +15,7 @@ import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/pinned_messages.dart';
 import '../../state/providers.dart';
+import '../../state/read_aloud.dart';
 import '../../state/read_marker.dart';
 import '../../state/window_providers.dart';
 import '../../domain/window_handoff.dart';
@@ -32,8 +33,10 @@ import 'load_failure.dart';
 import 'message_actions.dart';
 import 'message_source.dart';
 import 'print_message.dart';
+import 'read_aloud_bar.dart';
 import 'move_to_sheet.dart';
 import 'person_card.dart';
+import 'unsubscribe_link.dart';
 
 /// One open message: a fixed header with actions, then the body.
 ///
@@ -86,9 +89,13 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
   /// one of the things it is told about.
   late final ReadMarker _marker;
 
+  /// Read once for the same reason: reading aloud stops with the pane.
+  late final ReadAloud _readAloud;
+
   @override
   void dispose() {
     _marker.left(widget.message.id);
+    _readAloud.stopFor(widget.message.id);
     _textScroll.dispose();
     _ownNode.dispose();
     super.dispose();
@@ -114,6 +121,11 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
       case LogicalKeyboardKey.pageUp:
         _scrollBy(-screen);
       case LogicalKeyboardKey.space:
+        // Ctrl+Alt+Space is Read Aloud's, for the shortcuts around this.
+        if (HardwareKeyboard.instance.isControlPressed ||
+            HardwareKeyboard.instance.isAltPressed) {
+          return KeyEventResult.ignored;
+        }
         _scrollBy(shift ? -screen : screen);
       case LogicalKeyboardKey.home:
         _scrollToEnd(top: true);
@@ -159,6 +171,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     // mail you meant to come back to. Acting on it — a key, a tap — claims the
     // selection, and it reads as opened from then on.
     _marker = ref.read(readMarkerProvider);
+    _readAloud = ref.read(readAloudProvider.notifier);
     if (ref.read(selectedMessageIdProvider.notifier).chosenByPerson) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _opened());
     }
@@ -264,6 +277,9 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
             .firstOrNull;
     final message = live ?? widget.message;
     final body = ref.watch(messageBodyProvider(message.id));
+    final reading = ref.watch(
+      readAloudProvider.select((s) => s?.messageId == message.id),
+    );
 
     return Focus(
       focusNode: _node,
@@ -321,6 +337,12 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                 onFullScreen: body.value == null
                     ? null
                     : () => FullScreenMessage.open(context, message),
+                reading: reading,
+                onReadAloud: body.value == null
+                    ? null
+                    : () => reading
+                        ? _readAloud.stop()
+                        : _readAloud.start(message, body.value!),
                 // Whatever the phone has: the account's own calendar takes it,
                 // and the calendar app is only the way out for an account
                 // without one.
@@ -347,6 +369,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
             if (ref.watch(messageInviteProvider(message.id)) case final invite?)
               InviteCard(message: message, invite: invite),
             const Divider(height: 1),
+            ReadAloudBar(messageId: message.id),
             Expanded(
               child: body.when(
                 loading: () => const Center(
@@ -466,7 +489,14 @@ class _Header extends StatelessWidget {
     this.onFullScreen,
     this.onPerson,
     this.compact = false,
+    this.reading = false,
+    this.onReadAloud,
   });
+
+  /// Read Aloud, or stop it where this message is being read. Null until
+  /// the body is here: there is nothing to read before.
+  final VoidCallback? onReadAloud;
+  final bool reading;
 
   /// The card for someone on the message, from a tap on the sender or on
   /// anyone it went to: Add to contacts and the rest.
@@ -630,6 +660,7 @@ class _Header extends StatelessWidget {
                       'pin' => onTogglePin?.call(),
                       'window' => onOpenWindow?.call(),
                       'print' => onPrint?.call(),
+                      'read' => onReadAloud?.call(),
                       'event' => onCreateEvent?.call(),
                       _ => onSaveSource?.call(),
                     },
@@ -639,6 +670,11 @@ class _Header extends StatelessWidget {
                           value: 'window',
                           child: Text('Open in new window'),
                         ),
+                      PopupMenuItem(
+                        value: 'read',
+                        enabled: onReadAloud != null,
+                        child: Text(reading ? 'Stop reading' : 'Read aloud'),
+                      ),
                       PopupMenuItem(
                         value: 'print',
                         enabled: onPrint != null,
@@ -730,19 +766,31 @@ class _Header extends StatelessWidget {
                       ),
                     ],
                   ),
+                  // Unsubscribe beside the address, as Gmail has it, for
+                  // mail from a list that says how to leave it.
                   if (message.from.name != null)
-                    _PersonTap(
-                      person: message.from,
-                      onPerson: onPerson,
-                      child: Text(
-                        message.from.email,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
+                    Row(
+                      children: [
+                        Flexible(
+                          child: _PersonTap(
+                            person: message.from,
+                            onPerson: onPerson,
+                            child: Text(
+                              message.from.email,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
+                        const SizedBox(width: 8),
+                        UnsubscribeLink(message: message),
+                      ],
+                    )
+                  else
+                    UnsubscribeLink(message: message),
                   const SizedBox(height: 2),
                   // Keyed by the message, so the next one opens folded
                   // whatever was done with this one.

@@ -8,6 +8,8 @@ import '../domain/message_filter.dart';
 
 export '../domain/search_field.dart';
 export '../domain/message_filter.dart';
+export '../domain/unsubscribe.dart';
+export '../domain/recoverable_message.dart';
 export 'contacts/account_people.dart' show PeopleSearchAccess, PeopleSearchState;
 import 'auth/oauth_token.dart';
 import 'contacts/account_people.dart' show PeopleSearchAccess;
@@ -20,6 +22,8 @@ import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
 import '../domain/meeting.dart';
 import '../domain/message_move.dart';
+import '../domain/recoverable_message.dart';
+import '../domain/unsubscribe.dart';
 
 /// Everything the UI is allowed to know about talking to mail.
 ///
@@ -207,6 +211,12 @@ abstract class MailEngine {
   /// The bytes of one attachment, by the id [listAttachments] gave it.
   Future<Uint8List> fetchAttachment(String messageId, String attachmentId);
 
+  /// How the mailing list a message came from says to leave it, read from
+  /// its headers on the server when asked, or null where it says nothing:
+  /// see [UnsubscribeOptions]. Throws as [listAttachments] does when the
+  /// server cannot be asked.
+  Future<UnsubscribeOptions?> unsubscribeOptions(String messageId);
+
   /// The message as it arrived: RFC 822 text, headers and all. For saving
   /// as an `.eml`, or attaching one message to another.
   ///
@@ -357,6 +367,27 @@ abstract class MailEngine {
   /// instead, which is slower but works against a server that moves mail
   /// without saying where it put it.
   Future<void> undoMoves(List<MessageMove> moves);
+
+  /// Whether [accountId] keeps mail emptied out of Deleted Items where it
+  /// can be got back: a Microsoft account, signed in. Gmail keeps deleted
+  /// mail in sight, in Trash, for thirty days, and has nothing more.
+  bool canRecoverDeleted(String accountId);
+
+  /// Recover Deleted Items: mail emptied out of [accountId]'s Deleted
+  /// Items, newest received first, [limit] from [offset]; with a [query],
+  /// what the server's search finds among it instead. Throws
+  /// [FolderOperationNotSupported] for an account without it (see
+  /// [canRecoverDeleted]), and as [loadMessages] does otherwise.
+  Future<List<RecoverableMessage>> recoverableMessages(
+    String accountId, {
+    String query = '',
+    int offset = 0,
+    int limit = 50,
+  });
+
+  /// Put [ids], from [recoverableMessages], back in [accountId]'s Inbox.
+  /// Answers how many went back.
+  Future<int> recoverMessages(String accountId, List<String> ids);
 
   /// Search the server for [query] within [scope], newest first, looking
   /// in [field]: subject, sender and body together unless one is named.

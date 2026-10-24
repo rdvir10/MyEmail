@@ -461,6 +461,7 @@ void main() {
             hasPreview: true,
             hasConversation: false,
             hasSize: false,
+            needsAttachmentNames: false,
           ),
           (
             uid: 1,
@@ -468,6 +469,7 @@ void main() {
             hasPreview: false,
             hasConversation: false,
             hasSize: true,
+            needsAttachmentNames: false,
           ),
         ]);
       });

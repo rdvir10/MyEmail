@@ -678,6 +678,90 @@ class SampleMailEngine implements MailEngine {
     ];
   }
 
+  /// How each sample message's list says to leave it, by message id, for
+  /// a test to fill: none says anything otherwise.
+  final Map<String, UnsubscribeOptions> unsubscribe = {};
+
+  @override
+  Future<UnsubscribeOptions?> unsubscribeOptions(String messageId) async {
+    await _latency();
+    return unsubscribe[messageId];
+  }
+
+  /// What Recover Deleted Items lists, by account id, for a test to fill.
+  final Map<String, List<RecoverableMessage>> recoverable = {};
+
+  /// Microsoft accounts, as the real engine has it.
+  @override
+  bool canRecoverDeleted(String accountId) => _accounts.any(
+        (a) => a.id == accountId && a.provider == MailProvider.outlook,
+      );
+
+  @override
+  Future<List<RecoverableMessage>> recoverableMessages(
+    String accountId, {
+    String query = '',
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    await _latency();
+    if (!canRecoverDeleted(accountId)) {
+      throw FolderOperationNotSupported(accountId, 'recover deleted items');
+    }
+    final words = query.trim().toLowerCase();
+    final all = [
+      for (final m in recoverable[accountId] ?? const <RecoverableMessage>[])
+        if (words.isEmpty ||
+            m.subject.toLowerCase().contains(words) ||
+            m.from.display.toLowerCase().contains(words))
+          m,
+    ]..sort((a, b) => b.received.compareTo(a.received));
+    return all.skip(words.isEmpty ? offset : 0).take(limit).toList();
+  }
+
+  /// Into the account's Inbox, at the top, as the server would.
+  @override
+  Future<int> recoverMessages(String accountId, List<String> ids) async {
+    await _latency();
+    final kept = recoverable[accountId] ?? const <RecoverableMessage>[];
+    final going = [
+      for (final m in kept)
+        if (ids.contains(m.id)) m,
+    ];
+    recoverable[accountId] = [
+      for (final m in kept)
+        if (!ids.contains(m.id)) m,
+    ];
+    final inbox = (_folders[accountId] ?? const <MailFolder>[])
+        .where((f) => f.role == FolderRole.inbox)
+        .firstOrNull;
+    if (inbox != null) {
+      final list =
+          _messages.putIfAbsent(inbox.id, () => generateSampleMessages(inbox));
+      for (final m in going) {
+        final uid = list.isEmpty ? 1 : list.map((x) => x.uid).reduce(max) + 1;
+        list.insert(
+          0,
+          MailMessage(
+            id: MailMessage.idFor(inbox.id, uid),
+            accountId: accountId,
+            folderId: inbox.id,
+            uid: uid,
+            subject: m.subject,
+            from: m.from,
+            to: const [],
+            date: m.received,
+            preview: m.preview,
+            isRead: true,
+            hasAttachments: m.hasAttachments,
+          ),
+        );
+      }
+      _replace(inbox.copyWith(totalCount: list.length));
+    }
+    return going.length;
+  }
+
   /// Every answer given, for tests to look at.
   final List<({String messageId, InviteResponse response})> inviteResponses = [];
 

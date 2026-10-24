@@ -321,6 +321,51 @@ class FakeImapTransport implements ImapTransport {
     return attachments[uid] ?? const [];
   }
 
+  /// Headers beyond the list row's, by uid then name in lower case, for a
+  /// test to fill: what [headerValues] answers.
+  final Map<int, Map<String, String>> headers = {};
+
+  @override
+  Future<Map<String, String>> headerValues(
+    String path,
+    int uid,
+    List<String> names,
+  ) async {
+    _online();
+    calls.add('UID FETCH $path $uid HEADERS ${names.join(',')}');
+    final all = headers[uid] ?? const <String, String>{};
+    return {
+      for (final n in names)
+        n.toLowerCase(): ?all[n.toLowerCase()],
+    };
+  }
+
+  /// What [attachmentNames] answers, keyed by uid, for a test to fill.
+  /// A message not in it is answered from [attachments], files only.
+  final Map<int, List<String>> attachmentNameAnswers = {};
+
+  /// Where [attachmentNames] is to fail, as a server that cannot say.
+  bool refuseAttachmentNames = false;
+
+  @override
+  Future<Map<int, List<String>>> attachmentNames(
+    String path,
+    List<int> uids,
+  ) async {
+    _online();
+    calls.add('UID FETCH $path ${uids.join(',')} NAMES');
+    if (refuseAttachmentNames) throw StateError('names refused');
+    return {
+      for (final uid in uids)
+        if (_require(path).messages.containsKey(uid))
+          uid: attachmentNameAnswers[uid] ??
+              [
+                for (final a in attachments[uid] ?? const <MailAttachment>[])
+                  if (!a.isInline) a.name,
+              ],
+    };
+  }
+
   @override
   Future<Uint8List> fetchAttachment(
     String path,
@@ -668,6 +713,12 @@ class FakeMessage {
   bool isDeleted = false;
   bool isAnswered = false;
   bool isForwarded = false;
+
+  /// Files, and their names as the header gives them: none by default, as
+  /// an IMAP header with no files says. Null names with files is a header
+  /// that does not name them, as Microsoft's does not.
+  bool hasAttachments = false;
+  List<String>? attachmentNames = const [];
   final String body;
   final String? html;
   int modSeq;
@@ -698,7 +749,8 @@ class FakeMessage {
         isFlagged: isFlagged,
         isAnswered: isAnswered,
         isForwarded: isForwarded,
-        hasAttachments: false,
+        hasAttachments: hasAttachments,
+        attachmentNames: attachmentNames,
         preview: preview,
         messageId: messageId,
         sizeBytes: sizeBytes,

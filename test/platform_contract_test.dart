@@ -8,6 +8,7 @@ import 'package:myemail/data/calendar/device_calendar.dart';
 import 'package:myemail/data/contacts/device_contacts.dart';
 import 'package:myemail/data/files/file_bridge.dart';
 import 'package:myemail/data/print/message_printer.dart';
+import 'package:myemail/data/speech/speech_engine.dart';
 import 'package:myemail/data/updates/apk_installer.dart';
 import 'package:myemail/data/widget/widget_setup_channel.dart';
 import 'package:myemail/data/windows/window_opener.dart';
@@ -73,6 +74,7 @@ void main() {
             'paste' || 'search' || 'placedWidgets' => <Object?>[],
             'takeShare' => null,
             'timeZone' => 'Asia/Jerusalem',
+            'pickFolder' => 'content://tree/Downloads',
             _ => true,
           };
         });
@@ -132,6 +134,19 @@ void main() {
         text: 'a:INBOX#1',
       );
       await files.takeShare();
+      await files.pickFolder();
+      await files.saveIntoFolder(
+        'content://tree/Downloads',
+        '/f/a.pdf',
+        name: 'a.pdf',
+        mimeType: 'application/pdf',
+      );
+
+      final speech = AndroidSpeechEngine();
+      await speech.speak(id: '1', text: 'Hello', language: 'en-US');
+      await speech.stop();
+      await speech.hasLanguage('he-IL');
+      await speech.openSettings();
 
       await const AndroidMessagePrinter().print(title: 'Hi', html: '<p>Hi</p>');
 
@@ -191,6 +206,10 @@ void main() {
           'mailtree/files openWith',
           'mailtree/files defaultApp',
           'mailtree/files showDefaults',
+          'mailtree/files pickFolder',
+          'mailtree/files saveIntoFolder',
+          'mailtree/speech speak',
+          'mailtree/speech hasLanguage',
           'mailtree/installer install',
           'mailtree/widget placedWidgets',
           'mailtree/windows open',
@@ -217,6 +236,8 @@ void main() {
         // OAuthRedirects, which google_redirect_contract_test holds to it.
         'mailtree/oauth': {'redirect'},
         'mailtree/leaving': {'putAway'},
+        // AndroidSpeechEngine: each piece read aloud finished, or failed.
+        'mailtree/speech': {'done', 'error'},
       };
       for (final MapEntry(key: channel, value: methods)
           in kotlin.invoked.entries) {
@@ -226,6 +247,7 @@ void main() {
       expect(kotlin.invoked['mailtree/widget'], {'configure'});
       expect(kotlin.invoked['mailtree/oauth'], {'redirect'});
       expect(kotlin.invoked['mailtree/leaving'], {'putAway'});
+      expect(kotlin.invoked['mailtree/speech'], {'done', 'error'});
     });
 
     test('the app put away by the person reaches Dart', () async {

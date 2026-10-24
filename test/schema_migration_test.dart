@@ -60,9 +60,18 @@ void main() {
   // and every test here would still have passed, while every device
   // upgrading from 2.35 or earlier failed on every cache read.
 
+  /// What schema 13 added: the names of a message's files, for its row.
+  Future<void> dropSchema13(MailDatabase db) async {
+    await db.customStatement(
+      'ALTER TABLE messages DROP COLUMN attachment_names_json',
+    );
+  }
+
   /// What schema 12 added: the index the list reads a folder through,
   /// newest arrival first. It has to go before the arrival column can.
+  /// And everything after it.
   Future<void> dropSchema12(MailDatabase db) async {
+    await dropSchema13(db);
     await db.customStatement('DROP INDEX IF EXISTS messages_by_arrival');
   }
 
@@ -247,6 +256,29 @@ void main() {
     await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
     await dropSchema12(db);
     await db.customStatement('PRAGMA user_version = 11');
+    await db.close();
+  }
+
+  /// A database as it stood at schema 12, the release before this one: a
+  /// message with files whose names were never kept.
+  Future<void> buildVersion12() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [
+      CachedMessage(
+        uid: 11,
+        subject: 'Cached before the upgrade',
+        from: const MailAddress(email: 'x@example.com'),
+        to: const [],
+        date: DateTime(2026, 9, 1),
+        isRead: false,
+        isFlagged: false,
+        hasAttachments: true,
+        bodyText: 'A body worth keeping',
+        bodyHtml: '<p>A body worth keeping</p>',
+      ),
+    ]);
+    await dropSchema13(db);
+    await db.customStatement('PRAGMA user_version = 12');
     await db.close();
   }
 
@@ -768,6 +800,24 @@ void main() {
 
     expect(cached.single.subject, 'Cached before the upgrade');
     expect(await indexes(db), contains('messages_by_arrival'));
+  });
+
+  test("a version 12 database gains the files' names, keeps its rows, and "
+      'asks for the names of the files it has', () async {
+    await buildVersion12();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    final cached = (await store.readMessages('acct-1', 'INBOX')).single;
+
+    expect(cached.subject, 'Cached before the upgrade');
+    expect(await keptBody(store), '<p>A body worth keeping</p>');
+    expect(cached.attachmentNames, isNull, reason: 'cached before they were');
+    expect(
+      (await store.readSyncRows('acct-1', 'INBOX')).single.needsAttachmentNames,
+      isTrue,
+    );
   });
 
   test('and so does one coming up from before arrival times were kept',

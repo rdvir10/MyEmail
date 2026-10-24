@@ -55,6 +55,7 @@ open class MainActivity : FlutterActivity() {
 
     private var files: FilesBridge? = null
     private var contacts: ContactsBridge? = null
+    private var speech: SpeechBridge? = null
 
     /**
      * Whether this start is Android bringing the app back rather than
@@ -115,6 +116,8 @@ open class MainActivity : FlutterActivity() {
         PrintBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         // Events handed to the calendar app's own new-event screen.
         CalendarBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        // Read Aloud, in the phone's own voice.
+        speech = SpeechBridge(this, flutterEngine.dartExecutor.binaryMessenger)
 
         files = FilesBridge(this, flutterEngine.dartExecutor.binaryMessenger)
             .also {
@@ -215,6 +218,12 @@ open class MainActivity : FlutterActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
     }
 
+    /** Save all's folder, chosen; everything else is the plugins'. */
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (files?.onActivityResult(requestCode, resultCode, data) == true) return
+        super.onActivityResult(requestCode, resultCode, data)
+    }
+
     override fun startActivityForResult(intent: Intent, requestCode: Int, options: Bundle?) {
         sentAway = true
         super.startActivityForResult(intent, requestCode, options)
@@ -254,6 +263,12 @@ open class MainActivity : FlutterActivity() {
         super.onStop()
         if (putAway) leavingChannel?.invokeMethod("putAway", null)
         putAway = false
+    }
+
+    override fun onDestroy() {
+        speech?.shutdown()
+        speech = null
+        super.onDestroy()
     }
 
     override fun onResume() {
