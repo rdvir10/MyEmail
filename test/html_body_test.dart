@@ -1,8 +1,19 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:html/parser.dart' as html_parser;
+import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/html_safety.dart';
+import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/message_providers.dart';
+import 'package:myemail/state/providers.dart';
 import 'package:myemail/theme/app_theme.dart';
+import 'package:myemail/ui/compose/compose_screen.dart';
 import 'package:myemail/ui/messages/html_body_view.dart';
+import 'package:myemail/ui/messages/reading_pane.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+
+import 'fakes/fake_webview.dart';
 
 void main() {
   group('htmlHasRemoteContent', () {
@@ -291,6 +302,86 @@ void main() {
       }
     });
 
+    // Taken out in one pass, the tag inside joined the halves around it into
+    // a working one: a refresh to the sender's page a few seconds after the
+    // message opened, or a viewport of the message's own. Read here as the
+    // WebView reads it, by a parser.
+    test('a meta or base rebuilt from the halves around one taken out is '
+        'gone too', () {
+      for (final html in [
+        '<me<meta>ta http-equiv="refresh" '
+            'content="5;url=https://phish.example/login"><p>Hi</p>',
+        '<html><body><ME<META>TA HTTP-EQUIV=refresh '
+            'CONTENT="0;url=https://t/"><p>Hi</p></body></html>',
+        '<<meta>meta http-equiv="refresh" content="0;url=https://t/"><p>Hi</p>',
+        '<me<me<meta>ta>ta http-equiv="refresh" '
+            'content="0;url=https://t/"><p>Hi</p>',
+        '<me<meta>ta name="viewport" content="width=200"><p>Hi</p>',
+        '<ba<base>se href="https://evil.example/"><p>Hi</p>',
+      ]) {
+        final page = html_parser.parse(wrapHtmlForDisplay(html));
+        expect(
+          page.querySelectorAll('meta').where((m) =>
+              m.attributes['http-equiv']?.toLowerCase() == 'refresh'),
+          isEmpty,
+          reason: html,
+        );
+        expect(page.querySelectorAll('meta[name="viewport"]'), hasLength(1),
+            reason: 'the app\'s own, alone: $html');
+        expect(page.querySelectorAll('base'), isEmpty, reason: html);
+        expect(page.querySelector('p')?.text, 'Hi', reason: html);
+      }
+    });
+
+    // Two ways past the pattern that the WebView still read as a tag. One
+    // left open at the very end was closed by the `>` of the `</body>` the
+    // page puts after it. And a style in the head ends where the WebView
+    // ends it, at `</style/>` or `</style x>` as well, so what came after
+    // was a tag in the page, carried there as a sheet's text.
+    test('a meta or base left open at the end, or after a style the WebView '
+        'has ended, is gone too', () {
+      const refresh =
+          '<meta http-equiv="refresh" content="0;url=https://phish.example/"';
+      for (final html in [
+        '<p>Hi</p>$refresh',
+        '<p>Hi</p>$refresh ',
+        '<html><body><p>Hi</p>$refresh</body></html>',
+        '<html><body><p>Hi</p>$refresh',
+        '<p>Hi</p><base href="https://evil.example/"',
+        '<html><head><style>p{}</style/>$refresh></style></head>'
+            '<body><p>Hi</p></body></html>',
+        '<html><head><style>p{}</style x>$refresh></style></head>'
+            '<body><p>Hi</p></body></html>',
+        '<html><head><STYLE>p{}</STYLE\t>$refresh></style></head>'
+            '<body><p>Hi</p></body></html>',
+        '<html><head><style>p{}</style/><base href="https://evil.example/">'
+            '</style></head><body><p>Hi</p></body></html>',
+        '<html><head><style>p{}</style/>$refresh</style></head>'
+            '<body><p>Hi</p></body></html>',
+      ]) {
+        final page = html_parser.parse(wrapHtmlForDisplay(html));
+        expect(
+          page.querySelectorAll('meta').where((m) =>
+              m.attributes['http-equiv']?.toLowerCase() == 'refresh'),
+          isEmpty,
+          reason: html,
+        );
+        expect(page.querySelectorAll('meta[name="viewport"]'), hasLength(1),
+            reason: 'the app\'s own, alone: $html');
+        expect(page.querySelectorAll('base'), isEmpty, reason: html);
+        expect(page.querySelector('p')?.text, 'Hi', reason: html);
+      }
+    });
+
+    test('a sheet from the head ends where the WebView ends it', () {
+      final page = html_parser.parse(wrapHtmlForDisplay(
+        '<html><head><style>p{color:red}</style/><p>Not a sheet</p></style>'
+        '</head><body><p>Hi</p></body></html>',
+      ));
+      expect(page.head!.querySelectorAll('style').last.text, 'p{color:red}');
+      expect(page.body!.text, 'Hi');
+    });
+
     String policyOf(String page) =>
         RegExp(r'Content-Security-Policy" content="([^"]*)"')
             .firstMatch(page)!
@@ -361,6 +452,88 @@ void main() {
 
     test('about:blank is always the WebView\'s own', () {
       expect(decide('about:blank'), PaneNavigation.load);
+    });
+  });
+
+  // Handed to Android, a mailto: link in a message went to another mail
+  // app; with this one the default, tapped in a message's own window, it
+  // would start a second copy of the whole app inside the window.
+  group('a mailto: link tapped in a message', () {
+    final message = MailMessage(
+      id: 'acct-personal:INBOX#1',
+      accountId: 'acct-personal',
+      folderId: 'acct-personal:INBOX',
+      uid: 1,
+      subject: 'Numbers for Thursday',
+      preview: '',
+      from: const MailAddress(email: 'dana@example.com', name: 'Dana Levi'),
+      to: const [MailAddress(email: 'personal@example.com')],
+      date: DateTime(2026, 10, 12, 9, 30),
+      isRead: true,
+    );
+
+    Future<FakeWebViewPlatform> pump(WidgetTester tester) async {
+      final web = FakeWebViewPlatform.install();
+      tester.view.physicalSize = const Size(1200, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        messageBodyProvider(message.id).overrideWith((ref) async =>
+            const MailBody(
+              text: 'Write to the site office.',
+              html: '<p>Write to <a href="mailto:office@example.com">the '
+                  'site office</a>.</p>',
+            )),
+      ]);
+      addTearDown(c.dispose);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: MaterialApp(
+          home: Scaffold(body: ReadingPane(message: message, onPopOut: () {})),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      return web;
+    }
+
+    testWidgets('is a new message here, from the account the message came '
+        'to, to whoever the link names', (tester) async {
+      final web = await pump(tester);
+
+      await tester.tap(find.byType(WebViewWidget));
+      final decision = await web.navigationHandler!(const NavigationRequest(
+        url: 'mailto:office@example.com?cc=sam@example.com,Office@Example.com'
+            '&subject=Site%20visit&body=Thursday%20at%202%3F',
+        isMainFrame: true,
+      ));
+      // Past the moment a new message waits before it would show a spinner.
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pumpAndSettle();
+
+      expect(decision, NavigationDecision.prevent);
+      final draft =
+          tester.widget<ComposeScreen>(find.byType(ComposeScreen)).draft;
+      expect(draft.accountId, 'acct-personal');
+      expect(draft.to.map((a) => a.email), ['office@example.com']);
+      expect(draft.cc.map((a) => a.email), ['sam@example.com'],
+          reason: 'the address in To once, not again in Cc');
+      expect(draft.subject, 'Site visit');
+      expect(draft.htmlBody, contains('Thursday at 2?'));
+    });
+
+    testWidgets('that nobody tapped for opens nothing', (tester) async {
+      final web = await pump(tester);
+
+      await web.navigationHandler!(const NavigationRequest(
+        url: 'mailto:office@example.com',
+        isMainFrame: true,
+      ));
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ComposeScreen), findsNothing);
     });
   });
 

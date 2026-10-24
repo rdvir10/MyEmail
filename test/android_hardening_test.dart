@@ -90,6 +90,24 @@ void main() {
       expect(bridge, contains('if (uri.scheme != ContentResolver.SCHEME_CONTENT) return false'));
     });
 
+    // Android drops a "0@" before a provider's name, the user it is on, as
+    // it finds the provider. Compared as written, content://0@ and this
+    // app's own provider's name passed for another app's, and the file
+    // under it, the account list among them, was attached.
+    test("the app's own provider is known by its name with the user dropped, "
+        'and by the package Android says is behind it', () {
+      final guard = RegExp(r'private fun mayCopyIn\([\s\S]*?\n    }')
+          .firstMatch(bridge)!
+          .group(0)!;
+      expect(guard, contains("uri.authority?.substringAfterLast('@')"));
+      expect(guard, isNot(contains('when (uri.authority)')),
+          reason: 'the raw authority keeps the user');
+      expect(guard, contains('resolveContentProvider(name, 0)'));
+      expect(guard, contains('!= activity.packageName'));
+      expect(guard.indexOf('isSharedCacheFile(uri)'),
+          lessThan(guard.indexOf('resolveContentProvider')));
+    });
+
     test("the app's own files allowed back in are the ones it hands out", () {
       // A drag between two of the app's windows carries its own URI. The
       // folders allowed must be the folders the Dart side writes to.

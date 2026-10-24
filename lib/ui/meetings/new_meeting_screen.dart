@@ -166,8 +166,8 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
 
 class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     with GuardsPutAway<NewMeetingScreen> {
-  /// A meeting has nowhere to be saved, so one with anything typed in it
-  /// stays when the app is put away; an untouched one closes.
+  /// A meeting has nowhere to be saved, so one with anything typed or
+  /// picked in it stays when the app is put away; an untouched one closes.
   @override
   Future<bool> whenPutAway() async => _untouched;
 
@@ -189,8 +189,13 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   final _location = TextEditingController();
   late final _notes = TextEditingController(text: widget.notes);
 
-  late DateTime _start = widget.start ?? _nextHour(DateTime.now());
-  late DateTime _end = _start.add(const Duration(hours: 1));
+  /// The times as the screen opened, kept to tell a time picked from one
+  /// left alone.
+  late final DateTime _startToBegin = widget.start ?? _nextHour(DateTime.now());
+  late final DateTime _endToBegin = _startToBegin.add(const Duration(hours: 1));
+
+  late DateTime _start = _startToBegin;
+  late DateTime _end = _endToBegin;
   bool _allDay = false;
   bool _sending = false;
 
@@ -273,6 +278,19 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// is being sent either: Send puts it back on the ledger if it did not
   /// go, and the next start deletes it then.
   bool _sendingMeeting = false;
+
+  /// This meeting's key for the calendar, the same through every Send: a
+  /// Send that failed after the calendar had made the meeting after all,
+  /// tapped again, is the same meeting, not a second set of invitations.
+  final String _transactionId = MeetingDraft.newTransactionId();
+
+  /// The meeting of each Send that failed, as it stood. The calendar may
+  /// have made any one of them after all, so a Send of a meeting unlike
+  /// any of these asks for the one it answers with to be brought up to
+  /// date; see [MeetingDraft.changedSinceFailedSend]. Each, not only the
+  /// first: a second Send that failed may have made its meeting in place
+  /// of the first's.
+  final List<MeetingDraft> _failedSends = [];
 
   /// The app's container, taken while the screen is there: a meeting made
   /// ahead is undone as the screen goes, when its own ref no longer reads.
@@ -423,7 +441,17 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
 
   /// Whether leaving loses nothing: the screen is as it opened, and what it
   /// opened with can be had again.
+  ///
+  /// A time picked counts, and so do All day and another From: a meeting
+  /// made out of a message comes with everything else filled in, and they
+  /// can be all that was done before a look at the calendar app. The
+  /// Online switch alone does not: its link is undone with the screen, and
+  /// made again as easily.
   bool get _untouched =>
+      _accountId == widget.accountId &&
+      _start == _startToBegin &&
+      _end == _endToBegin &&
+      !_allDay &&
       _title.text == widget.title &&
       _attendees.text == _attendeesToBegin &&
       _location.text.isEmpty &&
@@ -460,7 +488,8 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   }
 
   /// What the screen holds, as a meeting, with the device's zone so the
-  /// calendar knows what clock the times are on.
+  /// calendar knows what clock the times are on, and said to be changed
+  /// where it is unlike a Send that failed.
   Future<MeetingDraft> _draft(List<MailAddress> attendees) async {
     String? zone;
     try {
@@ -469,19 +498,25 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       // Then the times go as UTC, which every calendar reads.
     }
     DateTime day(DateTime t) => DateTime(t.year, t.month, t.day);
-    return MeetingDraft(
-      accountId: _accountId,
-      title: _title.text.trim(),
-      attendees: attendees,
-      start: _allDay ? day(_start) : _start,
-      end: _allDay ? day(_end) : _end,
-      allDay: _allDay,
-      location: _location.text.trim(),
-      notes: _notes.text.trim(),
-      timeZone: zone,
-      online: _online ? _onlineKind : null,
-      prepared: _online ? _prepared : null,
-    );
+    MeetingDraft draft({bool changed = false}) => MeetingDraft(
+          accountId: _accountId,
+          title: _title.text.trim(),
+          attendees: attendees,
+          start: _allDay ? day(_start) : _start,
+          end: _allDay ? day(_end) : _end,
+          allDay: _allDay,
+          location: _location.text.trim(),
+          notes: _notes.text.trim(),
+          timeZone: zone,
+          online: _online ? _onlineKind : null,
+          prepared: _online ? _prepared : null,
+          transactionId: _transactionId,
+          changedSinceFailedSend: changed,
+        );
+    final now = draft();
+    return _failedSends.any((tried) => !tried.sameMeetingAs(now))
+        ? draft(changed: true)
+        : now;
   }
 
   Future<void> _send() async {
@@ -553,6 +588,11 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     } on CalendarUnavailable catch (e) {
       await _handToDevice(meeting, e);
     } catch (e) {
+      // Any Send may have made its meeting with only the answer lost, but
+      // not one turned away for want of a sign-in: nothing was asked.
+      if (e is! SignInNeedsConsent && e is! MeetLinkNeedsConsent) {
+        _failedSends.add(meeting);
+      }
       if (!mounted) return;
       // Every failure the calendars throw on purpose already carries a
       // sentence written for a person; the rest is kept whole for a report.

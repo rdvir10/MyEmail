@@ -71,8 +71,13 @@ class FilesBridge(
 
     /**
      * Something shared to this app from another: files under EXTRA_STREAM,
-     * text under EXTRA_TEXT, a subject if the sender gave one. Copied in
-     * now, while the grant that came with the intent still holds.
+     * text under EXTRA_TEXT, a subject and recipients if the sender gave
+     * them. Copied in now, while the grant that came with the intent still
+     * holds.
+     *
+     * Or an address tapped in another app, a mailto: link to write to,
+     * which Dart reads. Files come only with a share: a link can be any web
+     * page's.
      *
      * Kept for Dart to collect on a cold start, and pushed straight across
      * when the app was already running.
@@ -80,24 +85,37 @@ class FilesBridge(
     fun takeShare(intent: Intent?, pushNow: Boolean) {
         if (intent == null) return
         val action = intent.action
-        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+        // VIEW only on a mailto: link. The sign-in's way back is a VIEW as
+        // well, on a scheme of its own, and is MainActivity's.
+        val mailto = intent.data?.takeIf { it.scheme.equals("mailto", ignoreCase = true) }
+        val sharing = action == Intent.ACTION_SEND || action == Intent.ACTION_SEND_MULTIPLE
+        val writing = mailto != null &&
+            (action == Intent.ACTION_SENDTO || action == Intent.ACTION_VIEW)
+        if (!sharing && !writing) return
 
         val uris = mutableListOf<Uri>()
         if (action == Intent.ACTION_SEND) {
             IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
                 ?.let { uris.add(it) }
-        } else {
+        } else if (action == Intent.ACTION_SEND_MULTIPLE) {
             IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
                 ?.let { uris.addAll(it) }
         }
-        intent.clipData?.let { clip ->
-            for (i in 0 until clip.itemCount) {
-                clip.getItemAt(i).uri?.let { if (it !in uris) uris.add(it) }
+        if (sharing) {
+            intent.clipData?.let { clip ->
+                for (i in 0 until clip.itemCount) {
+                    clip.getItemAt(i).uri?.let { if (it !in uris) uris.add(it) }
+                }
             }
         }
 
-        val text = intent.getStringExtra(Intent.EXTRA_TEXT)
-        val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)
+        // As CharSequences: text with styling in it (Html.fromHtml) is not
+        // a String, and asked for as one it came as nothing at all.
+        val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+        val subject = intent.getCharSequenceExtra(Intent.EXTRA_SUBJECT)?.toString()
+        val addressedTo = addresses(intent, Intent.EXTRA_EMAIL)
+        val copiedTo = addresses(intent, Intent.EXTRA_CC)
+        val blindCopiedTo = addresses(intent, Intent.EXTRA_BCC)
         // The same intent is not a share twice: a rotation hands the
         // activity its launching intent again. Not enough on its own, as
         // Android keeps a copy of the intent; see MainActivity.
@@ -109,6 +127,10 @@ class FilesBridge(
                 "skipped" to incoming.skipped,
                 "text" to text,
                 "subject" to subject,
+                "to" to addressedTo,
+                "cc" to copiedTo,
+                "bcc" to blindCopiedTo,
+                "mailto" to mailto?.toString(),
             )
             if (pushNow) {
                 channel.invokeMethod("shared", share)
@@ -120,6 +142,13 @@ class FilesBridge(
             }
         }
     }
+
+    /// The addresses under [name]: an array of them, as Android documents
+    /// it, or one string, as some apps send it all the same.
+    private fun addresses(intent: Intent, name: String): List<String> =
+        (intent.getStringArrayExtra(name)?.toList()
+            ?: listOfNotNull(intent.getStringExtra(name)))
+            .filterNot { it.isNullOrBlank() }
 
     /// Called when the app comes back to the front: a platform view added
     /// while it was away — a WebView opening a message — is added above
@@ -504,15 +533,24 @@ class FilesBridge(
      * except for the folders it shares on purpose: either would let another
      * app have the mail database or the stored sign-ins attached to a new
      * message, next to text of its choosing, one tap from being sent.
+     *
+     * The provider is known by its name as Android finds it. A "0@" before
+     * the name says which user it is on, and Android drops it on the way
+     * to the provider: compared as written, content://0@ and this app's
+     * own name passed for someone else's provider.
      */
     private fun mayCopyIn(uri: Uri): Boolean {
         if (uri.scheme != ContentResolver.SCHEME_CONTENT) return false
-        return when (uri.authority) {
-            null -> false
-            "${activity.packageName}.files", "${activity.packageName}.updates" ->
-                isSharedCacheFile(uri)
-            else -> true
+        val name = uri.authority?.substringAfterLast('@')
+        if (name.isNullOrEmpty()) return false
+        if (name == authority || name == "${activity.packageName}.updates") {
+            return isSharedCacheFile(uri)
         }
+        // Any other provider of this app's own, a plugin's, is no file of
+        // another app's either. Android says whose it is; another app's
+        // may not be visible to this one, and is let through.
+        return activity.packageManager.resolveContentProvider(name, 0)
+            ?.packageName != activity.packageName
     }
 
     /**

@@ -98,6 +98,20 @@
                 <category android:name="android.intent.category.DEFAULT"/>
                 <data android:mimeType="*/*"/>
             </intent-filter>
+            <!-- An address tapped in another app, a browser, or a message
+                 here: a mailto: link becomes a new message to it. SENDTO
+                 is what apps send; VIEW is a link in a page. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SENDTO"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:scheme="mailto"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="mailto"/>
+            </intent-filter>
         </activity>
         <!-- A way back from the browser after a Google sign-in: the app's
              Google client ID reversed as a URI scheme. The loopback address

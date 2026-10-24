@@ -12,6 +12,7 @@ import '../../domain/mail_message.dart';
 import '../../state/attachment_providers.dart';
 import '../../state/display_providers.dart';
 import '../common/bottom_message.dart';
+import '../compose/open_compose.dart';
 import 'attachment_bar.dart' show attachmentIcon, showDefaultApp;
 import 'attachment_save.dart';
 import 'date_format.dart';
@@ -150,6 +151,7 @@ class AttachedMessageScreen extends ConsumerWidget {
                     html: html,
                     inlinePictures: m.inlinePictures,
                     showImages: ref.watch(displayProvider).alwaysShowImages,
+                    onMailto: (link) => openMailto(context, ref, link),
                   )
                 : SingleChildScrollView(
                     padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),

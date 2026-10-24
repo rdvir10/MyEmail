@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/foundation.dart';
 
 import 'mail_message.dart';
@@ -22,6 +24,8 @@ class MeetingDraft {
     this.timeZone,
     this.online,
     this.prepared,
+    this.transactionId,
+    this.changedSinceFailedSend = false,
   });
 
   /// Whose calendar it goes on, and who the invitations come from.
@@ -74,6 +78,49 @@ class MeetingDraft {
           prepared!.kind == online
       ? prepared
       : null;
+
+  /// A key for one meeting, the same through every Send the screen takes,
+  /// made by [newTransactionId]. A Send tapped again after an answer that
+  /// never came reaches a calendar that already made the event and sent
+  /// the invitations; given the key again, it answers with that event
+  /// rather than making a second and inviting everyone twice. Graph's
+  /// `transactionId`, and the event's id on Google. Null where nothing
+  /// gave one; each create then has one of its own.
+  final String? transactionId;
+
+  /// 32 random lowercase hex digits: what Graph takes as a transaction id,
+  /// and within what Google takes as an event id it is given.
+  static String newTransactionId() {
+    final random = Random.secure();
+    return [
+      for (var i = 0; i < 16; i++)
+        random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ].join();
+  }
+
+  /// Whether a Send of this meeting failed before, and the meeting has
+  /// been changed since. The calendar may have made what that Send asked
+  /// for, invitations and all, with only its answer lost, and it answers
+  /// [transactionId] with that meeting as it was then. Told this, the
+  /// calendar brings the meeting up to date and tells everyone on it;
+  /// otherwise the screen said "Invitation sent" over a change that never
+  /// reached the calendar, nor anyone added since.
+  final bool changedSinceFailedSend;
+
+  /// Whether [other] is this meeting to everyone on it: the same account,
+  /// title, people, times, place, notes and link. What was made ahead of
+  /// Send, and the key, are how it is sent, not what.
+  bool sameMeetingAs(MeetingDraft other) =>
+      other.accountId == accountId &&
+      other.title == title &&
+      listEquals(other.attendees, attendees) &&
+      other.start == start &&
+      other.end == end &&
+      other.allDay == allDay &&
+      other.location == location &&
+      other.notes == notes &&
+      other.timeZone == timeZone &&
+      other.online == online;
 
   bool get hasAttendees => attendees.isNotEmpty;
 

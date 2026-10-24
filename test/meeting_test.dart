@@ -64,6 +64,8 @@ void main() {
     String? timeZone = 'Asia/Jerusalem',
     OnlineMeetingKind? online,
     PreparedMeeting? prepared,
+    String? transactionId,
+    bool changedSinceFailedSend = false,
   }) =>
       MeetingDraft(
         accountId: accountId,
@@ -77,6 +79,8 @@ void main() {
         timeZone: timeZone,
         online: online,
         prepared: prepared,
+        transactionId: transactionId,
+        changedSinceFailedSend: changedSinceFailedSend,
       );
 
   http.Response json(Object body, [int status = 200]) =>
@@ -256,6 +260,37 @@ void main() {
       expect(dayAfter(DateTime.utc(2026, 2, 28)), DateTime.utc(2026, 3, 1));
       expect(dayAfter(DateTime.utc(2026, 2, 28)).isUtc, isTrue);
     });
+
+    test('is the same meeting whatever its key or what was made ahead, and '
+        'another for any change to it', () {
+      final first = meeting(transactionId: 'a');
+      expect(first.sameMeetingAs(meeting(transactionId: 'b')), isTrue);
+      expect(
+        first.sameMeetingAs(meeting(
+          prepared: const PreparedMeeting(
+            accountId: 'acct-ms',
+            kind: OnlineMeetingKind.teams,
+            joinUrl: 'https://teams.microsoft.com/l/x',
+            inviteText: '',
+          ),
+        )),
+        isTrue,
+      );
+      for (final changed in [
+        meeting(accountId: 'acct-g'),
+        meeting(title: 'Q4 review'),
+        meeting(attendees: const [MailAddress(email: 'dana@example.com')]),
+        meeting(start: DateTime(2026, 10, 1, 8)),
+        meeting(end: DateTime(2026, 10, 1, 11)),
+        meeting(allDay: true),
+        meeting(location: 'Room 5'),
+        meeting(notes: ''),
+        meeting(timeZone: null),
+        meeting(online: OnlineMeetingKind.teams),
+      ]) {
+        expect(first.sameMeetingAs(changed), isFalse);
+      }
+    });
   });
 
   group('GraphCalendarApi', () {
@@ -381,6 +416,125 @@ void main() {
 
       expect(sent, hasLength(2));
       expect(slept, [const Duration(seconds: 3)]);
+    });
+
+    test('sent again by a second Send, it carries the same transaction id, '
+        'so Graph makes one event and one set of invitations', () async {
+      // The first answer never came: Exchange made the event and invited
+      // everyone, and the screen said it could not reach Microsoft.
+      var posts = 0;
+      final client = api((_) async => ++posts == 1
+          ? throw http.ClientException('Connection closed')
+          : json({'id': 'evt-1'}, 201));
+      final key = MeetingDraft.newTransactionId();
+      await expectLater(
+        client.createEvent(meeting(transactionId: key)),
+        throwsA(isA<ConnectionFailed>()),
+      );
+      final created = await client.createEvent(meeting(transactionId: key));
+
+      String transactionIdOf(http.Request request) =>
+          (jsonDecode(request.body) as Map)['transactionId'] as String;
+      expect(sent.map(transactionIdOf), [key, key]);
+      expect(created.id, 'evt-1');
+    });
+
+    test('with no key of its own, a create is known by one all the same, the '
+        'same through a throttle', () async {
+      var posts = 0;
+      await api((_) async => ++posts == 1
+          ? http.Response('', 503)
+          : json({'id': 'evt-1'}, 201)).createEvent(meeting());
+
+      String transactionIdOf(http.Request request) =>
+          (jsonDecode(request.body) as Map)['transactionId'] as String;
+      expect(sent, hasLength(2));
+      expect(transactionIdOf(sent.first), matches(RegExp(r'^[0-9a-f]{32}$')));
+      expect(transactionIdOf(sent.last), transactionIdOf(sent.first));
+    });
+
+    // The Send that failed made the meeting after all, and Ron then moved
+    // it and asked someone else. Graph answers the key with the meeting as
+    // it was: without the patch the screen said "Invitation sent" over a
+    // change that never reached the calendar, nor the person added.
+    test('changed since a Send that failed, the event Graph answers with is '
+        'brought up to date', () async {
+      final created = await api((request) async => request.method == 'POST'
+              ? json({
+                  'id': 'evt-1',
+                  'subject': 'Q3 review',
+                  'isOnlineMeeting': false,
+                }, 201)
+              : json({'id': 'evt-1', 'subject': 'Q4 review'}))
+          .createEvent(meeting(
+        title: 'Q4 review',
+        attendees: const [
+          MailAddress(email: 'dana@example.com', name: 'Dana Levi'),
+          MailAddress(email: 'lee@example.com'),
+        ],
+        start: DateTime(2026, 10, 2, 9),
+        end: DateTime(2026, 10, 2, 10),
+        location: '',
+        transactionId: 'key-1',
+        changedSinceFailedSend: true,
+      ));
+
+      expect(sent.map((r) => r.method), ['POST', 'PATCH']);
+      final patch = sent.last;
+      expect(patch.url.toString(),
+          'https://graph.microsoft.com/v1.0/me/events/evt-1');
+      final body = jsonDecode(patch.body) as Map;
+      expect(body['subject'], 'Q4 review');
+      expect(body['start'],
+          {'dateTime': '2026-10-02T09:00:00', 'timeZone': 'Asia/Jerusalem'});
+      expect(
+        (body['attendees'] as List)
+            .map((a) => (a as Map)['emailAddress']['address']),
+        ['dana@example.com', 'lee@example.com'],
+      );
+      expect(body['body'],
+          {'contentType': 'text', 'content': 'Bring the numbers.'});
+      expect(body['location'], {'displayName': ''},
+          reason: 'the room the failed Send named is taken off');
+      expect(body, isNot(contains('transactionId')));
+      expect(body, isNot(contains('isOnlineMeeting')),
+          reason: 'a patch never turns a link off');
+      expect(created.id, 'evt-1');
+    });
+
+    test('changed since, a Teams meeting made at Send keeps the body '
+        'Exchange wrote', () async {
+      final created = await api((request) async => request.method == 'POST'
+              ? json({
+                  'id': 'evt-1',
+                  'isOnlineMeeting': true,
+                  'onlineMeeting': {'joinUrl': teamsJoin},
+                  'body': {'contentType': 'html', 'content': teamsBody},
+                }, 201)
+              : json({
+                  'id': 'evt-1',
+                  'isOnlineMeeting': true,
+                  'onlineMeeting': {'joinUrl': teamsJoin},
+                }))
+          .createEvent(
+        meeting(
+          title: 'Q4 review',
+          location: '',
+          online: OnlineMeetingKind.teams,
+          transactionId: 'key-1',
+          changedSinceFailedSend: true,
+        ),
+        onlineMeetingProvider: 'teamsForBusiness',
+      );
+
+      final body = jsonDecode(sent.last.body) as Map;
+      expect(sent.last.method, 'PATCH');
+      expect(body['subject'], 'Q4 review');
+      expect(body, isNot(contains('body')));
+      expect(body, isNot(contains('location')),
+          reason: "Exchange's own place for a Teams meeting stands");
+      expect(body['isOnlineMeeting'], isTrue);
+      expect(created.joinUrl, teamsJoin);
     });
 
     test('a forbidden calendar names the administrator', () async {
@@ -1308,6 +1462,177 @@ void main() {
       expect((jsonDecode(sent.single.body) as Map).containsKey('conferenceData'),
           isFalse);
       expect(created.joinUrl, isNull);
+    });
+
+    test('the event is given its id by the meeting, so a second Send makes '
+        'no second event', () async {
+      // Google made the event and sent the invitations; the answer was
+      // lost, and Send was tapped again.
+      final key = MeetingDraft.newTransactionId();
+      final created = await api((request) async => request.method == 'POST'
+              ? json({
+                  'error': {
+                    'code': 409,
+                    'message': 'The requested identifier already exists.',
+                    'errors': [
+                      {'domain': 'global', 'reason': 'duplicate'},
+                    ],
+                  }
+                }, 409)
+              : json({
+                  'id': key,
+                  'status': 'confirmed',
+                  'conferenceData': {
+                    'entryPoints': [
+                      {
+                        'entryPointType': 'video',
+                        'uri': 'https://meet.google.com/abc-defg-hij',
+                      },
+                    ],
+                  },
+                }))
+          .createEvent(meeting(
+        accountId: 'acct-g',
+        online: OnlineMeetingKind.googleMeet,
+        transactionId: key,
+      ));
+
+      expect((jsonDecode(sent.first.body) as Map)['id'], key);
+      expect(sent.map((r) => r.method), ['POST', 'GET']);
+      expect(sent.last.url.path, endsWith('/events/$key'));
+      expect(created.id, key);
+      expect(created.joinUrl, 'https://meet.google.com/abc-defg-hij');
+    });
+
+    test('a duplicate whose event was deleted since is still refused',
+        () async {
+      final key = MeetingDraft.newTransactionId();
+      await expectLater(
+        api((request) async => request.method == 'POST'
+            ? json({
+                'error': {
+                  'code': 409,
+                  'message': 'The requested identifier already exists.',
+                }
+              }, 409)
+            : json({'id': key, 'status': 'cancelled'}))
+            .createEvent(meeting(transactionId: key)),
+        throwsA(isA<ConnectionFailed>().having((e) => e.message, 'message',
+            contains('already exists'))),
+      );
+    });
+
+    test('with no key of its own, the event is given an id all the same',
+        () async {
+      await api((_) async => json({'id': 'evt-g'})).createEvent(meeting());
+
+      expect((jsonDecode(sent.single.body) as Map)['id'],
+          matches(RegExp(r'^[0-9a-f]{32}$')));
+    });
+
+    group('changed since a Send that failed', () {
+      const meet = 'https://meet.google.com/abc-defg-hij';
+      final duplicate = json({
+        'error': {
+          'code': 409,
+          'message': 'The requested identifier already exists.',
+        }
+      }, 409);
+      Map<String, Object?> linked(String id) => {
+            'id': id,
+            'status': 'confirmed',
+            'conferenceData': {
+              'entryPoints': [
+                {'entryPointType': 'video', 'uri': meet},
+              ],
+            },
+          };
+
+      // The Send that failed made the meeting and invited everyone; Ron
+      // then moved it and asked someone else. The event is Google's
+      // answer, and without the patch the change reached nobody.
+      test('the event that Send made is brought up to date, and everyone on '
+          'it told', () async {
+        final key = MeetingDraft.newTransactionId();
+        final created = await api((request) async => switch (request.method) {
+              'POST' => duplicate,
+              'GET' => json({...linked(key), 'summary': 'Q3 review'}),
+              _ => json({...linked(key), 'summary': 'Q4 review'}),
+            }).createEvent(meeting(
+          accountId: 'acct-g',
+          title: 'Q4 review',
+          attendees: const [
+            MailAddress(email: 'dana@example.com', name: 'Dana Levi'),
+            MailAddress(email: 'lee@example.com'),
+          ],
+          location: '',
+          online: OnlineMeetingKind.googleMeet,
+          transactionId: key,
+          changedSinceFailedSend: true,
+        ));
+
+        expect(sent.map((r) => r.method), ['POST', 'GET', 'PATCH']);
+        final patch = sent.last;
+        expect(patch.url.path, endsWith('/events/$key'));
+        expect(patch.url.queryParameters['sendUpdates'], 'all');
+        final body = jsonDecode(patch.body) as Map;
+        expect(body['summary'], 'Q4 review');
+        expect(
+          (body['attendees'] as List).map((a) => (a as Map)['email']),
+          ['dana@example.com', 'lee@example.com'],
+        );
+        expect(body['location'], '',
+            reason: 'the room the failed Send named is taken off');
+        expect(body, isNot(contains('conferenceData')),
+            reason: 'the link it has is kept, not asked for again');
+        expect(body, isNot(contains('id')));
+        expect(created.id, key);
+        expect(created.joinUrl, meet);
+      });
+
+      test('a link asked for since is made, and one no longer wanted taken '
+          'off', () async {
+        final key = MeetingDraft.newTransactionId();
+        await api((request) async => switch (request.method) {
+              'POST' => duplicate,
+              'GET' => json({'id': key, 'status': 'confirmed'}),
+              _ => json(linked(key)),
+            }).createEvent(meeting(
+          accountId: 'acct-g',
+          online: OnlineMeetingKind.googleMeet,
+          transactionId: key,
+          changedSinceFailedSend: true,
+        ));
+        final asked = jsonDecode(sent.last.body) as Map;
+        expect(asked['conferenceData']['createRequest']['conferenceSolutionKey'],
+            {'type': 'hangoutsMeet'});
+        expect(sent.last.url.queryParameters['conferenceDataVersion'], '1');
+
+        sent.clear();
+        final created = await api((request) async => switch (request.method) {
+              'POST' => duplicate,
+              'GET' => json(linked(key)),
+              _ => json({'id': key, 'status': 'confirmed'}),
+            }).createEvent(meeting(
+          accountId: 'acct-g',
+          transactionId: key,
+          changedSinceFailedSend: true,
+        ));
+        final dropped = jsonDecode(sent.last.body) as Map;
+        expect(dropped, contains('conferenceData'));
+        expect(dropped['conferenceData'], isNull);
+        expect(created.joinUrl, isNull);
+      });
+
+      test('a meeting not changed since is left as that Send made it',
+          () async {
+        final key = MeetingDraft.newTransactionId();
+        await api((request) async =>
+                request.method == 'POST' ? duplicate : json(linked(key)))
+            .createEvent(meeting(accountId: 'acct-g', transactionId: key));
+
+        expect(sent.map((r) => r.method), ['POST', 'GET']);
+      });
     });
 
     test('a refused token is refreshed once and the request sent again',

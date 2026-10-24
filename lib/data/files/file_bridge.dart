@@ -31,12 +31,16 @@ class IncomingFile {
   }
 }
 
-/// What another app shared to this one.
+/// What another app shared to this one, or asked to be written: files,
+/// text, a subject, and who it is to.
 class SharedContent {
   const SharedContent({
     this.files = const [],
     this.text,
     this.subject,
+    this.to = const [],
+    this.cc = const [],
+    this.bcc = const [],
     this.skipped = 0,
   });
 
@@ -44,11 +48,24 @@ class SharedContent {
   final String? text;
   final String? subject;
 
+  /// Who it is to, as the other app wrote them: an address each, or
+  /// several with commas between, with or without a name in front. A
+  /// calendar's "Email guests" hands them over with the share, and an
+  /// address tapped in a browser comes as a mailto: link.
+  final List<String> to;
+  final List<String> cc;
+  final List<String> bcc;
+
   /// Files that were shared and could not be read: see [skippedFiles].
   final int skipped;
 
+  bool get hasRecipients => to.isNotEmpty || cc.isNotEmpty || bcc.isNotEmpty;
+
   bool get isEmpty =>
-      files.isEmpty && (text == null || text!.trim().isEmpty);
+      files.isEmpty &&
+      (text == null || text!.trim().isEmpty) &&
+      subject == null &&
+      !hasRecipients;
 
   static SharedContent? fromMap(Object? value) {
     if (value is! Map) return null;
@@ -56,17 +73,95 @@ class SharedContent {
       for (final item in (value['files'] as List? ?? const []))
         ?IncomingFile.fromMap(item),
     ];
-    final text = value['text'];
-    final subject = value['subject'];
+    final mailto = value['mailto'];
+    final link = mailto is String ? MailtoLink.parse(mailto) : null;
+    String? given(Object? v) => v is String && v.trim().isNotEmpty ? v : null;
+    List<String> addresses(Object? v) => [
+          for (final a in v is List ? v : const [])
+            if (a is String && a.trim().isNotEmpty) a.trim(),
+        ];
     final content = SharedContent(
       files: files,
-      text: text is String && text.trim().isNotEmpty ? text : null,
-      subject: subject is String && subject.trim().isNotEmpty ? subject : null,
+      // What the other app put beside the link is what it meant, where it
+      // put anything: Android's own words for it over the link's.
+      text: given(value['text']) ?? given(link?.body),
+      subject: given(value['subject']) ?? given(link?.subject),
+      to: [...?link?.to, ...addresses(value['to'])],
+      cc: [...?link?.cc, ...addresses(value['cc'])],
+      bcc: [...?link?.bcc, ...addresses(value['bcc'])],
       skipped: skippedFiles(value),
     );
     // A share of nothing but files that could not be read is still worth
     // hearing about: it is the only way to say so.
     return content.isEmpty && content.skipped == 0 ? null : content;
+  }
+}
+
+/// A mailto: link, read as RFC 6068 has it: addresses before the `?`, then
+/// headers. Read by hand rather than as a [Uri]'s query, which takes `+`
+/// for a space; in a mailto: link it is a `+`, as in ron+work@example.com.
+class MailtoLink {
+  const MailtoLink({
+    this.to = const [],
+    this.cc = const [],
+    this.bcc = const [],
+    this.subject,
+    this.body,
+  });
+
+  final List<String> to;
+  final List<String> cc;
+  final List<String> bcc;
+  final String? subject;
+  final String? body;
+
+  /// Null for anything that is not a mailto: link. Headers other than
+  /// these are left out: none of them is for a new message to take.
+  static MailtoLink? parse(String link) {
+    if (!link.toLowerCase().startsWith('mailto:')) return null;
+    final rest = link.substring('mailto:'.length);
+    final ask = rest.indexOf('?');
+    final path = ask < 0 ? rest : rest.substring(0, ask);
+    final to = <String>[if (path.trim().isNotEmpty) _decode(path).trim()];
+    final cc = <String>[];
+    final bcc = <String>[];
+    String? subject;
+    String? body;
+    if (ask >= 0) {
+      for (final field in rest.substring(ask + 1).split('&')) {
+        final equals = field.indexOf('=');
+        if (equals <= 0) continue;
+        final value = _decode(field.substring(equals + 1));
+        switch (_decode(field.substring(0, equals)).toLowerCase()) {
+          case 'to' when value.trim().isNotEmpty:
+            to.add(value.trim());
+          case 'cc' when value.trim().isNotEmpty:
+            cc.add(value.trim());
+          case 'bcc' when value.trim().isNotEmpty:
+            bcc.add(value.trim());
+          case 'subject':
+            subject = value;
+          case 'body':
+            // Lines end in CRLF on the wire, and in a newline here.
+            body = value.replaceAll('\r\n', '\n');
+        }
+      }
+    }
+    return MailtoLink(to: to, cc: cc, bcc: bcc, subject: subject, body: body);
+  }
+
+  /// Percent-decoded, or as it came where the encoding is broken: a link
+  /// written by hand is still worth what can be read of it. A stray `%` is
+  /// an ArgumentError and bytes that are not UTF-8 a FormatException; let
+  /// through, either one lost the whole link, and the share it came with.
+  static String _decode(String s) {
+    try {
+      return Uri.decodeComponent(s);
+    } on ArgumentError {
+      return s;
+    } on FormatException {
+      return s;
+    }
   }
 }
 

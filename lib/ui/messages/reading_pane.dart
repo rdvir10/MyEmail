@@ -451,6 +451,8 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
         showImages: _showsImages,
         inlinePictures: watchInlinePictures(ref, widget.message.id, html),
         senderEmail: widget.message.from.email,
+        onMailto: (link) => openMailto(context, ref, link,
+            accountId: widget.message.accountId),
         onTrust: (entry) {
           ref.read(trustedSendersProvider.notifier).trust(entry);
           ScaffoldMessenger.maybeOf(context)

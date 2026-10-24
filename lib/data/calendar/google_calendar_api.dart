@@ -60,7 +60,9 @@ class GoogleCalendarApi {
   /// A meeting held online asks for a Meet link with it. The ask travels in
   /// the event, and `conferenceDataVersion=1` on the request is what makes
   /// the API read it and answer with the link; without it the ask is
-  /// dropped without a word.
+  /// dropped without a word. A meeting changed since a Send of it failed
+  /// ([MeetingDraft.changedSinceFailedSend]) has the event that Send made,
+  /// if it did, brought up to date.
   Future<CreatedMeeting> createEvent(MeetingDraft meeting) async {
     final uri = meeting.isOnline
         ? eventsUri.replace(queryParameters: {
@@ -68,14 +70,30 @@ class GoogleCalendarApi {
             'conferenceDataVersion': '1',
           })
         : eventsUri;
+    // The event's id is chosen here, so that a Send tapped again after an
+    // answer that never came is refused as a duplicate rather than making
+    // a second event and inviting everyone twice.
+    final key = meeting.transactionId ?? MeetingDraft.newTransactionId();
     // Built once: a try sent again after a refused token asks for the same
     // link, and Google makes one link for one ask.
-    final body = jsonEncode(eventJson(meeting));
+    final body = jsonEncode({...eventJson(meeting), 'id': key});
     final response = await _authorised(
       () => http.Request('POST', uri)
         ..headers['Content-Type'] = 'application/json'
         ..body = body,
     );
+    if (response.statusCode == 409) {
+      // Made by the Send before, invitations and all: that is the answer,
+      // once it has what was changed since. One deleted since is not, and
+      // the refusal stands.
+      final made = await _event(key);
+      if (made != null && made['status'] != 'cancelled') {
+        if (meeting.changedSinceFailedSend) {
+          return _bringUpToDate(key, made, meeting);
+        }
+        return CreatedMeeting(id: key, joinUrl: _joinUrlOf(made));
+      }
+    }
     if (response.statusCode >= 400) throw _failureFor(response);
     final json = _jsonOf(response);
     final id = json['id'];
@@ -174,22 +192,10 @@ class GoogleCalendarApi {
         _joinUrlOf(current) == null) {
       throw const PreparedMeetingLost('the event was deleted');
     }
-    final fields = eventJson(meeting)..remove('conferenceData');
+    final fields = _patchOf(meeting);
     // A meeting now: reminded of as the calendar reminds, and busy.
     fields['reminders'] = {'useDefault': true};
     fields['transparency'] = 'opaque';
-    // Emptied as well as filled: the event had none, but a patch leaves out
-    // only what it is not given.
-    fields['description'] = meeting.notes;
-    fields['location'] = meeting.location.trim();
-    // A patch merges into what the event has, and All day may have changed
-    // since it was made: the other way of giving a time is emptied, or the
-    // event holds a date and a time at once and Google refuses it.
-    for (final key in const ['start', 'end']) {
-      fields[key] = meeting.allDay
-          ? {...fields[key] as Map, 'dateTime': null, 'timeZone': null}
-          : {...fields[key] as Map, 'date': null};
-    }
     final body = jsonEncode(fields);
     final response = await _authorised(
       () => http.Request(
@@ -207,6 +213,59 @@ class GoogleCalendarApi {
       id: id,
       joinUrl: _joinUrlOf(_jsonOf(response)) ?? prepared.joinUrl,
     );
+  }
+
+  /// [made], the event a Send that failed made after all, given everything
+  /// [meeting] has now, and everyone on it told: added, taken off, or sent
+  /// the change. The Meet link it has is kept; one asked for since is made,
+  /// and one no longer wanted is taken off.
+  Future<CreatedMeeting> _bringUpToDate(
+    String id,
+    Map<String, Object?> made,
+    MeetingDraft meeting,
+  ) async {
+    final fields = _patchOf(meeting);
+    final linked = _joinUrlOf(made) != null;
+    if (meeting.isOnline && !linked) {
+      fields['conferenceData'] = eventJson(meeting)['conferenceData'];
+    } else if (!meeting.isOnline && linked) {
+      fields['conferenceData'] = null;
+    }
+    final body = jsonEncode(fields);
+    final response = await _authorised(
+      () => http.Request(
+        'PATCH',
+        _eventsAt(id, {'sendUpdates': 'all', 'conferenceDataVersion': '1'}),
+      )
+        ..headers['Content-Type'] = 'application/json'
+        ..body = body,
+    );
+    if (response.statusCode >= 400) throw _failureFor(response);
+    return CreatedMeeting(
+      id: id,
+      joinUrl: meeting.isOnline
+          ? _joinUrlOf(_jsonOf(response)) ?? _joinUrlOf(made)
+          : null,
+    );
+  }
+
+  /// [meeting] as a patch to an event made already: [eventJson] less the
+  /// ask for a link, which the event has or is given on its own.
+  static Map<String, Object?> _patchOf(MeetingDraft meeting) {
+    final fields = eventJson(meeting)..remove('conferenceData');
+    // Emptied as well as filled: a patch leaves out only what it is not
+    // given, and notes or a place the event had would stay.
+    fields['description'] = meeting.notes;
+    fields['location'] = meeting.location.trim();
+    // A patch merges into what the event has, and All day may have changed
+    // since it was made: the other way of giving a time is emptied, or the
+    // event holds a date and a time at once and Google refuses it.
+    for (final key in const ['start', 'end']) {
+      fields[key] = meeting.allDay
+          ? {...fields[key] as Map, 'dateTime': null, 'timeZone': null}
+          : {...fields[key] as Map, 'date': null};
+    }
+    return fields;
   }
 
   /// Delete an event [createShell] made, telling nobody, provided nobody is

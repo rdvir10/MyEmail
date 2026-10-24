@@ -301,6 +301,22 @@ List<MailAddress> parseAddresses(String raw) {
   return result;
 }
 
+/// Who a new message is to when another app or a mailto: link says so:
+/// [to], [cc] and [bcc] as such lists come, an address each or several
+/// with commas between, and each address once, ignoring case, in the first
+/// of the three that names it. Apps often name one twice: a "Send feedback"
+/// puts it in the link and in the list beside it, and the message opened
+/// with it twice in To.
+({List<MailAddress> to, List<MailAddress> cc, List<MailAddress> bcc})
+    recipientsOnce(List<String> to, List<String> cc, List<String> bcc) {
+  final seen = <String>{};
+  List<MailAddress> once(List<String> given) => [
+        for (final a in parseAddresses(given.join(', ')))
+          if (seen.add(a.email.toLowerCase())) a,
+      ];
+  return (to: once(to), cc: once(cc), bcc: once(bcc));
+}
+
 /// What a recipients field shows for a parsed list.
 String formatAddresses(List<MailAddress> addresses) => addresses
     .map((a) => formatRecipient(a.name, a.email))

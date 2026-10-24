@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../../data/files/file_bridge.dart' show MailtoLink;
 import '../../domain/html_safety.dart';
 import '../../domain/message_colours.dart';
 import '../../domain/trusted_senders.dart';
@@ -24,6 +25,7 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 ///    on the message is handed to the system browser or mail app, so a link
 ///    can never replace the message with a page that looks like one; one
 ///    nobody tapped for is dropped, because the message started it by itself.
+///    A mailto: link tapped is a new message here, where [onMailto] says so.
 ///  * `<meta>` and `<base>` removed. A `<meta http-equiv=refresh>` works with
 ///    JavaScript off, and used to open the sender's page in the browser the
 ///    moment a message was opened, images blocked or not.
@@ -39,6 +41,7 @@ class HtmlBodyView extends StatefulWidget {
     this.showImages = false,
     this.senderEmail,
     this.onTrust,
+    this.onMailto,
     this.inlinePictures = const {},
   });
 
@@ -62,6 +65,16 @@ class HtmlBodyView extends StatefulWidget {
   /// `@`. The screen above decides what trusting means and where it is
   /// kept; this only asks.
   final void Function(String entry)? onTrust;
+
+  /// Write to whoever a mailto: link tapped in the message names. Null
+  /// hands the link to Android like any other.
+  ///
+  /// Handed to Android, with this app the one mailto: links open, a link
+  /// tapped in a message's own window would start a second copy of the
+  /// whole app inside that window: the window is a task of its own, and
+  /// Android starts the app's main screen anew in the task a link is
+  /// tapped from.
+  final void Function(MailtoLink link)? onMailto;
 
   @override
   State<HtmlBodyView> createState() => HtmlBodyViewState();
@@ -106,7 +119,14 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
                 // One tap, one page: a second navigation riding on the same
                 // touch is the message's, not the reader's.
                 _touchedAt = null;
-                openExternally(Uri.parse(request.url));
+                final mailto = widget.onMailto == null
+                    ? null
+                    : MailtoLink.parse(request.url);
+                if (mailto != null) {
+                  widget.onMailto!(mailto);
+                } else {
+                  openExternally(Uri.parse(request.url));
+                }
                 return NavigationDecision.prevent;
               case PaneNavigation.drop:
                 return NavigationDecision.prevent;
@@ -519,6 +539,13 @@ String wrapHtmlForDisplay(
 }
 
 /// The `<style>` blocks from the message's head, with only their `media`.
+///
+/// Each ends where the WebView ends it: at `</style` followed by a space, a
+/// `/` or a `>`, so `</style/>` and `</style x>` too. Ended only at
+/// `</style>`, whatever the message put between the two came into the page
+/// as a sheet's text and was read there as tags: a `<meta>` refresh among
+/// them. What a sheet holds is taken through [removeDocumentDirectives] as
+/// well, as the body is.
 String _headStyles(String html) {
   final lower = html.toLowerCase();
   final bodyAt = lower.indexOf('<body');
@@ -531,13 +558,13 @@ String _headStyles(String html) {
   final media = RegExp(r'''\bmedia\s*=\s*("[^"]*"|'[^']*')''',
       caseSensitive: false);
   return [
-    for (final m in RegExp(r'<style\b([^>]*)>([\s\S]*?)</style\s*>',
+    for (final m in RegExp(r'<style\b([^>]*)>([\s\S]*?)</style[\s/>]',
             caseSensitive: false)
         .allMatches(head))
       '<style${switch (media.firstMatch(m[1]!)) {
         final a? => ' media=${a[1]}',
         null => '',
-      }}>${m[2]}</style>',
+      }}>${removeDocumentDirectives(m[2]!)}</style>',
   ].join();
 }
 

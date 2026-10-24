@@ -11,6 +11,7 @@ import '../../state/attachment_providers.dart';
 import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/trusted_senders.dart';
+import '../compose/open_compose.dart';
 import 'html_body_view.dart';
 
 /// One message, and nothing else: the body edge to edge, with Android's
@@ -214,6 +215,8 @@ class _FullScreenMessageState extends ConsumerState<FullScreenMessage> {
         showImages: showImages,
         inlinePictures: watchInlinePictures(ref, widget.message.id, html),
         senderEmail: widget.message.from.email,
+        onMailto: (link) => openMailto(context, ref, link,
+            accountId: widget.message.accountId),
         onTrust: (entry) =>
             ref.read(trustedSendersProvider.notifier).trust(entry),
       );

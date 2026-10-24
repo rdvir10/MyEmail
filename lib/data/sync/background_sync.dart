@@ -28,6 +28,7 @@ class BackgroundSync {
     required this.state,
     this.scanWindow = 30,
     this.maxPerFolder = 5,
+    this.maxShownPerAccount = 8,
     DateTime Function()? clock,
   }) : _clock = clock ?? DateTime.now;
 
@@ -43,6 +44,15 @@ class BackgroundSync {
   /// The most notifications one folder will post in one pass. A mailing-list
   /// digest arriving at 3am should not produce forty rows.
   final int maxPerFolder;
+
+  /// The most rows of one account's mail left showing; past it the oldest
+  /// come down as new ones go up. A row comes down by itself only as its
+  /// mail is dealt with, and Android shows an app 50 notifications at most
+  /// and refuses the rest without a word: new mail, and the report of a
+  /// reply that could not be sent. Unread newsletters left in the shade for
+  /// days got there. Eight for each of five accounts, with a summary each
+  /// and push mode's own, leaves room for those reports.
+  final int maxShownPerAccount;
 
   final DateTime Function() _clock;
 
@@ -167,12 +177,46 @@ class BackgroundSync {
     final batch = [
       for (final m in fresh.take(maxPerFolder)) MailNotification.forMessage(m),
     ];
+    await _makeRoom(account, batch);
     await notifier.showNewMail(
       account: account,
       folder: folder,
       notifications: batch,
     );
     return batch.length;
+  }
+
+  /// Take down the oldest of [account]'s rows that [batch] would put over
+  /// [maxShownPerAccount], before it goes up: posted first, it could be
+  /// what Android refuses. Oldest by the message's date, and one the cache
+  /// no longer has before any.
+  Future<void> _makeRoom(
+    Account account,
+    List<MailNotification> batch,
+  ) async {
+    try {
+      final coming = {for (final n in batch) n.payload};
+      // Every message id starts with its folder's, which starts with the
+      // account's (MailFolder.idFor).
+      final own = MailFolder.idFor(account.id, '');
+      final shown = [
+        for (final id in await notifier.shownMessageIds())
+          if (id.startsWith(own) && !coming.contains(id)) id,
+      ];
+      final over = shown.length + coming.length - maxShownPerAccount;
+      if (over <= 0) return;
+      final dated = [
+        for (final id in shown)
+          (id: id, date: (await engine.cachedMessage(id))?.date),
+      ];
+      final never = DateTime.fromMillisecondsSinceEpoch(0);
+      dated.sort((a, b) => (a.date ?? never).compareTo(b.date ?? never));
+      final oldest = {for (final d in dated.take(over)) d.id};
+      await notifier.withdraw(oldest.contains);
+    } catch (e) {
+      // Posted all the same: a row too many is better than new mail unsaid.
+      debugPrint('[myemail] could not make room for new mail: $e');
+    }
   }
 
   /// Take down the notifications of mail in [folder] that has been read, or

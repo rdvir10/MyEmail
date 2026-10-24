@@ -24,6 +24,7 @@ import 'package:myemail/state/calendar_providers.dart';
 import 'package:myemail/state/meeting_providers.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/put_away_providers.dart';
 import 'package:myemail/ui/accounts/google_sign_in_screen.dart';
 import 'package:myemail/ui/accounts/microsoft_sign_in_screen.dart';
 import 'package:myemail/ui/common/problem_view.dart';
@@ -32,6 +33,7 @@ import 'package:myemail/ui/messages/date_format.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
+import 'package:myemail/ui/shell/put_away.dart';
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
 import 'fakes/fake_webview.dart';
@@ -128,6 +130,18 @@ void main() {
   Future<void> send(WidgetTester tester) async {
     await tester.tap(find.byTooltip('Send'));
     await tester.pumpAndSettle();
+  }
+
+  /// The app put away, Home or another app: what it closes, as it closes
+  /// it. True where everything over the mail went.
+  Future<bool> putAway(WidgetTester tester, ProviderContainer c) async {
+    bool? all;
+    unawaited(closeForPutAway(
+      tester.state<NavigatorState>(find.byType(Navigator)),
+      c.read(putAwayGuardsProvider),
+    ).then((a) => all = a));
+    await tester.pumpAndSettle();
+    return all!;
   }
 
   /// Pick [day] of the month on show in the open date picker.
@@ -265,6 +279,117 @@ void main() {
       expect(m.allDay, isTrue);
       expect(m.start, DateTime(2026, 10, 1));
       expect(m.end, DateTime(2026, 10, 1));
+    });
+
+    testWidgets('a Send tapped again after one failed is the same meeting to '
+        'the calendar, and another screen is another', (tester) async {
+      // The calendar may have made the first and invited everyone, its
+      // answer lost on the way back: the same key has it answer with that
+      // one rather than inviting them twice.
+      final flaky = _SendFailsOnce();
+      engine = flaky;
+      await pumpScreen(tester, accountId: 'acct-ms');
+      await type(tester, 'meeting-title', 'Q3 review');
+      await type(tester, 'meeting-attendees', 'dana@example.com');
+
+      await send(tester);
+      expect(find.byType(NewMeetingScreen), findsOneWidget);
+      await send(tester);
+      expect(find.byType(NewMeetingScreen), findsNothing);
+
+      final key = flaky.tried.first.transactionId;
+      expect(key, matches(RegExp(r'^[0-9a-f]{32}$')));
+      expect(flaky.tried.map((m) => m.transactionId), [key, key]);
+      expect(flaky.tried.map((m) => m.changedSinceFailedSend), [false, false],
+          reason: 'the same meeting, with nothing to bring up to date');
+
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      await type(tester, 'meeting-title', 'Q4 review');
+      await send(tester);
+      expect(flaky.tried.last.transactionId, isNot(key));
+    });
+
+    // The calendar answers the key with the meeting the failed Send made,
+    // as it was then. Changed since, the screen said "Invitation sent" and
+    // the change, and whoever was added, never reached the calendar.
+    testWidgets('a meeting changed after a Send that failed says so, and the '
+        'calendar brings what it made up to date', (tester) async {
+      final flaky = _SendFailsOnce(times: 2);
+      engine = flaky;
+      await pumpScreen(tester, accountId: 'acct-ms');
+      await type(tester, 'meeting-title', 'Q3 review');
+      await type(tester, 'meeting-attendees', 'dana@example.com');
+      await send(tester);
+
+      await type(tester, 'meeting-attendees', 'dana@example.com, lee@example.com');
+      await send(tester);
+      // Sent again as the second stood: still unlike the first, which the
+      // calendar may be the one to have made.
+      await send(tester);
+      expect(find.byType(NewMeetingScreen), findsNothing);
+
+      expect(flaky.tried.map((m) => m.changedSinceFailedSend),
+          [false, true, true]);
+      expect(flaky.tried.last.attendees.map((a) => a.email),
+          ['dana@example.com', 'lee@example.com']);
+      expect(flaky.tried.map((m) => m.transactionId).toSet(), hasLength(1));
+    });
+
+    testWidgets('one turned away for want of a sign-in made nothing to bring '
+        'up to date', (tester) async {
+      final flaky = _SendFailsOnce(
+        error: const SignInNeedsConsent('Approval required.',
+            needsAdministrator: true),
+      );
+      engine = flaky;
+      await pumpScreen(tester, accountId: 'acct-ms');
+      await type(tester, 'meeting-title', 'Q3 review');
+      await type(tester, 'meeting-attendees', 'dana@example.com');
+      await send(tester);
+      expect(find.textContaining('only the organisation'), findsOneWidget);
+
+      // Approved, and the meeting moved on a little meanwhile.
+      await type(tester, 'meeting-title', 'Q3 review, numbers');
+      await send(tester);
+
+      expect(find.byType(NewMeetingScreen), findsNothing);
+      expect(flaky.tried.last.changedSinceFailedSend, isFalse);
+    });
+
+    testWidgets('a time, All day or another From is something to lose too',
+        (tester) async {
+      final changes = <String, Future<void> Function()>{
+        'start': () => pickDay(tester, 'start-date', '15'),
+        'end': () => pickDay(tester, 'end-date', '2'),
+        'All day': () async {
+          await tester.tap(find.byType(Switch));
+          await tester.pumpAndSettle();
+        },
+        'From': () async {
+          await tester.tap(find.byKey(const ValueKey('meeting-from-account')));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('projects@example.com').last);
+          await tester.pumpAndSettle();
+        },
+      };
+      final c = await pumpScreen(tester);
+      expect(await putAway(tester, c), isTrue, reason: 'untouched, it goes');
+      for (final change in changes.entries) {
+        await tester.tap(find.text('open'));
+        await tester.pumpAndSettle();
+        await change.value();
+
+        expect(await putAway(tester, c), isFalse, reason: change.key);
+        expect(find.byType(NewMeetingScreen), findsOneWidget,
+            reason: change.key);
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+        expect(find.text('Discard this meeting?'), findsOneWidget,
+            reason: change.key);
+        await tester.tap(find.text('Discard'));
+        await tester.pumpAndSettle();
+      }
     });
 
     testWidgets('backing out asks only once something has been typed',
@@ -657,6 +782,25 @@ void main() {
         expect(engine.discardedMeetings.single,
             same(engine.preparedMeetings.single));
         expect(engine.meetings, isEmpty);
+      });
+
+      testWidgets('stays, and the meeting with it, when the app is put away '
+          'after only a time was picked', (tester) async {
+        // A meeting made out of a message comes with its title, notes and
+        // attendees: the time and the link can be all that is done before
+        // a look at the calendar app.
+        engine = _EachKind();
+        final c = await pumpScreen(tester, accountId: 'acct-ms');
+        await pickDay(tester, 'start-date', '15');
+        await tester.tap(online);
+        await tester.pumpAndSettle();
+
+        expect(await putAway(tester, c), isFalse);
+
+        expect(find.byType(NewMeetingScreen), findsOneWidget);
+        expect(find.text(formatDay(DateTime(2026, 10, 15))), findsNWidgets(2));
+        expect(invite, findsOneWidget);
+        expect(engine.discardedMeetings, isEmpty);
       });
 
       testWidgets('is undone when a half-written meeting is discarded, and '
@@ -1825,16 +1969,23 @@ class _SlowSend extends _EachKind {
 }
 
 /// An engine with an account of each kind whose first Send fails on the
-/// way, and whose second goes through.
+/// way, or the first [times], with [error], and whose next goes through.
 class _SendFailsOnce extends _EachKind {
-  bool _failed = false;
+  _SendFailsOnce({
+    this.times = 1,
+    this.error = const ConnectionFailed('The calendar could not be reached.'),
+  });
+
+  final int times;
+  final Exception error;
+
+  /// Every meeting Send handed over, those that failed with the rest.
+  final List<MeetingDraft> tried = [];
 
   @override
   Future<CreatedMeeting> createMeeting(MeetingDraft meeting) async {
-    if (!_failed) {
-      _failed = true;
-      throw const ConnectionFailed('The calendar could not be reached.');
-    }
+    tried.add(meeting);
+    if (tried.length <= times) throw error;
     return super.createMeeting(meeting);
   }
 }

@@ -4,10 +4,23 @@
 ///
 /// Used before a message is shown and before it is printed. A tag cut short
 /// by a `>` inside a quoted value leaves harmless text behind, never a
-/// working tag.
+/// working tag. One left open at the very end goes too: the page it is put
+/// in carries on after it, and the WebView closed it at the `>` of the
+/// `</body>` that followed.
+///
+/// Each goes for a space, not for nothing. Taken out to nothing, a tag
+/// inside another's name joined the halves around it into a working one:
+/// `<me<meta>ta http-equiv="refresh" …>` became a refresh. A tag's name
+/// ends at a space, and a `<` before one opens no tag, so nothing either
+/// side of it can join.
+///
+/// A pattern rather than a parser. The html package writes a `<style>`
+/// inside an `<svg>` back out as raw text, so a message parsed, cleaned
+/// and written out again could hand the WebView a refresh that had only
+/// been text in it.
 String removeDocumentDirectives(String html) => html.replaceAll(
-      RegExp(r'<\s*(meta|base)\b[^>]*>', caseSensitive: false),
-      '',
+      RegExp(r'<\s*(meta|base)\b[^>]*(?:>|$)', caseSensitive: false),
+      ' ',
     );
 
 /// The Content-Security-Policy a received message is shown and printed under.

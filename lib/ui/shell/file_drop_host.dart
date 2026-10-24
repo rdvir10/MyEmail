@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/files/file_bridge.dart';
 import '../../state/attachment_providers.dart';
+import '../../state/compose_providers.dart' show recipientsOnce;
 import '../../state/drop_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/message_transfer.dart';
@@ -48,13 +49,19 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
   }
 
   /// Something shared from another app is a new message holding it: files
-  /// as attachments, text as the body, a subject if one came along.
+  /// as attachments, text as the body, a subject and recipients if they
+  /// came along. A mailto: link is one too, with no files.
   Future<void> _shared(SharedContent content) async {
     if (!mounted) return;
     _sayLeftOut(content.skipped);
     final attachments = await readIncoming(content.files);
     if (!mounted) return;
-    if (attachments.isEmpty && content.text == null) return;
+    if (attachments.isEmpty &&
+        content.text == null &&
+        content.subject == null &&
+        !content.hasRecipients) {
+      return;
+    }
     // Opened from a share sheet, the app is still loading its accounts when
     // this runs, and a new message needs one to be sent from. Waiting here
     // is the difference between the message opening and "Add an account
@@ -65,10 +72,14 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
       // openCompose says what is wrong with the accounts.
     }
     if (!mounted) return;
+    final who = recipientsOnce(content.to, content.cc, content.bcc);
     await openCompose(
       context,
       ref,
       kind: ComposeKind.newMessage,
+      to: who.to,
+      cc: who.cc,
+      bcc: who.bcc,
       attachments: attachments,
       subject: content.subject,
       bodyText: content.text,

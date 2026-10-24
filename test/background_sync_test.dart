@@ -359,6 +359,39 @@ void main() {
       expect(state.watermarks.values.single, 12);
     });
 
+    // Android shows an app 50 notifications at most and refuses the rest
+    // without a word. A Gmail Inbox's newsletters, left in the shade for
+    // days, got there, and new mail stopped being announced at all.
+    test("an account's rows are kept to a few, the oldest taken down as new "
+        'mail comes', () async {
+      await addAccount();
+      await sync().run();
+      var uid = 0;
+      Future<void> pass(int arriving) async {
+        for (var i = 0; i < arriving; i++) {
+          uid++;
+          server.folder('INBOX').deliver(
+                subject: 'Newsletter $uid',
+                date: _now.subtract(Duration(minutes: 60 - uid)),
+              );
+        }
+        await sync().run();
+      }
+
+      await pass(4);
+      await pass(4);
+      expect(await notifier.shownMessageIds(), hasLength(8));
+      expect(notifier.withdrawn, isEmpty, reason: 'room for all eight');
+
+      await pass(4);
+
+      final shown = await notifier.shownMessageIds();
+      expect(shown, hasLength(8));
+      int uidOf(String id) => int.parse(id.substring(id.lastIndexOf('#') + 1));
+      expect(shown.map(uidOf), unorderedEquals([5, 6, 7, 8, 9, 10, 11, 12]));
+      expect(notifier.withdrawn.map(uidOf), unorderedEquals([1, 2, 3, 4]));
+    });
+
     test('a message read before the pass ran is not announced', () async {
       await addAccount();
       await sync().run();

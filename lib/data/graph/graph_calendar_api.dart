@@ -76,31 +76,87 @@ class GraphCalendarApi {
   /// meeting held online. Without one, Graph holds it at the calendar's
   /// default. [joinUrl] is a link made elsewhere, Google Meet's, for a
   /// meeting held there instead: the event carries it, and no Teams link
-  /// is asked for.
+  /// is asked for. A meeting changed since a Send of it failed
+  /// ([MeetingDraft.changedSinceFailedSend]) has the event Graph answers
+  /// with brought up to date.
   Future<CreatedMeeting> createEvent(
     MeetingDraft meeting, {
     String? onlineMeetingProvider,
     String? joinUrl,
   }) async {
-    final body = jsonEncode(eventJson(
-      meeting,
-      onlineMeetingProvider: onlineMeetingProvider,
-      joinUrl: joinUrl,
-    ));
+    final body = jsonEncode({
+      ...eventJson(
+        meeting,
+        onlineMeetingProvider: onlineMeetingProvider,
+        joinUrl: joinUrl,
+      ),
+      // One event and one set of invitations however often it is sent: a
+      // Send tapped again after an answer that never came, or a retry
+      // after a throttle, is known by it.
+      'transactionId': meeting.transactionId ?? _transactionId(),
+    });
     final response = await _exchange(
       () => http.Request('POST', eventsUri)
         ..headers['Content-Type'] = 'application/json'
         ..body = body,
     );
     if (response.statusCode >= 400) throw _failureFor(response);
-    final json = _jsonOf(response);
+    var json = _jsonOf(response);
     final id = json['id'];
+    if (meeting.changedSinceFailedSend && id is String && id.isNotEmpty) {
+      json = await _bringUpToDate(
+        id,
+        json,
+        meeting,
+        onlineMeetingProvider: onlineMeetingProvider,
+        joinUrl: joinUrl,
+      );
+    }
     final online = json['onlineMeeting'];
     final made = online is Map ? online['joinUrl'] : null;
     return CreatedMeeting(
       id: id is String && id.isNotEmpty ? id : null,
       joinUrl: joinUrl ?? (made is String && made.isNotEmpty ? made : null),
     );
+  }
+
+  /// [made], the event Graph answered a create with, given everything
+  /// [meeting] has now, and everyone on it told. Its event as it stands.
+  ///
+  /// Graph answers a transaction id it has seen with the event it made
+  /// then, as it was: the meeting of a Send that failed with only its
+  /// answer lost, from before the change. It does not say whether it did,
+  /// so the event is patched either way; where the failed Send made
+  /// nothing, the patch gives the event just made what it has already.
+  /// Two things a patch here never does: turn off a link the event has,
+  /// or rewrite a body that holds Exchange's Teams block, which loses the
+  /// meeting. The notes of a Teams meeting made at Send stay as they went.
+  Future<Map<String, Object?>> _bringUpToDate(
+    String id,
+    Map<String, Object?> made,
+    MeetingDraft meeting, {
+    String? onlineMeetingProvider,
+    String? joinUrl,
+  }) async {
+    final fields = eventJson(
+      meeting,
+      onlineMeetingProvider: onlineMeetingProvider,
+      joinUrl: joinUrl,
+    );
+    if (fields['isOnlineMeeting'] != true) fields.remove('isOnlineMeeting');
+    final teams = made['isOnlineMeeting'] == true && joinUrl == null;
+    if (teams) {
+      fields.remove('body');
+    } else if (!fields.containsKey('location')) {
+      // Emptied as well as filled: a patch leaves out only what it is not
+      // given, and the place the failed Send named would stay.
+      fields['location'] = {'displayName': ''};
+    }
+    final body = jsonEncode(fields);
+    final response = await _exchange(() => _patch(id, body));
+    if (response.statusCode >= 400) throw _failureFor(response);
+    final patched = _jsonOf(response);
+    return patched.isEmpty ? made : patched;
   }
 
   /// Where the calendar holds a meeting online, or null when nowhere: what

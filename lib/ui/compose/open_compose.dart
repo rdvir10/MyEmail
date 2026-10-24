@@ -4,6 +4,7 @@ import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/files/file_bridge.dart' show MailtoLink;
 import '../../domain/draft.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_message.dart';
@@ -22,7 +23,8 @@ import 'compose_screen.dart';
 /// opening an editor that then rewrites itself under the user.
 ///
 /// [to], where given, is who a new message is to: New email on the card for
-/// someone on a message.
+/// someone on a message. [cc] and [bcc] come from another app, which can
+/// say all three.
 Future<void> openCompose(
   BuildContext context,
   WidgetRef ref, {
@@ -30,6 +32,8 @@ Future<void> openCompose(
   MailMessage? original,
   String? accountId,
   List<MailAddress> to = const [],
+  List<MailAddress> cc = const [],
+  List<MailAddress> bcc = const [],
   List<DraftAttachment> attachments = const [],
   String? subject,
   String? bodyText,
@@ -59,6 +63,8 @@ Future<void> openCompose(
   if (built == null || !context.mounted) return;
   var draft = built;
   if (to.isNotEmpty) draft = draft.copyWith(to: to);
+  if (cc.isNotEmpty) draft = draft.copyWith(cc: cc);
+  if (bcc.isNotEmpty) draft = draft.copyWith(bcc: bcc);
   if (attachments.isNotEmpty) {
     draft = draft.copyWith(attachments: [...draft.attachments, ...attachments]);
   }
@@ -93,6 +99,30 @@ Future<void> openCompose(
     MaterialPageRoute<bool>(
       builder: (_) => ComposeScreen(draft: draft, disposable: disposable),
     ),
+  );
+}
+
+/// A new message from a mailto: link tapped in a message: to whoever the
+/// link names, with its subject and body, from [accountId], the account
+/// the message came to.
+Future<void> openMailto(
+  BuildContext context,
+  WidgetRef ref,
+  MailtoLink link, {
+  String? accountId,
+}) {
+  final who = recipientsOnce(link.to, link.cc, link.bcc);
+  String? given(String? v) => v != null && v.trim().isNotEmpty ? v : null;
+  return openCompose(
+    context,
+    ref,
+    kind: ComposeKind.newMessage,
+    accountId: accountId,
+    to: who.to,
+    cc: who.cc,
+    bcc: who.bcc,
+    subject: given(link.subject),
+    bodyText: given(link.body),
   );
 }
 

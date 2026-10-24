@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- What the FileProvider in AndroidManifest.xml is allowed to share, for
      both of its names: the downloaded update that apk_installer.dart writes,
-     and the attachments and incoming files under the cache directory. Mail,
-     accounts and the message database live elsewhere and are not reachable
-     through this. -->
+     and the attachments and incoming files under the cache directory. The
+     message database and the sign-ins live elsewhere. The roots are whole
+     directories, which hold the account list too, so FilesBridge.mayCopyIn
+     takes back in from another app only the cache folders handed out. -->
 <paths>
     <files-path name="updates" path="." />
     <cache-path name="update-cache" path="." />
