@@ -53,6 +53,10 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
   /// second ask does not pile on the first.
   bool _asking = false;
 
+  /// An ask of [listRefreshProvider] came while nothing was looking at the
+  /// list, and is owed to it when something looks again.
+  bool _missed = false;
+
   @override
   Future<List<MailMessage>> build() async {
     final engine = ref.watch(mailEngineProvider);
@@ -64,7 +68,30 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     // While the app is in front, now and then and after a background pass:
     // asked again in place rather than rebuilt, so a delete or a page on
     // its way is not lost to it.
-    ref.listen(listRefreshProvider, (_, _) => _askAgain(() => current));
+    //
+    // Only while something is looking at it. A list is kept once opened,
+    // and its listener went on firing after the folder was left, so every
+    // folder visited since the app last came back asked its server every
+    // minute, a renamed folder's old path and All inboxes turned off among
+    // them. A list left meanwhile asks once when it is looked at again,
+    // showing what the device has first. This build reads the device and
+    // asks the server itself, so nothing is owed to it.
+    _missed = false;
+    ref.listen(listRefreshProvider, (_, _) {
+      if (ref.isPaused) {
+        _missed = true;
+      } else {
+        _askAgain(() => current);
+      }
+    });
+    ref.onResume(() {
+      if (!_missed) return;
+      _missed = false;
+      // After the widget that looked has been built, not during it.
+      unawaited(Future.microtask(
+        () => _askAgain(() => current, storedFirst: true),
+      ));
+    });
     // Read, not watched: paging appends in place, and the depth is only
     // here so a refresh comes back as deep as the list had been scrolled
     // rather than snapping back to the first page.
@@ -109,17 +136,27 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     int changes,
     bool Function() current,
   ) async {
-    final List<MailMessage> fresh;
     try {
-      final (lists, _) = await _loadEach({for (final id in ids) id: limit});
-      // Not what is on its way out, which the server still has.
-      fresh = [
-        for (final m in _merged(lists))
-          if (!_removing.contains(m.id)) m,
-      ];
+      await _answer(ids, limit, changes, current);
     } catch (_) {
-      return;
+      // The list on screen is still worth showing.
     }
+  }
+
+  /// The server's list in place of the one shown, where it differs and
+  /// nothing has changed here meanwhile. Throws what asking threw.
+  Future<void> _answer(
+    List<String> ids,
+    int limit,
+    int changes,
+    bool Function() current,
+  ) async {
+    final (lists, _) = await _loadEach({for (final id in ids) id: limit});
+    // Not what is on its way out, which the server still has.
+    final fresh = [
+      for (final m in _merged(lists))
+        if (!_removing.contains(m.id)) m,
+    ];
     if (!current() || changes != _changes) return;
     if (!_sameList(state.value, fresh)) state = AsyncData(fresh);
   }
@@ -127,16 +164,24 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
   /// Ask the server again for the list as it stands, as deep as it has
   /// been scrolled; see [listRefreshProvider]. Quiet, as a refresh on
   /// opening is, and dropped if the list changes meanwhile.
-  Future<void> _askAgain(bool Function() current) async {
+  ///
+  /// [storedFirst] for a list looked at again after it missed an ask:
+  /// what is on the device is shown while the server is asked, as when a
+  /// list is built. The background passes store new mail all the while, and
+  /// a folder left hours earlier showed rows hours old for as long as its
+  /// server took to answer, and kept them if asking failed.
+  Future<void> _askAgain(
+    bool Function() current, {
+    bool storedFirst = false,
+  }) async {
     if (_asking || state.value == null) return;
     _asking = true;
     try {
       final changes = _changes;
-      final ids = folderId == kUnifiedInboxId
-          ? inboxIdsOf(await ref.read(foldersProvider.future))
-          : [folderId];
+      final ids = await _idsNow();
       if (!current()) return;
       final limit = pageSize * ref.read(listDepthProvider(folderId)).pages;
+      if (storedFirst) await _showStored(ids, limit, changes, current);
       await _askServer(ids, limit, changes, current);
     } catch (_) {
       // As any refresh: the list on screen is still worth showing.
@@ -144,6 +189,58 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       _asking = false;
     }
   }
+
+  /// What the device has for the list in place of the one shown, where it
+  /// differs and nothing has changed here meanwhile. Nothing stored is not
+  /// shown, as when the list is built: an empty read is no reason to blank
+  /// it before the server says so. Quiet, since the server is asked next.
+  Future<void> _showStored(
+    List<String> ids,
+    int limit,
+    int changes,
+    bool Function() current,
+  ) async {
+    final engine = ref.read(mailEngineProvider);
+    final List<MailMessage> stored;
+    try {
+      stored = [
+        for (final m in _merged(await Future.wait([
+          for (final id in ids) engine.cachedMessages(id, limit: limit),
+        ])))
+          // Not what is on its way out, as with the server's answer.
+          if (!_removing.contains(m.id)) m,
+      ];
+    } catch (_) {
+      return;
+    }
+    if (stored.isEmpty || !current() || changes != _changes) return;
+    if (!_sameList(state.value, stored)) state = AsyncData(stored);
+  }
+
+  /// Ask the server for the list now, as deep as it has been scrolled,
+  /// and wait for the answer: for Sync now and pulling the list down; see
+  /// [syncNow]. Those are over once the list has been checked. Reading
+  /// it again only drew it from what was already on the device, so the
+  /// spinner stopped before the server was asked, and the mail being
+  /// waited for came in after the app had said it was done. Unlike a
+  /// refresh, a list that could not be checked throws, so whoever asked
+  /// hears of it.
+  Future<void> checkNow() async {
+    // One that could not be read at all is built again, which with
+    // nothing stored waits for the server and throws what it threw.
+    if (state.hasError) ref.invalidateSelf();
+    await future;
+    final changes = _changes;
+    final ids = await _idsNow();
+    final limit = pageSize * ref.read(listDepthProvider(folderId)).pages;
+    await _answer(ids, limit, changes, () => ref.mounted);
+  }
+
+  /// The server folders behind this list as they are now, read rather
+  /// than watched: outside a build there is nothing to rebuild.
+  Future<List<String>> _idsNow() async => folderId == kUnifiedInboxId
+      ? inboxIdsOf(await ref.read(foldersProvider.future))
+      : [folderId];
 
   /// Each folder's messages from the server, down to its limit, or what
   /// is stored for a folder whose account did not answer. The second half

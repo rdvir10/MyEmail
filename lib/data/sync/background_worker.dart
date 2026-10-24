@@ -492,14 +492,23 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
         await liveEngine.releaseRemovedAccounts();
         // Every minute the accounts that cannot say when mail arrives;
         // everything when one that can has spoken, and every five minutes.
-        final report = mode != SyncMode.realtime || plan.nextIsFull()
+        final full = mode != SyncMode.realtime || plan.nextIsFull();
+        final report = full
             ? await sync.run()
             : await sync.run(
                 only: (a) => !CachedImapEngine.hearsNewMail(a),
                 listFolders: false,
               );
         announceBackgroundPassDone();
-        await widgets.refresh(liveEngine);
+        // From what the pass has just written, not done over again; see
+        // MailboxWidgets.refresh. After the minute check nothing at all is
+        // asked: a widget on a folder it does not sync is brought up to
+        // date by the next pass over everything, within five minutes.
+        await widgets.refresh(
+          liveEngine,
+          fromCache: !full,
+          synced: report.synced,
+        );
         await state.writeLastLivePass(DateTime.now());
         return report;
       },
@@ -649,12 +658,13 @@ Future<bool> _runOnePass() async {
     ).run();
     announceBackgroundPassDone();
 
-    // After the sync, so the numbers it writes are the ones just fetched.
-    // It never throws; see MailboxWidgets.refresh.
+    // After the sync, so the numbers it writes are the ones just fetched,
+    // and from them rather than fetched again. It never throws; see
+    // MailboxWidgets.refresh.
     await MailboxWidgets(
       surface: homeScreenSurface(),
       store: PrefsWidgetStateStore(),
-    ).refresh(engine);
+    ).refresh(engine, synced: report.synced);
 
     debugPrint('[myemail] background pass: $report');
     for (final failure in report.failures) {

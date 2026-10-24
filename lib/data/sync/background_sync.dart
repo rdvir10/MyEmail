@@ -84,6 +84,7 @@ class BackgroundSync {
     var scanned = 0;
     var unreachable = 0;
     final failures = <String>[];
+    final synced = <String>{};
 
     for (final account in accounts) {
       try {
@@ -95,6 +96,7 @@ class BackgroundSync {
           account,
           announce: prefs.notifiesFor(account.id),
           listFolders: listFolders,
+          synced: synced,
         );
         posted += result.posted;
         scanned += result.scanned;
@@ -112,6 +114,7 @@ class BackgroundSync {
       failures: failures,
       accounts: accounts.length,
       unreachable: unreachable,
+      synced: synced,
     );
   }
 
@@ -119,6 +122,7 @@ class BackgroundSync {
     Account account, {
     required bool announce,
     required bool listFolders,
+    required Set<String> synced,
   }) async {
     final saved =
         listFolders ? const <MailFolder>[] : await engine.cachedFolders(account.id);
@@ -132,6 +136,7 @@ class BackgroundSync {
     var posted = 0;
     for (final folder in inboxes) {
       posted += await _runFolder(account, folder, announce: announce);
+      synced.add(folder.id);
     }
     return (posted: posted, scanned: inboxes.length);
   }
@@ -257,6 +262,7 @@ class BackgroundSyncReport {
     this.failures = const [],
     this.accounts = 0,
     this.unreachable = 0,
+    this.synced = const {},
   });
 
   final int posted;
@@ -267,6 +273,10 @@ class BackgroundSyncReport {
   /// reach at all.
   final int accounts;
   final int unreachable;
+
+  /// The folders the pass synced, whose mail is now in the cache: see
+  /// `MailboxWidgets.refresh`.
+  final Set<String> synced;
 
   bool get ok => failures.isEmpty;
 

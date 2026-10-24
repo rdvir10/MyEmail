@@ -135,6 +135,82 @@ void main() {
           reason: 'not snapped back to the first page');
     });
 
+    test('a list nobody is looking at is not asked', () async {
+      // Kept once opened, every folder visited since the app last came
+      // back asked its server every minute: other folders, All inboxes,
+      // and the old path of a folder since renamed.
+      final engine = _GrowingEngine(inbox)..arrive(3);
+      final c = container(engine);
+      final looking = c.listen(messagesProvider(inbox), (_, _) {});
+      await c.read(messagesProvider(inbox).future);
+      looking.close();
+      final before = engine.loads;
+
+      c.read(listRefreshProvider.notifier).ping();
+      await pumpEventQueue();
+
+      expect(engine.loads, before);
+    });
+
+    test('but is asked once looked at again, having missed an ask',
+        () async {
+      final engine = _GrowingEngine(inbox)..arrive(3);
+      final c = container(engine);
+      final looking = c.listen(messagesProvider(inbox), (_, _) {});
+      await c.read(messagesProvider(inbox).future);
+      looking.close();
+      engine.arrive(1);
+      c.read(listRefreshProvider.notifier).ping();
+      await pumpEventQueue();
+      final before = engine.loads;
+
+      c.listen(messagesProvider(inbox), (_, _) {});
+      await pumpEventQueue();
+
+      expect(engine.loads - before, 1);
+      expect(subjects(c).first, 'Message 4');
+    });
+
+    test('showing first what the device was given meanwhile', () async {
+      // Mail the background passes stored while the list was left stayed
+      // hidden for as long as its server took to answer, and for good if
+      // that failed: on the tablet, a folder left hours earlier showed
+      // rows hours old.
+      final engine = _GrowingEngine(inbox)..arrive(3);
+      final c = container(engine);
+      final looking = c.listen(messagesProvider(inbox), (_, _) {});
+      await c.read(messagesProvider(inbox).future);
+      looking.close();
+      engine.arrive(1);
+      engine.stored.addAll(engine.server);
+      c.read(listRefreshProvider.notifier).ping();
+      await pumpEventQueue();
+      engine.holdLoad = Completer<void>();
+
+      c.listen(messagesProvider(inbox), (_, _) {});
+      await pumpEventQueue();
+
+      expect(subjects(c), hasLength(4));
+      expect(subjects(c).first, 'Message 4');
+      engine.holdLoad!.complete();
+      await pumpEventQueue();
+    });
+
+    test('and not when it missed nothing', () async {
+      // Walking between two folders is not a sync of each every time.
+      final engine = _GrowingEngine(inbox)..arrive(3);
+      final c = container(engine);
+      final looking = c.listen(messagesProvider(inbox), (_, _) {});
+      await c.read(messagesProvider(inbox).future);
+      looking.close();
+      final before = engine.loads;
+
+      c.listen(messagesProvider(inbox), (_, _) {});
+      await pumpEventQueue();
+
+      expect(engine.loads, before);
+    });
+
     test('the folder tree asks again as well, for its counts', () async {
       final engine = _CountingFolders();
       final c = container(engine);
@@ -225,6 +301,29 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
     });
 
+    testWidgets('put away, a background pass has nothing asked',
+        (tester) async {
+      // Push keeps the app's process alive, so its passes reached the
+      // hidden app, which listed every account's folders and resynced the
+      // open list after each one, every minute.
+      final c = await pumpShell(tester);
+      final start = c.read(listRefreshProvider);
+      goTo(tester, const [
+        AppLifecycleState.inactive,
+        AppLifecycleState.hidden,
+        AppLifecycleState.paused,
+      ]);
+      await tester.pump();
+
+      announceBackgroundPassDone();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await tester.pump();
+
+      expect(c.read(listRefreshProvider), start);
+    });
+
     testWidgets('counts its minute again from a background pass, rather than '
         'asking moments after it', (tester) async {
       final c = await pumpShell(tester);
@@ -269,6 +368,10 @@ class _GrowingEngine extends SampleMailEngine {
   final List<MailMessage> server = [];
   var _next = 1;
 
+  /// What the device has, as a background pass left it. Nothing unless a
+  /// test puts it there, so a list is built from the server.
+  final List<MailMessage> stored = [];
+
   /// How many times the server was asked for the list.
   var loads = 0;
 
@@ -298,9 +401,14 @@ class _GrowingEngine extends SampleMailEngine {
     }
   }
 
-  List<MailMessage> _page(int offset, int limit) => offset >= server.length
-      ? const []
-      : List.of(server.sublist(offset, min(server.length, offset + limit)));
+  static List<MailMessage> _page(
+    List<MailMessage> all,
+    int offset,
+    int limit,
+  ) =>
+      offset >= all.length
+          ? const []
+          : List.of(all.sublist(offset, min(all.length, offset + limit)));
 
   @override
   Future<List<MailMessage>> cachedMessages(
@@ -308,7 +416,7 @@ class _GrowingEngine extends SampleMailEngine {
     int offset = 0,
     int limit = 50,
   }) async =>
-      const [];
+      _page(stored, offset, limit);
 
   @override
   Future<List<MailMessage>> loadMessages(
@@ -318,7 +426,7 @@ class _GrowingEngine extends SampleMailEngine {
   }) async {
     loads++;
     await holdLoad?.future;
-    return _page(offset, limit);
+    return _page(server, offset, limit);
   }
 
   @override

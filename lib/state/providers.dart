@@ -247,6 +247,11 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
   /// a second ask does not pile on the first.
   bool _asking = false;
 
+  /// Each account's listing on its way, and the one waiting to follow it;
+  /// see [_reloadAccount].
+  final _listing = <String, Future<void>>{};
+  final _listingNext = <String, Future<void>>{};
+
   @override
   Future<Map<String, List<MailFolder>>> build() async {
     final engine = ref.watch(mailEngineProvider);
@@ -474,7 +479,38 @@ class Folders extends AsyncNotifier<Map<String, List<MailFolder>>> {
     }
   }
 
-  Future<void> _reloadAccount(String accountId) async {
+  /// Re-read one account's folders into the tree.
+  ///
+  /// One listing of an account at a time, and at most one waiting behind
+  /// it, which begins once that one ends and so answers every ask made
+  /// meanwhile. Marking forty messages read asked for forty listings of
+  /// the work mailbox at once, each a couple of requests to Microsoft; on
+  /// Gmail they queued on its one connection among the flags still to be
+  /// stored. Each wrote its counts whenever it finished, and an early one
+  /// finishing last put back an unread count that had since come down.
+  Future<void> _reloadAccount(String accountId) {
+    final waiting = _listingNext[accountId];
+    if (waiting != null) return waiting;
+    final running = _listing[accountId];
+    if (running == null) return _listOnce(accountId);
+    return _listingNext[accountId] = running
+        // Its failure is told to whoever asked for it.
+        .then((_) {}, onError: (Object _) {})
+        .then((_) {
+      _listingNext.remove(accountId);
+      return _listOnce(accountId);
+    });
+  }
+
+  Future<void> _listOnce(String accountId) {
+    final listing = _listAccount(accountId);
+    _listing[accountId] = listing;
+    return listing.whenComplete(() {
+      if (identical(_listing[accountId], listing)) _listing.remove(accountId);
+    });
+  }
+
+  Future<void> _listAccount(String accountId) async {
     if (state.value == null) return;
     _changes++;
     final fresh = await ref.read(mailEngineProvider).loadFolders(accountId);

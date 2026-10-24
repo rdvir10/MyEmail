@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -6,7 +8,9 @@ import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/sync_now.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 
@@ -94,6 +98,79 @@ void main() {
     expect(find.textContaining('Could not sync'), findsOneWidget);
   });
 
+  group('Sync now', () {
+    // It read the list again, which drew it from what the device already
+    // had and asked the server behind it, quietly: the spinner stopped
+    // before the mail being waited for had been looked for, and a list
+    // that could not be checked said nothing at all.
+    const inbox = 'acct-personal:INBOX';
+
+    Future<(ProviderContainer, WidgetRef)> open(WidgetTester tester) async {
+      final c = ProviderContainer(
+        overrides: [
+          uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+          mailEngineProvider.overrideWithValue(engine),
+        ],
+      );
+      addTearDown(c.dispose);
+      late WidgetRef widgetRef;
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: Consumer(builder: (context, ref, _) {
+            widgetRef = ref;
+            // The tree and the list, as on screen.
+            ref.watch(foldersProvider);
+            ref.watch(messagesProvider(inbox));
+            return const SizedBox();
+          }),
+        ),
+      );
+      await tester.pump(const Duration(seconds: 1));
+      return (c, widgetRef);
+    }
+
+    testWidgets('is over once the open list has been checked, not before',
+        (tester) async {
+      final (_, ref) = await open(tester);
+      final server = engine.holdList = Completer<void>();
+      var done = false;
+
+      unawaited(syncNow(ref, inbox).then((_) => done = true));
+      await tester.pump(const Duration(seconds: 1));
+      expect(done, isFalse, reason: 'the server has not answered for it');
+
+      server.complete();
+      await tester.pump(const Duration(seconds: 1));
+      expect(done, isTrue);
+    });
+
+    testWidgets('a list that cannot be checked says so', (tester) async {
+      final (_, ref) = await open(tester);
+      engine.listFails = inbox;
+
+      Object? thrown;
+      unawaited(syncNow(ref, inbox).catchError((Object e) => thrown = e));
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(thrown, isA<SyncIncomplete>());
+      expect('$thrown', 'Personal: The folder is not there.');
+    });
+
+    testWidgets('and an account that failed is said once, not twice',
+        (tester) async {
+      final (_, ref) = await open(tester);
+      engine.refused = 'acct-personal';
+      engine.listFails = inbox;
+
+      Object? thrown;
+      unawaited(syncNow(ref, inbox).catchError((Object e) => thrown = e));
+      await tester.pump(const Duration(seconds: 1));
+
+      expect('$thrown', 'Personal: Sign in again.');
+    });
+  });
+
   testWidgets('the indicator is there on a tablet too', (tester) async {
     // A tablet has the ribbon's Sync button, but a finger on a list still
     // expects the pull to work.
@@ -112,13 +189,23 @@ class _CountingEngine extends SampleMailEngine {
   /// An account whose folders cannot be listed: a sign-in to renew.
   String? refused;
 
+  /// A folder whose messages cannot be fetched.
+  String? listFails;
+
+  /// Held open to keep the server's answer for a list on its way.
+  Completer<void>? holdList;
+
   @override
   Future<List<MailMessage>> loadMessages(
     String folderId, {
     int offset = 0,
     int limit = 50,
-  }) {
+  }) async {
     messageLoads++;
+    await holdList?.future;
+    if (folderId == listFails) {
+      throw const AuthenticationFailed('The folder is not there.');
+    }
     return super.loadMessages(folderId, offset: offset, limit: limit);
   }
 

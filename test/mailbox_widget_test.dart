@@ -1,14 +1,25 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/account_store.dart';
+import 'package:myemail/data/cache/cache_store.dart';
+import 'package:myemail/data/credential_store.dart';
+import 'package:myemail/data/imap/cached_imap_engine.dart';
+import 'package:myemail/data/notifications/mail_notifier.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/data/sync/background_sync.dart';
+import 'package:myemail/data/sync/sync_state_store.dart';
 import 'package:myemail/data/widget/home_screen_surface.dart';
 import 'package:myemail/data/widget/mailbox_widgets.dart';
 import 'package:myemail/data/widget/widget_state_store.dart';
 import 'package:myemail/data/widget/widget_taps.dart';
+import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/mailbox_counts.dart';
+import 'package:myemail/domain/sync_prefs.dart';
 import 'package:myemail/state/folder_tree.dart' show kUnifiedInboxId;
+
+import 'fakes/fake_imap_transport.dart';
 
 /// The two numbers on the home screen, and where they come from.
 void main() {
@@ -265,6 +276,97 @@ void main() {
         MailboxWidgets(surface: _BrokenSurface(), store: store).refresh(engine),
         completes,
       );
+    });
+  });
+
+  group('after a sync pass', () {
+    // Push's minute check synced the Microsoft Inbox, then the widget
+    // listed the account's folders and synced that Inbox again, every
+    // minute, and for All inboxes every account's, Gmail's included.
+    late FakeImapTransport server;
+    late CachedImapEngine engine;
+    late FakeHomeScreenSurface surface;
+    late MemoryWidgetStateStore store;
+    late MailboxWidgets widgets;
+    late Account account;
+
+    setUp(() async {
+      server = FakeImapTransport()
+        ..folder('INBOX', role: FolderRole.inbox)
+        ..folder('Work');
+      engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => server,
+      );
+      account = await engine.addAccount(
+        displayName: 'Personal',
+        emailAddress: 'me@example.com',
+        provider: MailProvider.gmail,
+        secret: 'abcdabcdabcdabcd',
+      );
+      surface = FakeHomeScreenSurface();
+      store = MemoryWidgetStateStore()..openedAt = DateTime.utc(2000);
+      widgets = MailboxWidgets(surface: surface, store: store);
+    });
+
+    Future<BackgroundSyncReport> aPass() => BackgroundSync(
+          engine: engine,
+          notifier: FakeMailNotifier(),
+          state: MemorySyncStateStore(
+            prefs: const SyncPrefs(mode: SyncMode.periodic),
+          ),
+        ).run();
+
+    test('an Inbox it synced is counted from what it wrote', () async {
+      final inbox = '${account.id}:INBOX';
+      store.mailboxes['7'] = WidgetMailbox(folderId: inbox);
+      server.folder('INBOX').deliver(subject: 'Just in');
+      final pass = await aPass();
+      server.calls.clear();
+
+      await widgets.refresh(engine, synced: pass.synced);
+
+      expect(server.calls, isEmpty,
+          reason: 'the pass has just listed the folders and synced it');
+      expect(surface.values['count.$inbox.total'], 1);
+      expect(surface.values['count.$inbox.unread'], 1);
+      expect(surface.values['count.$inbox.new'], 1);
+    });
+
+    test('so is All inboxes', () async {
+      store.mailboxes['7'] = const WidgetMailbox(folderId: kUnifiedInboxId);
+      server.folder('INBOX').deliver(subject: 'Just in');
+      final pass = await aPass();
+      server.calls.clear();
+
+      await widgets.refresh(engine, synced: pass.synced);
+
+      expect(server.calls, isEmpty);
+      expect(surface.values['count.$kUnifiedInboxId.new'], 1);
+    });
+
+    test('a folder it did not sync is synced, but not listed again',
+        () async {
+      final work = '${account.id}:Work';
+      store.mailboxes['7'] = WidgetMailbox(folderId: work);
+      server.folder('Work').deliver(subject: 'Filed');
+      final pass = await aPass();
+      server.calls.clear();
+
+      await widgets.refresh(engine, synced: pass.synced);
+
+      expect(server.calls, isNot(contains('LIST')));
+      expect(server.calls, contains('SELECT Work'));
+      expect(surface.values['count.$work.new'], 1);
+    });
+
+    test('the pass says which folders it synced', () async {
+      final pass = await aPass();
+
+      expect(pass.synced, {'${account.id}:INBOX'},
+          reason: 'only the Inbox is watched');
     });
   });
 

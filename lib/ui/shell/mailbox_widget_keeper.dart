@@ -65,12 +65,26 @@ class _MailboxWidgetKeeperState extends ConsumerState<MailboxWidgetKeeper>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _caughtUp();
+    // Back from being away, and not merely given focus again: the shade
+    // pushed back up, or the app tapped in split screen, synced every
+    // widget's folder and moved its mark while the mail was on screen
+    // all along.
+    if (state == AppLifecycleState.resumed && _away) {
+      _away = false;
+      _caughtUp();
+    }
+    if (state == AppLifecycleState.hidden) _away = true;
     // Going away, the counts are redrawn from what the app already holds.
     // Syncing every widget's folder on the way out cost battery and data
     // for numbers that were current a moment ago.
-    if (state == AppLifecycleState.paused) _caughtUp(fromCache: true);
+    if (state == AppLifecycleState.paused) {
+      _away = true;
+      _caughtUp(fromCache: true);
+    }
   }
+
+  /// Hidden or paused since the app was last in front.
+  bool _away = false;
 
   Future<void> _caughtUp({bool fromCache = false}) async {
     // Not awaited by the caller: nothing on screen is waiting for it, and a

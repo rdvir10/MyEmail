@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -17,6 +18,7 @@ import 'package:myemail/domain/meeting.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/state/folder_tree.dart';
+import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/widget_providers.dart';
 
@@ -350,6 +352,89 @@ void main() {
     });
   });
 
+  group("an account's folders listed again", () {
+    // Marking forty messages read listed the work mailbox's folders forty
+    // times at once, and whichever listing finished last had the last word.
+    const account = 'acct-personal';
+    const inbox = 'acct-personal:INBOX';
+
+    Future<(ProviderContainer, _HeldListings)> settled() async {
+      final engine = _HeldListings();
+      final c = _container(engine: engine);
+      await c.read(foldersProvider.future);
+      // The listing on opening, let finish.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      engine.listed = 0;
+      return (c, engine);
+    }
+
+    int unreadIn(ProviderContainer c) => c
+        .read(foldersProvider)
+        .value![account]!
+        .firstWhere((f) => f.id == inbox)
+        .unreadCount;
+
+    test('one at a time, and one more for every ask made meanwhile',
+        () async {
+      final (c, engine) = await settled();
+      final folders = c.read(foldersProvider.notifier);
+      final hold = engine.holdNext = Completer<void>();
+
+      final first = folders.refreshAccount(account);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final more = [
+        for (var i = 0; i < 40; i++) folders.refreshAccount(account),
+      ];
+      hold.complete();
+      await Future.wait([first, ...more]);
+
+      expect(engine.listed, 2);
+    });
+
+    test('the listing asked for last has the last word', () async {
+      final (c, engine) = await settled();
+      final folders = c.read(foldersProvider.notifier);
+      final unread = (await engine.loadMessages(inbox, limit: 200))
+          .firstWhere((m) => !m.isRead);
+      final hold = engine.holdNext = Completer<void>();
+
+      // Listed before the message is read, and slow to answer.
+      final early = folders.refreshAccount(account);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await engine.setRead(unread.id, true);
+      final late = folders.refreshAccount(account);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      hold.complete();
+      await Future.wait([early, late]);
+
+      final server = (await engine.cachedFolders(account))
+          .firstWhere((f) => f.id == inbox);
+      expect(unreadIn(c), server.unreadCount);
+    });
+
+    test('marking ten messages read lists the folders twice, not ten times',
+        () async {
+      final (c, engine) = await settled();
+      c.listen(messagesProvider(inbox), (_, _) {});
+      final unread = [
+        for (final m in await c.read(messagesProvider(inbox).future))
+          if (!m.isRead) m,
+      ].take(10);
+      expect(unread, hasLength(10));
+      final hold = engine.holdNext = Completer<void>();
+
+      // One after another, as Mark read does with what is ticked.
+      final list = c.read(messagesProvider(inbox).notifier);
+      for (final m in unread) {
+        await list.setRead(m.id, true);
+      }
+      hold.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      expect(engine.listed, 2);
+    });
+  });
+
   group('id remapping across rename and delete', () {
     test('expand, favourite and selection follow a renamed subtree', () async {
       final c = _container();
@@ -440,4 +525,22 @@ void main() {
       );
     });
   });
+}
+
+/// The sample accounts, counting how often the personal one's folders are
+/// listed, and able to hold the next listing back after it has read them.
+class _HeldListings extends SampleMailEngine {
+  var listed = 0;
+  Completer<void>? holdNext;
+
+  @override
+  Future<List<MailFolder>> loadFolders(String accountId) async {
+    if (accountId != 'acct-personal') return super.loadFolders(accountId);
+    listed++;
+    final folders = await super.loadFolders(accountId);
+    final hold = holdNext;
+    holdNext = null;
+    await hold?.future;
+    return folders;
+  }
 }

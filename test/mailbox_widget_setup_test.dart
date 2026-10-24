@@ -380,17 +380,67 @@ void main() {
       await tester.pumpAndSettle();
 
       engine.synced.clear();
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await tester.pumpAndSettle();
-      expect(engine.synced, [inbox], reason: 'one refresh, not two');
-
-      engine.synced.clear();
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      for (final state in const [
+        AppLifecycleState.inactive,
+        AppLifecycleState.hidden,
+        AppLifecycleState.paused,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
       await tester.pumpAndSettle();
       expect(engine.synced, isEmpty,
           reason: 'on the way out the counts come from the cache');
       expect(surface.values['widget.7.folder'], inbox);
+
+      for (final state in const [
+        AppLifecycleState.hidden,
+        AppLifecycleState.inactive,
+        AppLifecycleState.resumed,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      await tester.pumpAndSettle();
+      expect(engine.synced, [inbox], reason: 'one refresh, not two');
+    });
+
+    testWidgets('focus back without going away moves nothing',
+        (tester) async {
+      // The notification shade pushed back up, or the app tapped again in
+      // split screen: the mail was on screen all along.
+      final engine = _CountingEngine();
+      final inbox = (await tester.runAsync(
+        () => engine.loadFolders('acct-personal'),
+      ))!
+          .firstWhere((f) => f.role == FolderRole.inbox)
+          .id;
+      store.mailboxes['7'] = WidgetMailbox(folderId: inbox);
+      final c = ProviderContainer(
+        overrides: [
+          uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+          homeScreenSurfaceProvider.overrideWithValue(surface),
+          widgetStateStoreProvider.overrideWithValue(store),
+          mailEngineProvider.overrideWithValue(engine),
+        ],
+      );
+      addTearDown(c.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: const MaterialApp(
+            home: MailboxWidgetKeeper(child: SizedBox.shrink()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      engine.synced.clear();
+      final mark = store.openedAt;
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+
+      expect(engine.synced, isEmpty);
+      expect(store.openedAt, mark);
     });
 
     testWidgets('and so does leaving', (tester) async {

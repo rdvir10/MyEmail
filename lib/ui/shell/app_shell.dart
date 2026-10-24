@@ -177,6 +177,12 @@ class _AppShellState extends ConsumerState<AppShell>
   /// all the same, so nothing here knew a message had been deleted from
   /// the shade and the list went on showing it. The worker says so when it
   /// is done, and the lists are read again.
+  ///
+  /// Not while the app is away, as with a background pass; see
+  /// [_listenForPassesDone]. Push's service keeps a hidden app alive, and
+  /// each press carried out had it list every account's folders and resync
+  /// the open list, with nobody to see either. Coming back to the front
+  /// reads every list and the tree again.
   void _listenForPressesDone() {
     IsolateNameServer.removePortNameMapping(actionsDonePortName);
     IsolateNameServer.registerPortWithName(
@@ -184,7 +190,7 @@ class _AppShellState extends ConsumerState<AppShell>
       actionsDonePortName,
     );
     _pressesDone.listen((_) {
-      if (!mounted) return;
+      if (!mounted || _away) return;
       ref.invalidate(messagesProvider);
       ref.invalidate(foldersProvider);
     });
@@ -201,6 +207,13 @@ class _AppShellState extends ConsumerState<AppShell>
   ///
   /// A notification tapped while the app was running arrives the same way,
   /// so it is looked for again here rather than only at startup.
+  ///
+  /// Only after the app was really away, hidden or paused. Getting focus
+  /// back is a resume too: the notification shade pushed back up, a system
+  /// dialog dismissed, the app tapped again in split screen. Each of those
+  /// listed every account's folders again, resynced the lists on screen and
+  /// threw away what they had in hand, and in split screen that was every
+  /// tap between the two apps. The cheap checks are made either way.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // Asked only while it can be seen: in the background the background
@@ -209,19 +222,30 @@ class _AppShellState extends ConsumerState<AppShell>
         state == AppLifecycleState.paused) {
       _asking?.cancel();
       _asking = null;
+      _away = true;
       return;
     }
     if (state != AppLifecycleState.resumed) return;
-    _keepAsking();
+    final wasAway = _away;
+    _away = false;
     ref.read(multiWindowModeProvider.notifier).refresh();
-    ref.invalidate(messagesProvider);
-    ref.invalidate(foldersProvider);
-    _openLaunchMessage();
+    _openLaunchMessage(reread: !wasAway);
+    // A button pressed in the shade pulled down over the app is carried
+    // out as the shade goes back up, not whenever WorkManager gets to it.
+    // With nothing pressed this reads one folder and asks no server.
     _carryOutPressedButtons();
     // Back from Android's battery dialog or its settings, perhaps.
     ref.invalidate(batteryExemptProvider);
+    if (!wasAway) return;
+    _keepAsking();
+    ref.invalidate(messagesProvider);
+    ref.invalidate(foldersProvider);
     _restartStalledSync();
   }
+
+  /// Hidden or paused since the app was last in front; see
+  /// [didChangeAppLifecycleState].
+  bool _away = false;
 
   /// Push or five-minute sync that Android stopped starts again here: see
   /// [restartStalledLiveSync].
@@ -254,6 +278,13 @@ class _AppShellState extends ConsumerState<AppShell>
   /// A background pass has written what it found: the lists on screen ask
   /// again, and see it. With push on, that is within seconds of the mail
   /// arriving, rather than at the next [AppShell.askEvery].
+  ///
+  /// Not while the app is away. Push's service keeps the app's process
+  /// alive for hours, so its passes reached a hidden app too, which then
+  /// listed every account's folders and resynced the open list after each
+  /// of them, every minute: the background traffic twice over. Coming back
+  /// to the front reads every list and the tree again, which sees what
+  /// the passes wrote meanwhile.
   void _listenForPassesDone() {
     IsolateNameServer.removePortNameMapping(backgroundPassDonePortName);
     IsolateNameServer.registerPortWithName(
@@ -261,6 +292,7 @@ class _AppShellState extends ConsumerState<AppShell>
       backgroundPassDonePortName,
     );
     _passesDone.listen((_) {
+      if (_away) return;
       _askAgain();
       // Just asked: the next of the app's own asks is a whole interval on,
       // not moments after this one.
@@ -322,7 +354,16 @@ class _AppShellState extends ConsumerState<AppShell>
 
   /// A tap on a new-mail notification launched the app. Select that message's
   /// folder and remember which message to open once the list arrives.
-  Future<void> _openLaunchMessage() async {
+  ///
+  /// [reread] when the lists were not read again on the way here. A tap on
+  /// a notification over the app in front only takes focus away and gives
+  /// it back. The worker stores the message before it posts the
+  /// notification, but says its pass is done only after every account, and
+  /// the list then waited for its own server: on the phone the message
+  /// opened seconds later, and on the tablet the list, not holding it,
+  /// landed on another message instead. Read again, the list has it from
+  /// the device at once, and it is selected once it is there.
+  Future<void> _openLaunchMessage({bool reread = false}) async {
     final payload = await ref.read(mailNotifierProvider).takeLaunchPayload();
     if (payload == null || !mounted) return;
     final String folderId;
@@ -332,6 +373,15 @@ class _AppShellState extends ConsumerState<AppShell>
       return; // Not a message id. Opening the app was the whole effect.
     } on FormatException {
       return;
+    }
+    if (reread) {
+      ref.invalidate(messagesProvider(folderId));
+      try {
+        await ref.read(messagesProvider(folderId).future);
+      } catch (_) {
+        // Selected all the same, as it always was.
+      }
+      if (!mounted) return;
     }
     ref.read(selectedFolderIdProvider.notifier).select(folderId);
     ref.read(selectedMessageIdProvider.notifier).select(payload);

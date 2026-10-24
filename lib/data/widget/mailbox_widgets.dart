@@ -84,10 +84,20 @@ class MailboxWidgets {
   /// the background isolate, and nothing is forgotten.
   ///
   /// [fromCache] counts from what is already stored, with no network at all.
+  ///
+  /// [synced] is given after a sync pass: the folders it synced. The pass
+  /// has just listed the folders, or took them as saved, and synced those
+  /// folders' mail into the cache, so the counts are taken as it left them
+  /// and only a widget folder it did not sync is synced here. Counted from
+  /// the network, every pass was done twice: push's minute check listed
+  /// every widget account's folders, Gmail's included, which that check
+  /// leaves to IDLE, and synced again the Inbox it had synced a moment
+  /// before.
   Future<void> refresh(
     MailEngine engine, {
     List<String>? placed,
     bool fromCache = false,
+    Set<String>? synced,
   }) async {
     try {
       if (placed != null) await store.keepOnly(placed);
@@ -104,8 +114,14 @@ class MailboxWidgets {
       final unknown = <String>{};
       for (final folderId in mailboxes.values.map((m) => m.folderId).toSet()) {
         try {
-          final count =
-              await _count(engine, accounts, folderId, mark, fromCache);
+          final count = await _count(
+            engine,
+            accounts,
+            folderId,
+            mark,
+            fromCache: fromCache,
+            synced: synced,
+          );
           if (count != null) {
             counts[folderId] = count.counts;
             recent[folderId] = count.recent;
@@ -168,15 +184,22 @@ class MailboxWidgets {
     MailEngine engine,
     List<Account> accounts,
     String folderId,
-    DateTime? mark,
-    bool fromCache,
-  ) async {
-    Future<List<MailFolder>> folders(String accountId) => fromCache
-        ? engine.cachedFolders(accountId)
-        : engine.loadFolders(accountId);
-    Future<List<MailMessage>> messages(String folderId) => fromCache
-        ? engine.cachedMessages(folderId, limit: window)
-        : engine.loadMessages(folderId, limit: window);
+    DateTime? mark, {
+    required bool fromCache,
+    required Set<String>? synced,
+  }) async {
+    Future<List<MailFolder>> folders(String accountId) async {
+      if (fromCache) return engine.cachedFolders(accountId);
+      if (synced == null) return engine.loadFolders(accountId);
+      // As the pass left them, unless it never got as far as saving any.
+      final saved = await engine.cachedFolders(accountId);
+      return saved.isNotEmpty ? saved : engine.loadFolders(accountId);
+    }
+
+    Future<List<MailMessage>> messages(String folderId) =>
+        fromCache || (synced?.contains(folderId) ?? false)
+            ? engine.cachedMessages(folderId, limit: window)
+            : engine.loadMessages(folderId, limit: window);
 
     if (folderId == kUnifiedInboxId) {
       var total = 0;
