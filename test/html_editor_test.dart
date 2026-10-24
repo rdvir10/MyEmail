@@ -64,7 +64,7 @@ void main() {
       expect(doc,
           contains(r'var RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;'));
       expect(doc, contains("if (top.classList.contains('mailtree-quote')) continue;"));
-      expect(doc, contains("document.body.addEventListener('input', orientAll);"));
+      expect(doc, contains("body.addEventListener('input', orientAll);"));
     });
 
     test("what is sent has every paragraph's direction brought up to date",
@@ -90,6 +90,17 @@ void main() {
       expect(getHtml, isNot(contains('return document.body.innerHTML')));
     });
 
+    test('the script works on the real body, whatever the message names', () {
+      // Behind the sanitiser, which takes a picture's name off. A named
+      // picture is a property of the document ahead of its own, so
+      // <img name="body"> made document.body that picture: the editor read
+      // back nothing, and an empty message was sent.
+      final script = doc.substring(doc.indexOf('<script nonce='));
+      expect(script,
+          contains("Object.getOwnPropertyDescriptor(Document.prototype, 'body')"));
+      expect(script, isNot(contains('document.body')));
+    });
+
     test('in the dark the quote goes dark too, and is sent as it came', () {
       const quote = '<div class="mailtree-quote">'
           '<p style="color:#000">Black on white</p></div>';
@@ -111,7 +122,7 @@ void main() {
       expect(getHtml, contains('unmark(copy);'), reason: 'and no marks');
       expect(
         RegExp(r'window\.mailtreeSetTheme = function \(name\) \{[^}]*'
-                r"paintColours\(document\.body, name === 'dark'\);")
+                r"paintColours\(body, name === 'dark'\);")
             .hasMatch(dark),
         isTrue,
         reason: 'a theme change repaints the quote in place',

@@ -78,7 +78,7 @@ void main() {
       expect(doc, contains('font:15px/1.35'));
       expect(doc, contains(
           "document.execCommand('defaultParagraphSeparator', false, 'div');"));
-      expect(doc, contains("document.body.innerHTML = '<div><br></div>';"));
+      expect(doc, contains("body.innerHTML = '<div><br></div>';"));
     });
 
     test("an old paragraph of this message's own goes out with no gap", () {

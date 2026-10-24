@@ -73,6 +73,59 @@ void main() {
     expect(opened.htmlBody.toLowerCase(), isNot(contains('script')));
   });
 
+  group('a reopened draft', () {
+    Future<Draft> reopen(
+      WidgetTester tester, {
+      String? raw,
+      bool hasAttachments = true,
+    }) async {
+      final c = over(_Engine()..raw = raw);
+      final ref = await refOver(tester, c);
+      return (await tester.runAsync(() => draftFromMessage(
+            ref: ref,
+            message: _message(
+              id: 'acct-personal:[Gmail]/Drafts#7',
+              to: const [MailAddress(email: 'dana@example.com')],
+              hasAttachments: hasAttachments,
+            ),
+          )))!;
+    }
+
+    testWidgets('read whole replaces its copy in Drafts when saved',
+        (tester) async {
+      final opened = await reopen(tester, raw: _forwardedMime);
+
+      expect(opened.savedAs, 'acct-personal:[Gmail]/Drafts#7');
+      expect(opened.attachments, isNotEmpty);
+      expect(opened.storedCopyUnread, isFalse);
+    });
+
+    testWidgets('whose stored copy could not be fetched leaves that copy alone',
+        (tester) async {
+      // Offline, the body comes from the cache and the stored message not at
+      // all, so the draft opened without its files and its Bcc. Saved or
+      // sent, it replaced the one copy that still had them, for good.
+      final opened = await reopen(tester);
+
+      expect(opened.savedAs, isNull,
+          reason: 'saving makes a copy of its own beside it');
+      expect(opened.lostAttachmentNames, isNotEmpty);
+      expect(opened.storedCopyUnread, isTrue);
+    });
+
+    testWidgets('with no files, still says its stored copy was not read',
+        (tester) async {
+      // Nothing to attach again, so nothing was said: Save left two drafts
+      // with no word why, and Send went without the Bcc and left the sent
+      // message in Drafts.
+      final opened = await reopen(tester, hasAttachments: false);
+
+      expect(opened.savedAs, isNull);
+      expect(opened.lostAttachmentNames, isEmpty);
+      expect(opened.storedCopyUnread, isTrue);
+    });
+  });
+
   testWidgets('Reply all leaves your other accounts off the copy',
       (tester) async {
     // The message reached two of your accounts. Answered from one, the
@@ -235,6 +288,7 @@ MailMessage _message({
   required String id,
   List<MailAddress> to = const [],
   List<MailAddress> cc = const [],
+  bool hasAttachments = false,
 }) =>
     MailMessage(
       id: id,
@@ -247,6 +301,7 @@ MailMessage _message({
       cc: cc,
       date: DateTime(2026, 9, 20),
       preview: 'The figures',
+      hasAttachments: hasAttachments,
     );
 
 /// The sample engine with a body of the test's choosing, a record of what

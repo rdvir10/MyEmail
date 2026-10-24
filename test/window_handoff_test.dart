@@ -27,6 +27,7 @@ void main() {
     references: const ['<w@example.com>', '<x@example.com>'],
     originalMessageId: 'acct:INBOX#12',
     lostAttachmentNames: const ['big.zip'],
+    storedCopyUnread: true,
   );
 
   final message = MailMessage(
@@ -64,6 +65,7 @@ void main() {
       expect(d.originalMessageId, draft.originalMessageId);
       expect(d.savedAs, isNull);
       expect(d.lostAttachmentNames, ['big.zip']);
+      expect(d.storedCopyUnread, isTrue);
     });
 
     test('keeps which message each forwarded file is', () {

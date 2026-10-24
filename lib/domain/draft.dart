@@ -69,6 +69,7 @@ class Draft {
     this.originalMessageId,
     this.savedAs,
     this.lostAttachmentNames = const [],
+    this.storedCopyUnread = false,
     this.calendarReply,
   });
 
@@ -105,6 +106,14 @@ class Draft {
   /// says it did.
   final List<String> lostAttachmentNames;
 
+  /// Reopened from Drafts, but the message stored there could not be
+  /// fetched, so what only that copy holds is not here: its Bcc, and its
+  /// files. It is saved as a copy of its own and the stored one left
+  /// alone, so the window has to say so, files or not. Without a word, Save
+  /// left two drafts, and Send went without the Bcc and left the sent
+  /// message in Drafts to be sent again.
+  final bool storedCopyUnread;
+
   /// The same draft, saved as [savedAs] or, given null, not saved at all,
   /// which [copyWith] cannot say.
   Draft withSavedAs(String? savedAs) => Draft(
@@ -122,6 +131,7 @@ class Draft {
         savedAs: savedAs,
         calendarReply: calendarReply,
         lostAttachmentNames: lostAttachmentNames,
+        storedCopyUnread: storedCopyUnread,
       );
 
   /// Whether there is anything worth keeping. An untouched compose window
@@ -165,6 +175,7 @@ class Draft {
     String? inReplyTo,
     List<String>? references,
     List<String>? lostAttachmentNames,
+    bool? storedCopyUnread,
   }) {
     return Draft(
       accountId: accountId ?? this.accountId,
@@ -181,6 +192,7 @@ class Draft {
       savedAs: savedAs ?? this.savedAs,
       calendarReply: calendarReply ?? this.calendarReply,
       lostAttachmentNames: lostAttachmentNames ?? this.lostAttachmentNames,
+      storedCopyUnread: storedCopyUnread ?? this.storedCopyUnread,
     );
   }
 }

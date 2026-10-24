@@ -98,6 +98,7 @@ Map<String, Object?> _draftToJson(Draft d) => {
       if (d.originalMessageId != null) 'originalMessageId': d.originalMessageId,
       if (d.savedAs != null) 'savedAs': d.savedAs,
       'lostAttachmentNames': d.lostAttachmentNames,
+      if (d.storedCopyUnread) 'storedCopyUnread': true,
     };
 
 Draft _draftFromJson(Map json) => Draft(
@@ -123,6 +124,7 @@ Draft _draftFromJson(Map json) => Draft(
       originalMessageId: json['originalMessageId'] as String?,
       savedAs: json['savedAs'] as String?,
       lostAttachmentNames: (json['lostAttachmentNames'] as List).cast<String>(),
+      storedCopyUnread: json['storedCopyUnread'] == true,
     );
 
 Map<String, Object?> _messageToJson(MailMessage m) => {

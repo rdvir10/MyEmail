@@ -170,11 +170,12 @@ const _elements = {
 };
 
 /// Presentation attributes mail actually uses. No `id`: the editor finds its
-/// caret by id, and a quote must not be able to move it.
+/// caret by id, and a quote must not be able to move it. And `name` only on a
+/// link (see [_cleanElement]).
 const _attributes = {
   'abbr', 'align', 'alt', 'bgcolor', 'border', 'cellpadding', 'cellspacing',
   'class', 'color', 'colspan', 'datetime', 'dir', 'face', 'headers', 'height',
-  'hspace', 'lang', 'name', 'nowrap', 'reversed', 'rowspan', 'scope', 'size',
+  'hspace', 'lang', 'nowrap', 'reversed', 'rowspan', 'scope', 'size',
   'span', 'start', 'style', 'summary', 'title', 'type', 'valign', 'value',
   'vspace', 'width',
   // Written by this function on an earlier pass, so a reopened draft keeps
@@ -231,6 +232,14 @@ void _cleanElement(dom.Element el, {required bool keepRemoteImages}) {
     if (attr.startsWith('on')) return;
     if (attr == 'href') {
       if (name == 'a' && _isAllowedLink(value)) kept['href'] = value;
+      return;
+    }
+    // A link's name is the place it marks. On a picture it makes the picture
+    // a property of the document, ahead of the document's own: with
+    // <img name="body"> the editor's document.body was that picture, so it
+    // read back nothing, and Send sent an empty message.
+    if (attr == 'name') {
+      if (name == 'a') kept['name'] = value;
       return;
     }
     if (attr == 'src' || attr == 'srcset' || attr == 'background' ||

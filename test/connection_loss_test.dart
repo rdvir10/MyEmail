@@ -102,6 +102,24 @@ void main() {
   });
 
   group('SMTP', () {
+    final message = buildMimeMessage(
+      draft: const Draft(
+        accountId: 'a',
+        kind: ComposeKind.newMessage,
+        to: [MailAddress(email: 'dana@example.com')],
+        subject: 'Hi',
+        htmlBody: '<p>Hi</p>',
+      ),
+      account: const Account(
+        id: 'a',
+        displayName: 'Ron',
+        emailAddress: 'ron@example.com',
+        provider: MailProvider.gmail,
+        authMethod: AuthMethod.appPassword,
+        colorValue: 0xFF0F6CBD,
+      ),
+    );
+
     test('a send that cannot connect says so, rather than hanging', () async {
       // A port with nothing listening: refused at once, which used to leave
       // the goodbye waiting forever on a socket that was never made.
@@ -115,29 +133,52 @@ void main() {
         user: 'ron@example.com',
         credentials: const PasswordCredentials('app-password'),
       );
-      final message = buildMimeMessage(
-        draft: const Draft(
-          accountId: 'a',
-          kind: ComposeKind.newMessage,
-          to: [MailAddress(email: 'dana@example.com')],
-          subject: 'Hi',
-          htmlBody: '<p>Hi</p>',
-        ),
-        account: const Account(
-          id: 'a',
-          displayName: 'Ron',
-          emailAddress: 'ron@example.com',
-          provider: MailProvider.gmail,
-          authMethod: AuthMethod.appPassword,
-          colorValue: 0xFF0F6CBD,
-        ),
-      );
 
       await expectLater(
         sender.send(message),
         throwsA(isA<ConnectionFailed>()),
       ).timeout(const Duration(seconds: 15));
     });
+
+    for (final (what, answer) in [
+      ('says nothing', (Socket _) {}),
+      ('hangs up', (Socket s) => s.destroy()),
+    ]) {
+      test('a server that takes the connection and then $what before its '
+          'greeting is given up on', () async {
+        // enough_mail limits only the connect, then waits for the greeting
+        // with nothing to end the wait: the Send button spun for good, and a
+        // reply from the shade hung its isolate until Android killed it.
+        final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+        final held = <Socket>[];
+        addTearDown(() async {
+          for (final s in held) {
+            s.destroy();
+          }
+          await server.close();
+        });
+        server.listen((s) {
+          held.add(s);
+          answer(s);
+        });
+
+        final sender = SmtpSender(
+          host: '127.0.0.1',
+          port: server.port,
+          user: 'ron@example.com',
+          credentials: const PasswordCredentials('app-password'),
+          // In the clear to start with, so the wait is for the greeting and
+          // not for a TLS handshake.
+          useStartTls: true,
+          stepLimit: const Duration(seconds: 2),
+        );
+
+        await expectLater(
+          sender.send(message),
+          throwsA(isA<ConnectionFailed>()),
+        ).timeout(const Duration(seconds: 15));
+      });
+    }
   });
 }
 

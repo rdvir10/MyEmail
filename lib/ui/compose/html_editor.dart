@@ -364,6 +364,15 @@ String editorDocument(String bodyHtml,
 <body contenteditable="true">${bothWays(bodyHtml, dark: dark)}</body>
 <script nonce="$nonce">
 (function () {
+  // The body itself, through the document's own getter, and never asked
+  // for by name again. A picture with a name is a property of the document
+  // ahead of that getter, so a quote's <img name="body"> was the body as
+  // the script saw it: what was typed was never read, and an empty message
+  // was sent. The sanitiser takes such names off; this holds if one ever
+  // gets past it.
+  var body = Object.getOwnPropertyDescriptor(Document.prototype, 'body')
+      .get.call(document);
+
   function post(payload) {
     if (window.MyEmail) window.MyEmail.postMessage(JSON.stringify(payload));
   }
@@ -376,7 +385,7 @@ String editorDocument(String bodyHtml,
   // way carries it still, and loses it here.
   window.mailtreeGetHtml = function () {
     orientAll();
-    var copy = document.body.cloneNode(true);
+    var copy = body.cloneNode(true);
     var scripts = copy.querySelectorAll('script');
     for (var i = 0; i < scripts.length; i++) scripts[i].remove();
     // The colours as they came, and none of the marks that carry them.
@@ -404,7 +413,7 @@ String editorDocument(String bodyHtml,
   window.mailtreeLineSpacing = function (value) {
     var sel = window.getSelection();
     var range = sel.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0) : null;
-    var lines = document.body.querySelectorAll(BLOCKS);
+    var lines = body.querySelectorAll(BLOCKS);
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
       if (line.closest('.mailtree-quote') ||
@@ -412,7 +421,7 @@ String editorDocument(String bodyHtml,
         continue;
       }
       if (range ? !range.intersectsNode(line)
-                : line.parentElement !== document.body) {
+                : line.parentElement !== body) {
         continue;
       }
       respace(line, 'style', value);
@@ -448,7 +457,7 @@ String editorDocument(String bodyHtml,
   // discard what has been written.
   window.mailtreeSetTheme = function (name) {
     document.documentElement.setAttribute('data-theme', name);
-    paintColours(document.body, name === 'dark');
+    paintColours(body, name === 'dark');
   };
 
   // The colours the quote (or a signature) brought. Where they differ in
@@ -509,7 +518,7 @@ String editorDocument(String bodyHtml,
 
   window.mailtreeFormat = function (command, value) {
     document.execCommand(command, false, value);
-    document.body.focus();
+    body.focus();
     orientAll();
     reportFormats();
   };
@@ -541,10 +550,10 @@ String editorDocument(String bodyHtml,
       // Above the quote, where the builder puts it; at the end without one.
       // A blank line above it and one between it and the quote, as the
       // builder writes them.
-      document.body.insertBefore(sig, quote);
-      if (quote) document.body.insertBefore(blankLine(), quote);
+      body.insertBefore(sig, quote);
+      if (quote) body.insertBefore(blankLine(), quote);
       if (!isBlankLine(sig.previousElementSibling)) {
-        document.body.insertBefore(blankLine(), sig);
+        body.insertBefore(blankLine(), sig);
       }
     }
     sig.innerHTML = html;
@@ -570,14 +579,14 @@ String editorDocument(String bodyHtml,
   var lastCaret = null;
   document.addEventListener('selectionchange', function () {
     var sel = window.getSelection();
-    if (sel.rangeCount && document.body.contains(sel.anchorNode)) {
+    if (sel.rangeCount && body.contains(sel.anchorNode)) {
       lastCaret = sel.getRangeAt(0).cloneRange();
     }
   });
 
   window.mailtreeFocus = function () {
-    document.body.focus();
-    if (lastCaret && document.body.contains(lastCaret.startContainer)) {
+    body.focus();
+    if (lastCaret && body.contains(lastCaret.startContainer)) {
       var sel = window.getSelection();
       sel.removeAllRanges();
       sel.addRange(lastCaret);
@@ -624,7 +633,7 @@ String editorDocument(String bodyHtml,
   // Outer before inner, which is document order, so a paragraph is
   // compared with its container as it now reads.
   function orientAll() {
-    var tops = document.body.children;
+    var tops = body.children;
     for (var i = 0; i < tops.length; i++) {
       var top = tops[i];
       if (top.classList.contains('mailtree-quote')) continue;
@@ -654,9 +663,9 @@ String editorDocument(String bodyHtml,
     if (marker) {
       range.setStartBefore(marker);
     } else {
-      var first = document.body.firstChild;
+      var first = body.firstChild;
       range.selectNodeContents(
-          first && first.nodeType === 1 ? first : document.body);
+          first && first.nodeType === 1 ? first : body);
       range.collapse(true);
     }
     range.collapse(true);
@@ -666,8 +675,8 @@ String editorDocument(String bodyHtml,
   }
 
   document.addEventListener('selectionchange', reportFormats);
-  document.body.addEventListener('input', orientAll);
-  document.body.addEventListener('input', reportFormats);
+  body.addEventListener('input', orientAll);
+  body.addEventListener('input', reportFormats);
 
   // Keys pressed in here never reach Flutter, so the ones the compose
   // screen answers to are reported across. Ctrl+Enter is stopped from
@@ -701,7 +710,7 @@ String editorDocument(String bodyHtml,
       window.scrollBy(0, rect.top - margin);
     }
   }
-  document.body.addEventListener('input', keepCaretVisible);
+  body.addEventListener('input', keepCaretVisible);
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', keepCaretVisible);
   }
@@ -714,8 +723,8 @@ String editorDocument(String bodyHtml,
   // An empty document, a signature not yet written, is given a line to
   // type into: text typed straight into the body belongs to no line, and
   // would have no direction of its own.
-  if (!document.body.innerHTML.trim()) {
-    document.body.innerHTML = '<div><br></div>';
+  if (!body.innerHTML.trim()) {
+    body.innerHTML = '<div><br></div>';
   }
   orientAll();
   placeCaret();

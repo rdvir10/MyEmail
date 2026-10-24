@@ -141,7 +141,11 @@ Future<Draft> buildDraft({
 Future<Draft> saveDraft(WidgetRef ref, Draft draft) async {
   final savedAs = await ref.read(mailEngineProvider).saveDraft(draft);
   await _refreshAfter(ref, draft.accountId, 'save');
-  if (savedAs != null) {
+  // The screen that asked can close while the save is under way, taking
+  // its ref with it. Where the copy went is still the answer: thrown away
+  // with the ref's complaint, a copy saved in the background could not be
+  // found to take out again.
+  if (savedAs != null && ref.context.mounted) {
     final folderId = savedAs.substring(0, savedAs.lastIndexOf('#'));
     ref.invalidate(messagesProvider(folderId));
     // The copy it replaced was in the same folder, so one invalidation covers
@@ -161,6 +165,8 @@ Future<Draft> saveDraft(WidgetRef ref, Draft draft) async {
 /// twice; a second Save left two copies in Drafts. The next refresh puts the
 /// counts right, so it is only logged.
 Future<void> _refreshAfter(WidgetRef ref, String accountId, String what) async {
+  // The screen that asked has closed, and its ref reaches nothing now.
+  if (!ref.context.mounted) return;
   try {
     await ref.read(foldersProvider.notifier).refreshAccount(accountId);
   } catch (e) {
@@ -175,8 +181,9 @@ Future<void> _refreshAfter(WidgetRef ref, String accountId, String what) async {
 /// once as it is stored. Without it a reopened draft went out without its
 /// Cc and Bcc, started a new thread, and dropped its files; saving it again
 /// replaced the server copy with the same losses. If the stored message
-/// cannot be fetched, the draft still opens, and says which files it could
-/// not bring back.
+/// cannot be fetched, the draft still opens, says what it could not bring
+/// back, and is saved as a copy of its own: the stored one, which has it,
+/// is left where it is.
 Future<Draft> draftFromMessage({
   required WidgetRef ref,
   required MailMessage message,
@@ -203,7 +210,6 @@ Future<Draft> draftFromMessage({
         ? _asHtml(body.text)
         : sanitiseForEditing(body.html!, ownDraft: true),
     inReplyTo: message.inReplyTo,
-    savedAs: message.id,
   );
 
   try {
@@ -214,11 +220,17 @@ Future<Draft> draftFromMessage({
       inReplyTo: headers.inReplyTo,
       references: headers.references,
       attachments: attachmentsInMime(raw),
+      savedAs: message.id,
     );
   } catch (_) {
+    // Not saved over the stored copy. Opened without its files and its
+    // Bcc, saving or sending used to replace the one copy that still had
+    // them, and they were gone for good. Said even with no files to miss:
+    // a Bcc is never in the message list, so it may be lost either way.
     return draft.copyWith(
       lostAttachmentNames:
           message.hasAttachments ? const ['the original attachment'] : const [],
+      storedCopyUnread: true,
     );
   }
 }

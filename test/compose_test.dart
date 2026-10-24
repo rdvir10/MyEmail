@@ -169,6 +169,21 @@ void main() {
       expect(out, contains('src="https://example.com/logo.png"'));
       expect(out, isNot(contains('onerror')));
     });
+
+    test('a picture cannot take the name of a part of the page', () {
+      // A named picture is a property of the document, ahead of its own.
+      // <img name="body"> in a quote made document.body that picture, so the
+      // editor read back nothing: Send sent an empty message, and Back
+      // threw away what had been typed without asking.
+      final out = sanitiseForEditing(
+        '<img name="body" width="1" height="1"><p>Quote</p>'
+        '<a name="top">Top</a>',
+      );
+      expect(out, isNot(contains('name="body"')));
+      expect(out, contains('width="1"'));
+      expect(out, contains('<a name="top">'),
+          reason: "an anchor's name is no property of the document");
+    });
   });
 
   group('wireText', () {
@@ -421,9 +436,131 @@ void main() {
           reason: 'the text alternative is derived from the HTML');
     });
 
+    test('a long line with nothing but ASCII in it arrives as it was written',
+        () {
+      // Such a message went out 7bit, cut every 76 characters with a real
+      // line break: at a space where there was one, and through whatever
+      // was there where not. A long link arrived in two halves, and a break
+      // inside a tag could make the rest of the message bold.
+      final link = 'https://hadco.sharepoint.com/sites/Sales/Shared%20Documents/'
+          '${'Q3-forecast-' * 10}final.xlsx?web=1';
+      final html = '<div style="${'margin:0;padding:0;' * 6}">See '
+          '<a href="$link">$link</a></div>${'<div><br></div>' * 8}'
+          '<div>${'word ' * 40}end</div>';
+      final rendered =
+          buildMimeMessage(draft: draft(html: html), account: _account)
+              .renderMessage();
+
+      // As a reader takes it in, from the text that went.
+      final received = em.MimeMessage.parseFromText(rendered);
+      // Less the line break before the boundary, which is the boundary's.
+      expect(received.decodeTextHtmlPart()?.trimRight(), html);
+      expect(received.decodeTextPlainPart(), contains(link));
+      for (final line in rendered.split('\r\n')) {
+        expect(line.length, lessThanOrEqualTo(78), reason: line);
+      }
+    });
+
+    test('a draft holding a picture as data is built at once', () {
+      // A saved draft keeps its pictures as data in the HTML. Cut for 7bit,
+      // text took time in the square of its length: this one, a 66 KB
+      // picture, took 25 seconds, with the screen frozen while it did. It
+      // now takes a small part of one.
+      final picture = 'iVBORw0KGgo' * 6000;
+      final html = '<p>Hi</p><img src="data:image/png;base64,$picture">';
+      final watch = Stopwatch()..start();
+      final rendered =
+          buildMimeMessage(draft: draft(html: html), account: _account)
+              .renderMessage();
+      watch.stop();
+
+      // Far more than it needs, for a busy machine.
+      expect(watch.elapsed, lessThan(const Duration(seconds: 5)));
+      expect(em.MimeMessage.parseFromText(rendered).decodeTextHtmlPart(),
+          contains(picture));
+    }, timeout: const Timeout(Duration(seconds: 60)));
+
     test('an empty subject is labelled rather than sent blank', () {
       final mime = buildMimeMessage(draft: draft(subject: '   '), account: _account);
       expect(mime.decodeSubject(), '(No subject)');
+    });
+
+    group('a line break in a header', () {
+      /// The header lines of what goes out, by either route: the text
+      /// Graph is given, and what SMTP's DATA carries.
+      List<List<String>> heads(em.MimeMessage mime) => [
+            for (final text in [mime.renderMessage(), wireText(mime)])
+              text.substring(0, text.indexOf('\r\n\r\n')).split('\r\n'),
+          ];
+
+      test('in the subject cannot start a header of its own', () {
+        // A subject arrives decoded, and an encoded word can carry CR and LF.
+        // Answered, it put a Reply-To of the sender's choosing, and a blank
+        // line that made the rest the body, into mail sent from here.
+        final mime = buildMimeMessage(
+          draft: draft(
+            subject: 'Re: Deal\r\nReply-To: attacker@evil.example\r\n\r\n'
+                'Content-Type: text/plain\nPay here',
+          ),
+          account: _account,
+        );
+
+        for (final head in heads(mime)) {
+          expect(head.where((l) => l.startsWith('Reply-To:')), isEmpty);
+          expect(head.where((l) => l.startsWith('Content-Type: text/plain')),
+              isEmpty);
+          expect(head, contains(startsWith('MIME-Version:')),
+              reason: 'the real headers are still headers');
+        }
+        expect(mime.decodeSubject(), startsWith('Re: Deal Reply-To:'));
+      });
+
+      test('in a name cannot either', () {
+        // Names come decoded from the message answered, and a name with only
+        // ASCII in it is written as it is.
+        final mime = buildMimeMessage(
+          draft: draft(to: const [
+            MailAddress(
+              email: 'dana@example.com',
+              name: 'Dana\r\nReply-To: attacker@evil.example',
+            ),
+          ]),
+          account: _account.copyWith(senderName: 'Ron\nX-Injected: yes'),
+        );
+
+        for (final head in heads(mime)) {
+          expect(head.where((l) => l.startsWith('Reply-To:')), isEmpty);
+          expect(head.where((l) => l.startsWith('X-Injected:')), isEmpty);
+        }
+        expect(mime.to!.single.email, 'dana@example.com');
+      });
+
+      test("in a picture's Content-ID cannot either", () {
+        // A forwarded picture keeps the id the message it came in gave it,
+        // which nothing here wrote.
+        final mime = buildMimeMessage(
+          draft: draft(
+            html: '<p>See</p><img src="cid:logo">',
+            attachments: [
+              DraftAttachment(
+                fileName: 'logo.png',
+                mimeType: 'image/png',
+                bytes: Uint8List.fromList([1, 2, 3]),
+                contentId: 'logo\nX-Injected: yes',
+              ),
+            ],
+          ),
+          account: _account,
+        );
+
+        for (final text in [mime.renderMessage(), wireText(mime)]) {
+          expect(
+            text.split(RegExp(r'\r\n|\r|\n')).where(
+                (l) => l.startsWith('X-Injected:')),
+            isEmpty,
+          );
+        }
+      });
     });
 
     test('threading headers are set so replies stay in the conversation', () {
@@ -460,10 +597,8 @@ void main() {
       );
       expect(html, contains('data-blocked-src'), reason: 'blocked in the editor');
 
-      // Collapsed, because the encoder folds long lines at their spaces.
       final sent = buildMimeMessage(draft: draft(html: html), account: _account)
-          .decodeTextHtmlPart()!
-          .replaceAll(RegExp(r'\s+'), ' ');
+          .decodeTextHtmlPart()!;
       expect(sent, contains('src="https://cdn.example/hero.png"'));
       expect(sent, contains('srcset="https://cdn.example/hero2.png 2x"'));
       expect(sent, isNot(contains('data-blocked-')));

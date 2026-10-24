@@ -29,15 +29,15 @@ em.MimeMessage buildMimeMessage({
   required Draft draft,
   required Account account,
 }) {
-  final from = em.MailAddress(account.senderName, account.emailAddress);
+  final from =
+      em.MailAddress(_oneLine(account.senderName), account.emailAddress);
+  final subject = _oneLine(draft.subject).trim();
   final builder = em.MessageBuilder()
     ..from = [from]
     ..to = [for (final a in draft.to) _addr(a)]
     ..cc = [for (final a in draft.cc) _addr(a)]
     ..bcc = [for (final a in draft.bcc) _addr(a)]
-    ..subject = draft.subject.trim().isEmpty
-        ? '(No subject)'
-        : draft.subject.trim();
+    ..subject = subject.isEmpty ? '(No subject)' : subject;
 
   // Threading: a reply that omits these starts a new conversation in every
   // client that shows threads. The cache keeps ids without their angle
@@ -63,10 +63,23 @@ em.MimeMessage buildMimeMessage({
       ? builder
       : builder.addPart(mediaSubtype: em.MediaSubtype.multipartRelated);
   final html = restoreBlockedImages(draft.htmlBody);
-  body.addMultipartAlternative(
-    plainText: plainTextFromHtml(html),
-    htmlText: html,
-  );
+  // Quoted-printable, whatever the text. Left to choose, enough_mail sent
+  // text with nothing but ASCII in it as 7bit, cut every 76 characters with
+  // a real line break: at a space where there was one, and through whatever
+  // was there where not. A long link arrived in two halves, and a break
+  // inside a tag could make the rest of the message bold. Its cutting also
+  // took time in the square of the length, so saving a draft that held a
+  // picture as data froze the screen. A quoted-printable break is taken out
+  // again by the reader, and its encoder goes through the text once.
+  body.addPart(mediaSubtype: em.MediaSubtype.multipartAlternative)
+    ..addTextPlain(
+      plainTextFromHtml(html),
+      transferEncoding: em.TransferEncoding.quotedPrintable,
+    )
+    ..addTextHtml(
+      html,
+      transferEncoding: em.TransferEncoding.quotedPrintable,
+    );
   for (final picture in pictures) {
     _addFile(body, picture);
   }
@@ -125,7 +138,9 @@ void _addFile(em.PartBuilder parent, DraftAttachment file) {
     disposition.parameters.addAll(_rfc2231('filename', name));
     part.contentType?.parameters['name'] = '"${_encodedWords(name)}"';
   }
-  if (cid != null) part.setHeader('Content-ID', '<$cid>');
+  // A forwarded picture keeps the id its message gave it, which the sender
+  // of that message chose: one line, as the subject is.
+  if (cid != null) part.setHeader('Content-ID', '<${_oneLine(cid)}>');
 }
 
 /// A name that can go in a header between quotes as it is: printable ASCII,
@@ -247,13 +262,28 @@ String _extensionFor(String imageType) =>
       final other => other,
     };
 
-em.MailAddress _addr(domain.MailAddress a) =>
-    em.MailAddress(a.name, a.email);
+em.MailAddress _addr(domain.MailAddress a) => em.MailAddress(
+      a.name == null ? null : _oneLine(a.name!),
+      _oneLine(a.email),
+    );
 
 String? _angled(String? id) {
   final bare = normaliseMessageId(id);
-  return bare == null ? null : '<$bare>';
+  return bare == null ? null : '<${_oneLine(bare)}>';
 }
+
+/// [value] with each run of line breaks and other control characters made
+/// one space, so it can only ever be one header.
+///
+/// Subjects and names arrive decoded, from the message being answered or an
+/// invitation's SUMMARY, and an encoded word can carry any bytes, CR and LF
+/// among them. enough_mail writes a header whose text is all ASCII as it is,
+/// so a reply carried the break onwards: a Reply-To of the sender's choosing
+/// in mail sent from here, or a blank line that made everything after it
+/// the body. Here, where every header is written, so the compose screen, a
+/// reply from the shade and an answer to an invitation are all covered.
+String _oneLine(String value) =>
+    value.replaceAll(RegExp(r'[\x00-\x08\x0a-\x1f\x7f]+'), ' ');
 
 /// Everyone the message is delivered to: To, Cc and Bcc, each address once.
 ///
@@ -393,6 +423,7 @@ class SmtpSender {
     this.port = 465,
     this.useStartTls = false,
     this.isLogEnabled = false,
+    this.stepLimit = defaultStepLimit,
   });
 
   /// Everything one provider needs to submit mail.
@@ -401,6 +432,7 @@ class SmtpSender {
     required this.user,
     required this.credentials,
     this.isLogEnabled = false,
+    this.stepLimit = defaultStepLimit,
   })  : host = smtpHostFor(provider),
         port = portFor(provider),
         useStartTls = usesStartTlsFor(provider);
@@ -420,6 +452,10 @@ class SmtpSender {
   /// sent.
   final bool useStartTls;
   final bool isLogEnabled;
+
+  /// See [defaultStepLimit]; settable so a test does not have to wait a
+  /// minute to see it run out.
+  final Duration stepLimit;
 
   static String smtpHostFor(MailProvider provider) => switch (provider) {
         MailProvider.gmail => 'smtp.gmail.com',
@@ -442,7 +478,7 @@ class SmtpSender {
   /// fail a command whose connection drops, so without these a send on a
   /// dying connection never returned: the Send button spun, and a reply from
   /// a notification hung its isolate until Android killed it.
-  static const stepLimit = Duration(seconds: 60);
+  static const defaultStepLimit = Duration(seconds: 60);
 
   /// For handing over the message itself, which can be large.
   static const transferLimit = Duration(minutes: 10);
@@ -451,7 +487,13 @@ class SmtpSender {
     final client = em.SmtpClient('myemail', isLogEnabled: isLogEnabled);
     try {
       try {
-        await client.connectToServer(host, port, isSecure: !useStartTls);
+        // Limited here too. enough_mail's own limit ends at the socket and
+        // its handshake, and then it waits for the greeting with nothing to
+        // end the wait: a connection dropped or gone quiet before the
+        // server said hello hung the send for good.
+        await client
+            .connectToServer(host, port, isSecure: !useStartTls)
+            .timeout(stepLimit);
         await client.ehlo().timeout(stepLimit);
         if (useStartTls) {
           final upgraded = await client.startTls().timeout(stepLimit);

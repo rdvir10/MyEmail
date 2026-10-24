@@ -109,11 +109,16 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// copy is started meanwhile.
   bool _closingForPutAway = false;
 
+  /// The window has ended: sent, saved, discarded, moved or put away. No
+  /// background copy is started after that.
+  bool _ended = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _showBcc = widget.draft.bcc.isNotEmpty;
+    // Shown too where the notice asks for a Bcc to be added again.
+    _showBcc = widget.draft.bcc.isNotEmpty || widget.draft.storedCopyUnread;
     _editor.addListener(_onEditorState);
     // While this screen is open, a file dropped anywhere on the app is an
     // attachment for this message rather than the start of a new one. Held
@@ -191,7 +196,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// Quietly: nothing on screen changes, and a failure changes nothing
   /// either, because the window is still open with everything in it.
   void _saveInBackground() {
-    if (_sending || _closingForPutAway) return;
+    if (_sending || _closingForPutAway || _ended) return;
     _backgroundSaving ??=
         _copyToDrafts().whenComplete(() => _backgroundSaving = null);
   }
@@ -201,8 +206,10 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       final now = await _currentDraft();
       if (!now.isWorthSaving || _unchanged(now)) return;
       final holds = _fingerprint(now);
-      if (holds == _backgroundCopyOf || !mounted) return;
+      if (holds == _backgroundCopyOf || !mounted || _ended) return;
       final saved = await saveDraft(ref, now.withSavedAs(_backgroundCopy));
+      // Kept even if the window has ended meanwhile: that is what
+      // _dropBackgroundCopy is waiting for, to take it out again.
       _backgroundCopy = saved.savedAs;
       _backgroundCopyOf = holds;
     } catch (_) {
@@ -232,23 +239,35 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
         return false;
       }
       if (now.isWorthSaving && !_unchanged(now)) {
-        // A message with no draft of its own yet is saved over that copy:
-        // one draft in Drafts, not a second beside it.
-        final into = widget.draft.savedAs ?? _backgroundCopy;
         try {
-          await saveDraft(ref, now.withSavedAs(into));
+          await _saveForGood(now);
         } catch (_) {
           return false;
-        }
-        if (into != null && into == _backgroundCopy) {
-          _backgroundCopy = null;
-          _backgroundCopyOf = null;
         }
       }
       if (mounted) _dropBackgroundCopy();
       return true;
     } finally {
       _closingForPutAway = false;
+    }
+  }
+
+  /// Save [now] as the window closes on it, once a background copy still
+  /// going up has landed. A message with no draft of its own yet is saved
+  /// over that copy: one draft in Drafts, not a second beside it.
+  ///
+  /// Waited for because where a copy went is read back as the newest
+  /// message in Drafts. Saved alongside a background copy still going up,
+  /// this one landed before that save looked for its own, which it then
+  /// took to be this one. So this one was taken out as the window closed:
+  /// the copy with the file just picked went, and the older copy stayed.
+  Future<void> _saveForGood(Draft now) async {
+    await _backgroundSaving;
+    final into = widget.draft.savedAs ?? _backgroundCopy;
+    await saveDraft(ref, now.withSavedAs(into));
+    if (into != null && into == _backgroundCopy) {
+      _backgroundCopy = null;
+      _backgroundCopyOf = null;
     }
   }
 
@@ -265,14 +284,23 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// The window is ending some other way, so the background copy has done
   /// its job. Not waited for: leaving must not hang on the network, and a
   /// copy that fails to go is untidy rather than wrong.
+  ///
+  /// A copy still being saved goes once it has landed. Looked for at once,
+  /// it was not there yet, so nothing was taken out: a message sent or
+  /// thrown away while the file picker's copy was going up stayed in
+  /// Drafts, and one saved and closed was there twice.
   void _dropBackgroundCopy() {
-    final copy = _backgroundCopy;
-    if (copy == null) return;
-    _backgroundCopy = null;
-    _backgroundCopyOf = null;
-    unawaited(
-      ref.read(mailEngineProvider).discardDraft(copy).catchError((_) {}),
-    );
+    _ended = true;
+    final engine = ref.read(mailEngineProvider);
+    final saving = _backgroundSaving;
+    unawaited(() async {
+      await saving;
+      final copy = _backgroundCopy;
+      if (copy == null) return;
+      _backgroundCopy = null;
+      _backgroundCopyOf = null;
+      await engine.discardDraft(copy).catchError((_) {});
+    }());
   }
 
   /// Files dropped on the app or pasted from the clipboard.
@@ -501,6 +529,8 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       // One catch rather than four. Every failure the send path throws on
       // purpose already carries a sentence written for a person, and what the
       // screen needs from the rest is the error itself, so it can be reported.
+      // A window that has gone meanwhile has nowhere to say it.
+      if (!mounted) return;
       setState(() => _problem = ProblemReport(
             doing: 'Sending a message',
             error: e,
@@ -564,6 +594,23 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     return choice ?? _LeaveChoice.keepWriting;
   }
 
+  /// What a draft reopened without its stored copy lacks. Opened as a copy
+  /// of its own (draftFromMessage), so the one in Drafts keeps it, and
+  /// stays there once this is saved or sent. The file is named until it is
+  /// attached again; the Bcc and the copy left behind are worth saying
+  /// with or without one.
+  String _storedCopyNotice() =>
+      widget.draft.lostAttachmentNames.isNotEmpty && _attachments.isEmpty
+          ? "This draft's saved copy could not be fetched, so its attachment "
+              'and any Bcc it had are not here. Attach the file and add the '
+              'Bcc again before sending. The copy in Drafts still has them '
+              'and is left as it is, even once this is saved or sent: '
+              'delete it when you are done with it.'
+          : "This draft's saved copy could not be fetched, so any Bcc it had "
+              'is not here. Add the Bcc again before sending. The copy in '
+              'Drafts still has it and is left as it is, even once this is '
+              'saved or sent: delete it when you are done with it.';
+
   /// What is on screen right now, as a draft.
   Future<Draft> _currentDraft() async => widget.draft.copyWith(
         accountId: _accountId,
@@ -615,7 +662,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       _problem = null;
     });
     try {
-      await saveDraft(ref, await _currentDraft());
+      await _saveForGood(await _currentDraft());
       if (!mounted) return;
       _dropBackgroundCopy();
       Navigator.of(context).pop(false);
@@ -647,6 +694,12 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
+        // Not while it is being sent or saved, as Esc and putting the app
+        // away wait too. The question said it had not been sent, and
+        // Discard closed the window with the send still going: when that
+        // send failed, nothing said so and the message was gone. Save draft
+        // kept a draft of a message that then went.
+        if (_sending) return;
         switch (await _askOnLeave()) {
           case _LeaveChoice.keepWriting:
             return;
@@ -811,16 +864,15 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
                               [..._attachments]..remove(a),
                         ),
               ),
-            if (widget.draft.lostAttachmentNames.isNotEmpty &&
+            if (widget.draft.storedCopyUnread)
+              _Notice(_storedCopyNotice(), theme: theme)
+            else if (widget.draft.kind == ComposeKind.forward &&
+                widget.draft.lostAttachmentNames.isNotEmpty &&
                 _attachments.isEmpty)
               _Notice(
-                widget.draft.kind == ComposeKind.forward
-                    ? 'The files on the message being forwarded could not '
-                        'be fetched, so they are not attached. Attach them '
-                        'again before sending, or forward it again when '
-                        'online.'
-                    : 'This draft had an attachment that could not be '
-                        'brought back. Attach it again before sending.',
+                'The files on the message being forwarded could not be '
+                'fetched, so they are not attached. Attach them again before '
+                'sending, or forward it again when online.',
                 theme: theme,
               ),
             if (_invalid != null)

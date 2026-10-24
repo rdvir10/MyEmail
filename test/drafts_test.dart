@@ -22,6 +22,7 @@ import 'package:myemail/state/put_away_providers.dart';
 import 'package:myemail/ui/shell/put_away.dart';
 import 'package:myemail/data/compose/quote_builder.dart';
 import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/ui/common/problem_view.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
 import 'package:myemail/ui/compose/open_compose.dart';
 
@@ -324,6 +325,8 @@ void main() {
         (tester) async {
       // Losing a file quietly between one session and the next is worse than
       // saying it was lost.
+      // A copy of its own, as draftFromMessage opens it when the stored one
+      // cannot be read, so the Bcc is gone with the file.
       await open(
         tester,
         Draft(
@@ -331,12 +334,41 @@ void main() {
           kind: ComposeKind.newMessage,
           subject: 'Had a file',
           htmlBody: '<p>Words</p>',
-          savedAs: 'acct-personal:Drafts#3',
           lostAttachmentNames: const ['report.pdf'],
+          storedCopyUnread: true,
         ),
       );
 
-      expect(find.textContaining('had an attachment'), findsOneWidget);
+      expect(find.textContaining('its attachment and any Bcc'), findsOneWidget);
+      expect(find.textContaining('add the Bcc again'), findsOneWidget);
+      expect(find.textContaining('copy in Drafts still has them'),
+          findsOneWidget);
+    });
+
+    testWidgets(
+        'a reopened draft with no files still says its Bcc was not brought '
+        'back, and that the copy in Drafts stays', (tester) async {
+      // Nothing on screen said so: Save left two drafts with no word why,
+      // and Send went without the Bcc and left the message in Drafts after
+      // it had gone, to be sent again.
+      await open(
+        tester,
+        const Draft(
+          accountId: 'acct-personal',
+          kind: ComposeKind.newMessage,
+          to: [MailAddress(email: 'dana@example.com')],
+          subject: 'No files',
+          htmlBody: '<p>Words</p>',
+          storedCopyUnread: true,
+        ),
+      );
+
+      expect(find.textContaining('any Bcc it had is not here'), findsOneWidget);
+      expect(find.textContaining('even once this is saved or sent'),
+          findsOneWidget);
+      expect(find.textContaining('attachment'), findsNothing);
+      expect(find.widgetWithText(TextButton, 'Bcc'), findsNothing,
+          reason: 'the line to add it on is showing already');
     });
 
     testWidgets('an editable draft says it will update the saved copy',
@@ -448,6 +480,107 @@ void main() {
       await tester.pumpAndSettle(const Duration(milliseconds: 50));
 
       expect(await drafts(), unorderedEquals(before));
+    });
+
+    // The file picker puts the app in the background, which starts a copy
+    // to Drafts. Ended before that copy landed, the window looked for it,
+    // found none yet, and left it there: a sent message stayed a draft, and
+    // a discarded one was saved after all.
+    for (final how in ['sent', 'discarded']) {
+      testWidgets(
+          'a copy still being saved in the background when the message is '
+          '$how is not left in Drafts', (tester) async {
+        final engine = _SlowSave();
+        const draftsId = 'acct-personal:[Gmail]/Drafts';
+        Future<List<String>> drafts() async =>
+            (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                .map((m) => m.subject)
+                .toList();
+        final before = await drafts();
+        await open(tester, _draft(accountId: 'acct-personal'), engine: engine);
+
+        final copying = engine.hold = Completer<void>();
+        for (final state in [
+          AppLifecycleState.inactive,
+          AppLifecycleState.hidden,
+          AppLifecycleState.paused,
+          AppLifecycleState.hidden,
+          AppLifecycleState.inactive,
+          AppLifecycleState.resumed,
+        ]) {
+          tester.binding.handleAppLifecycleStateChanged(state);
+        }
+        await tester.pump(const Duration(milliseconds: 50));
+        expect(engine.hold, isNull, reason: 'the background copy has begun');
+
+        if (how == 'sent') {
+          await tester.tap(find.byTooltip('Send'));
+        } else {
+          await tester.pageBack();
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Discard'));
+        }
+        await tester.pumpAndSettle(const Duration(milliseconds: 50));
+        expect(find.byType(ComposeScreen), findsNothing);
+
+        // The save lands, and then whatever follows it has its turn.
+        copying.complete();
+        for (var i = 0; i < 6; i++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+
+        expect(await drafts(), unorderedEquals(before));
+      });
+    }
+
+    testWidgets(
+        'Save draft while the background copy is still going up keeps the '
+        'copy just saved', (tester) async {
+      // Where a copy went is read back as the newest message in Drafts.
+      // Saved alongside the background copy, Save's landed before the
+      // background save looked, which took it for its own; that is the one
+      // taken out as the window closed, and the older copy stayed.
+      final engine = _SlowSave();
+      const draftsId = 'acct-personal:[Gmail]/Drafts';
+      Future<List<String>> drafts() async =>
+          (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+              .map((m) => m.subject)
+              .toList();
+      final before = await drafts();
+      await open(tester, _draft(accountId: 'acct-personal'), engine: engine);
+
+      final copying = engine.hold = Completer<void>();
+      for (final state in [
+        AppLifecycleState.inactive,
+        AppLifecycleState.hidden,
+        AppLifecycleState.paused,
+        AppLifecycleState.hidden,
+        AppLifecycleState.inactive,
+        AppLifecycleState.resumed,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(engine.hold, isNull, reason: 'the background copy has begun');
+
+      // Back from the picker, something changes before Save.
+      await tester.enterText(
+          find.widgetWithText(TextField, 'Half written'), 'Finished');
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Save draft'));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.byType(ComposeScreen), findsOneWidget,
+          reason: 'Save waits for the copy going up');
+
+      copying.complete();
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ComposeScreen), findsNothing);
+      expect(find.text('Saved to Drafts'), findsOneWidget);
+      expect(await drafts(), unorderedEquals([...before, 'Finished']));
     });
 
     group('put away (Home, another app)', () {
@@ -692,7 +825,57 @@ void main() {
           findsOneWidget);
       expect(find.byType(ComposeScreen), findsOneWidget);
     });
+
+    testWidgets(
+        'Back while it is being sent offers nothing, and a failure is still '
+        'shown', (tester) async {
+      // Back asked whether to keep a message "not sent", and Discard closed
+      // the window while the send went on. When that send then failed,
+      // nothing said so, and the message was gone.
+      final engine = _SlowSend();
+      await open(tester, _draft(accountId: 'acct-personal'), engine: engine);
+
+      await tester.tap(find.byTooltip('Send'));
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pageBack();
+      // Not settled: the Send button spins while it sends.
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(find.text('Keep this message?'), findsNothing);
+      expect(find.byType(ComposeScreen), findsOneWidget);
+
+      engine.sending.completeError(
+          const ConnectionFailed('Could not reach smtp.gmail.com.'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ComposeScreen), findsOneWidget);
+      expect(find.byType(ProblemView), findsOneWidget);
+    });
+
+    testWidgets('a send that fails after the window has gone fails quietly',
+        (tester) async {
+      // Saying so threw, on a screen that was no longer there.
+      final engine = _SlowSend();
+      await open(tester, _draft(accountId: 'acct-personal'), engine: engine);
+      await tester.tap(find.byTooltip('Send'));
+      await tester.pump(const Duration(milliseconds: 50));
+
+      await tester.pumpWidget(const SizedBox());
+      engine.sending.completeError(
+          const ConnectionFailed('Could not reach smtp.gmail.com.'));
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+    });
   });
+}
+
+/// A send that ends when the test says, and how.
+class _SlowSend extends SampleMailEngine {
+  final sending = Completer<void>();
+
+  @override
+  Future<void> sendDraft(Draft draft) => sending.future;
 }
 
 /// Has the folders and lists, and no connection for a body.
@@ -729,4 +912,36 @@ class _NoDrafts extends SampleMailEngine {
   @override
   Future<String?> saveDraft(Draft draft) async =>
       throw const SocketException('offline');
+}
+
+/// Saves as the real engine makes them, one command after another: the
+/// copy goes up, and then the newest message in Drafts is read back as
+/// where it went. The next upload waits until the test lets it through, as
+/// one on a slow connection does; the ones after it do not.
+class _SlowSave extends SampleMailEngine {
+  Completer<void>? hold;
+
+  /// The last command asked for, which the next one waits behind.
+  Future<void> _tail = Future.value();
+
+  Future<T> _inTurn<T>(Future<T> Function() command) {
+    final done = _tail.then((_) => command());
+    _tail = done.then<void>((_) {}, onError: (_) {});
+    return done;
+  }
+
+  @override
+  Future<String?> saveDraft(Draft draft) async {
+    final held = hold;
+    hold = null;
+    final landed = await _inTurn(() async {
+      await held?.future;
+      return super.saveDraft(draft);
+    });
+    final folderId = landed!.substring(0, landed.lastIndexOf('#'));
+    return _inTurn(() async {
+      final copies = await loadMessages(folderId, limit: 1000);
+      return copies.reduce((a, b) => a.uid > b.uid ? a : b).id;
+    });
+  }
 }

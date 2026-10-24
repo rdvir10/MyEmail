@@ -46,6 +46,7 @@ void main() {
 
   Future<(Account, MailMessage)> arrival({
     String from = 'dana@example.com',
+    String subject = 'Thursday',
     List<String> alsoTo = const [],
   }) async {
     server
@@ -54,7 +55,7 @@ void main() {
       ..folder('[Gmail]/Drafts', role: FolderRole.drafts)
       ..folder('[Gmail]/Trash', role: FolderRole.deleted);
     server.folder('INBOX').deliver(
-          subject: 'Thursday',
+          subject: subject,
           from: from,
           body: 'Can you make ten?',
         );
@@ -151,6 +152,24 @@ void main() {
       expect(sent, contains('barry@example.com'));
       expect(RegExp('me@example.com').allMatches(sent).length, lessThan(2),
           reason: 'the sender is not also a recipient of their own reply');
+    });
+
+    test('a subject with a line break in it adds no header to the reply',
+        () async {
+      // Decoded from an encoded word, a subject can hold CR and LF. The
+      // reply from the shade went out with the sender's Reply-To in it.
+      final (account, message) = await arrival(
+        subject: 'Deal\r\nReply-To: attacker@evil.example',
+      );
+
+      await actionsFor(account)
+          .perform(NotificationActions.replyId, message.id, 'Agreed.');
+
+      final sent = sender.sent.single;
+      final head =
+          sent.substring(0, sent.indexOf('\r\n\r\n')).split('\r\n');
+      expect(head.where((l) => l.startsWith('Reply-To:')), isEmpty);
+      expect(head, contains(startsWith('Subject: Re: Deal Reply-To:')));
     });
 
     test('a plain reply leaves the others off', () async {
