@@ -396,6 +396,31 @@ void main() {
       expect(trash.messages, isEmpty);
       expect(await cache.countMessages(a.id, '[Gmail]/Trash'), 0);
     });
+
+    test('a selection is flagged with one STORE for each folder', () async {
+      seedGmail();
+      server.folder('INBOX')
+        ..deliver()
+        ..deliver();
+      server.folder('Work').deliver();
+      final a = await addAccount();
+      await engine.loadMessages('${a.id}:INBOX');
+      await engine.loadMessages('${a.id}:Work');
+      server.calls.clear();
+
+      await engine.setMessagesFlagged(
+        ['${a.id}:INBOX#1', '${a.id}:Work#1', '${a.id}:INBOX#2'],
+        true,
+      );
+
+      expect(server.calls.where((c) => c.startsWith('UID STORE')), [
+        'UID STORE INBOX 1,2 +MessageFlag.flagged',
+        'UID STORE Work 1 +MessageFlag.flagged',
+      ]);
+      final rows = await cache.readMessages(a.id, 'INBOX');
+      expect(rows.every((m) => m.isFlagged), isTrue,
+          reason: 'and the list says so before the next sync');
+    });
   });
 
   // On both stores. The 2.29.0 bug was the database's alone: its upsert
@@ -497,6 +522,29 @@ void main() {
             contains('Hello there'));
         expect(rows.firstWhere((m) => m.subject == 'Two').preview,
             'The second one.');
+      });
+
+      test('a body cached with its HTML and no text gets the text back',
+          () async {
+        // How a Microsoft HTML message opened before the text was made from
+        // its HTML sits in the cache: no second line in the list, and no
+        // notes for a meeting made from it. Offline, so the server cannot be
+        // what mends it.
+        seedGmail();
+        server.folder('INBOX').deliver(subject: 'Our call');
+        final a = await addAccount();
+        final id = (await engine.loadMessages('${a.id}:INBOX')).single.id;
+        const html = '<p>Hi Ron, confirming <b>Thursday</b> at ten.</p>';
+        await store.writeBody(a.id, 'INBOX', 1,
+            text: '', html: html, preview: '');
+        server.offline = true;
+
+        final body = await engine.loadMessageBody(id);
+
+        expect(body.text, contains('confirming Thursday at ten.'));
+        expect(body.html, html);
+        expect((await store.readMessages(a.id, 'INBOX')).single.preview,
+            contains('confirming Thursday at ten.'));
       });
     });
   }

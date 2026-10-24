@@ -8,7 +8,9 @@ import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import '../imap/imap_mapping.dart';
 import '../../domain/calendar_invite.dart';
+import '../../domain/draft.dart' show SendFailed;
 import 'package:enough_mail/enough_mail.dart' as em;
+import '../compose/mime_parts.dart' show attachmentsInMime, mimeWithoutFiles;
 import '../imap/imap_transport.dart';
 import '../mail_engine.dart';
 import 'filed_message.dart';
@@ -45,11 +47,17 @@ class GraphTransport implements ImapTransport {
     required this.accountId,
     required this.api,
     required this.idMap,
+    this.maxMimeBytes = GraphMailApi.maxPostedMimeBytes,
   });
 
   final String accountId;
   final GraphMailApi api;
   final GraphIdMap idMap;
+
+  /// The largest message put in a folder in one request; see
+  /// [appendMessage]. Lowered by tests, for the reason GraphSender gives
+  /// for its own.
+  final int maxMimeBytes;
 
   /// Folder path to Graph id, filled by [listFolders] and needed by every call
   /// that takes a path.
@@ -385,12 +393,24 @@ class GraphTransport implements ImapTransport {
     // message's MIME, the way it was sent. Only fetched for event messages:
     // the whole message can be tens of megabytes, and downloading it to look
     // for a part that is almost never there would make every message slow.
+    //
+    // A download that could not be had for the moment leaves the words to
+    // read and says the invitation is still to come, so the body is not
+    // cached and the next open asks again (see [MailBody.calendarPending]).
+    // Swallowed, the message was cached as one with no invitation, and its
+    // card never came back; thrown, a meeting request with a large deck
+    // attached could not be read at all on a weak signal. MIME Microsoft
+    // refuses, or that will not parse, leaves the message to read without
+    // one.
     String? calendar;
+    var pending = false;
     if (body.isEventMessage) {
       try {
         calendar = calendarPartOf(
           em.MimeMessage.parseFromData(await api.mimeBytes(remoteId)),
         );
+      } on GraphUnavailable {
+        pending = true;
       } catch (_) {
         calendar = null;
       }
@@ -400,15 +420,32 @@ class GraphTransport implements ImapTransport {
     // arrives. The list of what is attached is one small request and the
     // reading pane asks for it anyway; only the invitation itself is
     // downloaded, and only when there is one.
-    calendar ??= body.hasAttachments
-        ? await _calendarFileOn(remoteId)
-        : null;
-    return MailBody(text: body.text ?? '', html: body.html, calendar: calendar);
+    if (calendar == null && !pending && body.hasAttachments) {
+      try {
+        calendar = await _calendarFileOn(remoteId);
+      } on GraphUnavailable {
+        pending = true;
+      }
+    }
+    // Graph sends one form of the body, and for work mail it is HTML. The
+    // text is what the cache makes the list's second line from and what a
+    // meeting made from the message takes for notes, so it is the HTML read
+    // as text, as it is for a Gmail message with no text part. Left empty,
+    // it wiped the preview Graph had sent with the row.
+    final html = body.html;
+    return MailBody(
+      text: body.text ?? (html != null ? htmlToText(html) : ''),
+      html: html,
+      calendar: calendar,
+      calendarPending: pending,
+    );
   }
 
   /// The invitation attached to a message, if one of its files is an
-  /// `.ics`. Silent about failure: a message that will not give up its
-  /// attachments still has a body worth showing.
+  /// `.ics`. Silent about a refusal: a message that will not give up its
+  /// attachments still has a body worth showing. Not about Microsoft being
+  /// out of reach for the moment, which would otherwise be cached as a
+  /// message with no invitation; see [fetchBody].
   Future<String?> _calendarFileOn(String remoteId) async {
     try {
       for (final file in await api.attachments(remoteId)) {
@@ -420,6 +457,8 @@ class GraphTransport implements ImapTransport {
         final text = utf8.decode(bytes, allowMalformed: true);
         if (text.trim().isNotEmpty) return text;
       }
+    } on GraphUnavailable {
+      rethrow;
     } catch (_) {
       // No invitation, then.
     }
@@ -575,18 +614,20 @@ class GraphTransport implements ImapTransport {
     required bool set,
   }) async {
     final remoteIds = await idMap.remoteIdsFor(accountId, path, uids);
-    for (final uid in uids) {
-      final id = remoteIds[uid];
-      if (id == null) continue;
-      try {
-        await _applyFlag(id, flag, set);
-      } on GraphNotFound {
-        // A delete of mail already gone has nothing left to do. Anything
-        // else on a message that is not there is still a failure.
-        if (flag != MessageFlag.deleted || !set) rethrow;
-        if (await api.message(id) != null) rethrow;
-      }
-    }
+    final failures = await _applyFlag(
+      [for (final uid in uids) ?remoteIds[uid]],
+      flag,
+      set,
+    );
+    if (failures.isEmpty) return;
+    // Which went is said, so a selection marked part way keeps on screen
+    // the part that was.
+    final stored = [
+      for (final uid in uids)
+        if (!failures.containsKey(remoteIds[uid])) uid,
+    ];
+    if (stored.isEmpty) throw failures.values.first;
+    throw FlaggedInPart(stored: stored, cause: failures.values.first);
   }
 
   @override
@@ -599,9 +640,11 @@ class GraphTransport implements ImapTransport {
     if (flag == MessageFlag.deleted && set) {
       return _deleteAll(folderId);
     }
-    // Paged rather than one call: "mark all read" on a folder of thousands is
-    // thousands of requests either way, and holding them all in memory first
-    // buys nothing.
+    if (flag == MessageFlag.seen && set) {
+      return _markAllRead(folderId);
+    }
+    // Any other mark on a whole folder, which the app does not ask for, is
+    // paged through. Holding the folder in memory first buys nothing.
     for (var page = 0; page < _maxPages; page++) {
       final messages = await api.messages(
         folderId,
@@ -609,14 +652,54 @@ class GraphTransport implements ImapTransport {
         top: _pageSize,
       );
       if (messages.isEmpty) return;
-      for (final m in messages) {
-        // Already in the wanted state. Skipping keeps a second "mark all
-        // read" from being thousands of pointless writes.
-        if (flag == MessageFlag.seen && m.isRead == set) continue;
-        if (flag == MessageFlag.flagged && m.isFlagged == set) continue;
-        await _applyFlag(m.id, flag, set);
-      }
+      final failures = await _applyFlag(
+        [
+          for (final m in messages)
+            // Already in the wanted state, and left alone.
+            if (!(flag == MessageFlag.seen && m.isRead == set) &&
+                !(flag == MessageFlag.flagged && m.isFlagged == set))
+              m.id,
+        ],
+        flag,
+        set,
+      );
+      if (failures.isNotEmpty) throw failures.values.first;
       if (messages.length < _pageSize) return;
+    }
+  }
+
+  /// Mark a folder read: what is unread, from the top, until nothing is.
+  ///
+  /// Asked for by what is unread, not paged through by offset. That looked
+  /// at the newest 4,000 and stopped without a word, so older unread mail
+  /// in a folder a rule fills stayed unread and its badge stayed up; and
+  /// it listed every message to find the few unread. What is read already
+  /// is not listed, so a second Mark all read writes nothing. Each page
+  /// marked drops out of the next listing, as an emptied one does in
+  /// [_deleteAll], and the marks go twenty to a request.
+  Future<void> _markAllRead(String folderId) async {
+    final tried = <String>{};
+    while (true) {
+      final unread = await api.unreadMessages(folderId, top: _pageSize);
+      if (unread.isEmpty) return;
+      final fresh = [
+        for (final m in unread)
+          if (tried.add(m.id)) m.id,
+      ];
+      if (fresh.isEmpty) {
+        // Marked, and still unread. Going round again would never end.
+        throw const ConnectionFailed(
+          'Microsoft would not mark some of the messages in that folder read.',
+        );
+      }
+      final answers = await api.batch([
+        for (final id in fresh) GraphRequest.read(id, true),
+      ]);
+      for (final (json: _, :failure) in answers) {
+        // Gone since the page was listed: nothing left to mark.
+        if (failure == null || failure is GraphNotFound) continue;
+        throw failure;
+      }
     }
   }
 
@@ -641,43 +724,76 @@ class GraphTransport implements ImapTransport {
           'Microsoft would not delete some of the messages in that folder.',
         );
       }
-      for (final m in fresh) {
-        try {
-          await _applyFlag(m.id, MessageFlag.deleted, true);
-        } on GraphNotFound {
-          // Gone since the page was listed (Outlook, a rule, another
-          // device): the delete asked for has already happened.
-        }
+      final answers = await api.batch([
+        for (final m in fresh) GraphRequest.delete(m.id),
+      ]);
+      for (final (json: _, :failure) in answers) {
+        // Gone since the page was listed (Outlook, a rule, another
+        // device): the delete asked for has already happened.
+        if (failure == null || failure is GraphNotFound) continue;
+        throw failure;
       }
     }
   }
 
-  Future<void> _applyFlag(String remoteId, MessageFlag flag, bool set) async {
-    switch (flag) {
-      case MessageFlag.seen:
-        await api.setRead(remoteId, set);
-      case MessageFlag.flagged:
-        await api.setFlagged(remoteId, set);
-      case MessageFlag.deleted:
-        // Graph has no \Deleted to set and later expunge: deleting is a single
-        // call, and it moves the message to Deleted Items exactly as Outlook
-        // does. Unsetting is meaningless, so it does nothing rather than
-        // pretending to undelete.
-        if (set) await api.delete(remoteId);
-      case MessageFlag.answered || MessageFlag.forwarded:
-        // Exchange has no flag for either. It keeps what was last done to a
-        // message, so setting one writes that, and there is nothing to clear.
-        if (set) {
-          await api.setLastVerb(
-            remoteId,
-            flag == MessageFlag.forwarded
-                ? GraphMailApi.verbForward
-                : GraphMailApi.verbReply,
-            at: DateTime.now(),
-          );
-        }
+  /// Set or clear [flag] on each of [remoteIds], twenty to a request (see
+  /// [GraphMailApi.batch]), and answer with the ones that failed and why,
+  /// in the order asked, once every one has been tried.
+  Future<Map<String, Exception>> _applyFlag(
+    List<String> remoteIds,
+    MessageFlag flag,
+    bool set,
+  ) async {
+    final asked = [
+      for (final id in remoteIds)
+        if (_flagRequest(id, flag, set) case final request?) (id, request),
+    ];
+    final answers = await api.batch([for (final (_, r) in asked) r]);
+    final failures = <String, Exception>{};
+    for (final (i, (id, _)) in asked.indexed) {
+      final failure = answers[i].failure;
+      if (failure == null) continue;
+      // A delete of mail already gone has nothing left to do. Anything
+      // else on a message that is not there is still a failure.
+      if (failure is GraphNotFound &&
+          flag == MessageFlag.deleted &&
+          set &&
+          await api.message(id) == null) {
+        continue;
+      }
+      failures[id] = failure;
     }
+    return failures;
   }
+
+  /// What sets or clears [flag] on one message, or null where there is
+  /// nothing to do.
+  static GraphRequest? _flagRequest(
+    String remoteId,
+    MessageFlag flag,
+    bool set,
+  ) =>
+      switch (flag) {
+        MessageFlag.seen => GraphRequest.read(remoteId, set),
+        MessageFlag.flagged => GraphRequest.flagged(remoteId, set),
+        // Graph has no \Deleted to set and later expunge: deleting is a
+        // single call, and it moves the message to Deleted Items exactly as
+        // Outlook does. Unsetting is meaningless, so it does nothing rather
+        // than pretending to undelete.
+        MessageFlag.deleted => set ? GraphRequest.delete(remoteId) : null,
+        // Exchange has no flag for either. It keeps what was last done to a
+        // message, so setting one writes that, and there is nothing to
+        // clear.
+        MessageFlag.answered || MessageFlag.forwarded => set
+            ? GraphRequest.lastVerb(
+                remoteId,
+                flag == MessageFlag.forwarded
+                    ? GraphMailApi.verbForward
+                    : GraphMailApi.verbReply,
+                at: DateTime.now(),
+              )
+            : null,
+      };
 
   /// A reply to all is a verb of its own on Exchange.
   @override
@@ -707,43 +823,60 @@ class GraphTransport implements ImapTransport {
   ) async {
     final destination = await _folderId(toPath);
     final remoteIds = await idMap.remoteIdsFor(accountId, fromPath, uids);
+    final asked = [
+      for (final uid in uids)
+        if (remoteIds[uid] != null) uid,
+    ];
+
+    // Twenty to a request; see GraphMailApi.batch.
+    final answers = await api.batch([
+      for (final uid in asked) GraphRequest.move(remoteIds[uid]!, destination),
+    ]);
 
     final movedIds = <String>[];
     final moved = <int>[];
-    try {
-      for (final uid in uids) {
-        final id = remoteIds[uid];
-        if (id == null) continue;
-        // Graph reissues the id on a move, and the old one stops resolving at
-        // once. Taking the new one is what lets the destination folder be
-        // numbered without a resync.
-        final String? newId;
+    Object? failure;
+    for (final (i, uid) in asked.indexed) {
+      final (:json, failure: refused) = answers[i];
+      if (refused == null) {
+        moved.add(uid);
+        // Graph reissues the id on a move, and the old one stops resolving
+        // at once. Taking the new one is what lets the destination folder
+        // be numbered without a resync.
+        final newId = json['id'];
+        if (newId is String && newId.isNotEmpty) movedIds.add(newId);
+        continue;
+      }
+      if (refused is GraphNotFound && failure == null) {
+        // Deleted or moved already, from Outlook, a rule, another device.
+        // Where it was asked to leave, it has left: counted as moved, so
+        // its number is spent and its row goes. A Delete from the shade
+        // otherwise failed five times over and then said the message was
+        // where it was. Unless the message is still there, in which case
+        // what was not found is the destination, and so it is for the rest.
         try {
-          newId = await api.move(id, destination);
-        } on GraphNotFound {
-          // Deleted or moved already, from Outlook, a rule, another device.
-          // Where it was asked to leave, it has left: counted as moved, so
-          // its number is spent and its row goes. A Delete from the shade
-          // otherwise failed five times over and then said the message was
-          // where it was. Unless the message is still there, in which case
-          // what was not found is the destination.
-          if (await api.message(id) != null) rethrow;
-          moved.add(uid);
+          if (await api.message(remoteIds[uid]!) == null) {
+            moved.add(uid);
+            continue;
+          }
+        } catch (e) {
+          failure = e;
           continue;
         }
-        moved.add(uid);
-        if (newId != null) movedIds.add(newId);
       }
-    } catch (e) {
-      // One at a time, so a failure part way leaves some moved. Their old
-      // numbers point at nothing now, and saying which went is what lets
-      // them stay gone from the list and be put back.
-      if (moved.isEmpty) rethrow;
+      failure ??= refused;
+    }
+
+    if (failure != null) {
+      // Some may have gone and others not. Their old numbers point at
+      // nothing now, and saying which went is what lets them stay gone from
+      // the list and be put back.
+      if (moved.isEmpty) throw failure;
       await idMap.forgetMoved(accountId, fromPath, moved);
       throw MovedInPart(
         moved: moved,
         landed: await _numbered(toPath, movedIds),
-        cause: e,
+        cause: failure,
       );
     }
 
@@ -767,18 +900,64 @@ class GraphTransport implements ImapTransport {
     bool seen = true,
     bool draft = false,
   }) async {
-    final id = await api.createMessage(await _folderId(path), mimeText);
+    final folderId = await _folderId(path);
+    final id = utf8.encode(mimeText).length <= maxMimeBytes
+        ? await api.createMessage(folderId, mimeText)
+        : await _createInPieces(folderId, mimeText);
     // A message created from MIME arrives unread. Everything the app appends
     // is something the person wrote, so leaving it bold in Drafts would be
     // wrong. But it exists by now: failing to mark it must not read as not
     // saved, or the caller saves another copy.
-    if (id != null && seen) {
+    if (seen) {
       try {
         await api.setRead(id, true);
       } catch (e) {
         debugPrint('[myemail] appended, but not marked read: $e');
       }
     }
+  }
+
+  /// A message too large to post whole, made the way GraphSender sends
+  /// one: the message without its files first, then each file put on it,
+  /// through an upload session where the file is itself too large. Posted
+  /// whole, a draft with a 4 MB file on it was refused every time.
+  ///
+  /// If a file will not go, the message is taken back out and the failure
+  /// thrown: a draft without its files is not the draft, and the copy it
+  /// was to replace is still there.
+  Future<String> _createInPieces(String folderId, String mimeText) async {
+    final words = mimeWithoutFiles(mimeText);
+    final size = utf8.encode(words).length;
+    if (size > maxMimeBytes) {
+      // The message itself, not its files: a picture pasted into the text
+      // is the usual cause, and it cannot be split off the way a file can.
+      throw SendFailed(
+        'The message itself is ${(size / (1024 * 1024)).toStringAsFixed(1)} '
+        'MB before any attachments, which is more than Microsoft accepts in '
+        'one piece, so it was not saved. Pictures pasted into the message '
+        'are the usual cause; attaching them instead works.',
+      );
+    }
+    final id = await api.createMessage(folderId, words);
+    try {
+      for (final a in attachmentsInMime(mimeText)) {
+        await api.attach(
+          id,
+          name: a.fileName,
+          contentType: a.mimeType,
+          bytes: a.bytes,
+          contentId: a.contentId,
+        );
+      }
+    } catch (_) {
+      try {
+        await api.delete(id);
+      } catch (e) {
+        debugPrint('[myemail] a half-saved draft was left: $e');
+      }
+      rethrow;
+    }
+    return id;
   }
 
   /// As received mail, in Graph's JSON: see [filedMessageFromMime].

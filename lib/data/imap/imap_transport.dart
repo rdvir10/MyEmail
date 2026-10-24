@@ -155,6 +155,9 @@ abstract class ImapTransport {
     bool unlabelledOnly = false,
   });
 
+  /// Set or clear [flag] on [uids]. One STORE over IMAP, which goes or does
+  /// not; over Graph each message is a request of its own, and one that
+  /// reached some and not the rest throws [FlaggedInPart].
   Future<void> storeFlag(
     String path, {
     required List<int> uids,
@@ -287,6 +290,18 @@ class MovedInPart implements Exception {
 /// One message a search found, and its header where the search brought it:
 /// see [ImapTransport.searchHits].
 typedef SearchHit = ({int uid, RemoteHeader? header});
+/// A transport's [ImapTransport.storeFlag] that reached part of what it was
+/// given: [stored] have the flag as asked, and the rest do not, because of
+/// [cause].
+class FlaggedInPart implements Exception {
+  const FlaggedInPart({required this.stored, required this.cause});
+
+  final List<int> stored;
+  final Object cause;
+
+  @override
+  String toString() => '$cause';
+}
 
 @immutable
 class RemoteFolder {

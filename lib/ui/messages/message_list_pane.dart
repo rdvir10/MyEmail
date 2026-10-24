@@ -845,13 +845,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       case 'delete':
         await actions.delete(context, messages);
       case 'read':
-        for (final m in messages) {
-          await notifier.setRead(m.id, unread);
-        }
+        await notifier.setMessagesRead([for (final m in messages) m.id], unread);
       case 'flag':
-        for (final m in messages) {
-          await notifier.setFlagged(m.id, !flagged);
-        }
+        await notifier
+            .setMessagesFlagged([for (final m in messages) m.id], !flagged);
     }
   }
 

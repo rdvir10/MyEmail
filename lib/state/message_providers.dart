@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/mail_engine.dart' show PartialFlagChange;
 import '../domain/calendar_invite.dart';
 import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
@@ -264,10 +265,18 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       state.value?.any((m) => m.id == messageId) ?? false;
 
   Future<void> setRead(String messageId, bool isRead) =>
-      _setFlags(messageId, isRead: isRead);
+      _setFlags([messageId], isRead: isRead);
 
   Future<void> setFlagged(String messageId, bool isFlagged) =>
-      _setFlags(messageId, isFlagged: isFlagged);
+      _setFlags([messageId], isFlagged: isFlagged);
+
+  /// [setRead] on several of this list's messages, sent to the engine
+  /// together: see [MailEngine.setMessagesRead].
+  Future<void> setMessagesRead(List<String> messageIds, bool isRead) =>
+      _setFlags(messageIds, isRead: isRead);
+
+  Future<void> setMessagesFlagged(List<String> messageIds, bool isFlagged) =>
+      _setFlags(messageIds, isFlagged: isFlagged);
 
   /// Move messages out of this list. The rows go at once and come back if
   /// the engine refuses, so a failed move never silently loses a message
@@ -391,55 +400,100 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     }
   }
 
+  /// The change on every row of [messageIds] it changes, on screen at once,
+  /// and then on the server, all of them in one go.
   Future<void> _setFlags(
-    String messageId, {
+    List<String> messageIds, {
     bool? isRead,
     bool? isFlagged,
   }) async {
     final current = state.value;
     if (current == null) return;
-    final index = current.indexWhere((m) => m.id == messageId);
-    if (index < 0) return;
-    final before = current[index];
-    final after = before.copyWith(isRead: isRead, isFlagged: isFlagged);
-    if (after.isRead == before.isRead && after.isFlagged == before.isFlagged) {
-      return;
-    }
+    final asked = messageIds.toSet();
+    // Each row as it was. One already as asked is left out, and the server
+    // is not asked about it.
+    final before = {
+      for (final m in current)
+        if (asked.contains(m.id) &&
+            ((isRead != null && m.isRead != isRead) ||
+                (isFlagged != null && m.isFlagged != isFlagged)))
+          m.id: m,
+    };
+    if (before.isEmpty) return;
 
     _changes++;
-    state = AsyncData([...current]..[index] = after);
+    state = AsyncData([
+      for (final m in current)
+        if (before.containsKey(m.id))
+          m.copyWith(isRead: isRead, isFlagged: isFlagged)
+        else
+          m,
+    ]);
+    final ids = [...before.keys];
     try {
       final engine = ref.read(mailEngineProvider);
-      if (isRead != null) await engine.setRead(messageId, isRead);
-      if (isFlagged != null) await engine.setFlagged(messageId, isFlagged);
-    } catch (_) {
-      // This message back as it was, and nothing else: the rest of the list
-      // may have moved on meanwhile.
-      final now = state.value;
-      final at = now?.indexWhere((m) => m.id == messageId) ?? -1;
-      if (now != null && at >= 0) {
-        state = AsyncData([...now]
-          ..[at] = now[at].copyWith(
-            isRead: before.isRead,
-            isFlagged: before.isFlagged,
-          ));
+      if (isRead != null) await engine.setMessagesRead(ids, isRead);
+      if (isFlagged != null) await engine.setMessagesFlagged(ids, isFlagged);
+    } on PartialFlagChange catch (part) {
+      final failed = part.failed.toSet();
+      _putFlagsBack([for (final id in failed) ?before[id]]);
+      _afterFlags([
+        for (final m in before.values)
+          if (!failed.contains(m.id)) m,
+      ], isRead: isRead);
+      rethrow;
+    } catch (e) {
+      _putFlagsBack(before.values);
+      // Rows that were as asked already still are, so a selection of them
+      // and others is said to have failed for the others only.
+      if (ids.length < asked.length) {
+        throw PartialFlagChange(failed: ids, cause: e);
       }
       rethrow;
     }
+    _afterFlags(before.values, isRead: isRead);
+  }
 
+  /// [rows] back as they were, read and flagged, and nothing else: the rest
+  /// of the list may have moved on meanwhile.
+  void _putFlagsBack(Iterable<MailMessage> rows) {
+    final was = {for (final m in rows) m.id: m};
+    final now = state.value;
+    if (now == null || was.isEmpty) return;
+    state = AsyncData([
+      for (final m in now)
+        if (was[m.id] case final b?)
+          m.copyWith(isRead: b.isRead, isFlagged: b.isFlagged)
+        else
+          m,
+    ]);
+  }
+
+  void _afterFlags(Iterable<MailMessage> changed, {bool? isRead}) {
+    if (changed.isEmpty) return;
     // The count moves now, and the server's follows without anything
     // waiting for it. Awaited, marking thirty messages read was thirty
     // folder listings end to end.
     if (isRead != null) {
-      final folders = ref.read(foldersProvider.notifier)
-        ..countUnread(after.folderId, isRead ? -1 : 1);
-      unawaited(
-        folders.refreshAccount(after.accountId).catchError((Object _) {}),
-      );
+      final folders = ref.read(foldersProvider.notifier);
+      final byFolder = <String, int>{};
+      for (final m in changed) {
+        byFolder[m.folderId] = (byFolder[m.folderId] ?? 0) + 1;
+      }
+      for (final MapEntry(key: id, value: n) in byFolder.entries) {
+        folders.countUnread(id, isRead ? -n : n);
+      }
+      for (final accountId in {for (final m in changed) m.accountId}) {
+        unawaited(
+          folders.refreshAccount(accountId).catchError((Object _) {}),
+        );
+      }
     }
-    // Keep the other view of this message honest.
+    // Keep the other view of these messages honest.
     if (folderId == kUnifiedInboxId) {
-      ref.invalidate(messagesProvider(after.folderId));
+      for (final id in {for (final m in changed) m.folderId}) {
+        ref.invalidate(messagesProvider(id));
+      }
     } else {
       ref.invalidate(messagesProvider(kUnifiedInboxId));
     }
@@ -685,8 +739,19 @@ final isSelectingProvider =
     Provider<bool>((ref) => ref.watch(selectedMessageIdsProvider).isNotEmpty);
 
 final messageBodyProvider =
-    FutureProvider.family<MailBody, String>((ref, messageId) {
-  return ref.watch(mailEngineProvider).loadMessageBody(messageId);
+    FutureProvider.family<MailBody, String>((ref, messageId) async {
+  final body = await ref.watch(mailEngineProvider).loadMessageBody(messageId);
+  // Its invitation could not be fetched just now. The words stay on screen
+  // as they are, and the message is asked for again when it is next opened,
+  // which is when its card can come. Held as a whole body is, it would not
+  // be asked again while the app stayed open. Just after the opening, not
+  // in it: Riverpod allows nothing to change from inside its own callbacks.
+  if (body.calendarPending && ref.mounted) {
+    ref.onResume(() => scheduleMicrotask(() {
+          if (ref.mounted) ref.invalidateSelf();
+        }));
+  }
+  return body;
 });
 
 /// The invitation a message carries, read once when its body arrives rather

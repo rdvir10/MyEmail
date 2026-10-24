@@ -163,8 +163,8 @@ class MessageActions {
       _setEach(
         context,
         messages,
-        held: (n, m) => n.setRead(m.id, isRead),
-        engine: (e, m) => e.setRead(m.id, isRead),
+        held: (n, ids) => n.setMessagesRead(ids, isRead),
+        engine: (e, ids) => e.setMessagesRead(ids, isRead),
         what: isRead ? 'mark read' : 'mark unread',
       );
 
@@ -176,8 +176,8 @@ class MessageActions {
       _setEach(
         context,
         messages,
-        held: (n, m) => n.setFlagged(m.id, isFlagged),
-        engine: (e, m) => e.setFlagged(m.id, isFlagged),
+        held: (n, ids) => n.setMessagesFlagged(ids, isFlagged),
+        engine: (e, ids) => e.setMessagesFlagged(ids, isFlagged),
         what: isFlagged ? 'flag' : 'unflag',
       );
 
@@ -186,37 +186,44 @@ class MessageActions {
   /// It stopped at the first that failed and said nothing, leaving the rest
   /// untouched and the ticks in place. Now each is tried, and what failed is
   /// counted and said.
+  ///
+  /// They go to the engine together rather than one by one, so a Microsoft
+  /// account sends twenty to a request: sixty flagged were sixty requests
+  /// end to end, seconds on a phone.
   Future<void> _setEach(
     BuildContext context,
     List<MailMessage> messages, {
-    required Future<void> Function(Messages, MailMessage) held,
-    required Future<void> Function(MailEngine, MailMessage) engine,
+    required Future<void> Function(Messages, List<String>) held,
+    required Future<void> Function(MailEngine, List<String>) engine,
     required String what,
   }) async {
     if (messages.isEmpty) return;
     final to = _reporterFor(context);
     final (here, elsewhere) = _split(messages);
-    final notifier = container.read(messagesProvider(listId).notifier);
     var failed = 0;
     Object? why;
-    for (final m in here) {
+    Future<void> change(
+      List<MailMessage> some,
+      Future<void> Function(List<String>) apply,
+    ) async {
       try {
-        await held(notifier, m);
+        await apply([for (final m in some) m.id]);
+      } on PartialFlagChange catch (part) {
+        failed += part.failed.length;
+        why ??= part;
       } catch (e) {
-        failed++;
+        failed += some.length;
         why ??= e;
       }
     }
+
+    if (here.isNotEmpty) {
+      final notifier = container.read(messagesProvider(listId).notifier);
+      await change(here, (ids) => held(notifier, ids));
+    }
     if (elsewhere.isNotEmpty) {
       final mail = container.read(mailEngineProvider);
-      for (final m in elsewhere) {
-        try {
-          await engine(mail, m);
-        } catch (e) {
-          failed++;
-          why ??= e;
-        }
-      }
+      await change(elsewhere, (ids) => engine(mail, ids));
       await _afterEngineChange(elsewhere);
     } else {
       _refreshSearch();

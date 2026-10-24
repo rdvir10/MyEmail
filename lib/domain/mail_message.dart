@@ -248,7 +248,12 @@ class MailMessage {
 /// supplied none, and is what the browser preview shows.
 @immutable
 class MailBody {
-  const MailBody({required this.text, this.html, this.calendar});
+  const MailBody({
+    required this.text,
+    this.html,
+    this.calendar,
+    this.calendarPending = false,
+  });
 
   final String text;
   final String? html;
@@ -256,4 +261,11 @@ class MailBody {
   /// The `text/calendar` part, when the message carries an invitation:
   /// iCalendar text, parsed by `CalendarInvite.parse` where it is shown.
   final String? calendar;
+
+  /// True when the part of the message an invitation would be in could not
+  /// be fetched just now: Microsoft out of reach for a moment, or a large
+  /// download that would not finish. The words are all here to read; the
+  /// body is not cached, and the message is asked for again when it is
+  /// next opened, so the Accept and Decline card can come with it then.
+  final bool calendarPending;
 }

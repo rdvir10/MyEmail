@@ -314,6 +314,20 @@ abstract class MailEngine {
   /// Set or clear \Flagged.
   Future<void> setFlagged(String messageId, bool isFlagged);
 
+  /// [setRead] on several messages at once, as a selection is marked. Each
+  /// folder's go together: one STORE over IMAP, twenty to a request on a
+  /// Microsoft account. One at a time, sixty marked on a Microsoft account
+  /// were sixty requests end to end.
+  ///
+  /// Every folder is tried whatever happened to the one before. Where none
+  /// changed, the first failure is thrown as it came; where only some did,
+  /// a [PartialFlagChange] names the rest.
+  Future<void> setMessagesRead(List<String> messageIds, bool isRead);
+
+  /// [setFlagged] on several messages at once, the way [setMessagesRead]
+  /// marks them.
+  Future<void> setMessagesFlagged(List<String> messageIds, bool isFlagged);
+
   /// Move messages into [toFolderId], from any account. Within one account
   /// the server moves them. Into another, which no server does, each is
   /// copied there as it is and then deleted here, into Trash: see
@@ -468,6 +482,25 @@ class ConnectionFailed implements Exception, Retryable, ReadableError {
 
   @override
   final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// A read or flagged change on several messages that reached some of them:
+/// the ones in [failed] are as they were, because of [cause], and every
+/// other one asked for is as asked. Thrown as the cause alone, a selection
+/// whose change had mostly gone was put back on screen whole, and said to
+/// have failed for all of it.
+class PartialFlagChange implements Exception, ReadableError {
+  const PartialFlagChange({required this.failed, required this.cause});
+
+  final List<String> failed;
+  final Object cause;
+
+  @override
+  String get message =>
+      cause is ReadableError ? (cause as ReadableError).message : '$cause';
 
   @override
   String toString() => message;

@@ -216,16 +216,14 @@ class FolderSync {
 
   /// The body, from the cache if we have it, else fetched and cached along
   /// with a preview for the list.
+  ///
+  /// Not cached when its invitation is still to come: kept, it would be
+  /// the message without its card for good.
   Future<MailBody> body(String path, int uid) async {
-    final cached = await store.readMessage(accountId, path, uid);
-    if (cached != null && cached.bodyText != null) {
-      return MailBody(
-        text: cached.bodyText!,
-        html: cached.bodyHtml,
-        calendar: cached.calendar,
-      );
-    }
+    final cached = await cachedBody(store, accountId, path, uid);
+    if (cached != null) return cached;
     final fetched = await transport.fetchBody(path, uid);
+    if (fetched.calendarPending) return fetched;
     await store.writeBody(
       accountId,
       path,
@@ -284,6 +282,47 @@ class FolderSync {
         inReplyTo: h.inReplyTo,
         conversationId: h.conversationId,
       );
+}
+
+/// The body cached for a message, or null where none is.
+///
+/// A Microsoft HTML message opened before the text was made from its HTML
+/// (see `GraphTransport.fetchBody`) was cached with no text at all: its row
+/// lost the second line Graph had sent with it, and a meeting made from it
+/// had nothing for notes. A cached body is never fetched again, so the
+/// text is made from the HTML here, the first time the message is opened
+/// since, and kept, with the list's preview made from it.
+Future<MailBody?> cachedBody(
+  CacheStore store,
+  String accountId,
+  String path,
+  int uid,
+) async {
+  final cached = await store.readMessage(accountId, path, uid);
+  final text = cached?.bodyText;
+  if (cached == null || text == null) return null;
+  final html = cached.bodyHtml;
+  if (text.isEmpty && html != null && html.isNotEmpty) {
+    final remade = htmlToText(html);
+    if (remade.isNotEmpty) {
+      try {
+        await store.writeBody(
+          accountId,
+          path,
+          uid,
+          text: remade,
+          html: html,
+          calendar: cached.calendar,
+          preview: previewFromText(remade),
+        );
+      } catch (_) {
+        // Kept or not, the message reads the same; the next open tries
+        // again.
+      }
+      return MailBody(text: remade, html: html, calendar: cached.calendar);
+    }
+  }
+  return MailBody(text: text, html: html, calendar: cached.calendar);
 }
 
 class SyncResult {

@@ -868,6 +868,38 @@ class SampleMailEngine implements MailEngine {
   Future<void> setFlagged(String messageId, bool isFlagged) =>
       _setFlags(messageId, isFlagged: isFlagged);
 
+  @override
+  Future<void> setMessagesRead(List<String> messageIds, bool isRead) =>
+      _each(messageIds, (id) => setRead(id, isRead));
+
+  @override
+  Future<void> setMessagesFlagged(List<String> messageIds, bool isFlagged) =>
+      _each(messageIds, (id) => setFlagged(id, isFlagged));
+
+  /// [change] on each message in turn, through the one-message form so a
+  /// test that refuses one message refuses it here too, and failures
+  /// reported as [MailEngine.setMessagesRead] reports them.
+  Future<void> _each(
+    List<String> messageIds,
+    Future<void> Function(String messageId) change,
+  ) async {
+    final failed = <String>[];
+    (Object, StackTrace)? first;
+    for (final id in messageIds) {
+      try {
+        await change(id);
+      } catch (e, stack) {
+        failed.add(id);
+        first ??= (e, stack);
+      }
+    }
+    if (first == null) return;
+    if (failed.length == messageIds.length) {
+      Error.throwWithStackTrace(first.$1, first.$2);
+    }
+    throw PartialFlagChange(failed: failed, cause: first.$1);
+  }
+
   Future<void> _setFlags(String messageId, {bool? isRead, bool? isFlagged}) async {
     await _latency();
     final folderId = messageId.substring(0, messageId.lastIndexOf('#'));

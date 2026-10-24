@@ -258,6 +258,14 @@ class _EmptyEngine implements MailEngine {
       _inner.setFlagged(messageId, isFlagged);
 
   @override
+  Future<void> setMessagesRead(List<String> messageIds, bool isRead) =>
+      _inner.setMessagesRead(messageIds, isRead);
+
+  @override
+  Future<void> setMessagesFlagged(List<String> messageIds, bool isFlagged) =>
+      _inner.setMessagesFlagged(messageIds, isFlagged);
+
+  @override
   Future<List<MessageMove>> moveMessages(
     List<String> messageIds,
     String toFolderId,

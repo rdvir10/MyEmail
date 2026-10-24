@@ -36,6 +36,17 @@ class _RefusingEngine implements MailEngine {
       throw const ConnectionFailed('offline');
 
   @override
+  Future<void> setMessagesRead(List<String> messageIds, bool isRead) async =>
+      throw const ConnectionFailed('offline');
+
+  @override
+  Future<void> setMessagesFlagged(
+    List<String> messageIds,
+    bool isFlagged,
+  ) async =>
+      throw const ConnectionFailed('offline');
+
+  @override
   Future<List<Account>> loadAccounts() => _inner.loadAccounts();
 
   @override
@@ -318,6 +329,54 @@ void main() {
       expect(after.any((m) => m.id == target.id), isFalse);
     });
 
+    test('a selection with one refused puts back that one alone', () async {
+      final engine = _RefusesOne();
+      final c = container(engine: engine);
+      await c.read(foldersProvider.future);
+      const folderId = 'acct-personal:INBOX';
+      final list = await c.read(messagesProvider(folderId).future);
+      final unread = [for (final m in list) if (!m.isRead) m.id].take(3).toList();
+      expect(unread, hasLength(3));
+      engine.refused = unread[1];
+      final unreadBefore = c.read(folderIndexProvider)[folderId]!.unreadCount;
+
+      await expectLater(
+        c.read(messagesProvider(folderId).notifier).setMessagesRead(unread, true),
+        throwsA(isA<PartialFlagChange>()
+            .having((p) => p.failed, 'failed', [unread[1]])),
+      );
+
+      final now = {
+        for (final m in c.read(messagesProvider(folderId)).value!) m.id: m,
+      };
+      expect([for (final id in unread) now[id]!.isRead], [true, false, true]);
+      expect(c.read(folderIndexProvider)[folderId]!.unreadCount,
+          unreadBefore - 2);
+    });
+
+    test('a selection the server refuses fails only for what it would change',
+        () async {
+      // Marking read a selection with some read already, offline, said all
+      // of them had failed.
+      final c = container(engine: _RefusingEngine());
+      await c.read(foldersProvider.future);
+      const folderId = 'acct-personal:INBOX';
+      final list = await c.read(messagesProvider(folderId).future);
+      final read = list.firstWhere((m) => m.isRead).id;
+      final unread = [for (final m in list) if (!m.isRead) m.id].take(2).toList();
+
+      await expectLater(
+        c
+            .read(messagesProvider(folderId).notifier)
+            .setMessagesRead([read, ...unread], true),
+        throwsA(isA<PartialFlagChange>()
+            .having((p) => p.failed, 'failed', unorderedEquals(unread))
+            .having((p) => p.cause, 'cause', isA<ConnectionFailed>())),
+      );
+      final now = c.read(messagesProvider(folderId)).value!;
+      expect(now.where((m) => unread.contains(m.id) && m.isRead), isEmpty);
+    });
+
     test('a no-op change does not touch the engine', () async {
       final c = container(engine: _RefusingEngine());
       await c.read(foldersProvider.future);
@@ -395,4 +454,15 @@ void main() {
     expect(folders.firstWhere((f) => f.role == FolderRole.inbox).unreadCount,
         greaterThan(0));
   });
+}
+
+/// The sample engine, refusing to change one message.
+class _RefusesOne extends SampleMailEngine {
+  String? refused;
+
+  @override
+  Future<void> setRead(String messageId, bool isRead) async {
+    if (messageId == refused) throw const ConnectionFailed('the server said no');
+    await super.setRead(messageId, isRead);
+  }
 }

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:drift/native.dart';
 import 'package:enough_mail/enough_mail.dart' as em;
@@ -20,10 +21,12 @@ import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/calendar_invite.dart';
 import 'package:myemail/domain/draft.dart';
+import 'package:myemail/domain/error_report.dart' show Retryable;
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_credentials.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/mail_folder.dart';
+import 'package:myemail/domain/message_move.dart';
 
 /// The mail transport over Microsoft Graph.
 ///
@@ -879,6 +882,107 @@ void main() {
         expect(CalendarInvite.parse(body.calendar!)!.summary, 'Review');
       });
 
+      /// Opened twice through the cache, as the reading pane opens it: what
+      /// the first open was given, or what it threw, and then the second,
+      /// which must not be handed what the first would have kept.
+      Future<(Object, MailBody)> openTwice() async {
+        final cache = MemoryCacheStore();
+        final sync =
+            FolderSync(transport: transport, store: cache, accountId: 'acct-1');
+        await sync.sync('Inbox');
+        final uid = (await cache.readMessages('acct-1', 'Inbox',
+                offset: 0, limit: 10))
+            .single
+            .uid;
+        Object first;
+        try {
+          first = await sync.body('Inbox', uid);
+        } on ConnectionFailed catch (e) {
+          first = e;
+        }
+        return (first, await sync.body('Inbox', uid));
+      }
+
+      /// The message to read, without its card for now.
+      Matcher readableAlone(String html) => isA<MailBody>()
+          .having((b) => b.html, 'html', html)
+          .having((b) => b.calendar, 'calendar', isNull)
+          .having((b) => b.calendarPending, 'calendarPending', isTrue);
+
+      test('an invitation that would not download is asked for again',
+          () async {
+        // A weak signal or a throttle on the MIME was taken for a message
+        // with no invitation, and cached so: the Accept and Decline card
+        // never came back for it. Failing the whole body instead left a
+        // meeting request with a large deck attached unreadable on a weak
+        // signal.
+        server
+          ..message('f-inbox', id: 'm1', subject: 'Review', minutesAgo: 5)
+          ..bodies['m1'] = ('html', '<p>Please come.</p>')
+          ..mimes['m1'] = invitation
+          ..eventMessages.add('m1')
+          ..mimeAnswers.add(500);
+
+        final (first, second) = await openTwice();
+
+        expect(first, readableAlone('<p>Please come.</p>'));
+        expect(second.calendar, contains('BEGIN:VEVENT'));
+      });
+
+      test('so is one on a message whose files would not list', () async {
+        server
+          ..message('f-inbox',
+              id: 'm1',
+              subject: 'Our call',
+              minutesAgo: 5,
+              hasAttachments: true)
+          ..bodies['m1'] = ('html', '<p>See you then.</p>')
+          ..attachments['m1'] = [
+            ('a-1', 'meeting.ics', 'application/octet-stream', ics),
+          ]
+          ..attachmentListingAnswers.add(500);
+
+        final (first, second) = await openTwice();
+
+        expect(first, readableAlone('<p>See you then.</p>'));
+        expect(second.calendar, contains('BEGIN:VEVENT'));
+      });
+
+      test('and so is one whose first question failed for a moment',
+          () async {
+        // Asked again without the cast, the answer may not say what type
+        // the message is, and the MIME with the invitation was never asked
+        // for at all.
+        server
+          ..message('f-inbox', id: 'm1', subject: 'Review', minutesAgo: 5)
+          ..bodies['m1'] = ('html', '<p>Please come.</p>')
+          ..mimes['m1'] = invitation
+          ..eventMessages.add('m1')
+          ..odataTypeOmitted = true
+          ..castSelectAnswers.add(500);
+
+        final (first, second) = await openTwice();
+
+        expect(first, isA<ConnectionFailed>(),
+            reason: 'there was no body to show');
+        expect(second.calendar, contains('BEGIN:VEVENT'));
+      });
+
+      test('but MIME Microsoft refuses still leaves the message to read',
+          () async {
+        server
+          ..message('f-inbox', id: 'm1', subject: 'Review', minutesAgo: 5)
+          ..bodies['m1'] = ('html', '<p>Please come.</p>')
+          ..mimes['m1'] = invitation
+          ..eventMessages.add('m1')
+          ..mimeAnswers.add(400);
+
+        final body = await fetch();
+
+        expect(body.html, '<p>Please come.</p>');
+        expect(body.calendar, isNull);
+      });
+
       test('a message with ordinary files downloads none of them', () async {
         server
           ..message('f-inbox',
@@ -1377,6 +1481,241 @@ void main() {
         expect(server.messages, isEmpty,
             reason: 'a copy without its files is not the message');
       });
+
+      group('its body', () {
+        /// [mime] filed, as Graph was given it: the body, and the names
+        /// of the files put on it after.
+        Future<({Map body, List<Object?> files})> filed(String mime) async {
+          await transport.listFolders();
+          await transport.fileMessage('Receipts', mime, seen: true);
+          final (id, message) =
+              server.messages.entries.map((e) => (e.key, e.value)).single;
+          return (
+            body: message['body'] as Map,
+            files: [for (final f in server.attached[id] ?? []) f['name']],
+          );
+        }
+
+        String message(String contentType, String parts) =>
+            'From: Dana Levi <dana@example.com>\r\n'
+            'To: ron@example.com\r\n'
+            'Subject: Numbers\r\n'
+            'MIME-Version: 1.0\r\n'
+            'Content-Type: $contentType; boundary="b"\r\n'
+            '\r\n'
+            '$parts'
+            '--b--\r\n';
+
+        test('is the sender\'s words, not an HTML page attached', () async {
+          // enough_mail hands over the first HTML part it finds, a file
+          // among them: the copy's body became the attached page, and what
+          // Dana wrote was gone.
+          final result = await filed(message(
+            'multipart/mixed',
+            '--b\r\n'
+                'Content-Type: text/plain; charset=utf-8\r\n'
+                '\r\n'
+                'The report is attached.\r\n'
+                '--b\r\n'
+                'Content-Type: text/html; name="report.html"\r\n'
+                'Content-Disposition: attachment; filename="report.html"\r\n'
+                '\r\n'
+                '<h1>Quarterly report</h1>\r\n',
+          ));
+
+          expect(result.body['contentType'], 'text');
+          expect(result.body['content'], contains('The report is attached.'));
+          expect(result.body['content'], isNot(contains('Quarterly')));
+          expect(result.files, ['report.html']);
+        });
+
+        test('keeps the words after a picture, as Apple Mail splits them',
+            () async {
+          // iPhone Mail writes the text either side of a picture as parts
+          // of their own. Everything after the first picture was dropped,
+          // and the later parts went neither into the body nor as files.
+          final result = await filed(message(
+            'multipart/mixed',
+            '--b\r\n'
+                'Content-Type: text/plain; charset=utf-8\r\n'
+                '\r\n'
+                'Before the photo.\r\n'
+                '--b\r\n'
+                'Content-Type: image/jpeg; name="IMG_0001.jpg"\r\n'
+                'Content-Disposition: inline; filename="IMG_0001.jpg"\r\n'
+                'Content-Transfer-Encoding: base64\r\n'
+                '\r\n'
+                '/9j/4AAQ\r\n'
+                '--b\r\n'
+                'Content-Type: text/plain; charset=utf-8\r\n'
+                '\r\n'
+                'After the photo.\r\n',
+          ));
+
+          expect(result.body['content'], contains('Before the photo.'));
+          expect(result.body['content'], contains('After the photo.'));
+          expect(result.files, ['IMG_0001.jpg']);
+        });
+
+        test('joins HTML either side of a picture, and text as HTML',
+            () async {
+          final result = await filed(message(
+            'multipart/mixed',
+            '--b\r\n'
+                'Content-Type: multipart/alternative; boundary="a"\r\n'
+                '\r\n'
+                '--a\r\n'
+                'Content-Type: text/plain\r\n'
+                '\r\n'
+                'Before.\r\n'
+                '--a\r\n'
+                'Content-Type: text/html\r\n'
+                '\r\n'
+                '<html><body><p>Before.</p></body></html>\r\n'
+                '--a--\r\n'
+                '--b\r\n'
+                'Content-Type: image/png; name="chart.png"\r\n'
+                'Content-Disposition: inline; filename="chart.png"\r\n'
+                'Content-Transfer-Encoding: base64\r\n'
+                '\r\n'
+                'iVBORw0KGgo=\r\n'
+                '--b\r\n'
+                'Content-Type: text/plain\r\n'
+                '\r\n'
+                'After <the> chart.\r\n',
+          ));
+
+          expect(result.body['contentType'], 'html');
+          final content = result.body['content'] as String;
+          expect(content, contains('<p>Before.</p>'));
+          expect(content, contains('After &lt;the&gt; chart.'));
+          expect(content.indexOf('Before'), lessThan(content.indexOf('After')));
+          expect('Before.'.allMatches(content), hasLength(1),
+              reason: 'one form of an alternative, not both');
+        });
+
+        test('takes a text file with a name for a file', () async {
+          final result = await filed(message(
+            'multipart/mixed',
+            '--b\r\n'
+                'Content-Type: text/plain\r\n'
+                '\r\n'
+                'Notes attached.\r\n'
+                '--b\r\n'
+                'Content-Type: text/plain; name="notes.txt"\r\n'
+                'Content-Disposition: inline; filename="notes.txt"\r\n'
+                '\r\n'
+                'Bring the drawings.\r\n',
+          ));
+
+          expect(result.body['content'], isNot(contains('Bring')));
+          expect(result.files, ['notes.txt']);
+        });
+      });
+    });
+
+    group('a draft too large to post whole', () {
+      // Graph takes 4 MB a request and base64 adds a third. A forward with
+      // a 4 MB file on it could never be saved as a draft, and the Try
+      // again offered could never work.
+      final pdf = base64Encode(List<int>.generate(3000, (i) => i % 256));
+      final raw = 'From: ron@contoso.example\r\n'
+          'Subject: Drawings\r\n'
+          'MIME-Version: 1.0\r\n'
+          'Content-Type: multipart/mixed; boundary="m"\r\n'
+          '\r\n'
+          '--m\r\n'
+          'Content-Type: multipart/related; boundary="r"\r\n'
+          '\r\n'
+          '--r\r\n'
+          'Content-Type: text/html; charset=utf-8\r\n'
+          '\r\n'
+          '<p>Here they are.</p><img src="cid:logo@x">\r\n'
+          '--r\r\n'
+          'Content-Type: image/png\r\n'
+          'Content-ID: <logo@x>\r\n'
+          'Content-Transfer-Encoding: base64\r\n'
+          '\r\n'
+          'iVBORw0KGgo=\r\n'
+          '--r--\r\n'
+          '--m\r\n'
+          'Content-Type: application/pdf; name="drawings.pdf"\r\n'
+          'Content-Disposition: attachment; filename="drawings.pdf"\r\n'
+          'Content-Transfer-Encoding: base64\r\n'
+          '\r\n'
+          '$pdf\r\n'
+          '--m--\r\n';
+
+      GraphTransport postingUpTo(int bytes) => GraphTransport(
+            accountId: 'acct-1',
+            idMap: ids,
+            api: GraphMailApi(
+              accessToken: ({bool force = false}) async => 'token',
+              httpClient: http_testing.MockClient(server.handle),
+            ),
+            maxMimeBytes: bytes,
+          );
+
+      setUp(() {
+        server.folder(id: 'f-drafts', name: 'Drafts', wellKnown: 'drafts');
+      });
+
+      test('goes up as its words, and then each file', () async {
+        await postingUpTo(2048).appendMessage('Drafts', raw, draft: true);
+
+        final (id, made) =
+            server.messages.entries.map((e) => (e.key, e.value)).single;
+        final words = made['_mime'] as String;
+        expect(words.length, lessThan(2048));
+        expect(words, isNot(contains(pdf.substring(0, 64))));
+        expect(em.MimeMessage.parseFromText(words).decodeTextHtmlPart(),
+            contains('cid:logo@x'));
+        final files = server.attached[id]!;
+        expect([for (final f in files) f['name']],
+            unorderedEquals(['drawings.pdf', 'attachment.png']));
+        final picture = files.firstWhere((f) => f['name'] != 'drawings.pdf');
+        expect(picture['contentId'], 'logo@x',
+            reason: 'the body still finds its picture');
+        expect(made['isRead'], isTrue);
+      });
+
+      test('a file that will not go takes the draft back out', () async {
+        // As a move does: a failed save then leaves nothing half made, and
+        // the copy it was to replace stays where it was.
+        server.refuseAttachments = true;
+
+        await expectLater(
+          postingUpTo(2048).appendMessage('Drafts', raw, draft: true),
+          throwsA(isA<ConnectionFailed>()),
+        );
+        expect(server.messages, isEmpty);
+      });
+
+      test('words that are too large alone are said to be, once', () async {
+        await expectLater(
+          postingUpTo(200).appendMessage('Drafts', raw, draft: true),
+          throwsA(isA<SendFailed>()
+              .having((e) => e, 'error', isNot(isA<Retryable>()))),
+        );
+        expect(server.messages, isEmpty);
+      });
+    });
+
+    test('a request too large for Microsoft is not offered again', () async {
+      final api = GraphMailApi(
+        accessToken: ({bool force = false}) async => 'token',
+        httpClient: http_testing.MockClient((_) async => http.Response(
+              jsonEncode({
+                'error': {'code': 'ErrorRequestEntityTooLarge'},
+              }),
+              413,
+            )),
+      );
+
+      await expectLater(
+        api.createMessage('f-drafts', 'Subject: Hi\r\n\r\nHello'),
+        throwsA(isNot(isA<Retryable>())),
+      );
     });
 
     test('a draft that was created is saved, marked read or not', () async {
@@ -1390,6 +1729,52 @@ void main() {
             draft: true),
         completes,
       );
+    });
+
+    test('a draft refused with nothing said is not taken for saved',
+        () async {
+      // A gateway's 502 has no body. Read as success, Save draft deleted
+      // the copy it was opened from and closed on "Saved to Drafts" with
+      // the words saved nowhere.
+      server
+        ..folder(id: 'f-drafts', name: 'Drafts', wellKnown: 'drafts')
+        ..emptyRefusalOfCreate = 502;
+
+      await expectLater(
+        transport.appendMessage('Drafts', 'Subject: Hi\r\n\r\nHello',
+            draft: true),
+        throwsA(isA<ConnectionFailed>()),
+      );
+    });
+
+    test('nor is a draft Microsoft took without saying where', () async {
+      final api = GraphMailApi(
+        accessToken: ({bool force = false}) async => 'token',
+        httpClient: http_testing.MockClient(
+          (_) async => http.Response('{}', 201),
+        ),
+      );
+
+      await expectLater(
+        api.createMessage('f-drafts', 'Subject: Hi\r\n\r\nHello'),
+        throwsA(isA<ConnectionFailed>()),
+      );
+    });
+
+    test('a move refused with nothing said is not taken for done', () async {
+      // Counted as moved, the row went from the list and came back at the
+      // next sync.
+      server
+        ..message('f-inbox', id: 'm1', subject: 'A', minutesAgo: 5)
+        ..emptyRefusalOfMove = 502;
+      final uid = (await transport.fetchHeadersFromUid('Inbox', 1)).single.uid;
+
+      await expectLater(
+        transport.moveMessages('Inbox', [uid], 'Archive'),
+        throwsA(isA<ConnectionFailed>()),
+      );
+      expect(await ids.remoteIdsFor('acct-1', 'Inbox', [uid]), {uid: 'm1'},
+          reason: 'its number still names it');
     });
 
     test('a property is found however Graph writes its id', () {
@@ -1468,12 +1853,170 @@ void main() {
           h.subject: h.uid,
       };
 
+      // Patient: a server fault inside a batch is asked again, after a wait.
       await expectLater(
-        transport.moveMessages('Inbox', [byId['B']!, byId['A']!], 'Archive'),
+        patientTransport.moveMessages(
+            'Inbox', [byId['B']!, byId['A']!], 'Archive'),
         throwsA(isA<MovedInPart>()
             .having((p) => p.moved, 'moved', [byId['B']])
             .having((p) => p.landed, 'landed', hasLength(1))),
       );
+    });
+
+    group('a selection', () {
+      /// [count] messages in the Inbox, by subject, numbered.
+      Future<Map<String, int>> inbox(int count) async {
+        for (var i = 0; i < count; i++) {
+          server.message('f-inbox',
+              id: 'm$i', subject: 'M$i', minutesAgo: count - i);
+        }
+        return {
+          for (final h in await transport.fetchHeadersFromUid('Inbox', 1,
+              windowStart: DateTime.utc(2000)))
+            h.subject: h.uid,
+        };
+      }
+
+      test('moved goes twenty to a request, and lands numbered', () async {
+        // Sixty selected and moved were sixty requests one after another,
+        // fifteen seconds and more on a phone before the list settled.
+        final uids = await inbox(45);
+
+        final landed =
+            await transport.moveMessages('Inbox', [...uids.values], 'Archive');
+
+        expect(server.batchSizes, [20, 20, 5]);
+        expect(landed, hasLength(45));
+        final archived = {
+          for (final h in await transport.fetchHeadersFromUid('Archive', 1,
+              windowStart: DateTime.utc(2000)))
+            h.uid: h.subject,
+        };
+        expect([for (final uid in landed!) archived[uid]],
+            [for (var i = 0; i < 45; i++) 'M$i'],
+            reason: 'each number names the message that went');
+      });
+
+      test('deleted goes twenty to a request', () async {
+        final uids = await inbox(60);
+
+        await transport.storeFlag('Inbox',
+            uids: [...uids.values], flag: MessageFlag.deleted, set: true);
+
+        expect(server.batchSizes, [20, 20, 20]);
+        expect(server.messages, isEmpty);
+      });
+
+      test('flagged goes in one request', () async {
+        final uids = await inbox(5);
+
+        await transport.storeFlag('Inbox',
+            uids: [...uids.values], flag: MessageFlag.flagged, set: true);
+
+        expect(server.batchSizes, [5]);
+        expect(
+          [for (final m in server.messages.values) (m['flag'] as Map)['flagStatus']],
+          everyElement('flagged'),
+        );
+      });
+
+      test('one throttled inside the batch is asked again', () async {
+        final uids = await inbox(3);
+        server.throttledInBatch['1'] = 1;
+
+        final landed = await patientTransport
+            .moveMessages('Inbox', [...uids.values], 'Archive');
+
+        expect(landed, hasLength(3));
+        expect(server.batchSizes, [3, 1]);
+      });
+
+      test('deleted, with one gone already, has nothing left to do',
+          () async {
+        final uids = await inbox(3);
+        server.remove('m1');
+
+        await transport.storeFlag('Inbox',
+            uids: [...uids.values], flag: MessageFlag.deleted, set: true);
+
+        expect(server.messages, isEmpty);
+      });
+
+      test('marked, with one refused, is a failure that says which went',
+          () async {
+        final uids = await inbox(3);
+        server.refusePatchOf.add('m1');
+
+        await expectLater(
+          patientTransport.storeFlag('Inbox',
+              uids: [...uids.values], flag: MessageFlag.seen, set: true),
+          throwsA(isA<FlaggedInPart>()
+              .having((p) => p.stored, 'stored', [uids['M0'], uids['M2']])
+              .having((p) => p.cause, 'cause', isA<ConnectionFailed>())),
+        );
+        expect(server.messages['m0']!['isRead'], isTrue,
+            reason: 'the rest are marked all the same');
+      });
+
+      test('marked, with every one refused, is the failure itself', () async {
+        final uids = await inbox(2);
+        server.refuseAllPatches = true;
+
+        await expectLater(
+          patientTransport.storeFlag('Inbox',
+              uids: [...uids.values], flag: MessageFlag.flagged, set: true),
+          throwsA(isA<ConnectionFailed>()),
+        );
+      });
+
+      test('emptying a folder deletes twenty to a request', () async {
+        // Emptying a Deleted Items of thousands took minutes.
+        await inbox(50);
+
+        await transport.storeFlagOnAll('Inbox',
+            flag: MessageFlag.deleted, set: true);
+
+        expect(server.messages, isEmpty);
+        expect(server.batchSizes, [20, 20, 10]);
+      });
+    });
+
+    test('marking all read reaches unread mail past the four thousandth',
+        () async {
+      // Paged by offset, it looked at the newest 4,000 and stopped without
+      // a word: older unread mail in a folder a rule fills stayed unread,
+      // and the badge stayed up. Every message was listed to find the few
+      // unread, and each was marked with a request of its own.
+      server.folder(id: 'f-rule', name: 'Alerts');
+      for (var i = 0; i < 4300; i++) {
+        server.message('f-rule',
+            id: 'a$i', subject: 'A$i', minutesAgo: i + 1, isRead: i < 4000);
+      }
+
+      await transport.storeFlagOnAll('Alerts',
+          flag: MessageFlag.seen, set: true);
+
+      expect(
+        server.messages.values.where((m) => m['isRead'] != true),
+        isEmpty,
+      );
+      expect(server.patched, hasLength(300),
+          reason: 'what was read already is left alone');
+      expect(server.batchSizes, List.filled(15, 20));
+    });
+
+    test('a message that will not be marked read ends it, not loops',
+        () async {
+      server
+        ..message('f-inbox', id: 'm1', subject: 'A', minutesAgo: 30)
+        ..message('f-inbox', id: 'm2', subject: 'B', minutesAgo: 20)
+        ..stayUnread.add('m1');
+
+      await expectLater(
+        transport.storeFlagOnAll('Inbox', flag: MessageFlag.seen, set: true),
+        throwsA(isA<ConnectionFailed>()),
+      );
+      expect(server.messages['m2']!['isRead'], isTrue);
     });
 
     test('marking all read skips what is already read', () async {
@@ -1622,6 +2165,51 @@ void main() {
       await sync.sync('Inbox');
       expect(await cache.countMessages('acct-1', 'Inbox'), 250);
       expect(await subjects('Inbox'), contains('M249'));
+    });
+
+    test('opening an HTML message keeps the second line under it', () async {
+      // Graph's body has no text form beside the HTML, and the empty text
+      // went into the cache as the preview: every work message opened lost
+      // its second line for good, and a meeting made from one had only the
+      // From line for notes.
+      server
+        ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+        ..message('f-inbox',
+            id: 'm1',
+            subject: 'Our call',
+            minutesAgo: 5,
+            preview: 'Hi Ron, confirming Thursday at ten.')
+        ..bodies['m1'] =
+            ('html', '<p>Hi Ron, confirming <b>Thursday</b> at ten.</p>');
+      await sync.sync('Inbox');
+      final uid = (await cached('Inbox')).single.uid;
+
+      final body = await sync.body('Inbox', uid);
+
+      expect(body.text, contains('confirming Thursday at ten.'));
+      expect((await cached('Inbox')).single.preview,
+          contains('confirming Thursday at ten.'));
+    });
+
+    test('and one opened before that gets its second line back', () async {
+      // Cached with no text, it was served as it was for good: nothing asks
+      // the server for a body the cache has.
+      server
+        ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+        ..message('f-inbox', id: 'm1', subject: 'Our call', minutesAgo: 5);
+      await sync.sync('Inbox');
+      final uid = (await cached('Inbox')).single.uid;
+      const html = '<p>Hi Ron, confirming <b>Thursday</b> at ten.</p>';
+      await cache.writeBody('acct-1', 'Inbox', uid,
+          text: '', html: html, preview: '');
+
+      final body = await sync.body('Inbox', uid);
+
+      expect(body.html, html);
+      expect(body.text, contains('confirming Thursday at ten.'));
+      final row = (await cached('Inbox')).single;
+      expect(row.preview, contains('confirming Thursday at ten.'));
+      expect(row.bodyText, body.text, reason: 'kept, not made at every open');
     });
 
     test('an older message moved in turns up in its new folder', () async {
@@ -1824,6 +2412,193 @@ void main() {
       );
     });
   });
+
+  // Saving through the engine, which is where a save that did not happen
+  // has to stop before the earlier copy is deleted.
+  group('a draft saved on a Microsoft account', () {
+    late CachedImapEngine engine;
+
+    setUp(() {
+      engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => transport,
+        senderFactory: (_, _) => _SendsNothing(),
+      );
+    });
+
+    test('a save Microsoft refuses keeps the copy it was opened from',
+        () async {
+      // The create answered with an empty 502 read as saved: the earlier
+      // copy was deleted, and what was written existed nowhere.
+      server
+        ..folder(id: 'f-drafts', name: 'Drafts', wellKnown: 'drafts')
+        ..message('f-drafts', id: 'd1', subject: 'Plan', minutesAgo: 5);
+      final account = await engine.addAccount(
+        displayName: 'Work',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      final earlier =
+          (await engine.loadMessages('${account.id}:Drafts')).single;
+      server.emptyRefusalOfCreate = 502;
+
+      await expectLater(
+        engine.saveDraft(Draft(
+          accountId: account.id,
+          kind: ComposeKind.newMessage,
+          subject: 'Plan',
+          htmlBody: '<p>The second version.</p>',
+          savedAs: earlier.id,
+        )),
+        throwsA(isA<ConnectionFailed>()),
+      );
+      expect(server.messages.keys, ['d1']);
+    });
+
+    test('a forward too large to post whole is saved with its file',
+        () async {
+      // The message as the app builds it, taken apart: the words go up
+      // first and the file after them.
+      final small = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => GraphTransport(
+          accountId: 'acct-1',
+          idMap: ids,
+          api: GraphMailApi(
+            accessToken: ({bool force = false}) async => 'token',
+            httpClient: http_testing.MockClient(server.handle),
+          ),
+          maxMimeBytes: 8 * 1024,
+        ),
+        senderFactory: (_, _) => _SendsNothing(),
+      );
+      server.folder(id: 'f-drafts', name: 'Drafts', wellKnown: 'drafts');
+      final account = await small.addAccount(
+        displayName: 'Work',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      final file = Uint8List.fromList(List.generate(20000, (i) => i % 251));
+
+      await small.saveDraft(Draft(
+        accountId: account.id,
+        kind: ComposeKind.forward,
+        subject: 'Fw: Drawings',
+        htmlBody: '<p>See the drawings.</p>',
+        attachments: [
+          DraftAttachment(
+            fileName: 'drawings.pdf',
+            mimeType: 'application/pdf',
+            bytes: file,
+          ),
+        ],
+      ));
+
+      final (id, made) =
+          server.messages.entries.map((e) => (e.key, e.value)).single;
+      final words = em.MimeMessage.parseFromText(made['_mime'] as String);
+      expect(words.decodeSubject(), 'Fw: Drawings');
+      expect(words.decodeTextHtmlPart(), contains('See the drawings.'));
+      expect((made['_mime'] as String).length, lessThan(8 * 1024));
+      final attached = server.attached[id]!.single;
+      expect(attached['name'], 'drawings.pdf');
+      expect(base64Decode(attached['contentBytes'] as String), file);
+    });
+  });
+
+  // Marking a selection through the engine, which is where it went one
+  // message at a time: sixty flagged were sixty requests end to end.
+  group('a selection on a Microsoft account', () {
+    late CachedImapEngine engine;
+
+    setUp(() {
+      engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => patientTransport,
+        senderFactory: (_, _) => _SendsNothing(),
+      );
+    });
+
+    /// [count] unread messages in a folder, as the list shows them.
+    Future<List<MailMessage>> listed(
+      int count, {
+      String id = 'f-inbox',
+      String name = 'Inbox',
+      String wellKnown = 'inbox',
+    }) async {
+      server.folder(id: id, name: name, wellKnown: wellKnown);
+      for (var i = 0; i < count; i++) {
+        server.message(id, id: 'm$i', subject: 'M$i', minutesAgo: count - i);
+      }
+      final account = await engine.addAccount(
+        displayName: 'Work',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      final shown = await engine.loadMessages('${account.id}:$name', limit: 100);
+      server.batchSizes.clear();
+      return shown;
+    }
+
+    test('marked read goes twenty to a request', () async {
+      final shown = await listed(45);
+
+      await engine.setMessagesRead([for (final m in shown) m.id], true);
+
+      expect(server.batchSizes, [20, 20, 5]);
+      expect(server.messages.values.where((m) => m['isRead'] != true), isEmpty);
+      final cached =
+          await engine.cachedMessages(shown.first.folderId, limit: 100);
+      expect(cached.where((m) => !m.isRead), isEmpty,
+          reason: 'and the list says so before the next sync');
+    });
+
+    test('flagged, with one refused, says which and keeps the rest',
+        () async {
+      final shown = await listed(3);
+      server.refusePatchOf.add('m1');
+      final refused = shown.firstWhere((m) => m.subject == 'M1');
+
+      await expectLater(
+        engine.setMessagesFlagged([for (final m in shown) m.id], true),
+        throwsA(isA<PartialFlagChange>()
+            .having((p) => p.failed, 'failed', [refused.id])),
+      );
+      expect(server.batchSizes.first, 3, reason: 'the three together');
+      final cached = await engine.cachedMessages(refused.folderId);
+      expect({for (final m in cached) m.subject: m.isFlagged},
+          {'M0': true, 'M1': false, 'M2': true});
+    });
+
+    test('deleted for good, with one refused, says which went', () async {
+      // Microsoft deletes one message at a time. All of them came back on
+      // screen, though only one was still there.
+      final shown = await listed(3,
+          id: 'f-deleted', name: 'Deleted Items', wellKnown: 'deleteditems');
+      server.refuseDeleteOf.add('m1');
+      final refused = shown.firstWhere((m) => m.subject == 'M1');
+
+      await expectLater(
+        engine.deleteMessages([for (final m in shown) m.id]),
+        throwsA(isA<PartialMove>().having((p) => p.moved, 'moved',
+            [for (final m in shown) if (m.id != refused.id) m.id])),
+      );
+      expect(server.messages.keys, ['m1']);
+      expect(
+        [for (final m in await engine.cachedMessages(refused.folderId)) m.id],
+        [refused.id],
+      );
+    });
+  });
 }
 
 /// A sender that sends nothing.
@@ -1853,6 +2628,10 @@ class _FakeGraph {
   /// well-known name, is the whole point of batching them.
   int batches = 0;
 
+  /// How many requests each batch of anything but the well-known names
+  /// carried, in order: moves, marks and deletes sent together.
+  final List<int> batchSizes = [];
+
   /// Called once each listing of a folder's messages has been read, with
   /// how many there have been: the moment to change the folder under a
   /// scan that is part way through.
@@ -1870,12 +2649,22 @@ class _FakeGraph {
   /// Every message PATCH answered 500.
   bool refuseAllPatches = false;
 
+  /// Messages a PATCH of isRead is answered for and leaves unread.
+  final Set<String> stayUnread = {};
+
   /// The Content-Type each message was created with: MIME (text/plain) or
   /// Graph's own JSON.
   final List<String> createdAs = [];
 
   /// Refuse a message created with a Message-ID, as Graph may.
   bool refuseInternetMessageId = false;
+
+  /// Answer every message created with this status and nothing in the
+  /// body, as a gateway in front of Graph does.
+  int? emptyRefusalOfCreate;
+
+  /// Answer every move with this status and nothing in the body.
+  int? emptyRefusalOfMove;
 
   /// Files put on each message, by its id, as they were sent.
   final Map<String, List<Map<String, Object?>>> attached = {};
@@ -1960,6 +2749,21 @@ class _FakeGraph {
 
   /// And one may refuse the cast in a select outright.
   bool castSelectRefused = false;
+
+  /// Statuses to answer the next requests of each kind with, in turn, in
+  /// place of the answer: a message's MIME, what is attached to one, and
+  /// a body asked for through the cast.
+  final List<int> mimeAnswers = [];
+  final List<int> attachmentListingAnswers = [];
+  final List<int> castSelectAnswers = [];
+
+  static http.Response _failure(int status) => http.Response(
+        jsonEncode({
+          'error': {'code': status >= 500 ? 'ServiceUnavailable' : 'BadRequest'},
+        }),
+        status,
+        headers: const {'content-type': 'application/json'},
+      );
 
   /// Files on a message: id to (name, contentType, bytes).
   final Map<String, List<(String, String, String, String)>> attachments = {};
@@ -2154,11 +2958,15 @@ class _FakeGraph {
       }
     }
 
-    // The batch that resolves every well-known name in one request.
+    // The batch that resolves every well-known name in one request, and
+    // any other batch, each request in it answered as it would be alone.
     if (request.method == 'POST' && path.endsWith(r'/$batch')) {
       batches++;
       final body = jsonDecode(request.body) as Map<String, Object?>;
       final requests = body['requests'] as List;
+      if (!requests.any((r) => knownNames.contains((r as Map)['id']))) {
+        batchSizes.add(requests.length);
+      }
       return json({
         'responses': [
           for (final r in requests)
@@ -2179,8 +2987,10 @@ class _FakeGraph {
                 'status': 200,
                 'body': {'id': wellKnown[r['id']]},
               }
+            else if (knownNames.contains(r['id']))
+              {'id': (r)['id'], 'status': 404, 'body': {}}
             else
-              {'id': (r)['id'], 'status': 404, 'body': {}},
+              await _inBatch(r.cast<String, Object?>()),
         ],
       });
     }
@@ -2216,8 +3026,26 @@ class _FakeGraph {
     if (request.method == 'GET' && path.endsWith('/messages')) {
       listings++;
       final folderId = _folderIdIn(path);
+      // Only unread mail where that is asked for. Ordered as well by a
+      // property the filter does not name, Graph refuses the request.
+      final filter = query[r'$filter'] ?? '';
+      final unreadOnly = filter == 'isRead eq false';
+      if (unreadOnly && query.containsKey(r'$orderby')) {
+        return http.Response(
+          jsonEncode({
+            'error': {
+              'code': 'InefficientFilter',
+              'message': 'The restriction or sort order is too complex for '
+                  'this operation.',
+            },
+          }),
+          400,
+          headers: const {'content-type': 'application/json'},
+        );
+      }
       final inFolder = messages.values
           .where((m) => m['_folder'] == folderId)
+          .where((m) => !unreadOnly || m['isRead'] != true)
           .toList()
         ..sort((a, b) => '${b['receivedDateTime']}'
             .compareTo('${a['receivedDateTime']}'));
@@ -2330,6 +3158,9 @@ class _FakeGraph {
     // What is attached, without the bytes.
     if (request.method == 'GET' && path.endsWith('/attachments')) {
       final id = path.split('/me/messages/').last.replaceAll('/attachments', '');
+      if (attachmentListingAnswers.isNotEmpty) {
+        return _failure(attachmentListingAnswers.removeAt(0));
+      }
       return json({
         'value': [
           for (final a in attachments[id] ?? const [])
@@ -2352,6 +3183,7 @@ class _FakeGraph {
     // The whole message as MIME.
     if (request.method == 'GET' && path.endsWith(r'/$value')) {
       final id = path.split('/me/messages/').last.replaceAll(r'/$value', '');
+      if (mimeAnswers.isNotEmpty) return _failure(mimeAnswers.removeAt(0));
       final mime = mimes[id];
       if (mime == null) return http.Response('{}', 404);
       // The bytes as sent, which for 8-bit mail are UTF-8.
@@ -2370,6 +3202,10 @@ class _FakeGraph {
         final select = query['\$select'] ?? '';
         if (castSelectRefused && select.contains('microsoft.graph.')) {
           return http.Response('{"error":{"code":"BadRequest"}}', 400);
+        }
+        if (castSelectAnswers.isNotEmpty &&
+            select.contains('microsoft.graph.')) {
+          return _failure(castSelectAnswers.removeAt(0));
         }
         return json({
           'body': {'contentType': body.$1, 'content': body.$2},
@@ -2407,6 +3243,7 @@ class _FakeGraph {
       }
       patched.add(id);
       final body = jsonDecode(request.body) as Map<String, Object?>;
+      if (stayUnread.contains(id)) body.remove('isRead');
       // Extended properties are set one by one, by id, and the rest kept.
       final properties = body.remove('singleValueExtendedProperties');
       if (properties is List) {
@@ -2439,6 +3276,9 @@ class _FakeGraph {
     if (request.method == 'POST' && creating != null) {
       final folderId = wellKnown[creating.group(1)] ?? creating.group(1)!;
       if (!folders.containsKey(folderId)) return http.Response('{}', 404);
+      if (emptyRefusalOfCreate case final status?) {
+        return http.Response('', status);
+      }
       final type = (request.headers['content-type'] ?? '').split(';').first;
       createdAs.add(type);
       final id = 'created-${messages.length}';
@@ -2448,6 +3288,10 @@ class _FakeGraph {
         'isRead': false,
         'isDraft': true,
       };
+      // The MIME it was made from, as it went up.
+      if (type == 'text/plain') {
+        message['_mime'] = utf8.decode(base64Decode(request.body));
+      }
       if (type == 'application/json') {
         final body = (jsonDecode(request.body) as Map).cast<String, Object?>();
         if (refuseInternetMessageId && body.containsKey('internetMessageId')) {
@@ -2490,6 +3334,9 @@ class _FakeGraph {
 
     if (request.method == 'POST' && path.endsWith('/move')) {
       final id = path.split('/me/messages/').last.replaceAll('/move', '');
+      if (emptyRefusalOfMove case final status?) {
+        return http.Response('', status);
+      }
       if (refuseMoveOf.contains(id)) {
         return http.Response('{"error":{"code":"ErrorInternalServerError"}}',
             500);
@@ -2515,6 +3362,27 @@ class _FakeGraph {
     }
 
     return http.Response('{"error":{"code":"NotHandled"}}', 400);
+  }
+
+  /// One request of a batch, answered as it would be sent alone, in the
+  /// form a batch carries its answers in.
+  Future<Map<String, Object?>> _inBatch(Map<String, Object?> asked) async {
+    final inner = http.Request(
+      '${asked['method']}',
+      Uri.parse('${GraphMailApi.base}${asked['url']}'),
+    );
+    if (asked['body'] != null) {
+      inner
+        ..headers['content-type'] = 'application/json'
+        ..body = jsonEncode(asked['body']);
+    }
+    final answer = await handle(inner);
+    return {
+      'id': asked['id'],
+      'status': answer.statusCode,
+      'headers': answer.headers,
+      'body': answer.body.isEmpty ? null : jsonDecode(answer.body),
+    };
   }
 
   /// What Microsoft says when a path does not parse: the message in Ron's

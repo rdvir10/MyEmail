@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/calendar/device_calendar.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/calendar_invite.dart';
 import 'package:myemail/domain/calendar_meeting.dart';
 import 'package:myemail/domain/draft.dart';
@@ -11,12 +12,17 @@ import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/calendar_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/messages/invite_card.dart';
+import 'package:myemail/ui/messages/reading_pane.dart';
+
+import 'fakes/fake_webview.dart';
 
 /// The card under meeting mail that is not a plain invitation, on screen:
 /// a meeting cancelled or moved since, a new time proposed to you as its
 /// organiser, an answer. What it says depends on where the account's own
 /// calendar has the meeting now, and what it offers on what can be done.
 void main() {
+  setUpAll(FakeWebViewPlatform.install);
+
   const uid = '040000008200E00074C5B7101A82E00800000000AB12';
 
   /// Exchange's definition of the zone it names.
@@ -263,6 +269,46 @@ void main() {
       expect(find.text('Accept'), findsOneWidget);
       expect(find.text('Add to calendar'), findsOneWidget);
     });
+
+    testWidgets('that could not be fetched is read, and answered next open',
+        (tester) async {
+      // A meeting request with a deck attached, on a weak signal: the
+      // download with the invitation in it would not finish. It was cached
+      // without its card for good, and then could not be read at all.
+      tester.view.physicalSize = const Size(1200, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final engine = _MeetingMail(invitation())..late = true;
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        mailEngineProvider.overrideWithValue(engine),
+        deviceCalendarProvider.overrideWithValue(calendar),
+      ]);
+      addTearDown(c.dispose);
+      final read = message.copyWith(isRead: true);
+      Future<void> open({required bool pane}) async {
+        await tester.pumpWidget(UncontrolledProviderScope(
+          container: c,
+          child: MaterialApp(
+            home: Scaffold(
+              body: pane ? ReadingPane(message: read) : const SizedBox(),
+            ),
+          ),
+        ));
+        await tester.pumpAndSettle();
+      }
+
+      await open(pane: true);
+      expect(find.byType(InviteCard), findsNothing);
+      expect(find.textContaining('Could not load'), findsNothing);
+
+      await open(pane: false);
+      await open(pane: true);
+
+      expect(find.byType(InviteCard), findsOneWidget);
+      expect(find.text('Accept'), findsOneWidget);
+    });
   });
 
   group('a new time proposed', () {
@@ -464,13 +510,22 @@ class _MeetingMail extends SampleMailEngine {
   final String ics;
   final List<Draft> sentDrafts = [];
 
+  /// Whether the first open meets an invitation that could not be fetched.
+  bool late = false;
+  int opened = 0;
+
   /// Thrown by [meetingOnCalendar] while set.
   Object? lookupFailure;
   int lookups = 0;
 
   @override
-  Future<MailBody> loadMessageBody(String messageId) async =>
-      MailBody(text: 'Meeting.', calendar: ics);
+  Future<MailBody> loadMessageBody(String messageId) async {
+    opened++;
+    if (late && opened == 1) {
+      return const MailBody(text: 'Meeting.', calendarPending: true);
+    }
+    return MailBody(text: 'Meeting.', calendar: ics);
+  }
 
   @override
   Future<CalendarMeeting?> meetingOnCalendar(

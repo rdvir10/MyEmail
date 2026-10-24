@@ -4,6 +4,8 @@ import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/state/message_providers.dart';
@@ -28,10 +30,16 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
   }
 
-  Future<ProviderContainer> pump(WidgetTester tester) async {
+  Future<ProviderContainer> pump(
+    WidgetTester tester, {
+    MailEngine? engine,
+  }) async {
     useSize(tester, const Size(1400, 900));
     final c = ProviderContainer(
-      overrides: [uiStateStoreProvider.overrideWithValue(MemoryUiStateStore())],
+      overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        if (engine != null) mailEngineProvider.overrideWithValue(engine),
+      ],
     );
     addTearDown(c.dispose);
     await tester.pumpWidget(
@@ -308,6 +316,35 @@ void main() {
     expect(c.read(selectedMessageIdsProvider), isEmpty);
   });
 
+  testWidgets('marking or flagging the selection asks the engine once',
+      (tester) async {
+    // One message at a time, sixty flagged on a Microsoft account were
+    // sixty requests end to end. Together, they go twenty to a request.
+    final engine = _Together();
+    final c = await pump(tester, engine: engine);
+    final unread = [
+      for (final t in tester.widgetList<MessageTile>(find.byType(MessageTile)))
+        if (!t.message.isRead && !t.message.isFlagged) t.message.id,
+    ].take(3).toList();
+    expect(unread, hasLength(3));
+
+    Finder inBar(String tooltip) => find.descendant(
+          of: find.byType(SelectionBar),
+          matching: find.byTooltip(tooltip),
+        );
+    c.read(selectedMessageIdsProvider.notifier).addAll(unread);
+    await tester.pumpAndSettle();
+    await tester.tap(inBar('Mark read'));
+    await tester.pumpAndSettle();
+    c.read(selectedMessageIdsProvider.notifier).addAll(unread);
+    await tester.pumpAndSettle();
+    await tester.tap(inBar('Flag'));
+    await tester.pumpAndSettle();
+
+    expect(engine.read, [unorderedEquals(unread)]);
+    expect(engine.flagged, [unorderedEquals(unread)]);
+  });
+
   group('a conversation row', () {
     /// The first closed thread on screen, with conversations turned on and
     /// selection started from an ordinary message.
@@ -436,4 +473,22 @@ void main() {
       );
     });
   });
+}
+
+/// The sample engine, saying what it was asked to change several at a time.
+class _Together extends SampleMailEngine {
+  final read = <List<String>>[];
+  final flagged = <List<String>>[];
+
+  @override
+  Future<void> setMessagesRead(List<String> messageIds, bool isRead) {
+    read.add(messageIds);
+    return super.setMessagesRead(messageIds, isRead);
+  }
+
+  @override
+  Future<void> setMessagesFlagged(List<String> messageIds, bool isFlagged) {
+    flagged.add(messageIds);
+    return super.setMessagesFlagged(messageIds, isFlagged);
+  }
 }

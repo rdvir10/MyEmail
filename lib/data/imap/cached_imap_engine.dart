@@ -830,14 +830,8 @@ class CachedImapEngine implements MailEngine {
   Future<MailBody> loadMessageBody(String messageId) async {
     final (folderId, uid) = splitMessageId(messageId);
     final (accountId, path) = splitFolderId(folderId);
-    final cached = await cache.readMessage(accountId, path, uid);
-    if (cached != null && cached.bodyText != null) {
-      return MailBody(
-        text: cached.bodyText!,
-        html: cached.bodyHtml,
-        calendar: cached.calendar,
-      );
-    }
+    final cached = await cachedBody(cache, accountId, path, uid);
+    if (cached != null) return cached;
     final t = await _transport(accountId);
     return _sync(accountId, t).body(path, uid);
   }
@@ -1034,14 +1028,20 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
-  Future<void> setRead(String messageId, bool isRead) async {
-    await _setFlag(messageId, MessageFlag.seen, isRead);
-    if (isRead) _handled((id) => id == messageId);
-  }
+  Future<void> setRead(String messageId, bool isRead) =>
+      setMessagesRead([messageId], isRead);
 
   @override
   Future<void> setFlagged(String messageId, bool isFlagged) =>
-      _setFlag(messageId, MessageFlag.flagged, isFlagged);
+      setMessagesFlagged([messageId], isFlagged);
+
+  @override
+  Future<void> setMessagesRead(List<String> messageIds, bool isRead) =>
+      _setFlagOn(messageIds, MessageFlag.seen, isRead);
+
+  @override
+  Future<void> setMessagesFlagged(List<String> messageIds, bool isFlagged) =>
+      _setFlagOn(messageIds, MessageFlag.flagged, isFlagged);
 
   @override
   Future<List<MessageMove>> moveMessages(
@@ -1252,6 +1252,19 @@ class CachedImapEngine implements MailEngine {
           await t.storeFlag(fromPath,
               uids: group.value, flag: MessageFlag.deleted, set: true);
           await t.expunge(fromPath);
+        } on FlaggedInPart catch (part) {
+          // Microsoft deletes one message at a time, and some went: those
+          // are gone here too, and only the rest come back on screen.
+          await cache.deleteUids(accountId, fromPath, part.stored.toSet());
+          _handled(_uidsIn(group.key, part.stored));
+          moves.add(MessageMove(
+            fromFolderId: group.key,
+            toFolderId: group.key,
+            movedIds: const [],
+          ));
+          went.addAll(
+              [for (final uid in part.stored) MailMessage.idFor(group.key, uid)]);
+          throw PartialMove(done: moves, moved: went, cause: part.cause);
         } catch (e) {
           if (moves.isEmpty) rethrow;
           throw PartialMove(done: moves, moved: went, cause: e);
@@ -1592,22 +1605,55 @@ class CachedImapEngine implements MailEngine {
     await _sync(accountId, t).sync(path);
   }
 
-  Future<void> _setFlag(String messageId, MessageFlag flag, bool set) async {
-    final (folderId, uid) = splitMessageId(messageId);
-    final (accountId, path) = splitFolderId(folderId);
-    final t = await _transport(accountId);
-    await t.storeFlag(path, uids: [uid], flag: flag, set: set);
-    final cached = await cache.readMessage(accountId, path, uid);
-    if (cached != null) {
-      await cache.updateFlags(accountId, path, {
-        uid: (
+  /// [flag] set or cleared on [messageIds], one call to the server per
+  /// folder, and the cache told of each that changed. See
+  /// [MailEngine.setMessagesRead] for what a failure throws.
+  Future<void> _setFlagOn(
+    List<String> messageIds,
+    MessageFlag flag,
+    bool set,
+  ) async {
+    final changed = <String>[];
+    final failed = <String>[];
+    (Object, StackTrace)? first;
+    for (final group in _groupByFolder(messageIds).entries) {
+      final (accountId, path) = splitFolderId(group.key);
+      var stored = group.value;
+      try {
+        final t = await _transport(accountId);
+        await t.storeFlag(path, uids: group.value, flag: flag, set: set);
+      } on FlaggedInPart catch (part, stack) {
+        stored = part.stored;
+        first ??= (part.cause, stack);
+      } catch (e, stack) {
+        stored = const [];
+        first ??= (e, stack);
+      }
+      final went = stored.toSet();
+      for (final uid in group.value) {
+        (went.contains(uid) ? changed : failed)
+            .add(MailMessage.idFor(group.key, uid));
+      }
+
+      final flags = <int, CachedFlags>{};
+      for (final uid in went) {
+        final cached = await cache.readMessage(accountId, path, uid);
+        if (cached == null) continue;
+        flags[uid] = (
           isRead: flag == MessageFlag.seen ? set : cached.isRead,
           isFlagged: flag == MessageFlag.flagged ? set : cached.isFlagged,
           isAnswered: cached.isAnswered,
           isForwarded: cached.isForwarded,
-        ),
-      });
+        );
+      }
+      if (flags.isNotEmpty) await cache.updateFlags(accountId, path, flags);
     }
+    if (flag == MessageFlag.seen && set && changed.isNotEmpty) {
+      _handled(changed.toSet().contains);
+    }
+    if (first == null) return;
+    if (changed.isEmpty) Error.throwWithStackTrace(first.$1, first.$2);
+    throw PartialFlagChange(failed: failed, cause: first.$1);
   }
 
   @override

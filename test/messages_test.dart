@@ -224,6 +224,48 @@ void main() {
       await c.read(messagesProvider('acct-personal:Travel').future);
       expect(c.read(selectedMessageProvider), isNull);
     });
+
+    /// The message opened, closed and opened again, as a pane shows it.
+    Future<(MailBody, MailBody)> openTwice(ProviderContainer c) async {
+      const id = 'acct-personal:INBOX#1';
+      final pane = c.listen(messageBodyProvider(id), (_, _) {});
+      final first = await c.read(messageBodyProvider(id).future);
+      pane.close();
+      c.listen(messageBodyProvider(id), (_, _) {});
+      // What the pane is shown once anything it set off has run.
+      await Future<void>.delayed(Duration.zero);
+      return (first, await c.read(messageBodyProvider(id).future));
+    }
+
+    test('a body whose invitation is still to come is asked again next open',
+        () async {
+      // Held for the app's life, it showed the message without its card
+      // until the app was closed, however often it was opened again.
+      final engine = _InvitationLate();
+      final c = ProviderContainer(
+        overrides: [mailEngineProvider.overrideWithValue(engine)],
+      );
+      addTearDown(c.dispose);
+
+      final (first, second) = await openTwice(c);
+
+      expect(first.html, '<p>Please come.</p>');
+      expect(first.calendar, isNull);
+      expect(second.calendar, contains('BEGIN:VEVENT'));
+      expect(engine.asked, 2);
+    });
+
+    test('and a whole one is kept', () async {
+      final engine = _InvitationLate()..late = false;
+      final c = ProviderContainer(
+        overrides: [mailEngineProvider.overrideWithValue(engine)],
+      );
+      addTearDown(c.dispose);
+
+      await openTwice(c);
+
+      expect(engine.asked, 1);
+    });
   });
 
   group('date format', () {
@@ -256,4 +298,28 @@ void main() {
     final inbox = await _folder('INBOX');
     expect(inbox.role, FolderRole.inbox);
   });
+}
+
+/// The sample engine with a meeting request whose invitation could not be
+/// fetched the first time it was asked for, unless [late] is false.
+class _InvitationLate extends SampleMailEngine {
+  bool late = true;
+  int asked = 0;
+
+  @override
+  Future<MailBody> loadMessageBody(String messageId) async {
+    asked++;
+    if (late && asked == 1) {
+      return const MailBody(
+        text: 'Please come.',
+        html: '<p>Please come.</p>',
+        calendarPending: true,
+      );
+    }
+    return const MailBody(
+      text: 'Please come.',
+      html: '<p>Please come.</p>',
+      calendar: 'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nEND:VEVENT\r\nEND:VCALENDAR',
+    );
+  }
 }

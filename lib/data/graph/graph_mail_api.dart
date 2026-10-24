@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import '../../domain/calendar_invite.dart';
+import '../../domain/draft.dart' show SendFailed;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
@@ -344,6 +345,28 @@ class GraphMailApi {
     return _messagesFrom(json);
   }
 
+  /// Up to [top] of a folder's unread messages, in whatever order Graph
+  /// keeps them, with nothing but their ids: the next to mark read.
+  ///
+  /// No `$orderby`. Beside a `$filter` on another property Graph can
+  /// refuse the request as an inefficient filter, and the order does not
+  /// matter to mail that is about to be read.
+  Future<List<GraphMessage>> unreadMessages(
+    String folderId, {
+    int top = 100,
+  }) async {
+    final json = await _get(
+      Uri.parse('$base/me/mailFolders/${_id(folderId)}/messages').replace(
+        queryParameters: {
+          '\$filter': 'isRead eq false',
+          '\$select': 'id,isRead',
+          '\$top': '$top',
+        },
+      ),
+    );
+    return _messagesFrom(json);
+  }
+
   /// One message's headers, or null if it is no longer there.
   ///
   /// Null rather than an error: a message deleted from another device is the
@@ -384,22 +407,33 @@ class GraphMailApi {
   /// `meetingMessageType`, asked for through the cast that names it. A
   /// mailbox that refuses the cast falls back to the plain question rather
   /// than failing to show the message at all.
+  ///
+  /// Only a refusal is asked again plainly. A request that failed for a
+  /// moment, throttled or a server fault, is not a mailbox refusing the
+  /// cast, and asked again without it the answer can lose the type: the
+  /// invitation was then never fetched, and the message was cached as one
+  /// without it.
   Future<GraphBody?> body(String messageId) async {
     final uri = Uri.parse('$base/me/messages/${_id(messageId)}');
     try {
-      Map<String, Object?> json;
-      try {
-        json = await _get(uri.replace(queryParameters: {
+      final cast = await _exchange(http.Request(
+        'GET',
+        uri.replace(queryParameters: {
           '\$select': 'body,uniqueBody,hasAttachments,'
               'microsoft.graph.eventMessage/meetingMessageType',
-        }));
-      } on GraphNotFound {
-        rethrow;
-      } catch (_) {
-        json = await _get(uri.replace(
-          queryParameters: {'\$select': 'body,uniqueBody,hasAttachments'},
-        ));
-      }
+        }),
+      ));
+      // Refused as a mailbox that does not know the cast refuses it: a 4xx
+      // other than one saying the message is gone or asking for a wait, or
+      // the 501 Graph gives for something it does not do.
+      final status = cast.statusCode;
+      final refused = status == 501 ||
+          (status >= 400 && status < 500 && status != 404 && status != 429);
+      final json = refused
+          ? await _get(uri.replace(
+              queryParameters: {'\$select': 'body,uniqueBody,hasAttachments'},
+            ))
+          : _json(cast);
       final body = json['body'];
       if (body is! Map) return null;
       final contentType = '${body['contentType']}'.toLowerCase();
@@ -656,17 +690,11 @@ class GraphMailApi {
     ].join(' ');
   }
 
-  Future<void> setRead(String messageId, bool isRead) => _patch(
-        Uri.parse('$base/me/messages/${_id(messageId)}'),
-        {'isRead': isRead},
-      );
+  Future<void> setRead(String messageId, bool isRead) =>
+      _one(GraphRequest.read(messageId, isRead));
 
-  Future<void> setFlagged(String messageId, bool isFlagged) => _patch(
-        Uri.parse('$base/me/messages/${_id(messageId)}'),
-        {
-          'flag': {'flagStatus': isFlagged ? 'flagged' : 'notFlagged'},
-        },
-      );
+  Future<void> setFlagged(String messageId, bool isFlagged) =>
+      _one(GraphRequest.flagged(messageId, isFlagged));
 
   /// Record what was just done to a message, [verb] at [at], as Outlook
   /// records its own replies and forwards, and says "You replied on ..."
@@ -676,41 +704,148 @@ class GraphMailApi {
     int verb, {
     required DateTime at,
   }) =>
-      _patch(
-        Uri.parse('$base/me/messages/${_id(messageId)}'),
-        {
-          'singleValueExtendedProperties': [
-            {'id': lastVerbProperty, 'value': '$verb'},
-            {
-              'id': lastVerbTimeProperty,
-              'value': at.toUtc().toIso8601String(),
-            },
-            {
-              'id': iconIndexProperty,
-              'value': verb == 104 ? '262' : '261',
-            },
-          ],
-        },
-      );
+      _one(GraphRequest.lastVerb(messageId, verb, at: at));
 
   /// Move a message, returning its new id.
   ///
   /// Graph reissues the id on a move, so the caller has to take the new one:
   /// the old id stops resolving the moment this returns.
   Future<String?> move(String messageId, String destinationFolderId) async {
-    final json = await _post(
-      Uri.parse('$base/me/messages/${_id(messageId)}/move'),
-      {'destinationId': destinationFolderId},
-    );
+    final json = await _one(GraphRequest.move(messageId, destinationFolderId));
     final id = json['id'];
     return id is String ? id : null;
   }
 
   Future<void> delete(String messageId) =>
-      _delete(Uri.parse('$base/me/messages/${_id(messageId)}'));
+      _one(GraphRequest.delete(messageId));
 
-  /// Put a MIME message into a folder, for drafts and for filing a copy.
-  Future<String?> createMessage(String folderId, String mimeText) async {
+  // --- many at once ----------------------------------------------------------
+
+  /// How many requests one `$batch` may carry. Graph takes no more.
+  static const batchSize = 20;
+
+  /// Send [requests] together, twenty to a request, and answer with what
+  /// each came back with, in the order given.
+  ///
+  /// One round trip for twenty. Sixty messages selected and deleted were
+  /// sixty requests one after another, fifteen seconds and more on a
+  /// phone, and emptying a Deleted Items of thousands took minutes.
+  ///
+  /// A batch answers 200 whatever happened inside it, and Graph throttles
+  /// the requests in it one by one, so each carries its own status. One
+  /// that got a 429 or a 5xx is sent again after the longest wait any of
+  /// them asked for, as in [wellKnownFolderIds], and after
+  /// [maxThrottleRetries] it is left as the failure it is.
+  ///
+  /// Never throws. A request that went wrong answers with the failure it
+  /// would have thrown sent alone, and one that was never sent, because
+  /// its batch could not be, with why: what happened to the rest is still
+  /// known, which a move part way through has to say. One request on its
+  /// own goes as itself; a batch of one is the same request with more
+  /// around it.
+  Future<List<GraphAnswer>> batch(List<GraphRequest> requests) async {
+    if (requests.length == 1) {
+      try {
+        return [(json: await _one(requests.single), failure: null)];
+      } on Exception catch (e) {
+        return [(json: const {}, failure: e)];
+      }
+    }
+    final answers = List<GraphAnswer?>.filled(requests.length, null);
+    for (var start = 0; start < requests.length; start += batchSize) {
+      final end = start + batchSize < requests.length
+          ? start + batchSize
+          : requests.length;
+      try {
+        await _batchOf(
+          requests,
+          [for (var i = start; i < end; i++) i],
+          answers,
+        );
+      } on Exception catch (e) {
+        for (var i = start; i < requests.length; i++) {
+          answers[i] ??= (json: const {}, failure: e);
+        }
+        break;
+      }
+    }
+    return [for (final answer in answers) answer!];
+  }
+
+  /// One `$batch` of the [requests] [numbered], with the answers put in
+  /// [answers], and those throttled or failing asked again.
+  Future<void> _batchOf(
+    List<GraphRequest> requests,
+    List<int> numbered,
+    List<GraphAnswer?> answers,
+  ) async {
+    var asking = numbered;
+    for (var attempt = 0;; attempt++) {
+      final json = await _post(Uri.parse('$base/\$batch'), {
+        'requests': [
+          for (final i in asking)
+            {
+              'id': '$i',
+              'method': requests[i].method,
+              'url': requests[i].path,
+              if (requests[i].body case final body?) ...{
+                'headers': {'Content-Type': 'application/json'},
+                'body': body,
+              },
+            },
+        ],
+      });
+      final responses = json['responses'];
+      final byId = {
+        for (final entry in responses is List ? responses : const [])
+          if (entry is Map) '${entry['id']}': entry,
+      };
+
+      final again = <int>[];
+      var wait = Duration.zero;
+      for (final i in asking) {
+        final entry = byId['$i'];
+        final status = entry?['status'];
+        final body = entry?['body'] is Map
+            ? (entry!['body'] as Map).cast<String, Object?>()
+            : const <String, Object?>{};
+        final Exception? failure;
+        if (status is! int) {
+          failure = const GraphUnavailable(
+            'Microsoft left part of the request unanswered. Try again.',
+          );
+        } else if (status >= 200 && status < 300) {
+          failure = null;
+        } else if (status == 404) {
+          failure = const GraphNotFound();
+        } else {
+          failure = _failureFor(status, body);
+        }
+        answers[i] = (json: body, failure: failure);
+        // Throttled, failing, or left out: no answer yet, rather than one.
+        if (status is! int || status == 429 || status >= 500) {
+          again.add(i);
+          final asked = _innerRetryAfter(entry?['headers']);
+          if (asked > wait) wait = asked;
+        }
+      }
+      if (again.isEmpty ||
+          attempt >= maxThrottleRetries ||
+          wait > maxThrottleWait) {
+        return;
+      }
+      await (sleep ?? _realSleep)(wait);
+      asking = again;
+    }
+  }
+
+  /// Put a MIME message into a folder, for drafts and for filing a copy,
+  /// and answer with its id.
+  ///
+  /// An answer without one is not taken for saved: a draft Save draft
+  /// cannot find again is no better than one that is not there, and the
+  /// copy it replaces is deleted once this returns.
+  Future<String> createMessage(String folderId, String mimeText) async {
     final json = await _send(
       http.Request(
         'POST',
@@ -720,7 +855,12 @@ class GraphMailApi {
         ..body = base64Encode(utf8.encode(mimeText)),
     );
     final id = json['id'];
-    return id is String ? id : null;
+    if (id is! String || id.isEmpty) {
+      throw const ConnectionFailed(
+        'Microsoft did not say it had saved the message. Try again.',
+      );
+    }
+    return id;
   }
 
   /// PidTagMessageFlags, PidTagMessageDeliveryTime and PidTagClientSubmitTime:
@@ -772,6 +912,10 @@ class GraphMailApi {
   /// What one request carries of a file before it goes up in pieces
   /// instead: base64 adds a third, and Graph takes 4 MB a request.
   static const maxPostedAttachmentBytes = 3 * 1024 * 1024;
+
+  /// The same for a whole message given to [createMessage] as MIME, which
+  /// goes up as base64 too.
+  static const maxPostedMimeBytes = 3 * 1024 * 1024;
 
   /// What one PUT of an upload session carries: ten of the 320 KiB pieces
   /// Microsoft wants every chunk but the last to be a multiple of.
@@ -832,7 +976,7 @@ class GraphMailApi {
       try {
         response = await _within(_client.send(request), uploading: end - start);
       } on Exception catch (e) {
-        throw ConnectionFailed('Could not reach Microsoft. ($e)');
+        throw GraphUnavailable('Could not reach Microsoft. ($e)');
       }
       // 200 and 202 take a chunk and ask for the next; 201 is the last.
       if (response.statusCode >= 400) {
@@ -859,6 +1003,19 @@ class GraphMailApi {
 
   Future<Map<String, Object?>> _get(Uri uri) =>
       _send(http.Request('GET', uri));
+
+  /// [request] sent alone, as any other request is.
+  Future<Map<String, Object?>> _one(GraphRequest request) {
+    final sent =
+        http.Request(request.method, Uri.parse('$base${request.path}'));
+    final body = request.body;
+    if (body != null) {
+      sent
+        ..headers['Content-Type'] = 'application/json'
+        ..body = jsonEncode(body);
+    }
+    return _send(sent);
+  }
 
   /// A response that is a file rather than JSON.
   ///
@@ -900,7 +1057,7 @@ class GraphMailApi {
     try {
       return await accessToken(force: force);
     } on SignInUnreachable catch (e) {
-      throw ConnectionFailed(e.message);
+      throw GraphUnavailable(e.message);
     }
   }
 
@@ -923,7 +1080,7 @@ class GraphMailApi {
           uploading: request.contentLength,
         );
       } on Exception catch (e) {
-        throw ConnectionFailed('Could not reach Microsoft. ($e)');
+        throw GraphUnavailable('Could not reach Microsoft. ($e)');
       }
       if (response.statusCode != 401 || forced) return response;
     }
@@ -1000,8 +1157,16 @@ class GraphMailApi {
       _json(await _exchange(request));
 
   /// What Graph answered, as JSON, or the failure it amounts to.
+  ///
+  /// A refusal is a refusal whatever it carries. An empty one used to read
+  /// as an empty success: a draft that was never created was taken for
+  /// saved, and the copy it replaced deleted; a move that never happened
+  /// dropped the message from the list.
   static Map<String, Object?> _json(http.Response response) {
     if (response.statusCode == 404) throw const GraphNotFound();
+    if (response.statusCode >= 400) {
+      throw _failureFor(response.statusCode, _errorOf(response));
+    }
     if (response.statusCode == 204 || response.body.isEmpty) {
       return const {};
     }
@@ -1015,13 +1180,9 @@ class GraphMailApi {
         '(HTTP ${response.statusCode}).',
       );
     }
-    final json =
-        decoded is Map ? decoded.cast<String, Object?>() : <String, Object?>{};
-
-    if (response.statusCode >= 400) {
-      throw _failureFor(response.statusCode, json);
-    }
-    return json;
+    return decoded is Map
+        ? decoded.cast<String, Object?>()
+        : <String, Object?>{};
   }
 
   /// Graph's error envelope from a response that is not otherwise JSON, or
@@ -1084,10 +1245,18 @@ class GraphMailApi {
         'app for your organisation.',
       );
     }
+    if (status == 413) {
+      // Larger than Graph takes in one request. Trying again sends the same
+      // request, so it is not offered.
+      return SendFailed(
+        'That is more than Microsoft accepts in one piece '
+        '(${code ?? 'HTTP 413'}).',
+      );
+    }
     if (status == 429 || status >= 500) {
       // Worth retrying, so it reads as a connection problem rather than as
       // something the person did.
-      return ConnectionFailed(
+      return GraphUnavailable(
         status == 429
             ? 'Microsoft is rate limiting this account. Try again shortly.'
             : 'Microsoft is having trouble (HTTP $status). Try again shortly.',
@@ -1103,6 +1272,57 @@ class GraphMailApi {
     );
   }
 }
+
+/// One request to Graph about one message, as it goes alone or as one of
+/// a `$batch`: a method, a path under [GraphMailApi.base], and the JSON it
+/// carries, if any. Made here, so the shape of each is written once for
+/// both.
+class GraphRequest {
+  const GraphRequest(this.method, this.path, [this.body]);
+
+  GraphRequest.read(String messageId, bool isRead)
+      : this('PATCH', _messagePath(messageId), {'isRead': isRead});
+
+  GraphRequest.flagged(String messageId, bool isFlagged)
+      : this('PATCH', _messagePath(messageId), {
+          'flag': {'flagStatus': isFlagged ? 'flagged' : 'notFlagged'},
+        });
+
+  /// See [GraphMailApi.setLastVerb].
+  GraphRequest.lastVerb(String messageId, int verb, {required DateTime at})
+      : this('PATCH', _messagePath(messageId), {
+          'singleValueExtendedProperties': [
+            {'id': GraphMailApi.lastVerbProperty, 'value': '$verb'},
+            {
+              'id': GraphMailApi.lastVerbTimeProperty,
+              'value': at.toUtc().toIso8601String(),
+            },
+            {
+              'id': GraphMailApi.iconIndexProperty,
+              'value': verb == 104 ? '262' : '261',
+            },
+          ],
+        });
+
+  /// Answered with the message where it went, under its new id.
+  GraphRequest.move(String messageId, String destinationFolderId)
+      : this('POST', '${_messagePath(messageId)}/move',
+            {'destinationId': destinationFolderId});
+
+  GraphRequest.delete(String messageId)
+      : this('DELETE', _messagePath(messageId));
+
+  final String method;
+  final String path;
+  final Map<String, Object?>? body;
+
+  static String _messagePath(String messageId) =>
+      '/me/messages/${GraphMailApi._id(messageId)}';
+}
+
+/// What one request of [GraphMailApi.batch] came back with: its JSON, and
+/// the failure it amounts to where it did not work.
+typedef GraphAnswer = ({Map<String, Object?> json, Exception? failure});
 
 /// One file on a message, as Graph describes it.
 class GraphAttachment {
@@ -1125,6 +1345,18 @@ class GraphAttachment {
   /// the message. Its name is the item's subject, with no extension, and
   /// it has no media type; its `$value` is the item as MIME.
   final bool isItem;
+}
+
+/// Microsoft could not be reached, or could not answer: no network, a
+/// request that timed out, a throttle that outlasted its retries, a server
+/// fault. A failure that passes, unlike a refusal, which is a plain
+/// [ConnectionFailed] and says the same thing every time it is asked.
+///
+/// Told apart so that what is only nice to have, a message's invitation,
+/// can do without an answer Microsoft refused, and still not be taken for
+/// absent on the strength of one it never gave.
+class GraphUnavailable extends ConnectionFailed {
+  const GraphUnavailable(super.message);
 }
 
 /// The message or folder is not there. Usually means deleted elsewhere.

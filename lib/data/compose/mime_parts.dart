@@ -18,7 +18,8 @@ import '../mail_engine.dart' show rawMessageBytes;
 /// back without its attachments.
 ///
 /// The message's own text is not a file: a `text/*` part is left out unless
-/// it was attached on purpose. A picture the HTML shows in place keeps its
+/// it was attached on purpose or has a name of its own. A picture the HTML
+/// shows in place keeps its
 /// Content-ID, so the `cid:` link in the quote still finds it. An attached
 /// message comes across whole, as the `.eml` it was.
 List<DraftAttachment> attachmentsInMime(String raw) {
@@ -34,9 +35,9 @@ List<DraftAttachment> attachmentsInMime(String raw) {
       return;
     }
 
-    final disposition = part.getHeaderContentDisposition()?.disposition;
-    final attached = disposition == em.ContentDisposition.attachment;
-    if (type.top == em.MediaToptype.text && !attached) return;
+    if (!isFilePart(part)) return;
+    final attached = part.getHeaderContentDisposition()?.disposition ==
+        em.ContentDisposition.attachment;
 
     final bytes = part.decodeContentBinary();
     if (bytes == null || bytes.isEmpty) return;
@@ -54,6 +55,44 @@ List<DraftAttachment> attachmentsInMime(String raw) {
 
   visit(message);
   return found;
+}
+
+/// The message as it would be without the files [attachmentsInMime] finds
+/// on it: its headers, its text and its layout, for a message too large to
+/// put anywhere in one piece, whose files go up after it.
+String mimeWithoutFiles(String raw) {
+  final message = em.MimeMessage.parseFromData(rawMessageBytes(raw));
+
+  bool strip(em.MimePart part) {
+    final parts = part.parts;
+    if (parts == null) return false;
+    final before = parts.length;
+    parts.removeWhere(isFilePart);
+    var changed = parts.length != before;
+    for (final child in parts) {
+      if (strip(child)) changed = true;
+    }
+    // Drawn again from what is left of its parts. Its own text, as it was
+    // read, still holds the files.
+    if (changed) part.mimeData = null;
+    return changed;
+  }
+
+  strip(message);
+  return message.renderMessage();
+}
+
+/// Whether [part] is one of a message's files rather than its text or its
+/// layout: anything that is not text, and text attached on purpose or
+/// given a file name, which a mail app shows as a file however it is
+/// placed.
+bool isFilePart(em.MimePart part) {
+  final type = part.mediaType;
+  if (type.top == em.MediaToptype.multipart) return false;
+  if (type.top != em.MediaToptype.text) return true;
+  return part.getHeaderContentDisposition()?.disposition ==
+          em.ContentDisposition.attachment ||
+      part.decodeFileName() != null;
 }
 
 /// The headers of a saved draft that the message list does not keep: who it
