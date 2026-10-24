@@ -407,9 +407,11 @@ class SampleMailEngine implements MailEngine {
           : _accounts.map((a) => a.id);
       for (final accountId in accountIds) {
         for (final f in _folders[accountId] ?? const <MailFolder>[]) {
-          if (f.role == FolderRole.archive ||
-              f.role == FolderRole.junk ||
-              f.role == FolderRole.deleted) {
+          // Spam and Trash are not what "search my mail" means. All Mail
+          // is searched, as the real engine searches it for the mail
+          // archived with no label. Here its mail is made up on its own
+          // and is no copy of another folder's, so there is none to drop.
+          if (f.role == FolderRole.junk || f.role == FolderRole.deleted) {
             continue;
           }
           folders.add(f);

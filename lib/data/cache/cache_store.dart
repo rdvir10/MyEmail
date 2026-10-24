@@ -239,6 +239,16 @@ abstract class CacheStore {
   Future<({int min, int max})?> uidRange(String accountId, String path);
   Future<CachedMessage?> readMessage(String accountId, String path, int uid);
 
+  /// Those of [uids] that are cached, in one read: what a list row is made
+  /// of, for turning search hits into rows. Each hit read on its own was a
+  /// round trip per hit. The database leaves the body out, since a whole
+  /// row is mostly its body, so these are not for writing back.
+  Future<List<CachedMessage>> readHeaders(
+    String accountId,
+    String path,
+    List<int> uids,
+  );
+
   /// The `Message-ID` header of each of [uids] that has one, in the order
   /// the uids were given.
   ///
@@ -426,6 +436,17 @@ class MemoryCacheStore implements CacheStore {
     int uid,
   ) async =>
       _folder(accountId, path)[uid];
+
+  /// Whole rows: in memory nothing is saved by leaving the body out.
+  @override
+  Future<List<CachedMessage>> readHeaders(
+    String accountId,
+    String path,
+    List<int> uids,
+  ) async {
+    final folder = _folder(accountId, path);
+    return [for (final uid in uids) ?folder[uid]];
+  }
 
   @override
   Future<List<String>> messageIdsFor(

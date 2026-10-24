@@ -590,6 +590,32 @@ class DriftCacheStore implements CacheStore {
   }
 
   @override
+  Future<List<CachedMessage>> readHeaders(
+    String accountId,
+    String path,
+    List<int> uids,
+  ) async {
+    if (uids.isEmpty) return const [];
+    // Every column but the body's, named from the table so a column added
+    // later comes along. Read back through the table's own mapping, which
+    // takes the body columns that are not there as null.
+    final m = db.messages;
+    final body = {m.bodyText.name, m.bodyHtml.name, m.calendar.name};
+    final columns = [
+      for (final c in m.$columns)
+        if (!body.contains(c.name)) c.name,
+    ];
+    final rows = await db.customSelect(
+      'SELECT ${columns.join(', ')} FROM ${m.actualTableName} '
+      'WHERE account_id = ? AND path = ? '
+      'AND uid IN (${List.filled(uids.length, '?').join(', ')})',
+      variables: _variables([accountId, path, ...uids]),
+      readsFrom: {m},
+    ).get();
+    return [for (final r in rows) _fromRow(m.map(r.data))];
+  }
+
+  @override
   Future<void> upsertMessages(
     String accountId,
     String path,

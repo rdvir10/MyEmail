@@ -126,15 +126,34 @@ abstract class ImapTransport {
   ///
   /// Server-side: IMAP SEARCH, so it covers mail that was never cached.
   /// Newest first, capped at [limit].
+  ///
+  /// [unlabelledOnly] is for Gmail's All Mail, searched with the other
+  /// folders: only the mail none of them holds, out of the Inbox, Sent and
+  /// Drafts and under no label. Graph has no such folder and ignores it.
   Future<List<int>> searchUids(
     String path,
     String query, {
     int limit = 100,
     SearchField field = SearchField.all,
+    bool unlabelledOnly = false,
   });
 
   /// Headers for specific UIDs, for turning search hits into rows.
   Future<List<RemoteHeader>> fetchHeadersByUids(String path, List<int> uids);
+
+  /// [searchUids], each hit with its header where the server's answer to
+  /// the search carries it, so turning hits into rows asks nothing more.
+  ///
+  /// Graph answers a search with the messages themselves. IMAP's SEARCH
+  /// answers with numbers alone, so there each header is null and the
+  /// caller fetches, in one request, the headers it has not cached.
+  Future<List<SearchHit>> searchHits(
+    String path,
+    String query, {
+    int limit = 100,
+    SearchField field = SearchField.all,
+    bool unlabelledOnly = false,
+  });
 
   Future<void> storeFlag(
     String path, {
@@ -264,6 +283,10 @@ class MovedInPart implements Exception {
   @override
   String toString() => '$cause';
 }
+
+/// One message a search found, and its header where the search brought it:
+/// see [ImapTransport.searchHits].
+typedef SearchHit = ({int uid, RemoteHeader? header});
 
 @immutable
 class RemoteFolder {

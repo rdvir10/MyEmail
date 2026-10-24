@@ -381,6 +381,53 @@ void main() {
     });
   });
 
+  group('bodyPartsOf', () {
+    test("an attached file's text, or an attached message's, is not the body",
+        () {
+      // A message of HTML alone, a log file attached to it and a forwarded
+      // invitation attached as an email.
+      final forwarded = em.BodyPart()
+        ..contentType = em.ContentTypeHeader('multipart/mixed');
+      forwarded
+        ..addPart(
+          em.BodyPart()..contentType = em.ContentTypeHeader('text/plain'),
+        )
+        ..addPart(
+          em.BodyPart()..contentType = em.ContentTypeHeader('text/calendar'),
+        );
+      final attached = em.BodyPart()
+        ..contentType = em.ContentTypeHeader('message/rfc822');
+      attached.addPart(forwarded);
+      final root = em.BodyPart()
+        ..contentType = em.ContentTypeHeader('multipart/mixed');
+      root
+        ..addPart(
+          em.BodyPart()..contentType = em.ContentTypeHeader('text/html'),
+        )
+        ..addPart(
+          em.BodyPart()
+            ..contentType = em.ContentTypeHeader('text/plain; name=log.txt')
+            ..contentDisposition =
+                em.ContentDispositionHeader('attachment; filename=log.txt'),
+        )
+        ..addPart(attached);
+
+      final parts = bodyPartsOf(em.MimeMessage()..body = root)!;
+
+      expect(parts.text, isNull);
+      // The invitation is found wherever it is, as in a whole message, and
+      // asked for by the id IMAP knows it by.
+      expect(parts.ids, ['1', '3.2']);
+    });
+
+    test('a message of one part is left to be fetched whole', () {
+      final root = em.BodyPart()
+        ..contentType = em.ContentTypeHeader('text/html');
+      expect(bodyPartsOf(em.MimeMessage()..body = root), isNull);
+      expect(bodyPartsOf(em.MimeMessage()), isNull);
+    });
+  });
+
   group('htmlToText / preview', () {
     test('strips tags, decodes entities, keeps paragraph breaks', () {
       const html = '<html><head><style>p{}</style></head><body>'

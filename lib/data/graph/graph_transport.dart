@@ -503,6 +503,7 @@ class GraphTransport implements ImapTransport {
     String query, {
     int limit = 100,
     SearchField field = SearchField.all,
+    bool unlabelledOnly = false,
   }) async {
     final found = await api.search(
       await _folderId(path),
@@ -520,6 +521,30 @@ class GraphTransport implements ImapTransport {
       for (final m in found)
         if (uids.containsKey(m.id)) uids[m.id]!,
     ];
+  }
+
+  /// The search's answer carries every field of a header already. Kept to
+  /// the numbers, each hit nobody had cached was asked for again, one GET
+  /// after another: a folder of a hundred old hits took a hundred round
+  /// trips, and the whole search waited for it.
+  @override
+  Future<List<SearchHit>> searchHits(
+    String path,
+    String query, {
+    int limit = 100,
+    SearchField field = SearchField.all,
+    bool unlabelledOnly = false,
+  }) async {
+    final found = await api.search(
+      await _folderId(path),
+      query,
+      top: limit,
+      field: field,
+    );
+    // Numbered oldest first, as searchUids numbers them, and handed back
+    // newest first.
+    final headers = await _headers(path, found.reversed.toList());
+    return [for (final h in headers.reversed) (uid: h.uid, header: h)];
   }
 
   @override

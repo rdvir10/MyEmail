@@ -1764,6 +1764,66 @@ void main() {
           reason: 'and the next sync agrees');
     });
   });
+
+  group('searching a Microsoft account', () {
+    test('makes its rows from the search, not a request per hit', () async {
+      // Graph's search answers with every header field. Kept to the
+      // numbers, each hit not cached was asked for again on its own, one
+      // after another: a folder of a hundred old hits, a hundred round
+      // trips, and the whole search waiting on it.
+      server.folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox');
+      final asked = <Uri>[];
+      final searching = GraphTransport(
+        accountId: 'acct-1',
+        idMap: ids,
+        api: GraphMailApi(
+          accessToken: ({bool force = false}) async => 'token',
+          httpClient: http_testing.MockClient((request) {
+            asked.add(request.url);
+            return server.handle(request);
+          }),
+        ),
+      );
+      final engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => searching,
+      );
+      final account = await engine.addAccount(
+        displayName: 'Work',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      // Come since the account was added, so none of it is cached, as most
+      // of what a search turns up is not.
+      server
+        ..message('f-inbox', id: 'm1', subject: 'Acme quote', minutesAgo: 30,
+            from: 'dana@acme.example')
+        ..message('f-inbox', id: 'm2', subject: 'Acme order', minutesAgo: 20);
+      asked.clear();
+
+      final hits = await engine.searchMessages(
+        'acme',
+        SearchScope.folder('${account.id}:Inbox'),
+      );
+
+      expect(hits.map((m) => m.subject), ['Acme order', 'Acme quote']);
+      expect(hits.last.from.email, 'dana@acme.example');
+      expect(
+        asked.where((u) => u.path.contains('/me/messages/')),
+        isEmpty,
+        reason: 'no hit asked for again',
+      );
+      // The same numbers a search by number gives, so a row opened from
+      // the results is the message a sync would number so.
+      expect(
+        [for (final m in hits) m.uid],
+        await searching.searchUids('Inbox', 'acme'),
+      );
+    });
+  });
 }
 
 /// A sender that sends nothing.

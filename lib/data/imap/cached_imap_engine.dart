@@ -1371,35 +1371,49 @@ class CachedImapEngine implements MailEngine {
     final failures = <(Object, StackTrace)>[];
     final targets = await _searchTargets(scope, failures);
 
-    // Across accounts, one that fails (a sign-in to renew, a folder deleted
-    // elsewhere) leaves the others' results standing. It used to throw them
-    // all away. Only when nothing at all could be searched is it an error.
+    // Across accounts, one that fails (no signal, a sign-in to renew, a
+    // folder deleted elsewhere) leaves the others' results standing. It
+    // used to throw them all away. Only when nothing at all could be
+    // searched is it an error, a lost connection as much as any: an empty
+    // list then said "No messages found" of mail never looked for. A
+    // failed folder is null here, which an empty one is not.
     final results = await Future.wait([
       for (final t in targets)
         wide
-            ? _searchOneFolder(t.accountId, t.path, query, limit, field)
-                .catchError((Object e, StackTrace s) {
-                failures.add((e, s));
-                return const <MailMessage>[];
-              })
-            : _searchOneFolder(t.accountId, t.path, query, limit, field),
+            ? _searchOneFolder(t, query, limit, field)
+                .then<List<MailMessage>?>(
+                (found) => found,
+                onError: (Object e, StackTrace s) {
+                  failures.add((e, s));
+                  return null;
+                },
+              )
+            : _searchOneFolder(t, query, limit, field),
     ]);
-    if (failures.isNotEmpty && failures.length >= targets.length &&
-        results.every((r) => r.isEmpty)) {
+    if (failures.isNotEmpty && results.every((r) => r == null)) {
       final (error, stack) = failures.first;
       Error.throwWithStackTrace(error, stack);
     }
 
-    // On Gmail a label is the same message seen from another folder, so one
-    // message could come back once from the Inbox and again from each label
-    // on it, filling the list with copies. One per Message-ID per account,
-    // and the Inbox's copy where there is one.
+    // On Gmail a label is the same message seen from another folder, so
+    // one message could come back once from the Inbox and again from each
+    // label on it, filling the list with copies. One per Message-ID per
+    // account: the Inbox's copy where there is one, then a label's, and
+    // All Mail's last. All Mail is asked only for mail no other folder has
+    // (see _searchTargets), and should Gmail hand back a copy anyway, a
+    // move made from it would leave the message in the Inbox or under its
+    // label as well.
+    int rank(FolderRole role) => switch (role) {
+          FolderRole.inbox => 0,
+          FolderRole.archive => 2,
+          _ => 1,
+        };
     final seen = <String>{};
     final unique = <MailMessage>[];
-    for (final inboxFirst in [true, false]) {
+    for (final tier in [0, 1, 2]) {
       for (final (i, found) in results.indexed) {
-        if ((targets[i].role == FolderRole.inbox) != inboxFirst) continue;
-        for (final m in found) {
+        if (rank(targets[i].role) != tier) continue;
+        for (final m in found ?? const <MailMessage>[]) {
           final id = m.messageId;
           if (id != null && !seen.add('${m.accountId}\u0000$id')) continue;
           unique.add(m);
@@ -1411,87 +1425,102 @@ class CachedImapEngine implements MailEngine {
   }
 
   Future<List<MailMessage>> _searchOneFolder(
-    String accountId,
-    String path,
+    _SearchTarget target,
     String query,
     int limit,
     SearchField field,
   ) async {
-    try {
-      final t = await _transport(accountId);
-      final uids =
-          await t.searchUids(path, query, limit: limit, field: field);
-      if (uids.isEmpty) return const [];
-      final folderId = MailFolder.idFor(accountId, path);
+    final (:accountId, :path, role: _, :unlabelledOnly) = target;
+    final t = await _transport(accountId);
+    final hits = await t.searchHits(
+      path,
+      query,
+      limit: limit,
+      field: field,
+      unlabelledOnly: unlabelledOnly,
+    );
+    if (hits.isEmpty) return const [];
+    final folderId = MailFolder.idFor(accountId, path);
 
-      // Anything already cached needs no round trip, and brings its preview
-      // along; only the rest is fetched.
-      final rows = <MailMessage>[];
-      final missing = <int>[];
-      for (final uid in uids) {
-        final cached = await cache.readMessage(accountId, path, uid);
-        if (cached != null) {
-          rows.add(cached.toMailMessage(accountId: accountId, folderId: folderId));
-        } else {
-          missing.add(uid);
-        }
+    MailMessage row(RemoteHeader h) => MailMessage(
+          id: MailMessage.idFor(folderId, h.uid),
+          accountId: accountId,
+          folderId: folderId,
+          uid: h.uid,
+          subject: h.subject,
+          from: h.from,
+          to: h.to,
+          cc: h.cc,
+          replyTo: h.replyTo,
+          date: h.date,
+          arrived: h.arrived,
+          preview: h.preview,
+          isRead: h.isRead,
+          isFlagged: h.isFlagged,
+          isAnswered: h.isAnswered,
+          isForwarded: h.isForwarded,
+          hasAttachments: h.hasAttachments,
+          sizeBytes: h.sizeBytes,
+          isMeeting: h.isMeeting,
+          messageId: h.messageId,
+          inReplyTo: h.inReplyTo,
+          conversationId: h.conversationId,
+        );
+
+    // Anything already cached is read in one go and brings its preview
+    // along. What the search brought a header for needs nothing more, and
+    // only the rest is fetched, all of it in one request.
+    final cached = {
+      for (final c in await cache.readHeaders(
+        accountId,
+        path,
+        [for (final hit in hits) hit.uid],
+      ))
+        c.uid: c,
+    };
+    final rows = <MailMessage>[];
+    final missing = <int>[];
+    for (final hit in hits) {
+      if (cached[hit.uid] case final c?) {
+        rows.add(c.toMailMessage(accountId: accountId, folderId: folderId));
+      } else if (hit.header case final h?) {
+        rows.add(row(h));
+      } else {
+        missing.add(hit.uid);
       }
-      if (missing.isNotEmpty) {
-        final headers = await t.fetchHeadersByUids(path, missing);
-        for (final h in headers) {
-          rows.add(
-            MailMessage(
-              id: MailMessage.idFor(folderId, h.uid),
-              accountId: accountId,
-              folderId: folderId,
-              uid: h.uid,
-              subject: h.subject,
-              from: h.from,
-              to: h.to,
-              cc: h.cc,
-              replyTo: h.replyTo,
-              date: h.date,
-              arrived: h.arrived,
-              preview: h.preview,
-              isRead: h.isRead,
-              isFlagged: h.isFlagged,
-              isAnswered: h.isAnswered,
-              isForwarded: h.isForwarded,
-              hasAttachments: h.hasAttachments,
-              sizeBytes: h.sizeBytes,
-              isMeeting: h.isMeeting,
-              messageId: h.messageId,
-              inReplyTo: h.inReplyTo,
-              conversationId: h.conversationId,
-            ),
-          );
-        }
-      }
-      return rows;
-    } on ConnectionFailed {
-      // One unreachable account should not sink a search across the others.
-      return const [];
     }
+    if (missing.isNotEmpty) {
+      rows.addAll((await t.fetchHeadersByUids(path, missing)).map(row));
+    }
+    return rows;
   }
 
   /// The (account, folder path) pairs a scope covers.
   /// The folders a search looks in. Failures to list an account's folders
   /// go into [failures] rather than out, so the other accounts are still
   /// searched.
-  Future<List<({String accountId, String path, FolderRole role})>>
-      _searchTargets(
+  Future<List<_SearchTarget>> _searchTargets(
     SearchScope scope,
     List<(Object, StackTrace)> failures,
   ) async {
     if (scope.folderId != null) {
+      // All Mail searched on its own is searched whole: it is the folder
+      // open, and everything in it is what is being looked through.
       final (accountId, path) = splitFolderId(scope.folderId!);
-      return [(accountId: accountId, path: path, role: FolderRole.user)];
+      return [
+        (
+          accountId: accountId,
+          path: path,
+          role: FolderRole.user,
+          unlabelledOnly: false,
+        ),
+      ];
     }
     final accounts = [
       for (final a in accountStore.read())
         if (scope.accountId == null || a.id == scope.accountId) a,
     ];
-    final targets = <({String accountId, String path, FolderRole role})>[];
+    final targets = <_SearchTarget>[];
     for (final account in accounts) {
       List<RemoteFolder> remote;
       final cached = folderLists.read(account.id);
@@ -1500,11 +1529,9 @@ class CachedImapEngine implements MailEngine {
       } else {
         try {
           remote = await (await _transport(account.id)).listFolders();
-        } on ConnectionFailed {
-          // One unreachable account contributes nothing rather than sinking
-          // a search across the others.
-          continue;
         } catch (e, s) {
+          // An unreachable account among them too: it was not searched, and
+          // when none was, that is what the search has to say.
           failures.add((e, s));
           continue;
         }
@@ -1515,14 +1542,21 @@ class CachedImapEngine implements MailEngine {
         if (f.role == FolderRole.junk || f.role == FolderRole.deleted) {
           continue;
         }
-        // Gmail's All Mail holds a copy of everything, and Starred and
-        // Important are copies too, so each would repeat every hit.
-        // Outlook's Archive is a folder like any other, holding mail found
-        // nowhere else, and was left out by the same rule.
-        if (gmail && (f.role == FolderRole.archive || f.isServerManaged)) {
-          continue;
-        }
-        targets.add((accountId: account.id, path: f.path, role: f.role));
+        // Gmail's All Mail is searched for the mail archived with no label
+        // on it, which is there and nowhere else, and only for that. Asked
+        // for everything, nearly every hit was a copy of the Inbox's or a
+        // label's: a header fetched for each, for a row searchMessages
+        // then dropped, and the copies filled its hundred hits before
+        // older archived mail had a place. Starred and Important are
+        // labels on mail All Mail has as well, so they would add nothing
+        // but another search.
+        if (gmail && f.isServerManaged) continue;
+        targets.add((
+          accountId: account.id,
+          path: f.path,
+          role: f.role,
+          unlabelledOnly: gmail && f.role == FolderRole.archive,
+        ));
       }
     }
     return targets;
@@ -1872,3 +1906,12 @@ class CachedImapEngine implements MailEngine {
         () => FolderSync(transport: transport, store: cache, accountId: accountId),
       );
 }
+
+/// One folder a search looks in, and whether only the mail no other folder
+/// holds is wanted of it (see [ImapTransport.searchUids]).
+typedef _SearchTarget = ({
+  String accountId,
+  String path,
+  FolderRole role,
+  bool unlabelledOnly,
+});

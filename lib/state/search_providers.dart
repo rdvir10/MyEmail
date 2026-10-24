@@ -117,6 +117,12 @@ final searchScopeProvider = Provider<SearchScope>((ref) {
 });
 
 /// Search results, or null when the box is empty.
+///
+/// A search that fails says so at once. Riverpod's own retry asked every
+/// account again, up to ten times over some forty seconds, and the list
+/// showed a spinner the whole while: offline, "Search failed." came only
+/// after every account had been reconnected ten times. Another word typed,
+/// or another scope, searches again.
 final searchResultsProvider = FutureProvider<List<MailMessage>?>((ref) async {
   final query = ref.watch(searchQueryProvider).trim();
   if (query.isEmpty) return null;
@@ -136,4 +142,4 @@ final searchResultsProvider = FutureProvider<List<MailMessage>?>((ref) async {
   return ref
       .watch(mailEngineProvider)
       .searchMessages(query, scope, field: field);
-});
+}, retry: (_, _) => null);

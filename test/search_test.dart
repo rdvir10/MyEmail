@@ -12,6 +12,8 @@ import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_attachment.dart';
+import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/search_bar.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
@@ -65,6 +67,15 @@ void main() {
           'CHARSET UTF-8 X-GM-RAW "filename:invoice"');
       expect(buildSearchCriteria('q3 report', field: SearchField.attachment),
           'CHARSET UTF-8 X-GM-RAW "filename:q3" X-GM-RAW "filename:report"');
+    });
+
+    test("All Mail's own mail is asked for in Gmail's words too", () {
+      expect(
+        buildSearchCriteria('acme', field: SearchField.from,
+            unlabelledOnly: true),
+        'CHARSET UTF-8 FROM "acme" '
+        'X-GM-RAW "has:nouserlabels -in:inbox -in:sent -in:drafts"',
+      );
     });
 
     test('a Hebrew or accented word goes as a literal, not between quotes',
@@ -186,22 +197,23 @@ void main() {
       }
     });
 
-    test('All Mail, Spam and Trash are left out of the wide scopes', () async {
-      final hits =
-          await engine.searchMessages('the', const SearchScope.everywhere());
-      final folders = await engine.loadFolders('acct-personal');
-      final excluded = {
-        for (final f in folders)
-          if (f.role == FolderRole.archive ||
-              f.role == FolderRole.junk ||
-              f.role == FolderRole.deleted)
-            f.id,
-      };
-      expect(
-        hits.where((m) => excluded.contains(m.folderId)),
-        isEmpty,
-        reason: 'All Mail would duplicate every hit',
+    test('Spam and Trash are left out of the wide scopes, All Mail is not',
+        () async {
+      // As the real engine has it: mail archived with no label is in All
+      // Mail and nowhere else.
+      final hits = await engine.searchMessages(
+        'the',
+        const SearchScope.account('acct-personal'),
+        limit: 1000,
       );
+      final folders = await engine.loadFolders('acct-personal');
+      String folderOf(FolderRole role) =>
+          folders.firstWhere((f) => f.role == role).id;
+
+      final searched = hits.map((m) => m.folderId).toSet();
+      expect(searched, isNot(contains(folderOf(FolderRole.junk))));
+      expect(searched, isNot(contains(folderOf(FolderRole.deleted))));
+      expect(searched, contains(folderOf(FolderRole.archive)));
     });
 
     test('every word must match', () async {
@@ -228,12 +240,28 @@ void main() {
 
     setUp(() async {
       server = FakeImapTransport();
-      server.folder('INBOX', role: FolderRole.inbox)
-        ..deliver(subject: 'Acme invoice', body: 'Please pay')
-        ..deliver(subject: 'Lunch?', body: 'Thursday');
-      server.folder('Work').deliver(subject: 'Acme contract', body: 'Draft');
-      server.folder('[Gmail]/All Mail', role: FolderRole.archive)
-          .deliver(subject: 'Acme invoice', body: 'copy');
+      final inbox = server.folder('INBOX', role: FolderRole.inbox);
+      // Listed before the label, as Gmail may: which copy of a message is
+      // shown must not come down to the order of the folders.
+      final allMail =
+          server.folder('[Gmail]/All Mail', role: FolderRole.archive);
+      final invoice = inbox.deliver(subject: 'Acme invoice', body: 'Please pay');
+      inbox.deliver(subject: 'Lunch?', body: 'Thursday');
+      final contract =
+          server.folder('Work').deliver(subject: 'Acme contract', body: 'Draft');
+      // All Mail holds every message, these two as well, under the same
+      // Message-ID.
+      allMail
+        ..deliver(
+          subject: invoice.subject,
+          body: invoice.body,
+          messageId: invoice.messageId,
+        )
+        ..deliver(
+          subject: contract.subject,
+          body: contract.body,
+          messageId: contract.messageId,
+        );
       engine = CachedImapEngine(
         accountStore: MemoryAccountStore(),
         credentialStore: MemoryCredentialStore(),
@@ -288,16 +316,98 @@ void main() {
       expect(lastSearch(), 'UID SEARCH INBOX X-GM-RAW "quote"');
     });
 
-    test('an account search covers folders but skips All Mail', () async {
+    test('an account search finds mail only All Mail has, and the rest once',
+        () async {
+      // Archived on the web or the phone, or kept out of the Inbox by a
+      // filter, with no label on it: All Mail is the one folder holding it,
+      // and no search wider than All Mail itself used to find it.
+      server
+          .folder('[Gmail]/All Mail')
+          .deliver(subject: 'Acme statement', body: 'Archived');
+
+      for (final scope in [
+        SearchScope.account(account.id),
+        // What All Inboxes searches.
+        const SearchScope.everywhere(),
+      ]) {
+        final hits = await engine.searchMessages('acme', scope);
+
+        expect(
+          {for (final m in hits) m.subject: m.folderId},
+          {
+            'Acme statement': '${account.id}:[Gmail]/All Mail',
+            // The copies elsewhere win, so a move from the results moves
+            // the message out of the Inbox or the label it is under.
+            'Acme invoice': '${account.id}:INBOX',
+            'Acme contract': '${account.id}:Work',
+          },
+        );
+        expect(hits, hasLength(3), reason: 'one row per message');
+      }
+    });
+
+    test('All Mail is asked only for what no other folder has', () async {
+      // Every search typed in All Inboxes asks All Mail. Asked for all of
+      // it, nearly every hit was a copy of an Inbox or label message, its
+      // header fetched for a row that was then dropped.
+      final statement = server
+          .folder('[Gmail]/All Mail')
+          .deliver(subject: 'Acme statement', body: 'Archived');
+      server.calls.clear();
+
+      await engine.searchMessages('acme', SearchScope.account(account.id));
+
+      expect(
+        server.calls.where((c) => c.startsWith('UID SEARCH [Gmail]/All Mail')),
+        [contains('X-GM-RAW "has:nouserlabels -in:inbox')],
+      );
+      expect(
+        server.calls.where((c) => c.startsWith('UID FETCH [Gmail]/All Mail')),
+        ['UID FETCH [Gmail]/All Mail ${statement.uid}'],
+        reason: 'no header fetched for a copy',
+      );
+      expect(server.calls.where((c) => c.contains('X-GM-RAW')), hasLength(1),
+          reason: 'the Inbox and the labels are searched whole');
+    });
+
+    test('All Mail searched on its own is searched whole', () async {
       final hits = await engine.searchMessages(
         'acme',
-        SearchScope.account(account.id),
+        SearchScope.folder('${account.id}:[Gmail]/All Mail'),
       );
-      expect(hits.map((m) => m.subject).toSet(), {'Acme invoice', 'Acme contract'});
-      expect(
-        server.calls.any((c) => c.contains('UID SEARCH [Gmail]/All Mail')),
-        isFalse,
+
+      expect(hits.map((m) => m.subject).toSet(),
+          {'Acme invoice', 'Acme contract'});
+      expect(server.calls.where((c) => c.contains('X-GM-RAW')), isEmpty);
+    });
+
+    test('the hits a folder has cached are read in one go', () async {
+      // Each was read from the cache on its own, a whole row with its
+      // body, one after another.
+      final counting = _CountingCache();
+      final engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: counting,
+        transportFactory: (_, _) => server,
       );
+      final account = await engine.addAccount(
+        displayName: 'P',
+        emailAddress: 'p@example.com',
+        provider: MailProvider.gmail,
+        secret: 'abcdabcdabcdabcd',
+      );
+      await engine.loadMessages('${account.id}:INBOX');
+      server.calls.clear();
+
+      final hits = await engine.searchMessages(
+        'acme',
+        SearchScope.folder('${account.id}:INBOX'),
+      );
+
+      expect(hits.single.subject, 'Acme invoice');
+      expect(counting.singleReads, 0, reason: 'no hit read on its own');
+      expect(server.calls.where((c) => c.startsWith('UID FETCH')), isEmpty);
     });
 
     test('cached rows are reused, uncached ones fetched', () async {
@@ -342,13 +452,30 @@ void main() {
       expect(server.calls.any((c) => c.contains('[Gmail]/Important')), isFalse);
     });
 
-    test('an unreachable server yields no results rather than an error',
+    test('an unreachable server says so, rather than that nothing matched',
         () async {
-      server.offline = true;
-      expect(
-        await engine.searchMessages('acme', SearchScope.account(account.id)),
-        isEmpty,
-      );
+      // On the subway, "No messages found" said the message did not exist
+      // when the server had not been reached at all.
+      for (final listed in [false, true]) {
+        // With its folders listed while there was a signal, and without.
+        server.offline = false;
+        if (listed) {
+          await engine.loadFolders(account.id);
+        } else {
+          await engine.folderLists.delete(account.id);
+        }
+        server.offline = true;
+        for (final scope in [
+          SearchScope.folder('${account.id}:INBOX'),
+          SearchScope.account(account.id),
+          const SearchScope.everywhere(),
+        ]) {
+          await expectLater(
+            engine.searchMessages('acme', scope),
+            throwsA(isA<ConnectionFailed>()),
+          );
+        }
+      }
     });
   });
 
@@ -391,6 +518,11 @@ void main() {
           await engine.searchMessages('acme', SearchScope.account(work.id));
 
       expect(hits.single.subject, 'Acme contract, signed');
+      expect(
+        servers['me@work.example']!.calls.where((c) => c.contains('X-GM-RAW')),
+        isEmpty,
+        reason: 'Gmail alone keeps one message in many folders',
+      );
     });
 
     test("one account needing a sign-in leaves the others' results", () async {
@@ -415,6 +547,35 @@ void main() {
       await expectLater(
         engine.searchMessages('acme', SearchScope.everywhere()),
         throwsA(isA<AuthenticationFailed>()),
+      );
+    });
+
+    test("one account out of reach leaves the others' results", () async {
+      await add('me@gmail.example', MailProvider.gmail);
+      servers['me@gmail.example']!
+          .folder('INBOX')
+          .deliver(subject: 'Acme invoice');
+      await add('me@work.example', MailProvider.outlook);
+      servers['me@work.example']!.offline = true;
+
+      final hits = await engine.searchMessages('acme', SearchScope.everywhere());
+
+      expect(hits.single.subject, 'Acme invoice');
+    });
+
+    test('and an account searched with nothing found is no messages found',
+        () async {
+      // Not an error because another account could not be reached: the
+      // one that was searched has answered.
+      await add('me@gmail.example', MailProvider.gmail);
+      final work = await add('me@work.example', MailProvider.outlook);
+      // Its folders not yet listed, so it fails before any folder is tried.
+      await engine.folderLists.delete(work.id);
+      servers['me@work.example']!.offline = true;
+
+      expect(
+        await engine.searchMessages('acme', SearchScope.everywhere()),
+        isEmpty,
       );
     });
   });
@@ -488,6 +649,34 @@ void main() {
       expect(find.text('No messages found'), findsOneWidget);
     });
 
+    testWidgets('a search that reaches no server says so at once, and once',
+        (tester) async {
+      // Riverpod retried the failure up to ten times, some forty seconds
+      // of spinner with every account reconnected each time, before the
+      // list said anything.
+      wide(tester);
+      final engine = _Offline();
+      await tester.pumpWidget(ProviderScope(
+        overrides: [mailEngineProvider.overrideWithValue(engine)],
+        child: const MaterialApp(home: AppShell()),
+      ));
+      await tester.pumpAndSettle();
+
+      await openSearch(tester);
+      await tester.enterText(searchField, 'acme');
+      await tester.pump();
+      // Past the pause in typing the search waits for, and no further.
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+
+      expect(find.textContaining('Search failed.'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+
+      await tester.pump(const Duration(minutes: 1));
+      expect(engine.searches, 1);
+      expect(find.textContaining('Search failed.'), findsOneWidget);
+    });
+
     testWidgets('the part of the message to look in is chosen under the box',
         (tester) async {
       wide(tester);
@@ -538,4 +727,31 @@ void main() {
       expect(find.text('Account'), findsOneWidget);
     });
   });
+}
+
+/// On the subway: every search fails to reach a server.
+class _Offline extends SampleMailEngine {
+  int searches = 0;
+
+  @override
+  Future<List<MailMessage>> searchMessages(
+    String query,
+    SearchScope scope, {
+    int limit = 100,
+    SearchField field = SearchField.all,
+  }) async {
+    searches++;
+    throw const ConnectionFailed('No connection to imap.gmail.com.');
+  }
+}
+
+/// The cache, counting the messages read from it one at a time.
+class _CountingCache extends MemoryCacheStore {
+  int singleReads = 0;
+
+  @override
+  Future<CachedMessage?> readMessage(String accountId, String path, int uid) {
+    singleReads++;
+    return super.readMessage(accountId, path, uid);
+  }
 }

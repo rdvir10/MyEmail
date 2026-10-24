@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:enough_mail/enough_mail.dart' as em;
 
@@ -240,19 +241,124 @@ MailAddress addressFromMime(em.MailAddress a) =>
 /// The readable body: the plain-text part if the sender supplied one, else a
 /// text rendering of the HTML so the browser preview and any text-only view
 /// still show something. The HTML travels alongside for the WebView.
-MailBody bodyFromMime(em.MimeMessage m) {
-  final html = m.decodeTextHtmlPart();
-  final text = m.decodeTextPlainPart();
-  return MailBody(
-    text: (text != null && text.trim().isNotEmpty)
-        ? text
-        : html != null
-            ? htmlToText(html)
-            : '',
-    html: html,
-    calendar: calendarPartOf(m),
+MailBody bodyFromMime(em.MimeMessage m) => _body(
+      text: m.decodeTextPlainPart(),
+      html: m.decodeTextHtmlPart(),
+      calendar: calendarPartOf(m),
+    );
+
+MailBody _body({String? text, String? html, String? calendar}) => MailBody(
+      text: (text != null && text.trim().isNotEmpty)
+          ? text
+          : html != null
+              ? htmlToText(html)
+              : '',
+      html: html,
+      calendar: calendar,
+    );
+
+/// The parts of a message its body is read from, chosen by [bodyPartsOf].
+class BodyParts {
+  const BodyParts({this.text, this.html, this.calendar = const []});
+
+  final em.BodyPart? text;
+  final em.BodyPart? html;
+
+  /// Every part that may be the invitation, in the order they are tried.
+  final List<em.BodyPart> calendar;
+
+  /// What each is fetched as, `BODY[n]`, once each.
+  List<String> get ids =>
+      {for (final p in [?text, ?html, ...calendar]) _partId(p)}.toList();
+}
+
+/// The parts of a message [bodyFromParts] reads its body from, found in
+/// its BODYSTRUCTURE alone so that nothing else need be fetched: the first
+/// plain-text and the first HTML part that are its own, not an attached
+/// file or an attached message, and whatever may be its invitation, in the
+/// order [calendarPartOf] tries them.
+///
+/// Null for a message of one part, which is its body and nothing else, so
+/// is fetched whole.
+BodyParts? bodyPartsOf(em.MimeMessage structure) {
+  final body = structure.body;
+  if (body == null || (body.parts?.isEmpty ?? true)) return null;
+
+  // Depth first, as enough_mail finds them in a whole message, but past
+  // attached files and attached messages: their text is not this one's,
+  // and a log file attached to a message of HTML alone would be its text.
+  em.BodyPart? own(List<em.BodyPart>? parts, em.MediaSubtype subtype) {
+    for (final part in parts ?? const <em.BodyPart>[]) {
+      if (part.contentDisposition?.disposition ==
+          em.ContentDisposition.attachment) {
+        continue;
+      }
+      final type = part.contentType?.mediaType;
+      if (type?.sub == subtype) return part;
+      if (type?.isMessage ?? false) continue;
+      final inside = own(part.parts, subtype);
+      if (inside != null) return inside;
+    }
+    return null;
+  }
+
+  final calendar = <em.BodyPart>[
+    ?body.findFirst(em.MediaSubtype.textCalendar),
+  ];
+  for (final disposition in [
+    em.ContentDisposition.attachment,
+    em.ContentDisposition.inline,
+  ]) {
+    for (final info in structure.findContentInfo(disposition: disposition)) {
+      final type = info.contentType?.mediaType.toString() ?? '';
+      if (!isCalendarFile(type, info.fileName ?? '')) continue;
+      final part = body.getChildPart(info.fetchId);
+      if (part != null) calendar.add(part);
+    }
+  }
+  return BodyParts(
+    text: own(body.parts, em.MediaSubtype.textPlain),
+    html: own(body.parts, em.MediaSubtype.textHtml),
+    calendar: calendar,
   );
 }
+
+/// [bodyFromMime] for a message fetched as its structure and the parts
+/// [bodyPartsOf] chose: [fetched] holds them by id, as `BODY[n]` brought
+/// them, each decoded here with the encoding and charset its structure
+/// gives (see [decodePart]).
+MailBody bodyFromParts(BodyParts parts, Map<String, List<int>> fetched) {
+  String? read(em.BodyPart? part) {
+    if (part == null) return null;
+    final raw = fetched[_partId(part)];
+    if (raw == null) return null;
+    // 8bit, as what is left once the transfer encoding is undone: the
+    // bytes of the text in its charset.
+    return em.MailCodec.decodeAsText(
+      decodePart(raw, part.encoding),
+      '8bit',
+      part.contentType?.charset,
+    );
+  }
+
+  String? calendar;
+  for (final part in parts.calendar) {
+    final text = read(part);
+    if (text != null && text.trim().isNotEmpty) {
+      calendar = text;
+      break;
+    }
+  }
+  return _body(text: read(parts.text), html: read(parts.html), calendar: calendar);
+}
+
+/// A part's id as IMAP takes it. enough_mail numbers the parts of a message
+/// attached as part 2 `2.TEXT.1` and on, which IMAP calls `2.1`; `TEXT`
+/// there means that message's text, not a step on the way to a part.
+///
+/// Every part but the message itself has an id, and [bodyPartsOf] never
+/// chooses the message itself.
+String _partId(em.BodyPart part) => part.fetchId!.replaceAll('.TEXT', '');
 
 /// Is this file the invitation rather than something attached beside it?
 ///
@@ -396,6 +502,59 @@ List<MailAttachment> attachmentsOf(em.MimeMessage message) {
   return found;
 }
 
+/// A part fetched on its own, `BODY[n]`, decoded from the
+/// Content-Transfer-Encoding its BODYSTRUCTURE gives ([encoding]).
+///
+/// Such a part comes without its headers, so nothing in it says how it was
+/// encoded, and enough_mail, told nothing, handed it back as it came with
+/// every line break taken out: a PDF was its base64 text, a signature logo
+/// base64 of base64, an attached email one run-on line that did not parse.
+/// Nor does enough_mail turn quoted-printable into bytes at all. Unencoded
+/// parts (7bit, 8bit, binary) are already the bytes they stand for.
+Uint8List decodePart(List<int> raw, String? encoding) {
+  switch (encoding?.trim().toLowerCase()) {
+    case 'base64':
+      final text = String.fromCharCodes(raw).replaceAll(RegExp(r'\s+'), '');
+      return em.MailCodec.base64.decodeData(text);
+    case 'quoted-printable':
+      return _quotedPrintableBytes(raw);
+    default:
+      return raw is Uint8List ? raw : Uint8List.fromList(raw);
+  }
+}
+
+/// RFC 2045's quoted-printable, back to bytes: `=XX` is the byte XX, and an
+/// `=` at the end of a line joins it to the next. Anything else, a stray
+/// `=` included, is kept as it is rather than failing the whole file.
+Uint8List _quotedPrintableBytes(List<int> raw) {
+  int hex(int c) => switch (c) {
+        >= 0x30 && <= 0x39 => c - 0x30,
+        >= 0x41 && <= 0x46 => c - 0x41 + 10,
+        >= 0x61 && <= 0x66 => c - 0x61 + 10,
+        _ => -1,
+      };
+  final out = BytesBuilder(copy: false);
+  for (var i = 0; i < raw.length; i++) {
+    final c = raw[i];
+    if (c != 0x3D) {
+      out.addByte(c);
+      continue;
+    }
+    final next = i + 1 < raw.length ? raw[i + 1] : -1;
+    if (next == 0x0A) {
+      i += 1;
+    } else if (next == 0x0D && i + 2 < raw.length && raw[i + 2] == 0x0A) {
+      i += 2;
+    } else if (i + 2 < raw.length && hex(next) >= 0 && hex(raw[i + 2]) >= 0) {
+      out.addByte(hex(next) * 16 + hex(raw[i + 2]));
+      i += 2;
+    } else {
+      out.addByte(c);
+    }
+  }
+  return out.takeBytes();
+}
+
 String _nameFromType(String mime, String fetchId) {
   final slash = mime.indexOf('/');
   final extension = slash < 0 ? 'bin' : mime.substring(slash + 1);
@@ -437,9 +596,12 @@ String htmlToText(String html) {
 /// IMAP has no key for an attachment's name. Gmail, the one IMAP server
 /// this app talks to, takes its own search language under `X-GM-RAW`, and
 /// `filename:` there is the file's name.
+///
+/// [unlabelledOnly] narrows it, in that language, to [gmailUnlabelledMail].
 String buildSearchCriteria(
   String query, {
   SearchField field = SearchField.all,
+  bool unlabelledOnly = false,
 }) {
   final words = query
       .trim()
@@ -460,8 +622,15 @@ String buildSearchCriteria(
         SearchField.body => _term('BODY', word),
         SearchField.attachment => _term('X-GM-RAW', 'filename:$word'),
       },
+    if (unlabelledOnly) _term('X-GM-RAW', gmailUnlabelledMail),
   ].join(' ');
 }
+
+/// The mail in Gmail's All Mail that no other folder a search looks in
+/// holds: out of the Inbox, Sent and Drafts, with no label of Ron's on it.
+/// Starred and Important are Gmail's own labels, not his, and are not
+/// searched, so what is only under them is still here.
+const gmailUnlabelledMail = 'has:nouserlabels -in:inbox -in:sent -in:drafts';
 
 /// One search key and its word.
 ///

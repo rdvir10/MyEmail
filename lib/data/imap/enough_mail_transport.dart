@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -178,11 +179,16 @@ class EnoughMailTransport implements ImapTransport {
     String query, {
     int limit = 100,
     SearchField field = SearchField.all,
+    bool unlabelledOnly = false,
   }) =>
       _run((c) async {
         await _ensureSelected(c, path);
         final result = await c.uidSearchMessages(
-          searchCriteria: buildSearchCriteria(query, field: field),
+          searchCriteria: buildSearchCriteria(
+            query,
+            field: field,
+            unlabelledOnly: unlabelledOnly,
+          ),
         );
         final seq = result.matchingSequence;
         if (seq == null) return const [];
@@ -190,6 +196,26 @@ class EnoughMailTransport implements ImapTransport {
         final uids = seq.toList()..sort((a, b) => b.compareTo(a));
         return uids.take(limit).toList();
       });
+
+  /// SEARCH gives numbers and nothing else.
+  @override
+  Future<List<SearchHit>> searchHits(
+    String path,
+    String query, {
+    int limit = 100,
+    SearchField field = SearchField.all,
+    bool unlabelledOnly = false,
+  }) async =>
+      [
+        for (final uid in await searchUids(
+          path,
+          query,
+          limit: limit,
+          field: field,
+          unlabelledOnly: unlabelledOnly,
+        ))
+          (uid: uid, header: null),
+      ];
 
   @override
   Future<List<RemoteHeader>> fetchHeadersByUids(
@@ -209,11 +235,38 @@ class EnoughMailTransport implements ImapTransport {
   @override
   Future<MailBody> fetchBody(String path, int uid) => _run(limit: transferLimit, (c) async {
         await _ensureSelected(c, path);
-        final result = await c.uidFetchMessage(uid, 'BODY.PEEK[]');
-        if (result.messages.isEmpty) {
+        // The structure first, then only the parts the body is read from.
+        // BODY[] is the whole message, every file with it: 27 MB of base64
+        // downloaded and parsed to show a few lines beside a video, with
+        // every other command for the account waiting behind it.
+        final structure = await c.uidFetchMessage(uid, 'BODYSTRUCTURE');
+        if (structure.messages.isEmpty) {
           throw StateError('Message $uid in $path no longer exists');
         }
-        return bodyFromMime(result.messages.first);
+        final parts = bodyPartsOf(structure.messages.first);
+        if (parts == null) {
+          final result = await c.uidFetchMessage(uid, 'BODY.PEEK[]');
+          if (result.messages.isEmpty) {
+            throw StateError('Message $uid in $path no longer exists');
+          }
+          return bodyFromMime(result.messages.first);
+        }
+        final ids = parts.ids;
+        final fetched = <String, Uint8List>{};
+        if (ids.isNotEmpty) {
+          final result = await c.uidFetchMessage(
+            uid,
+            '(${[for (final id in ids) 'BODY.PEEK[$id]'].join(' ')})',
+          );
+          if (result.messages.isEmpty) {
+            throw StateError('Message $uid in $path no longer exists');
+          }
+          for (final id in ids) {
+            final raw = _fetchedPart(result.messages.first, id);
+            if (raw != null) fetched[id] = raw;
+          }
+        }
+        return bodyFromParts(parts, fetched);
       });
 
   /// IMAP has no preview to give: it would mean fetching a body part for
@@ -271,19 +324,25 @@ class EnoughMailTransport implements ImapTransport {
   Future<Uint8List> fetchAttachment(String path, int uid, String attachmentId) =>
       _run(limit: transferLimit, (c) async {
         await _ensureSelected(c, path);
-        // PEEK, so downloading a file does not mark the message read.
-        final result =
-            await c.uidFetchMessage(uid, 'BODY.PEEK[$attachmentId]');
+        // PEEK, so downloading a file does not mark the message read. The
+        // structure with it, in the same round trip, for how the part is
+        // encoded: see decodePart.
+        final result = await c.uidFetchMessage(
+          uid,
+          '(BODYSTRUCTURE BODY.PEEK[$attachmentId])',
+        );
         if (result.messages.isEmpty) {
           throw StateError('Attachment $attachmentId is no longer there');
         }
-        final part = result.messages.first.getPart(attachmentId) ??
-            result.messages.first;
-        final bytes = part.decodeContentBinary();
-        if (bytes == null) {
+        final message = result.messages.first;
+        final raw = _fetchedPart(message, attachmentId);
+        if (raw == null) {
           throw StateError('Attachment $attachmentId could not be decoded');
         }
-        return bytes;
+        return decodePart(
+          raw,
+          message.body?.getChildPart(attachmentId)?.encoding,
+        );
       });
 
   @override
@@ -759,6 +818,16 @@ class EnoughMailTransport implements ImapTransport {
   Future<void> _ensureSelected(em.ImapClient c, String path) async {
     if (_selectedPath != path) await _select(c, path);
   }
+
+  /// The bytes of part [fetchId] as a `BODY[n]` fetch brought them, still
+  /// in their transfer encoding.
+  static Uint8List? _fetchedPart(em.MimeMessage message, String fetchId) =>
+      switch (message.getPart(fetchId)?.mimeData) {
+        em.BinaryMimeData(:final data) => data,
+        // A small part can come as a quoted string rather than a literal.
+        em.TextMimeData(:final text) => utf8.encode(text),
+        _ => null,
+      };
 
   static List<RemoteHeader> _headers(em.FetchImapResult result) => [
         for (final m in result.messages)

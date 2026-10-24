@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cryptography/cryptography.dart' show Sha256;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -106,6 +107,29 @@ void main() {
           reason: 'IMAP: same part, another file');
       expect(await disk.cached('a:INBOX#1', invoice(id: 'AAMkAD=')), isNull,
           reason: 'Microsoft: another attachment id');
+    });
+
+    test('written before the Gmail decoding fix is never opened again',
+        () async {
+      // Up to 2.88.0 a Gmail PDF was written as its base64 text. The cache
+      // outlives an update, and the copy of the one Ron had already tried
+      // went on opening corrupt, as if nothing had been fixed.
+      const disk = DiskAttachmentFiles();
+      final before = (await Sha256().hash(utf8.encode('a:INBOX#1\n2\n10')))
+          .bytes
+          .take(16)
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
+      File('${temp.path}/attachments/$before/invoice.pdf')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('JVBERi0xLjQK');
+
+      expect(await disk.cached('a:INBOX#1', invoice()), isNull);
+
+      final file = await disk.write(
+          'a:INBOX#1', invoice(), Uint8List.fromList(utf8.encode('%PDF-1.4')));
+      expect((await disk.cached('a:INBOX#1', invoice()))?.path, file.path);
+      expect(file.readAsStringSync(), '%PDF-1.4');
     });
   });
 

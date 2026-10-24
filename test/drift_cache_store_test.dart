@@ -422,6 +422,44 @@ void main() {
         }
       });
 
+      test('search hits are read in one query, and not their bodies',
+          () async {
+        // Each hit was read on its own, a whole row with its body, one
+        // after another.
+        final seen = _Selects();
+        final watched =
+            MailDatabase(NativeDatabase.memory().interceptWith(seen));
+        addTearDown(watched.close);
+        final watchedStore = DriftCacheStore(watched);
+        await watchedStore.upsertMessages('a', 'INBOX', [
+          _msg(1),
+          _msg(2).copyWith(
+            preview: 'Numbers attached',
+            bodyText: 'Numbers attached.',
+            bodyHtml: '<p>Numbers attached.</p>',
+            calendar: 'BEGIN:VCALENDAR',
+          ),
+          _msg(3, read: true),
+        ]);
+        await watchedStore.upsertMessages('a', 'Work', [_msg(4)]);
+        seen.statements.clear();
+
+        final rows = await watchedStore.readHeaders('a', 'INBOX', [2, 3, 4]);
+
+        expect(seen.statements, hasLength(1));
+        expect(seen.statements.single, isNot(contains('body_')));
+        expect(seen.statements.single, isNot(contains('calendar')));
+        expect({for (final r in rows) r.uid: r.subject}, {2: 'S 2', 3: 'S 3'},
+            reason: 'only those asked for, and only in that folder');
+        final two = rows.firstWhere((r) => r.uid == 2);
+        expect(two.preview, 'Numbers attached');
+        expect((two.from.email, two.from.name), ('x@example.com', 'X'));
+        expect(two.to.single.email, 'me@example.com');
+        expect(two.date, DateTime(2026, 9, 1).add(const Duration(hours: 2)));
+        expect(two.hasBody, isFalse);
+        expect(rows.firstWhere((r) => r.uid == 3).isRead, isTrue);
+      });
+
       test('address suggestions include the copied',
           () => _copiedAreSuggested(store));
 

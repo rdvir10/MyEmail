@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'dart:async';
 
+import 'package:myemail/data/imap/imap_mapping.dart' show gmailUnlabelledMail;
 import 'package:myemail/data/imap/imap_transport.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/domain/folder_role.dart';
@@ -162,6 +163,7 @@ class FakeImapTransport implements ImapTransport {
     String query, {
     int limit = 100,
     SearchField field = SearchField.all,
+    bool unlabelledOnly = false,
   }) async {
     _online();
     final key = switch (field) {
@@ -171,11 +173,25 @@ class FakeImapTransport implements ImapTransport {
       SearchField.body => 'BODY',
       SearchField.attachment => 'X-GM-RAW',
     };
-    calls.add('UID SEARCH $path $key "$query"');
+    calls.add('UID SEARCH $path $key "$query"'
+        '${unlabelledOnly ? ' X-GM-RAW "$gmailUnlabelledMail"' : ''}');
+    // What Gmail holds elsewhere: in the Inbox, Sent, Drafts or a label.
+    // Its own Starred and Important are not labels of the person's.
+    final elsewhere = {
+      if (unlabelledOnly)
+        for (final f in folders.values)
+          if (f.path != path &&
+              !f.serverManaged &&
+              f.role != FolderRole.archive &&
+              f.role != FolderRole.junk &&
+              f.role != FolderRole.deleted)
+            for (final m in f.messages.values) m.messageId,
+    };
     final words = query.toLowerCase().split(RegExp(r'\s+'));
     final hits = [
       for (final m in _require(path).ordered)
-        if (words.every((w) => switch (field) {
+        if (!elsewhere.contains(m.messageId) &&
+            words.every((w) => switch (field) {
               SearchField.all => '${m.subject} ${m.from} ${m.body}',
               SearchField.from => m.from,
               SearchField.subject => m.subject,
@@ -191,6 +207,26 @@ class FakeImapTransport implements ImapTransport {
     ]..sort((a, b) => b.compareTo(a));
     return hits.take(limit).toList();
   }
+
+  /// Numbers alone, as an IMAP server answers.
+  @override
+  Future<List<SearchHit>> searchHits(
+    String path,
+    String query, {
+    int limit = 100,
+    SearchField field = SearchField.all,
+    bool unlabelledOnly = false,
+  }) async =>
+      [
+        for (final uid in await searchUids(
+          path,
+          query,
+          limit: limit,
+          field: field,
+          unlabelledOnly: unlabelledOnly,
+        ))
+          (uid: uid, header: null),
+      ];
 
   @override
   Future<List<RemoteHeader>> fetchHeadersByUids(

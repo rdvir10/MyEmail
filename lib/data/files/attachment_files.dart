@@ -33,6 +33,16 @@ abstract class AttachmentFiles {
 class DiskAttachmentFiles implements AttachmentFiles {
   const DiskAttachmentFiles();
 
+  /// Raised when the copies already on disk can no longer be trusted.
+  ///
+  /// 2: up to 2.88.0 every Gmail attachment was written as the base64 text
+  /// it arrived in, and an .eml or .txt without its line breaks. Android
+  /// keeps the cache through an update, so the PDF Ron had already tried to
+  /// open would have opened corrupt again from its old copy, and gone out
+  /// corrupt through Save as and Share. The old copies are left for Android
+  /// to clear with the rest of the cache.
+  static const copiesVersion = 2;
+
   @override
   Future<File?> cached(String messageId, MailAttachment attachment) async {
     final file = await _fileFor(messageId, attachment);
@@ -75,13 +85,15 @@ class DiskAttachmentFiles implements AttachmentFiles {
   /// unique by themselves, and over IMAP, where a part id is only "2", it
   /// would take another file with the same name, place and size to the
   /// byte. Hashed, because an id holds a colon and a slash, and a deep
-  /// folder path can be longer than a directory name may be.
+  /// folder path can be longer than a directory name may be. And
+  /// [copiesVersion], so a copy written before it is never found again.
   static Future<String> folderFor(
     String messageId,
     MailAttachment attachment,
   ) async {
     final hash = await Sha256().hash(utf8.encode(
-      '$messageId\n${attachment.id}\n${attachment.sizeBytes}',
+      '$messageId\n${attachment.id}\n${attachment.sizeBytes}'
+      '\n$copiesVersion',
     ));
     return [
       for (final b in hash.bytes.take(16)) b.toRadixString(16).padLeft(2, '0'),
