@@ -173,7 +173,8 @@ void main() {
 
       final row = (await cache.readMessages('a', 'INBOX')).single;
       expect(row.subject, 'Time off request');
-      expect(row.bodyText, isNull, reason: 'the old body went with the header');
+      expect(await cache.readBody('a', 'INBOX', 7), isNull,
+          reason: 'the old body went with the header');
       expect(row.preview, isEmpty);
     });
 
@@ -193,7 +194,8 @@ void main() {
 
       final row = (await cache.readMessages('a', 'INBOX')).single;
       expect(row.subject, 'RE: Outstanding invoices');
-      expect(row.bodyText, 'Please settle the attached.');
+      expect((await cache.readBody('a', 'INBOX', 7))!.text,
+          'Please settle the attached.');
     });
 
     test('a header with no Message-ID leaves the body alone', () async {
@@ -204,7 +206,7 @@ void main() {
 
       await cache.upsertMessages('a', 'INBOX', [header(7, 'Second')]);
 
-      expect((await cache.readMessages('a', 'INBOX')).single.bodyText, 'Body');
+      expect((await cache.readBody('a', 'INBOX', 7))!.text, 'Body');
     });
   });
 }

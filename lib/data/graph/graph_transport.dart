@@ -70,8 +70,8 @@ class GraphTransport implements ImapTransport {
 
   /// How far back a range scan will page before giving up. A folder with
   /// 50,000 messages must not turn one sync into a walk of the entire
-  /// mailbox; the sync only ever asks about its cached window, which is far
-  /// smaller than this.
+  /// mailbox. A cached window can still reach further back than this, and a
+  /// scan that stops here says so: see [existingUids].
   static const _maxPages = 40;
 
   // --- folders ---------------------------------------------------------------
@@ -261,8 +261,8 @@ class GraphTransport implements ImapTransport {
   }) async {
     // Everything numbered at or above fromUid: mail that arrived since the
     // last sync, and mail moved in, which keeps its old date but gets a new
-    // number. The scan reaches back across the whole cached window to find
-    // the second kind, which can sit anywhere in date order.
+    // number. The scan reaches back to windowStart to find the second kind,
+    // which can sit anywhere in date order.
     final fresh = await _scanBack(
       path,
       downToUid: fromUid,
@@ -362,7 +362,7 @@ class GraphTransport implements ImapTransport {
   }
 
   @override
-  Future<Set<int>> existingUids(
+  Future<Set<int>?> existingUids(
     String path,
     int fromUid,
     int toUid, {
@@ -373,11 +373,20 @@ class GraphTransport implements ImapTransport {
       downToUid: fromUid,
       downToDate: windowStart,
     );
+    // Out of pages before the bottom of the window: the messages below the
+    // last page were never seen, and nothing here tells them apart from
+    // mail that has gone. Listing only what was seen had the sync drop
+    // every cached row down there, and paging fetch them all again for
+    // the next sync to drop.
+    if (!scan.complete) return null;
     return {
       for (final m in scan.messages)
         if (_inRange(scan.uids[m.id], fromUid, toUid)) scan.uids[m.id]!,
     };
   }
+
+  @override
+  bool get readsBackByDate => true;
 
   static bool _inRange(int? uid, int from, int to) =>
       uid != null && uid >= from && uid <= to;
@@ -1068,10 +1077,10 @@ class GraphTransport implements ImapTransport {
   /// Numbering happens here, oldest of each page first, so the numbers keep
   /// rising with arrival order for mail arriving in the ordinary way.
   ///
-  /// Where it stops. With [downToDate] — the oldest cached message's date —
-  /// once a page reaches back past it: every cached message has then been
-  /// seen, whatever its number. Without it, at the first page holding a
-  /// number at or below [downToUid]. That was the only rule once, and it
+  /// Where it stops. With [downToDate] — the oldest date the sync is asking
+  /// about — once a page reaches back past it: every message since then has
+  /// been seen, whatever its number. Without it, at the first page holding
+  /// a number at or below [downToUid]. That was the only rule once, and it
   /// assumed numbers follow dates, which they do not for mail moved in (a
   /// new number, an old date) or older mail paged in (numbered when first
   /// seen, after the newer mail). A moved-in message below the first page
@@ -1131,7 +1140,14 @@ class GraphTransport implements ImapTransport {
     final uids = <String, int>{};
     List<GraphMessage>? previous;
 
-    for (var page = 0; page < _maxPages; page++) {
+    for (var page = 0;; page++) {
+      if (page == _maxPages) {
+        return _Scan(
+          messages: messages.values.toList(),
+          uids: uids,
+          complete: false,
+        );
+      }
       final batch = await api.messages(
         folderId,
         skip: page * (_pageSize - _overlap),
@@ -1171,7 +1187,11 @@ class GraphTransport implements ImapTransport {
       if (lowest <= downToUid) break;
     }
 
-    return _Scan(messages: messages.values.toList(), uids: uids);
+    return _Scan(
+      messages: messages.values.toList(),
+      uids: uids,
+      complete: true,
+    );
   }
 
   Future<List<RemoteHeader>> _headers(
@@ -1228,11 +1248,19 @@ class GraphTransport implements ImapTransport {
 }
 
 class _Scan {
-  const _Scan({required this.messages, required this.uids});
+  const _Scan({
+    required this.messages,
+    required this.uids,
+    required this.complete,
+  });
 
   /// Newest first, as Graph returns them.
   final List<GraphMessage> messages;
   final Map<String, int> uids;
+
+  /// Whether the scan got as far back as it was asked to, or to the end of
+  /// the folder. False when it ran out of pages first.
+  final bool complete;
 
   Iterable<GraphMessage> get reversed => messages.reversed;
 }

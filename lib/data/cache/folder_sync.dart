@@ -15,11 +15,13 @@ import 'cache_store.dart';
 ///     click after a server-side rebuild.
 ///  2. First fill (nothing cached): the newest [windowSize] messages by
 ///     sequence number, so a 9,000-message folder is not downloaded whole.
-///  3. Otherwise, new mail: `UID FETCH <max+1>:*`, filtered because IMAP
-///     returns the highest existing UID even when nothing is newer.
+///  3. Otherwise, new mail: `UID FETCH <max+1>:*`, filtered to what is not
+///     cached, because IMAP returns the highest existing UID even when
+///     nothing is newer.
 ///  4. Flags for the cached window: with CONDSTORE only those changed since
 ///     our HIGHESTMODSEQ; without it, all of them.
-///  5. Deletions: `UID SEARCH` the cached range and drop what is gone.
+///  5. Deletions: `UID SEARCH` the cached range and drop what is gone; on
+///     Graph, from the newest rows only, the ones a list is showing.
 ///  6. Record the new state.
 ///
 /// [ensureCached] extends the window downward on demand as the user pages.
@@ -36,12 +38,17 @@ class FolderSync {
   final CacheStore store;
   final String accountId;
 
-  /// How many of the newest messages the first sync of a folder fetches.
+  /// How many of the newest messages the first sync of a folder fetches,
+  /// and how many every sync keeps up to date at the least.
   final int windowSize;
 
   final DateTime Function() _clock;
 
-  Future<SyncResult> sync(String path) async {
+  /// [reach] is how many of the folder's newest messages the caller is
+  /// about to show. Their flags and deletions are brought up to date, or
+  /// the newest [windowSize] if that is more; rows below them wait until a
+  /// list reaches them, and the sync made for that list sees to them.
+  Future<SyncResult> sync(String path, {int reach = 0}) async {
     final status = await transport.selectFolder(path);
     final previous = await store.readFolderState(accountId, path);
 
@@ -65,31 +72,54 @@ class FolderSync {
       return SyncResult(added: added, serverExists: status.exists);
     }
 
-    // What is cached now, before anything is added: the rows the deletion
-    // check runs over, and how far back the window reaches, which a
-    // transport whose numbers do not follow dates needs to know. See
-    // ImapTransport.fetchHeadersFromUid.
+    // What is cached now, before anything is added, newest first, and how
+    // far back it reaches, which a transport whose numbers do not follow
+    // dates needs to know. See ImapTransport.fetchHeadersFromUid.
     final cached = await store.readSyncRows(accountId, path);
-    final windowStart = cached.isEmpty
-        ? null
-        : cached
-            .map((m) => m.date)
-            .reduce((a, b) => a.isBefore(b) ? a : b);
+    final windowStart = _oldest(cached);
 
-    // New mail.
+    // The rows kept up to date: as many as the caller is showing, and at
+    // least the newest [windowSize]. Not the whole cache, which nothing
+    // ever trims. On Graph each scan below pages back a hundred messages a
+    // request to the oldest row it is asked about, so a folder scrolled
+    // back two months cost some fifty requests a sync, every minute in
+    // push mode, against nine for the newest two hundred.
+    final recent = cached.take(max(windowSize, reach)).toList();
+    final recentStart = _oldest(recent);
+
+    // New mail. It is the newest there is, so on Graph a scan back as far
+    // as the rows kept up to date finds it: all but mail moved in, which
+    // keeps its old date. Moved in from elsewhere, it waits for a list to
+    // reach its date and is numbered then. But a move made here, an undo
+    // or a search numbers what it finds at once, and a number left without
+    // a row was never picked up: newer mail is numbered above it, and only
+    // numbers above the highest cached were asked for. So while a number
+    // handed out since the last sync has no row, the scan goes back across
+    // the whole cache, from the lowest such number. IMAP numbers by arrival
+    // in the folder and pays nothing for any of this.
+    final cachedUids = {for (final m in cached) m.uid};
+    final since = previous.uidNext;
+    final upTo = status.uidNext;
+    var unclaimed = since ?? range.max + 1;
+    while (upTo != null && unclaimed < upTo && cachedUids.contains(unclaimed)) {
+      unclaimed++;
+    }
+    final lookBack = since == null || upTo == null || unclaimed < upTo;
     final fresh = await transport.fetchHeadersFromUid(
       path,
-      range.max + 1,
-      windowStart: windowStart,
+      min(range.max + 1, unclaimed),
+      windowStart: lookBack ? windowStart : recentStart,
     );
     final newHeaders = [
       for (final h in fresh)
-        if (h.uid > range.max) h,
+        if (!cachedUids.contains(h.uid)) h,
     ];
     await store.upsertMessages(accountId, path, newHeaders.map(_cached).toList());
 
-    // Flag changes across the cached window: read, flagged, and a reply or
-    // forward sent from somewhere else.
+    // Flag changes: read, flagged, and a reply or forward sent from
+    // somewhere else. Across the cached range, which over IMAP is one
+    // request whatever its size; Graph pages back by date, and only as far
+    // as the rows kept up to date.
     // Changes only, where the server can say what changed, unless a row
     // has no size yet: cached before sizes were fetched, it needs the whole
     // window read once, and the size comes with the flags.
@@ -101,7 +131,7 @@ class FolderSync {
       range.min,
       range.max,
       changedSinceModSeq: useCondStore ? previous.highestModSeq : null,
-      windowStart: windowStart,
+      windowStart: recentStart,
     );
     await store.updateFlags(accountId, path, {
       for (final f in flags)
@@ -117,22 +147,28 @@ class FolderSync {
         if (f.sizeBytes case final size? when size > 0) f.uid: size,
     });
 
-    // Deletions.
+    // Deletions. On Graph, among the rows kept up to date only: the scan
+    // went no further than a page past the oldest of them, and an older row
+    // it did not happen to see is not gone for that. IMAP's one search
+    // covers the whole cache, and leaving its older rows out kept mail
+    // deleted elsewhere in the cache until a list scrolled down to it.
     final existing = await transport.existingUids(
       path,
       range.min,
       range.max,
-      windowStart: windowStart,
+      windowStart: recentStart,
     );
     // Only rows inside the range the server was asked about. A page of older
     // mail loaded while this ran lands below it (IMAP numbers them lower),
     // and counting those as gone deleted what had just been scrolled in.
+    // And none when the server could not say: see existingUids.
     final gone = {
-      for (final m in cached)
-        if (m.uid >= range.min &&
-            m.uid <= range.max &&
-            !existing.contains(m.uid))
-          m.uid,
+      if (existing != null)
+        for (final m in transport.readsBackByDate ? recent : cached)
+          if (m.uid >= range.min &&
+              m.uid <= range.max &&
+              !existing.contains(m.uid))
+            m.uid,
     };
     await store.deleteUids(accountId, path, gone);
 
@@ -261,6 +297,10 @@ class FolderSync {
         ),
       );
 
+  static DateTime? _oldest(List<SyncRow> rows) => rows.isEmpty
+      ? null
+      : rows.map((m) => m.date).reduce((a, b) => a.isBefore(b) ? a : b);
+
   static CachedMessage _cached(RemoteHeader h) => CachedMessage(
         uid: h.uid,
         subject: h.subject,
@@ -298,11 +338,10 @@ Future<MailBody?> cachedBody(
   String path,
   int uid,
 ) async {
-  final cached = await store.readMessage(accountId, path, uid);
-  final text = cached?.bodyText;
-  if (cached == null || text == null) return null;
-  final html = cached.bodyHtml;
-  if (text.isEmpty && html != null && html.isNotEmpty) {
+  final cached = await store.readBody(accountId, path, uid);
+  if (cached == null) return null;
+  final html = cached.html;
+  if (cached.text.isEmpty && html != null && html.isNotEmpty) {
     final remade = htmlToText(html);
     if (remade.isNotEmpty) {
       try {
@@ -322,7 +361,7 @@ Future<MailBody?> cachedBody(
       return MailBody(text: remade, html: html, calendar: cached.calendar);
     }
   }
-  return MailBody(text: text, html: html, calendar: cached.calendar);
+  return cached;
 }
 
 class SyncResult {

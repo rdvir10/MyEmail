@@ -16,6 +16,10 @@ class FolderSyncState {
 
   final int uidValidity;
   final DateTime lastSync;
+
+  /// The next number the folder would hand out when the last sync began:
+  /// everything numbered since is at or above it, which is how the sync
+  /// knows to look back for mail numbered without being cached.
   final int? uidNext;
   final int? highestModSeq;
 
@@ -59,6 +63,9 @@ typedef CachedFlags = ({
 });
 
 /// A message as cached: the list row plus, once fetched, the body.
+///
+/// The body is written with a row, but a row read back comes without it:
+/// only [CacheStore.readBody] reads one.
 @immutable
 class CachedMessage {
   const CachedMessage({
@@ -127,7 +134,28 @@ class CachedMessage {
   /// 10, until the folder's next sync reads their headers again.
   final String? conversationId;
 
-  bool get hasBody => bodyText != null;
+  /// The row as a read gives it back: everything but the body.
+  CachedMessage withoutBody() => CachedMessage(
+        uid: uid,
+        subject: subject,
+        from: from,
+        to: to,
+        cc: cc,
+        replyTo: replyTo,
+        date: date,
+        arrived: arrived,
+        isRead: isRead,
+        isFlagged: isFlagged,
+        isAnswered: isAnswered,
+        isForwarded: isForwarded,
+        hasAttachments: hasAttachments,
+        sizeBytes: sizeBytes,
+        isMeeting: isMeeting,
+        preview: preview,
+        messageId: messageId,
+        inReplyTo: inReplyTo,
+        conversationId: conversationId,
+      );
 
   CachedMessage copyWith({
     bool? isRead,
@@ -209,7 +237,14 @@ abstract class CacheStore {
   /// UIDVALIDITY changes and the cached UIDs no longer mean anything.
   Future<void> clearFolder(String accountId, String path);
 
-  /// Newest first by UID.
+  /// Newest first by when the server took each message in
+  /// ([CachedMessage.arrived] where it is known, else its date), and by
+  /// UID among those that arrived together. Not by UID alone: numbers do
+  /// not follow dates for older mail paged in on Graph, or for mail moved
+  /// into an IMAP folder.
+  ///
+  /// The rows come without their bodies, which a list has no use for and
+  /// which are most of what is stored: see [readBody].
   Future<List<CachedMessage>> readMessages(
     String accountId,
     String path, {
@@ -217,7 +252,9 @@ abstract class CacheStore {
     int limit = 50,
   });
 
-  /// Every cached row of the folder, as little of each as the sync needs.
+  /// Every cached row of the folder, as little of each as the sync needs,
+  /// in the order [readMessages] reads them: the sync keeps the newest up
+  /// to date, and they have to be the ones a list shows first.
   Future<List<SyncRow>> readSyncRows(String accountId, String path);
 
   Future<int> countMessages(String accountId, String path);
@@ -237,6 +274,9 @@ abstract class CacheStore {
     required DateTime now,
   });
   Future<({int min, int max})?> uidRange(String accountId, String path);
+
+  /// One row, without its body, as [readMessages] gives them: for its flags
+  /// and headers.
   Future<CachedMessage?> readMessage(String accountId, String path, int uid);
 
   /// Those of [uids] that are cached, in one read: what a list row is made
@@ -248,6 +288,10 @@ abstract class CacheStore {
     String path,
     List<int> uids,
   );
+
+  /// The body cached for one message, or null where none has been fetched:
+  /// the one read that takes it.
+  Future<MailBody?> readBody(String accountId, String path, int uid);
 
   /// The `Message-ID` header of each of [uids] that has one, in the order
   /// the uids were given.
@@ -339,6 +383,13 @@ class MemoryCacheStore implements CacheStore {
   Map<int, CachedMessage> _folder(String accountId, String path) =>
       _messages.putIfAbsent(_k(accountId, path), () => {});
 
+  /// The order the database reads a folder in: see [CacheStore.readMessages].
+  static int _newestArrivalFirst(CachedMessage a, CachedMessage b) {
+    final byArrival = (b.arrived ?? b.date).compareTo(a.arrived ?? a.date);
+    if (byArrival != 0) return byArrival;
+    return b.uid.compareTo(a.uid);
+  }
+
   @override
   Future<FolderSyncState?> readFolderState(String accountId, String path) async =>
       _states[_k(accountId, path)];
@@ -365,14 +416,20 @@ class MemoryCacheStore implements CacheStore {
     int limit = 50,
   }) async {
     final all = _folder(accountId, path).values.toList()
-      ..sort((a, b) => b.uid.compareTo(a.uid));
+      ..sort(_newestArrivalFirst);
     if (offset >= all.length) return const [];
-    return all.sublist(offset, (offset + limit).clamp(0, all.length));
+    // Without their bodies, as the database reads them, so that nothing
+    // tested against this store can come to rely on a body being there.
+    return [
+      for (final m in all.sublist(offset, (offset + limit).clamp(0, all.length)))
+        m.withoutBody(),
+    ];
   }
 
   @override
   Future<List<SyncRow>> readSyncRows(String accountId, String path) async => [
-        for (final m in _folder(accountId, path).values)
+        for (final m in _folder(accountId, path).values.toList()
+          ..sort(_newestArrivalFirst))
           (
             uid: m.uid,
             date: m.date,
@@ -380,7 +437,7 @@ class MemoryCacheStore implements CacheStore {
             hasConversation: m.conversationId != null,
             hasSize: m.sizeBytes > 0,
           ),
-      ]..sort((a, b) => b.uid.compareTo(a.uid));
+      ];
 
   @override
   Future<List<AddressSuggestion>> addressHistory({
@@ -435,7 +492,15 @@ class MemoryCacheStore implements CacheStore {
     String path,
     int uid,
   ) async =>
-      _folder(accountId, path)[uid];
+      _folder(accountId, path)[uid]?.withoutBody();
+
+  @override
+  Future<MailBody?> readBody(String accountId, String path, int uid) async {
+    final m = _folder(accountId, path)[uid];
+    final text = m?.bodyText;
+    if (m == null || text == null) return null;
+    return MailBody(text: text, html: m.bodyHtml, calendar: m.calendar);
+  }
 
   /// Whole rows: in memory nothing is saved by leaving the body out.
   @override
@@ -493,6 +558,7 @@ class MemoryCacheStore implements CacheStore {
               sizeBytes: m.sizeBytes > 0 ? m.sizeBytes : existing.sizeBytes,
               bodyText: existing.bodyText,
               bodyHtml: existing.bodyHtml,
+              calendar: existing.calendar,
             );
     }
   }

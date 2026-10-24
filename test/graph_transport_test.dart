@@ -1312,6 +1312,19 @@ void main() {
       expect(existing, containsAll([for (var i = 20; i < 150; i++) uidOf['M$i']]));
     });
 
+    test('a scan that runs out of pages does not say what is gone', () async {
+      // Forty pages reach 3,610 messages. Listing only those, it had the
+      // sync drop every cached row older than the last page as deleted.
+      for (var i = 0; i < 3700; i++) {
+        server.message('f-inbox', id: 'm$i', subject: 'M$i', minutesAgo: i + 1);
+      }
+
+      final existing = await transport.existingUids('Inbox', 1, 3700,
+          windowStart: DateTime.utc(2000));
+
+      expect(existing, isNull);
+    });
+
     test('a message already gone from Microsoft counts as moved', () async {
       // Deleted in Outlook while its notification was up: Delete in the
       // shade failed five times over, then said it was where it was.
@@ -2209,7 +2222,144 @@ void main() {
       expect(body.text, contains('confirming Thursday at ten.'));
       final row = (await cached('Inbox')).single;
       expect(row.preview, contains('confirming Thursday at ten.'));
-      expect(row.bodyText, body.text, reason: 'kept, not made at every open');
+      expect((await cache.readBody('acct-1', 'Inbox', row.uid))!.text, body.text,
+          reason: 'kept, not made at every open');
+    });
+
+    test('the first page is the newest mail after older mail is paged in',
+        () async {
+      // Older mail is numbered when it is first seen, after the newest. A
+      // list read by number then opened on last week's mail, with the last
+      // few days' missing until it had been scrolled four pages.
+      server.folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox');
+      for (var i = 0; i < 300; i++) {
+        server.message('f-inbox', id: 'm$i', subject: 'M$i', minutesAgo: i);
+      }
+      await sync.sync('Inbox');
+      await sync.ensureCached('Inbox', 250);
+
+      final page = await cache.readMessages('acct-1', 'Inbox', limit: 50);
+
+      expect(page.map((m) => m.subject),
+          [for (var i = 0; i < 50; i++) 'M$i']);
+    });
+
+    test('a window deeper than a scan reaches is not taken for deleted',
+        () async {
+      // Past 3,610 cached messages every sync dropped the oldest, bodies
+      // and all, and scrolling down fetched them again for the next sync
+      // to drop.
+      server.folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox');
+      for (var i = 0; i < 3700; i++) {
+        server.message('f-inbox', id: 'm$i', subject: 'M$i', minutesAgo: i);
+      }
+      await sync.sync('Inbox');
+      expect(await sync.ensureCached('Inbox', 3700), 3700);
+
+      // A list scrolled all the way down.
+      final result = await sync.sync('Inbox', reach: 3700);
+
+      expect(result.removed, 0);
+      expect(await cache.countMessages('acct-1', 'Inbox'), 3700);
+      expect(await subjects('Inbox'), contains('M3699'));
+    });
+
+    group('a folder scrolled far back', () {
+      setUp(() async {
+        server
+          ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+          ..folder(
+              id: 'f-del', name: 'Deleted Items', wellKnown: 'deleteditems');
+        for (var i = 0; i < 1000; i++) {
+          server.message('f-inbox', id: 'm$i', subject: 'M$i', minutesAgo: i);
+        }
+        await sync.sync('Inbox');
+        await sync.ensureCached('Inbox', 1000);
+        // And synced again since, as it is every minute.
+        await sync.sync('Inbox');
+      });
+
+      Future<CachedMessage?> row(String subject) async {
+        for (final m in await cached('Inbox')) {
+          if (m.subject == subject) return m;
+        }
+        return null;
+      }
+
+      test('syncs no further back than the newest rows', () async {
+        // Every scan paged back to the oldest row cached, which nothing
+        // ever trims: twelve requests each here, three or four scans a
+        // sync, every minute in push mode. Three each reach the newest two
+        // hundred.
+        final before = server.listings;
+
+        await sync.sync('Inbox');
+
+        expect(server.listings - before, lessThanOrEqualTo(9));
+      });
+
+      test('and brings older rows up to date when a list reaches them',
+          () async {
+        server.messages['m900']!['isRead'] = true;
+        server.remove('m950');
+
+        await sync.sync('Inbox', reach: 1000);
+
+        expect((await row('M900'))!.isRead, isTrue);
+        expect(await row('M950'), isNull);
+        expect(await cache.countMessages('acct-1', 'Inbox'), 999);
+      });
+
+      test('an old message put back by an undo turns up', () async {
+        // A move here numbers the message at once. Where the sync looked
+        // only as far back as the newest rows, it missed one dated before
+        // them, and newer mail was then numbered above it, so nothing ever
+        // asked for it again.
+        final uid = (await row('M800'))!.uid;
+        final binned =
+            await transport.moveMessages('Inbox', [uid], 'Deleted Items');
+        await cache.deleteUids('acct-1', 'Inbox', {uid});
+        await transport.moveMessages('Deleted Items', binned!, 'Inbox');
+
+        await sync.sync('Inbox');
+        server.message('f-inbox', id: 'new', subject: 'New', minutesAgo: -5);
+        await sync.sync('Inbox');
+
+        expect(await row('M800'), isNotNull);
+        expect(await row('New'), isNotNull);
+        expect(await cache.countMessages('acct-1', 'Inbox'), 1001);
+      });
+
+      test('mail moved in from elsewhere turns up when a list reaches its date',
+          () async {
+        // Moved in by Outlook, it keeps its old date and has no number yet.
+        // A sync of the newest rows does not page back as far as it, which
+        // is what keeps that sync cheap; the sync made for a list scrolled
+        // down to it does. Nothing else would bring it in: paging goes by
+        // how many are cached, and it lies among them by date.
+        server.message('f-inbox', id: 'x', subject: 'X', minutesAgo: 500);
+
+        await sync.sync('Inbox');
+        expect(await row('X'), isNull);
+
+        await sync.sync('Inbox', reach: 600);
+        expect(await row('X'), isNotNull);
+        expect(await cache.countMessages('acct-1', 'Inbox'), 1001);
+      });
+
+      test('and at the next sync when it lands just below the newest rows',
+          () async {
+        // The first sync's last page reaches past the newest rows and
+        // numbers it on the way, and a number with no row has the next sync
+        // look back across the whole cache.
+        server.message('f-inbox', id: 'x', subject: 'X', minutesAgo: 230);
+
+        await sync.sync('Inbox');
+        await sync.sync('Inbox');
+
+        expect(await row('X'), isNotNull);
+        expect(await cache.countMessages('acct-1', 'Inbox'), 1001);
+      });
     });
 
     test('an older message moved in turns up in its new folder', () async {
@@ -2350,6 +2500,48 @@ void main() {
       final synced = (await engine.loadMessages(inbox)).single;
       expect((synced.isAnswered, synced.isForwarded), (false, true),
           reason: 'and the next sync agrees');
+    });
+
+    test('a list scrolled down is kept up to date as far as it shows',
+        () async {
+      // The sync keeps only the newest rows up to date unless it is told
+      // how far down the list reaches.
+      for (var i = 0; i < 300; i++) {
+        server.message('f-inbox', id: 'm$i', subject: 'M$i', minutesAgo: i);
+      }
+      final account = await engine.addAccount(
+        displayName: 'Work',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      final inbox = '${account.id}:Inbox';
+      await engine.loadMessages(inbox, limit: 300);
+
+      server.messages['m280']!['isRead'] = true;
+      final shown = await engine.loadMessages(inbox, limit: 300);
+
+      expect(shown.firstWhere((m) => m.subject == 'M280').isRead, isTrue);
+    });
+
+    test('mark all read reaches every cached row', () async {
+      for (var i = 0; i < 300; i++) {
+        server.message('f-inbox', id: 'm$i', subject: 'M$i', minutesAgo: i);
+      }
+      final account = await engine.addAccount(
+        displayName: 'Work',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      final inbox = '${account.id}:Inbox';
+      await engine.loadMessages(inbox, limit: 300);
+
+      await engine.markAllRead(inbox);
+
+      final cached = await engine.cachedMessages(inbox, limit: 300);
+      expect(cached, hasLength(300));
+      expect(cached.where((m) => !m.isRead), isEmpty);
     });
   });
 

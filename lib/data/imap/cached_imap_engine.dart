@@ -765,8 +765,12 @@ class CachedImapEngine implements MailEngine {
     final (accountId, path) = splitFolderId(folderId);
     final t = await _transport(accountId);
     await t.storeFlagOnAll(path, flag: MessageFlag.seen, set: true);
-    // The flag sweep on the next sync brings the cache in line.
-    await _sync(accountId, t).sync(path);
+    // The flag sweep on the next sync brings the cache in line: all of it,
+    // not only the newest rows a sync otherwise keeps up to date.
+    await _sync(accountId, t).sync(
+      path,
+      reach: await cache.countMessages(accountId, path),
+    );
     _handled(_inFolder(folderId));
   }
 
@@ -792,7 +796,8 @@ class CachedImapEngine implements MailEngine {
     try {
       final t = await _transport(accountId);
       final sync = _sync(accountId, t);
-      await sync.sync(path);
+      // As deep as the list asks for, so that what it shows is up to date.
+      await sync.sync(path, reach: offset + limit);
       await sync.ensureCached(path, offset + limit);
     } on ConnectionFailed {
       // Offline: whatever is cached is what there is.

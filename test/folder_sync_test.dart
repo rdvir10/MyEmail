@@ -221,6 +221,23 @@ void main() {
       expect(await cachedUids(), [3, 1]);
     });
 
+    test('and so do ones further down than the newest window', () async {
+      // One UID SEARCH answers for the whole cached range, so nothing is
+      // saved by trusting it only for the newest rows, as Graph has to.
+      final inbox = server.folder('INBOX');
+      for (var i = 0; i < 12; i++) {
+        inbox.deliver();
+      }
+      await sync.sync('INBOX');
+      await sync.ensureCached('INBOX', 12);
+
+      inbox.delete(2);
+      final result = await sync.sync('INBOX');
+
+      expect(result.removed, 1);
+      expect(await cachedUids(), isNot(contains(2)));
+    });
+
     test('a cached body survives a header refresh', () async {
       final inbox = server.folder('INBOX');
       inbox.deliver(body: 'The whole body text.');
@@ -231,8 +248,9 @@ void main() {
       // Another sync re-upserts the header for uid 1 via the n:* quirk path.
       await sync.sync('INBOX');
       final m = await store.readMessage('a', 'INBOX', 1);
-      expect(m!.bodyText, 'The whole body text.');
-      expect(m.preview, 'The whole body text.');
+      expect((await store.readBody('a', 'INBOX', 1))!.text,
+          'The whole body text.');
+      expect(m!.preview, 'The whole body text.');
 
       // And the body is served from cache now.
       await sync.body('INBOX', 1);
@@ -248,7 +266,7 @@ void main() {
       }
       await sync.sync('INBOX');
       await sync.body('INBOX', 3);
-      expect((await store.readMessage('a', 'INBOX', 3))!.hasBody, isTrue);
+      expect(await store.readBody('a', 'INBOX', 3), isNotNull);
 
       inbox.rebuild();
       inbox.deliver(subject: 'After rebuild');
@@ -260,8 +278,8 @@ void main() {
       expect(state!.uidValidity, 1001);
       // The old body for "uid 3" must be gone: uid 3 is a different message now.
       final m3 = await store.readMessage('a', 'INBOX', 3);
-      expect(m3!.hasBody, isFalse);
-      expect(m3.subject, 'Message 3');
+      expect(await store.readBody('a', 'INBOX', 3), isNull);
+      expect(m3!.subject, 'Message 3');
     });
   });
 

@@ -174,6 +174,9 @@ class EnoughMailTransport implements ImapTransport {
       });
 
   @override
+  bool get readsBackByDate => false;
+
+  @override
   Future<List<int>> searchUids(
     String path,
     String query, {

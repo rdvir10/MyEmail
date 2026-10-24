@@ -178,8 +178,20 @@ class MailDatabase extends _$MailDatabase {
             "ON graph_ids (account_id, path, remote_id) WHERE remote_id <> ''",
       );
 
+  /// A folder's rows in the order the list reads them: newest arrival
+  /// first. See [DriftCacheStore.readMessages].
+  ///
+  /// The expression is written exactly as that query orders by, which is
+  /// what lets SQLite walk the index for a page instead of sorting the
+  /// whole folder to find it.
+  Index get messagesByArrival => Index(
+        'messages_by_arrival',
+        'CREATE INDEX IF NOT EXISTS messages_by_arrival ON messages '
+            '(account_id, path, COALESCE(arrived, date), uid)',
+      );
+
   @override
-  int get schemaVersion => 11;
+  int get schemaVersion => 12;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -194,6 +206,7 @@ class MailDatabase extends _$MailDatabase {
           await m.createAll();
           await m.createIndex(graphIdByRemote);
           await m.createIndex(graphIdOnePerRemote);
+          await m.createIndex(messagesByArrival);
         },
         onUpgrade: (m, from, to) async {
           // All of it or none, and one connection at a time.
@@ -207,20 +220,38 @@ class MailDatabase extends _$MailDatabase {
           // finish, then finds the version already moved on and does
           // nothing. It also means an upgrade cut short leaves the database
           // as it was, not half way.
-          await customStatement('BEGIN IMMEDIATE');
+          //
+          // The second waits for as long as the first takes, not the five
+          // seconds a connection usually gives the other. Schema 12's index
+          // is built on the arrival column, which on a database created
+          // before schema 8 sits after the bodies in every row, so building
+          // it reads every cached body with the lock held, and on a large
+          // cache read cold that can run past five seconds. The second's
+          // BEGIN then failed as "database is locked", and drift kept that
+          // the same way. The usual wait comes back afterwards, so that a
+          // write meeting another later still fails rather than hanging.
+          final wait = (await customSelect('PRAGMA busy_timeout').getSingle())
+              .read<int>('timeout');
+          await customStatement('PRAGMA busy_timeout = 120000');
           try {
-            final row = await customSelect('PRAGMA user_version').getSingle();
-            final current = row.read<int>('user_version');
-            if (current < to) {
-              await _upgrade(m, current);
-              // Inside the transaction, so the version and the work behind
-              // it land together. Drift writes it again afterwards.
-              await customStatement('PRAGMA user_version = $to');
+            await customStatement('BEGIN IMMEDIATE');
+            try {
+              final row =
+                  await customSelect('PRAGMA user_version').getSingle();
+              final current = row.read<int>('user_version');
+              if (current < to) {
+                await _upgrade(m, current);
+                // Inside the transaction, so the version and the work
+                // behind it land together. Drift writes it again afterwards.
+                await customStatement('PRAGMA user_version = $to');
+              }
+              await customStatement('COMMIT');
+            } catch (_) {
+              await customStatement('ROLLBACK');
+              rethrow;
             }
-            await customStatement('COMMIT');
-          } catch (_) {
-            await customStatement('ROLLBACK');
-            rethrow;
+          } finally {
+            await customStatement('PRAGMA busy_timeout = $wait');
           }
         },
       );
@@ -327,6 +358,12 @@ class MailDatabase extends _$MailDatabase {
         'messages.account_id AND g.path = messages.path)',
       );
     }
+    if (from < 12) {
+      // The list reads newest arrival first now, not highest number first.
+      // Last, because it is built on the arrival column, which schema 8
+      // added.
+      await m.createIndex(messagesByArrival);
+    }
   }
 
   /// Checked first: a database that already has the column (an upgrade
@@ -406,13 +443,64 @@ class DriftCacheStore implements CacheStore {
     int offset = 0,
     int limit = 50,
   }) async {
-    final rows = await (db.select(db.messages)
-          ..where((m) => _folder(m, accountId, path))
-          ..orderBy([(m) => OrderingTerm.desc(m.uid)])
+    final m = db.messages;
+    final rows = await (db.selectOnly(m)
+          ..addColumns(_headerColumns)
+          ..where(_folder(m, accountId, path))
+          ..orderBy(_newestArrivalFirst(m))
           ..limit(limit, offset: offset))
         .get();
-    return rows.map(_fromRow).toList();
+    return rows.map(_fromHeader).toList();
   }
+
+  /// Every column of a row but the body's three.
+  ///
+  /// A list read used to take whole rows. Most of a row, once its message
+  /// has been opened, is its HTML and text, and a refresh of an Inbox
+  /// scrolled to six pages copied three hundred bodies across from the
+  /// database's isolate to build rows that had no use for any of them:
+  /// every minute while the app was in front, for each of five Inboxes.
+  List<GeneratedColumn> get _headerColumns {
+    final m = db.messages;
+    return [
+      m.uid,
+      m.subject,
+      m.fromEmail,
+      m.fromName,
+      m.recipientsJson,
+      m.copiedJson,
+      m.replyToJson,
+      m.date,
+      m.arrived,
+      m.isRead,
+      m.isFlagged,
+      m.isAnswered,
+      m.isForwarded,
+      m.hasAttachments,
+      m.sizeBytes,
+      m.isMeeting,
+      m.preview,
+      m.messageId,
+      m.inReplyTo,
+      m.conversationId,
+    ];
+  }
+
+  /// When the server took a message in, newest first, as
+  /// [MailDatabase.messagesByArrival] holds them. Not by number: numbers do
+  /// not follow dates. Graph numbers mail when it is first seen, so older
+  /// mail paged in after the newest is numbered above it, and IMAP gives a
+  /// message moved in, or put back by an undo, the folder's highest number
+  /// and its old date. A first page read by number was last week's mail,
+  /// with the last few days' missing until the list had been scrolled down
+  /// to them.
+  ///
+  /// The sync reads its rows in this order too, so that the newest rows it
+  /// keeps up to date are the ones a list shows first.
+  static List<OrderingTerm> _newestArrivalFirst($MessagesTable m) => [
+        OrderingTerm.desc(coalesce([m.arrived, m.date])),
+        OrderingTerm.desc(m.uid),
+      ];
 
   @override
   Future<List<String>> messageIdsFor(
@@ -457,7 +545,7 @@ class DriftCacheStore implements CacheStore {
     final rows = await (db.selectOnly(m)
           ..addColumns([m.uid, m.date, hasPreview, hasConversation, hasSize])
           ..where(_folder(m, accountId, path))
-          ..orderBy([OrderingTerm.desc(m.uid)]))
+          ..orderBy(_newestArrivalFirst(m)))
         .get();
     return [
       for (final r in rows)
@@ -583,10 +671,28 @@ class DriftCacheStore implements CacheStore {
     String path,
     int uid,
   ) async {
-    final row = await (db.select(db.messages)
-          ..where((m) => _folder(m, accountId, path) & m.uid.equals(uid)))
+    final m = db.messages;
+    final row = await (db.selectOnly(m)
+          ..addColumns(_headerColumns)
+          ..where(_folder(m, accountId, path) & m.uid.equals(uid)))
         .getSingleOrNull();
-    return row == null ? null : _fromRow(row);
+    return row == null ? null : _fromHeader(row);
+  }
+
+  @override
+  Future<MailBody?> readBody(String accountId, String path, int uid) async {
+    final m = db.messages;
+    final row = await (db.selectOnly(m)
+          ..addColumns([m.bodyText, m.bodyHtml, m.calendar])
+          ..where(_folder(m, accountId, path) & m.uid.equals(uid)))
+        .getSingleOrNull();
+    final text = row?.read(m.bodyText);
+    if (row == null || text == null) return null;
+    return MailBody(
+      text: text,
+      html: row.read(m.bodyHtml),
+      calendar: row.read(m.calendar),
+    );
   }
 
   @override
@@ -596,23 +702,12 @@ class DriftCacheStore implements CacheStore {
     List<int> uids,
   ) async {
     if (uids.isEmpty) return const [];
-    // Every column but the body's, named from the table so a column added
-    // later comes along. Read back through the table's own mapping, which
-    // takes the body columns that are not there as null.
     final m = db.messages;
-    final body = {m.bodyText.name, m.bodyHtml.name, m.calendar.name};
-    final columns = [
-      for (final c in m.$columns)
-        if (!body.contains(c.name)) c.name,
-    ];
-    final rows = await db.customSelect(
-      'SELECT ${columns.join(', ')} FROM ${m.actualTableName} '
-      'WHERE account_id = ? AND path = ? '
-      'AND uid IN (${List.filled(uids.length, '?').join(', ')})',
-      variables: _variables([accountId, path, ...uids]),
-      readsFrom: {m},
-    ).get();
-    return [for (final r in rows) _fromRow(m.map(r.data))];
+    final rows = await (db.selectOnly(m)
+          ..addColumns(_headerColumns)
+          ..where(_folder(m, accountId, path) & m.uid.isIn(uids)))
+        .get();
+    return rows.map(_fromHeader).toList();
   }
 
   @override
@@ -899,34 +994,33 @@ class DriftCacheStore implements CacheStore {
 
   // ---------------------------------------------------------------------------
 
-  static CachedMessage _fromRow(MessageRow r) => CachedMessage(
-        uid: r.uid,
-        subject: r.subject,
-        from: MailAddress(email: r.fromEmail, name: r.fromName),
-        to: _decodeAddresses(r.recipientsJson),
-        cc: r.copiedJson == null
-            ? const []
-            : _decodeAddresses(r.copiedJson!),
-        replyTo: r.replyToJson == null
-            ? const []
-            : _decodeAddresses(r.replyToJson!),
-        date: r.date,
-        arrived: r.arrived,
-        isRead: r.isRead,
-        isFlagged: r.isFlagged,
-        isAnswered: r.isAnswered,
-        isForwarded: r.isForwarded,
-        hasAttachments: r.hasAttachments,
-        sizeBytes: r.sizeBytes,
-        isMeeting: r.isMeeting,
-        preview: r.preview,
-        bodyText: r.bodyText,
-        bodyHtml: r.bodyHtml,
-        calendar: r.calendar,
-        messageId: r.messageId,
-        inReplyTo: r.inReplyTo,
-        conversationId: r.conversationId,
-      );
+  /// A row read with [_headerColumns]: everything but the body.
+  CachedMessage _fromHeader(TypedResult r) {
+    final m = db.messages;
+    final copied = r.read(m.copiedJson);
+    final replyTo = r.read(m.replyToJson);
+    return CachedMessage(
+      uid: r.read(m.uid)!,
+      subject: r.read(m.subject)!,
+      from: MailAddress(email: r.read(m.fromEmail)!, name: r.read(m.fromName)),
+      to: _decodeAddresses(r.read(m.recipientsJson)!),
+      cc: copied == null ? const [] : _decodeAddresses(copied),
+      replyTo: replyTo == null ? const [] : _decodeAddresses(replyTo),
+      date: r.read(m.date)!,
+      arrived: r.read(m.arrived),
+      isRead: r.read(m.isRead)!,
+      isFlagged: r.read(m.isFlagged)!,
+      isAnswered: r.read(m.isAnswered)!,
+      isForwarded: r.read(m.isForwarded)!,
+      hasAttachments: r.read(m.hasAttachments)!,
+      sizeBytes: r.read(m.sizeBytes)!,
+      isMeeting: r.read(m.isMeeting)!,
+      preview: r.read(m.preview)!,
+      messageId: r.read(m.messageId),
+      inReplyTo: r.read(m.inReplyTo),
+      conversationId: r.read(m.conversationId),
+    );
+  }
 
   static String _encodeAddresses(List<MailAddress> list) => jsonEncode([
         for (final a in list) {'email': a.email, 'name': a.name},

@@ -45,8 +45,14 @@ void main() {
         isRead: false,
         isFlagged: false,
         hasAttachments: false,
+        // As an opened message is cached: the text, and the HTML with it.
+        bodyText: 'A body worth keeping',
         bodyHtml: '<p>A body worth keeping</p>',
       );
+
+  /// The body still cached for that message, read the way opening it does.
+  Future<String?> keptBody(DriftCacheStore store) async =>
+      (await store.readBody('acct-1', 'INBOX', 11))?.html;
 
   // Each fixture is today's database with everything later versions added
   // taken back out, so the upgrade has real work to do. They used to keep
@@ -54,9 +60,17 @@ void main() {
   // and every test here would still have passed, while every device
   // upgrading from 2.35 or earlier failed on every cache read.
 
+  /// What schema 12 added: the index the list reads a folder through,
+  /// newest arrival first. It has to go before the arrival column can.
+  Future<void> dropSchema12(MailDatabase db) async {
+    await db.customStatement('DROP INDEX IF EXISTS messages_by_arrival');
+  }
+
   /// What schema 9 added: whether a message was replied to or forwarded.
-  /// What schema 10 added: the conversation the server keeps.
+  /// What schema 10 added: the conversation the server keeps. And
+  /// everything after it.
   Future<void> dropSchema10(MailDatabase db) async {
+    await dropSchema12(db);
     await db.customStatement(
       'ALTER TABLE messages DROP COLUMN conversation_id',
     );
@@ -220,7 +234,19 @@ void main() {
         lastSync: DateTime.utc(2026, 9, 1),
       ),
     );
+    await dropSchema12(db);
     await db.customStatement('PRAGMA user_version = 10');
+    await db.close();
+  }
+
+  /// A database as it stood at schema 11, the release before this one: a
+  /// folder whose list was read by number, with nothing to read it by
+  /// arrival.
+  Future<void> buildVersion11() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await dropSchema12(db);
+    await db.customStatement('PRAGMA user_version = 11');
     await db.close();
   }
 
@@ -270,7 +296,7 @@ void main() {
     final store = DriftCacheStore(db);
     final cached = (await store.readMessages('acct-1', 'INBOX')).single;
 
-    expect(cached.bodyHtml, '<p>A body worth keeping</p>');
+    expect(await keptBody(store), '<p>A body worth keeping</p>');
     expect(cached.conversationId, isNull, reason: 'cached before it was kept');
     final state = await store.readFolderState('acct-1', 'INBOX');
     expect(state!.previewsChecked, isFalse,
@@ -295,7 +321,7 @@ void main() {
     ]);
     final after = await store.readMessage('acct-1', 'INBOX', 11);
     expect(after!.conversationId, 'AAQk-1');
-    expect(after.bodyHtml, '<p>A body worth keeping</p>',
+    expect(await keptBody(store), '<p>A body worth keeping</p>',
         reason: 'a header read again keeps the body');
   });
 
@@ -308,7 +334,7 @@ void main() {
     final store = DriftCacheStore(db);
     final cached = (await store.readMessages('acct-1', 'INBOX')).single;
 
-    expect(cached.bodyHtml, '<p>A body worth keeping</p>');
+    expect(await keptBody(store), '<p>A body worth keeping</p>');
     expect(cached.isAnswered, isFalse, reason: 'cached before it was read');
     expect(cached.isForwarded, isFalse);
 
@@ -323,7 +349,7 @@ void main() {
     final after = await store.readMessage('acct-1', 'INBOX', 11);
     expect(after!.isAnswered, isTrue);
     expect(after.isForwarded, isTrue);
-    expect(after.bodyHtml, '<p>A body worth keeping</p>');
+    expect(await keptBody(store), '<p>A body worth keeping</p>');
   });
 
   test('a reply made before the update shows once its folder syncs',
@@ -366,7 +392,7 @@ void main() {
     final store = DriftCacheStore(db);
     final cached = await store.readMessages('acct-1', 'INBOX');
 
-    expect(cached.single.bodyHtml, '<p>A body worth keeping</p>');
+    expect(await keptBody(store), '<p>A body worth keeping</p>');
     expect(cached.single.arrived, isNull, reason: 'cached before it was read');
     final state = await store.readFolderState('acct-1', 'INBOX');
     expect(state!.previewsChecked, isFalse,
@@ -445,16 +471,57 @@ void main() {
       final worker = open();
       try {
         final both = await Future.wait([
-          DriftCacheStore(app).readMessages('acct-1', 'INBOX'),
-          DriftCacheStore(worker).readMessages('acct-1', 'INBOX'),
+          keptBody(DriftCacheStore(app)),
+          keptBody(DriftCacheStore(worker)),
         ]);
-        expect(both[0].single.bodyHtml, '<p>A body worth keeping</p>');
-        expect(both[1].single.bodyHtml, '<p>A body worth keeping</p>');
+        expect(both, everyElement('<p>A body worth keeping</p>'));
       } finally {
         await app.close();
         await worker.close();
       }
     }
+  });
+
+  test('a connection that finds the upgrade under way waits for it, however '
+      'long it takes', () async {
+    // Building schema 12's index reads every cached body on a database
+    // created before schema 8, and on a large cache that can outlast the
+    // five seconds a connection gives the other. The second opener then
+    // failed, and drift kept the failure: every cache read on it failed
+    // until the process was killed. A plain connection holds the lock here
+    // as the first opener's upgrade does, against one that gives up after a
+    // tenth of a second where the app's gives up after five.
+    await buildVersion11();
+    final first = sqlite3.open(file.path)
+      ..execute('PRAGMA journal_mode = WAL')
+      ..execute('BEGIN IMMEDIATE');
+    var released = false;
+    void release() {
+      if (released) return;
+      released = true;
+      first
+        ..execute('COMMIT')
+        ..close();
+    }
+
+    addTearDown(release);
+    final db = MailDatabase(NativeDatabase.createInBackground(
+      file,
+      setup: (raw) {
+        MailDatabase.configureConnection(raw);
+        raw.execute('PRAGMA busy_timeout = 100');
+      },
+    ));
+    addTearDown(db.close);
+
+    final body = keptBody(DriftCacheStore(db));
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    release();
+
+    expect(await body, '<p>A body worth keeping</p>');
+    final wait = await db.customSelect('PRAGMA busy_timeout').getSingle();
+    expect(wait.read<int>('timeout'), 100,
+        reason: 'once it is up, a write meeting another waits as it did');
   });
 
   test('a version 6 database gains Reply-To and keeps its rows', () async {
@@ -465,7 +532,7 @@ void main() {
     final store = DriftCacheStore(db);
     final cached = await store.readMessages('acct-1', 'INBOX');
 
-    expect(cached.single.bodyHtml, '<p>A body worth keeping</p>');
+    expect(await keptBody(store), '<p>A body worth keeping</p>');
     expect(cached.single.replyTo, isEmpty,
         reason: 'cached before Reply-To was kept, so a reply goes to From');
 
@@ -496,7 +563,7 @@ void main() {
     final cached = await store.readMessages('acct-1', 'INBOX');
 
     expect(cached, hasLength(1));
-    expect(cached.single.bodyHtml, '<p>A body worth keeping</p>');
+    expect(await keptBody(store), '<p>A body worth keeping</p>');
     expect(cached.single.cc, isEmpty, reason: 'cached before Cc was kept');
     expect(cached.single.sizeBytes, 0);
     expect(cached.single.isMeeting, isFalse);
@@ -530,10 +597,11 @@ void main() {
 
     final db = MailDatabase(NativeDatabase(file));
     addTearDown(db.close);
-    final cached = await DriftCacheStore(db).readMessages('acct-1', 'INBOX');
+    final store = DriftCacheStore(db);
+    final cached = await store.readMessages('acct-1', 'INBOX');
 
     expect(cached.single.subject, 'Cached before the upgrade');
-    expect(cached.single.bodyHtml, '<p>A body worth keeping</p>');
+    expect(await keptBody(store), '<p>A body worth keeping</p>');
     expect(cached.single.messageId, isNull);
   });
 
@@ -546,11 +614,12 @@ void main() {
 
     final db = MailDatabase(NativeDatabase(file));
     addTearDown(db.close);
-    final cached = await DriftCacheStore(db).readMessages('acct-1', 'INBOX');
+    final store = DriftCacheStore(db);
+    final cached = await store.readMessages('acct-1', 'INBOX');
 
     expect(cached, hasLength(1));
     expect(cached.single.subject, 'Cached before the upgrade');
-    expect(cached.single.bodyHtml, isNull);
+    expect(await keptBody(store), isNull);
   });
 
   test('a Gmail account keeps every body it had', () async {
@@ -560,9 +629,8 @@ void main() {
 
     final db = MailDatabase(NativeDatabase(file));
     addTearDown(db.close);
-    final cached = await DriftCacheStore(db).readMessages('acct-1', 'INBOX');
 
-    expect(cached.single.bodyHtml, '<p>A body worth keeping</p>');
+    expect(await keptBody(DriftCacheStore(db)), '<p>A body worth keeping</p>');
   });
 
   test('a version 3 database gains the calendar column and keeps its rows',
@@ -572,13 +640,13 @@ void main() {
     final db = MailDatabase(NativeDatabase(file));
     addTearDown(db.close);
     final store = DriftCacheStore(db);
-    final cached = await store.readMessages('acct-1', 'INBOX');
-    expect(cached.single.bodyHtml, '<p>A body worth keeping</p>');
-    expect(cached.single.calendar, isNull, reason: 'cached before invitations');
+    final kept = await store.readBody('acct-1', 'INBOX', 11);
+    expect(kept!.html, '<p>A body worth keeping</p>');
+    expect(kept.calendar, isNull, reason: 'cached before invitations');
 
     await store.writeBody('acct-1', 'INBOX', 11,
         text: 'x', calendar: 'BEGIN:VCALENDAR', preview: 'x');
-    final again = await store.readMessage('acct-1', 'INBOX', 11);
+    final again = await store.readBody('acct-1', 'INBOX', 11);
     expect(again!.calendar, 'BEGIN:VCALENDAR');
   });
 
@@ -587,12 +655,13 @@ void main() {
 
     final db = MailDatabase(NativeDatabase(file));
     addTearDown(db.close);
-    final cached = await DriftCacheStore(db).readMessages('acct-1', 'INBOX');
+    final store = DriftCacheStore(db);
+    final cached = await store.readMessages('acct-1', 'INBOX');
 
     expect(cached, hasLength(1));
     expect(cached.single.subject, 'Cached before the upgrade');
     expect(
-      cached.single.bodyHtml,
+      await keptBody(store),
       '<p>A body worth keeping</p>',
       reason: 'a migration that drops bodies makes every account redownload '
           'its mail, whichever provider it uses',
@@ -647,8 +716,14 @@ void main() {
     final db = MailDatabase(NativeDatabase(file));
     addTearDown(db.close);
 
-    expect(await indexes(db),
-        containsAll(['graph_ids_by_remote', 'graph_ids_one_per_remote']));
+    expect(
+      await indexes(db),
+      containsAll([
+        'graph_ids_by_remote',
+        'graph_ids_one_per_remote',
+        'messages_by_arrival',
+      ]),
+    );
   });
 
   test('a Gmail account still reads its cache after the upgrade', () async {
@@ -681,5 +756,30 @@ void main() {
     expect(state!.highestModSeq, isNull);
     expect(state.uidValidity, 1000, reason: 'the folder is not thrown away');
     expect((await store.readMessage('acct-1', 'INBOX', 11))!.sizeBytes, 20480);
+  });
+
+  test('a version 11 database gains the index the list reads through, and '
+      'keeps its rows', () async {
+    await buildVersion11();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final cached = await DriftCacheStore(db).readMessages('acct-1', 'INBOX');
+
+    expect(cached.single.subject, 'Cached before the upgrade');
+    expect(await indexes(db), contains('messages_by_arrival'));
+  });
+
+  test('and so does one coming up from before arrival times were kept',
+      () async {
+    // The index is built on the arrival column, which schema 8 added: made
+    // before that step, it failed, and the whole upgrade with it.
+    await buildVersion7();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    await DriftCacheStore(db).readMessages('acct-1', 'INBOX');
+
+    expect(await indexes(db), contains('messages_by_arrival'));
   });
 }

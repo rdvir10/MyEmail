@@ -36,8 +36,9 @@ abstract class ImapTransport {
   /// existing UID even when it is below [fromUid]; callers filter.
   ///
   /// [windowStart], here and on [fetchFlags], [existingUids] and
-  /// [refreshHeaders], is the date of the oldest message cached for the
-  /// folder: how far back the cached window reaches. IMAP has no use for it,
+  /// [refreshHeaders], is how far back the sync is asking about: the date
+  /// of the oldest of the rows it keeps up to date, or of the oldest cached
+  /// when it wants the whole cache looked at. IMAP has no use for it,
   /// because its UIDs follow arrival order. Graph's numbers do not always —
   /// a message moved in, or older mail paged in, is numbered when it is
   /// first seen — so a scan there that stopped at a number missed messages,
@@ -61,12 +62,22 @@ abstract class ImapTransport {
 
   /// Which UIDs in the range still exist, so deletions made elsewhere can be
   /// mirrored. `UID SEARCH UID fromUid:toUid`.
-  Future<Set<int>> existingUids(
+  ///
+  /// Null when the server was not looked at all the way back to
+  /// [windowStart], and so cannot say what is gone: a Graph scan that ran
+  /// out of pages first. Nothing is taken for deleted then.
+  Future<Set<int>?> existingUids(
     String path,
     int fromUid,
     int toUid, {
     DateTime? windowStart,
   });
+
+  /// Whether [existingUids] looks back only as far as its windowStart, so
+  /// that a message older than that is missing from the answer without
+  /// being gone. Graph pages back by date and stops there. IMAP answers for
+  /// the whole range in one request, whatever windowStart says.
+  bool get readsBackByDate => false;
 
   Future<MailBody> fetchBody(String path, int uid);
 

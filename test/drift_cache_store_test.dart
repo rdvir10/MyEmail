@@ -1,5 +1,5 @@
 import 'package:drift/drift.dart'
-    show ApplyInterceptor, QueryExecutor, QueryInterceptor;
+    show ApplyInterceptor, QueryExecutor, QueryInterceptor, Variable;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/cache/cache_store.dart';
@@ -254,9 +254,76 @@ Future<void> _repliedAndForwarded(CacheStore store) async {
   expect(await store.readMessage('a', 'INBOX', 99), isNull);
 }
 
+/// A page of a folder is its newest mail, whatever the numbers say, on
+/// either store. Graph numbers mail the first time it is seen, so older
+/// mail paged in after the first fill is numbered above it, and a Gmail
+/// message put back by an undo comes back with the highest number in the
+/// folder and its old date. Read by number, the first page was last week's
+/// mail, and the last few days' were missing until it was scrolled.
+Future<void> _newestArrivalsFirst(CacheStore store) async {
+  CachedMessage row(int uid, DateTime date, {DateTime? arrived}) =>
+      CachedMessage(
+        uid: uid,
+        subject: 'S $uid',
+        from: const MailAddress(email: 'x@example.com'),
+        to: const [],
+        date: date,
+        arrived: arrived,
+        isRead: false,
+        isFlagged: false,
+        hasAttachments: false,
+      );
+  await store.upsertMessages('a', 'INBOX', [
+    // The first fill, the newest three days.
+    row(1, DateTime(2026, 10, 18)),
+    row(2, DateTime(2026, 10, 19)),
+    row(3, DateTime(2026, 10, 20)),
+    // A page of older mail, numbered after it.
+    row(4, DateTime(2026, 10, 1)),
+    row(5, DateTime(2026, 10, 2)),
+    // Written on a plane, arrived last of all.
+    row(6, DateTime(2026, 10, 10), arrived: DateTime(2026, 10, 20, 13)),
+    // Arrived with 3, so the number decides.
+    row(7, DateTime(2026, 10, 20)),
+  ]);
+
+  final first = await store.readMessages('a', 'INBOX', limit: 3);
+  final rest = await store.readMessages('a', 'INBOX', offset: 3, limit: 10);
+
+  expect(first.map((m) => m.uid), [6, 7, 3]);
+  expect(rest.map((m) => m.uid), [2, 1, 5, 4]);
+}
+
+/// A row read for a list or for its flags comes without its body, on
+/// either store, and the body is read on its own when a message is opened.
+/// The in-memory store used to hand the body back with every row, so code
+/// tested against it could come to rely on one being there.
+Future<void> _bodiesReadAlone(CacheStore store) async {
+  await store.upsertMessages('a', 'INBOX', [_msg(1), _msg(2)]);
+  await store.writeBody('a', 'INBOX', 1,
+      text: 'Body',
+      html: '<p>Body</p>',
+      calendar: 'BEGIN:VCALENDAR',
+      preview: 'Body');
+
+  final listed = await store.readMessages('a', 'INBOX');
+  final one = await store.readMessage('a', 'INBOX', 1);
+  final body = await store.readBody('a', 'INBOX', 1);
+
+  expect([for (final m in listed) m.bodyText], [null, null]);
+  expect(one!.bodyHtml, isNull);
+  expect(one.preview, 'Body', reason: 'the preview is part of the row');
+  expect((body!.text, body.html, body.calendar),
+      ('Body', '<p>Body</p>', 'BEGIN:VCALENDAR'));
+  expect(await store.readBody('a', 'INBOX', 2), isNull,
+      reason: 'never opened');
+  expect(await store.readBody('a', 'INBOX', 3), isNull, reason: 'not cached');
+}
+
 /// Every query a database runs, to see what it reads.
 class _Selects extends QueryInterceptor {
   final statements = <String>[];
+  final arguments = <List<Object?>>[];
 
   @override
   Future<List<Map<String, Object?>>> runSelect(
@@ -265,6 +332,7 @@ class _Selects extends QueryInterceptor {
     List<Object?> args,
   ) {
     statements.add(statement);
+    arguments.add(args);
     return super.runSelect(executor, statement, args);
   }
 }
@@ -289,6 +357,12 @@ void main() {
 
   test('MemoryCacheStore keeps replies and forwards as the database does',
       () => _repliedAndForwarded(MemoryCacheStore()));
+
+  test('MemoryCacheStore pages newest arrivals first as the database does',
+      () => _newestArrivalsFirst(MemoryCacheStore()));
+
+  test('MemoryCacheStore reads bodies apart as the database does',
+      () => _bodiesReadAlone(MemoryCacheStore()));
 
   group(
     'DriftCacheStore',
@@ -456,9 +530,41 @@ void main() {
         expect((two.from.email, two.from.name), ('x@example.com', 'X'));
         expect(two.to.single.email, 'me@example.com');
         expect(two.date, DateTime(2026, 9, 1).add(const Duration(hours: 2)));
-        expect(two.hasBody, isFalse);
+        expect((two.bodyText, two.bodyHtml, two.calendar), (null, null, null));
         expect(rows.firstWhere((r) => r.uid == 3).isRead, isTrue);
       });
+
+      test('nor for a list, or one row for its flags', () async {
+        // Every refresh of a list read whole rows, and a row once opened is
+        // mostly its HTML: three hundred bodies copied across from the
+        // database's isolate each minute, to be dropped on arrival.
+        final seen = _Selects();
+        final watched =
+            MailDatabase(NativeDatabase.memory().interceptWith(seen));
+        addTearDown(watched.close);
+        final watchedStore = DriftCacheStore(watched);
+        await watchedStore.upsertMessages('a', 'INBOX', [_msg(1)]);
+        await watchedStore.writeBody('a', 'INBOX', 1,
+            text: 'Body', html: '<p>Body</p>', preview: 'Body');
+        seen.statements.clear();
+
+        final listed = await watchedStore.readMessages('a', 'INBOX');
+        final one = await watchedStore.readMessage('a', 'INBOX', 1);
+
+        expect(seen.statements, hasLength(2));
+        for (final sql in seen.statements) {
+          expect(sql, isNot(contains('body_html')));
+          expect(sql, isNot(contains('body_text')));
+          expect(sql, isNot(contains('calendar')));
+          expect(sql, isNot(contains('*')));
+        }
+        expect(listed.single.subject, 'S 1');
+        expect(listed.single.preview, 'Body');
+        expect(one!.bodyHtml, isNull);
+      });
+
+      test('a body is read only when it is asked for',
+          () => _bodiesReadAlone(store));
 
       test('address suggestions include the copied',
           () => _copiedAreSuggested(store));
@@ -518,6 +624,33 @@ void main() {
         expect(await store.uidRange('a', 'Empty'), isNull);
       });
 
+      test('a page is the newest mail, not the highest numbers',
+          () => _newestArrivalsFirst(store));
+
+      test('and is read through an index in that order', () async {
+        // Without one, every page sorted the folder's whole cache to find
+        // its fifty rows.
+        final seen = _Selects();
+        final watched =
+            MailDatabase(NativeDatabase.memory().interceptWith(seen));
+        addTearDown(watched.close);
+        final watchedStore = DriftCacheStore(watched);
+        await watchedStore.upsertMessages('a', 'INBOX', [_msg(1), _msg(2)]);
+        seen.statements.clear();
+        seen.arguments.clear();
+
+        await watchedStore.readMessages('a', 'INBOX');
+        final plan = await watched.customSelect(
+          'EXPLAIN QUERY PLAN ${seen.statements.single}',
+          variables: [for (final a in seen.arguments.single) Variable(a)],
+        ).get();
+        final steps = [for (final r in plan) r.read<String>('detail')];
+
+        expect(steps.join('\n'), contains('messages_by_arrival'));
+        expect(steps.join('\n'), isNot(contains('TEMP B-TREE')),
+            reason: 'walked in order, not sorted');
+      });
+
       test('addresses survive the JSON column', () async {
         await store.upsertMessages('a', 'INBOX', [_msg(1)]);
         final m = await store.readMessage('a', 'INBOX', 1);
@@ -532,9 +665,10 @@ void main() {
             text: 'Body', html: '<p>Body</p>', preview: 'Body');
         await store.upsertMessages('a', 'INBOX', [_msg(1, read: true)]);
         final m = await store.readMessage('a', 'INBOX', 1);
+        final body = await store.readBody('a', 'INBOX', 1);
         expect(m!.isRead, isTrue, reason: 'header fields updated');
-        expect(m.bodyText, 'Body', reason: 'body kept');
-        expect(m.bodyHtml, '<p>Body</p>');
+        expect(body!.text, 'Body', reason: 'body kept');
+        expect(body.html, '<p>Body</p>');
         expect(m.preview, 'Body');
       });
 
