@@ -1,3 +1,4 @@
+import '../../domain/follow_up.dart' show dueLabel;
 import 'package:flutter/material.dart';
 
 import '../../domain/display_settings.dart';
@@ -108,6 +109,20 @@ class MessageTile extends StatelessWidget {
     );
     final date = Text(dateText, style: dateStyle);
 
+    // When a flag is due, where that is known: in the Flagged list, and
+    // where it was set here. Overdue in the error colour, as Outlook's red.
+    final due = message.isFlagged ? message.flagDue : null;
+    final dueText = due == null ? null : dueLabel(due, DateTime.now());
+    final dueStyle = theme.textTheme.labelSmall?.copyWith(
+      color: dueText == 'Overdue' ? scheme.error : scheme.onSurfaceVariant,
+    );
+    final dueMark = dueText == null
+        ? null
+        : Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: Text(dueText, key: const ValueKey('row-due'), style: dueStyle),
+          );
+
     // What the first line would hold besides the sender and the subject,
     // were they on it: the row's edges, the marks, the date, and with no
     // preview line the attachment and the size as well.
@@ -120,6 +135,7 @@ class MessageTile extends StatelessWidget {
         12 +
         8 +
         textWidth(context, dateText, dateStyle) +
+        (dueText == null ? 0 : 8 + textWidth(context, dueText, dueStyle)) +
         (showsPreview
             ? 6
             : 6 +
@@ -166,6 +182,7 @@ class MessageTile extends StatelessWidget {
               ),
             ),
             if (!showsPreview) ..._marks(theme, scheme),
+            ?dueMark,
             const SizedBox(width: 8),
             date,
             end,
@@ -195,6 +212,7 @@ class MessageTile extends StatelessWidget {
                 style: first,
               ),
             ),
+            ?dueMark,
             const SizedBox(width: 8),
             date,
             const SizedBox(width: 6),

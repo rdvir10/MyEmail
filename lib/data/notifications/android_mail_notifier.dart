@@ -1,3 +1,5 @@
+import 'package:flutter/services.dart' show PlatformException;
+import 'package:timezone/timezone.dart' as tz;
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -186,6 +188,64 @@ class AndroidMailNotifier implements MailNotifier {
     }
 
     _ready = true;
+  }
+
+  /// Follow Up's reminders, a channel of their own: Android's settings can
+  /// then treat them apart from new mail.
+  static const reminderChannelId = 'mailtree.reminders';
+
+  @override
+  Future<bool> scheduleReminder({
+    required int id,
+    required DateTime at,
+    required String title,
+    required String body,
+    required String payload,
+  }) async {
+    await ensureReady();
+    await _android?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        reminderChannelId,
+        'Reminders',
+        description: 'A message you flagged with a reminder is due.',
+        importance: Importance.high,
+      ),
+    );
+    const details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        reminderChannelId,
+        'Reminders',
+        importance: Importance.high,
+        priority: Priority.high,
+        category: AndroidNotificationCategory.reminder,
+      ),
+    );
+    // An instant, so UTC will do: nothing repeats by the clock.
+    final when = tz.TZDateTime.from(at.toUtc(), tz.UTC);
+    Future<void> schedule(AndroidScheduleMode mode) => _plugin.zonedSchedule(
+          id: id,
+          scheduledDate: when,
+          notificationDetails: details,
+          androidScheduleMode: mode,
+          title: title,
+          body: body,
+          payload: payload,
+        );
+    try {
+      // On time: USE_EXACT_ALARM allows it from Android 13. Where it is not
+      // allowed, within Android's window rather than not at all.
+      await schedule(AndroidScheduleMode.exactAllowWhileIdle);
+    } on PlatformException catch (e) {
+      debugPrint('[myemail] exact reminder refused, set inexact: $e');
+      await schedule(AndroidScheduleMode.inexactAllowWhileIdle);
+    }
+    return true;
+  }
+
+  @override
+  Future<void> cancelReminder(int id) async {
+    await ensureReady();
+    await _plugin.cancel(id: id);
   }
 
   AndroidFlutterLocalNotificationsPlugin? get _android =>

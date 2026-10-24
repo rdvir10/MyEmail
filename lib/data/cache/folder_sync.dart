@@ -260,6 +260,7 @@ class FolderSync {
       updated: flags.length,
       removed: gone.length,
       serverExists: status.exists,
+      arrived: [for (final h in newHeaders) h.uid],
     );
   }
 
@@ -469,9 +470,14 @@ class SyncResult {
     this.removed = 0,
     this.cacheReset = false,
     required this.serverExists,
+    this.arrived = const [],
   });
 
   final int added;
+
+  /// The UIDs of mail new since the last sync, as it arrived: not a first
+  /// fill or a refill, which is the folder as it already was.
+  final List<int> arrived;
   final int updated;
   final int removed;
 

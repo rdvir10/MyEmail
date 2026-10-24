@@ -266,6 +266,18 @@ abstract class ImapTransport {
     String toPath,
   );
 
+  /// Copy messages into another folder, leaving them where they are, and
+  /// answer the UIDs the copies were given there where the server says.
+  ///
+  /// For Gmail's All Mail, which holds every message whatever its labels:
+  /// a copy out of it adds the label it goes to, and a move would also
+  /// take the message out of All Mail, which Gmail reads as a delete.
+  Future<List<int>?> copyMessages(
+    String fromPath,
+    List<int> uids,
+    String toPath,
+  );
+
   /// Put a sent message into the Sent folder. Gmail does this itself for
   /// mail sent through its SMTP, so the engine only calls this where the
   /// provider does not.

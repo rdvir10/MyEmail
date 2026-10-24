@@ -5,9 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/mail_engine.dart';
+import '../../domain/folder_role.dart';
+import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/message_move.dart';
 import '../../state/folder_tree.dart';
+import '../../state/follow_ups.dart';
 import '../../state/list_filter.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
@@ -123,6 +126,164 @@ class MessageActions {
     }
   }
 
+  /// Into each account's archive, as Outlook's Archive: the Archive folder
+  /// on a Microsoft account, and on Gmail out of this folder into All Mail,
+  /// which takes the folder's label off as Gmail's own Archive does (out
+  /// of the Inbox, the Inbox label). Messages from several accounts go to
+  /// each one's own, with one report and one Undo. True when anything went.
+  Future<bool> archive(
+    BuildContext context,
+    List<MailMessage> messages,
+  ) =>
+      _toEach(
+        context,
+        messages,
+        targetFor: archiveTargetFor,
+        done: (n) => n == 1 ? 'Message archived' : '$n messages archived',
+        partly: 'Archived',
+        failed: 'Could not archive',
+        nowhere: 'This account has no Archive folder.',
+        already: 'Already in the archive.',
+      );
+
+  /// Into each account's Junk folder: Block Sender's first half. [said] is
+  /// what the report says when all went, and [alsoUndo] runs with its Undo.
+  Future<bool> junk(
+    BuildContext context,
+    List<MailMessage> messages, {
+    String? said,
+    VoidCallback? alsoUndo,
+  }) =>
+      _toEach(
+        context,
+        messages,
+        targetFor: (folders, accountId) =>
+            folderWithRole(folders, accountId, FolderRole.junk),
+        done: (n) =>
+            said ?? (n == 1 ? 'Moved to Junk' : '$n messages moved to Junk'),
+        partly: 'Moved',
+        failed: 'Could not move to Junk',
+        nowhere: 'This account has no Junk folder.',
+        already: 'Already in Junk.',
+        alsoUndo: alsoUndo,
+      );
+
+  /// Out of Junk into each account's Inbox: Not Junk's first half. As
+  /// [junk] for [said] and [alsoUndo].
+  Future<bool> toInbox(
+    BuildContext context,
+    List<MailMessage> messages, {
+    String? said,
+    VoidCallback? alsoUndo,
+  }) =>
+      _toEach(
+        context,
+        messages,
+        targetFor: (folders, accountId) =>
+            folderWithRole(folders, accountId, FolderRole.inbox),
+        done: (n) => said ?? (n == 1 ? 'Moved to Inbox' : '$n moved to Inbox'),
+        partly: 'Moved',
+        failed: 'Could not move to the Inbox',
+        nowhere: 'This account has no Inbox.',
+        already: 'Already in the Inbox.',
+        alsoUndo: alsoUndo,
+      );
+
+  /// [messages] into the folder [targetFor] names for each one's account,
+  /// with one report and one Undo for them all. True when anything went.
+  Future<bool> _toEach(
+    BuildContext context,
+    List<MailMessage> messages, {
+    required String? Function(
+      Map<String, List<MailFolder>> folders,
+      String accountId,
+    ) targetFor,
+    required String Function(int n) done,
+    required String partly,
+    required String failed,
+    required String nowhere,
+    required String already,
+    VoidCallback? alsoUndo,
+  }) async {
+    if (messages.isEmpty) return false;
+    final to = _reporterFor(context);
+    final folders = container.read(foldersProvider).value ?? const {};
+    final groups = <String, List<MailMessage>>{};
+    var none = false;
+    for (final m in messages) {
+      final target = targetFor(folders, m.accountId);
+      if (target == null) {
+        none = true;
+      } else if (m.folderId != target) {
+        (groups[target] ??= []).add(m);
+      }
+    }
+    if (groups.isEmpty) {
+      _say(to, none ? nowhere : already);
+      return false;
+    }
+    final moves = <MessageMove>[];
+    var count = 0;
+    try {
+      for (final MapEntry(key: target, value: some) in groups.entries) {
+        moves.addAll(await _moveAll(some, target));
+        count += some.length;
+      }
+      _say(to, done(count), undo: moves, of: count, alsoUndo: alsoUndo);
+      return true;
+    } on PartialMove catch (part) {
+      final went = [...moves, ...part.done];
+      final n = went.fold(0, (sum, m) => sum + m.count);
+      _say(to, '$partly $n of ${messages.length}. ${part.message}',
+          undo: went, of: n, alsoUndo: alsoUndo);
+      return true;
+    } catch (e) {
+      _say(to, '$failed: $e');
+      return moves.isNotEmpty;
+    }
+  }
+
+  /// [messages] into [toFolderId], through the list for the ones it holds
+  /// and the engine for the rest, every list that shows them read again.
+  /// A failure after some went is a [PartialMove] naming all that did.
+  Future<List<MessageMove>> _moveAll(
+    List<MailMessage> messages,
+    String toFolderId,
+  ) async {
+    final (held, elsewhere) = _split(messages);
+    final moves = <MessageMove>[];
+    try {
+      if (held.isNotEmpty) {
+        moves.addAll(await container
+            .read(messagesProvider(listId).notifier)
+            .move([for (final m in held) m.id], toFolderId));
+        _refreshSearch();
+      }
+      if (elsewhere.isNotEmpty) {
+        moves.addAll(await container
+            .read(mailEngineProvider)
+            .moveMessages([for (final m in elsewhere) m.id], toFolderId));
+        _afterEngineChange(elsewhere, touched: [
+          for (final m in moves) ...m.landedIn,
+          toFolderId,
+        ]);
+      }
+      return moves;
+    } on PartialMove catch (part) {
+      final done = [...moves, ...part.done];
+      if (elsewhere.isNotEmpty) {
+        _afterEngineChange(elsewhere, touched: [
+          for (final m in done) ...m.landedIn,
+          toFolderId,
+        ]);
+      }
+      throw PartialMove(done: done, moved: part.moved, cause: part.cause);
+    } catch (e) {
+      if (moves.isEmpty) rethrow;
+      throw PartialMove(done: moves, moved: const [], cause: e);
+    }
+  }
+
   Future<void> delete(
     BuildContext context,
     List<MailMessage> messages,
@@ -183,14 +344,44 @@ class MessageActions {
     BuildContext context,
     List<MailMessage> messages,
     bool isFlagged,
-  ) =>
-      _setEach(
-        context,
-        messages,
-        held: (n, ids) => n.setMessagesFlagged(ids, isFlagged),
-        engine: (e, ids) => e.setMessagesFlagged(ids, isFlagged),
-        what: isFlagged ? 'flag' : 'unflag',
-      );
+  ) {
+    // The flag off takes its day and its reminder with it.
+    if (!isFlagged) container.read(followUpsProvider.notifier).forget(messages);
+    return _setEach(
+      context,
+      messages,
+      held: (n, ids) => n.setMessagesFlagged(ids, isFlagged),
+      engine: (e, ids) => e.setMessagesFlagged(ids, isFlagged),
+      what: isFlagged ? 'flag' : 'unflag',
+    );
+  }
+
+  /// Outlook's Follow Up: flagged for [due] (no date where it is null), or
+  /// with [complete] marked complete; see [MailEngine.setFollowUp]. The day
+  /// is kept on this device as well, for the accounts that keep none;
+  /// complete forgets it, and the reminder with it.
+  Future<void> followUp(
+    BuildContext context,
+    List<MailMessage> messages, {
+    DateTime? due,
+    bool complete = false,
+  }) {
+    final store = container.read(followUpsProvider.notifier);
+    if (complete) {
+      store.forget(messages);
+    } else {
+      for (final m in messages) {
+        store.setDue(m, due);
+      }
+    }
+    return _setEach(
+      context,
+      messages,
+      held: (n, ids) => n.setFollowUp(ids, due: due, complete: complete),
+      engine: (e, ids) => e.setFollowUp(ids, due: due, complete: complete),
+      what: complete ? 'mark complete' : 'flag',
+    );
+  }
 
   /// Read, because it was opened, as Outlook does: [setRead] without a word
   /// said, whatever happens, since it is not something the person did.
@@ -318,6 +509,7 @@ class MessageActions {
       ...changed.map((m) => m.folderId),
       ...touched,
       kUnifiedInboxId,
+      kFlaggedId,
     }) {
       container.invalidate(messagesProvider(folderId));
     }
@@ -364,6 +556,7 @@ class MessageActions {
     String message, {
     List<MessageMove>? undo,
     int of = 0,
+    VoidCallback? alsoUndo,
   }) {
     final messenger = to.messenger;
     final offer = undo != null && canUndoAll(undo, of);
@@ -375,7 +568,10 @@ class MessageActions {
         action: offer
             ? SnackBarAction(
                 label: 'Undo',
-                onPressed: () => undoMoves(container!, messenger, undo, listId),
+                onPressed: () {
+                  alsoUndo?.call();
+                  undoMoves(container!, messenger, undo, listId);
+                },
               )
             : null,
       ));
@@ -402,6 +598,36 @@ class _Reporter {
   final ProviderContainer container;
 }
 
+/// [accountId]'s folder of [role], or null where it has none or its
+/// folders are not known yet.
+String? folderWithRole(
+  Map<String, List<MailFolder>> folders,
+  String accountId,
+  FolderRole role,
+) {
+  for (final f in folders[accountId] ?? const <MailFolder>[]) {
+    if (f.role == role) return f.id;
+  }
+  return null;
+}
+
+/// Where Archive puts [accountId]'s mail: an Archive folder that takes
+/// mail, as Microsoft's does, or else Gmail's All Mail, which a message
+/// reaches by losing the folder's label. Null for an account with neither,
+/// or whose folders are not known yet.
+String? archiveTargetFor(
+  Map<String, List<MailFolder>> folders,
+  String accountId,
+) {
+  final archives = [
+    for (final f in folders[accountId] ?? const <MailFolder>[])
+      if (f.role == FolderRole.archive) f,
+  ];
+  return (archives.where((f) => f.capabilities.canAcceptMessages).firstOrNull ??
+          archives.firstOrNull)
+      ?.id;
+}
+
 /// Put back what a move or a delete took away.
 ///
 /// Free of any widget on purpose: see [MessageActions._say]. The ids used
@@ -424,6 +650,7 @@ Future<void> undoMoves(
       for (final folderId in {
         listId,
         kUnifiedInboxId,
+        kFlaggedId,
         for (final m in moves) ...[m.fromFolderId, ...m.landedIn],
       }) {
         container.invalidate(messagesProvider(folderId));

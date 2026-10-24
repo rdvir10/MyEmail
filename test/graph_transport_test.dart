@@ -545,15 +545,16 @@ void main() {
           reason: 'naming only the sender is the same as not saying');
     });
 
-    test('a flag marked complete still reads as flagged', () async {
-      // Outlook shows a completed follow-up with the flag still on, so
-      // treating only "flagged" as flagged would lose it on sync.
+    test('a flag marked complete is done with, and no longer flagged',
+        () async {
+      // Follow Up's Mark complete, here or in Outlook: Outlook's Flagged
+      // list leaves it out, and so does this app's.
       server.message('f-inbox', id: 'm1', subject: 'Done', minutesAgo: 5,
           flagStatus: 'complete');
 
       final header = (await transport.fetchHeadersFromUid('Inbox', 1)).single;
 
-      expect(header.isFlagged, isTrue);
+      expect(header.isFlagged, isFalse);
     });
 
     test('what was last done to a message reads as replied or forwarded',
@@ -2831,6 +2832,80 @@ void main() {
       );
     });
   });
+
+  // Outlook's Follow Up and Flagged email (#29, #30).
+  group('follow-ups', () {
+    setUp(() {
+      server
+        ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+        ..folder(id: 'f-work', name: 'Work');
+    });
+
+    Future<int> numbered(String id) async =>
+        (await ids.uidsFor('acct-1', 'Inbox', [id]))[id]!;
+
+    test('a day goes as noon UTC, start and due both', () async {
+      server.message('f-inbox', id: 'm1', subject: 'Quote', minutesAgo: 5);
+      await transport.listFolders();
+
+      await transport.storeFollowUp('Inbox',
+          uids: [await numbered('m1')], due: DateTime(2026, 10, 30));
+
+      final flag = server.messages['m1']!['flag'] as Map;
+      expect(flag['flagStatus'], 'flagged');
+      expect(flag['dueDateTime'],
+          {'dateTime': '2026-10-30T12:00:00', 'timeZone': 'UTC'});
+      expect(flag['startDateTime'], flag['dueDateTime']);
+    });
+
+    test('no date is the flag taken off and put back, which clears a day',
+        () async {
+      server.message('f-inbox', id: 'm1', subject: 'Quote', minutesAgo: 5,
+          isFlagged: true, flagDue: '2026-10-30T12:00:00.0000000');
+      await transport.listFolders();
+
+      await transport.storeFollowUp('Inbox', uids: [await numbered('m1')]);
+
+      expect(server.patched, ['m1', 'm1']);
+      expect(server.messages['m1']!['flag'], {'flagStatus': 'flagged'});
+    });
+
+    test('complete is Outlook\'s check, with when', () async {
+      server.message('f-inbox', id: 'm1', subject: 'Quote', minutesAgo: 5,
+          isFlagged: true);
+      await transport.listFolders();
+
+      await transport.storeFollowUp('Inbox',
+          uids: [await numbered('m1')], complete: true);
+
+      final flag = server.messages['m1']!['flag'] as Map;
+      expect(flag['flagStatus'], 'complete');
+      expect((flag['completedDateTime'] as Map)['timeZone'], 'UTC');
+    });
+
+    test('everything flagged in the mailbox, by folder, with its day',
+        () async {
+      server
+        ..message('f-inbox', id: 'm1', subject: 'Quote', minutesAgo: 30,
+            isFlagged: true, flagDue: '2026-10-30T12:00:00.0000000')
+        ..message('f-work', id: 'm2', subject: 'Specs', minutesAgo: 20,
+            isFlagged: true)
+        ..message('f-inbox', id: 'm3', subject: 'Lunch', minutesAgo: 10)
+        ..message('f-work', id: 'm4', subject: 'Done', minutesAgo: 5,
+            flagStatus: 'complete');
+
+      final hits = await transport.flaggedHits();
+
+      expect({for (final h in hits) h.hit.header!.subject: h.path},
+          {'Quote': 'Inbox', 'Specs': 'Work'});
+      final quote =
+          hits.firstWhere((h) => h.hit.header!.subject == 'Quote');
+      expect(quote.due, DateTime(2026, 10, 30));
+      expect(hits.firstWhere((h) => h.path == 'Work').due, isNull);
+      expect(quote.hit.uid, await numbered('m1'),
+          reason: 'numbered in its own folder, as any row there is');
+    });
+  });
 }
 
 /// A sender that sends nothing.
@@ -2844,6 +2919,7 @@ class _SendsNothing extends SmtpSender {
 
   @override
   Future<void> send(em.MimeMessage message) async {}
+
 }
 
 /// A Graph mailbox in memory, answering the endpoints the transport uses.
@@ -3054,6 +3130,7 @@ class _FakeGraph {
     int? iconIndex,
     String? conversationId,
     int? sizeBytes,
+    String? flagDue,
   }) {
     messages[id] = {
       'id': id,
@@ -3075,6 +3152,8 @@ class _FakeGraph {
       'isRead': isRead,
       'flag': {
         'flagStatus': flagStatus ?? (isFlagged ? 'flagged' : 'notFlagged'),
+        if (flagDue != null)
+          'dueDateTime': {'dateTime': flagDue, 'timeZone': 'UTC'},
       },
       'hasAttachments': hasAttachments,
       'bodyPreview': preview,
@@ -3250,6 +3329,24 @@ class _FakeGraph {
         'value': [
           for (final f in folders.values)
             if (f['parentFolderId'] == parent) f,
+        ],
+      });
+    }
+
+    // Flagged mail anywhere in the mailbox, each with its folder.
+    if (request.method == 'GET' && path.endsWith('/me/messages')) {
+      final flaggedOnly =
+          (query[r'$filter'] ?? '').contains("flag/flagStatus eq 'flagged'");
+      final found = messages.values
+          .where((m) =>
+              !flaggedOnly || (m['flag'] as Map?)?['flagStatus'] == 'flagged')
+          .toList()
+        ..sort((a, b) => '${b['receivedDateTime']}'
+            .compareTo('${a['receivedDateTime']}'));
+      return json({
+        'value': [
+          for (final m in found)
+            {..._row(m, query), 'parentFolderId': m['_folder']},
         ],
       });
     }

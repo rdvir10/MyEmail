@@ -221,7 +221,9 @@ List<_FolderAction> _availableActions(
   // Not a folder: nothing below applies, and the one thing to do with it
   // is put it away.
   if (folder.role == FolderRole.unifiedInbox) {
-    return const [_FolderAction.hideAllInboxes];
+    return folder.id == kFlaggedId
+        ? const []
+        : const [_FolderAction.hideAllInboxes];
   }
   final c = folder.capabilities;
   return [

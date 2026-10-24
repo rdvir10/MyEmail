@@ -201,6 +201,28 @@ class _RefusingEngine implements MailEngine {
       _inner.canProposeNewTime(accountId);
 
   @override
+  Future<void> setFollowUp(
+    List<String> messageIds, {
+    DateTime? due,
+    bool complete = false,
+  }) =>
+      _inner.setFollowUp(messageIds, due: due, complete: complete);
+
+  @override
+  Future<List<MailMessage>> flaggedMessages(
+    String accountId, {
+    int limit = 100,
+  }) =>
+      _inner.flaggedMessages(accountId, limit: limit);
+
+  @override
+  Future<List<MailMessage>> cachedFlagged(
+    String accountId, {
+    int limit = 100,
+  }) =>
+      _inner.cachedFlagged(accountId, limit: limit);
+
+  @override
   Future<List<MailTip>> mailTips(String accountId, List<String> emails) =>
       _inner.mailTips(accountId, emails);
 

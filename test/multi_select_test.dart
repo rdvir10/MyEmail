@@ -220,6 +220,10 @@ void main() {
 
       await tester.drag(messageList(), const Offset(0, -600));
       await tester.pumpAndSettle();
+      // The bar's buttons scroll on a phone, Move, Archive and Delete
+      // showing first.
+      await tester.ensureVisible(find.byTooltip('Select what is on screen'));
+      await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Select what is on screen'));
       await tester.pumpAndSettle();
 

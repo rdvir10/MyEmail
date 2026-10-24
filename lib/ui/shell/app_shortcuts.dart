@@ -378,7 +378,8 @@ const shortcutHelp = <String, List<ShortcutHelp>>{
     ShortcutHelp('Space', 'Tick or untick'),
     ShortcutHelp('Shift+↑  Shift+↓', 'Tick a run of messages'),
     ShortcutHelp('Ctrl+A', 'Tick everything on screen'),
-    ShortcutHelp('Delete  or  Backspace', 'Delete, or delete what is ticked'),
+    ShortcutHelp('Delete', 'Delete, or delete what is ticked'),
+    ShortcutHelp('Backspace', 'Archive, or archive what is ticked'),
     ShortcutHelp('Esc', 'Untick everything'),
   ],
   'While writing': [

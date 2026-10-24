@@ -80,9 +80,15 @@ class MailMessage {
     this.inReplyTo,
     this.conversationId,
     this.importance = Importance.normal,
+    this.flagDue,
   });
 
   static String idFor(String folderId, int uid) => '$folderId#$uid';
+
+  /// The day a flag is due, Outlook's Follow Up, where it is known: what
+  /// Exchange says in the Flagged list, or what was set here. Null for no
+  /// date, and wherever it was not asked for.
+  final DateTime? flagDue;
 
   final String id;
   final String accountId;
@@ -186,6 +192,7 @@ class MailMessage {
     bool? isFlagged,
     bool? isAnswered,
     bool? isForwarded,
+    Object? flagDue = _keep,
   }) {
     return MailMessage(
       id: id,
@@ -212,6 +219,7 @@ class MailMessage {
       inReplyTo: inReplyTo,
       conversationId: conversationId,
       importance: importance,
+      flagDue: identical(flagDue, _keep) ? this.flagDue : flagDue as DateTime?,
     );
   }
 
@@ -255,7 +263,8 @@ class MailMessage {
       other.messageId == messageId &&
       other.inReplyTo == inReplyTo &&
       other.conversationId == conversationId &&
-      other.importance == importance;
+      other.importance == importance &&
+      other.flagDue == flagDue;
 
   /// The id and the flags only: enough to spread messages out, and equal
   /// messages still hash alike.
@@ -294,3 +303,6 @@ class MailBody {
   /// next opened, so the Accept and Decline card can come with it then.
   final bool calendarPending;
 }
+
+/// [MailMessage.copyWith]'s "leave it as it is", which a null cannot say.
+const _keep = Object();

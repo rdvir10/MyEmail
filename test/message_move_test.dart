@@ -133,6 +133,51 @@ void main() {
       expect(work.single.subject, 'To file');
     });
 
+    group('Gmail\'s All Mail', () {
+      setUp(() => server.folder('[Gmail]/All Mail', role: FolderRole.archive));
+
+      test('an archive is a move into it, and its Undo a copy back out',
+          () async {
+        // Out of All Mail a message only ever goes by a copy, which adds
+        // the label it goes to. A move takes it out of All Mail as well,
+        // which Gmail reads as a delete: the Undo of an Archive would have
+        // sent it to Trash.
+        server.folder('INBOX').deliver(subject: 'Done with');
+        final inbox = await engine.loadMessages('${account.id}:INBOX');
+        await engine.loadFolders(account.id);
+
+        final moves = await engine.moveMessages(
+            [inbox.single.id], '${account.id}:[Gmail]/All Mail');
+        expect(server.calls.last, startsWith('UID MOVE INBOX'));
+        expect(await cache.countMessages(account.id, 'INBOX'), 0);
+
+        server.calls.clear();
+        await engine.undoMoves(moves);
+
+        expect(server.calls.where((c) => c.startsWith('UID MOVE')), isEmpty);
+        expect(
+          server.calls,
+          contains(startsWith('UID COPY [Gmail]/All Mail')),
+        );
+        final back = await engine.loadMessages('${account.id}:INBOX');
+        expect(back.single.subject, 'Done with');
+        expect(server.folder('[Gmail]/All Mail').messages, isNotEmpty,
+            reason: 'still in All Mail, where every message is');
+      });
+
+      test('a message filed from it is copied, and stays in it', () async {
+        server.folder('[Gmail]/All Mail').deliver(subject: 'Old');
+        await engine.loadFolders(account.id);
+        final all = await engine.loadMessages('${account.id}:[Gmail]/All Mail');
+
+        await engine.moveMessages([all.single.id], '${account.id}:Work');
+
+        expect(server.calls, contains(startsWith('UID COPY [Gmail]/All Mail')));
+        expect(server.calls.where((c) => c.startsWith('UID MOVE')), isEmpty);
+        expect(await cache.countMessages(account.id, '[Gmail]/All Mail'), 1);
+      });
+    });
+
     test('a batch in one folder is one server call', () async {
       final inbox = server.folder('INBOX');
       for (var i = 0; i < 3; i++) {

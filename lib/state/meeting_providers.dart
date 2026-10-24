@@ -7,7 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/mail_engine.dart';
 import '../data/ui_state_store.dart';
 import '../domain/meeting.dart';
-import 'folder_tree.dart' show kUnifiedInboxId;
+import 'folder_tree.dart' show isSyntheticList;
 import 'providers.dart';
 
 /// The account of the folder on screen, or null in the unified Inbox, where
@@ -18,7 +18,7 @@ import 'providers.dart';
 /// way a new message from the same folder is.
 final accountOnScreenProvider = Provider<String?>((ref) {
   final folderId = ref.watch(effectiveSelectedFolderIdProvider);
-  if (folderId == null || folderId == kUnifiedInboxId) return null;
+  if (folderId == null || isSyntheticList(folderId)) return null;
   return ref.watch(folderIndexProvider)[folderId]?.accountId;
 });
 

@@ -107,6 +107,21 @@ abstract class MailNotifier {
   /// The message id a notification tap launched the app with, if any. Consumed
   /// once: asking twice returns null, so a rebuild does not reopen it.
   Future<String?> takeLaunchPayload();
+
+  /// A reminder at [at], Follow Up's Add Reminder: a notification Android
+  /// shows then whether the app is running or not, whose tap opens
+  /// [payload], a message id, as a new-mail notification's does. False
+  /// where it could not be set.
+  Future<bool> scheduleReminder({
+    required int id,
+    required DateTime at,
+    required String title,
+    required String body,
+    required String payload,
+  });
+
+  /// The reminder [id] taken back, shown or not.
+  Future<void> cancelReminder(int id);
 }
 
 /// Records instead of posting. Used by the tests and by the browser preview,
@@ -173,6 +188,25 @@ class FakeMailNotifier implements MailNotifier {
     cancelAllCalls++;
     batches.clear();
   }
+
+  /// The reminders set and not taken back, by id, for tests to look at.
+  final Map<int, ({DateTime at, String title, String body, String payload})>
+      reminders = {};
+
+  @override
+  Future<bool> scheduleReminder({
+    required int id,
+    required DateTime at,
+    required String title,
+    required String body,
+    required String payload,
+  }) async {
+    reminders[id] = (at: at, title: title, body: body, payload: payload);
+    return true;
+  }
+
+  @override
+  Future<void> cancelReminder(int id) async => reminders.remove(id);
 
   /// What a tapped notification carried. Set by a test; read once.
   String? launchPayload;

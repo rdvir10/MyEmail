@@ -397,6 +397,17 @@ abstract class MailEngine {
   /// marks them.
   Future<void> setMessagesFlagged(List<String> messageIds, bool isFlagged);
 
+  /// Outlook's Follow Up on [messageIds]: flagged, due on [due] (no date
+  /// where it is null), or with [complete] marked complete. A Microsoft
+  /// account keeps the day and the check on the server, where Outlook
+  /// shows them; anywhere else this is the flag alone, the day being kept
+  /// on this device. Fails as [setMessagesFlagged] does.
+  Future<void> setFollowUp(
+    List<String> messageIds, {
+    DateTime? due,
+    bool complete = false,
+  });
+
   /// Move messages into [toFolderId], from any account. Within one account
   /// the server moves them. Into another, which no server does, each is
   /// copied there as it is and then deleted here, into Trash: see
@@ -445,6 +456,15 @@ abstract class MailEngine {
   /// Put [ids], from [recoverableMessages], back in [accountId]'s Inbox.
   /// Answers how many went back.
   Future<int> recoverMessages(String accountId, List<String> ids);
+
+  /// Everything flagged in [accountId], whatever folder it is in, newest
+  /// first, as the server has it: Outlook's Flagged email. A Microsoft
+  /// account's carry the day each is due. Junk and Deleted Items are left
+  /// out, as Outlook leaves them out.
+  Future<List<MailMessage>> flaggedMessages(String accountId, {int limit = 100});
+
+  /// The same from what is on this device, with no network.
+  Future<List<MailMessage>> cachedFlagged(String accountId, {int limit = 100});
 
   /// Search the server for [query] within [scope], newest first, looking
   /// in [field]: subject, sender and body together unless one is named.

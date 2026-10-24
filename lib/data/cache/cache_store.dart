@@ -276,6 +276,13 @@ abstract class CacheStore {
     int limit = 50,
   });
 
+  /// The newest [limit] flagged messages in all of [accountId]'s folders,
+  /// each with the folder it is in, as [readMessages] reads them.
+  Future<List<({String path, CachedMessage message})>> readFlagged(
+    String accountId, {
+    int limit = 100,
+  });
+
   /// Every cached row of the folder, as little of each as the sync needs,
   /// in the order [readMessages] reads them: the sync keeps the newest up
   /// to date, and they have to be the ones a list shows first.
@@ -464,6 +471,22 @@ class MemoryCacheStore implements CacheStore {
       for (final m in all.sublist(offset, (offset + limit).clamp(0, all.length)))
         m.withoutBody(),
     ];
+  }
+
+  @override
+  Future<List<({String path, CachedMessage message})>> readFlagged(
+    String accountId, {
+    int limit = 100,
+  }) async {
+    final own = '$accountId$_separator';
+    final found = [
+      for (final MapEntry(:key, :value) in _messages.entries)
+        if (key.startsWith(own))
+          for (final m in value.values)
+            if (m.isFlagged)
+              (path: key.substring(own.length), message: m.withoutBody()),
+    ]..sort((a, b) => _newestArrivalFirst(a.message, b.message));
+    return found.take(limit).toList();
   }
 
   @override

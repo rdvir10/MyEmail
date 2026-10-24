@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/mail_engine.dart';
 import '../domain/mail_message.dart';
-import 'folder_tree.dart' show kUnifiedInboxId;
+import 'folder_tree.dart' show kFlaggedId, kUnifiedInboxId;
 import 'message_keeping.dart' show notRetried;
 import 'message_providers.dart' show inboxIdsOf;
 import 'providers.dart';
@@ -71,6 +71,8 @@ final filterHitsProvider = FutureProvider.autoDispose
     final (listId, filter) = key;
     if (filter == MessageFilter.all) return const [];
     final engine = ref.watch(mailEngineProvider);
+    // Flagged has nothing more to find on the server than it asked for.
+    if (listId == kFlaggedId) return const [];
     final ids = listId == kUnifiedInboxId
         ? inboxIdsOf(await ref.watch(foldersProvider.future))
         : [listId];

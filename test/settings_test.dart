@@ -442,6 +442,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(find.text('Compact'), 200,
           scrollable: find.byType(Scrollable).first);
+      await tester.ensureVisible(find.text('Compact'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Compact'));
       await tester.pumpAndSettle();
 

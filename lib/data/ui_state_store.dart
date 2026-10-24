@@ -66,6 +66,14 @@ abstract final class UiStateKeys {
   /// The days of the week worked, as `DateTime.weekday` numbers: for the
   /// free times put in a message and Next free time.
   static const workWeek = 'meetings.work-week.v1';
+
+  /// Senders blocked and never blocked; see `SenderBlocks`. Read by the
+  /// engine as mail arrives, in the background worker too.
+  static const senderBlocks = 'junk.senders.v1';
+
+  /// Follow-ups kept on this device: due days where the account keeps none,
+  /// and reminders. Not in the backup: a reminder is this phone's.
+  static const followUps = 'followups.v1';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.

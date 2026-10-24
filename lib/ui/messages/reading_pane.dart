@@ -31,7 +31,10 @@ import '../../state/attachment_providers.dart';
 import 'full_screen_message.dart';
 import 'html_body_view.dart';
 import 'load_failure.dart';
+import '../../state/sender_blocks.dart';
 import 'message_actions.dart';
+import 'follow_up_sheet.dart';
+import 'junk_actions.dart';
 import 'message_source.dart';
 import 'print_message.dart';
 import 'read_aloud_bar.dart';
@@ -214,6 +217,37 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     await done;
   }
 
+  /// Archive, from the header, which like a delete takes a screen of its
+  /// own with it at once.
+  Future<void> _archive() async {
+    final listId = _listId;
+    if (listId == null) return;
+    final done = MessageActions(ref, listId).archive(context, [widget.message]);
+    if (widget.onPopOut == null) Navigator.of(context).maybePop();
+    await done;
+  }
+
+  /// The Block menu's choices, from the header. Block sender and Not junk
+  /// move the message, and like a delete take a screen of its own with it.
+  Future<void> _junk(String choice, MailMessage message) async {
+    final listId = _listId;
+    if (listId == null) return;
+    switch (choice) {
+      case 'block' || 'notJunk':
+        final done = choice == 'block'
+            ? blockSender(context, ref, listId, message)
+            : notJunk(context, ref, listId, [message]);
+        if (widget.onPopOut == null) Navigator.of(context).maybePop();
+        await done;
+      case 'unblock':
+        unblockSender(context, ref, message);
+      case 'never':
+        neverBlock(context, ref, message);
+      case 'neverDomain':
+        neverBlock(context, ref, message, domain: true);
+    }
+  }
+
   /// Move, from the header: the same folder picker the list and the ribbon
   /// use. Like a delete, a move takes a screen of its own with it, as soon
   /// as the folder is chosen; a picker closed without a choice leaves
@@ -279,6 +313,10 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
             .firstOrNull;
     final message = live ?? widget.message;
     final body = ref.watch(messageBodyProvider(message.id));
+    final archive = archiveTargetFor(
+      ref.watch(foldersProvider).value ?? const {},
+      message.accountId,
+    );
     final reading = ref.watch(
       readAloudProvider.select((s) => s?.messageId == message.id),
     );
@@ -297,12 +335,24 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
+              padding: MediaQuery.sizeOf(context).width < 600
+                  ? const EdgeInsets.fromLTRB(12, 12, 4, 12)
+                  : const EdgeInsets.fromLTRB(20, 12, 12, 12),
               child: _Header(
                 message: message,
                 onPopOut: widget.onPopOut,
                 onDelete: _delete,
                 onMove: _move,
+                // Where the account has an archive and this is not in it.
+                onArchive: archive != null && archive != message.folderId
+                    ? _archive
+                    : null,
+                inJunk: ref.watch(folderIndexProvider)[message.folderId]
+                        ?.role ==
+                    FolderRole.junk,
+                senderBlocked:
+                    ref.watch(senderBlocksProvider).blocks(message.from.email),
+                onJunk: (choice) => _junk(choice, message),
                 onOpenWindow:
                     (ref.watch(windowsAvailableProvider).value ?? false) &&
                         widget.onPopOut != null
@@ -315,6 +365,12 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                 onToggleFlag: () => _act(
                   (a) => a.setFlagged(context, [message], !message.isFlagged),
                 ),
+                onFollowUp: () {
+                  final listId = _listId;
+                  if (listId == null) return;
+                  showFollowUpSheet(context, ref,
+                      listId: listId, messages: [message]);
+                },
                 onToggleRead: () => _act(
                   (a) => a.setRead(context, [message], !message.isRead),
                 ),
@@ -485,10 +541,15 @@ class _Header extends StatelessWidget {
     required this.message,
     this.onSaveSource,
     required this.onToggleFlag,
+    this.onFollowUp,
     required this.onToggleRead,
     required this.onCompose,
     required this.onDelete,
     required this.onMove,
+    this.onArchive,
+    this.inJunk = false,
+    this.senderBlocked = false,
+    this.onJunk,
     this.pinned = false,
     this.onTogglePin,
     this.onPopOut,
@@ -533,6 +594,9 @@ class _Header extends StatelessWidget {
 
   final MailMessage message;
   final VoidCallback onToggleFlag;
+
+  /// Outlook's Follow Up: a day, a reminder, complete.
+  final VoidCallback? onFollowUp;
   final VoidCallback onToggleRead;
   final VoidCallback onDelete;
 
@@ -543,6 +607,19 @@ class _Header extends StatelessWidget {
 
   /// Into another folder, chosen from the folder picker.
   final VoidCallback onMove;
+
+  /// Into the account's archive; null where it has none, or the message is
+  /// in it already.
+  final VoidCallback? onArchive;
+
+  /// Whether the message is in Junk, which offers Not junk, and whether
+  /// its sender is blocked, which offers Unblock in place of Block.
+  final bool inJunk;
+  final bool senderBlocked;
+
+  /// The Block menu: `block`, `unblock`, `never`, `neverDomain` and
+  /// `notJunk`.
+  final ValueChanged<String>? onJunk;
 
   /// Narrow: Delete takes the flag's place in the row and the flag moves
   /// into the menu.
@@ -579,15 +656,24 @@ class _Header extends StatelessWidget {
         // slide rather than being clipped at the delete.
         LayoutBuilder(
           builder: (context, box) {
-            // The meeting button only where the whole row fits with it: on a
-            // tablet standing up, with the pane at the bottom, it pushed More,
-            // and Print and Save source with it, off the end. Where it does not
-            // fit it is in More instead.
-            final meetingOnBar =
-                !compact &&
-                box.maxWidth >=
-                    kMinInteractiveDimension *
-                        ((onPopOut != null ? 1 : 0) + 10);
+            // The row as wide as the pane takes, More always on it: the
+            // buttons that are always there (the ways of answering, Read,
+            // Move, Delete, More), then as many of the rest as fit, in
+            // this order, and the others in More. A button past the edge
+            // took More with it: on a tablet standing up the meeting
+            // button did, and on a phone Archive.
+            final fits = (box.maxWidth / kMinInteractiveDimension).floor();
+            var count = (onPopOut != null ? 1 : 0) + 7;
+            bool fit(bool wanted) {
+              if (!wanted || count >= fits) return false;
+              count++;
+              return true;
+            }
+            final notJunkOnBar = fit(inJunk && onJunk != null);
+            final archiveOnBar = fit(onArchive != null);
+            final flagOnBar = fit(!compact);
+            final fullScreenOnBar = fit(true);
+            final meetingOnBar = fit(!compact);
             return SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
@@ -602,11 +688,12 @@ class _Header extends StatelessWidget {
                       icon: const Icon(Icons.open_in_full),
                       onPressed: onPopOut,
                     ),
-                  IconButton(
-                    tooltip: 'Full screen (F11)',
-                    icon: const Icon(Icons.fullscreen),
-                    onPressed: onFullScreen,
-                  ),
+                  if (fullScreenOnBar)
+                    IconButton(
+                      tooltip: 'Full screen (F11)',
+                      icon: const Icon(Icons.fullscreen),
+                      onPressed: onFullScreen,
+                    ),
                   IconButton(
                     tooltip: 'Reply',
                     icon: const Icon(Icons.reply),
@@ -632,7 +719,7 @@ class _Header extends StatelessWidget {
                       icon: const Icon(Icons.event_outlined),
                       onPressed: onCreateEvent,
                     ),
-                  if (!compact)
+                  if (flagOnBar)
                     IconButton(
                       tooltip: message.isFlagged ? 'Remove flag' : 'Flag',
                       icon: Icon(
@@ -657,6 +744,19 @@ class _Header extends StatelessWidget {
                     icon: const Icon(Icons.drive_file_move_outline),
                     onPressed: onMove,
                   ),
+                  // In Junk, the way out of it first, as Outlook has it.
+                  if (notJunkOnBar)
+                    IconButton(
+                      tooltip: 'Not junk',
+                      icon: const Icon(Icons.report_off_outlined),
+                      onPressed: () => onJunk!('notJunk'),
+                    ),
+                  if (archiveOnBar)
+                    IconButton(
+                      tooltip: 'Archive',
+                      icon: const Icon(Icons.archive_outlined),
+                      onPressed: onArchive,
+                    ),
                   IconButton(
                     tooltip: 'Delete',
                     icon: const Icon(Icons.delete_outline),
@@ -670,15 +770,35 @@ class _Header extends StatelessWidget {
                     icon: const Icon(Icons.more_vert),
                     onSelected: (value) => switch (value) {
                       'flag' => onToggleFlag(),
+                      'followUp' => onFollowUp?.call(),
+                      'fullScreen' => onFullScreen?.call(),
+                      'archive' => onArchive?.call(),
                       'pin' => onTogglePin?.call(),
                       'window' => onOpenWindow?.call(),
                       'print' => onPrint?.call(),
                       'read' => onReadAloud?.call(),
                       'resend' => onResend?.call(),
                       'event' => onCreateEvent?.call(),
+                      'block' ||
+                      'unblock' ||
+                      'never' ||
+                      'neverDomain' ||
+                      'notJunk' =>
+                        onJunk?.call(value),
                       _ => onSaveSource?.call(),
                     },
                     itemBuilder: (context) => [
+                      if (!fullScreenOnBar)
+                        PopupMenuItem(
+                          value: 'fullScreen',
+                          enabled: onFullScreen != null,
+                          child: const Text('Full screen'),
+                        ),
+                      if (onArchive != null && !archiveOnBar)
+                        const PopupMenuItem(
+                          value: 'archive',
+                          child: Text('Archive'),
+                        ),
                       if (onOpenWindow != null)
                         const PopupMenuItem(
                           value: 'window',
@@ -705,12 +825,17 @@ class _Header extends StatelessWidget {
                           enabled: onCreateEvent != null,
                           child: const Text('Meeting from this message…'),
                         ),
-                      if (compact)
+                      if (!flagOnBar)
                         PopupMenuItem(
                           value: 'flag',
                           child: Text(
                             message.isFlagged ? 'Remove flag' : 'Flag',
                           ),
+                        ),
+                      if (onFollowUp != null)
+                        const PopupMenuItem(
+                          value: 'followUp',
+                          child: Text('Follow up…'),
                         ),
                       if (onTogglePin != null)
                         PopupMenuItem(
@@ -722,6 +847,33 @@ class _Header extends StatelessWidget {
                         enabled: onSaveSource != null,
                         child: const Text('Save source…'),
                       ),
+                      // Outlook's Block menu.
+                      if (onJunk != null) ...[
+                        const PopupMenuDivider(),
+                        if (inJunk)
+                          const PopupMenuItem(
+                            value: 'notJunk',
+                            child: Text('Not junk'),
+                          ),
+                        if (senderBlocked)
+                          const PopupMenuItem(
+                            value: 'unblock',
+                            child: Text('Unblock sender'),
+                          )
+                        else if (!inJunk)
+                          const PopupMenuItem(
+                            value: 'block',
+                            child: Text('Block sender'),
+                          ),
+                        const PopupMenuItem(
+                          value: 'never',
+                          child: Text('Never block sender'),
+                        ),
+                        const PopupMenuItem(
+                          value: 'neverDomain',
+                          child: Text("Never block sender's domain"),
+                        ),
+                      ],
                     ],
                   ),
                 ],

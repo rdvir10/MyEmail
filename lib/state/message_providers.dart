@@ -2,8 +2,9 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../data/mail_engine.dart' show PartialFlagChange;
+import '../data/mail_engine.dart' show MailEngine, PartialFlagChange;
 import '../domain/calendar_invite.dart';
+import '../domain/follow_up.dart' show followUpKey;
 import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
@@ -11,6 +12,7 @@ import '../domain/message_filter.dart';
 import '../domain/message_move.dart';
 import 'conversation_extras.dart';
 import 'display_providers.dart';
+import 'follow_ups.dart';
 import '../domain/message_sort.dart';
 import 'folder_tree.dart';
 import 'list_filter.dart';
@@ -109,7 +111,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     // mail that is already on this device is seconds of blank screen for
     // nothing.
     final known = _merged(await Future.wait([
-      for (final id in ids) engine.cachedMessages(id, limit: limit),
+      for (final id in ids) _stored(engine, id, limit),
     ]));
     if (known.isEmpty) {
       // A folder opened for the first time, or an empty one: there is
@@ -221,7 +223,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     try {
       stored = [
         for (final m in _merged(await Future.wait([
-          for (final id in ids) engine.cachedMessages(id, limit: limit),
+          for (final id in ids) _stored(engine, id, limit),
         ])))
           // Not what is on its way out, as with the server's answer.
           if (!_removing.contains(m.id)) m,
@@ -254,9 +256,39 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
 
   /// The server folders behind this list as they are now, read rather
   /// than watched: outside a build there is nothing to rebuild.
-  Future<List<String>> _idsNow() async => folderId == kUnifiedInboxId
-      ? inboxIdsOf(await ref.read(foldersProvider.future))
-      : [folderId];
+  Future<List<String>> _idsNow() async => switch (folderId) {
+        kUnifiedInboxId => inboxIdsOf(await ref.read(foldersProvider.future)),
+        kFlaggedId => _flaggedIds(await ref.read(foldersProvider.future)),
+        _ => [folderId],
+      };
+
+  /// What the Flagged list is made of: each account's flagged mail, asked
+  /// of the engine as a whole rather than folder by folder.
+  static List<String> _flaggedIds(Map<String, List<MailFolder>> folders) => [
+        for (final accountId in folders.keys) '$_flagged$accountId',
+      ];
+
+  static const _flagged = 'flagged:';
+
+  /// One of the ids behind the list, from the server.
+  static Future<List<MailMessage>> _load(
+    MailEngine engine,
+    String id,
+    int limit,
+  ) =>
+      id.startsWith(_flagged)
+          ? engine.flaggedMessages(id.substring(_flagged.length), limit: limit)
+          : engine.loadMessages(id, limit: limit);
+
+  /// The same, from what is on this device.
+  static Future<List<MailMessage>> _stored(
+    MailEngine engine,
+    String id,
+    int limit,
+  ) =>
+      id.startsWith(_flagged)
+          ? engine.cachedFlagged(id.substring(_flagged.length), limit: limit)
+          : engine.cachedMessages(id, limit: limit);
 
   /// Each folder's messages from the server, down to its limit, or what
   /// is stored for a folder whose account did not answer. The second half
@@ -278,13 +310,13 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       for (final MapEntry(key: id, value: limit) in limits.entries)
         () async {
           try {
-            return await engine.loadMessages(id, limit: limit);
+            return await _load(engine, id, limit);
           } catch (e, st) {
             failed++;
             error ??= e;
             trace ??= st;
             try {
-              return await engine.cachedMessages(id, limit: limit);
+              return await _stored(engine, id, limit);
             } catch (_) {
               return const <MailMessage>[];
             }
@@ -321,6 +353,11 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
   /// it — and a list that rebuilt on that would resync every account and
   /// redraw itself on each arrow key press, which is what it used to do.
   Future<List<String>> _folderIds() async {
+    if (folderId == kFlaggedId) {
+      final joined = await ref.watch(foldersProvider
+          .selectAsync((folders) => _flaggedIds(folders).join('\n')));
+      return joined.isEmpty ? const [] : joined.split('\n');
+    }
     if (folderId != kUnifiedInboxId) return [folderId];
     final joined = await ref.watch(
       foldersProvider.selectAsync((folders) => inboxIdsOf(folders).join('\n')),
@@ -390,6 +427,63 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
 
   Future<void> setMessagesFlagged(List<String> messageIds, bool isFlagged) =>
       _setFlags(messageIds, isFlagged: isFlagged);
+
+  /// Follow Up on this list's [messageIds], on screen at once and then on
+  /// the server: see [MailEngine.setFollowUp]. Every one asked is sent, a
+  /// new day on one flagged already included.
+  Future<void> setFollowUp(
+    List<String> messageIds, {
+    DateTime? due,
+    bool complete = false,
+  }) async {
+    final current = state.value;
+    if (current == null) return;
+    final asked = messageIds.toSet();
+    final before = {
+      for (final m in current)
+        if (asked.contains(m.id)) m.id: m,
+    };
+    if (before.isEmpty) return;
+    _changes++;
+    state = AsyncData([
+      for (final m in current)
+        if (before.containsKey(m.id))
+          m.copyWith(isFlagged: !complete, flagDue: complete ? null : due)
+        else
+          m,
+    ]);
+    final ids = [...before.keys];
+    try {
+      await ref
+          .read(mailEngineProvider)
+          .setFollowUp(ids, due: due, complete: complete);
+    } on PartialFlagChange catch (part) {
+      final failed = part.failed.toSet();
+      _putFollowUpsBack([for (final id in failed) ?before[id]]);
+      _afterFlags([
+        for (final m in before.values)
+          if (!failed.contains(m.id)) m,
+      ]);
+      rethrow;
+    } catch (e) {
+      _putFollowUpsBack(before.values);
+      rethrow;
+    }
+    _afterFlags(before.values);
+  }
+
+  void _putFollowUpsBack(Iterable<MailMessage> rows) {
+    final was = {for (final m in rows) m.id: m};
+    final now = state.value;
+    if (now == null || was.isEmpty) return;
+    state = AsyncData([
+      for (final m in now)
+        if (was[m.id] case final b?)
+          m.copyWith(isFlagged: b.isFlagged, flagDue: b.flagDue)
+        else
+          m,
+    ]);
+  }
 
   /// Move messages out of this list. The rows go at once and come back if
   /// the engine refuses, so a failed move never silently loses a message
@@ -602,13 +696,16 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
         );
       }
     }
-    // Keep the other view of these messages honest.
-    if (folderId == kUnifiedInboxId) {
+    // Keep the other views of these messages honest.
+    if (isSyntheticList(folderId)) {
       for (final id in {for (final m in changed) m.folderId}) {
         ref.invalidate(messagesProvider(id));
       }
+      ref.invalidate(messagesProvider(
+          folderId == kFlaggedId ? kUnifiedInboxId : kFlaggedId));
     } else {
       ref.invalidate(messagesProvider(kUnifiedInboxId));
+      ref.invalidate(messagesProvider(kFlaggedId));
     }
   }
 }
@@ -663,8 +760,39 @@ final sortedMessagesProvider =
   // arrival order in one folder, so a message undone, moved in or delivered
   // late sat at the top weeks old, under a day bar out of sequence, while
   // the unified Inbox and search had it where its date put it.
+  // A day set on this device, for the accounts that keep none, where the
+  // row has none from the server.
+  final followUps = ref.watch(followUpsProvider);
+  final dated = followUps.isEmpty
+      ? shown
+      : [
+          for (final m in shown)
+            if (m.isFlagged && m.flagDue == null)
+              switch (followUps[followUpKey(m)]?.due) {
+                final due? => m.copyWith(flagDue: due),
+                null => m,
+              }
+            else
+              m,
+        ];
+  // Flagged: what is still flagged, soonest due first and those with no
+  // day after them, newest first among equals, as Outlook's To-Do list.
+  if (folderId == kFlaggedId) {
+    return [
+      for (final m in dated)
+        if (m.isFlagged) m,
+    ]..sort((a, b) {
+        final da = a.flagDue, db = b.flagDue;
+        if (da != db) {
+          if (da == null) return 1;
+          if (db == null) return -1;
+          return da.compareTo(db);
+        }
+        return newestFirst(a, b);
+      });
+  }
   return sortMessages(
-    shown,
+    dated,
     ref.watch(displayProvider).sort,
     accountRank: ref.watch(accountRankProvider),
     pinned: ref.watch(pinnedMessagesProvider),

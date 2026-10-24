@@ -712,6 +712,43 @@ class GraphTransport implements ImapTransport {
     return _headers(path, messages);
   }
 
+  /// Every flagged message in the mailbox as search hits, by the folder
+  /// each is in, with the day its flag is due: see
+  /// [GraphMailApi.flaggedEverywhere]. Not part of [ImapTransport]: over
+  /// IMAP each folder is asked on its own.
+  Future<List<({String path, SearchHit hit, DateTime? due})>> flaggedHits({
+    int limit = 100,
+  }) async {
+    final found = await api.flaggedEverywhere(top: limit);
+    if (found.isEmpty) return const [];
+    if (_folderIds.isEmpty) await listFolders();
+    final paths = {
+      for (final MapEntry(:key, :value) in _folderIds.entries) value: key,
+    };
+    final byPath = <String, List<GraphMessage>>{};
+    for (final m in found) {
+      final path = paths[m.parentFolderId];
+      if (path != null) (byPath[path] ??= []).add(m);
+    }
+    final hits = <({String path, SearchHit hit, DateTime? due})>[];
+    for (final MapEntry(key: path, value: messages) in byPath.entries) {
+      // Numbered oldest first, as a search numbers them.
+      final oldestFirst = messages.reversed.toList();
+      final headers = await _headers(path, oldestFirst);
+      final due = {for (final m in oldestFirst) m.id: m.flagDue};
+      final ids = await idMap.remoteIdsFor(
+          accountId, path, [for (final h in headers) h.uid]);
+      for (final h in headers.reversed) {
+        hits.add((
+          path: path,
+          hit: (uid: h.uid, header: h),
+          due: due[ids[h.uid]],
+        ));
+      }
+    }
+    return hits;
+  }
+
   // --- recover deleted items -------------------------------------------------
 
   /// Mail emptied out of Deleted Items: see [GraphMailApi.recoverable].
@@ -758,6 +795,46 @@ class GraphTransport implements ImapTransport {
     if (failures.isEmpty) return;
     // Which went is said, so a selection marked part way keeps on screen
     // the part that was.
+    final stored = [
+      for (final uid in uids)
+        if (!failures.containsKey(remoteIds[uid])) uid,
+    ];
+    if (stored.isEmpty) throw failures.values.first;
+    throw FlaggedInPart(stored: stored, cause: failures.values.first);
+  }
+
+  /// Outlook's Follow Up on [uids]: see [MailEngine.setFollowUp]. A flag
+  /// with no date is taken off and put back, which is what clears a day set
+  /// before: Graph is not known to take a null in its place. Fails as
+  /// [storeFlag] does.
+  Future<void> storeFollowUp(
+    String path, {
+    required List<int> uids,
+    DateTime? due,
+    bool complete = false,
+  }) async {
+    final remoteIds = await idMap.remoteIdsFor(accountId, path, uids);
+    final ids = [for (final uid in uids) ?remoteIds[uid]];
+    final noDate = due == null && !complete;
+    final failures = noDate
+        ? await _applyFlag(ids, MessageFlag.flagged, false)
+        : <String, Exception>{};
+    final answers = await api.batch([
+      for (final id in ids)
+        if (!failures.containsKey(id))
+          noDate
+              ? GraphRequest.flagged(id, true)
+              : GraphRequest.followUp(id, due: due, complete: complete),
+    ]);
+    final asked = [
+      for (final id in ids)
+        if (!failures.containsKey(id)) id,
+    ];
+    for (final (i, id) in asked.indexed) {
+      final failure = answers[i].failure;
+      if (failure != null) failures[id] = failure;
+    }
+    if (failures.isEmpty) return;
     final stored = [
       for (final uid in uids)
         if (!failures.containsKey(remoteIds[uid])) uid,
@@ -950,6 +1027,16 @@ class GraphTransport implements ImapTransport {
   /// One last verb per message, so a forward replaces the reply before it.
   @override
   bool get keepsBothMarks => false;
+
+  /// Not asked of Microsoft: only Gmail's All Mail needs a copy in place of
+  /// a move, and Exchange has no folder like it.
+  @override
+  Future<List<int>?> copyMessages(
+    String fromPath,
+    List<int> uids,
+    String toPath,
+  ) =>
+      throw UnsupportedError('Copying is only needed for Gmail.');
 
   @override
   Future<List<int>?> moveMessages(

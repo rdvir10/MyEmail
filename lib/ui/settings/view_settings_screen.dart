@@ -15,8 +15,10 @@ import '../../state/providers.dart' show accountsProvider;
 import '../accounts/google_sign_in_screen.dart';
 import '../accounts/microsoft_sign_in_screen.dart';
 import 'row_formats_screen.dart';
+import 'blocked_senders_screen.dart';
 import 'trusted_senders_screen.dart';
 import '../../state/row_formats.dart';
+import '../../state/sender_blocks.dart';
 import '../../state/trusted_senders.dart';
 import '../../state/window_providers.dart';
 
@@ -324,6 +326,28 @@ class ViewSettingsScreen extends ConsumerWidget {
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute<void>(
                     builder: (_) => const TrustedSendersScreen(),
+                  ),
+                ),
+              );
+            },
+          ),
+          Consumer(
+            builder: (context, ref, _) {
+              final blocks = ref.watch(senderBlocksProvider);
+              final n = blocks.blocked.length;
+              return ListTile(
+                leading: const Icon(Icons.block),
+                title: const Text('Blocked senders'),
+                subtitle: Text(
+                  n == 0
+                      ? 'Nobody\'s mail goes to Junk on arrival'
+                      : '$n ${n == 1 ? 'sender\'s' : 'senders\''} new mail '
+                          'goes to Junk',
+                ),
+                trailing: const Icon(Icons.chevron_right, size: 20),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const BlockedSendersScreen(),
                   ),
                 ),
               );

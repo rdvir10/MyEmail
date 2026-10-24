@@ -212,7 +212,7 @@ bool isDraftsFolder(WidgetRef ref, String? folderId) {
 /// where there is no single answer.
 String? _accountForCurrentFolder(WidgetRef ref) {
   final folderId = ref.read(effectiveSelectedFolderIdProvider);
-  if (folderId == null || folderId == kUnifiedInboxId) return null;
+  if (folderId == null || isSyntheticList(folderId)) return null;
   return ref.read(folderIndexProvider)[folderId]?.accountId;
 }
 

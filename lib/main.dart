@@ -24,6 +24,7 @@ import 'data/sync/sync_state_store.dart';
 import 'data/updates/apk_installer.dart';
 import 'data/updates/update_service.dart';
 import 'data/ui_state_store.dart';
+import 'domain/sender_blocks.dart';
 import 'data/widget/home_screen_surface.dart';
 import 'data/contacts/device_contacts.dart';
 import 'data/files/attachment_files.dart';
@@ -107,6 +108,10 @@ Future<void> main() async {
           folderLists: PrefsFolderListStore(prefs),
           // Mail read, filed or deleted here takes its notification with it.
           onMessagesHandled: (handled) => unawaited(notifier.withdraw(handled)),
+          // The store the settings write it to, read as each Inbox syncs.
+          senderBlocks: () => SenderBlocks.fromJsonString(
+            prefs.getString(UiStateKeys.senderBlocks),
+          ),
         );
 
   final syncState = PrefsSyncStateStore();

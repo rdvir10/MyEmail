@@ -465,7 +465,9 @@ class _FolderTileState extends State<FolderTile> {
 /// and the Move to sheet, so one folder looks the same in both. [open] is a
 /// folder whose branch is showing.
 IconData folderIconFor(MailFolder folder, {bool open = false}) =>
-    switch (folder.role) {
+    folder.id == kFlaggedId
+        ? Icons.flag_outlined
+        : switch (folder.role) {
       FolderRole.inbox => FolderIcons.inbox,
       FolderRole.drafts => FolderIcons.drafts,
       FolderRole.sent => FolderIcons.sent,

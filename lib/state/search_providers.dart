@@ -105,7 +105,7 @@ final searchScopeChoiceProvider =
 final searchScopeProvider = Provider<SearchScope>((ref) {
   final choice = ref.watch(searchScopeChoiceProvider);
   final folderId = ref.watch(effectiveSelectedFolderIdProvider);
-  if (folderId == null || folderId == kUnifiedInboxId) {
+  if (folderId == null || isSyntheticList(folderId)) {
     return const SearchScope.everywhere();
   }
   return switch (choice) {

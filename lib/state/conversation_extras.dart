@@ -6,7 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../domain/folder_role.dart';
 import '../domain/mail_message.dart';
 import 'display_providers.dart';
-import 'folder_tree.dart' show kUnifiedInboxId;
+import 'folder_tree.dart' show kFlaggedId, kUnifiedInboxId;
 import 'message_providers.dart' show inboxIdsOf;
 import 'providers.dart';
 
@@ -37,11 +37,13 @@ final conversationExtrasProvider =
     ref.watch(listRefreshProvider);
     final engine = ref.watch(mailEngineProvider);
     final folders = await ref.watch(foldersProvider.future);
-    final accountIds = listId == kUnifiedInboxId
-        ? {
-            for (final id in inboxIdsOf(folders)) ?index[id]?.accountId,
-          }
-        : {?index[listId]?.accountId};
+    final accountIds = switch (listId) {
+      kUnifiedInboxId => {
+          for (final id in inboxIdsOf(folders)) ?index[id]?.accountId,
+        },
+      kFlaggedId => folders.keys.toSet(),
+      _ => {?index[listId]?.accountId},
+    };
     final found = <MailMessage>[];
     for (final accountId in accountIds) {
       final sent = (folders[accountId] ?? const [])

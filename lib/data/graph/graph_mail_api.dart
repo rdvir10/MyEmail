@@ -921,6 +921,23 @@ class GraphMailApi {
       ..sort((a, b) => b.received.compareTo(a.received));
   }
 
+  /// Every flagged message in the mailbox, whatever folder it is in, the
+  /// newest [top]: Outlook's Flagged email. Each with its folder and the
+  /// day its flag is due.
+  Future<List<GraphMessage>> flaggedEverywhere({int top = 100}) async {
+    final json = await _get(
+      Uri.parse('$base/me/messages').replace(queryParameters: {
+        '\$filter': "receivedDateTime ge 1900-01-01T00:00:00Z and "
+            "flag/flagStatus eq 'flagged'",
+        '\$orderby': 'receivedDateTime desc',
+        '\$select': '$headerFields,parentFolderId',
+        '\$expand': lastVerbExpand,
+        '\$top': '$top',
+      }),
+    );
+    return _messagesFrom(json);
+  }
+
   /// What goes between the quotes of `$search`: the words as typed for a
   /// search of everything, or each word under the KQL property for the
   /// part of the message asked for (`from:dana from:levi`), which Graph's
@@ -1540,6 +1557,50 @@ class GraphRequest {
           'flag': {'flagStatus': isFlagged ? 'flagged' : 'notFlagged'},
         });
 
+  /// Outlook's Follow Up: flagged and due on [due], or marked complete at
+  /// [now]. For a flag with no date, [GraphRequest.flagged]: see
+  /// `GraphTransport.storeFollowUp`.
+  GraphRequest.followUp(
+    String messageId, {
+    DateTime? due,
+    bool complete = false,
+    DateTime? now,
+  }) : this('PATCH', _messagePath(messageId), {
+          'flag': followUpFlag(due: due, complete: complete, now: now),
+        });
+
+  /// The flag [GraphRequest.followUp] sends. A due day goes as noon UTC on
+  /// that day, which is the same day on every clock within eleven hours of
+  /// UTC, Outlook's included; Graph wants a start with a due, so the day is
+  /// both.
+  static Map<String, Object?> followUpFlag({
+    DateTime? due,
+    bool complete = false,
+    DateTime? now,
+  }) {
+    if (complete) {
+      final at = (now ?? DateTime.now()).toUtc().toIso8601String();
+      return {
+        'flagStatus': 'complete',
+        'completedDateTime': {
+          'dateTime': at.replaceFirst(RegExp(r'Z$'), ''),
+          'timeZone': 'UTC',
+        },
+      };
+    }
+    if (due == null) return {'flagStatus': 'flagged'};
+    String two(int n) => n.toString().padLeft(2, '0');
+    final noon = {
+      'dateTime': '${due.year}-${two(due.month)}-${two(due.day)}T12:00:00',
+      'timeZone': 'UTC',
+    };
+    return {
+      'flagStatus': 'flagged',
+      'startDateTime': noon,
+      'dueDateTime': noon,
+    };
+  }
+
   /// See [GraphMailApi.setLastVerb].
   GraphRequest.lastVerb(String messageId, int verb, {required DateTime at})
       : this('PATCH', _messagePath(messageId), {
@@ -1679,10 +1740,19 @@ class GraphMessage {
     this.conversationId,
     this.sizeBytes,
     this.importance = Importance.normal,
+    this.parentFolderId,
+    this.flagDue,
   });
 
   final String id;
   final String subject;
+
+  /// The folder it is in, where asked for: see
+  /// [GraphMailApi.flaggedEverywhere].
+  final String? parentFolderId;
+
+  /// The day its flag is due, where it has one: Outlook's Follow Up.
+  final DateTime? flagDue;
 
   /// High, normal or low, sent with every row.
   final Importance importance;
@@ -1754,11 +1824,12 @@ class GraphMessage {
       received: DateTime.tryParse('${json['receivedDateTime']}')?.toUtc() ??
           DateTime.now().toUtc(),
       isRead: json['isRead'] == true,
-      // Graph models a flag as an object with a status, where "flagged" and
-      // "complete" both mean the star is on in Outlook.
+      // Graph models a flag as an object with a status. "complete" is a
+      // follow-up done with, which Outlook's Flagged list leaves out, and
+      // Mark complete here is how one is done with: it is no longer
+      // flagged.
       isFlagged: json['flag'] is Map &&
-          const ['flagged', 'complete']
-              .contains('${(json['flag'] as Map)['flagStatus']}'.toLowerCase()),
+          '${(json['flag'] as Map)['flagStatus']}'.toLowerCase() == 'flagged',
       hasAttachments: json['hasAttachments'] == true,
       preview: json['bodyPreview'] is String ? json['bodyPreview'] as String : '',
       internetMessageId: json['internetMessageId'] is String
@@ -1781,7 +1852,32 @@ class GraphMessage {
         GraphMailApi.messageSizeProperty,
       ),
       importance: Importance.fromGraph(json['importance']),
+      parentFolderId: json['parentFolderId'] is String
+          ? json['parentFolderId'] as String
+          : null,
+      flagDue: json['flag'] is Map
+          ? dueDayOf((json['flag'] as Map)['dueDateTime'])
+          : null,
     );
+  }
+
+  /// A flag's due date as the day it means. One in UTC is read as that
+  /// moment on this phone's clock, which is the day for both a day set
+  /// here (noon UTC) and one set in Outlook (midnight where Outlook is,
+  /// converted); one in a named zone is the day it says.
+  static DateTime? dueDayOf(Object? value) {
+    if (value is! Map) return null;
+    final text = value['dateTime'];
+    if (text is! String || text.length < 10) return null;
+    final zone = '${value['timeZone'] ?? ''}';
+    if (zone.isEmpty || zone.toUpperCase() == 'UTC') {
+      final at = DateTime.tryParse(text.endsWith('Z') ? text : '${text}Z');
+      if (at == null) return null;
+      final local = at.toLocal();
+      return DateTime(local.year, local.month, local.day);
+    }
+    final day = DateTime.tryParse(text.substring(0, 10));
+    return day == null ? null : DateTime(day.year, day.month, day.day);
   }
 
   /// One of a row's extended properties, by id, as a number. Absent

@@ -60,20 +60,22 @@ class _RibbonState extends ConsumerState<Ribbon> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Wider than the screen, the ribbon scrolls sideways rather than
-          // clipping its last buttons; when it fits, the Spacer still pushes
-          // the view buttons to the right. IntrinsicWidth is what lets a
-          // Row hold a Spacer inside a horizontal scroll view.
+          // Wider than the screen, the actions scroll sideways rather than
+          // clipping their last buttons, and the view buttons stay where
+          // they are at the right: each button added pushed Search and
+          // Settings off a tablet's screen.
           SizedBox(
             height: height,
-            child: LayoutBuilder(
-              builder: (context, constraints) => SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(minWidth: constraints.maxWidth),
-                  child: IntrinsicWidth(child: _buttons(listId, message, pane)),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: _actions(listId, message),
+                  ),
                 ),
-              ),
+                ..._views(pane),
+              ],
             ),
           ),
           const Divider(height: 1),
@@ -82,14 +84,11 @@ class _RibbonState extends ConsumerState<Ribbon> {
     );
   }
 
-  Widget _buttons(
-    String? listId,
-    MailMessage? message,
-    ReadingPanePosition pane,
-  ) {
+  Widget _actions(String? listId, MailMessage? message) {
     // Parameters promote; the build method's local would not reach here.
     final has = message != null && listId != null;
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
         const SizedBox(width: 4),
         _Button(
@@ -115,6 +114,13 @@ class _RibbonState extends ConsumerState<Ribbon> {
           label: 'Delete',
           onPressed: has
               ? () => MessageActions(ref, listId).delete(context, [message])
+              : null,
+        ),
+        _Button(
+          icon: Icons.archive_outlined,
+          label: 'Archive',
+          onPressed: has
+              ? () => MessageActions(ref, listId).archive(context, [message])
               : null,
         ),
         _Button(
@@ -163,7 +169,12 @@ class _RibbonState extends ConsumerState<Ribbon> {
         // Outlook's Read Aloud, on its Home tab too: the open message read
         // out, or stopped where it is being read.
         _ReadAloudButton(message: has ? message : null),
-        const Spacer(),
+      ],
+    );
+  }
+
+  /// The buttons about the view rather than a message, kept at the right.
+  List<Widget> _views(ReadingPanePosition pane) => [
         const _Separator(),
         _Button(
           // Cycles right, bottom, off. The label names where the pane
@@ -191,9 +202,7 @@ class _RibbonState extends ConsumerState<Ribbon> {
           ),
         ),
         const SizedBox(width: 4),
-      ],
-    );
-  }
+      ];
 
   Future<void> _compose(ComposeKind kind, MailMessage original) =>
       openCompose(context, ref, kind: kind, original: original);

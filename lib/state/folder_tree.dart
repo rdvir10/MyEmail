@@ -162,6 +162,24 @@ class FolderTreeInput {
 
 const kUnifiedInboxId = 'unified:inbox';
 
+/// Everything flagged, in every account: Outlook's Flagged email, under All
+/// Inboxes. Like the unified Inbox, a list and not a server folder.
+const kFlaggedId = 'unified:flagged';
+
+/// Whether [id] is one of the lists made from several folders rather than
+/// a folder: no single account or folder answers for it.
+bool isSyntheticList(String? id) => id == kUnifiedInboxId || id == kFlaggedId;
+
+/// The Flagged list as the tree shows it.
+MailFolder buildFlaggedFolder() => const MailFolder(
+      id: kFlaggedId,
+      accountId: '',
+      name: 'Flagged',
+      path: '',
+      role: FolderRole.unifiedInbox,
+      capabilities: FolderCapabilities.synthetic(),
+    );
+
 /// Whether this folder may be put out of the way.
 ///
 /// Everything except an Inbox. Hiding the thing the app opens on would leave
@@ -251,6 +269,16 @@ List<TreeRow> buildTreeRows(FolderTreeInput input) {
     rows.add(
       FolderRow(
         folder: buildUnifiedInbox(input.foldersByAccount),
+        depth: 0,
+        hasChildren: false,
+        isExpanded: false,
+      ),
+    );
+  }
+  if (input.showUnifiedInbox && input.accounts.isNotEmpty) {
+    rows.add(
+      FolderRow(
+        folder: buildFlaggedFolder(),
         depth: 0,
         hasChildren: false,
         isExpanded: false,

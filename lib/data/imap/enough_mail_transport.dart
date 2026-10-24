@@ -528,6 +528,24 @@ class EnoughMailTransport implements ImapTransport {
         return _copiedUids(result);
       });
 
+  @override
+  Future<List<int>?> copyMessages(
+    String fromPath,
+    List<int> uids,
+    String toPath,
+  ) =>
+      _run((c) async {
+        if (uids.isEmpty) return null;
+        await _ensureSelected(c, fromPath);
+        final target = imapCommandPath(toPath, _delimiter,
+            serverTakesUtf8: c.serverInfo.supportsUtf8);
+        final result = await c.uidCopy(
+          em.MessageSequence.fromIds(uids, isUid: true),
+          targetMailboxPath: target,
+        );
+        return _copiedUids(result);
+      });
+
   static List<int>? _copiedUids(em.GenericImapResult result) {
     // UIDPLUS servers report the new UIDs; others say nothing.
     final code = result.responseCodeCopyUid;

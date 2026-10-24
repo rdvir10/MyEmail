@@ -28,6 +28,14 @@
          works without it: people you have already written to are suggested
          from your own mail either way. -->
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
+    <!-- Follow Up's reminders, shown on time. USE_EXACT_ALARM is granted
+         with the app from Android 13, without asking; before that,
+         SCHEDULE_EXACT_ALARM is. A reminder Android will not time exactly
+         is shown within its usual window instead. -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+    <uses-permission
+        android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        android:maxSdkVersion="32"/>
 
     <!-- No Android backup, and no copying to a new phone. Left on, the whole
          mail cache (work mail included) went to the Google backup, and a
@@ -184,6 +192,22 @@
         <receiver
             android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver"
             android:exported="false"/>
+        <!-- Where a reminder set for later is shown from, and what sets them
+             again after a restart or an update: the plugin's README asks the
+             app to declare both, as it does the one above. -->
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"
+            android:exported="false"/>
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+            </intent-filter>
+        </receiver>
         <!-- Hands the downloaded APK to the installer as a content:// URI.
              A bare file:// URI to this app's private storage is unreadable by
              the installer and throws FileUriExposedException on anything

@@ -28,7 +28,10 @@ import '../../state/message_transfer.dart';
 import '../../domain/window_handoff.dart';
 import '../quick_steps/quick_steps_screen.dart';
 import 'forward_as_attachment.dart';
+import 'follow_up_sheet.dart';
+import 'junk_actions.dart';
 import 'message_actions.dart';
+import '../../state/sender_blocks.dart';
 import '../compose/open_compose.dart';
 import '../meetings/new_meeting_screen.dart';
 import 'conversation_tile.dart';
@@ -208,7 +211,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     });
 
     final folder = ref.watch(folderIndexProvider)[folderId];
-    final isUnified = folderId == kUnifiedInboxId;
+    final isUnified = isSyntheticList(folderId);
     final accounts = ref.watch(accountsProvider).value ?? const [];
     final accountColors = {for (final a in accounts) a.id: Color(a.colorValue)};
     final selectedId = ref.watch(selectedMessageIdProvider);
@@ -979,6 +982,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       _item('select', Icons.checklist, 'Select all $count'),
       const PopupMenuDivider(),
       _item('move', Icons.drive_file_move_outline, 'Move all $count to…'),
+      _item('archive', Icons.archive_outlined, 'Archive all $count'),
       _item(
         'read',
         unread
@@ -1016,6 +1020,8 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         ]);
       case 'move':
         await actions.moveWithPrompt(context, messages);
+      case 'archive':
+        await actions.archive(context, messages);
       case 'delete':
         await actions.delete(context, messages);
       // Through the actions, as the date bar's menu and the swipe go: each
@@ -1084,6 +1090,13 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       _item('event', Icons.event_outlined, 'Meeting from this message…'),
       _item('select', Icons.checklist, 'Select'),
       _item('move', Icons.drive_file_move_outline, 'Move to…'),
+      if (archiveTargetFor(
+                ref.read(foldersProvider).value ?? const {},
+                message.accountId,
+              )
+              case final archive?
+          when archive != message.folderId)
+        _item('archive', Icons.archive_outlined, 'Archive'),
       _item(
         'read',
         message.isRead
@@ -1096,11 +1109,16 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         message.isFlagged ? Icons.flag : Icons.flag_outlined,
         message.isFlagged ? 'Remove flag' : 'Flag',
       ),
+      _item('followUp', Icons.alarm_outlined, 'Follow up…'),
       if (ref.read(pinnedMessagesProvider).contains(message.id))
         _item('pin', Icons.push_pin, 'Unpin')
       else
         _item('pin', Icons.push_pin_outlined, 'Pin to top'),
       const PopupMenuDivider(),
+      if (isInJunk(ref, message))
+        _item('notJunk', Icons.report_off_outlined, 'Not junk')
+      else if (!ref.read(senderBlocksProvider).blocks(message.from.email))
+        _item('block', Icons.block, 'Block sender'),
       _item('delete', Icons.delete_outline, 'Delete', color: error),
     ]);
     if (choice == null || !context.mounted) return;
@@ -1183,15 +1201,24 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         ref.read(selectedMessageIdsProvider.notifier).addAll([message.id]);
       case 'move':
         await actions.moveWithPrompt(context, [message]);
+      case 'archive':
+        await actions.archive(context, [message]);
       // Through the actions, which send a search hit from another folder
       // to the engine: the open list passed over it without a word.
       case 'read':
         await actions.setRead(context, [message], !message.isRead);
       case 'flag':
         await actions.setFlagged(context, [message], !message.isFlagged);
+      case 'followUp':
+        await showFollowUpSheet(context, ref,
+            listId: actions.listId, messages: [message]);
       case 'pin':
         final pins = ref.read(pinnedMessagesProvider.notifier);
         pins.setPinned([message.id], !pins.isPinned(message.id));
+      case 'block':
+        await blockSender(context, ref, actions.listId, message);
+      case 'notJunk':
+        await notJunk(context, ref, actions.listId, [message]);
       case 'delete':
         await actions.delete(context, [message]);
     }
@@ -1274,23 +1301,10 @@ class _SwipeableRow extends ConsumerWidget {
         await actions.setRead(context, messages, anyUnread(messages));
       case SwipeAction.toggleFlag:
         await actions.setFlagged(context, messages, !anyFlagged(messages));
+      // Gmail too, out of this folder into All Mail; an account with no
+      // archive at all is told so rather than the swipe doing nothing.
       case SwipeAction.archive:
-        final target = archiveFolderIdFor(ref, messages.first.accountId);
-        if (target == null) {
-          // Gmail has no folder to move into, and an account may simply not
-          // have one. Saying so beats a swipe that appears to do nothing.
-          if (context.mounted) {
-            ScaffoldMessenger.of(context)
-              ..hideCurrentSnackBar()
-              ..showSnackBar(
-                const SnackBar(duration: kBottomMessage, 
-                  content: Text('This account has no Archive folder.'),
-                ),
-              );
-          }
-          return;
-        }
-        await actions.moveTo(context, messages, target);
+        await actions.archive(context, messages);
     }
   }
 
@@ -1314,20 +1328,6 @@ class _SwipeableRow extends ConsumerWidget {
       label: swipeActionShortLabel(action, messages),
     );
   }
-}
-
-/// The Archive folder for an account, or null when it has none.
-String? archiveFolderIdFor(WidgetRef ref, String accountId) {
-  final folders = ref.read(foldersProvider).value?[accountId];
-  if (folders == null) return null;
-  for (final f in folders) {
-    // canAcceptMessages is what separates a real Archive folder from Gmail's
-    // All Mail, which is a view of everything and cannot be moved into.
-    if (f.role == FolderRole.archive && f.capabilities.canAcceptMessages) {
-      return f.id;
-    }
-  }
-  return null;
 }
 
 IconData swipeActionIcon(SwipeAction action) => switch (action) {

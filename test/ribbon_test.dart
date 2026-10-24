@@ -179,6 +179,9 @@ void main() {
       expect(button(offered), findsOneWidget);
       expect(button(wasRead ? 'Read' : 'Unread'), findsNothing);
 
+      // The actions scroll where the ribbon is narrower than they are.
+      await tester.ensureVisible(button(offered));
+      await tester.pumpAndSettle();
       await tester.tap(button(offered));
       await tester.pumpAndSettle();
 
@@ -210,6 +213,9 @@ void main() {
           (w) => w is MessageTile && w.message.id == hit.id));
       await tester.pumpAndSettle();
 
+      // The actions scroll where the ribbon is narrower than they are.
+      await tester.ensureVisible(button('Unread'));
+      await tester.pumpAndSettle();
       await tester.tap(button('Unread'));
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pumpAndSettle();
@@ -227,6 +233,9 @@ void main() {
           (w) => w is MessageTile && w.message.isRead).first);
       await tester.pumpAndSettle();
 
+      // The actions scroll where the ribbon is narrower than they are.
+      await tester.ensureVisible(button('Unread'));
+      await tester.pumpAndSettle();
       await tester.tap(button('Unread'));
       await tester.pumpAndSettle();
 

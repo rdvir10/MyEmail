@@ -255,8 +255,10 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
         // that has checkboxes.
         ref.read(selectedMessageIdsProvider.notifier).toggle(message.id);
         return KeyEventResult.handled;
+      // Delete deletes; Backspace archives, as in Outlook on the PC.
       case LogicalKeyboardKey.delete:
       case LogicalKeyboardKey.backspace:
+        final archive = event.logicalKey == LogicalKeyboardKey.backspace;
         if (event is KeyDownEvent) {
           _holdStopped = false;
         } else if (_holdStopped) {
@@ -268,10 +270,14 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
         final ticked = ref.read(selectedMessageIdsProvider);
         if (ticked.isNotEmpty) {
           if (event is KeyDownEvent) {
-            MessageActions(ref, widget.listId).delete(context, [
+            final chosen = [
               for (final m in _all)
                 if (ticked.contains(m.id)) m,
-            ]);
+            ];
+            final actions = MessageActions(ref, widget.listId);
+            archive
+                ? actions.archive(context, chosen)
+                : actions.delete(context, chosen);
             ref.read(selectedMessageIdsProvider.notifier).clear();
           }
           _holdStopped = true;
@@ -291,7 +297,10 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
           _move(-1);
           _holdStopped = true;
         }
-        MessageActions(ref, widget.listId).delete(context, [message]);
+        final actions = MessageActions(ref, widget.listId);
+        archive
+            ? actions.archive(context, [message])
+            : actions.delete(context, [message]);
         return KeyEventResult.handled;
       case LogicalKeyboardKey.escape:
         ref.read(selectedMessageIdsProvider.notifier).clear();

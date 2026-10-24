@@ -631,6 +631,9 @@ final folderIndexProvider = Provider<Map<String, MailFolder>>((ref) {
   if (accounts.length > 1 && ref.watch(displayProvider).showAllInboxes) {
     index[kUnifiedInboxId] = buildUnifiedInbox(folders);
   }
+  if (accounts.isNotEmpty && ref.watch(displayProvider).showAllInboxes) {
+    index[kFlaggedId] = buildFlaggedFolder();
+  }
   return index;
 });
 

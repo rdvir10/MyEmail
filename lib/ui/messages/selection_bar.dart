@@ -149,6 +149,15 @@ class SelectionBar extends ConsumerWidget {
                       },
                     ),
                     IconButton(
+                      tooltip: 'Archive',
+                      icon: const Icon(Icons.archive_outlined),
+                      onPressed: () async {
+                        if (await actions.archive(context, chosen)) {
+                          ref.read(selectedMessageIdsProvider.notifier).clear();
+                        }
+                      },
+                    ),
+                    IconButton(
                       tooltip: 'Delete',
                       icon: const Icon(Icons.delete_outline),
                       onPressed: () async {

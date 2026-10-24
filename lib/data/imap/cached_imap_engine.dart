@@ -15,6 +15,7 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/sender_blocks.dart';
 import '../../domain/meeting.dart';
 import '../../domain/message_move.dart';
 import '../../domain/draft.dart';
@@ -64,6 +65,7 @@ class CachedImapEngine implements MailEngine {
     this.senderFactory,
     this.graphSenderFactory,
     this.onMessagesHandled,
+    this.senderBlocks,
   })  : folderLists = folderLists ?? MemoryFolderListStore(),
         _injectedOAuthTokens = oauthTokens,
         _injectedTransportFactory = transportFactory;
@@ -72,6 +74,11 @@ class CachedImapEngine implements MailEngine {
   final CredentialStore credentialStore;
   final CacheStore cache;
   final FolderListStore folderLists;
+
+  /// The blocked senders as they stand, read as each Inbox syncs: new mail
+  /// from one of them goes to Junk as it arrives. Null where nothing is
+  /// blocked, as in most tests.
+  final SenderBlocks Function()? senderBlocks;
   /// Supplied by tests, which hand back an in-memory server. Null in the app,
   /// where [_buildTransport] chooses by provider.
   final ImapTransport Function(Account account, MailCredentials credentials)?
@@ -798,7 +805,8 @@ class CachedImapEngine implements MailEngine {
       final t = await _transport(accountId);
       final sync = _sync(accountId, t);
       // As deep as the list asks for, so that what it shows is up to date.
-      await sync.sync(path, reach: offset + limit);
+      final result = await sync.sync(path, reach: offset + limit);
+      await _junkBlocked(accountId, t, path, result.arrived);
       await sync.ensureCached(path, offset + limit);
     } on ConnectionFailed catch (e) {
       // Offline: whatever is cached is what there is.
@@ -1168,6 +1176,24 @@ class CachedImapEngine implements MailEngine {
   Future<void> setMessagesFlagged(List<String> messageIds, bool isFlagged) =>
       _setFlagOn(messageIds, MessageFlag.flagged, isFlagged);
 
+  /// The flag with its day on a Microsoft account; the flag alone over
+  /// IMAP, which keeps no day, and on which complete is the flag taken off.
+  @override
+  Future<void> setFollowUp(
+    List<String> messageIds, {
+    DateTime? due,
+    bool complete = false,
+  }) =>
+      _setFlagOn(
+        messageIds,
+        MessageFlag.flagged,
+        !complete,
+        store: (t, path, uids) => t is GraphTransport
+            ? t.storeFollowUp(path, uids: uids, due: due, complete: complete)
+            : t.storeFlag(path,
+                uids: uids, flag: MessageFlag.flagged, set: !complete),
+      );
+
   @override
   Future<List<MessageMove>> moveMessages(
     List<String> messageIds,
@@ -1323,11 +1349,15 @@ class CachedImapEngine implements MailEngine {
     required List<String> went,
   }) async {
     final t = await _transport(accountId);
+    // Out of Gmail's All Mail only ever by a copy: see _isAllMail.
+    final copyOnly = await _isAllMail(accountId, t, fromPath);
     List<int>? landed;
     var moved = uids;
     Object? stopped;
     try {
-      landed = await t.moveMessages(fromPath, uids, toPath);
+      landed = copyOnly
+          ? await t.copyMessages(fromPath, uids, toPath)
+          : await t.moveMessages(fromPath, uids, toPath);
     } on MovedInPart catch (part) {
       landed = part.landed;
       moved = part.moved;
@@ -1339,8 +1369,11 @@ class CachedImapEngine implements MailEngine {
     // Read before the cache forgets them, which is the last place they
     // can be read from here.
     final headers = await cache.messageIdsFor(accountId, fromPath, moved);
-    await cache.deleteUids(accountId, fromPath, moved.toSet());
-    _handled(_uidsIn('$accountId:$fromPath', moved));
+    // A copy out of All Mail leaves the message in it, as it should be.
+    if (!copyOnly) {
+      await cache.deleteUids(accountId, fromPath, moved.toSet());
+      _handled(_uidsIn('$accountId:$fromPath', moved));
+    }
     // The destination picks the new messages up on its next sync; it may
     // not be cached at all yet, and guessing UIDs would be worse.
     //
@@ -1596,6 +1629,80 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
+  Future<List<MailMessage>> flaggedMessages(
+    String accountId, {
+    int limit = 100,
+  }) async {
+    final account = _accountFor(accountId);
+    final t = await _transport(accountId);
+    final remote = folderLists.read(accountId) ?? await t.listFolders();
+    final leftOut = {
+      for (final f in remote)
+        if (f.role == FolderRole.deleted || f.role == FolderRole.junk) f.path,
+    };
+    if (t is GraphTransport) {
+      final found = [
+        for (final h in await t.flaggedHits(limit: limit))
+          if (!leftOut.contains(h.path)) h,
+      ];
+      final rows = <MailMessage>[];
+      for (final path in {for (final h in found) h.path}) {
+        final mine = [
+          for (final h in found)
+            if (h.path == path) h,
+        ];
+        final due = {for (final h in mine) h.hit.uid: h.due};
+        for (final m in await _rowsFor(
+            accountId, path, t, [for (final h in mine) h.hit])) {
+          rows.add(m.copyWith(flagDue: due[m.uid]));
+        }
+      }
+      return rows..sort((a, b) => b.date.compareTo(a.date));
+    }
+    // Gmail: All Mail holds every label's mail, so the flag is asked of it
+    // once. A star is the message's, whichever label it is seen under.
+    final all = remote.where((f) => f.role == FolderRole.archive).firstOrNull;
+    final path = all?.path ?? 'INBOX';
+    final hits = await t.filterHits(
+      path,
+      MessageFilter.flagged,
+      ownAddress: account.emailAddress,
+      limit: limit,
+    );
+    return _rowsFor(accountId, path, t, hits);
+  }
+
+  @override
+  Future<List<MailMessage>> cachedFlagged(
+    String accountId, {
+    int limit = 100,
+  }) async {
+    final remote = folderLists.read(accountId) ?? const <RemoteFolder>[];
+    final roles = {for (final f in remote) f.path: f.role};
+    final found = await cache.readFlagged(accountId, limit: limit * 2);
+    final seen = <String>{};
+    final rows = <MailMessage>[];
+    // All Mail's copy first where a Gmail message is in more than one
+    // folder, as the server's answer will have it.
+    final ordered = [
+      for (final f in found)
+        if (roles[f.path] == FolderRole.archive) f,
+      for (final f in found)
+        if (roles[f.path] != FolderRole.archive) f,
+    ];
+    for (final (:path, :message) in ordered) {
+      final role = roles[path];
+      if (role == FolderRole.deleted || role == FolderRole.junk) continue;
+      final key = message.messageId ?? '$path#${message.uid}';
+      if (!seen.add(key)) continue;
+      final folderId = MailFolder.idFor(accountId, path);
+      rows.add(message.toMailMessage(accountId: accountId, folderId: folderId));
+    }
+    rows.sort((a, b) => b.date.compareTo(a.date));
+    return rows.take(limit).toList();
+  }
+
+  @override
   Future<List<MailMessage>> filterMessages(
     String folderId,
     MessageFilter filter, {
@@ -1814,6 +1921,61 @@ class CachedImapEngine implements MailEngine {
     return byFolder;
   }
 
+  /// New mail in an Inbox from a blocked sender ([senderBlocks]), into the
+  /// account's Junk folder as it arrives, before any list or notification
+  /// has it: Outlook's Block Sender, carried out by the app. Mail that was
+  /// there before, or put back since, is left where it is.
+  ///
+  /// Best-effort: a move that fails leaves the mail in the Inbox, and is
+  /// logged rather than failing the sync it came with.
+  Future<void> _junkBlocked(
+    String accountId,
+    ImapTransport t,
+    String path,
+    List<int> arrived,
+  ) async {
+    final blocks = senderBlocks?.call();
+    if (blocks == null || blocks.isEmpty || arrived.isEmpty) return;
+    try {
+      final remote = folderLists.read(accountId) ?? await t.listFolders();
+      if (!remote.any((f) => f.path == path && f.role == FolderRole.inbox)) {
+        return;
+      }
+      final junk =
+          remote.where((f) => f.role == FolderRole.junk).firstOrNull?.path;
+      if (junk == null) return;
+      final folderId = MailFolder.idFor(accountId, path);
+      final blocked = <String>[];
+      for (final uid in arrived) {
+        final row = await cache.readMessage(accountId, path, uid);
+        if (row != null && blocks.blocks(row.from.email)) {
+          blocked.add(MailMessage.idFor(folderId, uid));
+        }
+      }
+      if (blocked.isEmpty) return;
+      await moveMessages(blocked, MailFolder.idFor(accountId, junk));
+      debugPrint('[myemail] ${blocked.length} from blocked senders to Junk');
+    } catch (e) {
+      debugPrint('[myemail] could not move blocked mail to Junk: $e');
+    }
+  }
+
+  /// Whether [path] is Gmail's All Mail, which holds every message the
+  /// account has whatever its labels. A message leaves it only by being
+  /// deleted, so it is never moved out of it: an Archive undone is a copy
+  /// back into the Inbox, which puts the Inbox label back. A move would
+  /// take it out of All Mail too, which Gmail reads as a delete, and so
+  /// the Undo of an Archive would have sent the message to Trash.
+  Future<bool> _isAllMail(
+    String accountId,
+    ImapTransport t,
+    String path,
+  ) async {
+    if (_providerFor(accountId) != MailProvider.gmail) return false;
+    final remote = folderLists.read(accountId) ?? await t.listFolders();
+    return remote.any((f) => f.path == path && f.role == FolderRole.archive);
+  }
+
   Future<String?> _trashPath(String accountId, ImapTransport t) async {
     final remote = folderLists.read(accountId) ?? await t.listFolders();
     for (final f in remote) {
@@ -1839,8 +2001,9 @@ class CachedImapEngine implements MailEngine {
   Future<void> _setFlagOn(
     List<String> messageIds,
     MessageFlag flag,
-    bool set,
-  ) async {
+    bool set, {
+    Future<void> Function(ImapTransport t, String path, List<int> uids)? store,
+  }) async {
     final changed = <String>[];
     final failed = <String>[];
     (Object, StackTrace)? first;
@@ -1849,7 +2012,11 @@ class CachedImapEngine implements MailEngine {
       var stored = group.value;
       try {
         final t = await _transport(accountId);
-        await t.storeFlag(path, uids: group.value, flag: flag, set: set);
+        if (store != null) {
+          await store(t, path, group.value);
+        } else {
+          await t.storeFlag(path, uids: group.value, flag: flag, set: set);
+        }
       } on FlaggedInPart catch (part, stack) {
         stored = part.stored;
         first ??= (part.cause, stack);

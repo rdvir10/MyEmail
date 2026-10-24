@@ -60,12 +60,14 @@ class BackupService {
     UiStateKeys.contactGroups: _Shape.text,
     UiStateKeys.forgottenAddresses: _Shape.ids,
     UiStateKeys.workWeek: _Shape.ids,
+    UiStateKeys.senderBlocks: _Shape.text,
     // Deliberately absent: UiStateKeys.selected, which is where you happened
     // to be standing, and UiStateKeys.recentMoves, which is a short history
     // rather than a setting. Neither is worth carrying and both would be odd
     // to find waiting on a new device. Nor UiStateKeys.preparedMeetings,
     // events this device made and will delete itself, nor UiStateKeys.pinned,
-    // whose message ids are numbered by this device.
+    // whose message ids are numbered by this device, nor
+    // UiStateKeys.followUps, whose reminders are set with this device.
   };
 
   /// Read everything into a backup.

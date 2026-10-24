@@ -63,11 +63,26 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('archive on Gmail says there is no Archive folder',
+  testWidgets('archive on Gmail takes it out of the Inbox, into All Mail',
       (tester) async {
-    // All Mail is Gmail's archive and cannot be moved into. Taken for an
-    // Archive folder, the swipe failed, or seemed to do nothing at all.
-    final c = await pump(tester, right: SwipeAction.archive);
+    // As Gmail's own Archive: the Inbox label off, the message kept.
+    final engine = SampleMailEngine();
+    final c = await pump(tester, right: SwipeAction.archive, engine: engine);
+    final message = first(tester);
+
+    await swipe(tester, 500);
+
+    expect(find.text('Message archived'), findsOneWidget);
+    expect(listOf(c).any((m) => m.id == message.id), isFalse);
+    final all = await tester.runAsync(() =>
+        engine.loadMessages('${message.accountId}:[Gmail]/All Mail'));
+    expect(all!.any((m) => m.subject == message.subject), isTrue);
+  });
+
+  testWidgets('archive where there is no archive at all says so',
+      (tester) async {
+    final c = await pump(tester,
+        right: SwipeAction.archive, engine: _NoArchive());
     final message = first(tester);
 
     await swipe(tester, 500);
@@ -89,8 +104,12 @@ void main() {
 
     await swipe(tester, 500);
 
-    expect(find.textContaining('moved to Archive'), findsOneWidget);
+    expect(find.text('Message archived'), findsOneWidget);
     expect(listOf(c).any((m) => m.id == message.id), isFalse);
+    final archive = await tester
+        .runAsync(() => engine.loadMessages('${message.accountId}:Archive'));
+    expect(archive!.any((m) => m.subject == message.subject), isTrue,
+        reason: 'a folder that takes mail before All Mail');
   });
 
   testWidgets('flag flags it and leaves it where it is', (tester) async {
@@ -133,6 +152,23 @@ void main() {
 
 /// The sample engine with an Outlook-style Archive: a folder of that name
 /// that takes mail, beside Gmail's All Mail, which does not.
+/// The sample engine with All Mail taken away: an account with nowhere to
+/// archive to.
+class _NoArchive extends SampleMailEngine {
+  List<MailFolder> _less(List<MailFolder> folders) => [
+        for (final f in folders)
+          if (f.role != FolderRole.archive) f,
+      ];
+
+  @override
+  Future<List<MailFolder>> loadFolders(String accountId) async =>
+      _less(await super.loadFolders(accountId));
+
+  @override
+  Future<List<MailFolder>> cachedFolders(String accountId) async =>
+      _less(await super.cachedFolders(accountId));
+}
+
 class _WithArchive extends SampleMailEngine {
   List<MailFolder> _marked(List<MailFolder> folders) => [
         for (final f in folders)

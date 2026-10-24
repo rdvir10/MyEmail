@@ -1075,6 +1075,54 @@ class SampleMailEngine implements MailEngine {
   Future<void> setMessagesFlagged(List<String> messageIds, bool isFlagged) =>
       _each(messageIds, (id) => setFlagged(id, isFlagged));
 
+  /// Everything flagged in the account's folders, as they have been loaded
+  /// so far, with the days set here.
+  @override
+  Future<List<MailMessage>> flaggedMessages(
+    String accountId, {
+    int limit = 100,
+  }) async {
+    await _latency();
+    return cachedFlagged(accountId, limit: limit);
+  }
+
+  /// The days [setFollowUp] set, by message id.
+  final Map<String, DateTime?> flagDues = {};
+
+  @override
+  Future<List<MailMessage>> cachedFlagged(
+    String accountId, {
+    int limit = 100,
+  }) async {
+    final rows = [
+      for (final MapEntry(:key, :value) in _messages.entries)
+        if (key.startsWith('$accountId:'))
+          for (final m in value)
+            if (m.isFlagged)
+              flagDues.containsKey(m.id)
+                  ? m.copyWith(flagDue: flagDues[m.id])
+                  : m,
+    ]..sort((a, b) => b.date.compareTo(a.date));
+    return rows.take(limit).toList();
+  }
+
+  /// Every follow-up set, for tests to look at.
+  final List<({List<String> ids, DateTime? due, bool complete})> followUps =
+      [];
+
+  @override
+  Future<void> setFollowUp(
+    List<String> messageIds, {
+    DateTime? due,
+    bool complete = false,
+  }) async {
+    followUps.add((ids: messageIds, due: due, complete: complete));
+    for (final id in messageIds) {
+      complete ? flagDues.remove(id) : flagDues[id] = due;
+    }
+    await setMessagesFlagged(messageIds, !complete);
+  }
+
   /// [change] on each message in turn, through the one-message form so a
   /// test that refuses one message refuses it here too, and failures
   /// reported as [MailEngine.setMessagesRead] reports them.

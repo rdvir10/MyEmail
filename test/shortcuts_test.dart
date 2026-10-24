@@ -247,8 +247,10 @@ void main() {
   group('in the list', () {
     // The row is kept before the selection moves on. Taken after the move,
     // it was the next message that went, not the one on screen.
+    // Delete deletes, and Backspace archives, as in Outlook on the PC; both
+    // take the message the cursor is on.
     for (final key in [LogicalKeyboardKey.delete, LogicalKeyboardKey.backspace]) {
-      testWidgets('${key.keyLabel} deletes the selected message, not the next',
+      testWidgets('${key.keyLabel} takes the selected message, not the next',
           (tester) async {
         final c = await pump(tester);
         final ids = listIds(c);
@@ -262,6 +264,12 @@ void main() {
         expect(listIds(c), isNot(contains(ids[3])));
         expect(listIds(c), hasLength(ids.length - 1));
         expect(selected(c), ids[4]);
+        expect(
+          find.text(key == LogicalKeyboardKey.backspace
+              ? 'Message archived'
+              : 'Message deleted'),
+          findsOneWidget,
+        );
       });
     }
 

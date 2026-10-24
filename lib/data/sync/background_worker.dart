@@ -9,6 +9,8 @@ import 'package:workmanager/workmanager.dart';
 import '../../domain/account.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
+import '../../domain/sender_blocks.dart';
+import '../ui_state_store.dart';
 import '../../domain/sync_prefs.dart';
 import '../account_store.dart';
 import '../cache/mail_database.dart';
@@ -459,6 +461,10 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
       cache: DriftCacheStore(database),
       folderLists: PrefsFolderListStore(prefs),
       graphIdMap: DriftGraphIdMap(database),
+      // Read again with the rest each pass: see prefs.reloadCache below.
+      senderBlocks: () => SenderBlocks.fromJsonString(
+        prefs.getString(UiStateKeys.senderBlocks),
+      ),
     );
     engine = liveEngine;
 
@@ -649,6 +655,9 @@ Future<bool> _runOnePass() async {
       cache: DriftCacheStore(database),
       folderLists: PrefsFolderListStore(prefs),
       graphIdMap: DriftGraphIdMap(database),
+      senderBlocks: () => SenderBlocks.fromJsonString(
+        prefs.getString(UiStateKeys.senderBlocks),
+      ),
     );
 
     final report = await BackgroundSync(

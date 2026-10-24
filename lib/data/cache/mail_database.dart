@@ -474,6 +474,23 @@ class DriftCacheStore implements CacheStore {
     return rows.map(_fromHeader).toList();
   }
 
+  @override
+  Future<List<({String path, CachedMessage message})>> readFlagged(
+    String accountId, {
+    int limit = 100,
+  }) async {
+    final m = db.messages;
+    final rows = await (db.selectOnly(m)
+          ..addColumns([..._headerColumns, m.path])
+          ..where(m.accountId.equals(accountId) & m.isFlagged.equals(true))
+          ..orderBy(_newestArrivalFirst(m))
+          ..limit(limit))
+        .get();
+    return [
+      for (final r in rows) (path: r.read(m.path)!, message: _fromHeader(r)),
+    ];
+  }
+
   /// Every column of a row but the body's three.
   ///
   /// A list read used to take whole rows. Most of a row, once its message
