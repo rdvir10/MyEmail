@@ -4,7 +4,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/folder_tree.dart';
+import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/ui/folder_tree/folder_tile.dart';
 import 'package:myemail/ui/folder_tree/folder_tree_panel.dart';
 
 Widget _harness() {
@@ -301,6 +305,77 @@ void main() {
       expect(find.text('Receipts › 2026'), findsOneWidget);
     });
 
+    group('the open list follows at once', () {
+      // The tree's count went, but the rows stayed bold until the next
+      // refresh a minute later; and an emptied folder went on listing every
+      // message, each asking, opened, for a body that was gone.
+      late ProviderContainer c;
+
+      Future<void> pumpWithList(WidgetTester tester, String listId) async {
+        c = ProviderContainer(overrides: [
+          mailEngineProvider.overrideWithValue(_AsAServerDoes()),
+        ]);
+        addTearDown(c.dispose);
+        // The list on screen beside the tree.
+        final open = c.listen(messagesProvider(listId), (_, _) {});
+        addTearDown(open.close);
+        await tester.pumpWidget(UncontrolledProviderScope(
+          container: c,
+          child: const MaterialApp(home: Scaffold(body: FolderTreePanel())),
+        ));
+        await tester.pumpAndSettle();
+      }
+
+      List<MailMessage> rows(String listId) =>
+          c.read(messagesProvider(listId)).value!;
+
+      testWidgets('after Mark all as read', (tester) async {
+        const newsletters = 'acct-personal:Newsletters';
+        await pumpWithList(tester, newsletters);
+        expect(rows(newsletters).where((m) => !m.isRead), isNotEmpty);
+
+        await _openMenuFor(tester, find.text('Newsletters'));
+        await tester.tap(find.text('Mark all as read'));
+        await tester.pumpAndSettle();
+
+        expect(rows(newsletters).where((m) => !m.isRead), isEmpty);
+      });
+
+      testWidgets('All Inboxes too, after Mark all as read on an Inbox',
+          (tester) async {
+        const inbox = 'acct-personal:INBOX';
+        await pumpWithList(tester, kUnifiedInboxId);
+        bool unreadHere(MailMessage m) => m.folderId == inbox && !m.isRead;
+        expect(rows(kUnifiedInboxId).where(unreadHere), isNotEmpty);
+
+        await _openMenuFor(
+          tester,
+          find
+              .byWidgetPredicate(
+                  (w) => w is FolderTile && w.row.folder.id == inbox)
+              .first,
+        );
+        await tester.tap(find.text('Mark all as read'));
+        await tester.pumpAndSettle();
+
+        expect(rows(kUnifiedInboxId).where(unreadHere), isEmpty);
+      });
+
+      testWidgets('after Empty folder', (tester) async {
+        const trash = 'acct-personal:[Gmail]/Trash';
+        await pumpWithList(tester, trash);
+        expect(rows(trash), isNotEmpty);
+
+        await _openMenuFor(tester, find.text('Deleted').first);
+        await tester.tap(find.text('Empty folder'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Empty'));
+        await tester.pumpAndSettle();
+
+        expect(rows(trash), isEmpty);
+      });
+    });
+
     testWidgets('mark all as read clears the unread badge', (tester) async {
       await _pumpTree(tester);
       expect(find.textContaining('231/'), findsOneWidget,
@@ -340,4 +415,46 @@ class _MicrosoftSample extends SampleMailEngine {
     renamedTo.add(newName);
     return super.renameFolder(folderId, newName);
   }
+}
+
+/// Marks the messages read and empties the folder, as a server does: the
+/// sample engine changes only the counts.
+class _AsAServerDoes extends SampleMailEngine {
+  final _allRead = <String>{};
+  final _emptied = <String>{};
+
+  @override
+  Future<void> markAllRead(String folderId) async {
+    await super.markAllRead(folderId);
+    _allRead.add(folderId);
+  }
+
+  @override
+  Future<void> emptyFolder(String folderId) async {
+    await super.emptyFolder(folderId);
+    _emptied.add(folderId);
+  }
+
+  List<MailMessage> _asNow(List<MailMessage> messages) => [
+        for (final m in messages)
+          if (!_emptied.contains(m.folderId))
+            _allRead.contains(m.folderId) ? m.copyWith(isRead: true) : m,
+      ];
+
+  @override
+  Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) async =>
+      _asNow(await super.loadMessages(folderId, offset: offset, limit: limit));
+
+  @override
+  Future<List<MailMessage>> cachedMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) async =>
+      _asNow(
+          await super.cachedMessages(folderId, offset: offset, limit: limit));
 }

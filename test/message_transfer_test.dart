@@ -9,7 +9,9 @@ import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/data/windows/window_opener.dart';
 import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/state/attachment_providers.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/message_transfer.dart';
@@ -37,12 +39,16 @@ void main() {
     windows = FakeWindowOpener();
   });
 
-  Future<ProviderContainer> pump(WidgetTester tester) async {
+  Future<ProviderContainer> pump(
+    WidgetTester tester, {
+    SampleMailEngine? engine,
+  }) async {
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final c = ProviderContainer(overrides: [
+      if (engine != null) mailEngineProvider.overrideWithValue(engine),
       uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
       fileBridgeProvider.overrideWithValue(bridge),
       messageFilesProvider.overrideWithValue(files),
@@ -61,6 +67,19 @@ void main() {
 
   MailMessage first(WidgetTester tester) =>
       tester.widget<MessageTile>(find.byType(MessageTile).first).message;
+
+  /// Where on screen the first folder row matching [test] is.
+  Offset folderAt(WidgetTester tester, bool Function(MailFolder f) test) {
+    final tile = tester
+        .widgetList<FolderTile>(find.byType(FolderTile))
+        .firstWhere((t) => test(t.row.folder));
+    return tester.getCenter(find.byWidget(tile));
+  }
+
+  Future<void> dropOn(WidgetTester tester, MailMessage m, Offset at) async {
+    bridge.drop(const [], label: messageDragLabel, text: m.id, at: at);
+    await tester.pumpAndSettle();
+  }
 
   test('the file name says which message it was', () {
     final m = MailMessage(
@@ -213,7 +232,7 @@ void main() {
           .firstWhere((t) =>
               t.row.folder.id != m.folderId &&
               t.row.folder.accountId == m.accountId &&
-              !t.row.folder.isSynthetic);
+              t.row.folder.capabilities.canAcceptMessages);
       final at = tester.getCenter(find.byWidget(target));
 
       bridge.drop(
@@ -227,6 +246,145 @@ void main() {
       final list = c.read(messagesProvider(folder)).value!;
       expect(list.any((x) => x.id == m.id), isFalse, reason: 'moved out');
       expect(find.textContaining('moved to'), findsOneWidget);
+    });
+
+    testWidgets('onto a folder that takes no mail is refused', (tester) async {
+      // Another window's drag arrives this way, and so does one within this
+      // window in split screen. The tree's own drop target refuses Gmail's
+      // Sent Mail and the All Inboxes row; the same drop through the system
+      // filed received mail under Sent, and failed outright on All Inboxes.
+      final c = await pump(tester);
+      final m = first(tester);
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+
+      await dropOn(
+        tester,
+        m,
+        folderAt(tester, (f) =>
+            f.accountId == m.accountId && f.role == FolderRole.sent),
+      );
+      await dropOn(
+        tester,
+        m,
+        folderAt(tester, (f) => f.role == FolderRole.unifiedInbox),
+      );
+
+      final list = c.read(messagesProvider(folder)).value!;
+      expect(list.any((x) => x.id == m.id), isTrue, reason: 'left where it is');
+      expect(find.textContaining('moved to'), findsNothing);
+      expect(find.textContaining('Could not move'), findsNothing);
+    });
+
+    testWidgets('onto the folder it is already in does not say it moved',
+        (tester) async {
+      await pump(tester);
+      final m = first(tester);
+
+      await dropOn(tester, m, folderAt(tester, (f) => f.id == m.folderId));
+
+      expect(find.textContaining('moved to'), findsNothing);
+    });
+
+    testWidgets('onto a folder can be undone', (tester) async {
+      final c = await pump(tester);
+      final m = first(tester);
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+
+      await dropOn(
+        tester,
+        m,
+        folderAt(tester, (f) =>
+            f.accountId == m.accountId &&
+            f.id != m.folderId &&
+            f.role == FolderRole.user),
+      );
+      expect(find.textContaining('moved to'), findsOneWidget);
+      await tester.tap(find.widgetWithText(SnackBarAction, 'Undo'));
+      await tester.pumpAndSettle();
+
+      final list = c.read(messagesProvider(folder)).value!;
+      expect(list.any((x) => x.subject == m.subject), isTrue,
+          reason: 'put back');
+      expect(find.text('Message put back'), findsOneWidget);
+    });
+
+    testWidgets('that moved is not reported as failed when a mailbox '
+        'cannot be listed afterwards', (tester) async {
+      // An expired sign-in on one of the five accounts failed its folder
+      // listing, and every account was listed before anything was said.
+      final engine = _ListingFails();
+      final c = await pump(tester, engine: engine);
+      final m = first(tester);
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+      final at = folderAt(tester, (f) =>
+          f.accountId == m.accountId &&
+          f.id != m.folderId &&
+          f.role == FolderRole.user);
+      engine.failing = true;
+
+      await dropOn(tester, m, at);
+
+      final list = c.read(messagesProvider(folder)).value!;
+      expect(list.any((x) => x.id == m.id), isFalse, reason: 'moved out');
+      expect(find.textContaining('moved to'), findsOneWidget);
+      expect(find.textContaining('Could not move'), findsNothing);
+    });
+
+    testWidgets('from another window, though in no list here, can be undone',
+        (tester) async {
+      final engine = _ListingFails();
+      final c = await pump(tester, engine: engine);
+      final m = first(tester);
+      final folders = c.read(folderIndexProvider).values.where((f) =>
+          f.accountId == m.accountId &&
+          f.role == FolderRole.user &&
+          f.parentId == null);
+      final from = folders.first;
+      final to = folders.last;
+      // Another window's list: the folder is not open here.
+      final theirs = (await tester.runAsync(() => engine.loadMessages(from.id)))!
+          .first;
+      final at = folderAt(tester, (f) => f.id == to.id);
+      engine.failing = true;
+
+      await dropOn(tester, theirs, at);
+
+      expect(find.textContaining('moved to'), findsOneWidget);
+      expect(find.widgetWithText(SnackBarAction, 'Undo'), findsOneWidget);
+      expect(find.textContaining('Could not move'), findsNothing);
+    });
+
+    testWidgets('from another window, half moved, shows here what went',
+        (tester) async {
+      // The connection lost part way: the open list went on without the
+      // message that had come into it, until the next refresh.
+      final engine = _StopsAfterOne();
+      final c = await pump(tester, engine: engine);
+      final open = c.read(effectiveSelectedFolderIdProvider)!;
+      final to = first(tester).folderId;
+      final from = c.read(folderIndexProvider).values.firstWhere((f) =>
+          f.accountId == first(tester).accountId &&
+          f.role == FolderRole.user);
+      final theirs = (await tester.runAsync(() => engine.loadMessages(from.id)))!
+          .take(2)
+          .toList();
+
+      bridge.drop(
+        const [],
+        label: messageDragLabel,
+        text: theirs.map((m) => m.id).join('\n'),
+        at: folderAt(tester, (f) => f.id == to),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Moved 1 of 2'), findsOneWidget);
+      final list = c.read(messagesProvider(open)).value!;
+      expect(
+        list.any((x) =>
+            x.subject == theirs.first.subject && x.date == theirs.first.date),
+        isTrue,
+        reason: 'the one that went',
+      );
     });
 
     testWidgets('anywhere else, with nothing being written, is left alone',
@@ -246,4 +404,36 @@ void main() {
           reason: 'a file from outside would start a message; our own does not');
     });
   });
+}
+
+/// Moves the first of a batch and then loses the connection, as a server
+/// that drops part way does.
+class _StopsAfterOne extends SampleMailEngine {
+  @override
+  Future<List<MessageMove>> moveMessages(
+    List<String> messageIds,
+    String toFolderId,
+  ) async {
+    if (messageIds.length < 2) {
+      return super.moveMessages(messageIds, toFolderId);
+    }
+    final done = await super.moveMessages([messageIds.first], toFolderId);
+    throw PartialMove(
+      done: done,
+      moved: [messageIds.first],
+      cause: StateError('connection lost'),
+    );
+  }
+}
+
+/// Answers everything but a folder listing once [failing] is set, the way a
+/// mailbox whose sign-in has expired does.
+class _ListingFails extends SampleMailEngine {
+  bool failing = false;
+
+  @override
+  Future<List<MailFolder>> loadFolders(String accountId) {
+    if (failing) throw StateError('signed out');
+    return super.loadFolders(accountId);
+  }
 }

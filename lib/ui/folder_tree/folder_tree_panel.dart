@@ -315,7 +315,13 @@ class _FolderSearchField extends ConsumerStatefulWidget {
 }
 
 class _FolderSearchFieldState extends ConsumerState<_FolderSearchField> {
-  final _controller = TextEditingController();
+  /// Started from the search, and kept to it, because the search outlives
+  /// the box. On the phone the drawer throws the box away as it closes, and
+  /// it came back empty over a tree still filtered by what had been typed.
+  /// Put away, the search is emptied from outside, and the tablet's box went
+  /// on showing it over a tree that no longer was.
+  late final _controller =
+      TextEditingController(text: ref.read(folderSearchQueryProvider));
 
   @override
   void dispose() {
@@ -326,6 +332,13 @@ class _FolderSearchFieldState extends ConsumerState<_FolderSearchField> {
   @override
   Widget build(BuildContext context) {
     final query = ref.watch(folderSearchQueryProvider);
+    ref.listen<String>(folderSearchQueryProvider, (_, next) {
+      if (_controller.text == next) return;
+      _controller.value = TextEditingValue(
+        text: next,
+        selection: TextSelection.collapsed(offset: next.length),
+      );
+    });
     // Slimmer than a text field likes to be, for the folders' sake.
     const iconRoom = BoxConstraints(minWidth: 36, minHeight: 32);
     return Padding(

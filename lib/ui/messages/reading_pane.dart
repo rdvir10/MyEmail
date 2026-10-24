@@ -253,6 +253,11 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
 
     return Focus(
       focusNode: _node,
+      // On a screen of its own the message has the keyboard from the start.
+      // There is nothing else there to have it, and a key pressed with only
+      // the screen focused reached neither this pane nor the shortcuts
+      // around it.
+      autofocus: widget.focusNode == null,
       onKeyEvent: _onKey,
       child: PaneFocusFrame(
         node: _node,

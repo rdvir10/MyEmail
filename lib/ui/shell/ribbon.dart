@@ -151,10 +151,12 @@ class _RibbonState extends ConsumerState<Ribbon> {
               ? Icons.mark_email_unread_outlined
               : Icons.mark_email_read_outlined,
           label: message?.isRead ?? false ? 'Unread' : 'Read',
+          // Through the list's actions, as the shortcuts and menus are:
+          // the list alone knows only its own rows, so a search hit from
+          // another folder was left as it was, and a refusal was never said.
           onPressed: has
-              ? () => ref
-                    .read(messagesProvider(listId).notifier)
-                    .setRead(message.id, !message.isRead)
+              ? () => MessageActions(ref, listId)
+                    .setRead(context, [message], !message.isRead)
               : null,
         ),
         const Spacer(),

@@ -1,10 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/draft.dart';
+import 'package:myemail/domain/window_handoff.dart';
 import 'package:myemail/domain/message_sort.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/state/conversations.dart';
 import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/domain/folder_role.dart';
@@ -22,6 +29,7 @@ import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 import 'package:myemail/ui/shell/app_shortcuts.dart';
 import 'package:myemail/ui/shell/pane_focus.dart';
+import 'package:myemail/ui/shell/window_host.dart';
 
 import 'helpers/open_search.dart';
 
@@ -1119,6 +1127,128 @@ void main() {
     });
   });
 
+  group('on a message of its own', () {
+    // The phone's message screen, the tablet's in portrait, a popped-out
+    // message and a message window are routes of their own, out of reach
+    // of the shell's keys, and none of them answered one.
+    Future<ProviderContainer> pumpPhone(
+      WidgetTester tester, {
+      MailEngine? engine,
+    }) async {
+      tester.view.physicalSize = const Size(400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c = ProviderContainer(
+        overrides: [
+          uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+          if (engine != null) mailEngineProvider.overrideWithValue(engine),
+        ],
+      );
+      addTearDown(c.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: const MaterialApp(home: AppShell()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return c;
+    }
+
+    ComposeScreen compose(WidgetTester tester) =>
+        tester.widget<ComposeScreen>(find.byType(ComposeScreen));
+
+    testWidgets('on a phone, Ctrl+R replies to it, as soon as it opens',
+        (tester) async {
+      await pumpPhone(tester);
+      final m = tester.widget<MessageTile>(find.byType(MessageTile).first)
+          .message;
+      await tester.tap(find.byType(MessageTile).first);
+      await tester.pumpAndSettle();
+      expect(find.byType(MessageScreen), findsOneWidget);
+
+      await press(tester, LogicalKeyboardKey.keyR, control: true);
+
+      expect(find.byType(ComposeScreen), findsOneWidget);
+      expect(compose(tester).draft.kind, ComposeKind.reply);
+      expect(compose(tester).draft.originalMessageId, m.id);
+    });
+
+    testWidgets('on a phone, Ctrl+D deletes it and the screen goes with it',
+        (tester) async {
+      final c = await pumpPhone(tester);
+      final m = tester.widget<MessageTile>(find.byType(MessageTile).first)
+          .message;
+      await tester.tap(find.byType(MessageTile).first);
+      await tester.pumpAndSettle();
+
+      await press(tester, LogicalKeyboardKey.keyD, control: true);
+
+      expect(find.byType(MessageScreen), findsNothing);
+      expect(listIds(c), isNot(contains(m.id)));
+    });
+
+    testWidgets('on a phone, Ctrl+Shift+V takes the screen away once the '
+        'folder is chosen', (tester) async {
+      // It waited for the server first, and then closed whatever was on
+      // top by then: a reply started from the message in the meantime.
+      final engine = _HeldMoves();
+      final c = await pumpPhone(tester, engine: engine);
+      final m = tester.widget<MessageTile>(find.byType(MessageTile).first)
+          .message;
+      await tester.tap(find.byType(MessageTile).first);
+      await tester.pumpAndSettle();
+
+      final to = c.read(foldersProvider).value![m.accountId]!.firstWhere(
+          (f) => f.role == FolderRole.user && f.parentId == null);
+
+      await press(tester, LogicalKeyboardKey.keyV, control: true, shift: true);
+      await tester.tap(find.byKey(ValueKey('move-tree-${to.id}')));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(MessageScreen), findsNothing,
+          reason: 'gone while the server is still answering');
+      Navigator.of(tester.element(find.byType(AppShell))).push(
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(body: Text('Opened since')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      engine.letGo();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Opened since'), findsOneWidget);
+      expect(listIds(c), isNot(contains(m.id)));
+    });
+
+    testWidgets('in a window, Ctrl+F forwards that message, not the one '
+        'selected', (tester) async {
+      final c = await pump(tester);
+      final ids = listIds(c);
+      final theirs = c
+          .read(messagesProvider(c.read(effectiveSelectedFolderIdProvider)!))
+          .value!
+          .firstWhere((m) => m.id != selected(c) && m.id != ids.first);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: MaterialApp(home: WindowHost(request: MessageWindow(theirs))),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(selected(c), isNot(theirs.id));
+
+      await press(tester, LogicalKeyboardKey.keyF, control: true);
+
+      expect(find.byType(ComposeScreen), findsOneWidget);
+      expect(compose(tester).draft.kind, ComposeKind.forward);
+      expect(compose(tester).draft.originalMessageId, theirs.id);
+    });
+  });
+
   group('while writing', () {
     testWidgets('Esc closes an empty message without a word', (tester) async {
       await pump(tester);
@@ -1158,4 +1288,20 @@ void main() {
       expect(find.text('Message sent'), findsOneWidget);
     });
   });
+}
+
+/// Moves that wait to be let go, as a server's do for a round trip.
+class _HeldMoves extends SampleMailEngine {
+  final _gate = Completer<void>();
+
+  void letGo() => _gate.complete();
+
+  @override
+  Future<List<MessageMove>> moveMessages(
+    List<String> messageIds,
+    String toFolderId,
+  ) async {
+    await _gate.future;
+    return super.moveMessages(messageIds, toFolderId);
+  }
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/quick_step.dart';
 import 'package:myemail/state/message_providers.dart';
@@ -50,17 +51,24 @@ void main() {
     FakeWebViewPlatform.install();
   });
 
-  ProviderContainer container() {
+  ProviderContainer container({SampleMailEngine? engine}) {
     final c = ProviderContainer(
-      overrides: [uiStateStoreProvider.overrideWithValue(store)],
+      overrides: [
+        uiStateStoreProvider.overrideWithValue(store),
+        if (engine != null) mailEngineProvider.overrideWithValue(engine),
+      ],
     );
     addTearDown(c.dispose);
     return c;
   }
 
-  Future<ProviderContainer> pump(WidgetTester tester, Size size) async {
+  Future<ProviderContainer> pump(
+    WidgetTester tester,
+    Size size, {
+    SampleMailEngine? engine,
+  }) async {
     _useSize(tester, size);
-    final c = container();
+    final c = container(engine: engine);
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: c,
@@ -177,6 +185,52 @@ void main() {
       expect(c.read(selectedMessageProvider)!.isRead, !wasRead);
       expect(button(wasRead ? 'Read' : 'Unread'), findsOneWidget,
           reason: 'and now it offers the other direction');
+    });
+
+    testWidgets('Read and Unread change a search hit from another folder',
+        (tester) async {
+      // The button asked the open list, which knows only its own rows, and
+      // a hit from elsewhere was left as it was without a word.
+      final engine = SampleMailEngine();
+      final c = await pump(tester, _landscapeTablet, engine: engine);
+      final listId = c.read(effectiveSelectedFolderIdProvider)!;
+      final inList = {
+        for (final m in c.read(messagesProvider(listId)).value!) m.id,
+      };
+      await openSearch(tester);
+      await tester.enterText(searchField, 'the');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+      final hit = tester
+          .widgetList<MessageTile>(find.byType(MessageTile).hitTestable())
+          .map((t) => t.message)
+          // One already read, which opening it leaves alone.
+          .firstWhere((m) => !inList.contains(m.id) && m.isRead);
+      await tester.tap(find.byWidgetPredicate(
+          (w) => w is MessageTile && w.message.id == hit.id));
+      await tester.pumpAndSettle();
+
+      await tester.tap(button('Unread'));
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+
+      expect((await engine.cachedMessage(hit.id))!.isRead, isFalse);
+      expect(button('Read'), findsOneWidget,
+          reason: 'and the button follows it');
+    });
+
+    testWidgets('Read and Unread say so when the server refuses',
+        (tester) async {
+      await pump(tester, _landscapeTablet, engine: _RefusesFlags());
+      // One already read, which opening it leaves alone.
+      await tester.tap(find.byWidgetPredicate(
+          (w) => w is MessageTile && w.message.isRead).first);
+      await tester.pumpAndSettle();
+
+      await tester.tap(button('Unread'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('the server said no'), findsOneWidget);
     });
 
     testWidgets('Delete takes that message out of the list', (tester) async {
@@ -305,4 +359,10 @@ void main() {
       expect(find.text('Read it applied'), findsOneWidget);
     });
   });
+}
+
+class _RefusesFlags extends SampleMailEngine {
+  @override
+  Future<void> setRead(String messageId, bool isRead) async =>
+      throw StateError('the server said no');
 }

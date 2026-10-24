@@ -3,13 +3,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/files/file_bridge.dart';
+import '../../domain/mail_message.dart';
 import '../../state/attachment_providers.dart';
 import '../../state/compose_providers.dart' show recipientsOnce;
 import '../../state/drop_providers.dart';
+import '../../state/folder_drag.dart';
 import '../../state/message_providers.dart';
 import '../../state/message_transfer.dart';
 import '../../state/providers.dart';
 import '../folder_tree/folder_tile.dart';
+import '../messages/message_actions.dart';
 import '../compose/open_compose.dart';
 import '../../domain/draft.dart';
 
@@ -152,28 +155,45 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
     if (claimed != null && dropped.files.isNotEmpty) claimed(dropped.files);
   }
 
+  /// The same move as a drag onto the tree, so the same folders refuse it
+  /// and it is reported, undone and half done the same way.
+  ///
+  /// In split screen every drag of a message goes out through the system,
+  /// even one that stays in this window, so this is the only way one
+  /// reaches a folder there. It went to the engine directly, and filed
+  /// received mail under Sent, failed on All Inboxes, said "moved" of a drop
+  /// on the folder the message was already in, and offered no Undo.
   Future<void> _move(List<String> ids, String folderId) async {
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    final name = ref.read(folderIndexProvider)[folderId]?.displayName ?? '';
+    final target = ref.read(folderIndexProvider)[folderId];
+    if (target == null) return;
+    final List<MailMessage> messages;
     try {
-      // Through the engine rather than a list: the messages may be another
-      // window's, and not in any list here. Every list is re-read after.
-      await ref.read(mailEngineProvider).moveMessages(ids, folderId);
-      ref.invalidate(messagesProvider);
-      for (final account in ref.read(accountsProvider).value ?? const []) {
-        await ref.read(foldersProvider.notifier).refreshAccount(account.id);
-      }
-      messenger
-        ?..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(duration: kBottomMessage, 
-          content: Text(
-            '${ids.length == 1 ? 'Message' : '${ids.length} messages'} moved to $name',
-          ),
-        ));
+      // From the cache, which every window shares: the messages may be
+      // another window's, and in no list here.
+      final engine = ref.read(mailEngineProvider);
+      messages = [for (final id in ids) ?await engine.cachedMessage(id)];
     } catch (e) {
-      messenger
+      if (!mounted) return;
+      ScaffoldMessenger.maybeOf(context)
         ?..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not move: $e')));
+        ..showSnackBar(SnackBar(
+            duration: kBottomMessage, content: Text('Could not move: $e')));
+      return;
+    }
+    // Refused without a word, as the tree refuses it: there the folder
+    // simply does not take the drag.
+    if (!mounted || !canDropMessagesOn(messages, target)) return;
+    final moving = [
+      for (final m in messages)
+        if (m.folderId != folderId) m,
+    ];
+    final listId = ref.read(effectiveSelectedFolderIdProvider) ?? folderId;
+    final moved =
+        await MessageActions(ref, listId).moveTo(context, moving, folderId);
+    // The long press that started the drag ticked the row. Left ticked,
+    // the bar went on counting a message no longer in the list.
+    if (moved && mounted) {
+      ref.read(selectedMessageIdsProvider.notifier).removeAll(ids);
     }
   }
 

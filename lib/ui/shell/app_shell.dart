@@ -128,7 +128,9 @@ class _AppShellState extends ConsumerState<AppShell>
       Navigator.of(context),
       ref.read(putAwayGuardsProvider),
     );
-    if (!mounted) return;
+    // Back while that went on, and looking at the list again: moved now, it
+    // would jump to the Inbox's top under the person reading it.
+    if (!mounted || isInFront()) return;
     ref.read(searchOpenProvider.notifier).close();
     ref.read(folderSearchQueryProvider.notifier).clear();
     ref.read(selectedMessageIdsProvider.notifier).clear();
@@ -868,19 +870,24 @@ class MessageScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          message.subject,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+    // The shell's keys too, on this message rather than the selected one:
+    // a route of its own, this screen is out of their reach.
+    return AppShortcuts(
+      message: message,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(
+            message.subject,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          centerTitle: false,
         ),
-        centerTitle: false,
-      ),
-      body: ReadingPane(
-        message: message,
-        // Its own node: this screen may sit on top of the shell's pane.
-        onEscape: () => Navigator.of(context).maybePop(),
+        body: ReadingPane(
+          message: message,
+          // Its own node: this screen may sit on top of the shell's pane.
+          onEscape: () => Navigator.of(context).maybePop(),
+        ),
       ),
     );
   }

@@ -157,6 +157,8 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.tap(inBar(find.byTooltip('Mark read')));
+      // The hits are asked for again, after the search's own pause.
+      await tester.pump(const Duration(milliseconds: 500));
       await tester.pumpAndSettle();
 
       expect(engine.markedRead, {hits[0].id, hits[2].id});

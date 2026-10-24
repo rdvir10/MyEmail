@@ -24,6 +24,7 @@ import 'package:myemail/data/compose/quote_builder.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/ui/common/problem_view.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
+import 'package:myemail/ui/compose/header_fields.dart';
 import 'package:myemail/ui/compose/open_compose.dart';
 
 import 'fakes/fake_imap_transport.dart';
@@ -44,6 +45,16 @@ Draft _draft({
       htmlBody: html,
       savedAs: savedAs,
     );
+
+/// The compose screen's Subject line.
+Finder subjectField() => find.descendant(
+      of: find.byWidgetPredicate(
+          (w) => w is HeaderField && w.label == 'Subject'),
+      matching: find.byType(TextField),
+    );
+
+String subject(WidgetTester tester) =>
+    tester.widget<TextField>(subjectField()).controller!.text;
 
 void main() {
   group('isWorthSaving', () {
@@ -681,6 +692,318 @@ void main() {
         );
       });
 
+      group('and back before it has finished', () {
+        // Saving on the way out takes seconds on Graph. Back within them,
+        // the person went on typing, and the screen was then taken away
+        // from under them, with what they had typed since saved nowhere.
+        const draftsId = 'acct-personal:[Gmail]/Drafts';
+
+        void leave(WidgetTester tester) {
+          for (final state in [
+            AppLifecycleState.inactive,
+            AppLifecycleState.hidden,
+            AppLifecycleState.paused,
+          ]) {
+            tester.binding.handleAppLifecycleStateChanged(state);
+          }
+        }
+
+        void comeBack(WidgetTester tester) {
+          for (final state in [
+            AppLifecycleState.hidden,
+            AppLifecycleState.inactive,
+            AppLifecycleState.resumed,
+          ]) {
+            tester.binding.handleAppLifecycleStateChanged(state);
+          }
+        }
+
+        /// Where closing for the last put-away got to: null while it is
+        /// still going, then whether it got all the way down.
+        bool? closed;
+
+        /// How many put-aways there have been, so an earlier one ending
+        /// does not speak for the last.
+        var putAways = 0;
+
+        /// Put away while [engine] still holds the saves.
+        Future<void> putAwayWhileHeld(WidgetTester tester) async {
+          closed = null;
+          final last = ++putAways;
+          leave(tester);
+          final guards = ProviderScope.containerOf(
+            tester.element(find.byType(ComposeScreen)),
+          ).read(putAwayGuardsProvider);
+          unawaited(closeForPutAway(
+            tester.state<NavigatorState>(find.byType(Navigator)),
+            guards,
+          ).then((all) {
+            if (last == putAways) closed = all;
+          }));
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+
+        /// Put away, and back while [engine] still holds the saves.
+        Future<void> putAwayAndComeBack(WidgetTester tester) async {
+          await putAwayWhileHeld(tester);
+          comeBack(tester);
+        }
+
+        /// The saves [engine] holds let go, and everything waiting on them
+        /// done.
+        Future<void> letGo(WidgetTester tester, _HeldSaves engine) async {
+          engine.letGo();
+          for (var i = 0; i < 20 && closed == null; i++) {
+            await tester.pump(const Duration(milliseconds: 50));
+          }
+          await tester.pumpAndSettle(const Duration(milliseconds: 50));
+        }
+
+        /// Put away, back while [engine] holds the saves, and the saves
+        /// then let go. Whether the closing got all the way down.
+        Future<bool> putAwayAndBack(
+          WidgetTester tester,
+          _HeldSaves engine, {
+          String? typedMeanwhile,
+        }) async {
+          await putAwayAndComeBack(tester);
+          if (typedMeanwhile != null) {
+            await tester.enterText(subjectField(), typedMeanwhile);
+          }
+          await letGo(tester, engine);
+          return closed!;
+        }
+
+        testWidgets('it stays open, with what was typed since',
+            (tester) async {
+          // Held from the first: the copy saved as the app went out of
+          // sight.
+          final engine = _HeldSaves(holdFrom: 1);
+          await open(tester, _draft(accountId: 'acct-personal'),
+              engine: engine);
+
+          expect(
+            await putAwayAndBack(tester, engine,
+                typedMeanwhile: 'Half written, and more'),
+            isFalse,
+          );
+
+          expect(find.byType(ComposeScreen), findsOneWidget);
+          expect(subject(tester), 'Half written, and more');
+        });
+
+        testWidgets('a later save replaces the copy it made, not a second',
+            (tester) async {
+          // Held from the second: the save of putting it away.
+          final engine = _HeldSaves(holdFrom: 2);
+          Future<List<String>> drafts() async =>
+              (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                  .map((m) => m.subject)
+                  .toList();
+          final before = await drafts();
+          await open(tester, _draft(accountId: 'acct-personal'),
+              engine: engine);
+
+          expect(await putAwayAndBack(tester, engine), isFalse);
+          await tester.enterText(subjectField(), 'Finished');
+          await tester.pageBack();
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Save draft'));
+          await tester.pumpAndSettle();
+
+          expect(find.byType(ComposeScreen), findsNothing);
+          expect(await drafts(), unorderedEquals([...before, 'Finished']));
+        });
+
+        testWidgets('a reopened draft saved again after is still one draft',
+            (tester) async {
+          // The save on the way out gave the draft a new name, and a later
+          // save went on replacing the old one, which was gone already.
+          final engine = _HeldSaves(holdFrom: 2);
+          Future<List<String>> drafts() async =>
+              (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                  .map((m) => m.subject)
+                  .toList();
+          final saved =
+              (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                  .first;
+          final others = (await drafts())..remove(saved.subject);
+          await open(
+            tester,
+            _draft(accountId: 'acct-personal', savedAs: saved.id),
+            engine: engine,
+          );
+
+          expect(await putAwayAndBack(tester, engine), isFalse);
+          expect(engine.saves, 2, reason: 'saved on the way out, and back');
+          await tester.enterText(subjectField(), 'Finished');
+          await tester.pageBack();
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Save draft'));
+          await tester.pumpAndSettle();
+
+          expect(await drafts(), unorderedEquals([...others, 'Finished']));
+        });
+
+        testWidgets('thrown away after, it leaves nothing in Drafts',
+            (tester) async {
+          // What putting it away saved was a copy against the app being
+          // ended, as the background one is, not a draft the person kept.
+          // Discard still means discard.
+          final engine = _HeldSaves(holdFrom: 2);
+          Future<List<String>> drafts() async =>
+              (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                  .map((m) => m.subject)
+                  .toList();
+          final before = await drafts();
+          await open(tester, _draft(accountId: 'acct-personal'),
+              engine: engine);
+
+          expect(await putAwayAndBack(tester, engine), isFalse);
+          expect(engine.saves, 2, reason: 'saved on the way out, and back');
+          await tester.pageBack();
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Discard'));
+          await tester.pumpAndSettle(const Duration(milliseconds: 50));
+
+          expect(find.byType(ComposeScreen), findsNothing);
+          expect(await drafts(), unorderedEquals(before));
+        });
+
+        testWidgets('away again, what was typed while back is what is saved',
+            (tester) async {
+          // Back for a moment, a few words, and away again. The second
+          // save, with the words, was done before the first, which then
+          // put what it had read over them, and closed the screen.
+          final engine = _HeldSaves(holdFrom: 2, holdTo: 2);
+          Future<List<String>> drafts() async =>
+              (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                  .map((m) => m.subject)
+                  .toList();
+          final before = await drafts();
+          await open(tester, _draft(accountId: 'acct-personal'),
+              engine: engine);
+
+          await putAwayAndComeBack(tester);
+          await tester.enterText(subjectField(), 'Typed while back');
+          await putAwayWhileHeld(tester);
+          await letGo(tester, engine);
+          comeBack(tester);
+          await tester.pumpAndSettle(const Duration(milliseconds: 50));
+
+          expect(closed, isTrue);
+          expect(find.byType(ComposeScreen), findsNothing);
+          expect(
+              await drafts(), unorderedEquals([...before, 'Typed while back']));
+        });
+
+        group('and done with before it has finished', () {
+          // The screen is there to use while the save goes on, and what it
+          // saved is only known once it has. Left meanwhile, its copy was
+          // in Drafts with nothing to remove it or save over it.
+          testWidgets('thrown away, it leaves nothing in Drafts',
+              (tester) async {
+            final engine = _HeldSaves(holdFrom: 2);
+            Future<List<String>> drafts() async =>
+                (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                    .map((m) => m.subject)
+                    .toList();
+            final before = await drafts();
+            await open(tester, _draft(accountId: 'acct-personal'),
+                engine: engine);
+
+            await putAwayAndComeBack(tester);
+            await tester.pageBack();
+            await tester.pumpAndSettle();
+            await tester.tap(find.text('Discard'));
+            await tester.pump();
+            await letGo(tester, engine);
+
+            expect(find.byType(ComposeScreen), findsNothing);
+            expect(await drafts(), unorderedEquals(before));
+          });
+
+          testWidgets('saved, it is one draft', (tester) async {
+            // Saving is done before the save on the way out, whose copy
+            // then came after the screen had dropped the copy it knew of.
+            final engine = _HeldSaves(holdFrom: 2, holdTo: 2);
+            Future<List<String>> drafts() async =>
+                (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                    .map((m) => m.subject)
+                    .toList();
+            final before = await drafts();
+            await open(tester, _draft(accountId: 'acct-personal'),
+                engine: engine);
+
+            await putAwayAndComeBack(tester);
+            await tester.enterText(subjectField(), 'Finished');
+            await tester.pageBack();
+            await tester.pumpAndSettle();
+            await tester.tap(find.text('Save draft'));
+            await tester.pump();
+            await letGo(tester, engine);
+
+            expect(find.byType(ComposeScreen), findsNothing);
+            expect(await drafts(), unorderedEquals([...before, 'Finished']));
+          });
+
+          testWidgets('a reopened draft saved is still one draft',
+              (tester) async {
+            final engine = _HeldSaves(holdFrom: 2);
+            Future<List<String>> drafts() async =>
+                (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                    .map((m) => m.subject)
+                    .toList();
+            final saved =
+                (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                    .first;
+            final others = (await drafts())..remove(saved.subject);
+            await open(
+              tester,
+              _draft(accountId: 'acct-personal', savedAs: saved.id),
+              engine: engine,
+            );
+
+            await putAwayAndComeBack(tester);
+            await tester.enterText(subjectField(), 'Finished');
+            await tester.pageBack();
+            await tester.pumpAndSettle();
+            await tester.tap(find.text('Save draft'));
+            await tester.pump();
+            await letGo(tester, engine);
+
+            expect(find.byType(ComposeScreen), findsNothing);
+            expect(await drafts(), unorderedEquals([...others, 'Finished']));
+          });
+
+          testWidgets('a reopened draft sent leaves nothing in Drafts',
+              (tester) async {
+            final engine = _HeldSaves(holdFrom: 2);
+            Future<List<String>> drafts() async =>
+                (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                    .map((m) => m.subject)
+                    .toList();
+            final saved =
+                (await tester.runAsync(() => engine.loadMessages(draftsId)))!
+                    .first;
+            final others = (await drafts())..remove(saved.subject);
+            await open(
+              tester,
+              _draft(accountId: 'acct-personal', savedAs: saved.id),
+              engine: engine,
+            );
+
+            await putAwayAndComeBack(tester);
+            await tester.tap(find.byTooltip('Send'));
+            await tester.pump();
+            await letGo(tester, engine);
+
+            expect(find.byType(ComposeScreen), findsNothing);
+            expect(await drafts(), unorderedEquals(others));
+          });
+        });
+      });
+
       testWidgets('one that cannot be saved stays open', (tester) async {
         // Closing it then would lose it, which is the thing to avoid.
         await open(tester, _draft(accountId: 'acct-personal'),
@@ -943,5 +1266,31 @@ class _SlowSave extends SampleMailEngine {
       final copies = await loadMessages(folderId, limit: 1000);
       return copies.reduce((a, b) => a.uid > b.uid ? a : b).id;
     });
+  }
+}
+
+/// Saves drafts once the test lets them go, the way a slow connection
+/// does: from the [holdFrom]th save on, counting from one.
+class _HeldSaves extends SampleMailEngine {
+  _HeldSaves({required this.holdFrom, this.holdTo});
+
+  final int holdFrom;
+
+  /// The last save held; null holds every one from [holdFrom] on. A save
+  /// asked for later then goes straight through, and can be done first.
+  final int? holdTo;
+
+  final _gate = Completer<void>();
+
+  /// How many saves have been asked for.
+  var saves = 0;
+
+  void letGo() => _gate.complete();
+
+  @override
+  Future<String?> saveDraft(Draft draft) async {
+    final n = ++saves;
+    if (n >= holdFrom && n <= (holdTo ?? n)) await _gate.future;
+    return super.saveDraft(draft);
   }
 }

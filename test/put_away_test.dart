@@ -206,6 +206,47 @@ void main() {
       expect(c.read(searchOpenProvider), isFalse);
     });
 
+    testWidgets('back while a screen was still closing, everything stays',
+        (tester) async {
+      // A message being written takes seconds to save on the way out. Back
+      // within them, the screen was taken away and the list reset under
+      // the person, who was by then looking at it.
+      await pumpApp(tester);
+      c.read(selectedFolderIdProvider.notifier).select(sent);
+      c.read(searchOpenProvider.notifier).open();
+      final saved = Completer<void>();
+      push(tester, _SlowToClose(saved.future));
+      await tester.pumpAndSettle();
+      for (final state in [
+        AppLifecycleState.inactive,
+        AppLifecycleState.hidden,
+        AppLifecycleState.paused,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+
+      putAway.add(null);
+      await tester.pump();
+      for (final state in [
+        AppLifecycleState.hidden,
+        AppLifecycleState.inactive,
+        AppLifecycleState.resumed,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+        await tester.pump();
+      }
+      saved.complete();
+      await tester.pumpAndSettle();
+
+      expect(find.text('still saving'), findsOneWidget);
+      expect(c.read(effectiveSelectedFolderIdProvider), sent);
+      expect(c.read(searchOpenProvider), isTrue);
+      // Back in front, the app asks for its folders again; its answer is
+      // let in before the test ends.
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    });
+
     testWidgets('a sign-in under way is left for the person to finish',
         (tester) async {
       // Microsoft's is approved in the Authenticator app, and an app
@@ -220,4 +261,28 @@ void main() {
       expect(find.byType(AddAccountScreen), findsOneWidget);
     });
   });
+}
+
+/// A screen that may close once [saved] is done, the way one that saves
+/// first does.
+class _SlowToClose extends ConsumerStatefulWidget {
+  const _SlowToClose(this.saved);
+
+  final Future<void> saved;
+
+  @override
+  ConsumerState<_SlowToClose> createState() => _SlowToCloseState();
+}
+
+class _SlowToCloseState extends ConsumerState<_SlowToClose>
+    with GuardsPutAway<_SlowToClose> {
+  @override
+  Future<bool> whenPutAway() async {
+    await widget.saved;
+    return true;
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      const Scaffold(body: Text('still saving'));
 }

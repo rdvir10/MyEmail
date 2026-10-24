@@ -105,9 +105,22 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// The background copy being saved, while it is.
   Future<void>? _backgroundSaving;
 
-  /// Being saved and closed because the app was put away; no background
-  /// copy is started meanwhile.
-  bool _closingForPutAway = false;
+  /// Where this message's own draft is: where it was opened from, and then
+  /// wherever putting the app away saved it, since a save gives it a new
+  /// name. Should the person be back before the screen closes, it stays
+  /// open, and a later save replaces that copy rather than leaving a second
+  /// beside it.
+  late String? _savedAs = widget.draft.savedAs;
+
+  /// The save of putting the app away, while it runs; no background copy
+  /// is started meanwhile. The person can be back, with this screen in
+  /// front of them, before it has finished.
+  Future<bool>? _puttingAway;
+
+  /// How many times the app has come back to the front, so a save on the
+  /// way out can tell whether the person was back while it ran, even if
+  /// they are away again by the time it ends.
+  var _timesBack = 0;
 
   /// The window has ended: sent, saved, discarded, moved or put away. No
   /// background copy is started after that.
@@ -190,13 +203,14 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused) _saveInBackground();
+    if (state == AppLifecycleState.resumed) _timesBack++;
   }
 
   /// Put what is written in Drafts as the app goes into the background.
   /// Quietly: nothing on screen changes, and a failure changes nothing
   /// either, because the window is still open with everything in it.
   void _saveInBackground() {
-    if (_sending || _closingForPutAway || _ended) return;
+    if (_sending || _puttingAway != null || _ended) return;
     _backgroundSaving ??=
         _copyToDrafts().whenComplete(() => _backgroundSaving = null);
   }
@@ -227,29 +241,106 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   @override
   Future<bool> whenPutAway() async {
     if (_sending) return false;
-    _closingForPutAway = true;
+    // The background copy started a moment ago, as the app went out of
+    // sight; it is dropped below once the real one is saved. Or the last
+    // put-away's save, the person having been back and away again before
+    // it had finished: this one saves over what that one saved.
+    await _quietSavesDone();
+    if (!mounted) return true;
+    // Back already, or leaving some other way: the screen stays, so there
+    // is nothing to save it for.
+    if (_sending || isInFront()) return false;
+    final saving = _saveForPutAway();
+    _puttingAway = saving;
     try {
-      // The background copy started a moment ago, as the app went out of
-      // sight; it is dropped below once the real one is saved.
-      await _backgroundSaving;
-      final Draft now;
+      return await saving;
+    } finally {
+      _puttingAway = null;
+    }
+  }
+
+  /// The save of [whenPutAway], and whether the screen may go once it is
+  /// done.
+  Future<bool> _saveForPutAway() async {
+    final timesBack = _timesBack;
+    final Draft now;
+    try {
+      now = await _currentDraft();
+    } on EditorUnreadable {
+      return false;
+    }
+    // Back while it was saved, even if away again since: what was read
+    // may not be all there is now, and the screen stays, for whatever the
+    // person does next with it.
+    bool backMeanwhile() => _timesBack != timesBack;
+    if (now.isWorthSaving && !_unchanged(now)) {
+      // A message with no draft of its own yet is saved over that copy:
+      // one draft in Drafts, not a second beside it.
+      final into = _savedAs ?? _backgroundCopy;
+      final String? savedAs;
       try {
-        now = await _currentDraft();
-      } on EditorUnreadable {
+        savedAs = (await saveDraft(ref, now.withSavedAs(into))).savedAs;
+      } catch (_) {
         return false;
       }
-      if (now.isWorthSaving && !_unchanged(now)) {
+      if (into != null && into == _backgroundCopy) {
+        _backgroundCopy = null;
+        _backgroundCopyOf = null;
+      }
+      if (_savedAs == null && backMeanwhile()) {
+        // With no draft of its own, what was saved is a copy against the
+        // app being ended, as the background one is, and it goes the same
+        // way: saved over next time, and thrown away if the message is.
+        _backgroundCopy = savedAs;
+        _backgroundCopyOf = _fingerprint(now);
+        return false;
+      }
+      _savedAs = savedAs;
+    }
+    if (mounted) _dropBackgroundCopy();
+    return !backMeanwhile();
+  }
+
+  /// Until no quiet save is under way: the background copy, or the save of
+  /// putting the app away. What either leaves in Drafts is only known once
+  /// it has finished, and a screen left before then left that copy behind,
+  /// with nothing to remove it or save over it.
+  Future<void> _quietSavesDone() async {
+    for (var saving = _backgroundSaving ?? _puttingAway;
+        saving != null;
+        saving = _backgroundSaving ?? _puttingAway) {
+      try {
+        await saving;
+      } catch (_) {
+        // How it went is its own business; only that it has ended matters.
+      }
+    }
+  }
+
+  /// Waits for the save of putting the app away, where one is under way,
+  /// before the screen is left by Send, Save, Discard or a window of its
+  /// own, with its buttons held meanwhile, so it is not left twice over.
+  /// False if it has gone in the meantime.
+  ///
+  /// Not for the background copy: [_dropBackgroundCopy] takes that out once
+  /// it has landed, and Save draft saves over it ([_saveForGood]), so a
+  /// message is sent or thrown away at once rather than after an upload.
+  Future<bool> _readyToLeave() async {
+    if (!mounted) return false;
+    if (_puttingAway == null) return true;
+    setState(() => _sending = true);
+    try {
+      for (var saving = _puttingAway; saving != null; saving = _puttingAway) {
         try {
-          await _saveForGood(now);
+          await saving;
         } catch (_) {
-          return false;
+          // How it went is its own business; only that it has ended matters.
         }
       }
-      if (mounted) _dropBackgroundCopy();
-      return true;
     } finally {
-      _closingForPutAway = false;
+      if (mounted) setState(() => _sending = false);
     }
+    return mounted;
   }
 
   /// Save [now] as the window closes on it, once a background copy still
@@ -263,7 +354,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// the copy with the file just picked went, and the older copy stayed.
   Future<void> _saveForGood(Draft now) async {
     await _backgroundSaving;
-    final into = widget.draft.savedAs ?? _backgroundCopy;
+    final into = _savedAs ?? _backgroundCopy;
     await saveDraft(ref, now.withSavedAs(into));
     if (into != null && into == _backgroundCopy) {
       _backgroundCopy = null;
@@ -512,6 +603,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       return;
     }
 
+    if (!await _readyToLeave()) return;
     setState(() {
       _sending = true;
       _invalid = null;
@@ -566,7 +658,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       builder: (context) => AlertDialog(
         title: const Text('Keep this message?'),
         content: Text(
-          widget.draft.savedAs == null
+          _savedAs == null
               ? 'It has not been sent. Saving puts it in Drafts, where you '
                   'can finish it here or anywhere else you read this mail.'
               : 'It has not been sent. Saving updates the copy in Drafts.',
@@ -612,7 +704,8 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
               'saved or sent: delete it when you are done with it.';
 
   /// What is on screen right now, as a draft.
-  Future<Draft> _currentDraft() async => widget.draft.copyWith(
+  Future<Draft> _currentDraft() async => widget.draft
+      .copyWith(
         accountId: _accountId,
         to: parseAddresses(_to.text),
         cc: parseAddresses(_cc.text),
@@ -620,12 +713,14 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
         subject: _subject.text,
         htmlBody: await _editor.getHtml(),
         attachments: _attachments,
-      );
+      )
+      .withSavedAs(_savedAs);
 
   /// Carry on writing in a window of its own. What has been typed goes
   /// across as it stands, and this copy closes without asking: the
   /// message has not been lost, it has moved.
   Future<void> _moveToWindow() async {
+    if (!await _readyToLeave()) return;
     final Draft draft;
     try {
       draft = await _currentDraft();
@@ -656,6 +751,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   }
 
   Future<void> _saveAndLeave() async {
+    if (!await _readyToLeave()) return;
     setState(() {
       _sending = true;
       _invalid = null;
@@ -706,7 +802,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
           case _LeaveChoice.save:
             await _saveAndLeave();
           case _LeaveChoice.discard:
-            if (!context.mounted) return;
+            if (!await _readyToLeave() || !context.mounted) return;
             _dropBackgroundCopy();
             Navigator.of(context).pop(false);
         }

@@ -9,7 +9,9 @@ import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../state/display_providers.dart';
 import '../../state/folder_tree.dart';
+import '../../state/message_providers.dart';
 import '../../state/providers.dart';
+import '../../state/search_providers.dart';
 
 /// The long-press menu for a folder: an Outlook-style bottom sheet whose
 /// entries are exactly the operations the provider allows on that folder.
@@ -48,6 +50,9 @@ Future<void> showFolderActionsSheet(
   );
   if (chosen == null || !context.mounted) return;
 
+  // Taken now: the lists are re-read once an action is over, and by then
+  // the row that was pressed may have gone.
+  final container = ProviderScope.containerOf(context, listen: false);
   final folders = ref.read(foldersProvider.notifier);
   final slashAllowed = _namesTakeSlash(ref, folder.accountId);
   switch (chosen) {
@@ -66,6 +71,7 @@ Future<void> showFolderActionsSheet(
       }
     case _FolderAction.markAllRead:
       await _guarded(context, () => folders.markAllRead(folder.id));
+      _rereadLists(container, folder);
     case _FolderAction.rename:
       await _promptForName(
         context,
@@ -110,6 +116,7 @@ Future<void> showFolderActionsSheet(
       );
       if (ok && context.mounted) {
         await _guarded(context, () => folders.empty(folder.id));
+        _rereadLists(container, folder);
       }
     case _FolderAction.delete:
       final descendants = _descendantCount(ref, folder);
@@ -127,6 +134,20 @@ Future<void> showFolderActionsSheet(
         await _guarded(context, () => folders.delete(folder.id));
       }
   }
+}
+
+/// Every list showing [folder]'s messages, asked again after a change to
+/// all of them at once. The engine puts its cache right, but a list on
+/// screen holds rows of its own: after Mark all as read they stayed bold
+/// until the next refresh a minute later, and an emptied folder went on
+/// listing messages whose bodies were gone. Asked whether or not it all
+/// went, since part of a folder may have been done before a failure.
+void _rereadLists(ProviderContainer container, MailFolder folder) {
+  container.invalidate(messagesProvider(folder.id));
+  if (folder.role == FolderRole.inbox) {
+    container.invalidate(messagesProvider(kUnifiedInboxId));
+  }
+  container.invalidate(searchResultsProvider);
 }
 
 /// Hiding is quiet and easily done by accident on a long press, so it says

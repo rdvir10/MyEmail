@@ -102,8 +102,16 @@ class MessageActions {
       );
       return true;
     } on PartialMove catch (part) {
-      // Some went: say how many, and offer those back.
+      // Some went: say how many, and offer those back. Those from elsewhere
+      // that went are in lists here all the same, which the list's own move
+      // would have re-read and the engine's does not.
       final done = [...moves, ...part.done];
+      if (elsewhere.isNotEmpty) {
+        _afterEngineChange(elsewhere, touched: [
+          for (final m in done) ...m.landedIn,
+          toFolderId,
+        ]);
+      }
       final n = done.fold(0, (sum, m) => sum + m.count);
       _say(to, 'Moved $n of ${messages.length}. ${part.message}',
           undo: done, of: n);

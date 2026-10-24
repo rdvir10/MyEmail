@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/draft.dart';
+import '../../domain/mail_message.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import '../../state/search_providers.dart';
@@ -14,6 +15,7 @@ import '../messages/forward_as_attachment.dart';
 import '../messages/full_screen_message.dart';
 import '../messages/list_keyboard.dart';
 import '../messages/message_actions.dart';
+import '../messages/move_to_sheet.dart';
 import '../messages/print_message.dart';
 import 'pane_focus.dart';
 
@@ -30,9 +32,15 @@ import 'pane_focus.dart';
 /// One table drives both the handler and the help sheet, so the sheet
 /// cannot describe a key the app does not answer to.
 class AppShortcuts extends ConsumerStatefulWidget {
-  const AppShortcuts({super.key, required this.child});
+  const AppShortcuts({super.key, required this.child, this.message});
 
   final Widget child;
+
+  /// The message the commands act on, for a message on a screen of its
+  /// own; null in the shell, where they act on the one selected. Such a
+  /// screen is a route of its own, which the shell's keys never reach, and
+  /// in a message window its message is not the selected one at all.
+  final MailMessage? message;
 
   @override
   ConsumerState<AppShortcuts> createState() => _AppShortcutsState();
@@ -53,13 +61,61 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
       alt: HardwareKeyboard.instance.isAltPressed,
     );
     if (command == null) return KeyEventResult.ignored;
+    // Over a message of its own, only what acts on that message or on none.
+    // The rest move about the panes and the list under the screen, where
+    // nothing they did could be seen.
+    if (widget.message != null && !_onItsOwn.contains(command)) {
+      return KeyEventResult.ignored;
+    }
     _run(command);
     return KeyEventResult.handled;
   }
 
+  static const _onItsOwn = {
+    AppCommand.newMessage,
+    AppCommand.newMeeting,
+    AppCommand.reply,
+    AppCommand.replyAll,
+    AppCommand.forward,
+    AppCommand.forwardAsAttachment,
+    AppCommand.print,
+    AppCommand.fullScreen,
+    AppCommand.delete,
+    AppCommand.markRead,
+    AppCommand.markUnread,
+    AppCommand.flag,
+    AppCommand.move,
+    AppCommand.sync,
+    AppCommand.help,
+  };
+
+  /// [AppShortcuts.message] as the list or the search has it now, so a flag
+  /// set a moment ago is seen; or the one selected, in the shell.
+  MailMessage? _target(String? listId) {
+    final given = widget.message;
+    if (given == null) return ref.read(selectedMessageProvider);
+    bool same(MailMessage m) => m.id == given.id;
+    return (listId == null
+            ? null
+            : ref.read(messagesProvider(listId)).value?.where(same).firstOrNull) ??
+        ref.read(searchResultsProvider).value?.where(same).firstOrNull ??
+        given;
+  }
+
+  /// A message on a screen of its own takes the screen with it when it is
+  /// deleted or moved, as the header's buttons do. That screen only, never
+  /// whatever has been opened over it.
+  void _leaveItsScreen() {
+    if (widget.message != null &&
+        mounted &&
+        (ModalRoute.isCurrentOf(context) ?? false)) {
+      Navigator.of(context).maybePop();
+    }
+  }
+
   Future<void> _run(AppCommand command) async {
     final listId = ref.read(effectiveSelectedFolderIdProvider);
-    final message = ref.read(selectedMessageProvider);
+    final message = _target(listId);
 
     switch (command) {
       case AppCommand.newMessage:
@@ -95,7 +151,9 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
         await printMessage(context, ref, message, body);
       case AppCommand.delete:
         if (message != null && listId != null) {
-          await MessageActions(ref, listId).delete(context, [message]);
+          final done = MessageActions(ref, listId).delete(context, [message]);
+          _leaveItsScreen();
+          await done;
         }
       case AppCommand.markRead:
       case AppCommand.markUnread:
@@ -111,9 +169,26 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
               .setFlagged(context, [message], !message.isFlagged);
         }
       case AppCommand.move:
-        if (message != null && listId != null) {
-          await MessageActions(ref, listId).moveWithPrompt(context, [message]);
+        if (message == null || listId == null) return;
+        final actions = MessageActions(ref, listId);
+        if (widget.message == null) {
+          await actions.moveWithPrompt(context, [message]);
+          return;
         }
+        // On a screen of its own, as the header's Move: the screen goes as
+        // soon as the folder is chosen. Waiting for the server first left
+        // the message up for a round trip, and a reply started from it in
+        // that time was what got closed when the move was done.
+        final target = await showMoveToSheet(
+          context,
+          accountId: message.accountId,
+          fromFolderId: message.folderId,
+          messageCount: 1,
+        );
+        if (target == null || !mounted) return;
+        final done = actions.moveTo(context, [message], target);
+        _leaveItsScreen();
+        await done;
       case AppCommand.search:
         ref.read(searchOpenProvider.notifier).open();
       case AppCommand.sync:

@@ -36,7 +36,13 @@ Future<bool> closeForPutAway(
       return true;
     }
     final guard = guards[route];
-    if (guard != null && !await guard()) return false;
+    if (guard != null) {
+      if (!await guard()) return false;
+      // Back already, while the guard did its work: what is on screen stays.
+      // A message's save on the way out takes seconds on Graph, and the
+      // screen was taken away from under someone typing in it again.
+      if (isInFront()) return false;
+    }
     // Closed already, by its guard or by the person.
     if (!route.isActive) continue;
     // Removed, not popped. A screen that asks before letting go has had
@@ -47,6 +53,12 @@ Future<bool> closeForPutAway(
   }
   return false;
 }
+
+/// Whether the app is in front again. Put away is said once the app is out
+/// of sight, but what it then does can take long enough for the person to
+/// have come back.
+bool isInFront() =>
+    WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
 
 /// For a screen that must deal with what it holds before the app, put away,
 /// closes it: [whenPutAway] keeps it, and says whether the screen may go.
