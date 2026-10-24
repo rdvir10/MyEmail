@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../state/search_providers.dart';
+import '../messages/search_bar.dart' show askSearchFolderName;
 import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
 import '../../domain/error_report.dart';
@@ -119,6 +121,19 @@ class FolderTreePanel extends ConsumerWidget {
                             row: row,
                             isSelected: selected == row.folder.id,
                             onTap: () {
+                              // A saved search runs again.
+                              final saved = savedSearchIdOf(row.folder.id);
+                              if (saved != null) {
+                                final search = ref
+                                    .read(savedSearchesProvider)
+                                    .where((s) => s.id == saved)
+                                    .firstOrNull;
+                                if (search != null) runSavedSearch(ref, search);
+                                final open = ref
+                                    .read(effectiveSelectedFolderIdProvider);
+                                if (open != null) onFolderSelected?.call(open);
+                                return;
+                              }
                               ref
                                   .read(selectedFolderIdProvider.notifier)
                                   .select(row.folder.id);
@@ -130,11 +145,15 @@ class FolderTreePanel extends ConsumerWidget {
                             onAutoExpand: () => ref
                                 .read(expandedFoldersProvider.notifier)
                                 .expand(row.folder.id),
-                            onLongPress: () => showFolderActionsSheet(
-                              context,
-                              ref,
-                              row.folder,
-                            ),
+                            onLongPress: () {
+                              final saved = savedSearchIdOf(row.folder.id);
+                              if (saved != null) {
+                                _savedSearchMenu(context, ref, saved);
+                              } else {
+                                showFolderActionsSheet(
+                                    context, ref, row.folder);
+                              }
+                            },
                             onDrop: row.folder.isSynthetic
                                 ? null
                                 : (dragged, zone) => _drop(
@@ -269,6 +288,50 @@ class FolderTreePanel extends ConsumerWidget {
     if (listId == null) return;
     await MessageActions(ref, listId)
         .moveTo(context, dragged.messages, toFolderId);
+  }
+
+  /// A saved search's own menu: Rename and Delete.
+  Future<void> _savedSearchMenu(
+    BuildContext context,
+    WidgetRef ref,
+    String id,
+  ) async {
+    final saved =
+        ref.read(savedSearchesProvider).where((s) => s.id == id).firstOrNull;
+    if (saved == null) return;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.drive_file_rename_outline),
+              title: const Text('Rename'),
+              onTap: () => Navigator.of(sheet).pop('rename'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Delete saved search'),
+              subtitle: const Text('The mail it finds stays where it is.'),
+              onTap: () => Navigator.of(sheet).pop('delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!context.mounted) return;
+    final searches = ref.read(savedSearchesProvider.notifier);
+    switch (choice) {
+      case 'rename':
+        final name = await askSearchFolderName(context, saved.name);
+        if (name != null && name.trim().isNotEmpty) {
+          searches.rename(id, name.trim());
+        }
+      case 'delete':
+        searches.remove(id);
+    }
   }
 
   Future<void> _drop(

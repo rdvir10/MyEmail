@@ -519,7 +519,7 @@ class MessageActions {
   /// list also held stayed in the results as it was, deleted or not.
   void _refreshSearch() {
     if (container.read(searchQueryProvider).trim().isNotEmpty) {
-      container.invalidate(searchResultsProvider);
+      container.invalidate(searchHitsProvider);
     }
     // And what a filter found on the server, which is from before this:
     // a message deleted from the list would come back from it.
@@ -564,7 +564,7 @@ class MessageActions {
     }) {
       container.invalidate(messagesProvider(folderId));
     }
-    container.invalidate(searchResultsProvider);
+    container.invalidate(searchHitsProvider);
     container.invalidate(filterHitsProvider);
     final index = container.read(folderIndexProvider);
     for (final accountId in {
@@ -706,7 +706,7 @@ Future<void> undoMoves(
       }) {
         container.invalidate(messagesProvider(folderId));
       }
-      container.invalidate(searchResultsProvider);
+      container.invalidate(searchHitsProvider);
       for (final accountId in {
         for (final m in moves) ...[
           ?index[m.fromFolderId]?.accountId,

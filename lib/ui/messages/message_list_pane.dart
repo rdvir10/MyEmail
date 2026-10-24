@@ -325,7 +325,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                   ),
                   const SizedBox(height: 8),
                   TextButton(
-                    onPressed: () => ref.invalidate(searchResultsProvider),
+                    onPressed: () => ref.invalidate(searchHitsProvider),
                     child: const Text('Try again'),
                   ),
                 ],

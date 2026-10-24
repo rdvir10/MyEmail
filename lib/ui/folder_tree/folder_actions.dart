@@ -152,7 +152,7 @@ void _rereadLists(ProviderContainer container, MailFolder folder) {
   if (folder.role == FolderRole.inbox) {
     container.invalidate(messagesProvider(kUnifiedInboxId));
   }
-  container.invalidate(searchResultsProvider);
+  container.invalidate(searchHitsProvider);
 }
 
 /// Hiding is quiet and easily done by accident on a long press, so it says

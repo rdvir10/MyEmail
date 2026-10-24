@@ -1,3 +1,4 @@
+import '../domain/search_refinement.dart' show SavedSearch, savedSearchRowId;
 import 'package:flutter/foundation.dart';
 
 import '../domain/account.dart';
@@ -119,7 +120,11 @@ class FolderTreeInput {
     this.searchQuery = '',
     this.showUnifiedInbox = true,
     this.accountsOnly = false,
+    this.savedSearches = const [],
   });
+
+  /// The searches kept to run again, shown under Saved searches.
+  final List<SavedSearch> savedSearches;
 
   final List<Account> accounts;
   final Map<String, List<MailFolder>> foldersByAccount;
@@ -290,6 +295,27 @@ List<TreeRow> buildTreeRows(FolderTreeInput input) {
   if (favorites.isNotEmpty) {
     rows.add(const SectionHeaderRow(title: 'Favourites', subtitle: null));
     rows.addAll(favorites);
+  }
+
+  // Outlook's Search Folders: a search kept to run again, which a tap runs.
+  // Not called that here: the tree's own box is Search folders.
+  if (input.savedSearches.isNotEmpty) {
+    rows.add(const SectionHeaderRow(title: 'Saved searches', subtitle: null));
+    for (final s in input.savedSearches) {
+      rows.add(FolderRow(
+        folder: MailFolder(
+          id: savedSearchRowId(s.id),
+          accountId: '',
+          name: s.name,
+          path: '',
+          role: FolderRole.unifiedInbox,
+          capabilities: const FolderCapabilities.synthetic(),
+        ),
+        depth: 0,
+        hasChildren: false,
+        isExpanded: false,
+      ));
+    }
   }
 
   final compare = folderComparator(input.orderOverrides);

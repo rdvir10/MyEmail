@@ -948,6 +948,7 @@ class GraphMailApi {
     final property = switch (field) {
       SearchField.all => null,
       SearchField.from => 'from',
+      SearchField.to => 'to',
       SearchField.subject => 'subject',
       SearchField.body => 'body',
       SearchField.attachment => 'attachment',

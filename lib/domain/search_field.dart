@@ -8,6 +8,9 @@
 enum SearchField {
   all('All'),
   from('From'),
+
+  /// Who it went to: Outlook's Sent To.
+  to('To'),
   subject('Subject'),
   body('Body'),
 

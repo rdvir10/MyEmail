@@ -7,6 +7,7 @@ import '../../data/contacts/device_contacts.dart';
 import '../../domain/draft.dart';
 import '../../domain/mail_message.dart';
 import '../../state/contact_providers.dart';
+import '../../state/sync_providers.dart' show syncSettingsProvider;
 import '../compose/open_compose.dart';
 
 /// The card for one person on a message, the sender or anyone it went to:
@@ -58,6 +59,10 @@ Future<void> showPersonCard(
     case _CopyAddress():
       await Clipboard.setData(ClipboardData(text: person.email));
       say('Address copied.');
+    case _Vip(:final vip):
+      await ref.read(syncSettingsProvider.notifier).setVip(person.email, vip);
+      say(vip ? '${person.display} is a VIP.' : '${person.display} is no '
+          'longer a VIP.');
   }
 }
 
@@ -82,6 +87,12 @@ final class _NewEmail extends _PersonAction {
 
 final class _CopyAddress extends _PersonAction {
   const _CopyAddress();
+}
+
+final class _Vip extends _PersonAction {
+  const _Vip(this.vip);
+
+  final bool vip;
 }
 
 /// The card itself; see [showPersonCard].
@@ -180,6 +191,27 @@ class PersonCard extends ConsumerWidget {
             title: const Text('Copy address'),
             onTap: () => choose(const _CopyAddress()),
           ),
+          // Outlook's VIPs: whose mail is worth a notification, even on an
+          // account set to tell of nobody else's.
+          if (ref
+                  .watch(syncSettingsProvider)
+                  .value
+                  ?.vips
+                  .contains(person.email.trim().toLowerCase()) ??
+              false)
+            ListTile(
+              key: const ValueKey('person-vip-off'),
+              leading: const Icon(Icons.star),
+              title: const Text('Remove from VIPs'),
+              onTap: () => choose(const _Vip(false)),
+            )
+          else
+            ListTile(
+              key: const ValueKey('person-vip-on'),
+              leading: const Icon(Icons.star_outline),
+              title: const Text('Add to VIPs'),
+              onTap: () => choose(const _Vip(true)),
+            ),
           const SizedBox(height: 8),
         ],
       ),

@@ -43,6 +43,24 @@ class _MessageSearchBarState extends ConsumerState<MessageSearchBar> {
     super.dispose();
   }
 
+  /// The search as it stands, kept under a name asked for.
+  Future<void> _save(String query) async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (_) => _NameDialog(initial: query.trim()),
+    );
+    if (name == null || name.trim().isEmpty || !mounted) return;
+    ref
+        .read(savedSearchesProvider.notifier)
+        .add(currentSearchAs(ref, name.trim()));
+    ref.read(recentSearchesProvider.notifier).remember(query);
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text('Saved: ${name.trim()}'),
+      ));
+  }
+
   @override
   Widget build(BuildContext context) {
     // The ribbon's Search button has no field of its own; it asks this one to
@@ -71,19 +89,66 @@ class _MessageSearchBarState extends ConsumerState<MessageSearchBar> {
               prefixIcon: const Icon(Icons.search, size: 18),
               // Puts the box away, the search with it. The box only came
               // out because it was asked for, so there is always a way back.
-              suffixIcon: IconButton(
-                icon: const Icon(Icons.close, size: 18),
-                tooltip: 'Close search',
-                onPressed: () {
-                  _controller.clear();
-                  ref.read(searchOpenProvider.notifier).close();
-                },
+              suffixIcon: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Kept to run again, under the tree's Saved searches:
+                  // Outlook's New Search Folder.
+                  if (query.trim().isNotEmpty)
+                    IconButton(
+                      key: const ValueKey('search-save'),
+                      icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+                      tooltip: 'Save this search',
+                      onPressed: () => _save(query),
+                    ),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    tooltip: 'Close search',
+                    onPressed: () {
+                      _controller.clear();
+                      ref.read(searchOpenProvider.notifier).close();
+                    },
+                  ),
+                ],
               ),
             ),
             onChanged: (value) =>
                 ref.read(searchQueryProvider.notifier).set(value),
+            onSubmitted: (value) =>
+                ref.read(recentSearchesProvider.notifier).remember(value),
           ),
         ),
+        // The last searches, while the box is empty, as Outlook offers them.
+        if (query.trim().isEmpty && ref.watch(recentSearchesProvider).isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Wrap(
+                key: const ValueKey('search-recent'),
+                spacing: 6,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  for (final recent in ref.watch(recentSearchesProvider))
+                    ActionChip(
+                      avatar: const Icon(Icons.history, size: 16),
+                      label: Text(recent),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () {
+                        _controller.text = recent;
+                        ref.read(searchQueryProvider.notifier).set(recent);
+                      },
+                    ),
+                  TextButton(
+                    onPressed: () =>
+                        ref.read(recentSearchesProvider.notifier).forgetAll(),
+                    child: const Text('Clear'),
+                  ),
+                ],
+              ),
+            ),
+          ),
         // Where in the message: everything, or the sender, the subject, the
         // body or a file's name alone. Chips that wrap, not segments: five
         // segments spread to the widest label's width each, and on a phone
@@ -106,6 +171,32 @@ class _MessageSearchBarState extends ConsumerState<MessageSearchBar> {
                       selected: ref.watch(searchFieldProvider) == field,
                       onSelected: (_) =>
                           ref.read(searchFieldProvider.notifier).set(field),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        // What the hits must also be: Outlook's search filters. Applied to
+        // what the server found, so a tap asks nothing again.
+        if (query.trim().isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Wrap(
+                key: const ValueKey('search-refine'),
+                spacing: 6,
+                runSpacing: 4,
+                children: [
+                  for (final r in SearchRefinement.values)
+                    FilterChip(
+                      key: ValueKey('search-refine-${r.name}'),
+                      label: Text(r.label),
+                      visualDensity: VisualDensity.compact,
+                      showCheckmark: false,
+                      selected: ref.watch(searchRefinementsProvider).contains(r),
+                      onSelected: (_) =>
+                          ref.read(searchRefinementsProvider.notifier).toggle(r),
                     ),
                 ],
               ),
@@ -146,3 +237,53 @@ class _MessageSearchBarState extends ConsumerState<MessageSearchBar> {
     );
   }
 }
+
+/// A name for a saved search, or a new one for one kept already.
+class _NameDialog extends StatefulWidget {
+  const _NameDialog({required this.initial});
+
+  final String initial;
+
+  @override
+  State<_NameDialog> createState() => _NameDialogState();
+}
+
+class _NameDialogState extends State<_NameDialog> {
+  late final _name = TextEditingController(text: widget.initial);
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Saved search'),
+        content: TextField(
+          key: const ValueKey('search-folder-name'),
+          controller: _name,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Name'),
+          onSubmitted: (v) => Navigator.of(context).pop(v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const ValueKey('search-folder-save'),
+            onPressed: () => Navigator.of(context).pop(_name.text),
+            child: const Text('Save'),
+          ),
+        ],
+      );
+}
+
+/// A name asked for a saved search, starting from [initial].
+Future<String?> askSearchFolderName(BuildContext context, String initial) =>
+    showDialog<String>(
+      context: context,
+      builder: (_) => _NameDialog(initial: initial),
+    );

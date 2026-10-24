@@ -2,10 +2,17 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'dart:convert';
+
 import '../data/mail_engine.dart';
+import '../data/ui_state_store.dart';
 import '../domain/mail_message.dart';
+import '../domain/search_refinement.dart';
 import 'folder_tree.dart';
+import 'meeting_providers.dart' show workWeekProvider;
 import 'providers.dart';
+
+export '../domain/search_refinement.dart';
 
 /// What the search box holds and where it looks.
 class SearchQuery extends Notifier<String> {
@@ -50,9 +57,14 @@ class SearchOpen extends Notifier<bool> {
 
   /// Away, and the search with it: a box put away with words still in it
   /// would leave the list showing hits with nothing on screen saying why.
+  /// The words are kept among the recent searches, and the filters go.
   void close() {
+    ref
+        .read(recentSearchesProvider.notifier)
+        .remember(ref.read(searchQueryProvider));
     state = false;
     ref.read(searchQueryProvider.notifier).clear();
+    ref.read(searchRefinementsProvider.notifier).clear();
   }
 }
 
@@ -116,14 +128,153 @@ final searchScopeProvider = Provider<SearchScope>((ref) {
   };
 });
 
-/// Search results, or null when the box is empty.
+/// The search filters chosen, under the box: see [SearchRefinement].
+class SearchRefinements extends Notifier<Set<SearchRefinement>> {
+  @override
+  Set<SearchRefinement> build() => const {};
+
+  void toggle(SearchRefinement r) =>
+      state = state.contains(r) ? ({...state}..remove(r)) : {...state, r};
+
+  void set(Set<SearchRefinement> value) => state = value;
+
+  void clear() => state = const {};
+}
+
+final searchRefinementsProvider =
+    NotifierProvider<SearchRefinements, Set<SearchRefinement>>(
+  SearchRefinements.new,
+);
+
+/// The last searches, newest first, offered when the box opens empty, as
+/// Outlook's recent searches. Kept on this device.
+class RecentSearches extends Notifier<List<String>> {
+  static const kept = 8;
+
+  @override
+  List<String> build() {
+    final store = ref.watch(uiStateStoreProvider);
+    listenSelf((previous, next) {
+      if (previous == null) return;
+      store.writeString(UiStateKeys.recentSearches, jsonEncode(next));
+    });
+    final raw = store.readString(UiStateKeys.recentSearches);
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final json = jsonDecode(raw);
+      return [
+        for (final q in json is List ? json : const [])
+          if (q is String && q.trim().isNotEmpty) q,
+      ];
+    } on FormatException {
+      return const [];
+    }
+  }
+
+  /// [query] first, once; two letters or more.
+  void remember(String query) {
+    final q = query.trim();
+    if (q.length < 2) return;
+    state = [
+      q,
+      for (final s in state)
+        if (s.toLowerCase() != q.toLowerCase()) s,
+    ].take(kept).toList();
+  }
+
+  void forgetAll() => state = const [];
+}
+
+final recentSearchesProvider =
+    NotifierProvider<RecentSearches, List<String>>(RecentSearches.new);
+
+/// The searches kept to run again, in the tree's Saved searches: see
+/// [SavedSearch]. In the backup.
+class SavedSearches extends Notifier<List<SavedSearch>> {
+  @override
+  List<SavedSearch> build() {
+    final store = ref.watch(uiStateStoreProvider);
+    listenSelf((previous, next) {
+      if (previous == null) return;
+      store.writeString(
+        UiStateKeys.savedSearches,
+        jsonEncode([for (final s in next) s.toJson()]),
+      );
+    });
+    return SavedSearch.listFromJson(
+        store.readString(UiStateKeys.savedSearches));
+  }
+
+  void add(SavedSearch search) => state = [...state, search];
+
+  void rename(String id, String name) => state = [
+        for (final s in state)
+          if (s.id == id) s.renamed(name) else s,
+      ];
+
+  void remove(String id) => state = [
+        for (final s in state)
+          if (s.id != id) s,
+      ];
+
+  static String newId() =>
+      'ss-${DateTime.now().toUtc().microsecondsSinceEpoch.toRadixString(36)}';
+}
+
+final savedSearchesProvider =
+    NotifierProvider<SavedSearches, List<SavedSearch>>(SavedSearches.new);
+
+/// The search as it stands, kept as [name]: the words, the field and the
+/// filters, and the scope as chosen in [folderId]'s list.
+SavedSearch currentSearchAs(WidgetRef ref, String name) {
+  final scope = ref.read(searchScopeProvider);
+  return SavedSearch(
+    id: SavedSearches.newId(),
+    name: name,
+    query: ref.read(searchQueryProvider).trim(),
+    field: ref.read(searchFieldProvider),
+    refinements: ref.read(searchRefinementsProvider),
+    accountId: scope.accountId,
+    folderId: scope.folderId,
+  );
+}
+
+/// [saved] run again: its folder opened where it was saved for one, and
+/// the search box put out with its words, field, filters and scope.
+void runSavedSearch(WidgetRef ref, SavedSearch saved) {
+  final index = ref.read(folderIndexProvider);
+  if (saved.folderId != null && index.containsKey(saved.folderId)) {
+    ref.read(selectedFolderIdProvider.notifier).select(saved.folderId);
+    ref.read(searchScopeChoiceProvider.notifier).set(SearchScopeChoice.folder);
+  } else if (saved.accountId != null) {
+    final inbox = index.values
+        .where((f) => f.accountId == saved.accountId && !f.isSynthetic)
+        .firstOrNull;
+    if (inbox != null) {
+      ref.read(selectedFolderIdProvider.notifier).select(inbox.id);
+    }
+    ref.read(searchScopeChoiceProvider.notifier).set(SearchScopeChoice.account);
+  } else {
+    ref
+        .read(searchScopeChoiceProvider.notifier)
+        .set(SearchScopeChoice.everywhere);
+  }
+  ref.read(searchFieldProvider.notifier).set(saved.field);
+  ref.read(searchRefinementsProvider.notifier).set(saved.refinements);
+  ref.read(searchQueryProvider.notifier).set(saved.query);
+  ref.read(searchOpenProvider.notifier).open();
+}
+
+/// What the server found for the search, or null when the box is empty:
+/// [searchResultsProvider] narrows it by the filters.
 ///
 /// A search that fails, with no server to be reached or every account
 /// needing a sign-in, is said at once and never run again by itself:
 /// Riverpod would otherwise run it ten times more over half a minute, every
 /// folder's search each time, with a spinner under the box throughout.
-/// Changing the words or the scope, or Try again, asks again.
-final searchResultsProvider = FutureProvider<List<MailMessage>?>((ref) async {
+/// Changing the words or the scope, or Try again, asks again. Read again
+/// after a change to the mail: invalidate this one, not the narrowing.
+final searchHitsProvider = FutureProvider<List<MailMessage>?>((ref) async {
   final query = ref.watch(searchQueryProvider).trim();
   if (query.isEmpty) return null;
 
@@ -142,4 +293,18 @@ final searchResultsProvider = FutureProvider<List<MailMessage>?>((ref) async {
   return ref
       .watch(mailEngineProvider)
       .searchMessages(query, scope, field: field);
+}, retry: (_, _) => null);
+
+/// Search results, or null when the box is empty: what the server found,
+/// as the filters under the box leave it. Changing a filter asks nothing
+/// again.
+final searchResultsProvider = FutureProvider<List<MailMessage>?>((ref) async {
+  final hits = await ref.watch(searchHitsProvider.future);
+  if (hits == null) return null;
+  return refineSearch(
+    hits,
+    ref.watch(searchRefinementsProvider),
+    now: DateTime.now(),
+    workWeek: ref.watch(workWeekProvider),
+  );
 }, retry: (_, _) => null);

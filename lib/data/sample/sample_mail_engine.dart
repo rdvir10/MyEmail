@@ -453,6 +453,8 @@ class SampleMailEngine implements MailEngine {
           SearchField.all =>
             '${m.subject} ${m.from.display} ${m.from.email} ${m.preview}',
           SearchField.from => '${m.from.display} ${m.from.email}',
+          SearchField.to =>
+            [for (final a in m.to) '${a.display} ${a.email}'].join(' '),
           SearchField.subject => m.subject,
           SearchField.body => m.preview,
           SearchField.attachment =>

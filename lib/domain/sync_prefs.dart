@@ -125,6 +125,116 @@ class PushPassPlan {
 /// network without a dropped connection looking like silence.
 const idleRenewInterval = Duration(minutes: 24);
 
+/// Outlook for Android's Do Not Disturb, for one account: quiet until a
+/// time (an hour, until tomorrow), every evening between two hours, and on
+/// the days off all day. Its mail still syncs; it is only not announced,
+/// then or after.
+@immutable
+class QuietRule {
+  const QuietRule({
+    this.until,
+    this.evenings = false,
+    this.from = 18,
+    this.to = 8,
+    this.weekends = false,
+    this.daysOff = const {DateTime.saturday, DateTime.sunday},
+  });
+
+  /// Quiet until then: For an hour, Until tomorrow.
+  final DateTime? until;
+
+  /// Every evening from [from] o'clock to [to] the next morning (or the
+  /// same day, where [to] comes after [from]).
+  final bool evenings;
+  final int from;
+  final int to;
+
+  /// All day on [daysOff], as `DateTime.weekday` numbers: the days not in
+  /// the work week when it was set, kept here because the background reads
+  /// this and not the work week.
+  final bool weekends;
+  final Set<int> daysOff;
+
+  /// Whether anything is set at all.
+  bool get isEmpty => until == null && !evenings && !weekends;
+
+  bool isQuiet(DateTime now) {
+    if (until != null && now.isBefore(until!)) return true;
+    if (weekends && daysOff.contains(now.weekday)) return true;
+    if (evenings) {
+      final h = now.hour;
+      if (from > to ? (h >= from || h < to) : (h >= from && h < to)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  QuietRule copyWith({
+    Object? until = _keep,
+    bool? evenings,
+    int? from,
+    int? to,
+    bool? weekends,
+    Set<int>? daysOff,
+  }) =>
+      QuietRule(
+        until: identical(until, _keep) ? this.until : until as DateTime?,
+        evenings: evenings ?? this.evenings,
+        from: from ?? this.from,
+        to: to ?? this.to,
+        weekends: weekends ?? this.weekends,
+        daysOff: daysOff ?? this.daysOff,
+      );
+
+  Map<String, Object?> toJson() => {
+        if (until != null) 'until': until!.toUtc().toIso8601String(),
+        'evenings': evenings,
+        'from': from,
+        'to': to,
+        'weekends': weekends,
+        'daysOff': daysOff.toList()..sort(),
+      };
+
+  /// As tolerant as [SyncPrefs.fromJson], for the same reason.
+  static QuietRule? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final until = json['until'];
+    final days = json['daysOff'];
+    int hour(Object? v, int fallback) =>
+        v is int && v >= 0 && v < 24 ? v : fallback;
+    return QuietRule(
+      until: until is String ? DateTime.tryParse(until)?.toLocal() : null,
+      evenings: json['evenings'] == true,
+      from: hour(json['from'], 18),
+      to: hour(json['to'], 8),
+      weekends: json['weekends'] == true,
+      daysOff: days is List
+          ? {
+              for (final d in days)
+                if (d is int && d >= 1 && d <= 7) d,
+            }
+          : const {DateTime.saturday, DateTime.sunday},
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is QuietRule &&
+      other.until == until &&
+      other.evenings == evenings &&
+      other.from == from &&
+      other.to == to &&
+      other.weekends == weekends &&
+      setEquals(other.daysOff, daysOff);
+
+  @override
+  int get hashCode =>
+      Object.hash(until, evenings, from, to, weekends, daysOff.length);
+}
+
+const _keep = Object();
+
 /// Background sync and notifications, which are two separate decisions.
 ///
 /// They were one switch, and that was wrong. Whether MyEmail keeps itself
@@ -143,7 +253,25 @@ class SyncPrefs {
     this.intervalMinutes = 15,
     this.notify = true,
     this.mutedAccountIds = const {},
+    this.quiet = const {},
+    this.vips = const {},
+    this.vipOnlyAccountIds = const {},
+    this.watchedFolderIds = const {},
   });
+
+  /// Do Not Disturb, by account: see [QuietRule].
+  final Map<String, QuietRule> quiet;
+
+  /// The people whose mail is always worth a notification, by address in
+  /// lower case: Outlook's VIPs.
+  final Set<String> vips;
+
+  /// Accounts that announce mail from [vips] and nothing else.
+  final Set<String> vipOnlyAccountIds;
+
+  /// Folders besides the Inboxes whose new mail is announced, by id; the
+  /// background checks them as it does the Inboxes.
+  final Set<String> watchedFolderIds;
 
   /// How often the background pass runs. Off by default: background work is a
   /// battery cost, and starting it uninvited on first run is not ours to do.
@@ -183,6 +311,16 @@ class SyncPrefs {
   bool notifiesFor(String accountId) =>
       syncs && notify && !mutedAccountIds.contains(accountId);
 
+  /// Whether [accountId] is in Do Not Disturb at [now].
+  bool quietFor(String accountId, DateTime now) =>
+      quiet[accountId]?.isQuiet(now) ?? false;
+
+  /// Whether mail from [email] to [accountId] is one to announce, as far as
+  /// VIPs go: anyone's, unless the account is for VIPs only.
+  bool announcesFrom(String accountId, String email) =>
+      !vipOnlyAccountIds.contains(accountId) ||
+      vips.contains(email.trim().toLowerCase());
+
   /// Notifications are switched on but nothing will ever find any. The
   /// Notifications screen has to say so rather than show a switch that is on
   /// above a phone that will stay silent.
@@ -197,14 +335,29 @@ class SyncPrefs {
     int? intervalMinutes,
     bool? notify,
     Set<String>? mutedAccountIds,
+    Map<String, QuietRule>? quiet,
+    Set<String>? vips,
+    Set<String>? vipOnlyAccountIds,
+    Set<String>? watchedFolderIds,
   }) {
     return SyncPrefs(
       mode: mode ?? this.mode,
       intervalMinutes: intervalMinutes ?? this.intervalMinutes,
       notify: notify ?? this.notify,
       mutedAccountIds: mutedAccountIds ?? this.mutedAccountIds,
+      quiet: quiet ?? this.quiet,
+      vips: vips ?? this.vips,
+      vipOnlyAccountIds: vipOnlyAccountIds ?? this.vipOnlyAccountIds,
+      watchedFolderIds: watchedFolderIds ?? this.watchedFolderIds,
     );
   }
+
+  /// [accountId]'s Do Not Disturb as [rule], or none.
+  SyncPrefs withQuiet(String accountId, QuietRule? rule) => copyWith(quiet: {
+        for (final e in quiet.entries)
+          if (e.key != accountId) e.key: e.value,
+        if (rule != null && !rule.isEmpty) accountId: rule,
+      });
 
   SyncPrefs withAccountMuted(String accountId, bool muted) {
     return copyWith(
@@ -221,6 +374,11 @@ class SyncPrefs {
         'intervalMinutes': intervalMinutes,
         'notify': notify,
         'muted': mutedAccountIds.toList(),
+        if (quiet.isNotEmpty)
+          'quiet': {for (final e in quiet.entries) e.key: e.value.toJson()},
+        if (vips.isNotEmpty) 'vips': vips.toList()..sort(),
+        if (vipOnlyAccountIds.isNotEmpty) 'vipOnly': vipOnlyAccountIds.toList(),
+        if (watchedFolderIds.isNotEmpty) 'watched': watchedFolderIds.toList(),
       };
 
   /// Tolerant on purpose: this is read in a background isolate where a throw
@@ -265,8 +423,22 @@ class SyncPrefs {
           for (final id in muted)
             if (id is String) id,
       },
+      quiet: {
+        if (json['quiet'] case final Map quiet)
+          for (final e in quiet.entries)
+            if (e.key is String) '${e.key}': ?QuietRule.fromJson(e.value),
+      },
+      vips: _strings(json['vips']),
+      vipOnlyAccountIds: _strings(json['vipOnly']),
+      watchedFolderIds: _strings(json['watched']),
     );
   }
+
+  static Set<String> _strings(Object? value) => {
+        if (value is List)
+          for (final s in value)
+            if (s is String && s.isNotEmpty) s,
+      };
 
   @override
   bool operator ==(Object other) =>
@@ -274,7 +446,11 @@ class SyncPrefs {
       other.mode == mode &&
       other.intervalMinutes == intervalMinutes &&
       other.notify == notify &&
-      setEquals(other.mutedAccountIds, mutedAccountIds);
+      setEquals(other.mutedAccountIds, mutedAccountIds) &&
+      mapEquals(other.quiet, quiet) &&
+      setEquals(other.vips, vips) &&
+      setEquals(other.vipOnlyAccountIds, vipOnlyAccountIds) &&
+      setEquals(other.watchedFolderIds, watchedFolderIds);
 
   @override
   int get hashCode =>

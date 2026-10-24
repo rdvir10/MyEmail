@@ -172,6 +172,7 @@ class FakeImapTransport implements ImapTransport {
     final key = switch (field) {
       SearchField.all => 'TEXT',
       SearchField.from => 'FROM',
+      SearchField.to => 'TO',
       SearchField.subject => 'SUBJECT',
       SearchField.body => 'BODY',
       SearchField.attachment => 'X-GM-RAW',
@@ -197,6 +198,9 @@ class FakeImapTransport implements ImapTransport {
             words.every((w) => switch (field) {
               SearchField.all => '${m.subject} ${m.from} ${m.body}',
               SearchField.from => m.from,
+              // The fake keeps no recipients: everything went to the
+              // account itself.
+              SearchField.to => 'me@example.com',
               SearchField.subject => m.subject,
               SearchField.body => m.body,
               SearchField.attachment =>

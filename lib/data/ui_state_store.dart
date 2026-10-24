@@ -74,6 +74,12 @@ abstract final class UiStateKeys {
   /// Follow-ups kept on this device: due days where the account keeps none,
   /// and reminders. Not in the backup: a reminder is this phone's.
   static const followUps = 'followups.v1';
+
+  /// The last searches, newest first. Not in the backup.
+  static const recentSearches = 'search.recent.v1';
+
+  /// The searches kept in the tree's Saved searches.
+  static const savedSearches = 'search.saved.v1';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.

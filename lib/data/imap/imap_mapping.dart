@@ -628,6 +628,7 @@ String buildSearchCriteria(
         SearchField.all => 'OR OR ${_term('SUBJECT', word)} '
             '${_term('FROM', word)} ${_term('BODY', word)}',
         SearchField.from => _term('FROM', word),
+        SearchField.to => _term('TO', word),
         SearchField.subject => _term('SUBJECT', word),
         SearchField.body => _term('BODY', word),
         SearchField.attachment => _term('X-GM-RAW', 'filename:$word'),

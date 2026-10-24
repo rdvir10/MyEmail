@@ -1,3 +1,4 @@
+import 'search_providers.dart' show savedSearchesProvider;
 import 'dart:async';
 
 import 'package:collection/collection.dart';
@@ -964,6 +965,7 @@ final treeRowsProvider = Provider<List<TreeRow>>((ref) {
       searchQuery: ref.watch(folderSearchQueryProvider),
       showUnifiedInbox: ref.watch(displayProvider).showAllInboxes,
       accountsOnly: ref.watch(draggingAccountProvider) != null,
+      savedSearches: ref.watch(savedSearchesProvider),
     ),
   );
 });

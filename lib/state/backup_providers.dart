@@ -6,6 +6,7 @@ import '../ui/settings/backup_screen.dart';
 import 'compose_providers.dart' show signaturesProvider;
 import 'display_providers.dart';
 import 'meeting_providers.dart' show workWeekProvider;
+import 'search_providers.dart' show savedSearchesProvider;
 import 'sender_blocks.dart';
 import 'pane_widths.dart';
 import 'providers.dart';
@@ -56,6 +57,7 @@ const reloadedAfterRestore = {
   UiStateKeys.forgottenAddresses,
   UiStateKeys.workWeek,
   UiStateKeys.senderBlocks,
+  UiStateKeys.savedSearches,
 };
 
 /// Every setting a restore wrote, read again from where it was written.
@@ -81,5 +83,6 @@ void reloadRestoredSettings(WidgetRef ref) {
     ..invalidate(contactGroupsProvider)
     ..invalidate(forgottenAddressesProvider)
     ..invalidate(workWeekProvider)
-    ..invalidate(senderBlocksProvider);
+    ..invalidate(senderBlocksProvider)
+    ..invalidate(savedSearchesProvider);
 }

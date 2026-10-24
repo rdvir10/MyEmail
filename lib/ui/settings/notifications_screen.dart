@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state/providers.dart';
 import '../../state/sync_providers.dart';
+import 'account_notifications_screen.dart';
 import 'sync_screen.dart';
 
 /// Whether new mail interrupts you, and which accounts are allowed to.
@@ -69,26 +70,58 @@ class NotificationsScreen extends ConsumerWidget {
                 const ListTile(dense: true, title: Text('No accounts yet.'))
               else
                 for (final account in accounts)
-                  SwitchListTile(
+                  // The switch mutes it; the row opens what else it can
+                  // be told: VIPs only, Do Not Disturb, other folders.
+                  ListTile(
+                    key: ValueKey('notify-account:${account.id}'),
                     title: Text(account.displayName),
-                    subtitle: Text(account.emailAddress),
-                    secondary: CircleAvatar(
+                    subtitle: Text(notificationStatus(
+                          prefs,
+                          account.id,
+                          DateTime.now(),
+                          use24h: MediaQuery.alwaysUse24HourFormatOf(context),
+                        ) ??
+                        account.emailAddress),
+                    leading: CircleAvatar(
                       radius: 12,
                       backgroundColor: Color(account.colorValue),
                     ),
-                    value: !prefs.mutedAccountIds.contains(account.id),
-                    onChanged: prefs.notify
-                        ? (on) => ref
-                            .read(syncSettingsProvider.notifier)
-                            .setAccountMuted(account.id, !on)
-                        : null,
+                    trailing: Switch(
+                      value: !prefs.mutedAccountIds.contains(account.id),
+                      onChanged: prefs.notify
+                          ? (on) => ref
+                              .read(syncSettingsProvider.notifier)
+                              .setAccountMuted(account.id, !on)
+                          : null,
+                    ),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) =>
+                            AccountNotificationsScreen(account: account),
+                      ),
+                    ),
                   ),
+              const Divider(height: 1),
+              ListTile(
+                key: const ValueKey('notify-vips'),
+                leading: const Icon(Icons.star_outline),
+                title: const Text('VIPs'),
+                subtitle: Text(prefs.vips.isEmpty
+                    ? 'Nobody yet'
+                    : '${prefs.vips.length} '
+                        '${prefs.vips.length == 1 ? 'person' : 'people'}'),
+                trailing: const Icon(Icons.chevron_right, size: 20),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(builder: (_) => const VipsScreen()),
+                ),
+              ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 20, 16, 32),
                 child: Text(
                   'A muted account still syncs. Its mail is on the device and '
                   'waiting when you open the app; it just does not interrupt '
-                  'you to say so.',
+                  'you to say so. Tap an account for Do Not Disturb, VIPs '
+                  'only, and folders besides the Inbox.',
                   style: theme.textTheme.bodySmall
                       ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                 ),

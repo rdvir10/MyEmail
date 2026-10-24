@@ -4,6 +4,7 @@ import '../../domain/account.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/sync_prefs.dart';
 import '../notifications/mail_notifier.dart';
 import '../mail_engine.dart';
 import 'new_mail_scan.dart';
@@ -97,9 +98,11 @@ class BackgroundSync {
         // whole reason these are two settings and not one.
         final result = await _runAccount(
           account,
-          announce: prefs.notifiesFor(account.id),
+          announce: prefs.notifiesFor(account.id) &&
+              !prefs.quietFor(account.id, _clock()),
           listFolders: listFolders,
           synced: synced,
+          prefs: prefs,
         );
         posted += result.posted;
         scanned += result.scanned;
@@ -126,38 +129,50 @@ class BackgroundSync {
     required bool announce,
     required bool listFolders,
     required Set<String> synced,
+    SyncPrefs prefs = const SyncPrefs(),
   }) async {
     final saved =
         listFolders ? const <MailFolder>[] : await engine.cachedFolders(account.id);
     final folders =
         saved.isNotEmpty ? saved : await engine.loadFolders(account.id);
-    final inboxes = [
+    // The Inboxes, and any folder chosen to be announced as well.
+    final watched = [
       for (final f in folders)
-        if (f.role == FolderRole.inbox) f,
+        if (f.role == FolderRole.inbox || prefs.watchedFolderIds.contains(f.id))
+          f,
     ];
 
     var posted = 0;
-    for (final folder in inboxes) {
-      posted += await _runFolder(account, folder, announce: announce);
+    for (final folder in watched) {
+      posted += await _runFolder(
+        account,
+        folder,
+        announce: announce,
+        keep: (m) => prefs.announcesFrom(account.id, m.from.email),
+      );
       synced.add(folder.id);
     }
-    return (posted: posted, scanned: inboxes.length);
+    return (posted: posted, scanned: watched.length);
   }
 
   Future<int> _runFolder(
     Account account,
     MailFolder folder, {
     required bool announce,
+    bool Function(MailMessage message)? keep,
   }) async {
     final messages = await engine.loadMessages(folder.id, limit: scanWindow);
     await _withdrawDealtWith(folder, messages);
     final watermark = await state.readWatermark(folder.id);
 
-    final fresh = selectNotifiable(
-      messages: messages,
-      watermark: watermark,
-      now: _clock(),
-    );
+    final fresh = [
+      for (final m in selectNotifiable(
+        messages: messages,
+        watermark: watermark,
+        now: _clock(),
+      ))
+        if (keep == null || keep(m)) m,
+    ];
 
     // The mark moves whether or not anything was announced, and before the
     // notifier is touched. A notifier that throws must not leave the folder

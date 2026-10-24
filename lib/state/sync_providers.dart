@@ -112,6 +112,44 @@ class SyncSettings extends AsyncNotifier<SyncPrefs> {
     await _save(current.withAccountMuted(accountId, muted));
   }
 
+  /// [accountId]'s Do Not Disturb, or none.
+  Future<void> setQuiet(String accountId, QuietRule? rule) async {
+    final current = state.value ?? const SyncPrefs();
+    await _save(current.withQuiet(accountId, rule));
+  }
+
+  /// [accountId] announcing mail from VIPs alone, or everyone's.
+  Future<void> setVipOnly(String accountId, bool only) async {
+    final current = state.value ?? const SyncPrefs();
+    await _save(current.copyWith(vipOnlyAccountIds: {
+      for (final id in current.vipOnlyAccountIds)
+        if (id != accountId) id,
+      if (only) accountId,
+    }));
+  }
+
+  /// [email] a VIP, or no longer one.
+  Future<void> setVip(String email, bool vip) async {
+    final e = email.trim().toLowerCase();
+    if (e.isEmpty) return;
+    final current = state.value ?? const SyncPrefs();
+    await _save(current.copyWith(vips: {
+      for (final v in current.vips)
+        if (v != e) v,
+      if (vip) e,
+    }));
+  }
+
+  /// [folderId]'s new mail announced as an Inbox's is, or not.
+  Future<void> setWatched(String folderId, bool watched) async {
+    final current = state.value ?? const SyncPrefs();
+    await _save(current.copyWith(watchedFolderIds: {
+      for (final id in current.watchedFolderIds)
+        if (id != folderId) id,
+      if (watched) folderId,
+    }));
+  }
+
   /// Show Android's battery dialog unless MyEmail is already exempt.
   Future<void> askToRunInBackground() async {
     final allowance = ref.read(backgroundAllowanceProvider);

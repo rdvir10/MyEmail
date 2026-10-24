@@ -440,7 +440,12 @@ void main() {
       );
       await pump(tester, const NotificationsScreen());
 
-      final account = find.byType(SwitchListTile).at(1);
+      // The switch at the end of the account's row; the row itself opens
+      // the account's own page.
+      final account = find.descendant(
+        of: find.byKey(const ValueKey('notify-account:acct-personal')),
+        matching: find.byType(Switch),
+      );
       await tester.ensureVisible(account);
       await tester.pumpAndSettle();
       await tester.tap(account);

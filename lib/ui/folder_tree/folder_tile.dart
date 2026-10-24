@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../domain/search_refinement.dart' show savedSearchIdOf;
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../state/folder_drag.dart';
@@ -467,7 +468,9 @@ class _FolderTileState extends State<FolderTile> {
 IconData folderIconFor(MailFolder folder, {bool open = false}) =>
     folder.id == kFlaggedId
         ? Icons.flag_outlined
-        : switch (folder.role) {
+        : savedSearchIdOf(folder.id) != null
+            ? Icons.saved_search
+            : switch (folder.role) {
       FolderRole.inbox => FolderIcons.inbox,
       FolderRole.drafts => FolderIcons.drafts,
       FolderRole.sent => FolderIcons.sent,
