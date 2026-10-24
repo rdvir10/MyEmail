@@ -7,12 +7,13 @@ import 'signature_editor_screen.dart';
 import '../../state/compose_providers.dart';
 import '../../state/providers.dart';
 
-/// A signature per account, because the whole point of several accounts is
-/// that they are not the same person writing.
+/// Signatures per account, because the whole point of several accounts is
+/// that they are not the same person writing; and several per account, as
+/// Outlook has them, with one for new messages and one for replies.
 ///
-/// Each account shows what it has, as words, with an Edit that opens the
-/// message editor on it: a signature is pasted more often than typed, and
-/// a plain box threw away everything a pasted one carried.
+/// Each shows what it says, as words, with an Edit that opens the message
+/// editor on it: a signature is pasted more often than typed, and a plain
+/// box threw away everything a pasted one carried.
 class SignaturesScreen extends ConsumerWidget {
   const SignaturesScreen({super.key});
 
@@ -28,14 +29,15 @@ class SignaturesScreen extends ConsumerWidget {
           : ListView(
               children: [
                 for (final account in accounts)
-                  _AccountSignature(key: ValueKey(account.id), account: account),
+                  _AccountSignatures(key: ValueKey(account.id), account: account),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
                   child: Text(
                     'A signature your organisation adds on its mail server '
                     '(CodeTwo, Exchange rules) goes on after sending and '
                     'does not show here. Add one here only if the server '
-                    'does not.',
+                    'does not. While writing, the Signature button on the '
+                    'bar under the message puts in another, or takes it out.',
                     style: theme.textTheme.bodySmall
                         ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                   ),
@@ -46,17 +48,40 @@ class SignaturesScreen extends ConsumerWidget {
   }
 }
 
-class _AccountSignature extends ConsumerWidget {
-  const _AccountSignature({super.key, required this.account});
+class _AccountSignatures extends ConsumerWidget {
+  const _AccountSignatures({super.key, required this.account});
 
   final Account account;
+
+  void _edit(BuildContext context, String? id) => Navigator.of(context).push(
+        MaterialPageRoute<bool>(
+          builder: (_) => SignatureEditorScreen(account: account, signatureId: id),
+        ),
+      );
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final signature = ref.watch(signaturesProvider)[account.id] ??
-        Signature(accountId: account.id, html: '');
-    final words = htmlToSignatureText(signature.html);
+        Signature(accountId: account.id);
+    final notifier = ref.read(signaturesProvider.notifier);
+
+    Widget choice(String label, String? value, ValueChanged<String?> onChanged) =>
+        Row(
+          children: [
+            Expanded(child: Text(label, style: theme.textTheme.bodyMedium)),
+            DropdownButton<String?>(
+              value: value,
+              underline: const SizedBox.shrink(),
+              items: [
+                const DropdownMenuItem<String?>(value: null, child: Text('None')),
+                for (final s in signature.named)
+                  DropdownMenuItem<String?>(value: s.id, child: Text(s.name)),
+              ],
+              onChanged: onChanged,
+            ),
+          ],
+        );
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -77,51 +102,111 @@ class _AccountSignature extends ConsumerWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              IconButton(
-                tooltip: 'Edit',
-                icon: const Icon(Icons.edit_outlined),
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute<bool>(
-                    builder: (_) => SignatureEditorScreen(account: account),
-                  ),
-                ),
-              ),
             ],
           ),
-          const SizedBox(height: 4),
-          // Words, not the HTML: what it says is what matters here, and how
-          // it looks is what the editor is for.
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              words.isEmpty ? 'Nothing yet' : words,
-              maxLines: 6,
-              overflow: TextOverflow.ellipsis,
+          const SizedBox(height: 6),
+          if (signature.named.isEmpty)
+            Text(
+              'Nothing yet',
               style: theme.textTheme.bodyMedium?.copyWith(
-                color: words.isEmpty ? theme.colorScheme.onSurfaceVariant : null,
-                fontStyle: words.isEmpty ? FontStyle.italic : null,
+                color: theme.colorScheme.onSurfaceVariant,
+                fontStyle: FontStyle.italic,
               ),
             ),
-          ),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Add to replies and forwards'),
-            subtitle: const Text(
-              'Off keeps it to new messages, so it does not pile up down a '
-              'long thread.',
+          for (final s in signature.named)
+            _SignatureCard(
+              key: ValueKey('signature:${account.id}:${s.id}'),
+              signature: s,
+              onEdit: () => _edit(context, s.id),
+              onDelete: () => notifier.set(signature.without(s.id)),
             ),
-            value: signature.onReply,
-            onChanged: (v) => ref
-                .read(signaturesProvider.notifier)
-                .set(signature.copyWith(onReply: v)),
+          TextButton.icon(
+            onPressed: () => _edit(context, null),
+            icon: const Icon(Icons.add),
+            label: Text(signature.named.isEmpty
+                ? 'Add a signature'
+                : 'Add another signature'),
           ),
+          if (signature.named.isNotEmpty) ...[
+            choice(
+              'New messages',
+              signature.forNew,
+              (id) => notifier.set(signature.withDefaults(
+                forNew: id,
+                forReplies: signature.forReplies,
+              )),
+            ),
+            choice(
+              'Replies and forwards',
+              signature.forReplies,
+              (id) => notifier.set(signature.withDefaults(
+                forNew: signature.forNew,
+                forReplies: id,
+              )),
+            ),
+          ],
           const Divider(),
         ],
+      ),
+    );
+  }
+}
+
+class _SignatureCard extends StatelessWidget {
+  const _SignatureCard({
+    super.key,
+    required this.signature,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final NamedSignature signature;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final words = htmlToSignatureText(signature.html);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(12, 4, 4, 12),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(signature.name, style: theme.textTheme.titleSmall),
+                ),
+                IconButton(
+                  tooltip: 'Edit',
+                  icon: const Icon(Icons.edit_outlined),
+                  onPressed: onEdit,
+                ),
+                IconButton(
+                  tooltip: 'Delete signature',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: onDelete,
+                ),
+              ],
+            ),
+            // Words, not the HTML: what it says is what matters here, and
+            // how it looks is what the editor is for.
+            Text(
+              words.isEmpty ? 'Empty' : words,
+              maxLines: 6,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodyMedium,
+            ),
+          ],
+        ),
       ),
     );
   }

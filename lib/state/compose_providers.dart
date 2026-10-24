@@ -46,7 +46,7 @@ class Signatures extends Notifier<Map<String, Signature>> {
       };
 
   Signature forAccount(String accountId) =>
-      state[accountId] ?? Signature(accountId: accountId, html: '');
+      state[accountId] ?? Signature(accountId: accountId);
 }
 
 final signaturesProvider =

@@ -104,12 +104,11 @@ void main() {
     final accounts = (await tester.runAsync(engine.loadAccounts))!;
     final c = await open(tester, engine, accounts.first.id);
     c.read(signaturesProvider.notifier)
-      ..set(Signature(
-        accountId: accounts.first.id,
+      ..set(Signature.single(accountId: accounts.first.id,
         html: '<p>First</p>',
         onReply: false,
       ))
-      ..set(Signature(accountId: accounts[1].id, html: '<p>Second</p>'));
+      ..set(Signature.single(accountId: accounts[1].id, html: '<p>Second</p>'));
 
     Future<void> choose(String email) async {
       await tester.tap(picker);

@@ -28,8 +28,9 @@ Draft draftFor({
     original: original,
     originalHtml: body?.html,
     originalText: body?.text,
-    signatureHtml: signature?.html ?? '',
-    signatureOnReply: signature?.onReply ?? true,
+    // The account's signature for a message of this kind: its new-message
+    // one, or its replies-and-forwards one, either of which may be none.
+    signatureHtml: signature?.htmlFor(kind) ?? '',
     typedHtml: typedText.trim().isEmpty ? '' : asParagraphs(typedText),
   );
 

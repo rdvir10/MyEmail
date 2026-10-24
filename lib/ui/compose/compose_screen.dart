@@ -10,9 +10,13 @@ import '../../domain/account.dart';
 import '../../domain/error_report.dart';
 import '../common/problem_view.dart';
 
-import '../../data/compose/quote_builder.dart' show carriesSignature;
 import '../../data/files/file_bridge.dart';
 import '../../domain/draft.dart';
+import '../../domain/address_suggestions.dart'
+    show AddressSuggestion, formatRecipient;
+import '../../domain/signature.dart';
+import 'insert_picture.dart';
+import 'mention_suggestions.dart';
 import '../../domain/send_checks.dart';
 import '../../state/display_providers.dart';
 import '../../state/held_sends.dart';
@@ -527,18 +531,39 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// answer should come from.
   late String _accountId = widget.draft.accountId;
 
-  /// Put [accountId]'s signature in the message in place of the one it
-  /// has. It used to keep the first account's, so a message sent from a
-  /// second account went out signed as the first, or unsigned.
+  /// Put [accountId]'s signature for this kind of message in place of the
+  /// one it has. It used to keep the first account's, so a message sent
+  /// from a second account went out signed as the first, or unsigned.
   void _useSignatureOf(String accountId) {
     final signature =
         ref.read(signaturesProvider.notifier).forAccount(accountId);
-    final carried = carriesSignature(
-      widget.draft.kind,
-      signature.html,
-      onReply: signature.onReply,
+    unawaited(_editor.setSignature(signature.htmlFor(widget.draft.kind)));
+  }
+
+  /// The Signature menu on the bar under the message, as Outlook has it:
+  /// any of the sending account's signatures in place of the one there, or
+  /// none. Not there for an account with none.
+  Widget? _signatureMenu() {
+    final signature = ref.watch(signaturesProvider)[_accountId];
+    final named = [
+      for (final s in signature?.named ?? const <NamedSignature>[])
+        if (!s.isEmpty) s,
+    ];
+    if (named.isEmpty) return null;
+    return PopupMenuButton<String>(
+      key: const ValueKey('signature-menu'),
+      tooltip: 'Signature',
+      enabled: !_sending,
+      icon: const Icon(Icons.draw_outlined),
+      onSelected: (id) => unawaited(_editor.setSignature(
+        named.where((s) => s.id == id).firstOrNull?.html ?? '',
+      )),
+      itemBuilder: (_) => [
+        for (final s in named) PopupMenuItem(value: s.id, child: Text(s.name)),
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: '', child: Text('No signature')),
+      ],
     );
-    unawaited(_editor.setSignature(carried ? signature.html : ''));
   }
 
   /// Ctrl+Enter sends, Esc leaves, and Tab moves between the fields, from
@@ -685,6 +710,27 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     } finally {
       if (mounted) setState(() => _sending = false);
     }
+  }
+
+  /// An @mention chosen: the name in the message, and the person on To if
+  /// they are not on the message already, as Outlook adds them.
+  Future<void> _mention(AddressSuggestion person) async {
+    final name = person.name?.trim().isNotEmpty ?? false
+        ? person.name!.trim()
+        : person.email;
+    await _editor.insertMention(name, person.email);
+    final already = {
+      for (final a in [
+        ...parseAddresses(_to.text),
+        ...parseAddresses(_cc.text),
+        ...parseAddresses(_bcc.text),
+      ])
+        a.email.toLowerCase(),
+    };
+    if (already.contains(person.email.toLowerCase()) || !mounted) return;
+    final kept = _to.text.trim().replaceAll(RegExp(r'[,;\s]+$'), '');
+    final added = formatRecipient(person.name, person.email);
+    setState(() => _to.text = kept.isEmpty ? added : '$kept, $added');
   }
 
   /// Outlook's two questions before a message goes, each with its switch
@@ -1231,7 +1277,14 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
             Expanded(
               child: HtmlEditor(controller: _editor, onReady: _noteOpened),
             ),
-            EditorToolbar(controller: _editor, enabled: !_sending),
+            // People an @ in the message could mean, as To suggests them.
+            MentionSuggestions(controller: _editor, onChoose: _mention),
+            EditorToolbar(
+              controller: _editor,
+              enabled: !_sending,
+              onPicture: () => insertPicture(context, ref, _editor),
+              signatures: _signatureMenu(),
+            ),
           ],
         ),
         ),

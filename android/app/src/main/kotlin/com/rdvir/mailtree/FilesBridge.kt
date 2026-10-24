@@ -8,7 +8,12 @@ import android.content.Context
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Matrix
+import android.media.ExifInterface
+import android.provider.MediaStore
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Point
@@ -73,6 +78,11 @@ class FilesBridge(
     /// Dart's ask for a folder while the picker is open: answered from
     /// [onActivityResult].
     private var folderAsked: MethodChannel.Result? = null
+
+    /// Dart's ask for a photo while the camera is open, and the file the
+    /// camera is writing it to.
+    private var photoAsked: MethodChannel.Result? = null
+    private var photoFile: File? = null
 
     /**
      * Something shared to this app from another: files under EXTRA_STREAM,
@@ -319,6 +329,13 @@ class FilesBridge(
                     ),
                 )
                 "pickFolder" -> pickFolder(result)
+                "takePhoto" -> takePhoto(result)
+                "scaleImage" -> scaleImage(
+                    call.argument<String>("path")!!,
+                    call.argument<Int>("maxSide") ?: 1600,
+                    call.argument<Int>("quality") ?: 82,
+                    result,
+                )
                 "saveIntoFolder" -> saveIntoFolder(
                     call.argument<String>("folder")!!,
                     call.argument<String>("path")!!,
@@ -372,8 +389,99 @@ class FilesBridge(
         }
     }
 
-    /** The picker's answer, from MainActivity. True when it was ours. */
+    /**
+     * The camera, for a picture in the message: the photo is written to a
+     * file of this app's, handed to the camera app through the provider,
+     * and answered with its path, or null when no photo was taken.
+     */
+    private fun takePhoto(result: MethodChannel.Result) {
+        photoAsked?.success(null)
+        val folder = File(activity.cacheDir, "incoming").apply { mkdirs() }
+        val file = File(folder, "photo-${UUID.randomUUID()}.jpg")
+        val uri = FileProvider.getUriForFile(activity, authority, file)
+        val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+            putExtra(MediaStore.EXTRA_OUTPUT, uri)
+            // The grant travels with the clip on Android's newer versions.
+            clipData = ClipData.newRawUri("", uri)
+            addFlags(
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }
+        photoAsked = result
+        photoFile = file
+        try {
+            activity.startActivityForResult(intent, TAKE_PHOTO)
+        } catch (e: ActivityNotFoundException) {
+            photoAsked = null
+            photoFile = null
+            result.error("no-camera", "There is no camera app on this device.", null)
+        }
+    }
+
+    /**
+     * A picture made fit to send: no longer than [maxSide] on its longer
+     * side, turned the way the camera held it (EXIF), and a JPEG at
+     * [quality]. Off the main thread, as a photo can be large. Answered
+     * with the new file's path, or the original's where it could not be
+     * read as a picture.
+     */
+    private fun scaleImage(path: String, maxSide: Int, quality: Int, result: MethodChannel.Result) {
+        copier.execute {
+            val scaled = try {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(path, bounds)
+                val longest = maxOf(bounds.outWidth, bounds.outHeight)
+                if (longest <= 0) throw IllegalStateException("not a picture")
+                var sample = 1
+                while (longest / (sample * 2) >= maxSide) sample *= 2
+                val decoded = BitmapFactory.decodeFile(
+                    path,
+                    BitmapFactory.Options().apply { inSampleSize = sample },
+                ) ?: throw IllegalStateException("not a picture")
+                val turn = when (
+                    ExifInterface(path).getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION,
+                        ExifInterface.ORIENTATION_NORMAL,
+                    )
+                ) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                    else -> 0f
+                }
+                val ratio = minOf(1f, maxSide.toFloat() / maxOf(decoded.width, decoded.height))
+                val matrix = Matrix().apply {
+                    postScale(ratio, ratio)
+                    postRotate(turn)
+                }
+                val fitted = Bitmap.createBitmap(
+                    decoded, 0, 0, decoded.width, decoded.height, matrix, true,
+                )
+                val folder = File(activity.cacheDir, "incoming").apply { mkdirs() }
+                val out = File(folder, "picture-${UUID.randomUUID()}.jpg")
+                out.outputStream().use { fitted.compress(Bitmap.CompressFormat.JPEG, quality, it) }
+                out.path
+            } catch (e: Exception) {
+                android.util.Log.e("MyEmail", "could not scale the picture", e)
+                path
+            }
+            main.post { result.success(scaled) }
+        }
+    }
+
+    /** The picker's or the camera's answer, from MainActivity. True when it was ours. */
     fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
+        if (requestCode == TAKE_PHOTO) {
+            val asked = photoAsked ?: return true
+            val file = photoFile
+            photoAsked = null
+            photoFile = null
+            val taken = resultCode == Activity.RESULT_OK && file != null &&
+                file.exists() && file.length() > 0
+            asked.success(if (taken) file!!.path else null)
+            return true
+        }
         if (requestCode != PICK_FOLDER) return false
         val asked = folderAsked ?: return true
         folderAsked = null
@@ -843,6 +951,9 @@ class FilesBridge(
 
         /** The folder picker's request, and where it was left. */
         private const val PICK_FOLDER = 4128
+
+        /** The camera's, for a picture in the message. */
+        private const val TAKE_PHOTO = 4129
         private const val LAST_FOLDER = "lastFolder"
 
         /// Where files coming in are copied: one batch at a time, in the

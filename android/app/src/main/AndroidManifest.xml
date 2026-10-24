@@ -237,6 +237,10 @@
             <action android:name="android.intent.action.VIEW"/>
             <data android:scheme="mailto"/>
         </intent>
+        <!-- The camera, for a photo put in a message. -->
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE"/>
+        </intent>
         <intent>
             <action android:name="android.intent.action.DIAL"/>
             <data android:scheme="tel"/>

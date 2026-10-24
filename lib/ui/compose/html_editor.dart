@@ -164,6 +164,16 @@ class HtmlEditorController extends ChangeNotifier {
   /// Which formats apply where the caret is, so the toolbar can light up.
   Set<String> get activeFormats => _activeFormats;
 
+  /// What is being typed after an @ in the message, for the people it could
+  /// mean; null when the caret is not in one. See [insertMention].
+  final mention = ValueNotifier<String?>(null);
+
+  @override
+  void dispose() {
+    mention.dispose();
+    super.dispose();
+  }
+
   Future<void> get ready => _readyCompleter.future;
 
   bool get isReady => _web != null;
@@ -185,6 +195,9 @@ class HtmlEditorController extends ChangeNotifier {
         }
       } else if (data['type'] == 'key' && data['value'] is String) {
         onKey?.call(data['value'] as String);
+      } else if (data['type'] == 'mention') {
+        final value = data['value'];
+        mention.value = value is String && value.isNotEmpty ? value : null;
       }
     } on FormatException {
       // A malformed bridge message is not worth crashing the editor over.
@@ -216,6 +229,28 @@ class HtmlEditorController extends ChangeNotifier {
 
   Future<void> insertHtml(String html) async {
     await _web?.runJavaScript('window.mailtreeInsert(${jsonEncode(html)});');
+  }
+
+  /// A link to [url] on what is selected, or with nothing selected, [text]
+  /// (or the address itself) put in as one.
+  Future<void> insertLink(String url, {String? text}) async {
+    await _web?.runJavaScript(
+      'window.mailtreeLink(${jsonEncode(url)}, ${jsonEncode(text ?? '')});',
+    );
+  }
+
+  /// The link the caret is in, taken off: the words stay.
+  Future<void> unlink() async {
+    await _web?.runJavaScript('window.mailtreeUnlink();');
+  }
+
+  /// The @ being typed, and what follows it, replaced by [name] as a link
+  /// to [email]: Outlook's @mention.
+  Future<void> insertMention(String name, String email) async {
+    mention.value = null;
+    await _web?.runJavaScript(
+      'window.mailtreeMention(${jsonEncode(name)}, ${jsonEncode(email)});',
+    );
   }
 
   /// Give the body the keyboard, with the caret back where it last was,
@@ -348,6 +383,7 @@ String editorDocument(String bodyHtml,
     -webkit-tap-highlight-color:transparent;
   }
   a{color:var(--link)}
+  a.mailtree-mention{font-weight:600;text-decoration:none}
   img{max-width:100%;height:auto}
   blockquote{margin:8px 0;padding-left:12px;border-left:2px solid var(--rule)}
   .mailtree-signature{color:var(--muted)}
@@ -516,11 +552,101 @@ String editorDocument(String bodyHtml,
     }
   }
 
+  // Colour, highlight, size and font are written as styles, as Outlook
+  // writes them, and not as <font> tags; the rest as the browser does.
+  var STYLED = ['foreColor', 'hiliteColor', 'fontSize', 'fontName'];
+
   window.mailtreeFormat = function (command, value) {
+    var styled = STYLED.indexOf(command) >= 0;
+    if (styled) document.execCommand('styleWithCSS', false, true);
     document.execCommand(command, false, value);
+    if (styled) document.execCommand('styleWithCSS', false, false);
     body.focus();
     orientAll();
     reportFormats();
+  };
+
+  function escapeText(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // A link on the words selected, or with none selected, the words given
+  // (or the address) put in as one.
+  window.mailtreeLink = function (url, text) {
+    var sel = window.getSelection();
+    body.focus();
+    if (sel.rangeCount && !sel.isCollapsed) {
+      document.execCommand('createLink', false, url);
+    } else {
+      document.execCommand('insertHTML', false,
+          '<a href="' + escapeText(url) + '">' + escapeText(text || url) +
+          '</a>&nbsp;');
+    }
+    reportFormats();
+  };
+
+  window.mailtreeUnlink = function () {
+    var sel = window.getSelection();
+    var a = sel.anchorNode && (sel.anchorNode.nodeType === 1
+        ? sel.anchorNode : sel.anchorNode.parentElement);
+    a = a && a.closest('a');
+    if (a) {
+      var range = document.createRange();
+      range.selectNodeContents(a);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    document.execCommand('unlink', false, null);
+    reportFormats();
+  };
+
+  // An @ typed after a space or at the start of a line, and what follows
+  // it: reported, for the people it could mean, until a space ends it.
+  // Never in the quote, and never in a link: "ron@" in an address is not
+  // a mention.
+  var mentionAt = null, mentionShown = false;
+  function checkMention() {
+    var sel = window.getSelection();
+    var found = null;
+    if (sel.rangeCount && sel.isCollapsed) {
+      var node = sel.anchorNode, offset = sel.anchorOffset;
+      if (node && node.nodeType === 3 &&
+          !node.parentElement.closest('.mailtree-quote, a')) {
+        var m = /(^|[\\s(\\u00a0])@([^\\s@\\u00a0]{1,40})\$/u
+            .exec(node.data.substring(0, offset));
+        if (m) {
+          found = m[2];
+          mentionAt = {node: node, start: offset - m[2].length - 1,
+                       end: offset};
+        }
+      }
+    }
+    if (found === null) {
+      mentionAt = null;
+      if (mentionShown) post({type: 'mention', value: null});
+      mentionShown = false;
+      return;
+    }
+    mentionShown = true;
+    post({type: 'mention', value: found});
+  }
+
+  window.mailtreeMention = function (name, email) {
+    if (!mentionAt || !body.contains(mentionAt.node)) return;
+    var range = document.createRange();
+    range.setStart(mentionAt.node, mentionAt.start);
+    range.setEnd(mentionAt.node, mentionAt.end);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('insertHTML', false,
+        '<a class="mailtree-mention" href="mailto:' + escapeText(email) +
+        '">@' + escapeText(name) + '</a>&nbsp;');
+    mentionAt = null;
+    mentionShown = false;
+    post({type: 'mention', value: null});
+    orientAll();
   };
 
   window.mailtreeInsert = function (html) {
@@ -596,8 +722,9 @@ String editorDocument(String bodyHtml,
     keepCaretVisible();
   };
 
-  var FORMATS = ['bold', 'italic', 'underline',
-                 'insertUnorderedList', 'insertOrderedList'];
+  var FORMATS = ['bold', 'italic', 'underline', 'strikeThrough',
+                 'insertUnorderedList', 'insertOrderedList',
+                 'justifyCenter', 'justifyRight'];
 
   // Right-to-left writing. Each paragraph written here takes the direction
   // of its first letter, as Gmail's and Outlook's editors set it, and
@@ -652,6 +779,11 @@ String editorDocument(String bodyHtml,
         if (document.queryCommandState(FORMATS[i])) active.push(FORMATS[i]);
       } catch (e) { /* not every command is queryable everywhere */ }
     }
+    // In a link, so the link button offers to change or take it off.
+    var sel = window.getSelection();
+    var at = sel.anchorNode && (sel.anchorNode.nodeType === 1
+        ? sel.anchorNode : sel.anchorNode.parentElement);
+    if (at && body.contains(at) && at.closest('a')) active.push('link');
     post({type: 'formats', value: active});
   }
 
@@ -677,6 +809,13 @@ String editorDocument(String bodyHtml,
   document.addEventListener('selectionchange', reportFormats);
   body.addEventListener('input', orientAll);
   body.addEventListener('input', reportFormats);
+  body.addEventListener('input', checkMention);
+  body.addEventListener('keyup', function (e) {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' ||
+        e.key === 'Home' || e.key === 'End') {
+      checkMention();
+    }
+  });
 
   // Keys pressed in here never reach Flutter, so the ones the compose
   // screen answers to are reported across. Ctrl+Enter is stopped from
@@ -735,13 +874,59 @@ String editorDocument(String bodyHtml,
 ''';
 }
 
-/// Bold, italic, underline, lists, line spacing, clear: the formatting a
-/// message or a signature needs, driving the editor's document.
+/// The formatting a message or a signature needs, as Outlook's Format Text
+/// has it, driving the editor's document: bold, italic, underline and
+/// strikethrough; colour, highlight and size; lists, indent and alignment;
+/// links; line spacing; and clear. One row, which slides sideways where the
+/// screen is narrower than it.
+///
+/// [onPicture] and [signatures] are the message's own, where it has them:
+/// a picture put where the cursor is, and the Signature menu.
 class EditorToolbar extends StatelessWidget {
-  const EditorToolbar({super.key, required this.controller, required this.enabled});
+  const EditorToolbar({
+    super.key,
+    required this.controller,
+    required this.enabled,
+    this.onPicture,
+    this.signatures,
+  });
 
   final HtmlEditorController controller;
   final bool enabled;
+
+  /// A picture in the text, from the gallery or the camera.
+  final VoidCallback? onPicture;
+
+  /// The Signature menu, which the compose screen builds.
+  final Widget? signatures;
+
+  /// Outlook's font colours, the few anyone uses in mail.
+  static const colours = <(String, String)>[
+    ('Black', '#000000'),
+    ('Red', '#c50f1f'),
+    ('Orange', '#ca5010'),
+    ('Green', '#107c10'),
+    ('Blue', '#0f6cbd'),
+    ('Purple', '#5c2e91'),
+    ('Grey', '#616161'),
+  ];
+
+  /// And its highlighter's.
+  static const highlights = <(String, String)>[
+    ('No highlight', 'transparent'),
+    ('Yellow', '#ffff00'),
+    ('Green', '#00ff00'),
+    ('Turquoise', '#00ffff'),
+    ('Pink', '#ff00ff'),
+  ];
+
+  /// Sizes as the browser's seven steps, which it writes as CSS.
+  static const sizes = <(String, String)>[
+    ('Small', '2'),
+    ('Normal', '3'),
+    ('Large', '5'),
+    ('Huge', '6'),
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -759,41 +944,247 @@ class EditorToolbar extends StatelessWidget {
       );
     }
 
+    Widget swatches(
+      String tooltip,
+      IconData icon,
+      String command,
+      List<(String, String)> choices,
+    ) =>
+        PopupMenuButton<String>(
+          tooltip: tooltip,
+          enabled: enabled,
+          icon: Icon(icon),
+          onSelected: (value) => controller.format(command, value),
+          itemBuilder: (_) => [
+            for (final (name, value) in choices)
+              PopupMenuItem(
+                value: value,
+                child: Row(
+                  children: [
+                    Container(
+                      width: 18,
+                      height: 18,
+                      decoration: BoxDecoration(
+                        color: value == 'transparent'
+                            ? null
+                            : Color(int.parse('ff${value.substring(1)}',
+                                radix: 16)),
+                        border: Border.all(color: theme.dividerColor),
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(name),
+                  ],
+                ),
+              ),
+          ],
+        );
+
+    const divider = VerticalDivider(width: 8, indent: 10, endIndent: 10);
     return SafeArea(
       top: false,
       child: Material(
         color: theme.colorScheme.surfaceContainerLow,
-        child: Row(
-          children: [
-            button('bold', Icons.format_bold, 'Bold'),
-            button('italic', Icons.format_italic, 'Italic'),
-            button('underline', Icons.format_underlined, 'Underline'),
-            const VerticalDivider(width: 8, indent: 10, endIndent: 10),
-            button('insertUnorderedList', Icons.format_list_bulleted, 'Bullets'),
-            button('insertOrderedList', Icons.format_list_numbered, 'Numbers'),
-            // Outlook's three. For the lines selected, or with nothing
-            // selected, for everything written so far.
-            PopupMenuButton<String>(
-              tooltip: 'Line spacing',
-              enabled: enabled,
-              icon: const Icon(Icons.format_line_spacing),
-              onSelected: (value) =>
-                  controller.setLineSpacing(value.isEmpty ? null : value),
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: '', child: Text('Single')),
-                PopupMenuItem(value: '150%', child: Text('1.5 lines')),
-                PopupMenuItem(value: '200%', child: Text('Double')),
-              ],
-            ),
-            const Spacer(),
-            IconButton(
-              tooltip: 'Remove formatting',
-              icon: const Icon(Icons.format_clear),
-              onPressed: enabled ? () => controller.format('removeFormat') : null,
-            ),
-          ],
+        child: SizedBox(
+          height: kMinInteractiveDimension,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            children: [
+              button('bold', Icons.format_bold, 'Bold'),
+              button('italic', Icons.format_italic, 'Italic'),
+              button('underline', Icons.format_underlined, 'Underline'),
+              button('strikeThrough', Icons.format_strikethrough,
+                  'Strikethrough'),
+              swatches('Font colour', Icons.format_color_text, 'foreColor',
+                  colours),
+              swatches('Highlight', Icons.border_color_outlined,
+                  'hiliteColor', highlights),
+              PopupMenuButton<String>(
+                tooltip: 'Size',
+                enabled: enabled,
+                icon: const Icon(Icons.format_size),
+                onSelected: (value) => controller.format('fontSize', value),
+                itemBuilder: (_) => [
+                  for (final (name, value) in sizes)
+                    PopupMenuItem(value: value, child: Text(name)),
+                ],
+              ),
+              divider,
+              button('insertUnorderedList', Icons.format_list_bulleted,
+                  'Bullets'),
+              button('insertOrderedList', Icons.format_list_numbered,
+                  'Numbers'),
+              button('outdent', Icons.format_indent_decrease,
+                  'Decrease indent'),
+              button('indent', Icons.format_indent_increase,
+                  'Increase indent'),
+              PopupMenuButton<String>(
+                tooltip: 'Align',
+                enabled: enabled,
+                icon: Icon(
+                  active.contains('justifyCenter')
+                      ? Icons.format_align_center
+                      : active.contains('justifyRight')
+                          ? Icons.format_align_right
+                          : Icons.format_align_left,
+                ),
+                onSelected: (value) => controller.format(value),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'justifyLeft', child: Text('Left')),
+                  PopupMenuItem(value: 'justifyCenter', child: Text('Centre')),
+                  PopupMenuItem(value: 'justifyRight', child: Text('Right')),
+                ],
+              ),
+              // Outlook's three. For the lines selected, or with nothing
+              // selected, for everything written so far.
+              PopupMenuButton<String>(
+                tooltip: 'Line spacing',
+                enabled: enabled,
+                icon: const Icon(Icons.format_line_spacing),
+                onSelected: (value) =>
+                    controller.setLineSpacing(value.isEmpty ? null : value),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: '', child: Text('Single')),
+                  PopupMenuItem(value: '150%', child: Text('1.5 lines')),
+                  PopupMenuItem(value: '200%', child: Text('Double')),
+                ],
+              ),
+              divider,
+              IconButton(
+                key: const ValueKey('editor-link'),
+                tooltip: active.contains('link') ? 'Link' : 'Insert link',
+                isSelected: active.contains('link'),
+                color: active.contains('link') ? theme.colorScheme.primary : null,
+                icon: const Icon(Icons.link),
+                onPressed: enabled ? () => _link(context) : null,
+              ),
+              if (onPicture != null)
+                IconButton(
+                  key: const ValueKey('editor-picture'),
+                  tooltip: 'Picture',
+                  icon: const Icon(Icons.image_outlined),
+                  onPressed: enabled ? onPicture : null,
+                ),
+              ?signatures,
+              IconButton(
+                tooltip: 'Remove formatting',
+                icon: const Icon(Icons.format_clear),
+                onPressed:
+                    enabled ? () => controller.format('removeFormat') : null,
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
+
+  /// Insert a link, or change or take off the one the cursor is in.
+  Future<void> _link(BuildContext context) async {
+    final inLink = controller.activeFormats.contains('link');
+    if (inLink) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (dialog) => SimpleDialog(
+          title: const Text('Link'),
+          children: [
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(dialog).pop('change'),
+              child: const Text('Change the address'),
+            ),
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(dialog).pop('remove'),
+              child: const Text('Remove the link'),
+            ),
+          ],
+        ),
+      );
+      if (choice == 'remove') {
+        await controller.unlink();
+        return;
+      }
+      if (choice != 'change' || !context.mounted) return;
+    }
+    if (!context.mounted) return;
+    final link = await showDialog<({String url, String text})>(
+      context: context,
+      builder: (_) => const _LinkDialog(),
+    );
+    if (link == null) return;
+    await controller.insertLink(
+      linkAddress(link.url),
+      text: link.text.trim().isEmpty ? null : link.text.trim(),
+    );
+  }
+}
+
+/// What was typed as a link's address, made one a mail app follows: an
+/// email address as mailto:, and a bare web address as https://.
+String linkAddress(String typed) {
+  final text = typed.trim();
+  if (RegExp(r'^[a-z][a-z0-9+.-]*:', caseSensitive: false).hasMatch(text)) {
+    return text;
+  }
+  if (RegExp(r'^[^@\s/]+@[^@\s/]+\.[^@\s/]+$').hasMatch(text)) {
+    return 'mailto:$text';
+  }
+  return 'https://$text';
+}
+
+class _LinkDialog extends StatefulWidget {
+  const _LinkDialog();
+
+  @override
+  State<_LinkDialog> createState() => _LinkDialogState();
+}
+
+class _LinkDialogState extends State<_LinkDialog> {
+  final _url = TextEditingController();
+  final _text = TextEditingController();
+
+  @override
+  void dispose() {
+    _url.dispose();
+    _text.dispose();
+    super.dispose();
+  }
+
+  void _done() {
+    if (_url.text.trim().isEmpty) return;
+    Navigator.of(context).pop((url: _url.text, text: _text.text));
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Insert link'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              key: const ValueKey('link-address'),
+              controller: _url,
+              autofocus: true,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(labelText: 'Address'),
+              onSubmitted: (_) => _done(),
+            ),
+            TextField(
+              key: const ValueKey('link-text'),
+              controller: _text,
+              decoration: const InputDecoration(
+                labelText: 'Text to show (if nothing is selected)',
+              ),
+              onSubmitted: (_) => _done(),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(onPressed: _done, child: const Text('Insert')),
+        ],
+      );
 }

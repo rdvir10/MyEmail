@@ -187,8 +187,7 @@ void main() {
 
       await actionsFor(
         account,
-        signature: Signature(
-          accountId: account.id,
+        signature: Signature.single(accountId: account.id,
           html: '<p>Ron Dvir, Hadco</p>',
           onReply: true,
         ),
@@ -202,8 +201,7 @@ void main() {
 
       await actionsFor(
         account,
-        signature: Signature(
-          accountId: account.id,
+        signature: Signature.single(accountId: account.id,
           html: '<p>Ron Dvir, Hadco</p>',
           onReply: false,
         ),

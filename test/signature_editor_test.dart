@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/compose/signature_images.dart';
 import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/draft.dart' show ComposeKind;
 import 'package:myemail/domain/signature.dart';
 import 'package:myemail/state/compose_providers.dart';
 import 'package:myemail/state/providers.dart';
@@ -71,24 +72,27 @@ void main() {
         (tester) async {
       final c = await pump(tester, const SignaturesScreen());
       final accounts = await c.read(accountsProvider.future);
-      c.read(signaturesProvider.notifier).set(Signature(
-            accountId: accounts.first.id,
+      c.read(signaturesProvider.notifier).set(Signature.single(accountId: accounts.first.id,
             html: '<p>Ron Dvir<br><b>Sales &amp; Marketing</b></p>',
           ));
       await tester.pumpAndSettle();
 
-      expect(find.byTooltip('Edit'), findsNWidgets(2));
+      expect(find.byTooltip('Edit'), findsOneWidget,
+          reason: 'one for the signature there is');
       expect(find.textContaining('Sales & Marketing'), findsOneWidget,
           reason: 'shown as words, not as HTML');
       expect(find.text('Nothing yet'), findsOneWidget);
+      expect(find.text('Add a signature'), findsOneWidget);
+      expect(find.text('Add another signature'), findsOneWidget);
+      expect(find.text('New messages'), findsOneWidget);
+      expect(find.text('Replies and forwards'), findsOneWidget);
     });
 
     testWidgets('Edit opens the editor holding the saved signature',
         (tester) async {
       final c = await pump(tester, const SignaturesScreen());
       final accounts = await c.read(accountsProvider.future);
-      c.read(signaturesProvider.notifier).set(Signature(
-            accountId: accounts.first.id,
+      c.read(signaturesProvider.notifier).set(Signature.single(accountId: accounts.first.id,
             html: '<p>Ron Dvir</p>',
           ));
       await tester.pumpAndSettle();
@@ -104,22 +108,29 @@ void main() {
     testWidgets('Save writes it back, through the picture step',
         (tester) async {
       var inlined = 0;
-      final c = await pump(tester, Consumer(builder: (context, ref, _) {
-        final accounts = ref.watch(accountsProvider).value;
-        if (accounts == null) return const SizedBox();
-        return SignatureEditorScreen(
-          account: accounts.first,
-          inlineImages: (html) async {
-            inlined++;
-            return '$html<!-- inlined -->';
-          },
-        );
-      }));
-      final accounts = await c.read(accountsProvider.future);
-      c.read(signaturesProvider.notifier).set(Signature(
+      final c = await pump(tester, const SizedBox());
+      // Nothing on screen is loading the accounts, so time has to pass
+      // for real while they are read.
+      final accounts =
+          (await tester.runAsync(() => c.read(accountsProvider.future)))!;
+      c.read(signaturesProvider.notifier).set(Signature.single(
             accountId: accounts.first.id,
             html: '<p>Before</p>',
           ));
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: MaterialApp(
+          home: SignatureEditorScreen(
+            account: accounts.first,
+            signatureId: Signature.mainId,
+            inlineImages: (html) async {
+              inlined++;
+              return '$html<!-- inlined -->';
+            },
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
 
       await tester.tap(find.byTooltip('Save'));
       await tester.pumpAndSettle();
@@ -129,6 +140,27 @@ void main() {
       // given; a real page hands back what was typed.
       expect(c.read(signaturesProvider)[accounts.first.id]!.html,
           contains('<!-- inlined -->'));
+    });
+
+    testWidgets('a second signature, named, and chosen for replies',
+        (tester) async {
+      final c = await pump(tester, const SizedBox());
+      const id = 'acct-personal';
+      final notifier = c.read(signaturesProvider.notifier);
+      notifier.set(Signature.single(accountId: id, html: '<p>Ron Dvir, Hadco</p>'));
+      notifier.set(notifier.forAccount(id).withSignature(
+            const NamedSignature(id: 'short', name: 'Short', html: '<p>Ron</p>'),
+          ));
+      notifier.set(notifier
+          .forAccount(id)
+          .withDefaults(forNew: Signature.mainId, forReplies: 'short'));
+
+      final signature = c.read(signaturesProvider)[id]!;
+      expect(signature.named.map((s) => s.name), ['Signature', 'Short']);
+      expect(signature.htmlFor(ComposeKind.newMessage), '<p>Ron Dvir, Hadco</p>');
+      expect(signature.htmlFor(ComposeKind.reply), '<p>Ron</p>');
+      expect(signature.without('short').htmlFor(ComposeKind.reply), '',
+          reason: 'gone, and no longer the replies one');
     });
   });
 }

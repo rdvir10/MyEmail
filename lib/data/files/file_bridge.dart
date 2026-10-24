@@ -294,6 +294,15 @@ abstract class FileBridge {
   /// all, which puts every file in one place with one choice.
   Future<String?> pickFolder();
 
+  /// The camera, for a picture in a message: the photo's path, or null if
+  /// none was taken. Throws where the device has no camera app.
+  Future<String?> takePhoto();
+
+  /// A picture made fit to send: no longer than [maxSide] on its longer
+  /// side, turned upright, a JPEG at [quality]. The new file's path, or
+  /// [path] itself where it could not be read as a picture.
+  Future<String> scaleImage(String path, {int maxSide = 1600, int quality = 82});
+
   /// Write the file at [path] into [folder], from [pickFolder], as [name].
   /// A name already there gets a number from the folder rather than
   /// replacing what is there. False if the folder would not take it.
@@ -418,6 +427,22 @@ class AndroidFileBridge implements FileBridge {
 
   @override
   Future<String?> pickFolder() => _channel.invokeMethod<String>('pickFolder');
+
+  @override
+  Future<String?> takePhoto() => _channel.invokeMethod<String>('takePhoto');
+
+  @override
+  Future<String> scaleImage(
+    String path, {
+    int maxSide = 1600,
+    int quality = 82,
+  }) async =>
+      await _channel.invokeMethod<String>('scaleImage', {
+        'path': path,
+        'maxSide': maxSide,
+        'quality': quality,
+      }) ??
+      path;
 
   @override
   Future<bool> saveIntoFolder(
@@ -571,6 +596,23 @@ class FakeFileBridge implements FileBridge {
 
   @override
   Future<String?> pickFolder() async => folderToPick;
+
+  /// What [takePhoto] answers, and every picture [scaleImage] was given.
+  String? photoToTake;
+  final List<String> scaled = [];
+
+  @override
+  Future<String?> takePhoto() async => photoToTake;
+
+  @override
+  Future<String> scaleImage(
+    String path, {
+    int maxSide = 1600,
+    int quality = 82,
+  }) async {
+    scaled.add(path);
+    return path;
+  }
 
   @override
   Future<bool> saveIntoFolder(
