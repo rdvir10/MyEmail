@@ -27,6 +27,7 @@ import 'package:myemail/ui/compose/compose_screen.dart';
 import 'package:myemail/ui/compose/header_fields.dart';
 import 'package:myemail/ui/compose/open_compose.dart';
 
+import 'helpers/send_at_once.dart';
 import 'fakes/fake_imap_transport.dart';
 import 'fakes/fake_webview.dart';
 
@@ -261,6 +262,7 @@ void main() {
         ProviderScope(
           overrides: [
             mailEngineProvider.overrideWithValue(engine ?? SampleMailEngine()),
+            uiStateStoreProvider.overrideWithValue(sendAtOnce()),
           ],
           child: MaterialApp(
             home: Builder(

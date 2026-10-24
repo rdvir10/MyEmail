@@ -64,6 +64,10 @@ class Messages extends Table {
   /// Added in schema 13; null where they are not known yet, which the sync
   /// fills in for the rows it keeps up to date.
   TextColumn get attachmentNamesJson => text().nullable()();
+
+  /// `high`, `normal` or `low`: see [CachedMessage.importance]. Added in
+  /// schema 14; null where not known yet, which the sync fills in.
+  TextColumn get importance => text().nullable()();
   TextColumn get preview => text().withDefault(const Constant(''))();
 
   /// The message's size: see [MailMessage.sizeBytes]. Added in schema 6,
@@ -196,7 +200,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 13;
+  int get schemaVersion => 14;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -375,6 +379,12 @@ class MailDatabase extends _$MailDatabase {
       // pass, so nothing has to be read again all at once.
       await _addColumnIfMissing(m, messages, messages.attachmentNamesJson);
     }
+    if (from < 14) {
+      // The importance, for the row's mark and for arranging by it. Null
+      // until the sync reads it: with the flags on Microsoft, a request a
+      // pass over IMAP.
+      await _addColumnIfMissing(m, messages, messages.importance);
+    }
   }
 
   /// Checked first: a database that already has the column (an upgrade
@@ -489,6 +499,7 @@ class DriftCacheStore implements CacheStore {
       m.isForwarded,
       m.hasAttachments,
       m.attachmentNamesJson,
+      m.importance,
       m.sizeBytes,
       m.isMeeting,
       m.preview,
@@ -555,6 +566,7 @@ class DriftCacheStore implements CacheStore {
     final hasConversation = m.conversationId.isNotNull();
     final hasSize = m.sizeBytes.isBiggerThanValue(0);
     final needsNames = m.hasAttachments & m.attachmentNamesJson.isNull();
+    final needsImportance = m.importance.isNull();
     final rows = await (db.selectOnly(m)
           ..addColumns([
             m.uid,
@@ -563,6 +575,7 @@ class DriftCacheStore implements CacheStore {
             hasConversation,
             hasSize,
             needsNames,
+            needsImportance,
           ])
           ..where(_folder(m, accountId, path))
           ..orderBy(_newestArrivalFirst(m)))
@@ -576,6 +589,7 @@ class DriftCacheStore implements CacheStore {
           hasConversation: r.read(hasConversation)!,
           hasSize: r.read(hasSize)!,
           needsAttachmentNames: r.read(needsNames)!,
+          needsImportance: r.read(needsImportance)!,
         ),
     ];
   }
@@ -763,6 +777,7 @@ class DriftCacheStore implements CacheStore {
             isForwarded: Value(m.isForwarded),
             hasAttachments: m.hasAttachments,
             attachmentNamesJson: Value(_encodeNames(m.attachmentNames)),
+            importance: Value(m.importance?.name),
             sizeBytes: Value(m.sizeBytes),
             isMeeting: Value(m.isMeeting),
             preview: Value(m.preview),
@@ -804,6 +819,10 @@ class DriftCacheStore implements CacheStore {
               attachmentNamesJson: m.attachmentNames == null
                   ? const Value.absent()
                   : Value(_encodeNames(m.attachmentNames)),
+              // Likewise the importance, which an IMAP header never has.
+              importance: m.importance == null
+                  ? const Value.absent()
+                  : Value(m.importance!.name),
               isMeeting: Value(m.isMeeting),
               // Only when the server said. A re-read header that carries no
               // size must not erase one that was found.
@@ -906,6 +925,24 @@ class DriftCacheStore implements CacheStore {
               _folder(m, accountId, path) &
               m.uid.equals(e.key) &
               m.sizeBytes.equals(e.value).not(),
+        );
+      }
+    });
+  }
+
+  @override
+  Future<void> updateImportance(
+    String accountId,
+    String path,
+    Map<int, Importance> importanceByUid,
+  ) async {
+    if (importanceByUid.isEmpty) return;
+    await db.batch((b) {
+      for (final e in importanceByUid.entries) {
+        b.update(
+          db.messages,
+          MessagesCompanion(importance: Value(e.value.name)),
+          where: (m) => _folder(m, accountId, path) & m.uid.equals(e.key),
         );
       }
     });
@@ -1045,6 +1082,7 @@ class DriftCacheStore implements CacheStore {
     final copied = r.read(m.copiedJson);
     final replyTo = r.read(m.replyToJson);
     final names = r.read(m.attachmentNamesJson);
+    final importance = r.read(m.importance);
     return CachedMessage(
       uid: r.read(m.uid)!,
       subject: r.read(m.subject)!,
@@ -1060,6 +1098,9 @@ class DriftCacheStore implements CacheStore {
       isForwarded: r.read(m.isForwarded)!,
       hasAttachments: r.read(m.hasAttachments)!,
       attachmentNames: names == null ? null : _decodeNames(names),
+      importance: importance == null
+          ? null
+          : Importance.values.where((i) => i.name == importance).firstOrNull,
       sizeBytes: r.read(m.sizeBytes)!,
       isMeeting: r.read(m.isMeeting)!,
       preview: r.read(m.preview)!,

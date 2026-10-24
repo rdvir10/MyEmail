@@ -9,6 +9,7 @@ import '../domain/message_filter.dart';
 export '../domain/search_field.dart';
 export '../domain/message_filter.dart';
 export '../domain/unsubscribe.dart';
+export '../domain/opened_headers.dart';
 export '../domain/recoverable_message.dart';
 export 'contacts/account_people.dart' show PeopleSearchAccess, PeopleSearchState;
 import 'auth/oauth_token.dart';
@@ -23,7 +24,7 @@ import '../domain/mail_message.dart';
 import '../domain/meeting.dart';
 import '../domain/message_move.dart';
 import '../domain/recoverable_message.dart';
-import '../domain/unsubscribe.dart';
+import '../domain/opened_headers.dart';
 
 /// Everything the UI is allowed to know about talking to mail.
 ///
@@ -211,11 +212,27 @@ abstract class MailEngine {
   /// The bytes of one attachment, by the id [listAttachments] gave it.
   Future<Uint8List> fetchAttachment(String messageId, String attachmentId);
 
-  /// How the mailing list a message came from says to leave it, read from
-  /// its headers on the server when asked, or null where it says nothing:
-  /// see [UnsubscribeOptions]. Throws as [listAttachments] does when the
-  /// server cannot be asked.
-  Future<UnsubscribeOptions?> unsubscribeOptions(String messageId);
+  /// What a message's headers say beyond its list row, read on the server
+  /// when it is opened: how its mailing list says to leave it, and whether
+  /// a read receipt was asked for. See [OpenedHeaders]. Throws as
+  /// [listAttachments] does when the server cannot be asked.
+  Future<OpenedHeaders> openedHeaders(String messageId);
+
+  /// Whether the app answers read-receipt requests on [accountId]: a Gmail
+  /// account, where nothing else does. Not a Microsoft one for now: whether
+  /// Exchange sends a receipt itself when the app marks a message read is
+  /// not yet known, and answering there too could send two.
+  bool answersReadReceipts(String accountId);
+
+  /// Send the read receipt [messageId]'s sender asked for (RFC 8098), from
+  /// the account it came to, and mark the request answered on the server
+  /// where it keeps such a mark (IMAP's `$MDNSent`). Throws as [sendDraft]
+  /// does.
+  Future<void> sendReadReceipt(String messageId);
+
+  /// Mark [messageId]'s receipt request answered without sending one, so
+  /// other mail apps do not ask again. Best-effort: never throws.
+  Future<void> declineReadReceipt(String messageId);
 
   /// The message as it arrived: RFC 822 text, headers and all. For saving
   /// as an `.eml`, or attaching one message to another.

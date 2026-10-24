@@ -7,7 +7,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/address_suggestions.dart';
 import '../../domain/text_direction.dart';
+import '../../state/contact_groups.dart';
 import '../../state/contact_providers.dart';
+import '../common/bottom_message.dart';
 
 /// The header rows of a compose-shaped screen: a name in muted text on the
 /// left and a field with a light rule under it, in the same type as the
@@ -242,6 +244,27 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
     );
   }
 
+  /// Take [person], from the mail history, out of the suggestions until
+  /// they are written to again: Outlook's X beside an Auto-Complete name,
+  /// for the typo once written to. Said on the bar, with Undo.
+  void _forget(AddressSuggestion person) {
+    final forgotten = ref.read(forgottenAddressesProvider.notifier);
+    forgotten.forget(person.email);
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        duration: kBottomMessage,
+        persist: false,
+        content: Text('${person.email} is no longer suggested.'),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () => forgotten.remember([person.asAddress]),
+        ),
+      ));
+    _lookedUp = null;
+    _lookUp();
+  }
+
   /// Enter, or the keyboard's Next: the person the arrow keys are on, or
   /// else the first, unless what was typed is a whole address of its own.
   /// "dan@example.com" typed out is meant as written, not as the
@@ -429,6 +452,11 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
                           person: _people[i],
                           highlighted: _arrowed && i == _highlight,
                           onTap: () => _choose(_people[i]),
+                          // Only what the mail history suggests: an address
+                          // book keeps its own, and a group is yours.
+                          onForget: _people[i].fromContacts || _people[i].isGroup
+                              ? null
+                              : () => _forget(_people[i]),
                         ),
                       ),
                     ),
@@ -454,6 +482,7 @@ class _SuggestionRow extends StatelessWidget {
     required this.person,
     required this.highlighted,
     required this.onTap,
+    this.onForget,
   });
 
   final AddressSuggestion person;
@@ -462,6 +491,10 @@ class _SuggestionRow extends StatelessWidget {
   final bool highlighted;
   final VoidCallback onTap;
 
+  /// A long press, or a right click: take this one out of the suggestions.
+  /// Null where it cannot be.
+  final VoidCallback? onForget;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -469,13 +502,19 @@ class _SuggestionRow extends StatelessWidget {
     final name = person.name;
     return InkWell(
       onTap: onTap,
+      onLongPress: onForget,
+      onSecondaryTap: onForget,
       child: Ink(
         color: highlighted ? theme.colorScheme.secondaryContainer : null,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
         child: Row(
           children: [
             Icon(
-              person.fromContacts ? Icons.person_outline : Icons.history,
+              person.isGroup
+                  ? Icons.group_outlined
+                  : person.fromContacts
+                      ? Icons.person_outline
+                      : Icons.history,
               size: 16,
               color: muted,
             ),
@@ -498,7 +537,10 @@ class _SuggestionRow extends StatelessWidget {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          person.email,
+                          person.isGroup
+                              ? '${person.members.length} '
+                                  '${person.members.length == 1 ? 'person' : 'people'}'
+                              : person.email,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style:

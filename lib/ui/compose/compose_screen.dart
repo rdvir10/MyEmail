@@ -13,6 +13,9 @@ import '../common/problem_view.dart';
 import '../../data/compose/quote_builder.dart' show carriesSignature;
 import '../../data/files/file_bridge.dart';
 import '../../domain/draft.dart';
+import '../../domain/send_checks.dart';
+import '../../state/display_providers.dart';
+import '../../state/held_sends.dart';
 import '../../state/attachment_providers.dart';
 import '../../state/compose_providers.dart';
 import '../../state/drop_providers.dart';
@@ -30,9 +33,18 @@ import '../shell/put_away.dart';
 /// rather than HTML because it has to sit above the soft keyboard and track
 /// its inset, which an in-page toolbar cannot do.
 class ComposeScreen extends ConsumerStatefulWidget {
-  const ComposeScreen({super.key, required this.draft, this.disposable = true});
+  const ComposeScreen({
+    super.key,
+    required this.draft,
+    this.disposable = true,
+    this.inWindow = false,
+  });
 
   final Draft draft;
+
+  /// In a window of its own, where Undo Send does not hold the message:
+  /// the window closes as it goes, and there is no bar left to undo on.
+  final bool inWindow;
 
   /// Whether closing the window as it opened loses nothing, because what it
   /// opened with can be had again: a new message, reply or forward as the
@@ -70,6 +82,10 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   bool _caretPlaced = false;
 
   late List<DraftAttachment> _attachments = List.of(widget.draft.attachments);
+
+  /// The ⋮ menu's choices: High or Low importance, and a read receipt.
+  late Importance _importance = widget.draft.importance;
+  late bool _readReceipt = widget.draft.requestReadReceipt;
   /// Bcc is the one line that stays hidden until asked for: it is rare, and
   /// a row nobody uses on every message is a row between them and the body.
   bool _showBcc = false;
@@ -202,6 +218,8 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       _bcc.text == formatAddresses(widget.draft.bcc) &&
       _subject.text == widget.draft.subject &&
       listEquals(_attachments, widget.draft.attachments) &&
+      _importance == widget.draft.importance &&
+      _readReceipt == widget.draft.requestReadReceipt &&
       now.htmlBody == (_openedHtml ?? widget.draft.htmlBody);
 
   @override
@@ -394,6 +412,8 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
         d.bcc,
         d.subject,
         d.htmlBody,
+        d.importance,
+        d.requestReadReceipt,
         for (final a in d.attachments) identityHashCode(a),
       ].join('\u0000');
 
@@ -631,7 +651,13 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       return;
     }
 
+    if (!await _passesChecks()) return;
     if (!await _readyToLeave()) return;
+    final hold = ref.read(displayProvider).undoSend.hold;
+    if (hold > Duration.zero && !widget.inWindow) {
+      await _sendHeld(hold);
+      return;
+    }
     setState(() {
       _sending = true;
       _invalid = null;
@@ -659,6 +685,147 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     } finally {
       if (mounted) setState(() => _sending = false);
     }
+  }
+
+  /// Outlook's two questions before a message goes, each with its switch
+  /// in Settings, View: a message with no subject, and one that mentions an
+  /// attachment and has none. False to keep writing.
+  Future<bool> _passesChecks() async {
+    final settings = ref.read(displayProvider);
+    if (settings.askNoSubject && _subject.text.trim().isEmpty) {
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (dialog) => AlertDialog(
+          title: const Text('No subject'),
+          content: const Text('This message has no subject. Send it anyway?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialog).pop(false),
+              child: const Text('Keep writing'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialog).pop(true),
+              child: const Text('Send anyway'),
+            ),
+          ],
+        ),
+      );
+      if (go != true) {
+        if (mounted) _subjectFocus.requestFocus();
+        return false;
+      }
+      if (!mounted) return false;
+    }
+    // A picture in the text is not a file attached.
+    if (settings.attachmentReminder &&
+        !_attachments.any((a) => a.contentId == null)) {
+      String html;
+      try {
+        html = await _editor.getHtml();
+      } on EditorUnreadable {
+        html = '';
+      }
+      if (!mounted) return false;
+      if (mentionsAttachment('${_subject.text}\n${ownTextOf(html)}')) {
+        final choice = await showDialog<String>(
+          context: context,
+          builder: (dialog) => AlertDialog(
+            title: const Text('Attachment reminder'),
+            content: const Text(
+              'The message says something is attached, but nothing is.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialog).pop('attach'),
+                child: const Text('Attach a file'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(dialog).pop(),
+                child: const Text('Keep writing'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialog).pop('send'),
+                child: const Text('Send anyway'),
+              ),
+            ],
+          ),
+        );
+        if (choice == 'attach' && mounted) await _addAttachment();
+        if (choice != 'send' || !mounted) return false;
+      }
+    }
+    return true;
+  }
+
+  /// Undo Send: the window closes at once and the message waits [hold],
+  /// with Undo on the bar, before it goes (see [HeldSends]). Undo opens it
+  /// again as it was; a send that fails says so, with the way back to it.
+  Future<void> _sendHeld(Duration hold) async {
+    final Draft draft;
+    try {
+      draft = await _currentDraft();
+    } on EditorUnreadable catch (e) {
+      if (mounted) {
+        setState(() => _problem = ProblemReport(
+              doing: 'Sending a message',
+              error: e,
+              account: _accountOrNull(),
+            ));
+      }
+      return;
+    }
+    if (!mounted) return;
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    void reopen() => navigator.push(
+          MaterialPageRoute<bool>(
+            // What was typed exists nowhere else now: closing it asks.
+            builder: (_) => ComposeScreen(draft: draft, disposable: false),
+          ),
+        );
+    final held = ref.read(heldSendsProvider.notifier).hold(
+      draft,
+      hold,
+      onSent: () => messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(
+          duration: kBottomMessage,
+          content: Text('Message sent'),
+        )),
+      onFailed: (e) => messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          duration: const Duration(seconds: 10),
+          persist: false,
+          content: Text(
+            'The message was not sent. '
+            '${e is ReadableError ? e.message : '$e'}',
+          ),
+          action: SnackBarAction(label: 'Open', onPressed: reopen),
+        )),
+    );
+    _dropBackgroundCopy();
+    navigator.pop(true);
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        duration: hold,
+        persist: false,
+        content: const Text('Sending…'),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () {
+            if (held.undo()) {
+              reopen();
+            } else {
+              messenger.showSnackBar(const SnackBar(
+                duration: kBottomMessage,
+                content: Text('Too late: it has gone.'),
+              ));
+            }
+          },
+        ),
+      ));
   }
 
   /// Backing out of a half-written message: keep writing, save it, or throw
@@ -741,6 +908,8 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
         subject: _subject.text,
         htmlBody: await _editor.getHtml(),
         attachments: _attachments,
+        importance: _importance,
+        requestReadReceipt: _readReceipt,
       )
       .withSavedAs(_savedAs);
 
@@ -880,7 +1049,44 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
                   : const Icon(Icons.send),
               onPressed: _sending ? null : _send,
             ),
-            const SizedBox(width: 4),
+            // Outlook's Tags and Options for one message.
+            PopupMenuButton<String>(
+              key: const ValueKey('compose-more'),
+              tooltip: 'More',
+              enabled: !_sending,
+              onSelected: (choice) => setState(() {
+                switch (choice) {
+                  case 'high':
+                    _importance = _importance == Importance.high
+                        ? Importance.normal
+                        : Importance.high;
+                  case 'low':
+                    _importance = _importance == Importance.low
+                        ? Importance.normal
+                        : Importance.low;
+                  case 'receipt':
+                    _readReceipt = !_readReceipt;
+                }
+              }),
+              itemBuilder: (_) => [
+                CheckedPopupMenuItem(
+                  value: 'high',
+                  checked: _importance == Importance.high,
+                  child: const Text('High importance'),
+                ),
+                CheckedPopupMenuItem(
+                  value: 'low',
+                  checked: _importance == Importance.low,
+                  child: const Text('Low importance'),
+                ),
+                const PopupMenuDivider(),
+                CheckedPopupMenuItem(
+                  value: 'receipt',
+                  checked: _readReceipt,
+                  child: const Text('Request a read receipt'),
+                ),
+              ],
+            ),
           ],
         ),
         body: Column(
@@ -978,6 +1184,11 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
               focusNode: _subjectFocus,
               enabled: !_sending,
             ),
+            if (_importance != Importance.normal || _readReceipt)
+              _MessageOptions(
+                importance: _importance,
+                readReceipt: _readReceipt,
+              ),
             if (_attachments.isNotEmpty)
               _AttachmentStrip(
                 attachments: _attachments,
@@ -1031,6 +1242,52 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
 
 /// What to do with a half-written message when the screen is backed out of.
 enum _LeaveChoice { keepWriting, save, discard }
+
+/// What the ⋮ menu has set on this message, said under the subject so it
+/// is not forgotten: High or Low importance, a read receipt asked for.
+class _MessageOptions extends StatelessWidget {
+  const _MessageOptions({required this.importance, required this.readReceipt});
+
+  final Importance importance;
+  final bool readReceipt;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final style = theme.textTheme.labelSmall;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+      child: Wrap(
+        spacing: 14,
+        runSpacing: 4,
+        children: [
+          if (importance == Importance.high)
+            _option(Icons.priority_high, 'High importance', scheme.error, style),
+          if (importance == Importance.low)
+            _option(Icons.arrow_downward, 'Low importance', scheme.primary, style),
+          if (readReceipt)
+            _option(
+              Icons.mark_email_read_outlined,
+              'Read receipt requested',
+              scheme.onSurfaceVariant,
+              style,
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _option(IconData icon, String text, Color colour, TextStyle? style) =>
+      Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: colour),
+          const SizedBox(width: 4),
+          Text(text, style: style?.copyWith(color: colour)),
+        ],
+      );
+}
 
 /// A quiet band of explanation, distinct from the error band above it.
 class _Notice extends StatelessWidget {

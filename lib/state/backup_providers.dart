@@ -9,6 +9,7 @@ import 'pane_widths.dart';
 import 'providers.dart';
 import 'quick_steps.dart';
 import 'row_formats.dart';
+import 'contact_groups.dart';
 import 'trusted_senders.dart';
 
 /// Reading the app's settings out and putting them back.
@@ -49,6 +50,8 @@ const reloadedAfterRestore = {
   UiStateKeys.display,
   UiStateKeys.trustedSenders,
   UiStateKeys.rowFormats,
+  UiStateKeys.contactGroups,
+  UiStateKeys.forgottenAddresses,
 };
 
 /// Every setting a restore wrote, read again from where it was written.
@@ -70,5 +73,7 @@ void reloadRestoredSettings(WidgetRef ref) {
     ..invalidate(folderPaneVisibleProvider)
     ..invalidate(displayProvider)
     ..invalidate(trustedSendersProvider)
-    ..invalidate(rowFormatsProvider);
+    ..invalidate(rowFormatsProvider)
+    ..invalidate(contactGroupsProvider)
+    ..invalidate(forgottenAddressesProvider);
 }

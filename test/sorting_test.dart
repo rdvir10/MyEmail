@@ -106,8 +106,10 @@ void main() {
         'Size (largest first)',
         'Attachments',
         'Flag',
+        'Importance',
         'Account',
       ]);
+      expect(MessageSort.importance.ascending, isFalse, reason: 'high first');
       expect(MessageSort.dateNewest.ascending, isFalse);
       expect(MessageSort.dateOldest.ascending, isTrue);
       expect(MessageSort.sender.ascending, isTrue);

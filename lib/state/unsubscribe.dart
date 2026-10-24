@@ -8,20 +8,21 @@ import '../data/files/file_bridge.dart' show MailtoLink;
 import '../domain/draft.dart';
 import '../domain/folder_role.dart';
 import '../domain/mail_message.dart';
+import '../domain/opened_headers.dart';
 import '../domain/unsubscribe.dart';
 import 'providers.dart';
 
-/// How the open message's mailing list says to leave it, asked of the
-/// server when the message is opened: see [UnsubscribeOptions]. Null where
-/// it says nothing, and where it could not be asked: the button is all a
-/// failure costs, so it is never an error.
-final unsubscribeOptionsProvider = FutureProvider.autoDispose
-    .family<UnsubscribeOptions?, String>((ref, messageId) async {
+/// What the open message's headers say beyond its row, asked of the server
+/// when it is opened: see [OpenedHeaders]. Nothing where it could not be
+/// asked: Unsubscribe and the receipt bar are all a failure costs, so it
+/// is never an error.
+final openedHeadersProvider = FutureProvider.autoDispose
+    .family<OpenedHeaders, String>((ref, messageId) async {
   try {
-    return await ref.watch(mailEngineProvider).unsubscribeOptions(messageId);
+    return await ref.watch(mailEngineProvider).openedHeaders(messageId);
   } catch (e) {
-    debugPrint('[myemail] unsubscribe headers not read: $e');
-    return null;
+    debugPrint('[myemail] opened headers not read: $e');
+    return OpenedHeaders.none;
   }
 });
 

@@ -47,6 +47,7 @@ class FolderSyncState {
 /// server's conversation.
 ///
 /// [needsAttachmentNames]: it has files and their names are not known yet.
+/// [needsImportance]: its importance is not known yet.
 typedef SyncRow = ({
   int uid,
   DateTime date,
@@ -54,6 +55,7 @@ typedef SyncRow = ({
   bool hasConversation,
   bool hasSize,
   bool needsAttachmentNames,
+  bool needsImportance,
 });
 
 /// A cached row's flags, all of them, as [CacheStore.updateFlags] writes
@@ -81,6 +83,7 @@ class CachedMessage {
     required this.isFlagged,
     required this.hasAttachments,
     this.attachmentNames,
+    this.importance,
     this.isAnswered = false,
     this.isForwarded = false,
     this.arrived,
@@ -122,6 +125,10 @@ class CachedMessage {
   /// cached before schema 13.
   final List<String>? attachmentNames;
 
+  /// See [MailMessage.importance]. Null where it is not known yet: an IMAP
+  /// row until it is asked for, and every row cached before schema 14.
+  final Importance? importance;
+
   /// See [MailMessage.sizeBytes].
   final int sizeBytes;
 
@@ -159,6 +166,7 @@ class CachedMessage {
         isForwarded: isForwarded,
         hasAttachments: hasAttachments,
         attachmentNames: attachmentNames,
+        importance: importance,
         sizeBytes: sizeBytes,
         isMeeting: isMeeting,
         preview: preview,
@@ -174,6 +182,7 @@ class CachedMessage {
     bool? isForwarded,
     int? sizeBytes,
     List<String>? attachmentNames,
+    Importance? importance,
     String? preview,
     String? bodyText,
     String? bodyHtml,
@@ -194,6 +203,7 @@ class CachedMessage {
       isForwarded: isForwarded ?? this.isForwarded,
       hasAttachments: hasAttachments,
       attachmentNames: attachmentNames ?? this.attachmentNames,
+      importance: importance ?? this.importance,
       sizeBytes: sizeBytes ?? this.sizeBytes,
       isMeeting: isMeeting,
       preview: preview ?? this.preview,
@@ -226,6 +236,7 @@ class CachedMessage {
       isForwarded: isForwarded,
       hasAttachments: hasAttachments,
       attachmentNames: attachmentNames ?? const [],
+      importance: importance ?? Importance.normal,
       sizeBytes: sizeBytes,
       isMeeting: isMeeting,
       messageId: messageId,
@@ -346,6 +357,14 @@ abstract class CacheStore {
     Map<int, int> bytesByUid,
   );
 
+  /// Each row's importance, as the server gave it: see
+  /// [CachedMessage.importance].
+  Future<void> updateImportance(
+    String accountId,
+    String path,
+    Map<int, Importance> importanceByUid,
+  );
+
   /// Each row's file names, as [ImapTransport.attachmentNames] found them:
   /// see [CachedMessage.attachmentNames].
   Future<void> updateAttachmentNames(
@@ -459,6 +478,7 @@ class MemoryCacheStore implements CacheStore {
             hasSize: m.sizeBytes > 0,
             needsAttachmentNames:
                 m.hasAttachments && m.attachmentNames == null,
+            needsImportance: m.importance == null,
           ),
       ];
 
@@ -582,6 +602,8 @@ class MemoryCacheStore implements CacheStore {
               sizeBytes: m.sizeBytes > 0 ? m.sizeBytes : existing.sizeBytes,
               // So do file names: a Microsoft header read again has none.
               attachmentNames: m.attachmentNames ?? existing.attachmentNames,
+              // And the importance, which an IMAP header never has.
+              importance: m.importance ?? existing.importance,
               bodyText: existing.bodyText,
               bodyHtml: existing.bodyHtml,
               calendar: existing.calendar,
@@ -619,6 +641,19 @@ class MemoryCacheStore implements CacheStore {
     for (final e in bytesByUid.entries) {
       final m = folder[e.key];
       if (m != null) folder[e.key] = m.copyWith(sizeBytes: e.value);
+    }
+  }
+
+  @override
+  Future<void> updateImportance(
+    String accountId,
+    String path,
+    Map<int, Importance> importanceByUid,
+  ) async {
+    final folder = _folder(accountId, path);
+    for (final e in importanceByUid.entries) {
+      final m = folder[e.key];
+      if (m != null) folder[e.key] = m.copyWith(importance: e.value);
     }
   }
 

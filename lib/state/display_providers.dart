@@ -58,6 +58,16 @@ class Display extends Notifier<DisplaySettings> {
 
   void setAttachmentsOnRow(bool on) =>
       state = state.copyWith(attachmentsOnRow: on);
+
+  void setUndoSend(UndoSend undo) => state = state.copyWith(undoSend: undo);
+
+  void setAskNoSubject(bool on) => state = state.copyWith(askNoSubject: on);
+
+  void setAttachmentReminder(bool on) =>
+      state = state.copyWith(attachmentReminder: on);
+
+  void setReceipts(ReceiptAnswer answer) =>
+      state = state.copyWith(receipts: answer);
 }
 
 final displayProvider =

@@ -50,6 +50,15 @@ abstract final class UiStateKeys {
   /// Pinned messages, by id. Not in the backup: the ids are this device's.
   static const pinned = 'list.pinned.v1';
 
+  /// Read-receipt requests answered here, by Message-ID. Not in the backup.
+  static const answeredReceipts = 'mail.receipts-answered.v1';
+
+  /// Contact groups, typed into To like one person.
+  static const contactGroups = 'compose.groups.v1';
+
+  /// Addresses taken out of the suggestions from mail history.
+  static const forgottenAddresses = 'compose.forgotten.v1';
+
   /// Online meetings made ahead of Send and not yet sent or undone; see
   /// `PreparedMeetingLedger`.
   static const preparedMeetings = 'meetings.prepared.v1';

@@ -9,6 +9,7 @@ import 'package:myemail/state/compose_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
 
+import 'helpers/send_at_once.dart';
 import 'fakes/fake_webview.dart';
 
 /// Which account a message goes out from, chosen from the header.
@@ -39,7 +40,10 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final c = ProviderContainer(
-      overrides: [mailEngineProvider.overrideWithValue(engine)],
+      overrides: [
+        mailEngineProvider.overrideWithValue(engine),
+        uiStateStoreProvider.overrideWithValue(sendAtOnce()),
+      ],
     );
     addTearDown(c.dispose);
     await tester.pumpWidget(

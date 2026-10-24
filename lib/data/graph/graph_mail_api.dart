@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import '../../domain/calendar_invite.dart';
 import '../../domain/draft.dart' show SendFailed;
+import '../../domain/importance.dart';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
@@ -93,7 +94,7 @@ class GraphMailApi {
   static const headerFields =
       'id,subject,from,toRecipients,ccRecipients,replyTo,receivedDateTime,'
       'isRead,flag,hasAttachments,bodyPreview,internetMessageId,'
-      'conversationId';
+      'conversationId,importance';
 
   /// What was last done to a message, as Exchange keeps it: the MAPI
   /// properties PidLastVerbExecuted and PidLastVerbExecutionTime. Graph has
@@ -592,6 +593,21 @@ class GraphMailApi {
       return DateTime.tryParse('${p['value']}'.trim())?.toLocal();
     }
     return null;
+  }
+
+  /// How important each of [messageIds] is, twenty to a request. A message
+  /// that could not be asked about is left out.
+  Future<Map<String, Importance>> importanceOf(List<String> messageIds) async {
+    if (messageIds.isEmpty) return const {};
+    final answers = await batch([
+      for (final id in messageIds)
+        GraphRequest('GET', '/me/messages/${_id(id)}?\$select=importance'),
+    ]);
+    return {
+      for (final (i, answer) in answers.indexed)
+        if (answer.failure == null)
+          messageIds[i]: Importance.fromGraph(answer.json['importance']),
+    };
   }
 
   /// What is attached to each of [messageIds], twenty messages to a
@@ -1604,10 +1620,14 @@ class GraphMessage {
     this.iconIndex,
     this.conversationId,
     this.sizeBytes,
+    this.importance = Importance.normal,
   });
 
   final String id;
   final String subject;
+
+  /// High, normal or low, sent with every row.
+  final Importance importance;
   final String fromEmail;
   final String? fromName;
   final List<({String email, String? name})> to;
@@ -1702,6 +1722,7 @@ class GraphMessage {
         json['singleValueExtendedProperties'],
         GraphMailApi.messageSizeProperty,
       ),
+      importance: Importance.fromGraph(json['importance']),
     );
   }
 

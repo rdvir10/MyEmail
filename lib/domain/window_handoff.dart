@@ -99,6 +99,8 @@ Map<String, Object?> _draftToJson(Draft d) => {
       if (d.savedAs != null) 'savedAs': d.savedAs,
       'lostAttachmentNames': d.lostAttachmentNames,
       if (d.storedCopyUnread) 'storedCopyUnread': true,
+      if (d.importance != Importance.normal) 'importance': d.importance.name,
+      if (d.requestReadReceipt) 'requestReadReceipt': true,
     };
 
 Draft _draftFromJson(Map json) => Draft(
@@ -125,6 +127,11 @@ Draft _draftFromJson(Map json) => Draft(
       savedAs: json['savedAs'] as String?,
       lostAttachmentNames: (json['lostAttachmentNames'] as List).cast<String>(),
       storedCopyUnread: json['storedCopyUnread'] == true,
+      importance: Importance.values
+              .where((i) => i.name == json['importance'])
+              .firstOrNull ??
+          Importance.normal,
+      requestReadReceipt: json['requestReadReceipt'] == true,
     );
 
 Map<String, Object?> _messageToJson(MailMessage m) => {
@@ -151,6 +158,7 @@ Map<String, Object?> _messageToJson(MailMessage m) => {
       if (m.messageId != null) 'messageId': m.messageId,
       if (m.inReplyTo != null) 'inReplyTo': m.inReplyTo,
       if (m.conversationId != null) 'conversationId': m.conversationId,
+      if (m.importance != Importance.normal) 'importance': m.importance.name,
     };
 
 MailMessage _messageFromJson(Map json) => MailMessage(
@@ -186,4 +194,8 @@ MailMessage _messageFromJson(Map json) => MailMessage(
       messageId: json['messageId'] as String?,
       inReplyTo: json['inReplyTo'] as String?,
       conversationId: json['conversationId'] as String?,
+      importance: Importance.values
+              .where((i) => i.name == json['importance'])
+              .firstOrNull ??
+          Importance.normal,
     );

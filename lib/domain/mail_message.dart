@@ -1,5 +1,9 @@
 import 'package:flutter/foundation.dart';
 
+import 'importance.dart';
+
+export 'importance.dart';
+
 @immutable
 class MailAddress {
   const MailAddress({required this.email, this.name});
@@ -75,6 +79,7 @@ class MailMessage {
     this.messageId,
     this.inReplyTo,
     this.conversationId,
+    this.importance = Importance.normal,
   });
 
   static String idFor(String folderId, int uid) => '$folderId#$uid';
@@ -162,6 +167,10 @@ class MailMessage {
   final String? messageId;
   final String? inReplyTo;
 
+  /// High or low importance, as the sender marked it; see [Importance].
+  /// Normal for nearly all mail, and for a row cached before it was read.
+  final Importance importance;
+
   /// The conversation the server keeps this in, where it keeps one:
   /// Exchange puts one on every message, and it is what Outlook groups by.
   /// Null on an IMAP account, and on a Microsoft row cached before it was
@@ -202,6 +211,7 @@ class MailMessage {
       messageId: messageId,
       inReplyTo: inReplyTo,
       conversationId: conversationId,
+      importance: importance,
     );
   }
 
@@ -244,7 +254,8 @@ class MailMessage {
       other.isForwarded == isForwarded &&
       other.messageId == messageId &&
       other.inReplyTo == inReplyTo &&
-      other.conversationId == conversationId;
+      other.conversationId == conversationId &&
+      other.importance == importance;
 
   /// The id and the flags only: enough to spread messages out, and equal
   /// messages still hash alike.

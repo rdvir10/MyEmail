@@ -60,8 +60,15 @@ void main() {
   // and every test here would still have passed, while every device
   // upgrading from 2.35 or earlier failed on every cache read.
 
+  /// What schema 14 added: how important a message was marked.
+  Future<void> dropSchema14(MailDatabase db) async {
+    await db.customStatement('ALTER TABLE messages DROP COLUMN importance');
+  }
+
   /// What schema 13 added: the names of a message's files, for its row.
+  /// And everything after it.
   Future<void> dropSchema13(MailDatabase db) async {
+    await dropSchema14(db);
     await db.customStatement(
       'ALTER TABLE messages DROP COLUMN attachment_names_json',
     );
@@ -259,8 +266,18 @@ void main() {
     await db.close();
   }
 
-  /// A database as it stood at schema 12, the release before this one: a
-  /// message with files whose names were never kept.
+  /// A database as it stood at schema 13, the release before this one: a
+  /// message whose importance was never read.
+  Future<void> buildVersion13() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await dropSchema14(db);
+    await db.customStatement('PRAGMA user_version = 13');
+    await db.close();
+  }
+
+  /// A database as it stood at schema 12: a message with files whose names
+  /// were never kept.
   Future<void> buildVersion12() async {
     final db = MailDatabase(NativeDatabase(file));
     await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [
@@ -816,6 +833,23 @@ void main() {
     expect(cached.attachmentNames, isNull, reason: 'cached before they were');
     expect(
       (await store.readSyncRows('acct-1', 'INBOX')).single.needsAttachmentNames,
+      isTrue,
+    );
+  });
+
+  test('a version 13 database gains the importance, keeps its rows, and asks '
+      'for it', () async {
+    await buildVersion13();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    final cached = (await store.readMessages('acct-1', 'INBOX')).single;
+
+    expect(cached.subject, 'Cached before the upgrade');
+    expect(cached.importance, isNull, reason: 'cached before it was read');
+    expect(
+      (await store.readSyncRows('acct-1', 'INBOX')).single.needsImportance,
       isTrue,
     );
   });

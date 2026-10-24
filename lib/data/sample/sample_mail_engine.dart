@@ -682,10 +682,36 @@ class SampleMailEngine implements MailEngine {
   /// a test to fill: none says anything otherwise.
   final Map<String, UnsubscribeOptions> unsubscribe = {};
 
+  /// Who each sample message asks a read receipt to go to, by message id,
+  /// for a test to fill; and the receipts sent and declined.
+  final Map<String, String> receiptRequests = {};
+  final List<String> receiptsSent = [];
+  final List<String> receiptsDeclined = [];
+
   @override
-  Future<UnsubscribeOptions?> unsubscribeOptions(String messageId) async {
+  Future<OpenedHeaders> openedHeaders(String messageId) async {
     await _latency();
-    return unsubscribe[messageId];
+    return OpenedHeaders(
+      unsubscribe: unsubscribe[messageId],
+      receiptTo: receiptRequests[messageId],
+    );
+  }
+
+  /// Gmail accounts, as the real engine has it: every sample account.
+  @override
+  bool answersReadReceipts(String accountId) => _accounts.any(
+        (a) => a.id == accountId && a.provider == MailProvider.gmail,
+      );
+
+  @override
+  Future<void> sendReadReceipt(String messageId) async {
+    await _latency();
+    receiptsSent.add(messageId);
+  }
+
+  @override
+  Future<void> declineReadReceipt(String messageId) async {
+    receiptsDeclined.add(messageId);
   }
 
   /// What Recover Deleted Items lists, by account id, for a test to fill.

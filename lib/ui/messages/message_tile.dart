@@ -503,8 +503,21 @@ String recipientsLine(MailMessage message, {bool short = false}) {
   return '$label: $who';
 }
 
-/// Replied and forwarded, as marks before the sender.
+/// High or low importance, then replied and forwarded, as marks before the
+/// sender: Outlook's red ! and blue arrow down.
 List<Widget> actionMarks(MailMessage message, ColorScheme scheme) => [
+      if (message.importance == Importance.high)
+        _Mark(
+          icon: Icons.priority_high,
+          label: 'High importance',
+          colour: scheme.error,
+        ),
+      if (message.importance == Importance.low)
+        _Mark(
+          icon: Icons.arrow_downward,
+          label: 'Low importance',
+          colour: scheme.primary,
+        ),
       if (message.isAnswered)
         _Mark(
           icon: Icons.reply,

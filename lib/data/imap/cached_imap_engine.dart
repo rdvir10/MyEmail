@@ -1024,19 +1024,67 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
-  Future<UnsubscribeOptions?> unsubscribeOptions(String messageId) async {
+  Future<OpenedHeaders> openedHeaders(String messageId) async {
     final (folderId, uid) = splitMessageId(messageId);
     final (accountId, path) = splitFolderId(folderId);
     final t = await _transport(accountId);
-    final headers = await t.headerValues(
+    return OpenedHeaders.fromHeaders(
+      await t.headerValues(path, uid, OpenedHeaders.headerNames),
+    );
+  }
+
+  @override
+  bool answersReadReceipts(String accountId) =>
+      accountStore.read().where((a) => a.id == accountId).firstOrNull?.provider ==
+      MailProvider.gmail;
+
+  @override
+  Future<void> sendReadReceipt(String messageId) async {
+    final (folderId, uid) = splitMessageId(messageId);
+    final (accountId, path) = splitFolderId(folderId);
+    final account = _accountFor(accountId);
+    final t = await _transport(accountId);
+    final asked = await t.headerValues(
       path,
       uid,
-      const ['List-Unsubscribe', 'List-Unsubscribe-Post'],
+      const ['Disposition-Notification-To', 'Message-ID', 'Subject', 'Date', 'From', 'To'],
     );
-    return UnsubscribeOptions.parse(
-      headers['list-unsubscribe'],
-      headers['list-unsubscribe-post'],
+    final to = asked['disposition-notification-to'];
+    if (to == null || !to.contains('@')) {
+      throw const SendFailed('The message no longer asks for a read receipt.');
+    }
+    final original = em.MimeMessage();
+    for (final MapEntry(:key, :value) in asked.entries) {
+      original.addHeader(key, value);
+    }
+    final receipt = em.MessageBuilder.buildReadReceipt(
+      original,
+      em.MailAddress(account.senderName, account.emailAddress),
+      reportingUa: 'MyEmail',
+      subject: 'Read: ${original.decodeSubject() ?? ''}'.trim(),
+      textTemplate: readReceiptText,
     );
+    await _send(account, await _credentialsFor(account), receipt);
+    await _markReceiptAnswered(t, path, uid);
+  }
+
+  @override
+  Future<void> declineReadReceipt(String messageId) async {
+    try {
+      final (folderId, uid) = splitMessageId(messageId);
+      final (accountId, path) = splitFolderId(folderId);
+      await _markReceiptAnswered(await _transport(accountId), path, uid);
+    } catch (e) {
+      debugPrint('[myemail] receipt request not marked answered: $e');
+    }
+  }
+
+  Future<void> _markReceiptAnswered(ImapTransport t, String path, int uid) async {
+    try {
+      await t.markReceiptAnswered(path, uid);
+    } catch (e) {
+      debugPrint('[myemail] receipt request not marked answered: $e');
+    }
   }
 
   @override
@@ -1542,7 +1590,12 @@ class CachedImapEngine implements MailEngine {
     if (hits.isEmpty) return const [];
     final folderId = MailFolder.idFor(accountId, path);
 
-    MailMessage row(RemoteHeader h, {String? preview, List<String>? names}) =>
+    MailMessage row(
+      RemoteHeader h, {
+      String? preview,
+      List<String>? names,
+      Importance? importance,
+    }) =>
         MailMessage(
           id: MailMessage.idFor(folderId, h.uid),
           accountId: accountId,
@@ -1564,6 +1617,7 @@ class CachedImapEngine implements MailEngine {
           // A Microsoft hit says only that it has files; the cached row may
           // know what they are called.
           attachmentNames: h.attachmentNames ?? names ?? const [],
+          importance: h.importance ?? importance ?? Importance.normal,
           sizeBytes: h.sizeBytes,
           isMeeting: h.isMeeting,
           messageId: h.messageId,
@@ -1596,6 +1650,7 @@ class CachedImapEngine implements MailEngine {
           h,
           preview: c != null && h.preview.isEmpty ? c.preview : null,
           names: c?.attachmentNames,
+          importance: c?.importance,
         ));
         if (c != null &&
             (c.isRead, c.isFlagged, c.isAnswered, c.isForwarded) !=

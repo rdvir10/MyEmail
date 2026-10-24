@@ -147,6 +147,17 @@ abstract class ImapTransport {
   /// The bytes of one attachment, by the id [listAttachments] gave it.
   Future<Uint8List> fetchAttachment(String path, int uid, String attachmentId);
 
+  /// The importance each of [uids] that is still there was sent with: see
+  /// [MailMessage.importance]. For rows whose header did not say (every
+  /// IMAP header) and rows cached before it was kept. One request over
+  /// IMAP whatever the number; over Graph, one for every twenty.
+  Future<Map<int, Importance>> importanceOf(String path, List<int> uids);
+
+  /// Mark one message's read-receipt request answered, sent or declined, as
+  /// RFC 3503 has IMAP keep it: the `$MDNSent` keyword. Nothing where the
+  /// server keeps no such mark.
+  Future<void> markReceiptAnswered(String path, int uid) async {}
+
   /// The values of the headers [names] on one message, keyed by name in
   /// lower case, the absent ones left out. A header given twice answers
   /// with its first. For what the list rows do not carry: how a mailing
@@ -413,12 +424,18 @@ class RemoteHeader {
     this.messageId,
     this.inReplyTo,
     this.conversationId,
+    this.importance,
   });
 
   final int uid;
   final String subject;
   final MailAddress from;
   final List<MailAddress> to;
+
+  /// See [MailMessage.importance], where the header said: Graph sends it
+  /// with every row. Null over IMAP, whose header fetch does not read it
+  /// (see [ImapTransport.importanceOf]).
+  final Importance? importance;
 
   /// Everyone copied openly. See [MailMessage.cc].
   final List<MailAddress> cc;
@@ -485,11 +502,16 @@ class RemoteFlags {
     required this.isAnswered,
     required this.isForwarded,
     this.sizeBytes,
+    this.importance,
   });
 
   final int uid;
   final bool isRead;
   final bool isFlagged;
+
+  /// The importance, where the server sends it with the flags: Graph does,
+  /// so rows cached before it was kept get theirs. Null over IMAP.
+  final Importance? importance;
 
   /// The whole message's size, sent with the flags (IMAP RFC822.SIZE, Graph
   /// PidTagMessageSize) so rows cached without one get it. Null or 0 means

@@ -348,6 +348,26 @@ class FakeImapTransport implements ImapTransport {
   bool refuseAttachmentNames = false;
 
   @override
+  Future<void> markReceiptAnswered(String path, int uid) async {
+    _online();
+    calls.add('UID STORE $path $uid +\$MDNSent');
+  }
+
+  /// What [importanceOf] answers, keyed by uid; normal for the rest.
+  final Map<int, Importance> importanceAnswers = {};
+
+  @override
+  Future<Map<int, Importance>> importanceOf(String path, List<int> uids) async {
+    _online();
+    calls.add('UID FETCH $path ${uids.join(',')} IMPORTANCE');
+    return {
+      for (final uid in uids)
+        if (_require(path).messages.containsKey(uid))
+          uid: importanceAnswers[uid] ?? Importance.normal,
+    };
+  }
+
+  @override
   Future<Map<int, List<String>>> attachmentNames(
     String path,
     List<int> uids,
@@ -719,6 +739,10 @@ class FakeMessage {
   /// that does not name them, as Microsoft's does not.
   bool hasAttachments = false;
   List<String>? attachmentNames = const [];
+
+  /// As the header gives it: normal by default, as though known, so most
+  /// tests ask nothing more; null for a header that does not say.
+  Importance? importance = Importance.normal;
   final String body;
   final String? html;
   int modSeq;
@@ -751,6 +775,7 @@ class FakeMessage {
         isForwarded: isForwarded,
         hasAttachments: hasAttachments,
         attachmentNames: attachmentNames,
+        importance: importance,
         preview: preview,
         messageId: messageId,
         sizeBytes: sizeBytes,

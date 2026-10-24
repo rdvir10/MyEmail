@@ -157,6 +157,34 @@ enum MarkReadWhen {
   static const delay = Duration(seconds: 5);
 }
 
+/// How long a message waits after Send, with Undo on the bar, before it
+/// goes: Outlook's Undo send. Not scheduled send, which Ron turned down:
+/// it still goes within seconds.
+enum UndoSend {
+  off('Off', 'A message goes the moment you tap Send', Duration.zero),
+  five('5 seconds', 'Undo on the bar for 5 seconds', Duration(seconds: 5)),
+  ten('10 seconds', 'Undo on the bar for 10 seconds', Duration(seconds: 10));
+
+  const UndoSend(this.label, this.description, this.hold);
+
+  final String label;
+  final String description;
+  final Duration hold;
+}
+
+/// What to do when a message asks to be told it was read: Outlook's
+/// "For any message received that includes a read receipt request".
+enum ReceiptAnswer {
+  ask('Ask each time', 'A bar on the message offers to send one'),
+  always('Always send one', 'Sent when the message is opened'),
+  never('Never send one', 'The request is ignored');
+
+  const ReceiptAnswer(this.label, this.description);
+
+  final String label;
+  final String description;
+}
+
 /// What a swipe across a message row does.
 ///
 /// Deliberately a small set. A swipe is one gesture with no confirmation step
@@ -202,6 +230,10 @@ class DisplaySettings {
     this.theme = ThemeChoice.system,
     this.markRead = MarkReadWhen.opened,
     this.attachmentsOnRow = true,
+    this.undoSend = UndoSend.five,
+    this.askNoSubject = true,
+    this.attachmentReminder = true,
+    this.receipts = ReceiptAnswer.ask,
   });
 
   /// Light, dark, or as Android is.
@@ -214,6 +246,19 @@ class DisplaySettings {
   /// shows them, each opened with a tap. Only in a list with a preview
   /// line: Compact is for as many messages as the screen holds.
   final bool attachmentsOnRow;
+
+  /// How long Send holds a message with Undo on the bar.
+  final UndoSend undoSend;
+
+  /// Ask before sending a message with no subject.
+  final bool askNoSubject;
+
+  /// Ask before sending a message that talks about an attachment and has
+  /// none ("attached", "מצורף").
+  final bool attachmentReminder;
+
+  /// What to do when a message asks for a read receipt.
+  final ReceiptAnswer receipts;
 
   /// What the list is ordered by. The default is what every list did
   /// before this was a choice.
@@ -264,6 +309,10 @@ class DisplaySettings {
     ThemeChoice? theme,
     MarkReadWhen? markRead,
     bool? attachmentsOnRow,
+    UndoSend? undoSend,
+    bool? askNoSubject,
+    bool? attachmentReminder,
+    ReceiptAnswer? receipts,
   }) {
     return DisplaySettings(
       readingPane: readingPane ?? this.readingPane,
@@ -278,6 +327,10 @@ class DisplaySettings {
       theme: theme ?? this.theme,
       markRead: markRead ?? this.markRead,
       attachmentsOnRow: attachmentsOnRow ?? this.attachmentsOnRow,
+      undoSend: undoSend ?? this.undoSend,
+      askNoSubject: askNoSubject ?? this.askNoSubject,
+      attachmentReminder: attachmentReminder ?? this.attachmentReminder,
+      receipts: receipts ?? this.receipts,
     );
   }
 
@@ -294,6 +347,10 @@ class DisplaySettings {
         'theme': theme.name,
         'markRead': markRead.name,
         'attachmentsOnRow': attachmentsOnRow,
+        'undoSend': undoSend.name,
+        'askNoSubject': askNoSubject,
+        'attachmentReminder': attachmentReminder,
+        'receipts': receipts.name,
       };
 
   /// Tolerant of anything: a value written by a newer build, or a corrupted
@@ -333,6 +390,15 @@ class DisplaySettings {
       attachmentsOnRow: json['attachmentsOnRow'] is bool
           ? json['attachmentsOnRow'] as bool
           : true,
+      // Writing, from 2.92.0: a record from before has the defaults.
+      undoSend: _byName(UndoSend.values, json['undoSend'], UndoSend.five),
+      askNoSubject:
+          json['askNoSubject'] is bool ? json['askNoSubject'] as bool : true,
+      attachmentReminder: json['attachmentReminder'] is bool
+          ? json['attachmentReminder'] as bool
+          : true,
+      receipts:
+          _byName(ReceiptAnswer.values, json['receipts'], ReceiptAnswer.ask),
       // A record written before sorting existed has no key at all, and one
       // written by 2.23.0 has the field and direction it used to keep as
       // two. Either way it lands on an order that was already being shown.
@@ -384,7 +450,11 @@ class DisplaySettings {
       other.showAllInboxes == showAllInboxes &&
       other.theme == theme &&
       other.markRead == markRead &&
-      other.attachmentsOnRow == attachmentsOnRow;
+      other.attachmentsOnRow == attachmentsOnRow &&
+      other.undoSend == undoSend &&
+      other.askNoSubject == askNoSubject &&
+      other.attachmentReminder == attachmentReminder &&
+      other.receipts == receipts;
 
   // Every field, without exception: Riverpod skips notifying when the new
   // state equals the old, so a field left out here is a setting that can
@@ -403,12 +473,19 @@ class DisplaySettings {
         theme,
         markRead,
         attachmentsOnRow,
+        undoSend,
+        askNoSubject,
+        attachmentReminder,
+        receipts,
       );
 
   @override
   String toString() => 'DisplaySettings(${readingPane.name}, ${density.name}, '
       'mark read: ${markRead.name}, '
       'files on rows: $attachmentsOnRow, '
+      'undo send: ${undoSend.name}, '
+      'checks: subject $askNoSubject, files $attachmentReminder, '
+      'receipts: ${receipts.name}, '
       'conversations: $conversations, '
       'swipe: ${swipeRight.name}/${swipeLeft.name}, '
       'images: $alwaysShowImages, '

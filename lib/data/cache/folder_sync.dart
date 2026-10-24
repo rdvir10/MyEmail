@@ -52,6 +52,10 @@ class FolderSync {
   /// request for every twenty.
   static const attachmentNamesPerPass = 60;
 
+  /// The most rows one pass asks the importance of: one request over IMAP
+  /// whatever the number, so a whole window at once.
+  static const importancePerPass = 200;
+
   final DateTime Function() _clock;
 
   /// [reach] is how many of the folder's newest messages the caller is
@@ -156,6 +160,12 @@ class FolderSync {
       for (final f in flags)
         if (f.sizeBytes case final size? when size > 0) f.uid: size,
     });
+    // The importance, where it comes with the flags (Graph).
+    final rated = {
+      for (final f in flags)
+        f.uid: ?f.importance,
+    };
+    await store.updateImportance(accountId, path, rated);
 
     // Deletions. On Graph, among the rows kept up to date only: the scan
     // went no further than a page past the oldest of them, and an older row
@@ -188,6 +198,15 @@ class FolderSync {
       ...unnamed(newHeaders),
       for (final m in recent)
         if (m.needsAttachmentNames && !gone.contains(m.uid)) m.uid,
+    ]);
+    // The importance, the same way, less what the flags just brought.
+    await _rateImportance(path, [
+      ...unrated(newHeaders),
+      for (final m in recent)
+        if (m.needsImportance &&
+            !gone.contains(m.uid) &&
+            !rated.containsKey(m.uid))
+          m.uid,
     ]);
 
     // Rows that have no preview line.
@@ -276,6 +295,7 @@ class FolderSync {
     ];
     await store.upsertMessages(accountId, path, added.map(_cached).toList());
     await _nameAttachments(path, unnamed(added.reversed));
+    await _rateImportance(path, unrated(added.reversed));
     have = await store.countMessages(accountId, path);
     return have;
   }
@@ -311,7 +331,27 @@ class FolderSync {
     // Newest first, as the list shows them, for the pass's limit to fall
     // on the oldest.
     await _nameAttachments(path, unnamed(headers.reversed));
+    await _rateImportance(path, unrated(headers.reversed));
     return headers.length;
+  }
+
+  /// The headers among [headers] that did not say how important they are.
+  static List<int> unrated(Iterable<RemoteHeader> headers) => [
+        for (final h in headers)
+          if (h.importance == null) h.uid,
+      ];
+
+  /// Ask the server how important the first [importancePerPass] of [uids]
+  /// are, and keep it. Never fails the sync, as [_nameAttachments] does not.
+  Future<void> _rateImportance(String path, List<int> uids) async {
+    final wanted = uids.toSet().take(importancePerPass).toList();
+    if (wanted.isEmpty) return;
+    try {
+      final rated = await transport.importanceOf(path, wanted);
+      await store.updateImportance(accountId, path, rated);
+    } catch (e) {
+      debugPrint('[myemail] importance for $path not read: $e');
+    }
   }
 
   /// The headers among [headers] that have files and did not name them.
@@ -370,6 +410,7 @@ class FolderSync {
         isForwarded: h.isForwarded,
         hasAttachments: h.hasAttachments,
         attachmentNames: h.attachmentNames,
+        importance: h.importance,
         cc: h.cc,
         replyTo: h.replyTo,
         sizeBytes: h.sizeBytes,

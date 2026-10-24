@@ -25,7 +25,8 @@ class UnsubscribeLink extends ConsumerWidget {
       ownAddresses: ref.watch(ownAddressesProvider),
     );
     if (!offered) return const SizedBox.shrink();
-    final options = ref.watch(unsubscribeOptionsProvider(message.id)).value;
+    final options =
+        ref.watch(openedHeadersProvider(message.id)).value?.unsubscribe;
     if (options == null) return const SizedBox.shrink();
     final theme = Theme.of(context);
     final done =

@@ -33,6 +33,7 @@ import 'package:myemail/ui/shell/window_host.dart';
 
 import 'helpers/open_search.dart';
 
+import 'helpers/send_at_once.dart';
 import 'fakes/fake_webview.dart';
 
 /// What the keyboard does, from anywhere in the shell and in the list.
@@ -45,7 +46,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final c = ProviderContainer(
-      overrides: [uiStateStoreProvider.overrideWithValue(MemoryUiStateStore())],
+      overrides: [uiStateStoreProvider.overrideWithValue(sendAtOnce())],
     );
     addTearDown(c.dispose);
     await tester.pumpWidget(

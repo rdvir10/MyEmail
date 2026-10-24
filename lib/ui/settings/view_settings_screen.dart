@@ -1,3 +1,5 @@
+import '../../state/contact_groups.dart';
+import 'contact_groups_screen.dart';
 import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -209,6 +211,85 @@ class ViewSettingsScreen extends ConsumerWidget {
             theme: theme,
           ),
           const _OnlineAddressBooks(),
+          Consumer(
+            builder: (context, ref, _) {
+              final groups = ref.watch(contactGroupsProvider);
+              return ListTile(
+                leading: const Icon(Icons.group_outlined),
+                title: const Text('Contact groups'),
+                subtitle: Text(
+                  groups.isEmpty
+                      ? 'Several people under one name, typed into To like '
+                          'one person'
+                      : '${groups.length} '
+                          '${groups.length == 1 ? 'group' : 'groups'}',
+                ),
+                trailing: const Icon(Icons.chevron_right, size: 20),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const ContactGroupsScreen(),
+                  ),
+                ),
+              );
+            },
+          ),
+          const Divider(height: 1),
+          const _Heading('Sending'),
+          SwitchListTile(
+            title: const Text('Ask about a missing subject'),
+            subtitle: const Text('Before a message with no subject goes.'),
+            value: display.askNoSubject,
+            onChanged: notifier.setAskNoSubject,
+          ),
+          SwitchListTile(
+            title: const Text('Remind me about attachments'),
+            subtitle: const Text(
+              'When a message says it has a file ("attached", "מצורף") and '
+              'has none.',
+            ),
+            value: display.attachmentReminder,
+            onChanged: notifier.setAttachmentReminder,
+          ),
+          const _Heading('Undo Send'),
+          RadioGroup<UndoSend>(
+            groupValue: display.undoSend,
+            onChanged: (v) => v == null ? null : notifier.setUndoSend(v),
+            child: Column(
+              children: [
+                for (final undo in UndoSend.values)
+                  RadioListTile<UndoSend>(
+                    value: undo,
+                    title: Text(undo.label),
+                    subtitle: Text(undo.description),
+                  ),
+              ],
+            ),
+          ),
+          _Note(
+            'Put the app away while a message waits and it goes at once. A '
+            'message written in a window of its own goes at once too.',
+            theme: theme,
+          ),
+          const _Heading('Read receipts'),
+          RadioGroup<ReceiptAnswer>(
+            groupValue: display.receipts,
+            onChanged: (v) => v == null ? null : notifier.setReceipts(v),
+            child: Column(
+              children: [
+                for (final answer in ReceiptAnswer.values)
+                  RadioListTile<ReceiptAnswer>(
+                    value: answer,
+                    title: Text(answer.label),
+                    subtitle: Text(answer.description),
+                  ),
+              ],
+            ),
+          ),
+          _Note(
+            'For a message that asks to be told you read it. To ask for one '
+            'yourself, use ⋮ on the message you are writing.',
+            theme: theme,
+          ),
           const Divider(height: 1),
           const _Heading('Pictures in messages'),
           SwitchListTile(

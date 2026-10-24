@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/draft.dart';
+import '../../domain/folder_role.dart';
 import '../../state/trusted_senders.dart';
 import '../../domain/trusted_senders.dart';
 import 'invite_card.dart';
@@ -36,6 +37,7 @@ import 'print_message.dart';
 import 'read_aloud_bar.dart';
 import 'move_to_sheet.dart';
 import 'person_card.dart';
+import 'read_receipt_bar.dart';
 import 'unsubscribe_link.dart';
 
 /// One open message: a fixed header with actions, then the body.
@@ -337,6 +339,12 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                 onFullScreen: body.value == null
                     ? null
                     : () => FullScreenMessage.open(context, message),
+                // Sent mail, opened as a new message to send again.
+                onResend: ref.watch(folderIndexProvider)[message.folderId]
+                            ?.role ==
+                        FolderRole.sent
+                    ? () => openResend(context, ref, message)
+                    : null,
                 reading: reading,
                 onReadAloud: body.value == null
                     ? null
@@ -368,6 +376,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
             // the answer is the point of the message.
             if (ref.watch(messageInviteProvider(message.id)) case final invite?)
               InviteCard(message: message, invite: invite),
+            ReadReceiptBar(message: message),
             const Divider(height: 1),
             ReadAloudBar(messageId: message.id),
             Expanded(
@@ -491,7 +500,11 @@ class _Header extends StatelessWidget {
     this.compact = false,
     this.reading = false,
     this.onReadAloud,
+    this.onResend,
   });
+
+  /// Resend This Message, for one in Sent; null for the rest.
+  final VoidCallback? onResend;
 
   /// Read Aloud, or stop it where this message is being read. Null until
   /// the body is here: there is nothing to read before.
@@ -661,6 +674,7 @@ class _Header extends StatelessWidget {
                       'window' => onOpenWindow?.call(),
                       'print' => onPrint?.call(),
                       'read' => onReadAloud?.call(),
+                      'resend' => onResend?.call(),
                       'event' => onCreateEvent?.call(),
                       _ => onSaveSource?.call(),
                     },
@@ -669,6 +683,11 @@ class _Header extends StatelessWidget {
                         const PopupMenuItem(
                           value: 'window',
                           child: Text('Open in new window'),
+                        ),
+                      if (onResend != null)
+                        const PopupMenuItem(
+                          value: 'resend',
+                          child: Text('Resend…'),
                         ),
                       PopupMenuItem(
                         value: 'read',
@@ -800,6 +819,35 @@ class _Header extends StatelessWidget {
                     cc: message.cc,
                     onPerson: onPerson,
                   ),
+                  // As Outlook says it, over the message.
+                  if (message.importance != Importance.normal)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Row(
+                        children: [
+                          Icon(
+                            message.importance == Importance.high
+                                ? Icons.priority_high
+                                : Icons.arrow_downward,
+                            size: 14,
+                            color: message.importance == Importance.high
+                                ? scheme.error
+                                : scheme.primary,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            message.importance == Importance.high
+                                ? 'Sent with high importance'
+                                : 'Sent with low importance',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: message.importance == Importance.high
+                                  ? scheme.error
+                                  : scheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                 ],
               ),
             ),

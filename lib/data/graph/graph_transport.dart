@@ -320,6 +320,7 @@ class GraphTransport implements ImapTransport {
             // not only mail that arrives from now on. Unknown stays unknown
             // rather than wiping a size already had.
             sizeBytes: m.sizeBytes,
+            importance: m.importance,
           ),
     ];
   }
@@ -554,6 +555,27 @@ class GraphTransport implements ImapTransport {
       }
     }
     return found;
+  }
+
+  /// Exchange keeps no such mark where Graph can set it.
+  @override
+  Future<void> markReceiptAnswered(String path, int uid) async {}
+
+  /// Graph sends the importance with every row and with the flags, so this
+  /// is asked only of rows the scans have not reached.
+  @override
+  Future<Map<int, Importance>> importanceOf(String path, List<int> uids) async {
+    if (uids.isEmpty) return const {};
+    final remoteIds = await idMap.remoteIdsFor(accountId, path, uids);
+    final byRemote = {
+      for (final uid in uids)
+        if (remoteIds[uid] case final id? when id.isNotEmpty) id: uid,
+    };
+    final rated = await api.importanceOf(byRemote.keys.toList());
+    return {
+      for (final MapEntry(key: id, value: importance) in rated.entries)
+        byRemote[id]!: importance,
+    };
   }
 
   /// Twenty messages to a request; see [GraphMailApi.attachmentsOf].
@@ -1341,6 +1363,7 @@ class GraphTransport implements ImapTransport {
             // What Exchange groups by, and Outlook shows: the one thing that
             // tells two unrelated messages with one subject apart.
             conversationId: m.conversationId,
+            importance: m.importance,
           ),
     ];
   }

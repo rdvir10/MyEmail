@@ -173,6 +173,35 @@ Future<void> openSavedDraft(
   );
 }
 
+/// Resend This Message: [message], from Sent, opened as a new message with
+/// its people, text and files. See [draftForResend].
+Future<void> openResend(
+  BuildContext context,
+  WidgetRef ref,
+  MailMessage message,
+) async {
+  final Draft? loaded;
+  try {
+    loaded = await _withSpinner(
+      context,
+      draftForResend(ref: ref, message: message),
+    );
+  } on DraftNotLoaded catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+            SnackBar(duration: kBottomMessage, content: Text(e.message)));
+    }
+    return;
+  }
+  final draft = loaded;
+  if (draft == null || !context.mounted) return;
+  await Navigator.of(context).push(
+    MaterialPageRoute<bool>(builder: (_) => ComposeScreen(draft: draft)),
+  );
+}
+
 /// Whether [folderId] is a Drafts folder, so a tap opens the editor.
 bool isDraftsFolder(WidgetRef ref, String? folderId) {
   if (folderId == null) return false;

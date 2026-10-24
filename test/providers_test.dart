@@ -281,8 +281,20 @@ class _SingleAccountReversedEngine implements MailEngine {
       _inner.filterMessages(folderId, filter, limit: limit);
 
   @override
-  Future<UnsubscribeOptions?> unsubscribeOptions(String messageId) =>
-      _inner.unsubscribeOptions(messageId);
+  Future<OpenedHeaders> openedHeaders(String messageId) =>
+      _inner.openedHeaders(messageId);
+
+  @override
+  bool answersReadReceipts(String accountId) =>
+      _inner.answersReadReceipts(accountId);
+
+  @override
+  Future<void> sendReadReceipt(String messageId) =>
+      _inner.sendReadReceipt(messageId);
+
+  @override
+  Future<void> declineReadReceipt(String messageId) =>
+      _inner.declineReadReceipt(messageId);
 
   @override
   bool canRecoverDeleted(String accountId) =>

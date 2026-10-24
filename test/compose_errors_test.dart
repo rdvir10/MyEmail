@@ -10,6 +10,7 @@ import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/common/problem_view.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
 
+import 'helpers/send_at_once.dart';
 import 'fakes/fake_webview.dart';
 
 /// What compose does when a message cannot go, or cannot be kept. Only the
@@ -44,7 +45,10 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [mailEngineProvider.overrideWithValue(engine)],
+        overrides: [
+          mailEngineProvider.overrideWithValue(engine),
+          uiStateStoreProvider.overrideWithValue(sendAtOnce()),
+        ],
         child: MaterialApp(
           home: Builder(
             builder: (context) => Scaffold(

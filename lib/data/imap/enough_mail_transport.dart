@@ -368,6 +368,41 @@ class EnoughMailTransport implements ImapTransport {
       });
 
   @override
+  Future<void> markReceiptAnswered(String path, int uid) => _run((c) async {
+        await _ensureSelected(c, path);
+        await c.uidStore(
+          em.MessageSequence.fromIds([uid], isUid: true),
+          [em.MessageFlags.keywordMdnSent],
+          action: em.StoreAction.add,
+          silent: true,
+        );
+      });
+
+  /// The headers alone, without the ENVELOPE: fetched together, the
+  /// header lines replaced the subject and date the envelope had put there.
+  @override
+  Future<Map<int, Importance>> importanceOf(String path, List<int> uids) =>
+      _run((c) async {
+        if (uids.isEmpty) return const {};
+        await _ensureSelected(c, path);
+        final fields =
+            [for (final n in Importance.headerNames) n.toUpperCase()].join(' ');
+        final result = await c.uidFetchMessages(
+          em.MessageSequence.fromIds(uids, isUid: true),
+          '(UID BODY.PEEK[HEADER.FIELDS ($fields)])',
+        );
+        return {
+          for (final m in result.messages)
+            ?m.uid: Importance.fromHeaders(
+              importance: m.getHeaderValue('importance'),
+              xPriority: m.getHeaderValue('x-priority'),
+              priority: m.getHeaderValue('priority'),
+              msMailPriority: m.getHeaderValue('x-msmail-priority'),
+            ),
+        };
+      });
+
+  @override
   Future<Map<int, List<String>>> attachmentNames(
     String path,
     List<int> uids,

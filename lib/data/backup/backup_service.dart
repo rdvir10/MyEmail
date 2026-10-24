@@ -57,6 +57,8 @@ class BackupService {
     UiStateKeys.display: _Shape.text,
     UiStateKeys.trustedSenders: _Shape.ids,
     UiStateKeys.rowFormats: _Shape.text,
+    UiStateKeys.contactGroups: _Shape.text,
+    UiStateKeys.forgottenAddresses: _Shape.ids,
     // Deliberately absent: UiStateKeys.selected, which is where you happened
     // to be standing, and UiStateKeys.recentMoves, which is a short history
     // rather than a setting. Neither is worth carrying and both would be odd

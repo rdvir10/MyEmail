@@ -1,3 +1,4 @@
+import 'contact_group.dart';
 import 'mail_message.dart';
 
 /// One person who could be meant, while an address is being typed.
@@ -9,10 +10,26 @@ class AddressSuggestion {
     this.timesSeen = 0,
     this.timesSent = 0,
     this.weight = 0,
+    this.members = const [],
   });
+
+  /// A contact group as a suggestion: its name, standing for [members].
+  AddressSuggestion.group(ContactGroup group)
+      : email = 'group:${group.id}',
+        name = group.name,
+        fromContacts = true,
+        timesSeen = 0,
+        timesSent = 0,
+        weight = 0,
+        members = group.members;
 
   final String email;
   final String? name;
+
+  /// The people a contact group stands for; empty for one person.
+  final List<MailAddress> members;
+
+  bool get isGroup => members.isNotEmpty;
 
   /// From an address book rather than from mail already sent or received:
   /// the device's, or an account's own online (Google contacts, Microsoft's
@@ -40,8 +57,10 @@ class AddressSuggestion {
 
   MailAddress get asAddress => MailAddress(email: email, name: name);
 
-  /// What goes into the field when this is chosen.
-  String get formatted => formatRecipient(name, email);
+  /// What goes into the field when this is chosen: everyone in a group.
+  String get formatted => isGroup
+      ? [for (final m in members) formatRecipient(m.name, m.email)].join(', ')
+      : formatRecipient(name, email);
 }
 
 /// One recipient as a recipients field shows it.

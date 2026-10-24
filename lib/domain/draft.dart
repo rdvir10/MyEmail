@@ -4,6 +4,8 @@ import 'package:html/parser.dart' as html_parser;
 
 import 'mail_message.dart';
 
+export 'importance.dart';
+
 /// Why a compose window is open. Reply and forward carry the message being
 /// answered, which supplies the quote, the threading headers and, for a
 /// forward, the attachments.
@@ -71,7 +73,17 @@ class Draft {
     this.lostAttachmentNames = const [],
     this.storedCopyUnread = false,
     this.calendarReply,
+    this.importance = Importance.normal,
+    this.requestReadReceipt = false,
   });
+
+  /// High or low importance, as Outlook's Tags set it; normal for nearly
+  /// every message.
+  final Importance importance;
+
+  /// Ask the recipients' mail apps to say when it is read: the
+  /// `Disposition-Notification-To` header.
+  final bool requestReadReceipt;
 
   /// An iCalendar REPLY to go beside the body as a `text/calendar` part
   /// with `method=REPLY`, which is what makes a calendar server treat the
@@ -132,6 +144,8 @@ class Draft {
         calendarReply: calendarReply,
         lostAttachmentNames: lostAttachmentNames,
         storedCopyUnread: storedCopyUnread,
+        importance: importance,
+        requestReadReceipt: requestReadReceipt,
       );
 
   /// Whether there is anything worth keeping. An untouched compose window
@@ -176,6 +190,8 @@ class Draft {
     List<String>? references,
     List<String>? lostAttachmentNames,
     bool? storedCopyUnread,
+    Importance? importance,
+    bool? requestReadReceipt,
   }) {
     return Draft(
       accountId: accountId ?? this.accountId,
@@ -193,6 +209,8 @@ class Draft {
       calendarReply: calendarReply ?? this.calendarReply,
       lostAttachmentNames: lostAttachmentNames ?? this.lostAttachmentNames,
       storedCopyUnread: storedCopyUnread ?? this.storedCopyUnread,
+      importance: importance ?? this.importance,
+      requestReadReceipt: requestReadReceipt ?? this.requestReadReceipt,
     );
   }
 }

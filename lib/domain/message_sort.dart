@@ -20,6 +20,7 @@ enum MessageSort {
   size('Size (largest first)'),
   attachments('Attachments'),
   flag('Flag'),
+  importance('Importance'),
   account('Account');
 
   const MessageSort(this.label);
@@ -30,7 +31,7 @@ enum MessageSort {
   /// sizes largest first, and what has files or a flag before what has not;
   /// names and subjects run A to Z.
   bool get ascending => switch (this) {
-        dateNewest || size || attachments || flag => false,
+        dateNewest || size || attachments || flag || importance => false,
         _ => true,
       };
 
@@ -41,7 +42,13 @@ enum MessageSort {
   /// not. Sorted by a name or a subject there is a group for every name,
   /// and a bar over each would be a list of bars.
   bool get hasBars => switch (this) {
-        dateNewest || dateOldest || size || attachments || flag || account =>
+        dateNewest ||
+        dateOldest ||
+        size ||
+        attachments ||
+        flag ||
+        importance ||
+        account =>
           true,
         sender || recipient || subject => false,
       };
@@ -71,6 +78,8 @@ int compareMessages(
     MessageSort.size => b.sizeBytes.compareTo(a.sizeBytes),
     MessageSort.attachments => _yesFirst(a.hasAttachments, b.hasAttachments),
     MessageSort.flag => _yesFirst(a.isFlagged, b.isFlagged),
+    // High first, then normal, then low.
+    MessageSort.importance => b.importance.index.compareTo(a.importance.index),
     MessageSort.account => (accountRank[a.accountId] ?? _last)
         .compareTo(accountRank[b.accountId] ?? _last),
   };

@@ -1,3 +1,4 @@
+import 'contact_groups.dart';
 import 'dart:async';
 import 'dart:math';
 
@@ -204,24 +205,39 @@ class RecipientSuggester {
     Future<void> run() async {
       // Nothing typed is nobody: the list waits for a letter.
       if (query.trim().isEmpty) return;
-      final history = _ref
-          .read(sentThisSessionProvider)
-          .over(await _ref.read(addressHistoryProvider.future), DateTime.now());
+      // An address taken out of the suggestions stays out of them; an
+      // address book's entry for it is the book's own.
+      final forgotten = _ref.read(forgottenAddressesProvider);
+      final history = [
+        for (final h in _ref.read(sentThisSessionProvider).over(
+              await _ref.read(addressHistoryProvider.future),
+              DateTime.now(),
+            ))
+          if (!forgotten.contains(h.email.trim().toLowerCase())) h,
+      ];
       if (cancelled) return;
+      // Contact groups whose name has what was typed, first.
+      final needle = query.trim().toLowerCase();
+      final groups = [
+        for (final g in _ref.read(contactGroupsProvider))
+          if (g.members.isNotEmpty && g.name.toLowerCase().contains(needle))
+            AddressSuggestion.group(g),
+      ];
 
       final allowed = _ref.read(contactsAccessProvider).value ?? false;
       final contacts = allowed
           ? await _ref.read(deviceContactsProvider).search(query)
           : const <AddressSuggestion>[];
       if (cancelled) return;
-      out.add(
-        rankSuggestions(
+      out.add([
+        ...groups,
+        ...rankSuggestions(
           query,
           contacts: contacts,
           history: history,
           exclude: exclude,
         ),
-      );
+      ]);
 
       // A Timer, not a delayed future, so cancelling ends the wait too: a
       // field closed mid-pause leaves nothing behind it.
@@ -231,14 +247,15 @@ class RecipientSuggester {
       if (cancelled) return;
       final online = await _ref.read(mailEngineProvider).searchPeople(query);
       if (cancelled || online.isEmpty) return;
-      out.add(
-        rankSuggestions(
+      out.add([
+        ...groups,
+        ...rankSuggestions(
           query,
           contacts: [...contacts, ...online],
           history: history,
           exclude: exclude,
         ),
-      );
+      ]);
     }
 
     run()

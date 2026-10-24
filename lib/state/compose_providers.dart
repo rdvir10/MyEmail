@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart'
+    show ProviderListenable, ProviderOrFamily;
 
 import '../data/compose/mime_parts.dart';
 import '../data/compose/quote_builder.dart' show sanitiseForEditing;
@@ -14,6 +16,7 @@ import '../domain/error_report.dart' show ReadableError;
 import '../domain/mail_message.dart';
 import '../domain/signature.dart';
 import '../domain/html_safety.dart';
+import 'contact_groups.dart' show forgottenAddressesProvider;
 import 'contact_providers.dart' show sentThisSessionProvider;
 import 'folder_tree.dart' show kUnifiedInboxId;
 import 'message_providers.dart';
@@ -221,6 +224,8 @@ Future<Draft> draftFromMessage({
       references: headers.references,
       attachments: attachmentsInMime(raw),
       savedAs: message.id,
+      importance: headers.importance,
+      requestReadReceipt: headers.requestReadReceipt,
     );
   } catch (_) {
     // Not saved over the stored copy. Opened without its files and its
@@ -235,16 +240,65 @@ Future<Draft> draftFromMessage({
   }
 }
 
+/// Resend This Message, as Outlook has it: a message from Sent opened as a
+/// new one, to the same people (Bcc included), with the same subject, text
+/// and files, and the same importance and receipt request. It stays in the
+/// conversation it was in, and the copy in Sent is left where it is.
+///
+/// The files and the Bcc are only in the stored message, so it is fetched
+/// whole; a message that cannot be is not opened rather than opened short.
+Future<Draft> draftForResend({
+  required WidgetRef ref,
+  required MailMessage message,
+}) async {
+  final engine = ref.read(mailEngineProvider);
+  final MailBody body;
+  final String raw;
+  try {
+    body = await engine.loadMessageBody(message.id);
+    raw = await engine.rawMessage(message.id);
+  } catch (e) {
+    throw DraftNotLoaded(e, resend: true);
+  }
+  final headers = savedDraftHeaders(raw);
+  return Draft(
+    accountId: message.accountId,
+    kind: ComposeKind.newMessage,
+    to: message.to,
+    cc: message.cc,
+    bcc: headers.bcc,
+    subject: message.subject == '(No subject)' ? '' : message.subject,
+    // Cleaned as a draft is: it is your own text, but the editor runs
+    // JavaScript, and Sent can hold mail another client wrote.
+    htmlBody: body.html == null
+        ? _asHtml(body.text)
+        : sanitiseForEditing(body.html!, ownDraft: true),
+    attachments: attachmentsInMime(raw),
+    inReplyTo: headers.inReplyTo,
+    references: headers.references,
+    importance: headers.importance,
+    requestReadReceipt: headers.requestReadReceipt,
+  );
+}
+
 /// A saved draft that could not be read, so it was not opened.
 class DraftNotLoaded implements Exception, ReadableError {
-  const DraftNotLoaded(this.cause);
+  const DraftNotLoaded(this.cause, {this.resend = false});
 
   final Object cause;
 
+  /// A sent message being opened to send again, not a draft.
+  final bool resend;
+
   @override
-  String get message => cause is ReadableError
-      ? 'This draft could not be opened: ${(cause as ReadableError).message}'
-      : 'This draft could not be opened. Try again once connected.';
+  String get message {
+    final what = resend
+        ? 'This message could not be opened to send again'
+        : 'This draft could not be opened';
+    return cause is ReadableError
+        ? '$what: ${(cause as ReadableError).message}'
+        : '$what. Try again once connected.';
+  }
 
   @override
   String toString() => message;
@@ -264,13 +318,37 @@ String _escape(String s) => s
     .replaceAll('>', '&gt;');
 
 /// Send a draft and, on success, refresh what the result touched.
-Future<void> sendDraft(WidgetRef ref, Draft draft) async {
-  await ref.read(mailEngineProvider).sendDraft(draft);
-  // Suggested first from now on, before the Sent folder syncs them in.
-  ref
-      .read(sentThisSessionProvider)
-      .note([...draft.to, ...draft.cc, ...draft.bcc], DateTime.now());
-  await _refreshAfter(ref, draft.accountId, 'send');
+Future<void> sendDraft(WidgetRef ref, Draft draft) => sendWith(
+      read: ref.read,
+      invalidate: ref.invalidate,
+      alive: () => ref.context.mounted,
+      draft: draft,
+    );
+
+/// [sendDraft] through whichever ref there is: a screen's, or for a message
+/// held by Undo Send, the app's, its window having closed. [alive] says
+/// whether that ref still reaches anything, for the refresh after.
+Future<void> sendWith({
+  required T Function<T>(ProviderListenable<T> provider) read,
+  required void Function(ProviderOrFamily provider) invalidate,
+  required bool Function() alive,
+  required Draft draft,
+}) async {
+  await read(mailEngineProvider).sendDraft(draft);
+  // Suggested first from now on, before the Sent folder syncs them in, and
+  // again where one had been taken out of the suggestions.
+  final everyone = [...draft.to, ...draft.cc, ...draft.bcc];
+  read(sentThisSessionProvider).note(everyone, DateTime.now());
+  read(forgottenAddressesProvider.notifier).remember(everyone);
+  // A refresh that fails is not the send's: see [_refreshAfter].
+  if (alive()) {
+    try {
+      await read(foldersProvider.notifier).refreshAccount(draft.accountId);
+    } catch (e) {
+      debugPrint('[myemail] folder refresh after a send failed: $e');
+    }
+  }
+  if (!alive()) return;
   // What it replied to or forwarded is marked now, in the cache too, so
   // every list that shows one of them reads it again: its own folder's, and
   // the unified Inbox, which holds the same messages under another list.
@@ -283,7 +361,7 @@ Future<void> sendDraft(WidgetRef ref, Draft draft) async {
     for (final id in marked) id.substring(0, id.lastIndexOf('#')),
     kUnifiedInboxId,
   }) {
-    ref.invalidate(messagesProvider(folderId));
+    invalidate(messagesProvider(folderId));
   }
 }
 

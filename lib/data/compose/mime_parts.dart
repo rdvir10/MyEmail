@@ -96,12 +96,18 @@ bool isFilePart(em.MimePart part) {
 }
 
 /// The headers of a saved draft that the message list does not keep: who it
-/// was blind-copied to, and the thread it answers.
+/// was blind-copied to, the thread it answers, its importance, and whether
+/// it asks for a read receipt.
 ///
-/// A reopened draft used to lose all three, so sending it left the Bcc
-/// people out and started a new thread.
-({List<MailAddress> bcc, String? inReplyTo, List<String> references})
-    savedDraftHeaders(String raw) {
+/// A reopened draft used to lose the first three, so sending it left the
+/// Bcc people out and started a new thread.
+({
+  List<MailAddress> bcc,
+  String? inReplyTo,
+  List<String> references,
+  Importance importance,
+  bool requestReadReceipt,
+}) savedDraftHeaders(String raw) {
   final message = em.MimeMessage.parseFromData(rawMessageBytes(raw));
   final inReplyTo = message.getHeaderValue('in-reply-to')?.trim();
   final references = [
@@ -118,6 +124,12 @@ bool isFilePart(em.MimePart part) {
     ],
     inReplyTo: inReplyTo == null || inReplyTo.isEmpty ? null : inReplyTo,
     references: references,
+    importance: Importance.fromHeaders(
+      importance: message.getHeaderValue('importance'),
+      xPriority: message.getHeaderValue('x-priority'),
+    ),
+    requestReadReceipt:
+        message.getHeaderValue('disposition-notification-to') != null,
   );
 }
 

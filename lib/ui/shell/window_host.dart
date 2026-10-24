@@ -55,7 +55,11 @@ class _WindowHostState extends ConsumerState<WindowHost> {
     final Widget screen;
     switch (widget.request) {
       case ComposeWindow(:final draft, :final disposable):
-        screen = ComposeScreen(draft: draft, disposable: disposable);
+        screen = ComposeScreen(
+          draft: draft,
+          disposable: disposable,
+          inWindow: true,
+        );
       case MessageWindow(:final message):
         // The message's own folder is the list its actions go through:
         // marking read, flagging, deleting all look the message up there.

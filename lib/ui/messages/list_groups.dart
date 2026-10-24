@@ -46,6 +46,13 @@ ListGroup? listGroupOf(
       return lead.hasAttachments
           ? const ListGroup('files:yes', 'With attachments')
           : const ListGroup('files:no', 'Without attachments');
+    case MessageSort.importance:
+      return switch (lead.importance) {
+        Importance.high => const ListGroup('importance:high', 'High importance'),
+        Importance.normal =>
+          const ListGroup('importance:normal', 'Normal importance'),
+        Importance.low => const ListGroup('importance:low', 'Low importance'),
+      };
     case MessageSort.flag:
       return lead.isFlagged
           ? const ListGroup('flag:yes', 'Flagged')

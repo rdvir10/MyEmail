@@ -53,6 +53,15 @@ em.MimeMessage buildMimeMessage({
     builder.setHeader('References', references.join(' '));
   }
 
+  // High or low importance, as Outlook writes it, and a read receipt asked
+  // for of whoever reads it, sent back to this account.
+  for (final MapEntry(:key, :value) in draft.importance.headers.entries) {
+    builder.setHeader(key, value);
+  }
+  if (draft.requestReadReceipt) {
+    builder.setHeader('Disposition-Notification-To', account.emailAddress);
+  }
+
   // A picture the HTML shows in place goes beside it, in a
   // multipart/related, under its Content-ID; the cid: link finds it there.
   final pictures = [
@@ -108,6 +117,14 @@ em.MimeMessage buildMimeMessage({
   }
   return message;
 }
+
+/// What a read receipt says, for enough_mail's template: `<subject>`,
+/// `<date>`, `<recipient>` and `<sender>` are filled in from the message.
+const readReceiptText = 'Your message\r\n\r\n'
+    '  To: <recipient>\r\n'
+    '  Subject: <subject>\r\n'
+    '  Sent: <date>\r\n\r\n'
+    'was read.\r\n';
 
 /// One file as a part of [parent]: inline under its Content-ID if the HTML
 /// shows it, attached otherwise.
