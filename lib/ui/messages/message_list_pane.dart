@@ -3,29 +3,37 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/display_settings.dart';
+import '../../domain/message_filter.dart';
 import '../../domain/message_sort.dart';
 import '../../domain/draft.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/row_format.dart';
+import '../../state/conversation_extras.dart';
 import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
 import '../../state/conversations.dart';
 import '../../state/display_providers.dart';
+import '../../state/list_filter.dart';
 import '../../state/message_providers.dart';
+import '../../state/pinned_messages.dart';
 import '../../state/providers.dart';
 import '../../state/quick_steps.dart';
+import '../../state/read_marker.dart';
+import '../../state/row_formats.dart';
 import '../../state/search_providers.dart';
 import '../../state/sync_now.dart';
 import '../../state/window_providers.dart';
 import '../../state/message_transfer.dart';
 import '../../domain/window_handoff.dart';
-import 'date_format.dart';
 import '../quick_steps/quick_steps_screen.dart';
 import 'forward_as_attachment.dart';
 import 'message_actions.dart';
 import '../compose/open_compose.dart';
 import '../meetings/new_meeting_screen.dart';
 import 'conversation_tile.dart';
+import 'filter_bar.dart';
+import 'list_groups.dart';
 import '../shell/app_shell.dart';
 import '../shell/pane_focus.dart';
 import '../../state/put_away_providers.dart';
@@ -243,6 +251,11 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           ] else if (ref.watch(searchShownProvider)) ...[
             const MessageSearchBar(),
             const Divider(height: 1),
+          ] else ...[
+            // Outlook's All / Unread and Filter, over the list. Not while
+            // searching or selecting, whose bars take this place.
+            ListFilterBar(listId: folderId),
+            const Divider(height: 1),
           ],
           Expanded(
             child: MessageListKeyboard(
@@ -328,8 +341,13 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             final selecting = ticked.isNotEmpty;
             // The order the list is in applies to what a search turns up
             // too: the same question asked of a smaller set.
-            final ordered =
-                sortMessages(results, ref.watch(displayProvider).sort);
+            final ordered = sortMessages(
+              results,
+              ref.watch(displayProvider).sort,
+              accountRank: ref.watch(accountRankProvider),
+            );
+            final formats = ref.watch(rowFormatsProvider);
+            final own = ref.watch(ownAddressesProvider);
             return ListView.separated(
               key: _listKey,
               // So a selection the keys move follows on screen here too.
@@ -349,6 +367,11 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                   density: ref.watch(listDensityProvider),
                   accountColor: accountColors[m.accountId],
                   folderLabel: index[m.folderId]?.displayName,
+                  showRecipients: switch (index[m.folderId]?.role) {
+                    FolderRole.sent || FolderRole.drafts => true,
+                    _ => false,
+                  },
+                  format: rowFormatFor(m, formats, own),
                   onTap: () {
                     ref.read(selectedMessageIdProvider.notifier).select(m.id);
                     widget.onOpen(m);
@@ -418,6 +441,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           ),
           data: (fetched) {
             final messages = ref.watch(sortedMessagesProvider(folderId));
+            final filter = ref.watch(listFilterProvider(folderId));
             if (messages.isEmpty) {
               // Pulled down like a list with mail in it: an empty folder is
               // the one most likely to be waiting for some.
@@ -430,7 +454,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                       hasScrollBody: false,
                       child: Center(
                         child: Text(
-                          'Nothing in ${folder?.displayName ?? 'this folder'}',
+                          filter == MessageFilter.all
+                              ? 'Nothing in ${folder?.displayName ?? 'this folder'}'
+                              : filter.empty,
                           style: theme.textTheme.bodySmall,
                         ),
                       ),
@@ -443,13 +469,30 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             final ticked = ref.watch(selectedMessageIdsProvider);
             final selecting = ticked.isNotEmpty;
             final display = ref.watch(displayProvider);
-            final ownAddresses = <String>{
-              for (final a in ref.watch(accountsProvider).value ?? const [])
-                a.emailAddress.trim().toLowerCase(),
-            };
+            final ownAddresses = ref.watch(ownAddressesProvider);
+            final pinned = ref.watch(pinnedMessagesProvider);
+            final formats = ref.watch(rowFormatsProvider);
+            final index = ref.watch(folderIndexProvider);
+            bool outgoing(String folderId) => switch (index[folderId]?.role) {
+                  FolderRole.sent || FolderRole.drafts => true,
+                  _ => false,
+                };
+            bool isPinned(List<MailMessage> row) =>
+                row.any((m) => pinned.contains(m.id));
+            // Your replies from Sent, to show inside the threads they answer.
+            final others = display.conversations
+                ? ref.watch(conversationExtrasProvider(folderId)).value ??
+                    const <MailMessage>[]
+                : const <MailMessage>[];
             final rows = display.conversations
                 ? _conversationRows(
-                    conversationsInOrder(messages, display.sort),
+                    conversationsInOrder(
+                      messages,
+                      display.sort,
+                      accountRank: ref.watch(accountRankProvider),
+                      pinned: pinned,
+                      others: others,
+                    ),
                     ref.watch(expandedConversationsProvider),
                   )
                 : [for (final m in messages) _Row.message(m)];
@@ -459,14 +502,23 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             // Sync button, which on a phone is not there to press.
             // One more row than there are messages while the folder has
             // older mail: reaching it fetches the next page.
-            // Sorted by sender or subject the rows are not in date order
-            // at all, and a bar over them would name a grouping that is not
-            // there.
-            // Grouped as Outlook groups them; see DateGroup.
-            final items = display.sort.byDate
+            // Sorted by sender, recipient or subject there are no bars: a
+            // group for every name is a bar over every row or two.
+            // Grouped as Outlook groups them (see listGroupOf), with the
+            // pinned rows under a bar of their own above the rest.
+            final now = DateTime.now();
+            final accountNames = ref.watch(accountNamesProvider);
+            final items = display.sort.hasBars
                 ? _underBars(
                     rows,
-                    DateTime.now(),
+                    (row) => isPinned(row.messages)
+                        ? ListGroup.pinned
+                        : listGroupOf(
+                            row.lead,
+                            display.sort,
+                            now: now,
+                            accountNames: accountNames,
+                          )!,
                     ref.watch(collapsedDateGroupsProvider)[folderId] ??
                         const {},
                   )
@@ -569,11 +621,48 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                           at,
                         ),
                         ownAddresses: ownAddresses,
+                        showRecipients: outgoing(conversation.newest.folderId),
+                        format: rowFormatFor(
+                          leadOf(conversation, ownAddresses),
+                          formats,
+                          ownAddresses,
+                        ),
+                        pinned: isPinned(conversation.messages),
                       ),
                     ));
                   }
 
                   final m = row.message!;
+                  if (row.foreign) {
+                    // Your reply from Sent, inside the thread it answers. It
+                    // opens like any message, with the folder it lives in on
+                    // it, and nothing done to the thread reaches it: no
+                    // swipe, no drag, no tick.
+                    return _under(
+                      bar,
+                      Padding(
+                        padding: const EdgeInsets.only(left: 20),
+                        child: MessageTile(
+                          key: ValueKey('tile-other:${m.id}'),
+                          message: m,
+                          isSelected: m.id == selectedId,
+                          density: density,
+                          folderLabel: index[m.folderId]?.displayName,
+                          showRecipients: true,
+                          accountColor:
+                              isUnified ? accountColors[m.accountId] : null,
+                          onTap: () {
+                            ref
+                                .read(selectedMessageIdProvider.notifier)
+                                .select(m.id);
+                            widget.onOpen(m);
+                          },
+                          onContextMenu: (at) =>
+                              _showMessageMenu(context, ref, actions, m, at),
+                        ),
+                      ),
+                    );
+                  }
                   final tile = MessageTile(
                     message: m,
                     isSelected: m.id == selectedId,
@@ -583,6 +672,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                         .toggle(m.id),
                     density: density,
                     accountColor: isUnified ? accountColors[m.accountId] : null,
+                    showRecipients: outgoing(m.folderId),
+                    format: rowFormatFor(m, formats, ownAddresses),
+                    pinned: pinned.contains(m.id),
                     onTap: () {
                       // A message in Drafts is something you were writing, so a
                       // tap continues it rather than opening a reading pane on
@@ -595,19 +687,19 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                       ref
                           .read(lastOpenedInFolderProvider.notifier)
                           .remember(folderId, m.id);
-                      // Marked read here rather than left to the reading pane.
-                      // The pane marks read as it opens, and it does not open
+                      // Opened here as well as by the reading pane. The pane
+                      // tells the marker as it opens, and it does not open
                       // again for a message the app had already landed on — so
                       // tapping the message the folder opened at would leave it
                       // unread, which is the one case this has to get right.
-                      // Quiet when it fails, as the pane is: the message stays
-                      // unread, and nobody asked to be told.
-                      if (!m.isRead) {
-                        ref
-                            .read(messagesProvider(folderId).notifier)
-                            .setRead(m.id, true)
-                            .catchError((Object _) {});
-                      }
+                      // When it is marked read is Settings, View's to say
+                      // (see ReadMarker); quiet when it fails, as the pane is.
+                      ref.read(readMarkerProvider).opened(
+                            m.id,
+                            mark: m.isRead
+                                ? null
+                                : () => actions.markOpened(m),
+                          );
                       widget.onOpen(m);
                     },
                     // No long press of its own: the draggable around this
@@ -689,22 +781,28 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
   ///
   /// A conversation of one is a plain message row: a header with a "1" badge
   /// next to every ordinary message is noise. An open thread shows its
-  /// messages newest first, matching the order of the list around it.
+  /// messages newest first, matching the order of the list around it, your
+  /// replies from Sent among them (see [Conversation.others]). A message
+  /// with only your reply beside it is a thread of two, so the reply can be
+  /// seen.
   static List<_Row> _conversationRows(
     List<Conversation> conversations,
     Set<String> expandedIds,
   ) {
     final rows = <_Row>[];
     for (final c in conversations) {
-      if (!c.isThread) {
+      if (!c.isThread && c.others.isEmpty) {
         rows.add(_Row.message(c.newest));
         continue;
       }
       final isExpanded = expandedIds.contains(c.id);
       rows.add(_Row.conversation(c, isExpanded: isExpanded));
       if (isExpanded) {
-        for (final m in c.messages.reversed) {
-          rows.add(_Row.message(m, indented: true));
+        final own = {for (final m in c.messages) m.id};
+        for (final m in c.everything.reversed) {
+          rows.add(
+            _Row.message(m, indented: true, foreign: !own.contains(m.id)),
+          );
         }
       }
     }
@@ -728,7 +826,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           children: [bar, ?row],
         );
 
-  /// [rows] under their date bars, as the list's items.
+  /// [rows] under their bars, as the list's items: [groupOf] says which.
   ///
   /// A row's bar is decided at its own level: under an open thread that is
   /// the thread, not its oldest message, which could be from days before
@@ -736,7 +834,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
   /// [collapsed] is one item, its bar alone.
   static List<_Item> _underBars(
     List<_Row> rows,
-    DateTime now,
+    ListGroup Function(_Row row) groupOf,
     Set<String> collapsed,
   ) {
     final sections = <_Section>[];
@@ -745,7 +843,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         sections.last.rows.add(row);
         continue;
       }
-      final group = DateGroup.of(row.date, now: now);
+      final group = groupOf(row);
       if (sections.isEmpty || sections.last.group != group) {
         sections.add(
           _Section(group, collapsed: collapsed.contains(group.key)),
@@ -868,6 +966,8 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     final count = conversation.length;
     final unread = conversation.hasUnread;
     final flagged = conversation.isFlagged;
+    final pins = ref.read(pinnedMessagesProvider);
+    final pinned = conversation.messages.any((m) => pins.contains(m.id));
     final error = Theme.of(context).colorScheme.error;
 
     final choice = await _menuAt(context, at, [
@@ -886,6 +986,11 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         flagged ? Icons.flag : Icons.flag_outlined,
         flagged ? 'Remove flags' : 'Flag all $count',
       ),
+      _item(
+        'pin',
+        pinned ? Icons.push_pin : Icons.push_pin_outlined,
+        pinned ? 'Unpin' : 'Pin to top',
+      ),
       const PopupMenuDivider(),
       _item('delete', Icons.delete_outline, 'Delete all $count', color: error),
     ]);
@@ -893,6 +998,13 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
 
     final messages = conversation.messages;
     switch (choice) {
+      // Every message in the thread, so a reply arriving later finds the
+      // thread still pinned by the ones before it.
+      case 'pin':
+        ref.read(pinnedMessagesProvider.notifier).setPinned(
+              [for (final m in messages) m.id],
+              !pinned,
+            );
       case 'select':
         ref.read(selectedMessageIdsProvider.notifier).addAll([
           for (final m in messages) m.id,
@@ -979,6 +1091,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         message.isFlagged ? Icons.flag : Icons.flag_outlined,
         message.isFlagged ? 'Remove flag' : 'Flag',
       ),
+      if (ref.read(pinnedMessagesProvider).contains(message.id))
+        _item('pin', Icons.push_pin, 'Unpin')
+      else
+        _item('pin', Icons.push_pin_outlined, 'Pin to top'),
       const PopupMenuDivider(),
       _item('delete', Icons.delete_outline, 'Delete', color: error),
     ]);
@@ -1068,6 +1184,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         await actions.setRead(context, [message], !message.isRead);
       case 'flag':
         await actions.setFlagged(context, [message], !message.isFlagged);
+      case 'pin':
+        final pins = ref.read(pinnedMessagesProvider.notifier);
+        pins.setPinned([message.id], !pins.isPinned(message.id));
       case 'delete':
         await actions.delete(context, [message]);
     }
@@ -1327,13 +1446,23 @@ class _DragFeedback extends StatelessWidget {
 
 /// One line in the list: either a collapsed conversation, or a message.
 class _Row {
-  const _Row._(this.message, this.conversation, this.isExpanded, this.indented);
+  const _Row._(
+    this.message,
+    this.conversation,
+    this.isExpanded,
+    this.indented,
+    this.foreign,
+  );
 
-  factory _Row.message(MailMessage message, {bool indented = false}) =>
-      _Row._(message, null, false, indented);
+  factory _Row.message(
+    MailMessage message, {
+    bool indented = false,
+    bool foreign = false,
+  }) =>
+      _Row._(message, null, false, indented, foreign);
 
   factory _Row.conversation(Conversation c, {required bool isExpanded}) =>
-      _Row._(null, c, isExpanded, false);
+      _Row._(null, c, isExpanded, false, false);
 
   final MailMessage? message;
   final Conversation? conversation;
@@ -1342,18 +1471,26 @@ class _Row {
   /// A message shown inside an open thread rather than at the top level.
   final bool indented;
 
+  /// A message from another folder shown inside an open thread: your
+  /// reply, from Sent. Not one of the list's own.
+  final bool foreign;
+
   /// When this row happened, whichever kind it is.
-  DateTime get date => message?.date ?? conversation!.newest.date;
+  DateTime get date => lead.date;
+
+  /// The message that stands for the row, and decides its bar: a thread's
+  /// newest.
+  MailMessage get lead => message ?? conversation!.newest;
 
   /// What the row stands for: a thread's row, every message in it.
   List<MailMessage> get messages => conversation?.messages ?? [message!];
 }
 
-/// The rows under one date bar.
+/// The rows under one bar.
 class _Section {
   _Section(this.group, {required this.collapsed});
 
-  final DateGroup group;
+  final ListGroup group;
   final bool collapsed;
   final rows = <_Row>[];
 

@@ -350,6 +350,9 @@ void main() {
       await tester.scrollUntilVisible(
           find.text('personal@example.com'), 200,
           scrollable: find.byType(Scrollable).first);
+      // Built by the scroll, far down the screen: each row asks how its
+      // account stands, and the answer takes a moment.
+      await tester.pumpAndSettle();
 
       expect(find.text('Suggest recipients from each account online'),
           findsOneWidget);

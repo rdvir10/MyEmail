@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:enough_mail/enough_mail.dart' as em;
 
 import '../../domain/search_field.dart';
+import '../../domain/message_filter.dart';
 import '../../domain/account.dart';
 import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
@@ -625,6 +626,20 @@ String buildSearchCriteria(
     if (unlabelledOnly) _term('X-GM-RAW', gmailUnlabelledMail),
   ].join(' ');
 }
+
+/// IMAP SEARCH criteria for what [filter] keeps of a folder.
+///
+/// IMAP has no key for "has a file". Gmail, the one IMAP server this app
+/// talks to, answers its own `has:attachment` under `X-GM-RAW`. To me is on
+/// the To line: [ownAddress] is the account's address.
+String buildFilterCriteria(MessageFilter filter, {required String ownAddress}) =>
+    switch (filter) {
+      MessageFilter.all => 'ALL',
+      MessageFilter.unread => 'UNSEEN',
+      MessageFilter.flagged => 'FLAGGED',
+      MessageFilter.attachments => _term('X-GM-RAW', 'has:attachment'),
+      MessageFilter.toMe => _term('TO', ownAddress.trim()),
+    };
 
 /// The mail in Gmail's All Mail that no other folder a search looks in
 /// holds: out of the Inbox, Sent and Drafts, with no label of Ron's on it.

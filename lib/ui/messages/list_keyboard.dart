@@ -4,14 +4,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/mail_message.dart';
 import '../../domain/message_sort.dart';
+import '../../state/conversation_extras.dart';
 import '../../state/conversations.dart';
 import '../../state/display_providers.dart';
+import '../../state/list_filter.dart';
 import '../../state/list_navigation.dart';
 import '../../state/message_providers.dart';
 import '../../state/message_transfer.dart';
+import '../../state/pinned_messages.dart';
 import '../../state/search_providers.dart';
 import '../shell/pane_focus.dart';
-import 'date_format.dart';
+import 'list_groups.dart';
 import 'message_actions.dart';
 
 /// Keyboard control of the message list, and landing somewhere sensible when
@@ -389,6 +392,7 @@ List<MailMessage>? searchRows(WidgetRef ref) {
   return sortMessages(
     ref.read(searchResultsProvider).value ?? const [],
     ref.read(displayProvider).sort,
+    accountRank: ref.read(accountRankProvider),
   );
 }
 
@@ -401,6 +405,7 @@ List<MailMessage> folderRows(
   bool unfolding = false,
 }) {
   final display = ref.read(displayProvider);
+  final closed = ref.read(collapsedDateGroupsProvider)[listId];
   return visibleMessages(
     ref.read(sortedMessagesProvider(listId)),
     conversations: display.conversations,
@@ -409,8 +414,16 @@ List<MailMessage> folderRows(
     folded: unfolding
         ? null
         : foldedUnder(
-            ref.read(collapsedDateGroupsProvider)[listId],
+            closed,
             display.sort,
+            accountNames: ref.read(accountNamesProvider),
           ),
+    pinned: ref.read(pinnedMessagesProvider),
+    // The Pinned bar is drawn only where the list has bars at all.
+    pinnedClosed: !unfolding &&
+        display.sort.hasBars &&
+        (closed?.contains(ListGroup.pinned.key) ?? false),
+    accountRank: ref.read(accountRankProvider),
+    others: ref.read(conversationExtrasProvider(listId)).value ?? const [],
   );
 }

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../domain/display_settings.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/row_format.dart';
 import 'date_format.dart';
 
 /// One row of the message list: sender, subject, preview, date, and the
@@ -29,7 +30,21 @@ class MessageTile extends StatelessWidget {
     this.isTicked,
     this.onTicked,
     this.onContextMenu,
+    this.showRecipients = false,
+    this.format,
+    this.pinned = false,
   });
+
+  /// Who it went to, in place of who it is from: Sent and Drafts, where
+  /// the sender is always you, as Outlook's To column has it there.
+  final bool showRecipients;
+
+  /// The conditional format this message matches, if any: the colour of
+  /// its first line, and bold.
+  final RowFormat? format;
+
+  /// Pinned to the top of its folder, which a pin before the sender says.
+  final bool pinned;
 
   /// A right click, with where it landed, so a menu can open there.
   final void Function(Offset at)? onContextMenu;
@@ -67,11 +82,15 @@ class MessageTile extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final unread = !message.isRead;
-    final weight = unread ? FontWeight.w700 : FontWeight.w400;
+    final weight =
+        unread || (format?.bold ?? false) ? FontWeight.w700 : FontWeight.w400;
     // Only the first line is bold when unread; the rest are the same either
-    // way.
-    final first = listLineStyle(theme)?.copyWith(fontWeight: weight);
-    final rest = listLineStyle(theme);
+    // way. A conditional format colours the sender and the subject.
+    final colour = format?.colour.on(theme.brightness);
+    final first =
+        listLineStyle(theme)?.copyWith(fontWeight: weight, color: colour);
+    final rest = listLineStyle(theme)?.copyWith(color: colour);
+    final who = showRecipients ? recipientsLine(message) : null;
 
     final dateText = formatMessageDate(
       message.date,
@@ -86,7 +105,10 @@ class MessageTile extends StatelessWidget {
     // What the first line would hold besides the sender and the subject,
     // were they on it: the row's edges, the marks, the date, and with no
     // preview line the attachment and the size as well.
-    final marks = actionMarks(message, scheme);
+    final marks = [
+      if (pinned) pinMark(scheme),
+      ...actionMarks(message, scheme),
+    ];
     final fixed = rowEdges +
         marks.length * markWidth +
         12 +
@@ -121,7 +143,7 @@ class MessageTile extends StatelessWidget {
             Expanded(
               flex: 2,
               child: Text(
-                message.from.display,
+                who == null ? message.from.display : recipientsLine(message, short: true),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: first,
@@ -161,7 +183,7 @@ class MessageTile extends StatelessWidget {
             // first thing cut off, and Compact left it out altogether.
             Expanded(
               child: Text(
-                senderLine(message.from),
+                who ?? senderLine(message.from),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: first,
@@ -441,6 +463,27 @@ class RowCheckbox extends StatelessWidget {
         ? SizedBox(height: singleLineSize, child: box)
         : box;
   }
+}
+
+/// The pin before the sender of a pinned message or thread.
+Widget pinMark(ColorScheme scheme) => _Mark(
+      icon: Icons.push_pin,
+      label: 'Pinned',
+      colour: scheme.primary,
+    );
+
+/// Who a message went to, for a row in Sent or Drafts:
+/// `To: Crystal R <crystalr@hadco-metal.com>` for one person, as the sender
+/// line has it, and `To: Crystal R, Gilad F` for more. Copied people where nobody is on
+/// To. [short] leaves the address out, beside the subject on a tablet.
+String recipientsLine(MailMessage message, {bool short = false}) {
+  final named = message.to.isNotEmpty ? message.to : message.cc;
+  if (named.isEmpty) return 'No recipients';
+  final label = message.to.isNotEmpty ? 'To' : 'CC';
+  final who = named.length == 1 && !short
+      ? senderLine(named.single)
+      : named.map((a) => a.display).join(', ');
+  return '$label: $who';
 }
 
 /// Replied and forwarded, as marks before the sender.

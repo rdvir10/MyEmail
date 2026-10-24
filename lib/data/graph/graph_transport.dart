@@ -595,6 +595,27 @@ class GraphTransport implements ImapTransport {
     return [for (final h in headers.reversed) (uid: h.uid, header: h)];
   }
 
+  /// With each hit's header, as [searchHits] has them: Graph answers with
+  /// the messages themselves.
+  @override
+  Future<List<SearchHit>> filterHits(
+    String path,
+    MessageFilter filter, {
+    required String ownAddress,
+    int limit = 100,
+  }) async {
+    final found = await api.filtered(
+      await _folderId(path),
+      filter,
+      ownAddress: ownAddress,
+      top: limit,
+    );
+    // Numbered oldest first, as a search numbers them, and handed back
+    // newest first.
+    final headers = await _headers(path, found.reversed.toList());
+    return [for (final h in headers.reversed) (uid: h.uid, header: h)];
+  }
+
   @override
   Future<List<RemoteHeader>> fetchHeadersByUids(
     String path,

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../domain/display_settings.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/row_format.dart';
 import '../../state/conversations.dart';
 import 'date_format.dart';
 import 'message_tile.dart';
@@ -37,7 +38,20 @@ class ConversationTile extends StatelessWidget {
     this.onTicked,
     this.onContextMenu,
     this.ownAddresses = const {},
+    this.showRecipients = false,
+    this.format,
+    this.pinned = false,
   });
+
+  /// Who the newest message went to, in place of who it is from: Sent and
+  /// Drafts, where everyone writing is you.
+  final bool showRecipients;
+
+  /// The conditional format the message heading the row matches, if any.
+  final RowFormat? format;
+
+  /// A message in the thread is pinned to the top of its folder.
+  final bool pinned;
 
   /// Your own addresses, in lower case, so the row can be headed by the
   /// last person who is not you.
@@ -81,9 +95,12 @@ class ConversationTile extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final unread = conversation.hasUnread;
-    final weight = unread ? FontWeight.w700 : FontWeight.w400;
-    final first = listLineStyle(theme)?.copyWith(fontWeight: weight);
-    final rest = listLineStyle(theme);
+    final weight =
+        unread || (format?.bold ?? false) ? FontWeight.w700 : FontWeight.w400;
+    final colour = format?.colour.on(theme.brightness);
+    final first =
+        listLineStyle(theme)?.copyWith(fontWeight: weight, color: colour);
+    final rest = listLineStyle(theme)?.copyWith(color: colour);
     final previews = density.previewLines > 0;
     final lead = leadMessage;
 
@@ -98,11 +115,14 @@ class ConversationTile extends StatelessWidget {
     final date = Text(dateText, style: dateStyle);
     // The mark of the message the row is headed by, so the arrow and the
     // name beside it are about the same mail.
-    final marks = actionMarks(lead, scheme);
+    final marks = [
+      if (pinned) pinMark(scheme),
+      ...actionMarks(lead, scheme),
+    ];
     final fixed = rowEdges +
         marks.length * markWidth +
         12 +
-        textWidth(context, '${conversation.length}', theme.textTheme.labelSmall) +
+        textWidth(context, '${conversation.everything.length}', theme.textTheme.labelSmall) +
         12 +
         6 +
         8 +
@@ -112,8 +132,10 @@ class ConversationTile extends StatelessWidget {
             : (conversation.hasAttachments ? 20 : 0) + 18);
     final oneLine = rowsOnOneLine(context, width: width, fixed: fixed);
     final singleLine = oneLine && !previews;
+    // Your replies from Sent are counted: they are in the thread when it
+    // opens, as Outlook counts them.
     Widget badge({required bool bold}) => _CountBadge(
-          count: conversation.length,
+          count: conversation.everything.length,
           unread: conversation.unreadCount,
           theme: theme,
           bold: bold,
@@ -145,7 +167,9 @@ class ConversationTile extends StatelessWidget {
             Expanded(
               flex: 2,
               child: Text(
-                leadSender.display,
+                showRecipients
+                    ? recipientsLine(lead, short: true)
+                    : leadSender.display,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: first,
@@ -183,7 +207,7 @@ class ConversationTile extends StatelessWidget {
             ...marks,
             Expanded(
               child: Text(
-                senderLine(leadSender),
+                showRecipients ? recipientsLine(lead) : senderLine(leadSender),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: first,
@@ -221,7 +245,7 @@ class ConversationTile extends StatelessWidget {
     return Semantics(
       expanded: isExpanded,
       selected: isSelected,
-      label: '${conversation.length} messages'
+      label: '${conversation.everything.length} messages'
           '${conversation.isFlagged ? ', flagged' : ''}',
       child: Material(
         color: rowGround(
@@ -291,19 +315,24 @@ class ConversationTile extends StatelessWidget {
 
   /// The message that heads the row: the newest one not from you, or the
   /// newest where everyone in it is you.
-  MailMessage get leadMessage {
-    final newestFirst = [...conversation.messages]
-      ..sort((a, b) => b.date.compareTo(a.date));
-    for (final m in newestFirst) {
-      if (!ownAddresses.contains(m.from.email.trim().toLowerCase())) {
-        return m;
-      }
-    }
-    return conversation.newest;
-  }
+  MailMessage get leadMessage => leadOf(conversation, ownAddresses);
 
   /// Who heads the row: see [leadMessage].
   MailAddress get leadSender => leadMessage.from;
+}
+
+/// The message that heads [conversation]'s row: the newest one not from
+/// [ownAddresses], or the newest where everyone in it is you. The list
+/// matches a conditional format against it, as the row shows it.
+MailMessage leadOf(Conversation conversation, Set<String> ownAddresses) {
+  final newestFirst = [...conversation.messages]
+    ..sort((a, b) => b.date.compareTo(a.date));
+  for (final m in newestFirst) {
+    if (!ownAddresses.contains(m.from.email.trim().toLowerCase())) {
+      return m;
+    }
+  }
+  return conversation.newest;
 }
 
 /// How many messages, and how many of them are unread.

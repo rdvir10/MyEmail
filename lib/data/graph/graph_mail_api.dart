@@ -669,6 +669,52 @@ class GraphMailApi {
     return _messagesFrom(json);
   }
 
+  /// The newest [top] messages in a folder that [filter] keeps, newest
+  /// first.
+  ///
+  /// A `$filter` sorted by date, with the date first in it: Graph refuses
+  /// an `$orderby` on a property the filter does not start with
+  /// (InefficientFilter), so every date there is, and then the clause.
+  /// To me is a `$search` on the To line instead, as Graph filters on no
+  /// recipient; a search has its own order, so it is put in date order
+  /// here.
+  Future<List<GraphMessage>> filtered(
+    String folderId,
+    MessageFilter filter, {
+    required String ownAddress,
+    int top = 100,
+  }) async {
+    final clause = switch (filter) {
+      MessageFilter.all => null,
+      MessageFilter.unread => 'isRead eq false',
+      MessageFilter.flagged => "flag/flagStatus eq 'flagged'",
+      MessageFilter.attachments => 'hasAttachments eq true',
+      MessageFilter.toMe => null,
+    };
+    final query = filter == MessageFilter.toMe
+        ? {
+            '\$search': '"to:${ownAddress.trim().replaceAll('"', '')}"',
+            '\$select': headerFields,
+            '\$expand': lastVerbExpand,
+            '\$top': '$top',
+          }
+        : {
+            if (clause != null)
+              '\$filter':
+                  'receivedDateTime ge 1900-01-01T00:00:00Z and $clause',
+            '\$orderby': 'receivedDateTime desc',
+            '\$select': headerFields,
+            '\$expand': lastVerbExpand,
+            '\$top': '$top',
+          };
+    final json = await _get(
+      Uri.parse('$base/me/mailFolders/${_id(folderId)}/messages')
+          .replace(queryParameters: query),
+    );
+    return [..._messagesFrom(json)]
+      ..sort((a, b) => b.received.compareTo(a.received));
+  }
+
   /// What goes between the quotes of `$search`: the words as typed for a
   /// search of everything, or each word under the KQL property for the
   /// part of the message asked for (`from:dana from:levi`), which Graph's

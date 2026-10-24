@@ -289,6 +289,14 @@ class _EmptyEngine implements MailEngine {
       _inner.searchMessages(query, scope, limit: limit, field: field);
 
   @override
+  Future<List<MailMessage>> filterMessages(
+    String folderId,
+    MessageFilter filter, {
+    int limit = 100,
+  }) =>
+      _inner.filterMessages(folderId, filter, limit: limit);
+
+  @override
   Future<void> sendDraft(Draft draft) => _inner.sendDraft(draft);
 
   @override

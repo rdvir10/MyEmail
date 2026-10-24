@@ -96,16 +96,23 @@ void main() {
       expect(once.map((x) => x.uid), twice.map((x) => x.uid));
     });
 
-    test('four choices, and only dates run backwards', () {
+    test("the choices are Outlook's Arrange By, and which run backwards", () {
       expect(MessageSort.values.map((s) => s.label), [
         'Date (newest first)',
         'Date (oldest first)',
         'Sender',
+        'To',
         'Subject',
+        'Size (largest first)',
+        'Attachments',
+        'Flag',
+        'Account',
       ]);
       expect(MessageSort.dateNewest.ascending, isFalse);
       expect(MessageSort.dateOldest.ascending, isTrue);
       expect(MessageSort.sender.ascending, isTrue);
+      expect(MessageSort.size.ascending, isFalse, reason: 'largest first');
+      expect(MessageSort.flag.ascending, isFalse, reason: 'flagged first');
     });
   });
 

@@ -8,6 +8,7 @@ import '../../data/mail_engine.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/message_move.dart';
 import '../../state/folder_tree.dart';
+import '../../state/list_filter.dart';
 import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import '../../state/search_providers.dart';
@@ -278,6 +279,9 @@ class MessageActions {
     if (container.read(searchQueryProvider).trim().isNotEmpty) {
       container.invalidate(searchResultsProvider);
     }
+    // And what a filter found on the server, which is from before this:
+    // a message deleted from the list would come back from it.
+    container.invalidate(filterHitsProvider);
   }
 
   /// The messages this list holds, and the rest.
@@ -318,6 +322,7 @@ class MessageActions {
       container.invalidate(messagesProvider(folderId));
     }
     container.invalidate(searchResultsProvider);
+    container.invalidate(filterHitsProvider);
     final index = container.read(folderIndexProvider);
     for (final accountId in {
       ...changed.map((m) => m.accountId),

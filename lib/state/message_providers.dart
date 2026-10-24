@@ -7,11 +7,15 @@ import '../domain/calendar_invite.dart';
 import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
+import '../domain/message_filter.dart';
 import '../domain/message_move.dart';
+import 'conversation_extras.dart';
 import 'display_providers.dart';
 import '../domain/message_sort.dart';
 import 'folder_tree.dart';
+import 'list_filter.dart';
 import 'message_keeping.dart';
+import 'pinned_messages.dart';
 import 'providers.dart';
 import 'search_providers.dart';
 
@@ -638,14 +642,33 @@ int newestFirst(MailMessage a, MailMessage b) {
 /// One place, because the rows, the arrow keys and "select what is on
 /// screen" have to agree about what order they are in: sorting only where
 /// the rows are built would leave the keyboard walking the old one.
+///
+/// The filter on the list narrows it here too, with what the server found
+/// for it beyond what the list holds (see [filterHitsProvider]), and the
+/// pinned messages come first.
 final sortedMessagesProvider =
     Provider.family<List<MailMessage>, String>((ref, folderId) {
   final messages = ref.watch(messagesProvider(folderId)).value ?? const [];
+  final filter = ref.watch(listFilterProvider(folderId));
+  final shown = filter == MessageFilter.all
+      ? messages
+      : filteredMessages(
+          messages,
+          ref.watch(filterHitsProvider((folderId, filter))).value ?? const [],
+          filter,
+          ref.watch(ownAddressesProvider),
+          keep: ref.watch(selectedMessageIdProvider),
+        );
   // Newest first too, not left in the order the engine hands over. That is
   // arrival order in one folder, so a message undone, moved in or delivered
   // late sat at the top weeks old, under a day bar out of sequence, while
   // the unified Inbox and search had it where its date put it.
-  return sortMessages(messages, ref.watch(displayProvider).sort);
+  return sortMessages(
+    shown,
+    ref.watch(displayProvider).sort,
+    accountRank: ref.watch(accountRankProvider),
+    pinned: ref.watch(pinnedMessagesProvider),
+  );
 });
 
 /// How far down a folder's list has been paged.
@@ -712,7 +735,14 @@ final listDepthProvider =
 /// The folder's own total says so, until a page comes back empty. The
 /// total is what the tree shows next to the folder, so the list and the
 /// tree agree about whether there is more.
+///
+/// Not while a filter is on: what the server holds for it has been asked
+/// for already, and a page of the folder would bring in mostly mail the
+/// filter leaves out.
 final listHasMoreProvider = Provider.family<bool, String>((ref, folderId) {
+  if (ref.watch(listFilterProvider(folderId)) != MessageFilter.all) {
+    return false;
+  }
   final depth = ref.watch(listDepthProvider(folderId));
   if (depth.exhausted) return false;
   final shown = ref.watch(messagesProvider(folderId)).value;
@@ -772,6 +802,19 @@ final selectedMessageProvider = Provider<MailMessage?>((ref) {
   }
   final hits = ref.watch(searchResultsProvider).value;
   for (final m in hits ?? const <MailMessage>[]) {
+    if (m.id == id) return m;
+  }
+  // Older mail a filter found on the server, and your replies from Sent
+  // shown inside a thread: on screen in the list, and not among its own.
+  final filter = ref.watch(listFilterProvider(folderId));
+  if (filter != MessageFilter.all) {
+    for (final m in ref.watch(filterHitsProvider((folderId, filter))).value ??
+        const <MailMessage>[]) {
+      if (m.id == id) return m;
+    }
+  }
+  for (final m in ref.watch(conversationExtrasProvider(folderId)).value ??
+      const <MailMessage>[]) {
     if (m.id == id) return m;
   }
   return null;

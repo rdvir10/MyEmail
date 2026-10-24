@@ -387,6 +387,29 @@ class SampleMailEngine implements MailEngine {
   }
 
   @override
+  Future<List<MailMessage>> filterMessages(
+    String folderId,
+    MessageFilter filter, {
+    int limit = 100,
+  }) async {
+    await _latency();
+    if (filter == MessageFilter.all) return const [];
+    final list = _messages.putIfAbsent(
+      folderId,
+      () => generateSampleMessages(_require(folderId)),
+    );
+    // The sample mail is all to me@example.com, whichever account it is in.
+    final own = {
+      'me@example.com',
+      for (final a in _accounts) a.emailAddress.toLowerCase(),
+    };
+    return [
+      for (final m in list)
+        if (filter.matches(m, own)) m,
+    ].take(limit).toList();
+  }
+
+  @override
   Future<List<MailMessage>> searchMessages(
     String query,
     SearchScope scope, {

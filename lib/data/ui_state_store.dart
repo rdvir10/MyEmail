@@ -44,6 +44,12 @@ abstract final class UiStateKeys {
   static const attachmentsFolded = 'attachments.folded';
   static const backgroundAsked = 'sync.background-asked';
 
+  /// Conditional formats for the message list, in order of precedence.
+  static const rowFormats = 'list.row-formats.v1';
+
+  /// Pinned messages, by id. Not in the backup: the ids are this device's.
+  static const pinned = 'list.pinned.v1';
+
   /// Online meetings made ahead of Send and not yet sent or undone; see
   /// `PreparedMeetingLedger`.
   static const preparedMeetings = 'meetings.prepared.v1';

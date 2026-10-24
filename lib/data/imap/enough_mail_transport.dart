@@ -220,6 +220,27 @@ class EnoughMailTransport implements ImapTransport {
           (uid: uid, header: null),
       ];
 
+  /// Numbers alone, as [searchHits] has them: the caller fetches the
+  /// headers it has not cached.
+  @override
+  Future<List<SearchHit>> filterHits(
+    String path,
+    MessageFilter filter, {
+    required String ownAddress,
+    int limit = 100,
+  }) =>
+      _run((c) async {
+        await _ensureSelected(c, path);
+        final result = await c.uidSearchMessages(
+          searchCriteria: buildFilterCriteria(filter, ownAddress: ownAddress),
+        );
+        final seq = result.matchingSequence;
+        if (seq == null) return const <SearchHit>[];
+        // Highest UID is newest.
+        final uids = seq.toList()..sort((a, b) => b.compareTo(a));
+        return [for (final uid in uids.take(limit)) (uid: uid, header: null)];
+      });
+
   @override
   Future<List<RemoteHeader>> fetchHeadersByUids(
     String path,

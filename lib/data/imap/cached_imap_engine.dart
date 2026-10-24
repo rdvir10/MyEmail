@@ -1443,6 +1443,25 @@ class CachedImapEngine implements MailEngine {
     return unique.take(limit).toList();
   }
 
+  @override
+  Future<List<MailMessage>> filterMessages(
+    String folderId,
+    MessageFilter filter, {
+    int limit = 100,
+  }) async {
+    if (filter == MessageFilter.all) return const [];
+    final (accountId, path) = splitFolderId(folderId);
+    final account = _accountFor(accountId);
+    final t = await _transport(accountId);
+    final hits = await t.filterHits(
+      path,
+      filter,
+      ownAddress: account.emailAddress,
+      limit: limit,
+    );
+    return _rowsFor(accountId, path, t, hits);
+  }
+
   Future<List<MailMessage>> _searchOneFolder(
     _SearchTarget target,
     String query,
@@ -1458,6 +1477,18 @@ class CachedImapEngine implements MailEngine {
       field: field,
       unlabelledOnly: unlabelledOnly,
     );
+    return _rowsFor(accountId, path, t, hits);
+  }
+
+  /// [hits] in one folder as rows, newest first as they came: from the
+  /// header the server sent with each where it sent one, else from the
+  /// cache, and the rest fetched in one request.
+  Future<List<MailMessage>> _rowsFor(
+    String accountId,
+    String path,
+    ImapTransport t,
+    List<SearchHit> hits,
+  ) async {
     if (hits.isEmpty) return const [];
     final folderId = MailFolder.idFor(accountId, path);
 

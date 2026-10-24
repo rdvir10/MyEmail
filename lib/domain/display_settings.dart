@@ -137,6 +137,26 @@ enum ThemeChoice {
   final ThemeMode mode;
 }
 
+/// When opening a message counts as reading it.
+///
+/// Outlook's Reading Pane options. Marked read the moment it opens is what
+/// the app always did; the others are for someone who opens a message to
+/// see what it is and wants it to stay bold until it has really been read.
+enum MarkReadWhen {
+  opened('When it opens', 'As soon as a message is opened'),
+  afterDelay('After 5 seconds', 'Once it has been open for 5 seconds'),
+  leaving('When I move on', 'When another message opens, or it closes'),
+  never('Never', 'Only when you mark it read yourself');
+
+  const MarkReadWhen(this.label, this.description);
+
+  final String label;
+  final String description;
+
+  /// How long [afterDelay] waits.
+  static const delay = Duration(seconds: 5);
+}
+
 /// What a swipe across a message row does.
 ///
 /// Deliberately a small set. A swipe is one gesture with no confirmation step
@@ -180,10 +200,14 @@ class DisplaySettings {
     this.textSize = TextSize.standard,
     this.showAllInboxes = true,
     this.theme = ThemeChoice.system,
+    this.markRead = MarkReadWhen.opened,
   });
 
   /// Light, dark, or as Android is.
   final ThemeChoice theme;
+
+  /// When an opened message counts as read.
+  final MarkReadWhen markRead;
 
   /// What the list is ordered by. The default is what every list did
   /// before this was a choice.
@@ -232,6 +256,7 @@ class DisplaySettings {
     TextSize? textSize,
     bool? showAllInboxes,
     ThemeChoice? theme,
+    MarkReadWhen? markRead,
   }) {
     return DisplaySettings(
       readingPane: readingPane ?? this.readingPane,
@@ -244,6 +269,7 @@ class DisplaySettings {
       textSize: textSize ?? this.textSize,
       showAllInboxes: showAllInboxes ?? this.showAllInboxes,
       theme: theme ?? this.theme,
+      markRead: markRead ?? this.markRead,
     );
   }
 
@@ -258,6 +284,7 @@ class DisplaySettings {
         'textSize': textSize.name,
         'showAllInboxes': showAllInboxes,
         'theme': theme.name,
+        'markRead': markRead.name,
       };
 
   /// Tolerant of anything: a value written by a newer build, or a corrupted
@@ -287,6 +314,12 @@ class DisplaySettings {
       // A record from before there was a choice follows Android, as the
       // app did.
       theme: _byName(ThemeChoice.values, json['theme'], ThemeChoice.system),
+      // Marked read as it opens, as the app always did, until chosen.
+      markRead: _byName(
+        MarkReadWhen.values,
+        json['markRead'],
+        MarkReadWhen.opened,
+      ),
       // A record written before sorting existed has no key at all, and one
       // written by 2.23.0 has the field and direction it used to keep as
       // two. Either way it lands on an order that was already being shown.
@@ -336,7 +369,8 @@ class DisplaySettings {
       other.sort == sort &&
       other.textSize == textSize &&
       other.showAllInboxes == showAllInboxes &&
-      other.theme == theme;
+      other.theme == theme &&
+      other.markRead == markRead;
 
   // Every field, without exception: Riverpod skips notifying when the new
   // state equals the old, so a field left out here is a setting that can
@@ -353,10 +387,12 @@ class DisplaySettings {
         textSize,
         showAllInboxes,
         theme,
+        markRead,
       );
 
   @override
   String toString() => 'DisplaySettings(${readingPane.name}, ${density.name}, '
+      'mark read: ${markRead.name}, '
       'conversations: $conversations, '
       'swipe: ${swipeRight.name}/${swipeLeft.name}, '
       'images: $alwaysShowImages, '

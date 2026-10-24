@@ -53,6 +53,8 @@ class Display extends Notifier<DisplaySettings> {
 
   void setShowAllInboxes(bool on) =>
       state = state.copyWith(showAllInboxes: on);
+
+  void setMarkRead(MarkReadWhen when) => state = state.copyWith(markRead: when);
 }
 
 final displayProvider =

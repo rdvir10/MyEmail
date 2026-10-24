@@ -13,6 +13,7 @@ import '../../data/sync/pass_signal.dart';
 import '../../state/compose_providers.dart' show signaturesProvider;
 import '../../data/sync/background_worker.dart'
     show runPendingNotificationActions;
+import '../../state/list_filter.dart';
 import '../../state/message_providers.dart';
 import '../../state/message_transfer.dart';
 import '../../state/sync_providers.dart';
@@ -136,6 +137,7 @@ class _AppShellState extends ConsumerState<AppShell>
     ref.read(selectedMessageIdsProvider.notifier).clear();
     ref.read(expandedConversationsProvider.notifier).collapseAll();
     ref.read(collapsedDateGroupsProvider.notifier).openAll();
+    ref.read(listFiltersProvider.notifier).clearAll();
     final inbox = inboxToComeBackTo(
       ref.read(effectiveSelectedFolderIdProvider),
       ref.read(folderIndexProvider),

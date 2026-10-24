@@ -211,6 +211,34 @@ class FakeImapTransport implements ImapTransport {
     return hits.take(limit).toList();
   }
 
+  /// Numbers alone, as an IMAP server answers a SEARCH. Every message's To
+  /// is me@example.com here (see [FakeMessage.header]).
+  @override
+  Future<List<SearchHit>> filterHits(
+    String path,
+    MessageFilter filter, {
+    required String ownAddress,
+    int limit = 100,
+  }) async {
+    _online();
+    calls.add('UID SEARCH $path filter ${filter.name}');
+    final hits = [
+      for (final m in _require(path).ordered)
+        if (!m.isDeleted &&
+            switch (filter) {
+              MessageFilter.all => true,
+              MessageFilter.unread => !m.isRead,
+              MessageFilter.flagged => m.isFlagged,
+              MessageFilter.attachments =>
+                (attachments[m.uid] ?? const <MailAttachment>[]).isNotEmpty,
+              MessageFilter.toMe =>
+                ownAddress.toLowerCase() == 'me@example.com',
+            })
+          m.uid,
+    ]..sort((a, b) => b.compareTo(a));
+    return [for (final uid in hits.take(limit)) (uid: uid, header: null)];
+  }
+
   /// Numbers alone, as an IMAP server answers.
   @override
   Future<List<SearchHit>> searchHits(

@@ -4,8 +4,10 @@ import 'dart:typed_data';
 import '../domain/account.dart';
 import '../domain/error_report.dart';
 import '../domain/search_field.dart';
+import '../domain/message_filter.dart';
 
 export '../domain/search_field.dart';
+export '../domain/message_filter.dart';
 export 'contacts/account_people.dart' show PeopleSearchAccess, PeopleSearchState;
 import 'auth/oauth_token.dart';
 import 'contacts/account_people.dart' show PeopleSearchAccess;
@@ -363,6 +365,16 @@ abstract class MailEngine {
     SearchScope scope, {
     int limit = 100,
     SearchField field = SearchField.all,
+  });
+
+  /// The newest [limit] messages in [folderId] that [filter] keeps, asked of
+  /// the server, newest first: what a filtered list adds to the matching
+  /// mail it already holds, so mail never cached is found too. Empty for
+  /// [MessageFilter.all].
+  Future<List<MailMessage>> filterMessages(
+    String folderId,
+    MessageFilter filter, {
+    int limit = 100,
   });
 
   /// Send the draft (over SMTP for Gmail, through Graph for Microsoft), see

@@ -4,6 +4,7 @@ import '../../domain/folder_role.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/search_field.dart';
+import '../../domain/message_filter.dart';
 import '../../domain/calendar_invite.dart';
 
 /// The wire-level operations the cache needs from a mail server, for one
@@ -164,6 +165,17 @@ abstract class ImapTransport {
     int limit = 100,
     SearchField field = SearchField.all,
     bool unlabelledOnly = false,
+  });
+
+  /// The newest [limit] messages in the folder that [filter] keeps, newest
+  /// first, as [searchHits] answers: for a filtered list, on the server, so
+  /// mail never cached is found too. [ownAddress] is the account's own, for
+  /// [MessageFilter.toMe].
+  Future<List<SearchHit>> filterHits(
+    String path,
+    MessageFilter filter, {
+    required String ownAddress,
+    int limit = 100,
   });
 
   /// Set or clear [flag] on [uids]. One STORE over IMAP, which goes or does

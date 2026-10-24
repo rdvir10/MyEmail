@@ -13,7 +13,9 @@ import '../../domain/mail_message.dart';
 import '../../domain/recipient_summary.dart';
 import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
+import '../../state/pinned_messages.dart';
 import '../../state/providers.dart';
+import '../../state/read_marker.dart';
 import '../../state/window_providers.dart';
 import '../../domain/window_handoff.dart';
 import '../compose/open_compose.dart';
@@ -80,8 +82,13 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
 
   FocusNode get _node => widget.focusNode ?? _ownNode;
 
+  /// Read once, while the ref may still be used: the pane going away is
+  /// one of the things it is told about.
+  late final ReadMarker _marker;
+
   @override
   void dispose() {
+    _marker.left(widget.message.id);
     _textScroll.dispose();
     _ownNode.dispose();
     super.dispose();
@@ -151,22 +158,29 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     // every time someone walked past the Inbox, which is a good way to lose
     // mail you meant to come back to. Acting on it — a key, a tap — claims the
     // selection, and it reads as opened from then on.
-    if (!widget.message.isRead &&
-        ref.read(selectedMessageIdProvider.notifier).chosenByPerson) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _markRead());
+    _marker = ref.read(readMarkerProvider);
+    if (ref.read(selectedMessageIdProvider.notifier).chosenByPerson) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _opened());
     }
   }
 
   /// The list this message was opened from: the unified inbox or a folder.
   String? get _listId => ref.read(effectiveSelectedFolderIdProvider);
 
-  /// Through the list's actions, as the Read button is, so a search hit
-  /// from another folder, or from further back than the list has loaded,
-  /// goes to the engine, and the search shows it read.
-  Future<void> _markRead() async {
+  /// Opened, as far as being marked read goes, which Settings, View decides
+  /// the timing of (see [ReadMarker]). Through the list's actions, as the
+  /// Read button is, so a search hit from another folder, or from further
+  /// back than the list has loaded, goes to the engine, and the search
+  /// shows it read.
+  void _opened() {
     final listId = _listId;
     if (!mounted || listId == null) return;
-    await MessageActions(ref, listId).markOpened(widget.message);
+    final message = widget.message;
+    final actions = MessageActions(ref, listId);
+    _marker.opened(
+      message.id,
+      mark: message.isRead ? null : () => actions.markOpened(message),
+    );
   }
 
   /// Delete, from the header. On a screen of its own the screen goes too:
@@ -286,6 +300,11 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                 onToggleRead: () => _act(
                   (a) => a.setRead(context, [message], !message.isRead),
                 ),
+                pinned: ref.watch(pinnedMessagesProvider).contains(message.id),
+                onTogglePin: () {
+                  final pins = ref.read(pinnedMessagesProvider.notifier);
+                  pins.setPinned([message.id], !pins.isPinned(message.id));
+                },
                 onCompose: (kind) =>
                     openCompose(context, ref, kind: kind, original: message),
                 // Only once the body is here: there is nothing to save until it
@@ -438,6 +457,8 @@ class _Header extends StatelessWidget {
     required this.onCompose,
     required this.onDelete,
     required this.onMove,
+    this.pinned = false,
+    this.onTogglePin,
     this.onPopOut,
     this.onOpenWindow,
     this.onPrint,
@@ -471,6 +492,11 @@ class _Header extends StatelessWidget {
   final VoidCallback onToggleFlag;
   final VoidCallback onToggleRead;
   final VoidCallback onDelete;
+
+  /// Whether the message is pinned to the top of its folder, and the way to
+  /// pin or unpin it.
+  final bool pinned;
+  final VoidCallback? onTogglePin;
 
   /// Into another folder, chosen from the folder picker.
   final VoidCallback onMove;
@@ -601,6 +627,7 @@ class _Header extends StatelessWidget {
                     icon: const Icon(Icons.more_vert),
                     onSelected: (value) => switch (value) {
                       'flag' => onToggleFlag(),
+                      'pin' => onTogglePin?.call(),
                       'window' => onOpenWindow?.call(),
                       'print' => onPrint?.call(),
                       'event' => onCreateEvent?.call(),
@@ -629,6 +656,11 @@ class _Header extends StatelessWidget {
                           child: Text(
                             message.isFlagged ? 'Remove flag' : 'Flag',
                           ),
+                        ),
+                      if (onTogglePin != null)
+                        PopupMenuItem(
+                          value: 'pin',
+                          child: Text(pinned ? 'Unpin' : 'Pin to top'),
                         ),
                       PopupMenuItem(
                         value: 'source',

@@ -12,7 +12,9 @@ import '../../state/display_providers.dart';
 import '../../state/providers.dart' show accountsProvider;
 import '../accounts/google_sign_in_screen.dart';
 import '../accounts/microsoft_sign_in_screen.dart';
+import 'row_formats_screen.dart';
 import 'trusted_senders_screen.dart';
+import '../../state/row_formats.dart';
 import '../../state/trusted_senders.dart';
 import '../../state/window_providers.dart';
 
@@ -104,6 +106,28 @@ class ViewSettingsScreen extends ConsumerWidget {
                 : 'A pane on the right needs a wide screen, which in practice '
                     'means a tablet in landscape. On anything narrower, '
                     'choose Bottom to get a pane at all.',
+            theme: theme,
+          ),
+          const Divider(height: 1),
+          const _Heading('Mark as read'),
+          RadioGroup<MarkReadWhen>(
+            groupValue: display.markRead,
+            onChanged: (v) => v == null ? null : notifier.setMarkRead(v),
+            child: Column(
+              children: [
+                for (final when in MarkReadWhen.values)
+                  RadioListTile<MarkReadWhen>(
+                    value: when,
+                    title: Text(when.label),
+                    subtitle: Text(when.description),
+                  ),
+              ],
+            ),
+          ),
+          _Note(
+            'For a message you open. One the app shows for you, such as the '
+            'next message after a delete, stays unread until you choose it, '
+            'whatever this says.',
             theme: theme,
           ),
           const Divider(height: 1),
@@ -261,6 +285,27 @@ class ViewSettingsScreen extends ConsumerWidget {
                   ),
               ],
             ),
+          ),
+          Consumer(
+            builder: (context, ref, _) {
+              final rules = ref.watch(rowFormatsProvider);
+              return ListTile(
+                leading: const Icon(Icons.format_color_text),
+                title: const Text('Conditional formatting'),
+                subtitle: Text(
+                  rules.isEmpty
+                      ? 'Colour rows by who sent them, what they are about, '
+                          'or whether they came to you alone'
+                      : '${rules.length} ${rules.length == 1 ? 'rule' : 'rules'}',
+                ),
+                trailing: const Icon(Icons.chevron_right, size: 20),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const RowFormatsScreen(),
+                  ),
+                ),
+              );
+            },
           ),
           const Divider(height: 1),
           const _Heading('Swipe actions'),

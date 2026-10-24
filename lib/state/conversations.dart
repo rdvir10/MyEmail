@@ -26,16 +26,32 @@ import '../domain/message_sort.dart';
 /// list shows a flat run of messages, newest last. What matters here is only
 /// which messages belong together.
 class Conversation {
-  Conversation(this.messages);
+  Conversation(this.messages, {this.others = const []});
 
-  /// Oldest first, the order a thread is read in.
+  /// Oldest first, the order a thread is read in. The list's own messages:
+  /// what the row stands for, and what acting on the row acts on.
   final List<MailMessage> messages;
+
+  /// Messages of the thread from another folder, oldest first: your replies
+  /// in Sent, shown in the open thread as Outlook's Show Messages from Other
+  /// Folders shows them. Never acted on with the row: deleting the thread
+  /// from the Inbox leaves what you sent where it is, as Outlook does.
+  final List<MailMessage> others;
+
+  /// The whole thread, oldest first: [messages] and [others] together.
+  List<MailMessage> get everything => others.isEmpty
+      ? messages
+      : ([...messages, ...others]..sort((a, b) => a.date.compareTo(b.date)));
 
   MailMessage get newest => messages.last;
   MailMessage get oldest => messages.first;
 
   int get length => messages.length;
   bool get isThread => messages.length > 1;
+
+  /// Whether the row opens to show more than one message: a thread, or one
+  /// message with your reply from Sent beside it.
+  bool get opens => isThread || others.isNotEmpty;
 
   /// A conversation is unread if anything in it is. Marking one message read
   /// must not make the row look dealt with while two others are still unread.
@@ -85,46 +101,121 @@ class Conversation {
 /// them newest first whatever was chosen, so with oldest first Home went to
 /// the bottom of the screen and Down went up.
 ///
-/// [folded] says whether a row is under a closed date bar, and those rows
-/// are left out too. It is asked about the message that stands for the
-/// row, a thread's newest, because that is what the bar is decided by: an
-/// open thread's older replies sit under the thread's bar, not their own.
+/// [folded] says whether a row is under a closed bar, and those rows are
+/// left out too. It is asked about the message that stands for the row, a
+/// thread's newest, because that is what the bar is decided by: an open
+/// thread's older replies sit under the thread's bar, not their own.
+///
+/// A row with a message in [pinned] (by id) sits under the Pinned bar
+/// instead, and is left out when [pinnedClosed]. [others] are messages from
+/// other folders an open thread shows as well; see [Conversation.others].
 List<MailMessage> visibleMessages(
   List<MailMessage> messages, {
   required bool conversations,
   required Set<String> expandedIds,
   required MessageSort sort,
   bool Function(MailMessage row)? folded,
+  Set<String> pinned = const {},
+  bool pinnedClosed = false,
+  Map<String, int> accountRank = const {},
+  List<MailMessage> others = const [],
 }) {
+  bool hidden(List<MailMessage> row, MailMessage lead) =>
+      row.any((m) => pinned.contains(m.id))
+          ? pinnedClosed
+          : (folded != null && folded(lead));
   if (!conversations) {
-    if (folded == null) return messages;
-    return [for (final m in messages) if (!folded(m)) m];
+    if (folded == null && !pinnedClosed) return messages;
+    return [
+      for (final m in messages)
+        if (!hidden([m], m)) m,
+    ];
   }
   return [
-    for (final c in conversationsInOrder(messages, sort))
-      if (folded != null && folded(c.newest))
+    for (final c in conversationsInOrder(
+      messages,
+      sort,
+      accountRank: accountRank,
+      pinned: pinned,
+      others: others,
+    ))
+      if (hidden(c.messages, c.newest))
         ...const <MailMessage>[]
-      else if (!c.isThread || !expandedIds.contains(c.id))
+      else if (!c.opens || !expandedIds.contains(c.id))
         c.newest
       else
-        ...c.messages.reversed,
+        ...c.everything.reversed,
   ];
 }
 
 /// [messages] as conversations, in the order the list shows them: by each
-/// one's newest message, under [sort].
+/// one's newest message, under [sort], with the threads holding any of
+/// [pinned] first. [others] join the threads they belong to; see
+/// [groupIntoConversations].
 List<Conversation> conversationsInOrder(
   List<MailMessage> messages,
-  MessageSort sort,
-) {
-  final grouped = groupIntoConversations(messages);
-  if (sort == MessageSort.dateNewest) return grouped;
-  return [...grouped]
-    ..sort((a, b) => compareMessages(a.newest, b.newest, sort));
+  MessageSort sort, {
+  Map<String, int> accountRank = const {},
+  Set<String> pinned = const {},
+  List<MailMessage> others = const [],
+}) {
+  final grouped = groupIntoConversations(messages, others: others);
+  final sorted = sort == MessageSort.dateNewest
+      ? grouped
+      : ([...grouped]
+        ..sort((a, b) => compareMessages(
+              a.newest,
+              b.newest,
+              sort,
+              accountRank: accountRank,
+            )));
+  if (pinned.isEmpty) return sorted;
+  bool isPinned(Conversation c) => c.messages.any((m) => pinned.contains(m.id));
+  return [
+    for (final c in sorted)
+      if (isPinned(c)) c,
+    for (final c in sorted)
+      if (!isPinned(c)) c,
+  ];
 }
 
-List<Conversation> groupIntoConversations(List<MailMessage> messages) {
+/// [messages] grouped into conversations, newest conversation first.
+///
+/// [others] are messages from another folder, your own in Sent, that join
+/// a conversation of [messages] they belong to as [Conversation.others],
+/// by the same three signals. One that belongs to none is left out: the
+/// Inbox does not grow rows for mail you sent. A copy of a message the
+/// list holds (sent to yourself) is left out too.
+List<Conversation> groupIntoConversations(
+  List<MailMessage> messages, {
+  List<MailMessage> others = const [],
+}) {
   if (messages.isEmpty) return const [];
+  final own = {for (final m in messages) m.id};
+  if (others.isNotEmpty) {
+    final held = {
+      for (final m in messages)
+        if (m.messageId != null) (m.accountId, m.messageId!),
+    };
+    final extra = [
+      for (final o in others)
+        if (!own.contains(o.id) &&
+            (o.messageId == null || !held.contains((o.accountId, o.messageId!))))
+          o,
+    ];
+    if (extra.isNotEmpty) {
+      // Ordered by the list's own newest message, as without them: a reply
+      // just sent does not lift its thread above mail that came in since.
+      return [
+        for (final c in groupIntoConversations([...messages, ...extra]))
+          if (c.messages.any((m) => own.contains(m.id)))
+            Conversation(
+              [for (final m in c.messages) if (own.contains(m.id)) m],
+              others: [for (final m in c.messages) if (!own.contains(m.id)) m],
+            ),
+      ]..sort((a, b) => b.newest.date.compareTo(a.newest.date));
+    }
+  }
 
   // Scoped to the account, as the server's conversation and the subject are
   // below. A reply in the Gmail to a message in the work mailbox, written to
