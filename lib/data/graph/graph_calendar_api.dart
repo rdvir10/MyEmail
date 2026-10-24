@@ -718,6 +718,102 @@ class GraphCalendarApi {
   static String _char(int? code) =>
       code == null || code > 0x10FFFF ? '' : String.fromCharCode(code);
 
+  /// When the calendar is busy between [start] and [end]: everything on it
+  /// but what is shown as free or working elsewhere, cancelled, or turned
+  /// down.
+  Future<List<TimeSpan>> busy(DateTime start, DateTime end) async {
+    final busy = <TimeSpan>[];
+    var next = Uri.parse('$base/me/calendarView').replace(queryParameters: {
+      'startDateTime': start.toUtc().toIso8601String(),
+      'endDateTime': end.toUtc().toIso8601String(),
+      r'$select': 'start,end,showAs,isCancelled,responseStatus',
+      r'$top': '200',
+    });
+    for (var page = 0; page < 10; page++) {
+      final response = await _exchange(
+        () => http.Request('GET', next)..headers['Prefer'] = _inUtc,
+      );
+      if (response.statusCode >= 400) throw _failureFor(response);
+      final json = _jsonOf(response);
+      final value = json['value'];
+      for (final e in value is List ? value : const []) {
+        if (e is! Map) continue;
+        final event = e.cast<String, Object?>();
+        if (event['isCancelled'] == true) continue;
+        if (_notBusy.contains('${event['showAs']}')) continue;
+        final status = event['responseStatus'];
+        if (status is Map && status['response'] == 'declined') continue;
+        final span = _spanOf(event);
+        if (span != null) busy.add(span);
+      }
+      final link = json['@odata.nextLink'];
+      if (link is! String) break;
+      next = Uri.parse(link);
+    }
+    return busy;
+  }
+
+  /// When each of [emails] is busy between [start] and [end], as Exchange
+  /// lets the organisation see: Outlook's Scheduling Assistant. Null for
+  /// one it will not say for (outside the organisation, say).
+  Future<Map<String, List<TimeSpan>?>> schedules(
+    List<String> emails,
+    DateTime start,
+    DateTime end,
+  ) async {
+    if (emails.isEmpty) return const {};
+    String utc(DateTime t) =>
+        t.toUtc().toIso8601String().replaceFirst(RegExp(r'Z$'), '');
+    final response = await _exchange(
+      () => http.Request('POST', Uri.parse('$base/me/calendar/getSchedule'))
+        ..headers['Content-Type'] = 'application/json'
+        ..headers['Prefer'] = _inUtc
+        ..body = jsonEncode({
+          'schedules': emails,
+          'startTime': {'dateTime': utc(start), 'timeZone': 'UTC'},
+          'endTime': {'dateTime': utc(end), 'timeZone': 'UTC'},
+          'availabilityViewInterval': 30,
+        }),
+    );
+    if (response.statusCode >= 400) throw _failureFor(response);
+    final value = _jsonOf(response)['value'];
+    final found = <String, List<TimeSpan>?>{};
+    for (final s in value is List ? value : const []) {
+      if (s is! Map) continue;
+      final id = '${s['scheduleId'] ?? ''}'.toLowerCase();
+      if (id.isEmpty) continue;
+      if (s['error'] != null) {
+        found[id] = null;
+        continue;
+      }
+      final items = s['scheduleItems'];
+      found[id] = [
+        for (final item in items is List ? items : const [])
+          if (item is Map && !_notBusy.contains('${item['status']}'))
+            ?_spanOf(item.cast<String, Object?>()),
+      ];
+    }
+    return found;
+  }
+
+  /// What an event can be shown as and still leave the time free: working
+  /// elsewhere is working, as Outlook's Scheduling Assistant has it.
+  static const _notBusy = {'free', 'workingElsewhere'};
+
+  /// An event's or a schedule item's start and end, in UTC as asked.
+  static TimeSpan? _spanOf(Map<String, Object?> json) {
+    DateTime? at(Object? value) {
+      if (value is! Map) return null;
+      final text = value['dateTime'];
+      if (text is! String) return null;
+      return DateTime.tryParse(text.endsWith('Z') ? text : '${text}Z');
+    }
+
+    final start = at(json['start']), end = at(json['end']);
+    if (start == null || end == null || !end.isAfter(start)) return null;
+    return (start: start, end: end);
+  }
+
   /// Let go of the connection. Only one made here: a client handed in is
   /// closed by its owner.
   void close() {

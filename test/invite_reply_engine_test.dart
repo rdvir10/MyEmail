@@ -97,6 +97,49 @@ void main() {
         contains('RECURRENCE-ID:20260929T170000Z'));
   });
 
+  test('a note goes under the answer, as text', () async {
+    final account = await personal();
+
+    await engine.respondToInvite(
+      '${account.id}:INBOX#1',
+      invite(),
+      InviteResponse.tentative,
+      note: '  Late <by> ten minutes.  ',
+    );
+
+    expect(sent.single.decodeTextHtmlPart(),
+        contains('<p>Late &lt;by&gt; ten minutes.</p>'));
+  });
+
+  test('over mail, an answer kept from the organiser or a new time is '
+      'refused, and nothing goes', () async {
+    final account = await personal();
+
+    await expectLater(
+      engine.respondToInvite(
+        '${account.id}:INBOX#1',
+        invite(),
+        InviteResponse.accepted,
+        send: false,
+      ),
+      throwsA(isA<SendFailed>()),
+    );
+    await expectLater(
+      engine.respondToInvite(
+        '${account.id}:INBOX#1',
+        invite(),
+        InviteResponse.tentative,
+        proposal: (
+          start: DateTime.utc(2026, 9, 22, 12),
+          end: DateTime.utc(2026, 9, 22, 13),
+        ),
+      ),
+      throwsA(isA<SendFailed>()),
+    );
+    expect(sent, isEmpty);
+    expect(engine.canProposeNewTime(account.id), isFalse);
+  });
+
   test('an invitation that names no organiser says so and sends nothing',
       () async {
     final account = await personal();

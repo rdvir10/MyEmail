@@ -481,12 +481,21 @@ class GraphTransport implements ImapTransport {
     int uid,
     InviteResponse response, {
     String? iCalUid,
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
   }) async =>
       api.respondToInvite(
         await _remoteId(path, uid),
         response,
         iCalUid: iCalUid,
+        note: note,
+        send: send,
+        proposal: proposal,
       );
+
+  /// See [GraphMailApi.mailTips].
+  Future<List<MailTip>> mailTips(List<String> emails) => api.mailTips(emails);
 
   @override
   Future<String?> linkedEventId(String path, int uid) async {

@@ -12,6 +12,7 @@ import 'package:http/http.dart' as http;
 
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
 import '../compose/mime_parts.dart' show bareContentId;
+import '../imap/imap_mapping.dart' show htmlToText;
 import '../mail_engine.dart';
 
 /// A thin, typed client over the Microsoft Graph mail endpoints.
@@ -744,6 +745,9 @@ class GraphMailApi {
     String messageId,
     InviteResponse response, {
     String? iCalUid,
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
   }) async {
     final eventId = await eventIdFor(messageId, iCalUid: iCalUid);
     if (eventId == null) return false;
@@ -752,11 +756,65 @@ class GraphMailApi {
       InviteResponse.tentative => 'tentativelyAccept',
       InviteResponse.declined => 'decline',
     };
+    String utc(DateTime t) =>
+        t.toUtc().toIso8601String().replaceFirst(RegExp(r'Z$'), '');
     await _postNoContent(
       Uri.parse('$base/me/events/${_id(eventId)}/$action'),
-      {'sendResponse': true},
+      {
+        // A new time goes with the answer only, so it is always sent.
+        'sendResponse': send || proposal != null,
+        if (note.trim().isNotEmpty) 'comment': note.trim(),
+        if (proposal != null)
+          'proposedNewTime': {
+            'start': {'dateTime': utc(proposal.start), 'timeZone': 'UTC'},
+            'end': {'dateTime': utc(proposal.end), 'timeZone': 'UTC'},
+          },
+      },
     );
     return true;
+  }
+
+  /// What Exchange says about each of [emails] before a message goes to
+  /// them: see [MailTip]. With the mail permission the app already has.
+  Future<List<MailTip>> mailTips(List<String> emails) async {
+    if (emails.isEmpty) return const [];
+    final json = await _post(Uri.parse('$base/me/getMailTips'), {
+      'EmailAddresses': emails,
+      'MailTipsOptions': 'automaticReplies, mailboxFullStatus, '
+          'externalMemberCount, totalMemberCount, deliveryRestriction, '
+          'recipientScope',
+    });
+    final value = json['value'];
+    if (value is! List) return const [];
+    return [
+      for (final tip in value)
+        if (tip is Map) ?mailTipFrom(tip.cast<String, Object?>()),
+    ];
+  }
+
+  /// One of getMailTips' answers as a [MailTip], or null for one that
+  /// names nobody.
+  static MailTip? mailTipFrom(Map<String, Object?> tip) {
+    final address = tip['emailAddress'];
+    final email = address is Map ? address['address'] : null;
+    if (email is! String || email.isEmpty) return null;
+    final replies = tip['automaticReplies'];
+    final message = replies is Map ? replies['message'] : null;
+    final words = message is String
+        ? htmlToText(message).replaceAll(RegExp(r'\s+'), ' ').trim()
+        : '';
+    final scope = '${tip['recipientScope'] ?? ''}'.toLowerCase();
+    final members = tip['totalMemberCount'];
+    return MailTip(
+      email: email,
+      autoReply: words.isEmpty
+          ? null
+          : (words.length > 140 ? '${words.substring(0, 139)}…' : words),
+      external: scope.contains('external'),
+      memberCount: members is int && members > 1 ? members : null,
+      mailboxFull: tip['mailboxFull'] == true,
+      restricted: tip['deliveryRestricted'] == true,
+    );
   }
 
   /// A POST whose success is a 202 with nothing in it.

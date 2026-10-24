@@ -148,3 +148,27 @@ class PreparedMeetingLedger {
 final preparedMeetingLedgerProvider = Provider<PreparedMeetingLedger>(
   (ref) => PreparedMeetingLedger(ref.watch(uiStateStoreProvider)),
 );
+
+/// The days of the week worked, as `DateTime.weekday` numbers: chosen with
+/// the free times put in a message, and the days Next free time looks at.
+/// Monday to Friday until then.
+class WorkWeek extends Notifier<Set<int>> {
+  @override
+  Set<int> build() {
+    final store = ref.watch(uiStateStoreProvider);
+    listenSelf((_, next) => store.writeIds(
+          UiStateKeys.workWeek,
+          {for (final d in next) '$d'},
+        ));
+    final kept = {
+      for (final d in store.readIds(UiStateKeys.workWeek)) ?int.tryParse(d),
+    }..removeWhere((d) => d < DateTime.monday || d > DateTime.sunday);
+    return kept.isEmpty ? defaultWorkWeek : kept;
+  }
+
+  void set(Set<int> days) {
+    if (days.isNotEmpty) state = Set.unmodifiable(days);
+  }
+}
+
+final workWeekProvider = NotifierProvider<WorkWeek, Set<int>>(WorkWeek.new);

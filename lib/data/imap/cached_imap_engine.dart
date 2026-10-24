@@ -881,8 +881,11 @@ class CachedImapEngine implements MailEngine {
   Future<void> respondToInvite(
     String messageId,
     CalendarInvite invite,
-    InviteResponse response,
-  ) async {
+    InviteResponse response, {
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
+  }) async {
     final (folderId, uid) = splitMessageId(messageId);
     final (accountId, path) = splitFolderId(folderId);
     final t = await _transport(accountId);
@@ -893,8 +896,23 @@ class CachedImapEngine implements MailEngine {
       uid,
       response,
       iCalUid: invite.recurrenceId == null ? invite.uid : null,
+      note: note,
+      send: send,
+      proposal: proposal,
     )) {
       return;
+    }
+    if (proposal != null) {
+      throw const SendFailed(
+        'A new time can be proposed only from a Microsoft account.',
+      );
+    }
+    // Over mail, an answer the organiser is not sent is no answer at all.
+    if (!send) {
+      throw const SendFailed(
+        'An answer can be kept from the organiser only on a Microsoft '
+        'account.',
+      );
     }
 
     // The server has no calendar of its own to answer on: the reply goes
@@ -914,7 +932,8 @@ class CachedImapEngine implements MailEngine {
       // The name everyone else sees, as the calendar part has it; the
       // account's own label ("Personal") is for the folder list.
       htmlBody: '<p>${escapeHtml(account.senderName)} has '
-          '${response.word.toLowerCase()} this invitation.</p>',
+          '${response.word.toLowerCase()} this invitation.</p>'
+          '${note.trim().isEmpty ? '' : '<p>${escapeHtml(note.trim())}</p>'}',
       calendarReply: iMipReply(invite, attendee: me, response: response),
       originalMessageId: messageId,
     ));
@@ -966,6 +985,41 @@ class CachedImapEngine implements MailEngine {
     if (account == null) return true;
     return _calendars.discardPreparedMeeting(account, prepared);
   }
+
+  @override
+  bool canProposeNewTime(String accountId) =>
+      accountStore.read().where((a) => a.id == accountId).firstOrNull?.provider ==
+      MailProvider.outlook;
+
+  @override
+  Future<List<MailTip>> mailTips(String accountId, List<String> emails) async {
+    if (emails.isEmpty) return const [];
+    try {
+      final t = await _transport(accountId);
+      if (t is! GraphTransport) return const [];
+      return await t.mailTips(emails);
+    } catch (e) {
+      debugPrint('[myemail] mail tips not read: $e');
+      return const [];
+    }
+  }
+
+  @override
+  Future<List<TimeSpan>> busyTimes(
+    String accountId,
+    DateTime start,
+    DateTime end,
+  ) =>
+      _calendars.busyTimes(_accountFor(accountId), start, end);
+
+  @override
+  Future<Map<String, List<TimeSpan>?>> schedules(
+    String accountId,
+    List<String> emails,
+    DateTime start,
+    DateTime end,
+  ) =>
+      _calendars.schedules(_accountFor(accountId), emails, start, end);
 
   @override
   Future<CalendarMeeting?> meetingOnCalendar(

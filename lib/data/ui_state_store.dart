@@ -62,6 +62,10 @@ abstract final class UiStateKeys {
   /// Online meetings made ahead of Send and not yet sent or undone; see
   /// `PreparedMeetingLedger`.
   static const preparedMeetings = 'meetings.prepared.v1';
+
+  /// The days of the week worked, as `DateTime.weekday` numbers: for the
+  /// free times put in a message and Next free time.
+  static const workWeek = 'meetings.work-week.v1';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.

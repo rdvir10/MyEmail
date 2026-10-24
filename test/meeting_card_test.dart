@@ -311,6 +311,160 @@ void main() {
     });
   });
 
+  // Outlook's Edit the Response before Sending, Do Not Send a Response and
+  // Propose New Time, behind the menu beside the three answers.
+  group('more answers', () {
+    String invitation() => mail('REQUEST', extra: organisedByDana);
+
+    Future<void> choose(WidgetTester tester, String entry) async {
+      await tester.tap(find.byKey(const ValueKey('more-answers')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(entry));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('an answer with a note goes with the note', (tester) async {
+      final engine = _MeetingMail(invitation());
+      await show(tester, engine);
+
+      await choose(tester, 'Answer with a note…');
+      await tester.tap(find.descendant(
+        of: find.byType(SegmentedButton<InviteResponse>),
+        matching: find.text('Tentative'),
+      ));
+      await tester.enterText(
+          find.byKey(const ValueKey('answer-note')), 'Running late.');
+      expect(find.byKey(const ValueKey('answer-tell')), findsNothing,
+          reason: 'over mail, an answer not sent is no answer');
+      await tester.tap(find.byKey(const ValueKey('answer-send')));
+      await tester.pumpAndSettle();
+
+      final answer = engine.inviteAnswers.single;
+      expect(answer.response, InviteResponse.tentative);
+      expect(answer.note, 'Running late.');
+      expect(answer.send, isTrue);
+      expect(answer.proposal, isNull);
+      expect(find.text('Tentative. The organiser has been told.'),
+          findsOneWidget);
+      expect(find.text('You tentative'), findsOneWidget);
+    });
+
+    testWidgets('on a Microsoft account, can be kept from the organiser',
+        (tester) async {
+      final engine = _MeetingMail(invitation())
+        ..proposesNewTimes.add('acct-personal');
+      await show(tester, engine);
+
+      await choose(tester, 'Answer with a note…');
+      await tester.enterText(
+          find.byKey(const ValueKey('answer-note')), 'Not sent.');
+      await tester.tap(find.byKey(const ValueKey('answer-tell')));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const ValueKey('answer-note')))
+            .enabled,
+        isFalse,
+      );
+      await tester.tap(find.byKey(const ValueKey('answer-send')));
+      await tester.pumpAndSettle();
+
+      final answer = engine.inviteAnswers.single;
+      expect(answer.response, InviteResponse.accepted);
+      expect(answer.send, isFalse);
+      expect(answer.note, isEmpty, reason: 'a note to nobody is not kept');
+      expect(find.text('Accepted. The organiser was not told.'),
+          findsOneWidget);
+    });
+
+    testWidgets('Cancel answers nothing', (tester) async {
+      final engine = _MeetingMail(invitation());
+      await show(tester, engine);
+
+      await choose(tester, 'Answer with a note…');
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(engine.inviteAnswers, isEmpty);
+      expect(find.text('Accept'), findsOneWidget);
+    });
+
+    testWidgets('a new time is offered only where the account can propose '
+        'one', (tester) async {
+      await show(tester, _MeetingMail(invitation()));
+
+      await tester.tap(find.byKey(const ValueKey('more-answers')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Answer with a note…'), findsOneWidget);
+      expect(find.text('Propose a new time…'), findsNothing);
+    });
+
+    testWidgets('a new time goes as a tentative answer with the time, the '
+        'meeting\'s length kept', (tester) async {
+      final engine = _MeetingMail(invitation())
+        ..proposesNewTimes.add('acct-personal');
+      await show(tester, engine);
+
+      await choose(tester, 'Propose a new time…');
+      expect(find.text('Propose a new time'), findsOneWidget);
+      // Nine fifteen, typed into the clock.
+      await tester.tap(find.byKey(const ValueKey('propose-start')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Switch to text input mode'));
+      await tester.pumpAndSettle();
+      final clock = find.descendant(
+        of: find.byType(TimePickerDialog),
+        matching: find.byType(TextField),
+      );
+      await tester.enterText(clock.first, '9');
+      await tester.enterText(clock.last, '15');
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.byType(TextField),
+        ),
+        'Mornings suit me.',
+      );
+      await tester.tap(find.byKey(const ValueKey('propose-send')));
+      await tester.pumpAndSettle();
+
+      final day = DateTime.utc(2026, 10, 16, 11, 30).toLocal();
+      final start = DateTime(day.year, day.month, day.day, 9, 15);
+      final answer = engine.inviteAnswers.single;
+      expect(answer.response, InviteResponse.tentative);
+      expect(answer.proposal?.start, start);
+      expect(answer.proposal?.end, start.add(const Duration(hours: 1)));
+      expect(answer.note, 'Mornings suit me.');
+      expect(
+        find.text('Tentative, with a new time proposed. The organiser has '
+            'been told.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a new time can go with a decline', (tester) async {
+      final engine = _MeetingMail(invitation())
+        ..proposesNewTimes.add('acct-personal');
+      await show(tester, engine);
+
+      await choose(tester, 'Propose a new time…');
+      await tester.tap(find.descendant(
+        of: find.byType(SegmentedButton<InviteResponse>),
+        matching: find.text('Decline'),
+      ));
+      await tester.tap(find.byKey(const ValueKey('propose-send')));
+      await tester.pumpAndSettle();
+
+      final answer = engine.inviteAnswers.single;
+      expect(answer.response, InviteResponse.declined);
+      expect(answer.proposal!.start.toUtc(), DateTime.utc(2026, 10, 16, 11, 30),
+          reason: "the meeting's own time, unless another is chosen");
+    });
+  });
+
   group('a new time proposed', () {
     testWidgets('shows who, the time now and the time proposed',
         (tester) async {

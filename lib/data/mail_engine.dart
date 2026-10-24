@@ -11,6 +11,8 @@ export '../domain/message_filter.dart';
 export '../domain/unsubscribe.dart';
 export '../domain/opened_headers.dart';
 export '../domain/recoverable_message.dart';
+export '../domain/free_busy.dart';
+export '../domain/mail_tip.dart';
 export 'contacts/account_people.dart' show PeopleSearchAccess, PeopleSearchState;
 import 'auth/oauth_token.dart';
 import 'contacts/account_people.dart' show PeopleSearchAccess;
@@ -24,6 +26,8 @@ import '../domain/mail_message.dart';
 import '../domain/meeting.dart';
 import '../domain/message_move.dart';
 import '../domain/recoverable_message.dart';
+import '../domain/free_busy.dart';
+import '../domain/mail_tip.dart';
 import '../domain/opened_headers.dart';
 
 /// Everything the UI is allowed to know about talking to mail.
@@ -246,10 +250,46 @@ abstract class MailEngine {
   /// Answer the invitation in a message: on the calendar where the server
   /// has one (Microsoft), and as the mail reply every calendar server
   /// reads otherwise, sent from the account the invitation came to.
+  ///
+  /// [note] goes to the organiser with it, as Outlook's Edit the Response
+  /// before Sending. [send] false answers without telling them: on the
+  /// calendar on Microsoft, and nothing at all over mail. [proposal] is a
+  /// new time, with a tentative or declined answer; only where
+  /// [canProposeNewTime].
   Future<void> respondToInvite(
     String messageId,
     CalendarInvite invite,
-    InviteResponse response,
+    InviteResponse response, {
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
+  });
+
+  /// Whether an invitation to [accountId] can be answered with a new time:
+  /// a Microsoft account. Google Calendar ignores a time proposed by mail.
+  bool canProposeNewTime(String accountId);
+
+  /// What Exchange says about each of [emails] before a message from
+  /// [accountId] goes to them: see [MailTip]. A Microsoft account only;
+  /// empty for any other, and where it could not be asked.
+  Future<List<MailTip>> mailTips(String accountId, List<String> emails);
+
+  /// When [accountId]'s own calendar is busy between [start] and [end].
+  /// Throws as [meetingOnCalendar] does.
+  Future<List<TimeSpan>> busyTimes(
+    String accountId,
+    DateTime start,
+    DateTime end,
+  );
+
+  /// When each of [emails] is busy between [start] and [end], as far as
+  /// [accountId]'s calendar can see, by address in lower case: null for one
+  /// it cannot. Throws as [meetingOnCalendar] does.
+  Future<Map<String, List<TimeSpan>?>> schedules(
+    String accountId,
+    List<String> emails,
+    DateTime start,
+    DateTime end,
   );
 
   /// The meeting [invite] is about, as the account's own calendar has it

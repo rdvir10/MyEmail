@@ -309,6 +309,58 @@ class AccountCalendar {
     }
   }
 
+  /// When [account]'s own calendar is busy between [start] and [end]; see
+  /// `MailEngine.busyTimes`.
+  Future<List<TimeSpan>> busyTimes(
+    Account account,
+    DateTime start,
+    DateTime end,
+  ) async {
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          return await api.busy(start, end);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          return await api.busy(start, end);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  /// When each of [emails] is busy, as far as [account]'s calendar can see;
+  /// see `MailEngine.schedules`. Everyone in a Microsoft organisation; on
+  /// Google, the account itself and nobody else, since Google's free/busy
+  /// question would need a permission the app does not ask for.
+  Future<Map<String, List<TimeSpan>?>> schedules(
+    Account account,
+    List<String> emails,
+    DateTime start,
+    DateTime end,
+  ) async {
+    if (account.provider == MailProvider.outlook) {
+      final api = _graphApi(account);
+      try {
+        return await api.schedules(emails, start, end);
+      } finally {
+        api.close();
+      }
+    }
+    final own = account.emailAddress.toLowerCase();
+    final asked = [for (final e in emails) e.toLowerCase()];
+    final mine =
+        asked.contains(own) ? await busyTimes(account, start, end) : null;
+    return {for (final e in asked) e: e == own ? mine : null};
+  }
+
   /// Take [meeting] off [account]'s calendar; see
   /// `MailEngine.removeFromCalendar`.
   Future<void> removeMeeting(Account account, CalendarMeeting meeting) async {

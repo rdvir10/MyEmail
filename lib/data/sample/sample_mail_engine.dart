@@ -795,10 +795,76 @@ class SampleMailEngine implements MailEngine {
   Future<void> respondToInvite(
     String messageId,
     CalendarInvite invite,
-    InviteResponse response,
-  ) async {
+    InviteResponse response, {
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
+  }) async {
     await _latency();
     inviteResponses.add((messageId: messageId, response: response));
+    inviteAnswers.add((
+      messageId: messageId,
+      response: response,
+      note: note,
+      send: send,
+      proposal: proposal,
+    ));
+  }
+
+  /// Every answer, with what went with it, for tests to look at.
+  final List<
+      ({
+        String messageId,
+        InviteResponse response,
+        String note,
+        bool send,
+        TimeSpan? proposal,
+      })> inviteAnswers = [];
+
+  /// Which accounts can propose a new time, as a Microsoft one can; none of
+  /// the sample's, unless a test says so.
+  final Set<String> proposesNewTimes = {};
+
+  @override
+  bool canProposeNewTime(String accountId) =>
+      proposesNewTimes.contains(accountId);
+
+  /// What [mailTips] answers, by address, for a test to fill.
+  final Map<String, MailTip> tips = {};
+
+  @override
+  Future<List<MailTip>> mailTips(String accountId, List<String> emails) async {
+    await _latency();
+    return [
+      for (final e in emails) ?tips[e.toLowerCase()],
+    ];
+  }
+
+  /// The sample calendars' busy times, by address in lower case, for a test
+  /// to fill; an address not in it is one the calendar cannot see.
+  final Map<String, List<TimeSpan>> busy = {};
+
+  @override
+  Future<List<TimeSpan>> busyTimes(
+    String accountId,
+    DateTime start,
+    DateTime end,
+  ) async {
+    // The accounts as loaded, which a test's engine may have changed.
+    final account =
+        (await loadAccounts()).firstWhere((a) => a.id == accountId);
+    return busy[account.emailAddress.toLowerCase()] ?? const [];
+  }
+
+  @override
+  Future<Map<String, List<TimeSpan>?>> schedules(
+    String accountId,
+    List<String> emails,
+    DateTime start,
+    DateTime end,
+  ) async {
+    await _latency();
+    return {for (final e in emails) e.toLowerCase(): busy[e.toLowerCase()]};
   }
 
   /// The sample calendar, by invitation UID: what [meetingOnCalendar]

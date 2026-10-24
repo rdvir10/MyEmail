@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../domain/folder_role.dart';
+import '../../domain/free_busy.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/search_field.dart';
@@ -92,11 +93,18 @@ abstract class ImapTransport {
   ///
   /// [iCalUid] is the UID the invitation itself carries, which is how a
   /// calendar server finds the event when the message does not link to it.
+  ///
+  /// [note] goes to the organiser with the answer; [send] false answers on
+  /// the calendar without telling them; [proposal] is a new time, sent as
+  /// Exchange's tentative or declined with one.
   Future<bool> respondToInvite(
     String path,
     int uid,
     InviteResponse response, {
     String? iCalUid,
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
   });
 
   /// The calendar's id for the meeting a message is about, where the server

@@ -15,7 +15,9 @@ import '../../domain/draft.dart';
 import '../../domain/address_suggestions.dart'
     show AddressSuggestion, formatRecipient;
 import '../../domain/signature.dart';
+import 'free_times.dart';
 import 'insert_picture.dart';
+import 'mail_tips_line.dart';
 import 'mention_suggestions.dart';
 import '../../domain/send_checks.dart';
 import '../../state/display_providers.dart';
@@ -1112,6 +1114,13 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
                         : Importance.low;
                   case 'receipt':
                     _readReceipt = !_readReceipt;
+                  case 'free':
+                    unawaited(insertFreeTimes(
+                      context,
+                      ref,
+                      accountId: _accountId,
+                      editor: _editor,
+                    ));
                 }
               }),
               itemBuilder: (_) => [
@@ -1131,6 +1140,16 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
                   checked: _readReceipt,
                   child: const Text('Request a read receipt'),
                 ),
+                // Where the account has a calendar the app can read.
+                if (account != null &&
+                    (account.provider == MailProvider.outlook ||
+                        account.authMethod == AuthMethod.oauth)) ...[
+                  const PopupMenuDivider(),
+                  const PopupMenuItem(
+                    value: 'free',
+                    child: Text('Insert free times…'),
+                  ),
+                ],
               ],
             ),
           ],
@@ -1223,6 +1242,13 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
                 controller: _bcc,
                 focusNode: _bccFocus,
                 enabled: !_sending,
+              ),
+            // Exchange's word on the recipients, from a Microsoft account.
+            if (account?.provider == MailProvider.outlook)
+              MailTipsLine(
+                key: ValueKey('mail-tips:$_accountId'),
+                accountId: _accountId,
+                fields: [_to, _cc, _bcc],
               ),
             HeaderField(
               label: 'Subject',

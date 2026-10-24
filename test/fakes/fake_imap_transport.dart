@@ -288,6 +288,9 @@ class FakeImapTransport implements ImapTransport {
     int uid,
     InviteResponse response, {
     String? iCalUid,
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
   }) async {
     calls.add('RESPOND $path $uid ${response.partStat}'
         '${iCalUid == null ? '' : ' uid=$iCalUid'}');

@@ -449,6 +449,44 @@ class GoogleCalendarApi {
     return at is String ? DateTime.tryParse(at)?.toUtc() : null;
   }
 
+  /// When the account's own calendar is busy between [start] and [end]:
+  /// every event on it but those shown as free (transparent) and those
+  /// turned down. Read as a listing, which the calendar permission the app
+  /// has already covers; Google's free/busy question would need another.
+  Future<List<TimeSpan>> busy(DateTime start, DateTime end) async {
+    final events = await _list(_eventsAt(null, {
+      'timeMin': start.toUtc().toIso8601String(),
+      'timeMax': end.toUtc().toIso8601String(),
+      'singleEvents': 'true',
+      'orderBy': 'startTime',
+      'maxResults': '250',
+    }));
+    final busy = <TimeSpan>[];
+    for (final e in events) {
+      if (e['transparency'] == 'transparent') continue;
+      final attendees = e['attendees'];
+      final me = attendees is List
+          ? attendees.whereType<Map>().where((a) => a['self'] == true).firstOrNull
+          : null;
+      if (me != null && me['responseStatus'] == 'declined') continue;
+      final from = _busyAt(e['start']), to = _busyAt(e['end']);
+      if (from == null || to == null || !to.isAfter(from)) continue;
+      busy.add((start: from, end: to));
+    }
+    return busy;
+  }
+
+  /// An event's start or end for [busy]: a whole day's from the phone's
+  /// own midnight, which is the day it means, not UTC's.
+  static DateTime? _busyAt(Object? value) {
+    final date = value is Map ? value['date'] : null;
+    if (date is String) {
+      final day = _timeOf(value);
+      return day == null ? null : DateTime(day.year, day.month, day.day);
+    }
+    return _timeOf(value);
+  }
+
   /// Every event a listing gives, less those Google has as cancelled.
   Future<List<Map<String, Object?>>> _list(Uri uri) async {
     final response = await _authorised(() => http.Request('GET', uri));

@@ -13,7 +13,9 @@ import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/mail_message.dart';
 import '../../state/calendar_providers.dart';
 import '../../state/providers.dart';
+import '../../domain/free_busy.dart';
 import 'date_format.dart';
+import 'invite_answers.dart';
 
 /// The meeting mail inside a message, under its header: what, when, where,
 /// who, and what can be done about it.
@@ -82,16 +84,58 @@ class _InviteCardState extends ConsumerState<InviteCard> {
         _ => '$e',
       };
 
-  Future<void> _respond(InviteResponse response) async {
+  Future<void> _respond(
+    InviteResponse response, {
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
+  }) async {
     // Read before the wait: the card may be gone by the time it is over.
     final responses = ref.read(inviteResponsesProvider.notifier);
     final engine = ref.read(mailEngineProvider);
     if (await _run(
-      () => engine.respondToInvite(_id, widget.invite, response),
-      done: '${response.word}. The organiser has been told.',
+      () => engine.respondToInvite(
+        _id,
+        widget.invite,
+        response,
+        note: note,
+        send: send,
+        proposal: proposal,
+      ),
+      done: proposal != null
+          ? '${response.word}, with a new time proposed. The organiser has '
+              'been told.'
+          : send
+              ? '${response.word}. The organiser has been told.'
+              : '${response.word}. The organiser was not told.',
       failed: 'Could not reply',
     )) {
       responses.record(_id, response);
+    }
+  }
+
+  /// The menu beside the three answers: one with a note, or without a word
+  /// to the organiser, and on a Microsoft account, a new time.
+  Future<void> _moreAnswers(String choice) async {
+    if (choice == 'note') {
+      // A Microsoft account answers on its calendar, the organiser told or
+      // not; the same calendar takes a new time.
+      final answer = await askForNotedAnswer(
+        context,
+        canStayQuiet: ref
+            .read(mailEngineProvider)
+            .canProposeNewTime(widget.message.accountId),
+      );
+      if (answer == null || !mounted) return;
+      await _respond(answer.response, note: answer.note, send: answer.send);
+    } else if (choice == 'propose') {
+      final answer = await askForProposal(context, widget.invite);
+      if (answer == null || !mounted) return;
+      await _respond(
+        answer.response,
+        note: answer.note,
+        proposal: answer.proposal,
+      );
     }
   }
 
@@ -415,6 +459,26 @@ class _InviteCardState extends ConsumerState<InviteCard> {
                 OutlinedButton(
                   onPressed: _busy ? null : () => _respond(InviteResponse.declined),
                   child: const Text('Decline'),
+                ),
+                PopupMenuButton<String>(
+                  key: const ValueKey('more-answers'),
+                  tooltip: 'More answers',
+                  enabled: !_busy,
+                  icon: const Icon(Icons.more_horiz),
+                  onSelected: _moreAnswers,
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(
+                      value: 'note',
+                      child: Text('Answer with a note…'),
+                    ),
+                    if (ref
+                        .read(mailEngineProvider)
+                        .canProposeNewTime(widget.message.accountId))
+                      const PopupMenuItem(
+                        value: 'propose',
+                        child: Text('Propose a new time…'),
+                      ),
+                  ],
                 ),
               ],
               if (canRemove)

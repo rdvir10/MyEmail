@@ -214,9 +214,44 @@ class _EmptyEngine implements MailEngine {
   Future<void> respondToInvite(
     String messageId,
     CalendarInvite invite,
-    InviteResponse response,
+    InviteResponse response, {
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
+  }) =>
+      _inner.respondToInvite(
+        messageId,
+        invite,
+        response,
+        note: note,
+        send: send,
+        proposal: proposal,
+      );
+
+  @override
+  bool canProposeNewTime(String accountId) =>
+      _inner.canProposeNewTime(accountId);
+
+  @override
+  Future<List<MailTip>> mailTips(String accountId, List<String> emails) =>
+      _inner.mailTips(accountId, emails);
+
+  @override
+  Future<List<TimeSpan>> busyTimes(
+    String accountId,
+    DateTime start,
+    DateTime end,
   ) =>
-      _inner.respondToInvite(messageId, invite, response);
+      _inner.busyTimes(accountId, start, end);
+
+  @override
+  Future<Map<String, List<TimeSpan>?>> schedules(
+    String accountId,
+    List<String> emails,
+    DateTime start,
+    DateTime end,
+  ) =>
+      _inner.schedules(accountId, emails, start, end);
 
   @override
   Future<CalendarMeeting?> meetingOnCalendar(

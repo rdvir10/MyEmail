@@ -313,6 +313,9 @@ class EnoughMailTransport implements ImapTransport {
     int uid,
     InviteResponse response, {
     String? iCalUid,
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
   }) async =>
       false; // IMAP has no calendar; the reply goes as mail.
 

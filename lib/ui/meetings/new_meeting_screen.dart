@@ -1,3 +1,4 @@
+import 'scheduling_assistant.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -927,6 +928,26 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                         ? null
                         : (on) => setState(() => _allDay = on),
                   ),
+                  // Who is free, where the account has a calendar to ask:
+                  // in this row, since the notes need the height.
+                  if (!_allDay &&
+                      account != null &&
+                      (account.provider == MailProvider.outlook ||
+                          account.authMethod == AuthMethod.oauth))
+                    Expanded(
+                      child: Align(
+                        alignment: AlignmentDirectional.centerEnd,
+                        child: WhoIsFree(
+                          key: ValueKey('who-is-free:$_accountId'),
+                          accountId: _accountId,
+                          ownEmail: account.emailAddress,
+                          attendees: _attendees,
+                          start: _start,
+                          end: _end,
+                          onPick: _sending ? (_) {} : _setStart,
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
