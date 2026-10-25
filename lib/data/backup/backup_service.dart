@@ -168,6 +168,12 @@ class BackupService {
       }
       added.add(account);
     }
+    // A shared mailbox names the account it is reached through by id, and
+    // that account may have another id here.
+    for (final (i, a) in added.indexed) {
+      final via = ids[a.sharedVia];
+      if (via != null) added[i] = a.copyWith(sharedVia: via);
+    }
     // Settings of accounts in the file come from the file; those of this
     // device's other accounts stay as they are.
     final covered = {

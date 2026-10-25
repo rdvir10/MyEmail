@@ -41,6 +41,7 @@ class Account {
     required this.authMethod,
     required this.colorValue,
     this.chosenSenderName,
+    this.sharedVia,
   });
 
   final String id;
@@ -77,6 +78,13 @@ class Account {
   /// must tell "not set" from "set to the same thing".
   bool get hasOwnSenderName => (chosenSenderName?.trim() ?? '').isNotEmpty;
 
+  /// For a shared mailbox, Outlook's Add shared mailbox: the id of the
+  /// Microsoft account whose sign-in reaches it. Nothing is stored for the
+  /// mailbox itself. Null for an account that signs in on its own.
+  final String? sharedVia;
+
+  bool get isShared => sharedVia != null;
+
   /// Only the two things a person may change after the fact.
   ///
   /// The address, provider and auth method are deliberately not here. They
@@ -86,12 +94,14 @@ class Account {
   ///
   /// [authMethod] can change, once: an account added with an app password
   /// that signs in with Google from then on is the same account, with the
-  /// same cache under it.
+  /// same cache under it. [sharedVia] follows the account it names to the
+  /// id that account has on another device, in a restore.
   Account copyWith({
     String? displayName,
     int? colorValue,
     String? senderName,
     AuthMethod? authMethod,
+    String? sharedVia,
   }) =>
       Account(
         id: id,
@@ -101,6 +111,7 @@ class Account {
         authMethod: authMethod ?? this.authMethod,
         colorValue: colorValue ?? this.colorValue,
         chosenSenderName: senderName ?? chosenSenderName,
+        sharedVia: sharedVia ?? this.sharedVia,
       );
 
   @override

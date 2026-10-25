@@ -185,7 +185,8 @@ class CachedImapEngine implements MailEngine {
         idMap: _graphIds,
         api: GraphMailApi(
           accessToken: ({bool force = false}) =>
-              oauthTokens.accessToken(account.id, force: force),
+              _tokenFor(account, force: force),
+          mailbox: account.isShared ? account.emailAddress : null,
         ),
       );
     }
@@ -295,6 +296,74 @@ class CachedImapEngine implements MailEngine {
         storedSecret: token.toStoredJson(),
       );
   }
+
+  @override
+  Future<Account> addSharedMailbox({
+    required String viaAccountId,
+    required String emailAddress,
+    required String displayName,
+  }) async {
+    final email = emailAddress.trim();
+    final existing = accountStore.read();
+    final via = existing.where((a) => a.id == viaAccountId).firstOrNull;
+    if (via == null ||
+        via.provider != MailProvider.outlook ||
+        via.authMethod != AuthMethod.oauth ||
+        via.isShared) {
+      throw const AuthenticationFailed(
+        'A shared mailbox is reached through a Microsoft account it is '
+        'shared with.',
+      );
+    }
+    if (existing.any((a) => a.emailAddress.toLowerCase() == email.toLowerCase())) {
+      throw AuthenticationFailed('$email is already set up.');
+    }
+    final name = displayName.trim();
+    final account = Account(
+      id: _newAccountId(existing.map((a) => a.id).toSet()),
+      displayName: name.isEmpty ? email.split('@').first : name,
+      emailAddress: email,
+      provider: MailProvider.outlook,
+      authMethod: AuthMethod.oauth,
+      colorValue: newAccountColours[existing.length % newAccountColours.length],
+      sharedVia: via.id,
+    );
+    // Nothing to store first: the token is the other account's, asked for
+    // with the shared-mailbox permissions by name.
+    final transport = _transportFactory(account, await _credentialsFor(account));
+    final List<RemoteFolder> folders;
+    try {
+      folders = await transport.listFolders();
+    } on GraphUnavailable {
+      await transport.close();
+      rethrow;
+    } on AuthenticationFailed {
+      await transport.close();
+      throw _notShared(email, via);
+    } on ConnectionFailed catch (e) {
+      await transport.close();
+      // Graph's own refusal: no such mailbox, or not this account's to open.
+      if (e.message.startsWith('Microsoft refused the request')) {
+        throw _notShared(email, via);
+      }
+      rethrow;
+    } catch (_) {
+      await transport.close();
+      rethrow;
+    }
+    await folderLists.write(account.id, folders);
+    await accountStore.write([...existing, account]);
+    // Kept: it asks for its token per request, as one built later would.
+    _transports[account.id] = transport;
+    return account;
+  }
+
+  static AuthenticationFailed _notShared(String email, Account via) =>
+      AuthenticationFailed(
+        '${via.emailAddress} could not open $email. Check the address, and '
+        'that whoever runs that mailbox has given ${via.emailAddress} Full '
+        'Access to it.',
+      );
 
   Future<Account> _add({
     required String displayName,
@@ -524,6 +593,14 @@ class CachedImapEngine implements MailEngine {
 
   @override
   Future<void> removeAccount(String accountId) async {
+    // A shared mailbox goes with the account it is reached through: nothing
+    // else here can open it.
+    for (final shared in [
+      for (final a in accountStore.read())
+        if (a.sharedVia == accountId) a,
+    ]) {
+      await removeAccount(shared.id);
+    }
     await _transports.remove(accountId)?.close();
     _syncs.remove(accountId);
     oauthTokens.forget(accountId);
@@ -900,17 +977,26 @@ class CachedImapEngine implements MailEngine {
     final (folderId, uid) = splitMessageId(messageId);
     final (accountId, path) = splitFolderId(folderId);
     final t = await _transport(accountId);
+    // A shared mailbox's calendar is not reached here (that would be
+    // Calendars.ReadWrite.Shared): its answer goes by mail, from it.
+    final shared = accountStore
+            .read()
+            .where((a) => a.id == accountId)
+            .firstOrNull
+            ?.isShared ??
+        false;
     // Not by UID for one occurrence of a series: the UID is the series',
     // and the event it finds is the whole series.
-    if (await t.respondToInvite(
-      path,
-      uid,
-      response,
-      iCalUid: invite.recurrenceId == null ? invite.uid : null,
-      note: note,
-      send: send,
-      proposal: proposal,
-    )) {
+    if (!shared &&
+        await t.respondToInvite(
+          path,
+          uid,
+          response,
+          iCalUid: invite.recurrenceId == null ? invite.uid : null,
+          note: note,
+          send: send,
+          proposal: proposal,
+        )) {
       return;
     }
     if (proposal != null) {
@@ -997,10 +1083,15 @@ class CachedImapEngine implements MailEngine {
     return _calendars.discardPreparedMeeting(account, prepared);
   }
 
+  /// Not a shared mailbox's invitation, which is answered by mail.
   @override
-  bool canProposeNewTime(String accountId) =>
-      accountStore.read().where((a) => a.id == accountId).firstOrNull?.provider ==
-      MailProvider.outlook;
+  bool canProposeNewTime(String accountId) {
+    final account =
+        accountStore.read().where((a) => a.id == accountId).firstOrNull;
+    return account != null &&
+        account.provider == MailProvider.outlook &&
+        !account.isShared;
+  }
 
   @override
   Future<List<MailTip>> mailTips(String accountId, List<String> emails) async {
@@ -1022,7 +1113,9 @@ class CachedImapEngine implements MailEngine {
   ServerSettings? serverSettings(String accountId) {
     final account =
         accountStore.read().where((a) => a.id == accountId).firstOrNull;
-    if (account == null || account.authMethod != AuthMethod.oauth) {
+    if (account == null ||
+        account.authMethod != AuthMethod.oauth ||
+        account.isShared) {
       return null;
     }
     // A token asked for the settings by name: a mailbox approved for mail
@@ -2406,7 +2499,8 @@ class CachedImapEngine implements MailEngine {
       final sender = graphSenderFactory?.call(account, credentials) ??
           GraphSender(
             accessToken: ({bool force = false}) =>
-                oauthTokens.accessToken(account.id, force: force),
+                _tokenFor(account, force: force),
+            mailbox: account.isShared ? account.emailAddress : null,
           );
       // The draft, not just the built message: a message too large to post
       // in one request has to be assembled on the server from its parts,
@@ -2514,8 +2608,7 @@ class CachedImapEngine implements MailEngine {
     switch (account.authMethod) {
       case AuthMethod.oauth:
         return OAuthCredentials(
-          ({bool force = false}) =>
-              oauthTokens.accessToken(account.id, force: force),
+          ({bool force = false}) => _tokenFor(account, force: force),
         );
       case AuthMethod.appPassword:
         final secret = await credentialStore.readSecret(account.id);
@@ -2527,6 +2620,20 @@ class CachedImapEngine implements MailEngine {
         }
         return PasswordCredentials(secret);
     }
+  }
+
+  /// The token [account]'s mail is reached with: its own, or a shared
+  /// mailbox's owner's, asked for with the shared-mailbox permissions by
+  /// name, so an owner that has not allowed them reads as needing consent.
+  Future<String> _tokenFor(Account account, {bool force = false}) {
+    final via = account.sharedVia;
+    return via == null
+        ? oauthTokens.accessToken(account.id, force: force)
+        : oauthTokens.accessToken(
+            via,
+            force: force,
+            scopes: MicrosoftOAuth.sharedMailboxScopes,
+          );
   }
 
   FolderSync _sync(String accountId, ImapTransport transport) =>

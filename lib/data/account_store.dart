@@ -62,6 +62,7 @@ Map<String, dynamic> accountToJson(Account a) => {
       'provider': a.provider.name,
       'authMethod': a.authMethod.name,
       'colorValue': a.colorValue,
+      if (a.sharedVia != null) 'sharedVia': a.sharedVia,
     };
 
 Account accountFromJson(Map<String, dynamic> j) => Account(
@@ -75,4 +76,5 @@ Account accountFromJson(Map<String, dynamic> j) => Account(
       // A colour Android redrew becomes the one it drew; see
       // [currentAccountColour].
       colorValue: currentAccountColour(j['colorValue'] as int),
+      sharedVia: j['sharedVia'] is String ? j['sharedVia'] as String : null,
     );

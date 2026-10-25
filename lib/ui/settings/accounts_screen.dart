@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/account.dart';
 import '../../state/providers.dart';
+import 'add_shared_mailbox_screen.dart';
 import 'edit_account_screen.dart';
 import '../accounts/add_account_screen.dart';
 
@@ -48,7 +49,12 @@ class AccountsScreen extends ConsumerWidget {
                     ),
                   ),
                   title: Text(account.displayName),
-                  subtitle: Text(account.emailAddress),
+                  subtitle: Text(switch (_via(list, account)) {
+                    null => account.emailAddress,
+                    final via => '${account.emailAddress}\n'
+                        'Shared, through ${via.emailAddress}',
+                  }),
+                  isThreeLine: account.isShared,
                   // The row itself opens the editor, and Remove stays an
                   // explicit button: a list where tapping a row might delete
                   // the account is one nobody taps with confidence.
@@ -77,6 +83,21 @@ class AccountsScreen extends ConsumerWidget {
                     ],
                   ),
                 ),
+              if (sharedMailboxOwners(list).isNotEmpty)
+                ListTile(
+                  key: const ValueKey('add-shared-mailbox'),
+                  leading: const Icon(Icons.group_outlined),
+                  title: const Text('Add a shared mailbox'),
+                  subtitle: const Text(
+                    'info@ or sales@, shared with one of these Microsoft '
+                    'accounts',
+                  ),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const AddSharedMailboxScreen(),
+                    ),
+                  ),
+                ),
               const SizedBox(height: 88),
             ],
           ),
@@ -84,6 +105,12 @@ class AccountsScreen extends ConsumerWidget {
       },
     );
   }
+
+  /// The account [account] is reached through, for a shared mailbox.
+  static Account? _via(List<Account> accounts, Account account) =>
+      account.sharedVia == null
+          ? null
+          : accounts.where((a) => a.id == account.sharedVia).firstOrNull;
 
   static String _initial(Account account) {
     final source = account.displayName.trim().isEmpty
@@ -99,14 +126,25 @@ class AccountsScreen extends ConsumerWidget {
     WidgetRef ref,
     Account account,
   ) async {
+    final shared = [
+      for (final a in ref.read(accountsProvider).value ?? const <Account>[])
+        if (a.sharedVia == account.id) a.emailAddress,
+    ];
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Remove ${account.emailAddress}?'),
-        content: const Text(
-          'Its app password and everything cached on this device go too. '
+        content: Text(
+          '${switch (account) {
+            Account(isShared: true) => 'Everything',
+            Account(authMethod: AuthMethod.appPassword) =>
+              'Its app password and everything',
+            _ => 'Its sign-in and everything',
+          }} cached on this device go too. '
           'Nothing is deleted from the mail server, and you can add the '
-          'account again later.',
+          'account again later.'
+          '${shared.isEmpty ? '' : ' The shared mailboxes reached through '
+              'it go with it: ${shared.join(', ')}.'}',
         ),
         actions: [
           TextButton(

@@ -180,7 +180,7 @@ class SampleMailEngine implements MailEngine {
   @override
   Future<void> removeAccount(String accountId) async {
     await _latency();
-    _accounts.removeWhere((a) => a.id == accountId);
+    _accounts.removeWhere((a) => a.id == accountId || a.sharedVia == accountId);
     _folders.remove(accountId);
     _messages.removeWhere((key, _) => key.startsWith('$accountId:'));
   }
@@ -841,6 +841,31 @@ class SampleMailEngine implements MailEngine {
     return [
       for (final e in emails) ?tips[e.toLowerCase()],
     ];
+  }
+
+  /// What [addSharedMailbox] throws instead of adding, for a test.
+  Exception? refuseShared;
+
+  @override
+  Future<Account> addSharedMailbox({
+    required String viaAccountId,
+    required String emailAddress,
+    required String displayName,
+  }) async {
+    await _latency();
+    final refusal = refuseShared;
+    if (refusal != null) throw refusal;
+    final account = Account(
+      id: 'acct-shared-${_accounts.length}',
+      displayName: displayName,
+      emailAddress: emailAddress.trim(),
+      provider: MailProvider.outlook,
+      authMethod: AuthMethod.oauth,
+      colorValue: 0xFF8764B8,
+      sharedVia: viaAccountId,
+    );
+    _accounts.add(account);
+    return account;
   }
 
   /// Each account's server settings, kept in memory, as Outlook's or

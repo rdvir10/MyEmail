@@ -122,7 +122,7 @@ class AccountPeople {
   /// Whether [account] could ever be searched: one signed in with Google or
   /// Microsoft. An app password covers IMAP and SMTP and nothing else.
   static bool canSearch(Account account) => switch (account.provider) {
-    MailProvider.outlook => true,
+    MailProvider.outlook => !account.isShared,
     MailProvider.gmail => account.authMethod == AuthMethod.oauth,
   };
 

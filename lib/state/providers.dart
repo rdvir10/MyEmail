@@ -153,6 +153,22 @@ class Accounts extends AsyncNotifier<List<Account>> {
     return account;
   }
 
+  /// Add a shared mailbox, reached through [viaAccountId]'s sign-in. See
+  /// `MailEngine.addSharedMailbox`.
+  Future<Account> addSharedMailbox({
+    required String viaAccountId,
+    required String emailAddress,
+    required String displayName,
+  }) async {
+    final account = await ref.read(mailEngineProvider).addSharedMailbox(
+          viaAccountId: viaAccountId,
+          emailAddress: emailAddress,
+          displayName: displayName,
+        );
+    state = AsyncData([...state.value ?? const [], account]);
+    return account;
+  }
+
   /// Rename or recolour an account.
   ///
   /// Named `edit` rather than `update`: AsyncNotifier already has an `update`
@@ -211,11 +227,12 @@ class Accounts extends AsyncNotifier<List<Account>> {
     // debug build by throwing after the new sign-in was already stored).
   }
 
+  /// Remove an account, and the shared mailboxes reached through it.
   Future<void> remove(String accountId) async {
     await ref.read(mailEngineProvider).removeAccount(accountId);
     state = AsyncData([
       for (final a in state.value ?? const <Account>[])
-        if (a.id != accountId) a,
+        if (a.id != accountId && a.sharedVia != accountId) a,
     ]);
   }
 

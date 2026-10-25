@@ -29,9 +29,24 @@ class GraphMailApi {
     required this.accessToken,
     http.Client? httpClient,
     this.sleep,
+    this.mailbox,
   }) : _given = httpClient;
 
   final Future<String> Function({bool force}) accessToken;
+
+  /// A shared mailbox's address, for one reached through another account's
+  /// sign-in; null for the signed-in account's own (`/me`).
+  final String? mailbox;
+
+  /// Whose mailbox the paths name: `me`, or `users/<address>`.
+  String get _me =>
+      mailbox == null ? 'me' : 'users/${Uri.encodeComponent(mailbox!)}';
+
+  /// A [GraphRequest]'s path, which names `/me`, for this mailbox.
+  String _at(String path) =>
+      mailbox != null && path.startsWith('/me/')
+          ? '/$_me/${path.substring(4)}'
+          : path;
 
   /// A client handed in, which belongs to whoever handed it in.
   final http.Client? _given;
@@ -166,8 +181,8 @@ class GraphMailApi {
     Future<void> walk(String? parentId, int depth) async {
       if (depth > maxDepth) return;
       final path = parentId == null
-          ? '/me/mailFolders'
-          : '/me/mailFolders/${_id(parentId)}/childFolders';
+          ? '/$_me/mailFolders'
+          : '/$_me/mailFolders/${_id(parentId)}/childFolders';
       var next = Uri.parse('$base$path').replace(queryParameters: {
         '\$top': '100',
         '\$select': folderFields,
@@ -200,7 +215,7 @@ class GraphMailApi {
 
   Future<GraphFolder> folder(String folderId) async {
     final json = await _get(
-      Uri.parse('$base/me/mailFolders/${_id(folderId)}').replace(
+      Uri.parse('$base/$_me/mailFolders/${_id(folderId)}').replace(
         queryParameters: {r'$select': folderFields},
       ),
     );
@@ -233,7 +248,7 @@ class GraphMailApi {
             {
               'id': name,
               'method': 'GET',
-              'url': '/me/mailFolders/$name?\$select=id',
+              'url': '/$_me/mailFolders/$name?\$select=id',
             },
         ],
       });
@@ -293,8 +308,8 @@ class GraphMailApi {
     String? parentId,
   }) async {
     final path = parentId == null
-        ? '/me/mailFolders'
-        : '/me/mailFolders/${_id(parentId)}/childFolders';
+        ? '/$_me/mailFolders'
+        : '/$_me/mailFolders/${_id(parentId)}/childFolders';
     final json = await _post(
       Uri.parse('$base$path'),
       {'displayName': displayName},
@@ -308,18 +323,18 @@ class GraphMailApi {
   }
 
   Future<void> renameFolder(String folderId, String displayName) => _patch(
-        Uri.parse('$base/me/mailFolders/${_id(folderId)}'),
+        Uri.parse('$base/$_me/mailFolders/${_id(folderId)}'),
         {'displayName': displayName},
       );
 
   /// Reparent, which Graph does as a move rather than as a rename.
   Future<void> moveFolder(String folderId, String newParentId) => _post(
-        Uri.parse('$base/me/mailFolders/${_id(folderId)}/move'),
+        Uri.parse('$base/$_me/mailFolders/${_id(folderId)}/move'),
         {'destinationId': newParentId},
       );
 
   Future<void> deleteFolder(String folderId) =>
-      _delete(Uri.parse('$base/me/mailFolders/${_id(folderId)}'));
+      _delete(Uri.parse('$base/$_me/mailFolders/${_id(folderId)}'));
 
   // --- messages --------------------------------------------------------------
 
@@ -341,7 +356,7 @@ class GraphMailApi {
             '${receivedAfter.toUtc().toIso8601String()}',
     };
     final json = await _get(
-      Uri.parse('$base/me/mailFolders/${_id(folderId)}/messages')
+      Uri.parse('$base/$_me/mailFolders/${_id(folderId)}/messages')
           .replace(queryParameters: query),
     );
     return _messagesFrom(json);
@@ -358,7 +373,7 @@ class GraphMailApi {
     int top = 100,
   }) async {
     final json = await _get(
-      Uri.parse('$base/me/mailFolders/${_id(folderId)}/messages').replace(
+      Uri.parse('$base/$_me/mailFolders/${_id(folderId)}/messages').replace(
         queryParameters: {
           '\$filter': 'isRead eq false',
           '\$select': 'id,isRead',
@@ -376,7 +391,7 @@ class GraphMailApi {
   Future<GraphMessage?> message(String messageId) async {
     try {
       final json = await _get(
-        Uri.parse('$base/me/messages/${_id(messageId)}').replace(
+        Uri.parse('$base/$_me/messages/${_id(messageId)}').replace(
           queryParameters: {
             '\$select': headerFields,
             '\$expand': lastVerbExpand,
@@ -395,7 +410,7 @@ class GraphMailApi {
   Future<String?> conversationIndex(String messageId) async {
     try {
       final json = await _get(
-        Uri.parse('$base/me/messages/${_id(messageId)}').replace(
+        Uri.parse('$base/$_me/messages/${_id(messageId)}').replace(
           queryParameters: {'\$select': 'conversationIndex'},
         ),
       );
@@ -433,7 +448,7 @@ class GraphMailApi {
   /// invitation was then never fetched, and the message was cached as one
   /// without it.
   Future<GraphBody?> body(String messageId) async {
-    final uri = Uri.parse('$base/me/messages/${_id(messageId)}');
+    final uri = Uri.parse('$base/$_me/messages/${_id(messageId)}');
     try {
       final cast = await _exchange(http.Request(
         'GET',
@@ -474,7 +489,7 @@ class GraphMailApi {
   /// every attachment, so listing what is on a message downloads all of it.
   Future<List<GraphAttachment>> attachments(String messageId) async {
     final json = await _get(
-      Uri.parse('$base/me/messages/${_id(messageId)}/attachments').replace(
+      Uri.parse('$base/$_me/messages/${_id(messageId)}/attachments').replace(
         queryParameters: {
           '\$select': 'id,name,contentType,size,isInline',
         },
@@ -508,7 +523,7 @@ class GraphMailApi {
     String messageId,
   ) async {
     final json = await _get(
-      Uri.parse('$base/me/messages/${_id(messageId)}').replace(
+      Uri.parse('$base/$_me/messages/${_id(messageId)}').replace(
         queryParameters: {'\$select': 'internetMessageHeaders'},
       ),
     );
@@ -542,7 +557,7 @@ class GraphMailApi {
   }) async {
     final search = query.trim().replaceAll('"', '');
     final json = await _get(
-      Uri.parse('$base/me/mailFolders/$recoverableFolder/messages').replace(
+      Uri.parse('$base/$_me/mailFolders/$recoverableFolder/messages').replace(
         queryParameters: {
           '\$select':
               'id,subject,from,receivedDateTime,hasAttachments,bodyPreview',
@@ -645,7 +660,7 @@ class GraphMailApi {
     String attachmentId, {
     int sizeBytes = 0,
   }) async {
-    final at = '$base/me/messages/${_id(messageId)}'
+    final at = '$base/$_me/messages/${_id(messageId)}'
         '/attachments/${Uri.encodeComponent(attachmentId)}';
     try {
       final json = await _get(
@@ -686,8 +701,8 @@ class GraphMailApi {
   Future<String?> linkedEventId(String messageId) async {
     final id = _id(messageId);
     for (final path in [
-      '$base/me/messages/$id/microsoft.graph.eventMessage/event',
-      '$base/me/messages/$id/event',
+      '$base/$_me/messages/$id/microsoft.graph.eventMessage/event',
+      '$base/$_me/messages/$id/event',
     ]) {
       try {
         final json = await _get(
@@ -712,7 +727,7 @@ class GraphMailApi {
     if (linked != null) return linked;
     if (iCalUid == null || iCalUid.isEmpty) return null;
     try {
-      final json = await _get(Uri.parse('$base/me/events').replace(
+      final json = await _get(Uri.parse('$base/$_me/events').replace(
         queryParameters: {
           '\$filter': "iCalUId eq '${iCalUid.replaceAll("'", "''")}'",
           '\$select': 'id',
@@ -759,7 +774,7 @@ class GraphMailApi {
     String utc(DateTime t) =>
         t.toUtc().toIso8601String().replaceFirst(RegExp(r'Z$'), '');
     await _postNoContent(
-      Uri.parse('$base/me/events/${_id(eventId)}/$action'),
+      Uri.parse('$base/$_me/events/${_id(eventId)}/$action'),
       {
         // A new time goes with the answer only, so it is always sent.
         'sendResponse': send || proposal != null,
@@ -778,7 +793,7 @@ class GraphMailApi {
   /// them: see [MailTip]. With the mail permission the app already has.
   Future<List<MailTip>> mailTips(List<String> emails) async {
     if (emails.isEmpty) return const [];
-    final json = await _post(Uri.parse('$base/me/getMailTips'), {
+    final json = await _post(Uri.parse('$base/$_me/getMailTips'), {
       'EmailAddresses': emails,
       'MailTipsOptions': 'automaticReplies, mailboxFullStatus, '
           'externalMemberCount, totalMemberCount, deliveryRestriction, '
@@ -837,7 +852,7 @@ class GraphMailApi {
 
   /// The same, as the bytes themselves.
   Future<Uint8List> mimeBytes(String messageId) =>
-      _bytes(Uri.parse('$base/me/messages/${_id(messageId)}/\$value'));
+      _bytes(Uri.parse('$base/$_me/messages/${_id(messageId)}/\$value'));
 
   /// The bytes of one attachment.
   ///
@@ -847,7 +862,7 @@ class GraphMailApi {
   Future<Uint8List> attachmentBytes(String messageId, String attachmentId) =>
       _bytes(
         Uri.parse(
-          '$base/me/messages/${_id(messageId)}'
+          '$base/$_me/messages/${_id(messageId)}'
           '/attachments/${Uri.encodeComponent(attachmentId)}/\$value',
         ),
       );
@@ -863,7 +878,7 @@ class GraphMailApi {
     // $search takes a quoted string and cannot be combined with $orderby;
     // Graph returns its own relevance order, which is what a search wants.
     final json = await _get(
-      Uri.parse('$base/me/mailFolders/${_id(folderId)}/messages').replace(
+      Uri.parse('$base/$_me/mailFolders/${_id(folderId)}/messages').replace(
         queryParameters: {
           '\$search': '"${searchString(query, field)}"',
           '\$select': headerFields,
@@ -914,7 +929,7 @@ class GraphMailApi {
             '\$top': '$top',
           };
     final json = await _get(
-      Uri.parse('$base/me/mailFolders/${_id(folderId)}/messages')
+      Uri.parse('$base/$_me/mailFolders/${_id(folderId)}/messages')
           .replace(queryParameters: query),
     );
     return [..._messagesFrom(json)]
@@ -926,7 +941,7 @@ class GraphMailApi {
   /// day its flag is due.
   Future<List<GraphMessage>> flaggedEverywhere({int top = 100}) async {
     final json = await _get(
-      Uri.parse('$base/me/messages').replace(queryParameters: {
+      Uri.parse('$base/$_me/messages').replace(queryParameters: {
         '\$filter': "receivedDateTime ge 1900-01-01T00:00:00Z and "
             "flag/flagStatus eq 'flagged'",
         '\$orderby': 'receivedDateTime desc',
@@ -1057,7 +1072,7 @@ class GraphMailApi {
             {
               'id': '$i',
               'method': requests[i].method,
-              'url': requests[i].path,
+              'url': _at(requests[i].path),
               if (requests[i].body case final body?) ...{
                 'headers': {'Content-Type': 'application/json'},
                 'body': body,
@@ -1119,7 +1134,7 @@ class GraphMailApi {
     final json = await _send(
       http.Request(
         'POST',
-        Uri.parse('$base/me/mailFolders/${_id(folderId)}/messages'),
+        Uri.parse('$base/$_me/mailFolders/${_id(folderId)}/messages'),
       )
         ..headers['Content-Type'] = 'text/plain'
         ..body = base64Encode(utf8.encode(mimeText)),
@@ -1156,7 +1171,7 @@ class GraphMailApi {
     String folderId,
     Map<String, Object?> message,
   ) async {
-    final uri = Uri.parse('$base/me/mailFolders/${_id(folderId)}/messages');
+    final uri = Uri.parse('$base/$_me/mailFolders/${_id(folderId)}/messages');
     http.Request post(Map<String, Object?> body) => http.Request('POST', uri)
       ..headers['Content-Type'] = 'application/json'
       ..body = jsonEncode(body);
@@ -1201,7 +1216,7 @@ class GraphMailApi {
     required Uint8List bytes,
     String? contentId,
   }) async {
-    final attachments = '$base/me/messages/${_id(messageId)}/attachments';
+    final attachments = '$base/$_me/messages/${_id(messageId)}/attachments';
     final inline = {
       if (contentId != null) ...{'isInline': true, 'contentId': contentId},
     };
@@ -1277,7 +1292,7 @@ class GraphMailApi {
   /// [request] sent alone, as any other request is.
   Future<Map<String, Object?>> _one(GraphRequest request) {
     final sent =
-        http.Request(request.method, Uri.parse('$base${request.path}'));
+        http.Request(request.method, Uri.parse('$base${_at(request.path)}'));
     final body = request.body;
     if (body != null) {
       sent

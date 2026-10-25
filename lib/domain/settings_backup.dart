@@ -157,6 +157,8 @@ Map<String, Object?> accountToBackupJson(Account a) => {
       // The name mail goes out under. Left out, a restored account sent as
       // its folder-list label ("Personal") with nothing to say so.
       if (a.hasOwnSenderName) 'senderName': a.senderName,
+      // A shared mailbox, and the account it is reached through.
+      if (a.sharedVia != null) 'sharedVia': a.sharedVia,
     };
 
 /// Null for anything unreadable rather than throwing. See [SettingsBackup].
@@ -179,6 +181,7 @@ Account? accountFromBackupJson(Map<String, Object?> j) {
         ? currentAccountColour(j['colorValue'] as int)
         : 0xFF0F6CBD,
     chosenSenderName: j['senderName'] is String ? j['senderName'] as String : null,
+    sharedVia: j['sharedVia'] is String ? j['sharedVia'] as String : null,
   );
 }
 

@@ -258,6 +258,18 @@ class _SingleAccountReversedEngine implements MailEngine {
       _inner.serverSettings(accountId);
 
   @override
+  Future<Account> addSharedMailbox({
+    required String viaAccountId,
+    required String emailAddress,
+    required String displayName,
+  }) =>
+      _inner.addSharedMailbox(
+        viaAccountId: viaAccountId,
+        emailAddress: emailAddress,
+        displayName: displayName,
+      );
+
+  @override
   Future<List<TimeSpan>> busyTimes(
     String accountId,
     DateTime start,

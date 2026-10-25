@@ -40,9 +40,14 @@ Future<void> openNewMeeting(
   String notes = '',
   List<MailAddress> attendees = const [],
 }) async {
-  final resolved = accountId ??
+  final accounts = ref.read(accountsProvider).value ?? const <Account>[];
+  final chosen = accountId ??
       ref.read(accountOnScreenProvider) ??
-      ref.read(accountsProvider).value?.firstOrNull?.id;
+      accounts.firstOrNull?.id;
+  // A shared mailbox has no calendar here: its meetings are made on the
+  // account it is shared with.
+  final resolved =
+      accounts.where((a) => a.id == chosen).firstOrNull?.sharedVia ?? chosen;
   if (resolved == null) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
@@ -841,13 +846,14 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                         style: theme.textTheme.bodyMedium,
                         items: [
                           for (final a in accounts)
-                            DropdownMenuItem(
-                              value: a.id,
-                              child: Text(
-                                a.emailAddress,
-                                overflow: TextOverflow.ellipsis,
+                            if (!a.isShared)
+                              DropdownMenuItem(
+                                value: a.id,
+                                child: Text(
+                                  a.emailAddress,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
                               ),
-                            ),
                         ],
                         onChanged: _sending
                             ? null

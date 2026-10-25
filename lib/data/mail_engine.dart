@@ -277,8 +277,21 @@ abstract class MailEngine {
 
   /// [accountId]'s settings on its server: its automatic replies, and the
   /// rules the server runs on its mail. Null for an account signed in with
-  /// an app password, which reaches mail and nothing else.
+  /// an app password, which reaches mail and nothing else, and for a shared
+  /// mailbox, whose settings are its owner's to change.
   ServerSettings? serverSettings(String accountId);
+
+  /// Add the shared mailbox at [emailAddress] as an account of its own,
+  /// reached through [viaAccountId]'s sign-in: a Microsoft account that has
+  /// been given access to it. Its folders are read first, and nothing is
+  /// kept if they cannot be. Throws `SignInNeedsConsent` while that
+  /// account has not allowed the app into mailboxes shared with it, and
+  /// [AuthenticationFailed] when the mailbox does not let it in.
+  Future<Account> addSharedMailbox({
+    required String viaAccountId,
+    required String emailAddress,
+    required String displayName,
+  });
 
   /// When [accountId]'s own calendar is busy between [start] and [end].
   /// Throws as [meetingOnCalendar] does.

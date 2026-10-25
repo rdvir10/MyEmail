@@ -117,6 +117,14 @@ class MicrosoftOAuth implements OAuthRefresher {
     'https://graph.microsoft.com/MailboxSettings.ReadWrite',
   ];
 
+  /// Mailboxes other people have shared with the account: info@, sales@,
+  /// read and sent from as the account's own are. On its own for the same
+  /// reason as [calendarScopes].
+  static const sharedMailboxScopes = [
+    'https://graph.microsoft.com/Mail.ReadWrite.Shared',
+    'https://graph.microsoft.com/Mail.Send.Shared',
+  ];
+
   static Future<void> _realSleep(Duration d) => Future<void>.delayed(d);
 
   /// Where the redirect lands after a successful sign-in.

@@ -181,6 +181,16 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen>
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // A shared mailbox's owner, by address. Only then: the list is not
+    // otherwise needed here.
+    final via = _account.isShared
+        ? ref
+            .watch(accountsProvider)
+            .value
+            ?.where((a) => a.id == _account.sharedVia)
+            .firstOrNull
+            ?.emailAddress
+        : null;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Edit account'), centerTitle: false),
@@ -259,11 +269,14 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen>
           ),
           _FixedField(
             label: 'Signs in with',
-            value: switch ((_account.provider, _account.authMethod)) {
-              (_, AuthMethod.appPassword) => 'An app password',
-              (MailProvider.gmail, AuthMethod.oauth) => 'Google sign-in',
-              (MailProvider.outlook, AuthMethod.oauth) => 'Microsoft sign-in',
-            },
+            value: _account.isShared
+                ? 'The sign-in of ${via ?? 'the account it is shared with'}'
+                : switch ((_account.provider, _account.authMethod)) {
+                    (_, AuthMethod.appPassword) => 'An app password',
+                    (MailProvider.gmail, AuthMethod.oauth) => 'Google sign-in',
+                    (MailProvider.outlook, AuthMethod.oauth) =>
+                      'Microsoft sign-in',
+                  },
             theme: theme,
           ),
           const SizedBox(height: 8),
@@ -282,103 +295,115 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen>
           const SizedBox(height: 28),
           const Divider(height: 1),
           const SizedBox(height: 16),
-          Text('Sign in again', style: theme.textTheme.labelLarge),
-          const SizedBox(height: 4),
-          Text(
-            switch (_account.authMethod) {
-              AuthMethod.appPassword =>
-                'If the app password stopped working — revoked, or replaced — '
-                    'put the new one here. The account keeps its cached mail, '
-                    'which removing and adding it again would not.',
-              AuthMethod.oauth =>
-                'If this account has been signed out, sign in again here. It '
-                    'keeps its cached mail, which removing and adding it again '
-                    'would not.',
-            },
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-          ),
-          const SizedBox(height: 12),
-          if (_account.authMethod == AuthMethod.appPassword) ...[
-            TextField(
-              controller: _password,
-              enabled: !_busy,
-              obscureText: !_showPassword,
-              autocorrect: false,
-              enableSuggestions: false,
-              decoration: InputDecoration(
-                labelText: 'New app password',
-                suffixIcon: IconButton(
-                  tooltip: _showPassword ? 'Hide' : 'Show',
-                  icon: Icon(
-                    _showPassword
-                        ? Icons.visibility_off_outlined
-                        : Icons.visibility_outlined,
-                  ),
-                  onPressed: () =>
-                      setState(() => _showPassword = !_showPassword),
-                ),
-              ),
-              onChanged: (_) => setState(() {}),
+          if (_account.isShared) ...[
+            Text('Sign-in', style: theme.textTheme.labelLarge),
+            const SizedBox(height: 4),
+            Text(
+              'A shared mailbox has no sign-in of its own: it is reached '
+              'through ${via ?? 'the account it is shared with'}. If it stops '
+              'opening, sign that account in again.',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ] else ...[
+            Text('Sign in again', style: theme.textTheme.labelLarge),
+            const SizedBox(height: 4),
+            Text(
+              switch (_account.authMethod) {
+                AuthMethod.appPassword =>
+                  'If the app password stopped working — revoked, or replaced — '
+                      'put the new one here. The account keeps its cached mail, '
+                      'which removing and adding it again would not.',
+                AuthMethod.oauth =>
+                  'If this account has been signed out, sign in again here. It '
+                      'keeps its cached mail, which removing and adding it again '
+                      'would not.',
+              },
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),
             const SizedBox(height: 12),
-            OutlinedButton(
-              onPressed: (_busy || _password.text.trim().isEmpty)
-                  ? null
-                  // Google shows app passwords with spaces; they are not part
-                  // of it.
-                  : () => _signInAgain(
-                        appPassword: _password.text.replaceAll(' ', ''),
-                      ),
-              child: const Text('Check and save'),
-            ),
-            if (_account.provider == MailProvider.gmail &&
-                ref.watch(googleClientIdProvider).isNotEmpty) ...[
-              const SizedBox(height: 20),
-              Text('Or switch to Google sign-in', style: theme.textTheme.labelLarge),
-              const SizedBox(height: 4),
-              Text(
-                'No app password to make or keep, and meetings you create '
-                'go on your Google calendar. The account and its cached mail '
-                'stay as they are.',
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            if (_account.authMethod == AuthMethod.appPassword) ...[
+              TextField(
+                controller: _password,
+                enabled: !_busy,
+                obscureText: !_showPassword,
+                autocorrect: false,
+                enableSuggestions: false,
+                decoration: InputDecoration(
+                  labelText: 'New app password',
+                  suffixIcon: IconButton(
+                    tooltip: _showPassword ? 'Hide' : 'Show',
+                    icon: Icon(
+                      _showPassword
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                    ),
+                    onPressed: () =>
+                        setState(() => _showPassword = !_showPassword),
+                  ),
+                ),
+                onChanged: (_) => setState(() {}),
               ),
               const SizedBox(height: 12),
+              OutlinedButton(
+                onPressed: (_busy || _password.text.trim().isEmpty)
+                    ? null
+                    // Google shows app passwords with spaces; they are not part
+                    // of it.
+                    : () => _signInAgain(
+                          appPassword: _password.text.replaceAll(' ', ''),
+                        ),
+                child: const Text('Check and save'),
+              ),
+              if (_account.provider == MailProvider.gmail &&
+                  ref.watch(googleClientIdProvider).isNotEmpty) ...[
+                const SizedBox(height: 20),
+                Text('Or switch to Google sign-in', style: theme.textTheme.labelLarge),
+                const SizedBox(height: 4),
+                Text(
+                  'No app password to make or keep, and meetings you create '
+                  'go on your Google calendar. The account and its cached mail '
+                  'stay as they are.',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: _busy ? null : _signInWithGoogle,
+                  icon: const Icon(Icons.login),
+                  label: const Text('Sign in with Google'),
+                ),
+              ],
+            ] else if (_account.provider == MailProvider.gmail)
               OutlinedButton.icon(
                 onPressed: _busy ? null : _signInWithGoogle,
                 icon: const Icon(Icons.login),
                 label: const Text('Sign in with Google'),
+              )
+            else
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _signInWithMicrosoft,
+                icon: const Icon(Icons.login),
+                label: const Text('Sign in with Microsoft'),
+              ),
+            if (_signInResult != null) ...[
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Icon(Icons.check_circle_outline,
+                      size: 18, color: theme.colorScheme.primary),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _signInResult!,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: theme.colorScheme.primary),
+                    ),
+                  ),
+                ],
               ),
             ],
-          ] else if (_account.provider == MailProvider.gmail)
-            OutlinedButton.icon(
-              onPressed: _busy ? null : _signInWithGoogle,
-              icon: const Icon(Icons.login),
-              label: const Text('Sign in with Google'),
-            )
-          else
-            OutlinedButton.icon(
-              onPressed: _busy ? null : _signInWithMicrosoft,
-              icon: const Icon(Icons.login),
-              label: const Text('Sign in with Microsoft'),
-            ),
-          if (_signInResult != null) ...[
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Icon(Icons.check_circle_outline,
-                    size: 18, color: theme.colorScheme.primary),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    _signInResult!,
-                    style: theme.textTheme.bodySmall
-                        ?.copyWith(color: theme.colorScheme.primary),
-                  ),
-                ),
-              ],
-            ),
           ],
           const SizedBox(height: 28),
           FilledButton(

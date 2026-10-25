@@ -34,7 +34,16 @@ class GraphSender {
     required this.accessToken,
     http.Client? httpClient,
     this.maxMimeBytes = defaultMaxMimeBytes,
+    this.mailbox,
   }) : _http = httpClient;
+
+  /// A shared mailbox's address, to send from it: the message goes out
+  /// from that mailbox and is kept in its Sent Items. Null for the
+  /// signed-in account's own.
+  final String? mailbox;
+
+  String get _me =>
+      mailbox == null ? 'me' : 'users/${Uri.encodeComponent(mailbox!)}';
 
   /// Fetched per send, and for the Graph resource specifically: an access
   /// token is issued for one resource, and an IMAP one is refused here.
@@ -44,8 +53,8 @@ class GraphSender {
 
   static const base = 'https://graph.microsoft.com/v1.0';
 
-  static final sendMailUri = Uri.parse('$base/me/sendMail');
-  static final messagesUri = Uri.parse('$base/me/messages');
+  Uri get sendMailUri => Uri.parse('$base/$_me/sendMail');
+  Uri get messagesUri => Uri.parse('$base/$_me/messages');
 
   /// Graph accepts a request body up to 4 MB, and base64 adds about a third,
   /// so anything posted whole has to stay under roughly 3 MB. Past that the
@@ -313,7 +322,7 @@ class GraphSender {
     final response = await _authorised(
       uploading: body.length,
       (token) => client.post(
-        Uri.parse('$base/me/messages/${Uri.encodeComponent(messageId)}'
+        Uri.parse('$base/$_me/messages/${Uri.encodeComponent(messageId)}'
             '/attachments'),
         headers: {
           'Authorization': 'Bearer $token',
@@ -337,7 +346,7 @@ class GraphSender {
     DraftAttachment attachment,
   ) async {
     final opened = await _authorised((token) => client.post(
-          Uri.parse('$base/me/messages/${Uri.encodeComponent(messageId)}'
+          Uri.parse('$base/$_me/messages/${Uri.encodeComponent(messageId)}'
               '/attachments/createUploadSession'),
           headers: {
             'Authorization': 'Bearer $token',
@@ -399,7 +408,7 @@ class GraphSender {
   ) async {
     final response = await _authorised(sending: true, (token) => client.post(
           Uri.parse(
-            '$base/me/messages/${Uri.encodeComponent(messageId)}/send',
+            '$base/$_me/messages/${Uri.encodeComponent(messageId)}/send',
           ),
           headers: {'Authorization': 'Bearer $token'},
         ));
