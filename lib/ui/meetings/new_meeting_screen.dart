@@ -16,7 +16,8 @@ import '../../domain/mail_message.dart';
 import '../../domain/meeting.dart';
 import '../../domain/text_direction.dart';
 import '../../state/calendar_providers.dart';
-import '../../state/calendar_view_providers.dart' show calendarRefreshProvider;
+import '../../state/calendar_view_providers.dart'
+    show calendarRefreshProvider, keptAccountCalendarsProvider;
 import '../../state/compose_providers.dart'
     show addressesLookValid, formatAddresses, parseAddresses;
 import '../../state/meeting_providers.dart';
@@ -214,6 +215,10 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// account before anything else about an invitation, and the calendar
   /// it lands on follows from it.
   late String _accountId = widget.editing?.event.accountId ?? widget.accountId;
+
+  /// Which of the account's calendars it goes on: its main one unless
+  /// another is chosen. A meeting being changed stays where it is.
+  String _calendarId = CalendarEvent.mainCalendar;
 
   EventEdit? get _editing => widget.editing;
 
@@ -437,6 +442,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     _dropPrepared();
     final kind = _onlineKind;
     if (!_online || kind == null || !_onlineKinds.contains(kind)) return;
+    // Made ahead on the main calendar alone; on another, Send makes the
+    // link as it makes the meeting.
+    if (_calendarId != CalendarEvent.mainCalendar) return;
     final ask = ++_prepareAsk;
     final done = Completer<void>();
     setState(() {
@@ -621,7 +629,10 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
           notes: _notes.text.trim(),
           timeZone: elsewhere ?? zone,
           online: _online ? _onlineKind : null,
-          prepared: _online ? _prepared : null,
+          prepared: _online && _calendarId == CalendarEvent.mainCalendar
+              ? _prepared
+              : null,
+          calendarId: _calendarId,
           transactionId: _transactionId,
           changedSinceFailedSend: changed,
           recurrence: _editing == null ? _options.repeat : null,
@@ -1141,6 +1152,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                                   // the new one's is made once it answers.
                                   _dropPrepared();
                                   _accountId = id;
+                                  _calendarId = CalendarEvent.mainCalendar;
                                   // Unknown again until this account has
                                   // answered for itself; the kind chosen
                                   // waits to see whether it can too.
@@ -1169,6 +1181,22 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                         ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                   ),
                 ),
+              ),
+            if (_editing == null)
+              _CalendarChoice(
+                accountId: _accountId,
+                chosen: _calendarId,
+                muted: muted,
+                onChanged: _sending
+                    ? null
+                    : (id) {
+                        if (id == _calendarId) return;
+                        setState(() {
+                          _dropPrepared();
+                          _calendarId = id;
+                        });
+                        if (_online) unawaited(_prepare());
+                      },
               ),
             HeaderField(
               key: const ValueKey('meeting-title'),
@@ -1731,4 +1759,80 @@ class _QuickAddDialog extends StatelessWidget {
           ),
         ],
       );
+}
+
+/// Which of the account's calendars a new meeting goes on, Outlook's
+/// Calendar box: shown only where it has more than one that takes
+/// meetings, the main one first.
+class _CalendarChoice extends ConsumerWidget {
+  const _CalendarChoice({
+    required this.accountId,
+    required this.chosen,
+    required this.muted,
+    required this.onChanged,
+  });
+
+  final String accountId;
+  final String chosen;
+  final TextStyle? muted;
+  final void Function(String calendarId)? onChanged;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final calendars = [
+      for (final c in ref.watch(keptAccountCalendarsProvider(accountId)).value ??
+          const <CalendarInfo>[])
+        if (c.canEdit) c,
+    ];
+    if (calendars.length < 2) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final account = (ref.watch(accountsProvider).value ?? const <Account>[])
+        .where((a) => a.id == accountId)
+        .firstOrNull;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+      child: Row(
+        children: [
+          SizedBox(width: 64, child: Text('Calendar', style: muted)),
+          Expanded(
+            child: DropdownButton<String>(
+              key: const ValueKey('meeting-calendar'),
+              value: calendars.any((c) => c.id == chosen)
+                  ? chosen
+                  : calendars.first.id,
+              isExpanded: true,
+              underline: const SizedBox.shrink(),
+              style: theme.textTheme.bodyMedium,
+              items: [
+                for (final c in calendars)
+                  DropdownMenuItem(
+                    key: ValueKey('meeting-calendar:${c.id}'),
+                    value: c.id,
+                    child: Row(
+                      children: [
+                        CircleAvatar(
+                          radius: 5,
+                          backgroundColor: Color(
+                            c.colour ?? account?.colorValue ?? 0xFF888888,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(c.name, overflow: TextOverflow.ellipsis),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+              onChanged: onChanged == null
+                  ? null
+                  : (id) {
+                      if (id != null) onChanged!(id);
+                    },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

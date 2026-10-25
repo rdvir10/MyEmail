@@ -14,6 +14,7 @@ import '../ui_state_store.dart';
 import '../../domain/sync_prefs.dart';
 import '../account_store.dart';
 import '../calendar/calendar_upkeep.dart';
+import '../calendar/internet_calendars.dart';
 import '../calendar/phone_calendar_sync.dart';
 import '../duet/duet_uploader.dart';
 import '../cache/mail_database.dart';
@@ -603,6 +604,7 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
           PrefsUiStateStore(prefs),
           notifier,
           homeScreenSurface(),
+          links: FileInternetCalendars(),
         );
         // The Inboxes for Duet, at most every five minutes.
         await sendToDuetIfDue(
@@ -779,6 +781,7 @@ Future<bool> _runOnePass() async {
       PrefsUiStateStore(prefs),
       notifier,
       homeScreenSurface(),
+      links: FileInternetCalendars(),
     );
     // Nor this, where nothing is sent to Duet.
     await sendToDuetIfDue(engine, PrefsUiStateStore(prefs), SecureCredentialStore());

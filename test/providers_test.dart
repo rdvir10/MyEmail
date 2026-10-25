@@ -271,6 +271,14 @@ class _SingleAccountReversedEngine implements MailEngine {
       _inner.keptCalendarEvents(accountId, start, end);
 
   @override
+  Future<List<CalendarInfo>> calendarsOf(String accountId) =>
+      _inner.calendarsOf(accountId);
+
+  @override
+  Future<List<CalendarInfo>> keptCalendarsOf(String accountId) =>
+      _inner.keptCalendarsOf(accountId);
+
+  @override
   Future<void> respondToEvent(
     CalendarEvent event,
     InviteResponse response, {

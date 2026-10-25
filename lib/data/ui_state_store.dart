@@ -102,6 +102,9 @@ abstract final class UiStateKeys {
   /// backup.
   static const calendarPrefs = 'calendar.prefs.v1';
 
+  /// The calendars from links (see `InternetCalendar`). In the backup.
+  static const internetCalendars = 'calendar.internet.v1';
+
   /// The meeting reminders and the morning agenda set with Android, and
   /// when they were last brought up to date; see `CalendarUpkeep`. Read by
   /// the background worker too. Not in the backup: they are this phone's.

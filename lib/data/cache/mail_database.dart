@@ -4,6 +4,7 @@ import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 import 'package:sqlite3/common.dart' show CommonDatabase;
 
+import '../../domain/account_calendars.dart';
 import '../../domain/address_suggestions.dart';
 import '../../domain/calendar_event.dart';
 import '../../domain/calendar_reads.dart';
@@ -190,6 +191,20 @@ class CalendarReads extends Table {
   Set<Column> get primaryKey => {accountId, calendarId, startsAt};
 }
 
+/// Each account's calendars as last listed, so Calendars shown and the
+/// views' colours are there with no signal; see
+/// `CacheStore.keepCalendarList`. Added in schema 17.
+@DataClassName('CalendarListRow')
+class CalendarLists extends Table {
+  TextColumn get accountId => text()();
+
+  /// The calendars, a list of what `CalendarInfo.toJson` writes.
+  TextColumn get data => text()();
+
+  @override
+  Set<Column> get primaryKey => {accountId};
+}
+
 @DriftDatabase(tables: [
   FolderStates,
   Messages,
@@ -197,6 +212,7 @@ class CalendarReads extends Table {
   SnoozedMessages,
   KeptEvents,
   CalendarReads,
+  CalendarLists,
 ])
 class MailDatabase extends _$MailDatabase {
   MailDatabase(super.executor);
@@ -265,7 +281,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 16;
+  int get schemaVersion => 17;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -459,6 +475,11 @@ class MailDatabase extends _$MailDatabase {
       // which reads it as it always has and keeps what it finds.
       await m.createTable(keptEvents);
       await m.createTable(calendarReads);
+    }
+    if (from < 17) {
+      // Each account's calendars beside its main one. Empty until they
+      // are next listed, which the calendar does as it reads them.
+      await m.createTable(calendarLists);
     }
   }
 
@@ -1201,7 +1222,39 @@ class DriftCacheStore implements CacheStore {
       await (db.delete(db.calendarReads)
             ..where((t) => t.accountId.equals(accountId)))
           .go();
+      await (db.delete(db.calendarLists)
+            ..where((t) => t.accountId.equals(accountId)))
+          .go();
     });
+  }
+
+  @override
+  Future<void> keepCalendarList(
+    String accountId,
+    List<CalendarInfo> calendars,
+  ) =>
+      db.into(db.calendarLists).insertOnConflictUpdate(
+            CalendarListsCompanion.insert(
+              accountId: accountId,
+              data: jsonEncode([for (final c in calendars) c.toJson()]),
+            ),
+          );
+
+  @override
+  Future<List<CalendarInfo>> keptCalendarList(String accountId) async {
+    final row = await (db.select(db.calendarLists)
+          ..where((t) => t.accountId.equals(accountId)))
+        .getSingleOrNull();
+    if (row == null) return const [];
+    try {
+      final json = jsonDecode(row.data);
+      return [
+        for (final c in json is List ? json : const [])
+          ?CalendarInfo.fromJson(c),
+      ];
+    } on FormatException {
+      return const [];
+    }
   }
 
   /// The events of [accountId]'s [calendarId] that fall in [start]..[end]:

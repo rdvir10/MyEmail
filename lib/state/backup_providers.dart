@@ -3,7 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/backup/backup_service.dart';
 import '../data/ui_state_store.dart';
 import '../ui/settings/backup_screen.dart';
-import 'calendar_view_providers.dart' show calendarPrefsProvider;
+import 'calendar_view_providers.dart'
+    show calendarPrefsProvider, internetCalendarsProvider;
 import 'compose_providers.dart' show signaturesProvider;
 import 'display_providers.dart';
 import 'meeting_providers.dart' show workWeekProvider;
@@ -60,6 +61,7 @@ const reloadedAfterRestore = {
   UiStateKeys.senderBlocks,
   UiStateKeys.savedSearches,
   UiStateKeys.calendarPrefs,
+  UiStateKeys.internetCalendars,
 };
 
 /// Every setting a restore wrote, read again from where it was written.
@@ -87,5 +89,6 @@ void reloadRestoredSettings(WidgetRef ref) {
     ..invalidate(workWeekProvider)
     ..invalidate(senderBlocksProvider)
     ..invalidate(savedSearchesProvider)
-    ..invalidate(calendarPrefsProvider);
+    ..invalidate(calendarPrefsProvider)
+    ..invalidate(internetCalendarsProvider);
 }

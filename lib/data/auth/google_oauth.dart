@@ -66,8 +66,9 @@ class GoogleOAuth implements OAuthRefresher {
   /// servers accept for XOAUTH2; the narrower Gmail API scopes do not
   /// work there. `calendar.events` is for meetings created in the app.
   /// [meetScopes] is for Meet links made for other accounts' meetings,
-  /// [contactsScopes] for suggesting recipients from Google's contacts, and
-  /// [gmailSettingsScopes] for the vacation responder and filters.
+  /// [contactsScopes] for suggesting recipients from Google's contacts,
+  /// [gmailSettingsScopes] for the vacation responder and filters, and
+  /// [calendarListScopes] for the calendars beside the primary one.
   /// `openid` and `email` bring back an ID token naming the account.
   static const scopes = [
     'https://mail.google.com/',
@@ -75,6 +76,7 @@ class GoogleOAuth implements OAuthRefresher {
     ...meetScopes,
     ...contactsScopes,
     ...gmailSettingsScopes,
+    ...calendarListScopes,
     'openid',
     'email',
   ];
@@ -103,6 +105,14 @@ class GoogleOAuth implements OAuthRefresher {
   /// not change them; only this does. Named on its own, as [meetScopes].
   static const gmailSettingsScopes = [
     'https://www.googleapis.com/auth/gmail.settings.basic',
+  ];
+
+  /// The account's calendar list: its other calendars, those it made and
+  /// those it follows, Google's holidays and birthdays among them. Their
+  /// events need nothing more, `calendar.events` reaching every calendar
+  /// the account has. Named on its own, as [meetScopes].
+  static const calendarListScopes = [
+    'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
   ];
 
   /// The custom-scheme way back, for an Android client that has it enabled.
@@ -262,7 +272,9 @@ class GoogleOAuth implements OAuthRefresher {
                 ? 'your contacts'
                 : missing.any(gmailSettingsScopes.contains)
                     ? "Gmail's settings"
-                    : 'the calendar';
+                    : missing.any(calendarListScopes.contains)
+                        ? 'your other calendars'
+                        : 'the calendar';
         throw SignInNeedsConsent(
           'This Google account needs signing in again: it was set up before '
           'the app asked permission for $wanted. Open Settings, then '

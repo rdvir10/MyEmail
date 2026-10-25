@@ -52,8 +52,11 @@ import 'data/speech/speech_engine.dart';
 import 'state/read_aloud.dart';
 import 'state/print_providers.dart';
 import 'state/calendar_providers.dart';
+import 'state/calendar_view_providers.dart'
+    show internetCalendarReaderProvider;
 import 'data/calendar/device_calendar.dart';
 import 'data/ai/date_finder.dart';
+import 'data/calendar/internet_calendars.dart' show FileInternetCalendars;
 import 'state/date_providers.dart';
 import 'state/meeting_alert_providers.dart';
 import 'ui/shell/window_host.dart';
@@ -194,6 +197,8 @@ Future<void> main() async {
           deviceCalendarProvider.overrideWithValue(const AndroidDeviceCalendar()),
           dateFinderProvider.overrideWithValue(const AndroidDateFinder()),
           calendarKeeperProvider.overrideWith(AppCalendarKeeper.new),
+          internetCalendarReaderProvider
+              .overrideWithValue(FileInternetCalendars()),
           fileBridgeProvider.overrideWithValue(platformFileBridge()),
           deviceContactsProvider.overrideWithValue(platformDeviceContacts()),
           attachmentFilesProvider

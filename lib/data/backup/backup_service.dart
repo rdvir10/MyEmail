@@ -64,6 +64,7 @@ class BackupService {
     UiStateKeys.senderBlocks: _Shape.text,
     UiStateKeys.savedSearches: _Shape.text,
     UiStateKeys.calendarPrefs: _Shape.text,
+    UiStateKeys.internetCalendars: _Shape.text,
     // Deliberately absent: UiStateKeys.selected, which is where you happened
     // to be standing, and UiStateKeys.recentMoves, which is a short history
     // rather than a setting. Neither is worth carrying and both would be odd

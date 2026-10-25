@@ -3,14 +3,17 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../../domain/account.dart';
+import '../../domain/account_calendars.dart';
 import '../../domain/calendar_event.dart';
 import '../../domain/calendar_prefs.dart';
+import '../../domain/internet_calendar.dart';
 import '../../domain/meeting_alerts.dart';
 import '../mail_engine.dart';
 import '../notifications/mail_notifier.dart';
 import '../ui_state_store.dart';
 import '../widget/home_screen_surface.dart';
 import 'account_calendar.dart';
+import 'internet_calendars.dart';
 
 /// What MyEmail says about the calendars away from the calendar, kept up
 /// to date: each meeting's reminder, set with Android for its time; the
@@ -27,6 +30,7 @@ class CalendarUpkeep {
     required this.notifier,
     required this.uiState,
     required this.surface,
+    this.links = const NoInternetCalendars(),
     DateTime Function()? clock,
   }) : _clock = clock ?? DateTime.now;
 
@@ -34,6 +38,9 @@ class CalendarUpkeep {
   final MailNotifier notifier;
   final UiStateStore uiState;
   final HomeScreenSurface surface;
+
+  /// The calendars from links, for the widget and the agenda.
+  final InternetCalendars links;
   final DateTime Function() _clock;
 
   /// How many days are read, from today: the night's reminders and
@@ -79,7 +86,8 @@ class CalendarUpkeep {
         [
           for (final a in accounts)
             if (prefs.remindsFor(a, inPhoneCalendar: inPhone.contains(a.id)))
-              ...byAccount[a.id]!,
+              for (final e in byAccount[a.id]!)
+                if (calendarShown(e, hidden)) e,
         ],
         now: now,
         use24h: use24h,
@@ -88,9 +96,31 @@ class CalendarUpkeep {
       now,
     );
 
+    final fromLinks = <CalendarEvent>[];
+    final calendars = <String, CalendarInfo>{
+      for (final a in accounts)
+        for (final c in await _keptCalendarsOf(a.id)) c.key: c,
+    };
+    for (final c in InternetCalendar.listFrom(
+      uiState.readString(UiStateKeys.internetCalendars),
+    )) {
+      if (hidden.contains(c.accountId)) continue;
+      calendars[calendarKey(c.accountId, CalendarEvent.mainCalendar)] =
+          CalendarInfo(
+        accountId: c.accountId,
+        id: CalendarEvent.mainCalendar,
+        name: c.name,
+        colour: c.colour,
+        canEdit: false,
+      );
+      fromLinks.addAll(await _fromLink(c, today, end, now));
+    }
     final shown = [
       for (final a in accounts)
-        if (!hidden.contains(a.id)) ...byAccount[a.id]!,
+        if (!hidden.contains(a.id))
+          for (final e in byAccount[a.id]!)
+            if (calendarShown(e, hidden)) e,
+      ...fromLinks,
     ];
     final agendaAt = prefs.agendaAt;
     await _agenda(
@@ -108,7 +138,37 @@ class CalendarUpkeep {
     await _widget(
       widgetMeetings(shown, now, showDeclined: prefs.showDeclined),
       {for (final a in accounts) a.id: a},
+      calendars,
     );
+  }
+
+  Future<List<CalendarInfo>> _keptCalendarsOf(String accountId) async {
+    try {
+      return await engine.keptCalendarsOf(accountId);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// [calendar]'s events from [start] to [end], read from its link again
+  /// where what was kept is older than [InternetCalendars.readEvery].
+  Future<List<CalendarEvent>> _fromLink(
+    InternetCalendar calendar,
+    DateTime start,
+    DateTime end,
+    DateTime now,
+  ) async {
+    var kept = await links.kept(calendar);
+    if (kept == null ||
+        now.difference(kept.readAt) >= InternetCalendars.readEvery) {
+      try {
+        kept = (feed: await links.read(calendar), readAt: now);
+      } catch (e) {
+        debugPrint('[myemail] ${calendar.name} not read: $e');
+      }
+    }
+    return kept?.feed.between(start, end, accountId: calendar.accountId) ??
+        const [];
   }
 
   Future<List<CalendarEvent>> _read(
@@ -235,6 +295,7 @@ class CalendarUpkeep {
   Future<void> _widget(
     List<CalendarEvent> meetings,
     Map<String, Account> accounts,
+    Map<String, CalendarInfo> calendars,
   ) async {
     await surface.putString(
       widgetKey,
@@ -247,7 +308,11 @@ class CalendarUpkeep {
             if (e.allDay) 'a': true,
             if (e.declined) 'd': true,
             // Signed and inside 32 bits, as Android reads a colour.
-            'c': (accounts[e.accountId]?.colorValue ?? 0xFFFF7A18).toSigned(32),
+            'c': eventColour(
+              e,
+              accounts[e.accountId]?.colorValue ?? 0xFFFF7A18,
+              calendars: calendars,
+            ).toSigned(32),
             if (e.location.trim().isNotEmpty) 'w': e.location.trim(),
             'j': ?e.joinUrl,
             'l': calendarWidgetLink(e),
@@ -305,6 +370,7 @@ Future<void> keepCalendarUpIfDue(
   UiStateStore uiState,
   MailNotifier notifier,
   HomeScreenSurface surface, {
+  InternetCalendars links = const NoInternetCalendars(),
   Duration every = const Duration(minutes: 15),
   bool force = false,
   DateTime Function() clock = DateTime.now,
@@ -326,6 +392,7 @@ Future<void> keepCalendarUpIfDue(
       notifier: notifier,
       uiState: uiState,
       surface: surface,
+      links: links,
       clock: clock,
     ).run();
   } catch (e, stack) {

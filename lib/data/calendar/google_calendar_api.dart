@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
+import '../../domain/account_calendars.dart';
 import '../../domain/calendar_change.dart';
 import '../../domain/calendar_event.dart';
 import '../../domain/calendar_invite.dart';
@@ -68,12 +69,10 @@ class GoogleCalendarApi {
   /// ([MeetingDraft.changedSinceFailedSend]) has the event that Send made,
   /// if it did, brought up to date.
   Future<CreatedMeeting> createEvent(MeetingDraft meeting) async {
-    final uri = meeting.isOnline
-        ? eventsUri.replace(queryParameters: {
-            ...eventsUri.queryParameters,
-            'conferenceDataVersion': '1',
-          })
-        : eventsUri;
+    final uri = _eventsAt(null, {
+      ...eventsUri.queryParameters,
+      if (meeting.isOnline) 'conferenceDataVersion': '1',
+    }, calendarId: meeting.calendarId);
     // The event's id is chosen here, so that a Send tapped again after an
     // answer that never came is refused as a duplicate rather than making
     // a second event and inviting everyone twice.
@@ -90,7 +89,7 @@ class GoogleCalendarApi {
       // Made by the Send before, invitations and all: that is the answer,
       // once it has what was changed since. One deleted since is not, and
       // the refusal stands.
-      final made = await _event(key);
+      final made = await _event(key, calendarId: meeting.calendarId);
       if (made != null && made['status'] != 'cancelled') {
         if (meeting.changedSinceFailedSend) {
           return _bringUpToDate(key, made, meeting);
@@ -240,7 +239,8 @@ class GoogleCalendarApi {
     final response = await _authorised(
       () => http.Request(
         'PATCH',
-        _eventsAt(id, {'sendUpdates': 'all', 'conferenceDataVersion': '1'}),
+        _eventsAt(id, {'sendUpdates': 'all', 'conferenceDataVersion': '1'},
+            calendarId: meeting.calendarId),
       )
         ..headers['Content-Type'] = 'application/json'
         ..body = body,
@@ -481,12 +481,66 @@ class GoogleCalendarApi {
     return busy;
   }
 
-  /// Every event on the primary calendar between [start] and [end], each
-  /// occurrence of a series on its own, as [accountId]'s.
+  /// The calendars in the account's calendar list that it shows: the
+  /// primary one as the main calendar, and each beside it, its own and
+  /// those it follows (holidays, birthdays, others' shared with it), as
+  /// Google Calendar's list has them. Those switched off there are left
+  /// out here too.
+  Future<List<CalendarInfo>> calendars({required String accountId}) async {
+    final found = <CalendarInfo>[];
+    String? token;
+    for (var page = 0; page < 5; page++) {
+      final response = await _authorised(() => http.Request(
+            'GET',
+            Uri.parse('$base/users/me/calendarList').replace(queryParameters: {
+              'minAccessRole': 'reader',
+              'maxResults': '250',
+              'pageToken': ?token,
+            }),
+          ));
+      if (response.statusCode >= 400) throw _failureFor(response);
+      final json = _jsonOf(response);
+      final items = json['items'];
+      for (final c in items is List ? items : const []) {
+        if (c is! Map) continue;
+        final id = c['id'];
+        if (id is! String || id.isEmpty || c['deleted'] == true) continue;
+        final primary = c['primary'] == true;
+        if (!primary && c['selected'] != true) continue;
+        final name = '${c['summaryOverride'] ?? c['summary'] ?? ''}'.trim();
+        found.add(primary
+            ? CalendarInfo(
+                accountId: accountId,
+                id: CalendarEvent.mainCalendar,
+                name: name.isEmpty ? 'Calendar' : name,
+              )
+            : CalendarInfo(
+                accountId: accountId,
+                id: id,
+                name: name.isEmpty ? id : name,
+                colour: colourFromHex(c['backgroundColor']),
+                canEdit: c['accessRole'] == 'owner' || c['accessRole'] == 'writer',
+              ));
+      }
+      final next = json['nextPageToken'];
+      if (next is! String || next.isEmpty) break;
+      token = next;
+    }
+    if (!found.any((c) => c.isMain)) {
+      found.insert(0, CalendarInfo.main(accountId));
+    }
+    return found;
+  }
+
+  /// Every event on the primary calendar between [start] and [end], or on
+  /// [calendarId], one beside it, each occurrence of a series on its own,
+  /// as [accountId]'s. [readOnly] for a calendar the account only reads.
   Future<List<CalendarEvent>> events(
     DateTime start,
     DateTime end, {
     required String accountId,
+    String calendarId = CalendarEvent.mainCalendar,
+    bool readOnly = false,
   }) async {
     final found = <CalendarEvent>[];
     String? token;
@@ -500,7 +554,7 @@ class GoogleCalendarApi {
               'orderBy': 'startTime',
               'maxResults': '250',
               'pageToken': ?token,
-            }),
+            }, calendarId: calendarId),
           ));
       if (response.statusCode >= 400) throw _failureFor(response);
       final json = _jsonOf(response);
@@ -512,6 +566,8 @@ class GoogleCalendarApi {
           e.cast<String, Object?>(),
           accountId,
           calendarReminder: usual,
+          calendarId: calendarId,
+          readOnly: readOnly,
         );
         if (event != null) found.add(event);
       }
@@ -548,6 +604,8 @@ class GoogleCalendarApi {
     Map<String, Object?> json,
     String accountId, {
     int? calendarReminder,
+    String calendarId = CalendarEvent.mainCalendar,
+    bool readOnly = false,
   }) {
     final id = json['id'];
     if (id is! String || json['status'] == 'cancelled') return null;
@@ -604,6 +662,9 @@ class GoogleCalendarApi {
     return CalendarEvent(
       id: id,
       accountId: accountId,
+      calendarId: calendarId,
+      readOnly: readOnly,
+      colour: googleEventColours['${json['colorId']}'],
       title: '${json['summary'] ?? ''}'.trim(),
       start: start,
       end: end.isBefore(start) ? start : end,

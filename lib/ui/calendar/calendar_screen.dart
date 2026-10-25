@@ -16,6 +16,7 @@ import '../../domain/calendar_event.dart';
 import '../../domain/calendar_invite.dart' show InviteResponse;
 import '../../domain/calendar_prefs.dart';
 import '../../domain/error_report.dart' show ReadableError;
+import '../../domain/internet_calendar.dart' show isInternetAccount;
 import '../../domain/meeting_alerts.dart' show MeetingRef;
 import '../../domain/search_refinement.dart' show weekStartFor;
 import '../../domain/time_zones.dart';
@@ -29,6 +30,7 @@ import '../meetings/new_meeting_screen.dart' show openNewMeeting;
 import '../messages/date_format.dart';
 import '../../state/date_providers.dart' show deviceZoneProvider;
 import 'event_actions.dart';
+import 'event_colours.dart';
 
 /// Outlook's Calendar, beside the mail: every account's events as an
 /// agenda, a day, a week or a month. Shown from what the device kept of
@@ -293,15 +295,18 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
       showModalBottomSheet<void>(
         context: context,
         showDragHandle: true,
+        isScrollControlled: true,
         builder: (sheet) => SafeArea(
           child: Consumer(
             builder: (context, ref, _) {
               final hidden = ref.watch(hiddenCalendarsProvider);
+              final links = ref.watch(internetCalendarsProvider);
+              final shown = ref.read(hiddenCalendarsProvider.notifier);
               return ListView(
                 shrinkWrap: true,
                 children: [
                   const ListTile(title: Text('Calendars shown')),
-                  for (final a in accounts)
+                  for (final a in accounts) ...[
                     CheckboxListTile(
                       key: ValueKey('calendar-shown:${a.id}'),
                       secondary: CircleAvatar(
@@ -311,9 +316,25 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
                       title: Text(a.displayName),
                       subtitle: Text(a.emailAddress),
                       value: !hidden.contains(a.id),
-                      onChanged: (shown) => ref
-                          .read(hiddenCalendarsProvider.notifier)
-                          .setShown(a.id, shown ?? true),
+                      onChanged: (on) => shown.setShown(a.id, on ?? true),
+                    ),
+                    // Each of its calendars, under it, once it has more
+                    // than the one.
+                    if (!hidden.contains(a.id))
+                      _AccountCalendarsShown(account: a, hidden: hidden),
+                  ],
+                  for (final c in links)
+                    CheckboxListTile(
+                      key: ValueKey('calendar-shown:${c.accountId}'),
+                      secondary: CircleAvatar(
+                        radius: 8,
+                        backgroundColor: Color(c.colour),
+                      ),
+                      title: Text(c.name),
+                      subtitle: const Text('From a link'),
+                      value: !hidden.contains(c.accountId),
+                      onChanged: (on) =>
+                          shown.setShown(c.accountId, on ?? true),
                     ),
                 ],
               );
@@ -352,7 +373,10 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
     final prefs = ref.watch(calendarPrefsProvider);
     // Read now, for the sheet, which names the zone a meeting was set in.
     ref.watch(deviceZoneProvider);
-    final colours = {for (final a in accounts) a.id: Color(a.colorValue)};
+    final colours = EventColours(
+      accounts: {for (final a in accounts) a.id: Color(a.colorValue)},
+      calendars: load.value?.calendars ?? const {},
+    );
     final wide = MediaQuery.sizeOf(context).width >= 700;
     void details(CalendarEvent e) => showEventDetails(
           context,
@@ -449,7 +473,11 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
             icon: const Icon(Icons.today_outlined),
             onPressed: () => _jump(DateTime.now()),
           ),
-          if (accounts.length > 1)
+          // Once there is a choice: more than one account, an account with
+          // more than its main calendar, or a calendar from a link.
+          if (accounts.length > 1 ||
+              (load.value?.calendars.length ?? 0) > accounts.length ||
+              ref.watch(internetCalendarsProvider).isNotEmpty)
             IconButton(
               key: const ValueKey('calendar-accounts'),
               tooltip: 'Calendars shown',
@@ -606,6 +634,101 @@ class _KeptBar extends StatelessWidget {
 
 /// One account's calendar could not be read: why, and Allow where a
 /// sign-in fixes it.
+/// [account] signed in again asking for its calendar, and every calendar
+/// read again: the way past "Not allowed yet". What goes wrong is said.
+Future<void> signInForCalendar(
+  BuildContext context,
+  WidgetRef ref,
+  Account account,
+) async {
+  final messenger = ScaffoldMessenger.of(context);
+  try {
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final token = await MicrosoftSignInScreen.show(
+          context,
+          loginHint: account.emailAddress,
+          scopes: [...MicrosoftOAuth.scopes, ...MicrosoftOAuth.calendarScopes],
+        );
+        if (token == null) return;
+        await ref
+            .read(accountsProvider.notifier)
+            .signInAgain(accountId: account.id, token: token);
+      case MailProvider.gmail:
+        final result = await GoogleSignInScreen.show(
+          context,
+          loginHint: account.emailAddress,
+        );
+        if (result == null) return;
+        await ref.read(accountsProvider.notifier).signInAgain(
+              accountId: account.id,
+              token: result.token,
+              signedInAs: result.identity?.email,
+            );
+    }
+  } catch (e) {
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        duration: kBottomMessage,
+        content: Text(e is ReadableError ? e.message : '$e'),
+      ));
+  } finally {
+    ref.read(calendarRefreshProvider.notifier).now();
+  }
+}
+
+/// [account]'s calendars in Calendars shown, each switched on or off in
+/// its own colour, once it has more than its main one; and, where a
+/// Google account was signed in before the app asked to list them,
+/// Allow.
+class _AccountCalendarsShown extends ConsumerWidget {
+  const _AccountCalendarsShown({required this.account, required this.hidden});
+
+  final Account account;
+  final Set<String> hidden;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final listed = ref.watch(accountCalendarsProvider(account.id));
+    const inset = EdgeInsets.only(left: 56, right: 16);
+    return switch (listed) {
+      AsyncData(value: final calendars) when calendars.length > 1 => Column(
+          children: [
+            for (final c in calendars)
+              CheckboxListTile(
+                key: ValueKey('calendar-shown:${c.key}'),
+                contentPadding: inset,
+                dense: true,
+                secondary: CircleAvatar(
+                  radius: 6,
+                  backgroundColor: Color(c.colour ?? account.colorValue),
+                ),
+                title: Text(c.name),
+                subtitle: c.canEdit ? null : const Text('Read only'),
+                value: !hidden.contains(c.key),
+                onChanged: (on) => ref
+                    .read(hiddenCalendarsProvider.notifier)
+                    .setCalendarShown(c.key, on ?? true),
+              ),
+          ],
+        ),
+      AsyncError(error: SignInNeedsConsent()) => ListTile(
+          key: ValueKey('calendar-list-allow:${account.id}'),
+          contentPadding: inset,
+          dense: true,
+          title: const Text('Its other calendars'),
+          subtitle: const Text('Allow MyEmail to list them: sign in again.'),
+          trailing: TextButton(
+            onPressed: () => signInForCalendar(context, ref, account),
+            child: const Text('Allow'),
+          ),
+        ),
+      _ => const SizedBox.shrink(),
+    };
+  }
+}
+
 class _ProblemBar extends ConsumerStatefulWidget {
   const _ProblemBar({required this.account, required this.error});
 
@@ -622,41 +745,10 @@ class _ProblemBarState extends ConsumerState<_ProblemBar> {
   Account get account => widget.account;
 
   Future<void> _allow() async {
-    final messenger = ScaffoldMessenger.of(context);
     setState(() => _busy = true);
     try {
-      switch (account.provider) {
-        case MailProvider.outlook:
-          final token = await MicrosoftSignInScreen.show(
-            context,
-            loginHint: account.emailAddress,
-            scopes: [...MicrosoftOAuth.scopes, ...MicrosoftOAuth.calendarScopes],
-          );
-          if (token == null) return;
-          await ref
-              .read(accountsProvider.notifier)
-              .signInAgain(accountId: account.id, token: token);
-        case MailProvider.gmail:
-          final result = await GoogleSignInScreen.show(
-            context,
-            loginHint: account.emailAddress,
-          );
-          if (result == null) return;
-          await ref.read(accountsProvider.notifier).signInAgain(
-                accountId: account.id,
-                token: result.token,
-                signedInAs: result.identity?.email,
-              );
-      }
-    } catch (e) {
-      messenger
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
-          duration: kBottomMessage,
-          content: Text(e is ReadableError ? e.message : '$e'),
-        ));
+      await signInForCalendar(context, ref, account);
     } finally {
-      ref.read(calendarRefreshProvider.notifier).now();
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -795,7 +887,7 @@ class _CalendarPageView extends ConsumerWidget {
   final CalendarViewMode mode;
   final bool wide;
   final DateTime selected;
-  final Map<String, Color> colours;
+  final EventColours colours;
   final ValueNotifier<double> topHour;
   final void Function(CalendarEvent) onTap;
   final void Function(DateTime) onSlot;
@@ -888,7 +980,7 @@ class _Agenda extends StatefulWidget {
   });
 
   final DateTime from;
-  final Map<String, Color> colours;
+  final EventColours colours;
   final void Function(CalendarEvent) onTap;
 
   @override
@@ -1011,7 +1103,7 @@ class _AgendaLot extends ConsumerWidget {
   /// In order of date down the screen; false above the middle, where the
   /// list is laid out from the bottom up.
   final bool earlierFirst;
-  final Map<String, Color> colours;
+  final EventColours colours;
   final void Function(CalendarEvent) onTap;
 
   /// A day shown even with nothing on: the one the agenda opens at.
@@ -1060,7 +1152,7 @@ class _AgendaDay extends StatelessWidget {
 
   final DateTime day;
   final List<CalendarEvent> events;
-  final Map<String, Color> colours;
+  final EventColours colours;
   final void Function(CalendarEvent) onTap;
 
   @override
@@ -1102,7 +1194,7 @@ class _AgendaDay extends StatelessWidget {
           _AgendaRow(
             event: e,
             day: day,
-            colour: colours[e.accountId] ?? theme.colorScheme.primary,
+            colour: colours[e] ?? theme.colorScheme.primary,
             onTap: () => onTap(e),
           ),
       ],
@@ -1244,7 +1336,7 @@ class _MonthGrid extends StatelessWidget {
   /// The first of the month shown; days outside it are drawn faint.
   final DateTime month;
   final List<CalendarEvent> events;
-  final Map<String, Color> colours;
+  final EventColours colours;
   final DateTime? selected;
   final bool titles;
   final void Function(DateTime) onDay;
@@ -1323,7 +1415,7 @@ class _MonthDay extends StatelessWidget {
   final bool inMonth;
   final bool selected;
   final List<CalendarEvent> events;
-  final Map<String, Color> colours;
+  final EventColours colours;
   final bool titles;
   final VoidCallback onTap;
   final void Function(CalendarEvent)? onEvent;
@@ -1333,7 +1425,7 @@ class _MonthDay extends StatelessWidget {
     final theme = Theme.of(context);
     final today = _sameDay(day, DateTime.now());
     final scheme = theme.colorScheme;
-    Color colourOf(CalendarEvent e) => colours[e.accountId] ?? scheme.primary;
+    Color colourOf(CalendarEvent e) => colours[e] ?? scheme.primary;
     final number = Container(
       width: 26,
       height: 26,
@@ -1496,7 +1588,7 @@ class _DayList extends StatelessWidget {
 
   final DateTime day;
   final List<CalendarEvent> events;
-  final Map<String, Color> colours;
+  final EventColours colours;
   final void Function(CalendarEvent) onTap;
   final VoidCallback onOpen;
 
@@ -1534,7 +1626,7 @@ class _DayList extends StatelessWidget {
           _AgendaRow(
             event: e,
             day: day,
-            colour: colours[e.accountId] ?? theme.colorScheme.primary,
+            colour: colours[e] ?? theme.colorScheme.primary,
             onTap: () => onTap(e),
           ),
       ],
@@ -1578,7 +1670,10 @@ class _DatePickerState extends ConsumerState<_DatePicker> {
     final load = ref.watch(calendarEventsProvider(page.range));
     final prefs = ref.watch(calendarPrefsProvider);
     final accounts = ref.watch(calendarAccountsProvider);
-    final colours = {for (final a in accounts) a.id: Color(a.colorValue)};
+    final colours = EventColours(
+      accounts: {for (final a in accounts) a.id: Color(a.colorValue)},
+      calendars: load.value?.calendars ?? const {},
+    );
     void step(int months) =>
         setState(() => _month = DateTime(_month.year, _month.month + months));
     return SafeArea(
@@ -1654,7 +1749,7 @@ class _Timeline extends ConsumerStatefulWidget {
 
   final List<DateTime> days;
   final List<CalendarEvent> events;
-  final Map<String, Color> colours;
+  final EventColours colours;
   final CalendarPrefs prefs;
 
   /// The hour at the top, shared with the pages either side.
@@ -1942,8 +2037,9 @@ class _TimelineState extends ConsumerState<_Timeline> {
                         for (final e in allDay[d]!)
                           _Block(
                             event: e,
-                            colour: widget.colours[e.accountId] ??
+                            colour: widget.colours[e] ??
                                 theme.colorScheme.primary,
+                            edge: widget.colours.edgeOf(e),
                             onTap: () => widget.onTap(e),
                             compact: true,
                           ),
@@ -2058,7 +2154,7 @@ class _DayColumn extends StatelessWidget {
 
   final DateTime day;
   final List<CalendarEvent> events;
-  final Map<String, Color> colours;
+  final EventColours colours;
   final double hourHeight;
   final CalendarPrefs prefs;
   final void Function(CalendarEvent) onTap;
@@ -2075,7 +2171,12 @@ class _DayColumn extends StatelessWidget {
   final VoidCallback? onDrop;
 
   bool _canDrag(CalendarEvent e) =>
-      onTake != null && isOwnEvent(e) && !e.cancelled && !e.allDay;
+      onTake != null &&
+      isOwnEvent(e) &&
+      !e.cancelled &&
+      !e.allDay &&
+      !e.readOnly &&
+      !isInternetAccount(e.accountId);
 
   @override
   Widget build(BuildContext context) {
@@ -2147,8 +2248,9 @@ class _DayColumn extends StatelessWidget {
                     child: !_canDrag(slot.event)
                         ? _Block(
                             event: slot.event,
-                            colour: colours[slot.event.accountId] ??
+                            colour: colours[slot.event] ??
                                 theme.colorScheme.primary,
+                            edge: colours.edgeOf(slot.event),
                             onTap: () => onTap(slot.event),
                           )
                         : LayoutBuilder(
@@ -2167,8 +2269,9 @@ class _DayColumn extends StatelessWidget {
                               onLongPressCancel: () => onDrop?.call(),
                               child: _Block(
                                 event: slot.event,
-                                colour: colours[slot.event.accountId] ??
+                                colour: colours[slot.event] ??
                                     theme.colorScheme.primary,
+                                edge: colours.edgeOf(slot.event),
                                 onTap: () => onTap(slot.event),
                               ),
                             ),
@@ -2185,11 +2288,11 @@ class _DayColumn extends StatelessWidget {
                     child: Container(
                       key: const ValueKey('calendar-drag-ghost'),
                       decoration: BoxDecoration(
-                        color: (colours[g.accountId] ?? theme.colorScheme.primary)
+                        color: (colours[g] ?? theme.colorScheme.primary)
                             .withAlpha(140),
                         borderRadius: BorderRadius.circular(4),
                         border: Border.all(
-                          color: colours[g.accountId] ?? theme.colorScheme.primary,
+                          color: colours[g] ?? theme.colorScheme.primary,
                           width: 2,
                         ),
                       ),
@@ -2229,12 +2332,18 @@ class _Block extends StatelessWidget {
     required this.colour,
     required this.onTap,
     this.compact = false,
+    this.edge,
   });
 
   final CalendarEvent event;
   final Color colour;
   final VoidCallback onTap;
   final bool compact;
+
+  /// The account's colour, down the left, for an event drawn in a colour
+  /// of its own: an Outlook category, a colour picked in Google Calendar,
+  /// or its calendar's.
+  final Color? edge;
 
   @override
   Widget build(BuildContext context) {
@@ -2262,17 +2371,24 @@ class _Block extends StatelessWidget {
         child: InkWell(
           key: ValueKey('calendar-event:${event.id}'),
           onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-            child: SizedBox(
-              width: double.infinity,
-              child: Text(
-                compact || event.allDay
-                    ? event.title
-                    : '${event.title}\n${formatClock(event.start, use24h: use24h)}',
-                maxLines: compact ? 1 : 3,
-                overflow: TextOverflow.ellipsis,
-                style: style,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              border: edge == null
+                  ? null
+                  : Border(left: BorderSide(color: edge!, width: 3)),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              child: SizedBox(
+                width: double.infinity,
+                child: Text(
+                  compact || event.allDay
+                      ? event.title
+                      : '${event.title}\n${formatClock(event.start, use24h: use24h)}',
+                  maxLines: compact ? 1 : 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: style,
+                ),
               ),
             ),
           ),
@@ -2284,9 +2400,6 @@ class _Block extends StatelessWidget {
 
 // --- an event, opened -------------------------------------------------------------
 
-/// [event]'s details, and what can be done with it: answer it, join it,
-/// change it, write to the people on it. Each action closes the sheet and
-/// runs on the calendar screen's own [context] and [ref].
 /// The calendar on [meeting]'s day, with its sheet over it: a reminder,
 /// the widget or a link tapped for it. The sheet only where the device
 /// kept the meeting; the day alone otherwise.
@@ -2304,6 +2417,9 @@ Future<void> openMeeting(
   );
 }
 
+/// [event]'s details, and what can be done with it: answer it, join it,
+/// change it, write to the people on it. Each action closes the sheet and
+/// runs on the calendar screen's own [context] and [ref].
 Future<void> showEventDetails(
   BuildContext context,
   WidgetRef ref,
@@ -2412,7 +2528,10 @@ class _EventDetails extends StatelessWidget {
     final own = isOwnEvent(e);
     final others = hasOthers(e, email);
     // Only a calendar the app reaches takes a change; the rest is mail.
-    final reachable = account != null && AccountCalendar.canRead(account);
+    // A calendar the account only reads (holidays, birthdays, one shared
+    // to look at) takes nothing from here either.
+    final reachable =
+        account != null && AccountCalendar.canRead(account) && !e.readOnly;
     final microsoft = account?.provider == MailProvider.outlook;
     final invited = !own && e.organizer != null && !e.cancelled;
     final now = DateTime.now();

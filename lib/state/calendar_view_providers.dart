@@ -4,10 +4,13 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/calendar/account_calendar.dart';
+import '../data/calendar/internet_calendars.dart';
 import '../data/calendar/phone_calendar.dart';
 import '../data/ui_state_store.dart';
 import '../domain/account.dart';
+import '../domain/account_calendars.dart';
 import '../domain/calendar_event.dart';
+import '../domain/internet_calendar.dart';
 import '../domain/calendar_prefs.dart';
 import '../domain/calendar_reads.dart';
 import 'message_keeping.dart' show notRetried;
@@ -142,7 +145,8 @@ List<CalendarEvent> shownEvents(
         if (prefs.showDeclined || !e.declined) e,
     ];
 
-/// The accounts the calendar leaves out, by id.
+/// The accounts the calendar leaves out, by id, and the calendars, by
+/// `calendarKey`; a calendar from a link by its own account id.
 class HiddenCalendars extends Notifier<Set<String>> {
   @override
   Set<String> build() {
@@ -154,7 +158,67 @@ class HiddenCalendars extends Notifier<Set<String>> {
   void setShown(String accountId, bool shown) => state = Set.unmodifiable(
         shown ? ({...state}..remove(accountId)) : {...state, accountId},
       );
+
+  /// One calendar of an account, by its `calendarKey`, shown or not.
+  void setCalendarShown(String key, bool shown) => setShown(key, shown);
 }
+
+/// The calendars from links, as added in Settings, Calendar, kept on the
+/// device and in the backup.
+class InternetCalendarList extends Notifier<List<InternetCalendar>> {
+  @override
+  List<InternetCalendar> build() {
+    final store = ref.watch(uiStateStoreProvider);
+    listenSelf((_, next) => store.writeString(
+          UiStateKeys.internetCalendars,
+          InternetCalendar.listToText(next),
+        ));
+    return List.unmodifiable(InternetCalendar.listFrom(
+      store.readString(UiStateKeys.internetCalendars),
+    ));
+  }
+
+  void add(InternetCalendar calendar) =>
+      state = List.unmodifiable([...state, calendar]);
+
+  void remove(InternetCalendar calendar) {
+    state = List.unmodifiable([
+      for (final c in state)
+        if (c.id != calendar.id) c,
+    ]);
+    ref.read(internetCalendarReaderProvider).forget(calendar);
+  }
+
+  void rename(InternetCalendar calendar, String name) =>
+      state = List.unmodifiable([
+        for (final c in state) c.id == calendar.id ? c.copyWith(name: name) : c,
+      ]);
+}
+
+final internetCalendarsProvider =
+    NotifierProvider<InternetCalendarList, List<InternetCalendar>>(
+        InternetCalendarList.new);
+
+/// [accountId]'s calendars as its server lists them now, for Calendars
+/// shown: see `MailEngine.calendarsOf`, and what it throws.
+final accountCalendarsProvider = FutureProvider.autoDispose
+    .family<List<CalendarInfo>, String>((ref, accountId) {
+  ref.watch(calendarRefreshProvider);
+  return ref.watch(mailEngineProvider).calendarsOf(accountId);
+}, retry: notRetried);
+
+/// [accountId]'s calendars as last listed, with no network: the ones New
+/// meeting offers.
+final keptAccountCalendarsProvider = FutureProvider.autoDispose
+    .family<List<CalendarInfo>, String>(
+  (ref, accountId) => ref.watch(mailEngineProvider).keptCalendarsOf(accountId),
+  retry: notRetried,
+);
+
+/// Reading the calendars from links: nowhere by default, as a test and
+/// the browser preview have nowhere to keep them; main() sets the phone's.
+final internetCalendarReaderProvider =
+    Provider<InternetCalendars>((ref) => const NoInternetCalendars());
 
 final hiddenCalendarsProvider =
     NotifierProvider<HiddenCalendars, Set<String>>(HiddenCalendars.new);
@@ -168,12 +232,14 @@ typedef CalendarRange = ({DateTime start, DateTime end});
 /// [keptAt] is when the oldest of what is shown was read, where some of it
 /// is what the device kept rather than a read just made: null when every
 /// account was read just now. [reading] says the accounts are still being
-/// asked, with what was kept on screen meanwhile.
+/// asked, with what was kept on screen meanwhile. [calendars] is every
+/// calendar the events are on, by `calendarKey`, with its name and colour.
 typedef CalendarLoad = ({
   List<CalendarEvent> events,
   Map<String, Object> problems,
   DateTime? keptAt,
   bool reading,
+  Map<String, CalendarInfo> calendars,
 });
 
 /// How long a read counts as just made: a week swiped back to, or the
@@ -264,7 +330,25 @@ final calendarEventsProvider = StreamProvider.autoDispose
     for (final a in ref.watch(calendarAccountsProvider))
       if (!hidden.contains(a.id)) a,
   ];
+  final reader = ref.watch(internetCalendarReaderProvider);
+  final internet = [
+    for (final c in ref.watch(internetCalendarsProvider))
+      if (!hidden.contains(c.accountId)) c,
+  ];
   final kept = <String, KeptCalendar>{};
+  final lists = <String, List<CalendarInfo>>{};
+  final feeds = <String, KeptFeed>{};
+  Future<void> readLists() => Future.wait([
+        for (final a in accounts)
+          engine.keptCalendarsOf(a.id).then(
+            (calendars) {
+              lists[a.id] = calendars;
+            },
+            onError: (Object e) {
+              debugPrint('[myemail] kept calendar list not read: $e');
+            },
+          ),
+      ]);
   await Future.wait([
     for (final a in accounts)
       engine.keptCalendarEvents(a.id, range.start, range.end).then(
@@ -274,6 +358,11 @@ final calendarEventsProvider = StreamProvider.autoDispose
         onError: (Object e) =>
             debugPrint('[myemail] kept calendar not read: $e'),
       ),
+    readLists(),
+    for (final c in internet)
+      reader.kept(c).then((k) {
+        if (k != null) feeds[c.id] = k;
+      }),
   ]);
   final now = DateTime.now();
   bool fresh(KeptCalendar? k) {
@@ -304,6 +393,12 @@ final calendarEventsProvider = StreamProvider.autoDispose
         keptAt = at;
       }
     }
+    for (final c in internet) {
+      final feed = feeds[c.id]?.feed;
+      if (feed == null) continue;
+      events.addAll(feed.between(range.start, range.end, accountId: c.accountId));
+    }
+    events.retainWhere((e) => calendarShown(e, hidden));
     events.sort((a, b) {
       final byStart = a.start.compareTo(b.start);
       return byStart != 0 ? byStart : a.end.compareTo(b.end);
@@ -313,6 +408,18 @@ final calendarEventsProvider = StreamProvider.autoDispose
       problems: problems,
       keptAt: keptAt,
       reading: reading,
+      calendars: {
+        for (final calendars in lists.values)
+          for (final c in calendars) c.key: c,
+        for (final c in internet)
+          calendarKey(c.accountId, CalendarEvent.mainCalendar): CalendarInfo(
+            accountId: c.accountId,
+            id: CalendarEvent.mainCalendar,
+            name: c.name,
+            colour: c.colour,
+            canEdit: false,
+          ),
+      },
     );
   }
 
@@ -320,7 +427,16 @@ final calendarEventsProvider = StreamProvider.autoDispose
     for (final a in accounts)
       if (!fresh(kept[a.id])) a,
   ];
-  if (toRead.isEmpty) {
+  // A link read every few hours, or on Refresh.
+  final linksToRead = [
+    for (final c in internet)
+      if (feeds[c.id] case final k
+          when k == null ||
+              k.readAt.isBefore(notBefore) ||
+              now.difference(k.readAt) >= InternetCalendars.readEvery)
+        c,
+  ];
+  if (toRead.isEmpty && linksToRead.isEmpty) {
     yield load(const {}, const {}, reading: false);
     return;
   }
@@ -337,7 +453,18 @@ final calendarEventsProvider = StreamProvider.autoDispose
           problems[a.id] = e;
         },
       ),
+    for (final c in linksToRead)
+      reader.read(c).then(
+        (feed) {
+          feeds[c.id] = (feed: feed, readAt: DateTime.now());
+        },
+        onError: (Object e) {
+          problems[c.accountId] = e;
+        },
+      ),
   ]);
+  // Reading listed the accounts' calendars again.
+  await readLists();
   yield load(read, problems, reading: false);
 }, retry: notRetried);
 

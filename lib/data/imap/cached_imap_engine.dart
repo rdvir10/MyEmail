@@ -1162,9 +1162,51 @@ class CachedImapEngine implements MailEngine {
     // When it was asked, not answered: a read asked for after this one and
     // answered first is the newer, and this one must not undo it.
     final asked = DateTime.now();
-    final events = await _calendars.events(_accountFor(accountId), start, end);
+    final account = _accountFor(accountId);
+    final calendars = await _calendarsToRead(accountId);
+    final found = <CalendarEvent>[];
+    Object? mainFailure;
+    await Future.wait([
+      for (final calendar in calendars)
+        _readCalendar(account, calendar, start, end, asked).then(
+          (events) {
+            found.addAll(events);
+          },
+          onError: (Object e) {
+            mainFailure = e;
+          },
+        ),
+    ]);
+    final failure = mainFailure;
+    if (failure != null) throw failure;
+    found.sort(byStart);
+    return found;
+  }
+
+  /// One of [account]'s calendars between [start] and [end], kept as read.
+  /// One beside the main calendar that cannot be read gives what was kept
+  /// of it; the main one's failure is the read's.
+  Future<List<CalendarEvent>> _readCalendar(
+    Account account,
+    CalendarInfo calendar,
+    DateTime start,
+    DateTime end,
+    DateTime asked,
+  ) async {
+    final List<CalendarEvent> events;
     try {
-      await cache.keepCalendar(accountId, start, end, events, readAt: asked);
+      events = await _calendars.events(account, start, end, calendar: calendar);
+    } catch (e) {
+      if (calendar.isMain) rethrow;
+      debugPrint('[myemail] calendar ${calendar.name} of '
+          '${account.emailAddress} not read: $e');
+      return (await cache.keptCalendar(account.id, start, end,
+              calendarIds: {calendar.id}))
+          .events;
+    }
+    try {
+      await cache.keepCalendar(account.id, start, end, events,
+          readAt: asked, calendarId: calendar.id);
     } catch (e) {
       // The calendar was read; only opening faster next time is lost.
       debugPrint('[myemail] could not keep the calendar read: $e');
@@ -1177,8 +1219,67 @@ class CachedImapEngine implements MailEngine {
     String accountId,
     DateTime start,
     DateTime end,
-  ) =>
-      cache.keptCalendar(accountId, start, end);
+  ) async {
+    final calendars = await keptCalendarsOf(accountId);
+    return cache.keptCalendar(accountId, start, end, calendarIds: {
+      CalendarEvent.mainCalendar,
+      for (final c in calendars) c.id,
+    });
+  }
+
+  /// How long an account's calendars are taken as last listed before the
+  /// calendar lists them again: they change seldom, and each read asks for
+  /// every one of them.
+  static const calendarListFor = Duration(hours: 1);
+
+  /// Each account's calendars as last listed here, and when.
+  final Map<String, ({List<CalendarInfo> calendars, DateTime at})>
+      _calendarLists = {};
+
+  @override
+  Future<List<CalendarInfo>> calendarsOf(String accountId) async {
+    final calendars = await _calendars.calendars(_accountFor(accountId));
+    _calendarLists[accountId] = (calendars: calendars, at: DateTime.now());
+    try {
+      await cache.keepCalendarList(accountId, calendars);
+    } catch (e) {
+      debugPrint('[myemail] could not keep the calendar list: $e');
+    }
+    return calendars;
+  }
+
+  @override
+  Future<List<CalendarInfo>> keptCalendarsOf(String accountId) async {
+    final listed = _calendarLists[accountId];
+    if (listed != null) return listed.calendars;
+    try {
+      final kept = await cache.keptCalendarList(accountId);
+      if (kept.isNotEmpty) return kept;
+    } catch (e) {
+      debugPrint('[myemail] could not read the kept calendar list: $e');
+    }
+    return [CalendarInfo.main(accountId)];
+  }
+
+  /// The calendars a read of [accountId]'s asks: as listed within
+  /// [calendarListFor], or listed again. Where they cannot be listed
+  /// (offline, or a Google sign-in from before the app asked), as kept,
+  /// for the same while: the main one at least, as before there were more.
+  Future<List<CalendarInfo>> _calendarsToRead(String accountId) async {
+    final listed = _calendarLists[accountId];
+    if (listed != null &&
+        DateTime.now().difference(listed.at) < calendarListFor) {
+      return listed.calendars;
+    }
+    try {
+      return await calendarsOf(accountId);
+    } catch (e) {
+      debugPrint('[myemail] calendars of $accountId not listed: $e');
+      final kept = await keptCalendarsOf(accountId);
+      _calendarLists[accountId] = (calendars: kept, at: DateTime.now());
+      return kept;
+    }
+  }
 
   @override
   Future<void> respondToEvent(

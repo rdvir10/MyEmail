@@ -7,6 +7,7 @@ import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/cache/folder_sync.dart';
 import 'package:myemail/data/cache/mail_database.dart';
 import 'package:myemail/data/graph/graph_id_map.dart';
+import 'package:myemail/domain/account_calendars.dart';
 import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:sqlite3/sqlite3.dart' show sqlite3;
@@ -61,8 +62,15 @@ void main() {
   // and every test here would still have passed, while every device
   // upgrading from 2.35 or earlier failed on every cache read.
 
-  /// What schema 16 added: the calendar as last read.
+  /// What schema 17 added: each account's calendars as last listed.
+  Future<void> dropSchema17(MailDatabase db) async {
+    await db.customStatement('DROP TABLE IF EXISTS calendar_lists');
+  }
+
+  /// What schema 16 added: the calendar as last read. And everything after
+  /// it.
   Future<void> dropSchema16(MailDatabase db) async {
+    await dropSchema17(db);
     await db.customStatement('DROP TABLE IF EXISTS kept_events');
     await db.customStatement('DROP TABLE IF EXISTS calendar_reads');
   }
@@ -282,8 +290,17 @@ void main() {
     await db.close();
   }
 
-  /// A database as it stood at schema 15, the release before this one:
-  /// nowhere to keep the calendar.
+  /// A database as it stood at schema 16, the release before this one:
+  /// nowhere to keep each account's calendars.
+  Future<void> buildVersion16() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await dropSchema17(db);
+    await db.customStatement('PRAGMA user_version = 16');
+    await db.close();
+  }
+
+  /// A database as it stood at schema 15: nowhere to keep the calendar.
   Future<void> buildVersion15() async {
     final db = MailDatabase(NativeDatabase(file));
     await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
@@ -945,6 +962,24 @@ void main() {
     final kept = await store.keptCalendar('acct-1', from, to);
     expect(kept.events.single.title, 'Kept');
     expect(kept.readAt, DateTime(2026, 10, 25, 12));
+  });
+
+  test("a version 16 database gains somewhere to keep each account's "
+      'calendars, and keeps its rows', () async {
+    await buildVersion16();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    expect((await store.readMessages('acct-1', 'INBOX')).single.subject,
+        'Cached before the upgrade');
+    expect(await store.keptCalendarList('acct-1'), isEmpty);
+    const listed = [
+      CalendarInfo.main('acct-1'),
+      CalendarInfo(accountId: 'acct-1', id: 'BBB', name: 'Projects'),
+    ];
+    await store.keepCalendarList('acct-1', listed);
+    expect(await store.keptCalendarList('acct-1'), listed);
   });
 
   test('and so does one coming up from before arrival times were kept',

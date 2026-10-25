@@ -60,6 +60,9 @@ class CalendarEvent {
     this.seriesId,
     this.isPrivate = false,
     this.timeZone,
+    this.readOnly = false,
+    this.categories = const [],
+    this.colour,
   });
 
   /// The calendar's own id for this occurrence.
@@ -118,6 +121,18 @@ class CalendarEvent {
   /// where it does not say.
   final String? timeZone;
 
+  /// On a calendar the account only reads: Google's holidays and
+  /// birthdays, one shared to it to look at, a calendar from a link. Its
+  /// sheet answers, changes and removes nothing.
+  final bool readOnly;
+
+  /// Outlook's categories, by name, as the meeting has them.
+  final List<String> categories;
+
+  /// The event's own colour, ARGB: its first category's in Outlook, the
+  /// one picked for it in Google Calendar. Null for its calendar's.
+  final int? colour;
+
   CalendarEvent copyWith({
     DateTime? start,
     DateTime? end,
@@ -149,6 +164,9 @@ class CalendarEvent {
         seriesId: seriesId,
         isPrivate: isPrivate,
         timeZone: timeZone,
+        readOnly: readOnly,
+        categories: categories,
+        colour: colour,
       );
 
   /// The account said no and the calendar kept it all the same, as
@@ -208,6 +226,9 @@ class CalendarEvent {
       if (seriesId != null) 'seriesId': seriesId,
       if (isPrivate) 'isPrivate': true,
       if (timeZone != null) 'timeZone': timeZone,
+      if (readOnly) 'readOnly': true,
+      if (categories.isNotEmpty) 'categories': categories,
+      if (colour != null) 'colour': colour,
     };
   }
 
@@ -241,6 +262,8 @@ class CalendarEvent {
     String? text(Object? v) => v is String ? v : null;
     final attendees = json['attendees'];
     final minutes = json['reminderMinutes'];
+    final categories = json['categories'];
+    final colour = json['colour'];
     return CalendarEvent(
       id: id,
       accountId: accountId,
@@ -273,6 +296,12 @@ class CalendarEvent {
       seriesId: text(json['seriesId']),
       isPrivate: json['isPrivate'] == true,
       timeZone: text(json['timeZone']),
+      readOnly: json['readOnly'] == true,
+      categories: [
+        for (final c in categories is List ? categories : const [])
+          if (c is String) c,
+      ],
+      colour: colour is int ? colour : null,
     );
   }
 
@@ -299,7 +328,10 @@ class CalendarEvent {
       other.preview == preview &&
       other.seriesId == seriesId &&
       other.isPrivate == isPrivate &&
-      other.timeZone == timeZone;
+      other.timeZone == timeZone &&
+      other.readOnly == readOnly &&
+      listEquals(other.categories, categories) &&
+      other.colour == colour;
 
   @override
   int get hashCode => Object.hashAll([
@@ -324,6 +356,9 @@ class CalendarEvent {
         seriesId,
         isPrivate,
         timeZone,
+        readOnly,
+        Object.hashAll(categories),
+        colour,
       ]);
 
   @override

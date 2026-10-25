@@ -312,34 +312,120 @@ class AccountCalendar {
     }
   }
 
-  /// When [account]'s own calendar is busy between [start] and [end]; see
-  /// `MailEngine.busyTimes`.
-  /// Every event on [account]'s calendar between [start] and [end]; see
-  /// `MailEngine.calendarEvents`.
+  /// Every event on [account]'s calendar between [start] and [end], or on
+  /// [calendar], one beside it; see `MailEngine.calendarEvents`.
   Future<List<CalendarEvent>> events(
     Account account,
     DateTime start,
-    DateTime end,
-  ) async {
+    DateTime end, {
+    CalendarInfo? calendar,
+  }) async {
     if (account.isShared) throw const CalendarUnavailable(_sharedOnly);
+    final calendarId = calendar?.id ?? CalendarEvent.mainCalendar;
+    final readOnly = !(calendar?.canEdit ?? true);
     switch (account.provider) {
       case MailProvider.outlook:
+        final colours = await _categoryColoursOf(account);
         final api = _graphApi(account);
         try {
-          return await api.events(start, end, accountId: account.id);
+          return await api.events(
+            start,
+            end,
+            accountId: account.id,
+            calendarId: calendarId,
+            readOnly: readOnly,
+            categoryColours: colours,
+          );
         } finally {
           api.close();
         }
       case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
         final api = _googleApi(account);
         try {
-          return await api.events(start, end, accountId: account.id);
+          return await api.events(
+            start,
+            end,
+            accountId: account.id,
+            calendarId: calendarId,
+            readOnly: readOnly,
+          );
         } finally {
           api.close();
         }
       case MailProvider.gmail:
         throw const CalendarUnavailable(_appPasswordOnly);
     }
+  }
+
+  /// [account]'s calendars, the main one first; see `MailEngine.calendarsOf`.
+  /// A Google account's list needs a permission of its own, and one signed
+  /// in before the app asked for it throws `SignInNeedsConsent`.
+  Future<List<CalendarInfo>> calendars(Account account) async {
+    if (account.isShared) throw const CalendarUnavailable(_sharedOnly);
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          return await api.calendars(accountId: account.id);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = GoogleCalendarApi(
+          accessToken: ({bool force = false}) => accessToken(
+            account.id,
+            force: force,
+            scopes: GoogleOAuth.calendarListScopes,
+          ),
+          httpClient: _http,
+          sleep: sleep,
+        );
+        try {
+          return await api.calendars(accountId: account.id);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  /// How long a Microsoft mailbox's category colours are kept before they
+  /// are asked again: they change about never.
+  static const categoryColoursFor = Duration(hours: 6);
+
+  /// Each Microsoft mailbox's category colours, by account, and when read.
+  final Map<String, ({Map<String, int> colours, DateTime at})> _categories =
+      {};
+
+  /// [account]'s category colours by name, Outlook's master list. Read
+  /// with the mailbox's settings, which an organisation may not have
+  /// allowed yet: then none, and every event is its calendar's colour.
+  Future<Map<String, int>> _categoryColoursOf(Account account) async {
+    final kept = _categories[account.id];
+    if (kept != null && DateTime.now().difference(kept.at) < categoryColoursFor) {
+      return kept.colours;
+    }
+    final api = GraphCalendarApi(
+      accessToken: ({bool force = false}) => accessToken(
+        account.id,
+        force: force,
+        scopes: MicrosoftOAuth.mailboxSettingsScopes,
+      ),
+      httpClient: _http,
+      sleep: sleep,
+    );
+    Map<String, int> colours;
+    try {
+      colours = await api.categoryColours();
+    } catch (e) {
+      debugPrint('[myemail] no category colours for ${account.emailAddress}: $e');
+      colours = const {};
+    } finally {
+      api.close();
+    }
+    _categories[account.id] = (colours: colours, at: DateTime.now());
+    return colours;
   }
 
   /// Whether [account] has a calendar the app can read: one signed in with

@@ -3,13 +3,16 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/auth/microsoft_oauth.dart' show SignInNeedsConsent;
 import 'package:myemail/data/calendar/calendar_upkeep.dart';
+import 'package:myemail/data/calendar/internet_calendars.dart';
 import 'package:myemail/data/notifications/mail_notifier.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/data/widget/home_screen_surface.dart';
 import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/account_calendars.dart';
 import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/domain/calendar_prefs.dart';
+import 'package:myemail/domain/internet_calendar.dart';
 import 'package:myemail/domain/mail_message.dart' show MailAddress;
 import 'package:myemail/data/auth/oauth_token.dart';
 
@@ -241,5 +244,66 @@ void main() {
     at = now.add(const Duration(minutes: 26));
     await pass();
     expect(surface.calendarRedraws, 3);
+  });
+
+  test('a calendar switched off has no reminders, and is not on the widget',
+      () async {
+    now = DateTime(2026, 10, 26, 9);
+    engine.calendarLists[hadco.id] = [
+      CalendarInfo.main(hadco.id),
+      CalendarInfo(accountId: hadco.id, id: 'BBB', name: 'Projects'),
+    ];
+    engine.events[hadco.id] = [
+      meeting('a', DateTime(2026, 10, 26, 11), title: 'Main'),
+      CalendarEvent(
+        id: 'b',
+        accountId: hadco.id,
+        calendarId: 'BBB',
+        title: 'Projects',
+        start: DateTime(2026, 10, 26, 12),
+        end: DateTime(2026, 10, 26, 13),
+        reminderMinutes: 15,
+      ),
+    ];
+    await ui.writeIds(UiStateKeys.hiddenCalendars, {'${hadco.id}|BBB'});
+    await run();
+    expect([for (final r in notifier.meetingReminders.values) r.meeting.title],
+        ['Main']);
+    final rows =
+        jsonDecode(surface.values[CalendarUpkeep.widgetKey]! as String) as List;
+    expect([for (final r in rows) r['t']], ['Main']);
+  });
+
+  test('a calendar from a link is on the widget, in its colour', () async {
+    now = DateTime(2026, 10, 26, 9);
+    engine.events[hadco.id] = const [];
+    const link = InternetCalendar(
+      id: 'il',
+      name: 'Holidays in Israel',
+      url: 'https://example.com/il.ics',
+      colour: 0xFF0B8043,
+    );
+    await ui.writeString(
+        UiStateKeys.internetCalendars, InternetCalendar.listToText([link]));
+    final links = MemoryInternetCalendars({
+      link.url: 'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:h\r\n'
+          'SUMMARY:Holiday\r\nDTSTART;VALUE=DATE:20261027\r\n'
+          'DTEND;VALUE=DATE:20261028\r\nEND:VEVENT\r\nEND:VCALENDAR',
+    });
+    await CalendarUpkeep(
+      engine: engine,
+      notifier: notifier,
+      uiState: ui,
+      surface: surface,
+      links: links,
+      clock: () => now,
+    ).run();
+    final rows =
+        jsonDecode(surface.values[CalendarUpkeep.widgetKey]! as String) as List;
+    final holiday = rows.single as Map;
+    expect(holiday['t'], 'Holiday');
+    expect(holiday['a'], isTrue);
+    expect(holiday['c'], 0xFF0B8043.toSigned(32));
+    expect(links.asked, [link.url], reason: 'read, never having been');
   });
 }

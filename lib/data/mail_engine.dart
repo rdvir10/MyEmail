@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import '../domain/account_calendars.dart';
 import '../domain/account.dart';
 import '../domain/error_report.dart';
 import '../domain/search_field.dart';
@@ -14,6 +15,7 @@ export '../domain/recoverable_message.dart';
 export '../domain/free_busy.dart';
 export '../domain/mail_tip.dart';
 export '../domain/calendar_reads.dart' show KeptCalendar;
+export '../domain/account_calendars.dart' show CalendarInfo;
 export '../domain/calendar_change.dart' show EventChange, EventNotes;
 export 'contacts/account_people.dart' show PeopleSearchAccess, PeopleSearchState;
 import 'auth/oauth_token.dart';
@@ -298,10 +300,12 @@ abstract class MailEngine {
     required String displayName,
   });
 
-  /// Every event on [accountId]'s calendar between [start] and [end], each
-  /// occurrence on its own: the calendar view's. Throws `SignInNeedsConsent`
-  /// while the account has not allowed its calendar, and
-  /// [CalendarUnavailable] for one that cannot have one here.
+  /// Every event on [accountId]'s calendars between [start] and [end],
+  /// each occurrence on its own: the calendar view's. Its main calendar and
+  /// each of [calendarsOf] beside it; one of those that cannot be read just
+  /// now gives what was kept of it. Throws `SignInNeedsConsent` while the
+  /// account has not allowed its calendar, and [CalendarUnavailable] for
+  /// one that cannot have one here.
   ///
   /// What it finds is kept on the device, for [keptCalendarEvents].
   Future<List<CalendarEvent>> calendarEvents(
@@ -319,6 +323,17 @@ abstract class MailEngine {
     DateTime start,
     DateTime end,
   );
+
+  /// [accountId]'s calendars as its server lists them now: the main one,
+  /// and each made or followed beside it, Outlook's My Calendars and
+  /// Google's calendar list. Kept, for [keptCalendarsOf]. Throws as
+  /// [calendarEvents] does, and `SignInNeedsConsent` for a Google account
+  /// signed in before the app asked to list them.
+  Future<List<CalendarInfo>> calendarsOf(String accountId);
+
+  /// What [calendarsOf] last found for [accountId], with no network: the
+  /// main calendar alone where its calendars were never listed.
+  Future<List<CalendarInfo>> keptCalendarsOf(String accountId);
 
   /// Answer [event], a meeting someone else organised, on its account's
   /// calendar, as Outlook answers one there: with [note], without a word

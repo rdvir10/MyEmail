@@ -907,8 +907,52 @@ class SampleMailEngine implements MailEngine {
       for (final e in all)
         if (e.start.isBefore(end) && e.end.isAfter(start)) e,
     ];
-    _keptCalendars.keep(accountId, start, end, found, readAt: DateTime.now());
+    // Kept calendar by calendar, as the real engine keeps them.
+    final calendars = _listed(accountId);
+    _keptCalendars.keepList(accountId, calendars);
+    final readAt = DateTime.now();
+    for (final c in calendars) {
+      _keptCalendars.keep(
+        accountId,
+        start,
+        end,
+        [
+          for (final e in found)
+            if (e.calendarId == c.id) e,
+        ],
+        readAt: readAt,
+        calendarId: c.id,
+      );
+    }
     return found;
+  }
+
+  /// Each account's calendars, for a test to fill; an account not in it
+  /// has its main one alone.
+  final Map<String, List<CalendarInfo>> calendarLists = {};
+
+  List<CalendarInfo> _listed(String accountId) =>
+      calendarLists[accountId] ?? [CalendarInfo.main(accountId)];
+
+  /// What [calendarsOf] throws instead, by account, for a test: a Google
+  /// sign-in from before the app asked to list calendars.
+  final Map<String, Exception> calendarListRefusals = {};
+
+  @override
+  Future<List<CalendarInfo>> calendarsOf(String accountId) async {
+    await _latency();
+    final refusal =
+        calendarListRefusals[accountId] ?? calendarRefusals[accountId];
+    if (refusal != null) throw refusal;
+    final calendars = _listed(accountId);
+    _keptCalendars.keepList(accountId, calendars);
+    return calendars;
+  }
+
+  @override
+  Future<List<CalendarInfo>> keptCalendarsOf(String accountId) async {
+    final kept = _keptCalendars.keptList(accountId);
+    return kept.isNotEmpty ? kept : [CalendarInfo.main(accountId)];
   }
 
   /// What [calendarEvents] found, kept as the real engine keeps it.
@@ -920,7 +964,10 @@ class SampleMailEngine implements MailEngine {
     DateTime start,
     DateTime end,
   ) async =>
-      _keptCalendars.kept(accountId, start, end);
+      _keptCalendars.kept(accountId, start, end, calendarIds: {
+        CalendarEvent.mainCalendar,
+        for (final c in _keptCalendars.keptList(accountId)) c.id,
+      });
 
   /// What the calendars were asked to do with their events, a line each,
   /// for a test to read: "respond e1 accepted", "update e1 title=Lunch".

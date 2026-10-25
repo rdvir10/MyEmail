@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../../domain/account_calendars.dart';
 import '../../domain/address_suggestions.dart';
 import '../../domain/calendar_event.dart';
 import '../../domain/calendar_reads.dart';
@@ -322,6 +323,13 @@ abstract class CacheStore {
     Set<String> calendarIds = const {CalendarEvent.mainCalendar},
   });
 
+  /// [accountId]'s calendars as just listed, in place of those kept.
+  Future<void> keepCalendarList(String accountId, List<CalendarInfo> calendars);
+
+  /// What [keepCalendarList] last kept for [accountId]; empty where its
+  /// calendars were never listed.
+  Future<List<CalendarInfo>> keptCalendarList(String accountId);
+
   /// The newest [limit] flagged messages in all of [accountId]'s folders,
   /// each with the folder it is in, as [readMessages] reads them.
   Future<List<({String path, CachedMessage message})>> readFlagged(
@@ -557,6 +565,17 @@ class MemoryCacheStore implements CacheStore {
     Set<String> calendarIds = const {CalendarEvent.mainCalendar},
   }) async =>
       _calendars.kept(accountId, start, end, calendarIds: calendarIds);
+
+  @override
+  Future<void> keepCalendarList(
+    String accountId,
+    List<CalendarInfo> calendars,
+  ) async =>
+      _calendars.keepList(accountId, calendars);
+
+  @override
+  Future<List<CalendarInfo>> keptCalendarList(String accountId) async =>
+      _calendars.keptList(accountId);
 
   @override
   Future<List<({String path, CachedMessage message})>> readFlagged(
@@ -912,9 +931,18 @@ class MemoryCalendarKeep {
     return (events: events, readAt: readAtOverAll(reads, start, end, calendarIds));
   }
 
+  final Map<String, List<CalendarInfo>> _lists = {};
+
+  void keepList(String accountId, List<CalendarInfo> calendars) =>
+      _lists[accountId] = List.unmodifiable(calendars);
+
+  List<CalendarInfo> keptList(String accountId) =>
+      _lists[accountId] ?? const [];
+
   void forget(String accountId) {
     _reads.remove(accountId);
     _events.remove(accountId);
+    _lists.remove(accountId);
   }
 }
 

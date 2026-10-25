@@ -5,6 +5,8 @@ import '../../data/auth/microsoft_oauth.dart';
 import '../../data/calendar/phone_calendar_sync.dart';
 import '../../domain/account.dart';
 import '../../domain/calendar_prefs.dart';
+import '../../domain/internet_calendar.dart';
+import '../../data/calendar/internet_calendars.dart' show InternetCalendars;
 import '../../domain/error_report.dart' show ReadableError;
 import '../../state/calendar_view_providers.dart';
 import '../../state/providers.dart';
@@ -44,6 +46,7 @@ class CalendarSettingsScreen extends ConsumerWidget {
     String minutes(int m) =>
         formatClock(DateTime(2000, 1, 1, m ~/ 60, m % 60), use24h: use24h);
     final readable = ref.watch(calendarAccountsProvider);
+    final links = ref.watch(internetCalendarsProvider);
     final inPhone = ref.watch(phoneCalendarsProvider);
     final agendaAt = prefs.agendaAt;
     return Scaffold(
@@ -217,6 +220,53 @@ class CalendarSettingsScreen extends ConsumerWidget {
           const Divider(),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 18, 16, 6),
+            child: Text('Calendars from links', style: heading),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+            child: Text(
+              "Public holidays, a school's terms, a team's fixtures: an .ics "
+              'link MyEmail reads every few hours and shows beside your own, '
+              'read only, in its own colour.',
+              style: muted,
+            ),
+          ),
+          for (final c in links)
+            ListTile(
+              key: ValueKey('internet-calendar:${c.id}'),
+              leading: CircleAvatar(
+                radius: 10,
+                backgroundColor: Color(c.colour),
+              ),
+              title: Text(c.name),
+              subtitle: Text(
+                Uri.tryParse(c.url)?.host ?? c.url,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: IconButton(
+                key: ValueKey('internet-calendar-remove:${c.id}'),
+                tooltip: 'Remove',
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () =>
+                    ref.read(internetCalendarsProvider.notifier).remove(c),
+              ),
+            ),
+          ListTile(
+            key: const ValueKey('internet-calendar-add'),
+            leading: const Icon(Icons.link),
+            title: const Text('Add from a link'),
+            onTap: () => _addFromLink(context, ref),
+          ),
+          ListTile(
+            key: const ValueKey('internet-calendar-holidays'),
+            leading: const Icon(Icons.flag_outlined),
+            title: const Text('Public holidays'),
+            subtitle: const Text('By country, as Google publishes them'),
+            onTap: () => _addHolidays(context, ref),
+          ),
+          const Divider(),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 18, 16, 6),
             child: Text("In the phone's calendar", style: heading),
           ),
           for (final account in accounts) _PhoneCalendarRow(account: account),
@@ -240,6 +290,168 @@ class CalendarSettingsScreen extends ConsumerWidget {
       ),
     );
   }
+}
+
+/// A new calendar from a link, read once to see that it is one, and named
+/// as it names itself unless a name is given.
+Future<void> _addFromLink(BuildContext context, WidgetRef ref) async {
+  final added = await showDialog<InternetCalendar>(
+    context: context,
+    builder: (_) => _AddLinkDialog(
+      colour: _nextColour(ref.read(internetCalendarsProvider)),
+      reader: ref.read(internetCalendarReaderProvider),
+    ),
+  );
+  if (added == null) return;
+  ref.read(internetCalendarsProvider.notifier).add(added);
+  ref.read(calendarRefreshProvider.notifier).now();
+}
+
+/// A country's public holidays, picked from Google's.
+Future<void> _addHolidays(BuildContext context, WidgetRef ref) async {
+  final picked = await showDialog<({String country, String id})>(
+    context: context,
+    builder: (context) => SimpleDialog(
+      title: const Text('Public holidays'),
+      children: [
+        for (final h in holidayCalendars)
+          SimpleDialogOption(
+            key: ValueKey('holidays:${h.id}'),
+            onPressed: () => Navigator.of(context).pop(h),
+            child: Text(h.country),
+          ),
+      ],
+    ),
+  );
+  if (picked == null) return;
+  final have = ref.read(internetCalendarsProvider);
+  final url = holidayFeedUrl(picked.id);
+  if (have.any((c) => c.url == url)) return;
+  ref.read(internetCalendarsProvider.notifier).add(InternetCalendar(
+        id: _newId(),
+        name: picked.country.endsWith('holidays')
+            ? picked.country
+            : 'Holidays in ${picked.country}',
+        url: url,
+        colour: _nextColour(have),
+      ));
+  ref.read(calendarRefreshProvider.notifier).now();
+}
+
+String _newId() =>
+    DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+
+int _nextColour(List<InternetCalendar> have) =>
+    internetCalendarColours[have.length % internetCalendarColours.length];
+
+class _AddLinkDialog extends StatefulWidget {
+  const _AddLinkDialog({required this.colour, required this.reader});
+
+  final int colour;
+  final InternetCalendars reader;
+
+  @override
+  State<_AddLinkDialog> createState() => _AddLinkDialogState();
+}
+
+class _AddLinkDialogState extends State<_AddLinkDialog> {
+  final _link = TextEditingController();
+  final _name = TextEditingController();
+  String? _problem;
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _link.dispose();
+    _name.dispose();
+    super.dispose();
+  }
+
+  Future<void> _add() async {
+    final url = feedUrlOf(_link.text);
+    if (url == null) {
+      setState(() => _problem = 'That is not a link to a calendar.');
+      return;
+    }
+    final typed = _name.text.trim();
+    final calendar = InternetCalendar(
+      id: _newId(),
+      name: typed.isEmpty ? (Uri.parse(url).host) : typed,
+      url: url,
+      colour: widget.colour,
+    );
+    setState(() {
+      _busy = true;
+      _problem = null;
+    });
+    try {
+      final feed = await widget.reader.read(calendar);
+      if (!mounted) return;
+      final named = feed.name;
+      Navigator.of(context).pop(typed.isEmpty && named != null
+          ? calendar.copyWith(name: named)
+          : calendar);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _problem = e is ReadableError ? e.message : '$e';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Add from a link'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              key: const ValueKey('internet-calendar-link'),
+              controller: _link,
+              autofocus: true,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                labelText: 'Link',
+                hintText: 'https://… or webcal://…',
+              ),
+            ),
+            TextField(
+              key: const ValueKey('internet-calendar-name'),
+              controller: _name,
+              decoration: const InputDecoration(
+                labelText: 'Name',
+                hintText: 'As the calendar names itself',
+              ),
+            ),
+            if (_problem != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Text(
+                  _problem!,
+                  key: const ValueKey('internet-calendar-problem'),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: _busy ? null : () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const ValueKey('internet-calendar-save'),
+            onPressed: _busy ? null : _add,
+            child: _busy
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Add'),
+          ),
+        ],
+      );
 }
 
 class _PhoneCalendarRow extends ConsumerStatefulWidget {

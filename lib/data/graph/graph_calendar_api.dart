@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
+import '../../domain/account_calendars.dart';
 import '../../domain/calendar_change.dart';
 import '../../domain/calendar_event.dart';
 import '../../domain/calendar_invite.dart';
@@ -98,8 +99,13 @@ class GraphCalendarApi {
       // after a throttle, is known by it.
       'transactionId': meeting.transactionId ?? _transactionId(),
     });
+    // On a calendar beside the main one where one was chosen.
+    final into = meeting.calendarId == CalendarEvent.mainCalendar
+        ? eventsUri
+        : Uri.parse('$base/me/calendars/'
+            '${Uri.encodeComponent(meeting.calendarId)}/events');
     final response = await _exchange(
-      () => http.Request('POST', eventsUri)
+      () => http.Request('POST', into)
         ..headers['Content-Type'] = 'application/json'
         ..body = body,
     );
@@ -992,20 +998,29 @@ class GraphCalendarApi {
   }
 
   /// Every event on the calendar between [start] and [end], each
-  /// occurrence of a series on its own, as [accountId]'s.
+  /// occurrence of a series on its own, as [accountId]'s: on its main
+  /// calendar, or on [calendarId], one beside it. [readOnly] for one the
+  /// account cannot change; [categoryColours] the colours of the mailbox's
+  /// categories, by name, for an event's own.
   Future<List<CalendarEvent>> events(
     DateTime start,
     DateTime end, {
     required String accountId,
+    String calendarId = CalendarEvent.mainCalendar,
+    bool readOnly = false,
+    Map<String, int> categoryColours = const {},
   }) async {
     final found = <CalendarEvent>[];
-    var next = Uri.parse('$base/me/calendarView').replace(queryParameters: {
+    final view = calendarId == CalendarEvent.mainCalendar
+        ? '$base/me/calendarView'
+        : '$base/me/calendars/${Uri.encodeComponent(calendarId)}/calendarView';
+    var next = Uri.parse(view).replace(queryParameters: {
       'startDateTime': start.toUtc().toIso8601String(),
       'endDateTime': end.toUtc().toIso8601String(),
       r'$select': 'subject,start,end,isAllDay,location,organizer,attendees,'
           'onlineMeeting,webLink,showAs,responseStatus,isOrganizer,'
           'isCancelled,isReminderOn,reminderMinutesBeforeStart,bodyPreview,'
-          'seriesMasterId,sensitivity,originalStartTimeZone',
+          'seriesMasterId,sensitivity,originalStartTimeZone,categories',
       r'$orderby': 'start/dateTime',
       r'$top': '200',
     });
@@ -1018,7 +1033,13 @@ class GraphCalendarApi {
       final value = json['value'];
       for (final e in value is List ? value : const []) {
         if (e is! Map) continue;
-        final event = eventFrom(e.cast<String, Object?>(), accountId);
+        final event = eventFrom(
+          e.cast<String, Object?>(),
+          accountId,
+          calendarId: calendarId,
+          readOnly: readOnly,
+          categoryColours: categoryColours,
+        );
         if (event != null) found.add(event);
       }
       final link = json['@odata.nextLink'];
@@ -1028,9 +1049,74 @@ class GraphCalendarApi {
     return found;
   }
 
+  /// The mailbox's calendars, as Outlook's My Calendars lists them: its
+  /// default one as the main calendar, and each made or added beside it.
+  Future<List<CalendarInfo>> calendars({required String accountId}) async {
+    final found = <CalendarInfo>[];
+    var next = Uri.parse('$base/me/calendars').replace(queryParameters: {
+      r'$select': 'id,name,color,hexColor,isDefaultCalendar,canEdit',
+      r'$top': '100',
+    });
+    for (var page = 0; page < 5; page++) {
+      final response = await _exchange(() => http.Request('GET', next));
+      if (response.statusCode >= 400) throw _failureFor(response);
+      final json = _jsonOf(response);
+      final value = json['value'];
+      for (final c in value is List ? value : const []) {
+        if (c is! Map) continue;
+        final id = c['id'];
+        if (id is! String || id.isEmpty) continue;
+        final name = '${c['name'] ?? ''}'.trim();
+        found.add(c['isDefaultCalendar'] == true
+            ? CalendarInfo(
+                accountId: accountId,
+                id: CalendarEvent.mainCalendar,
+                name: name.isEmpty ? 'Calendar' : name,
+              )
+            : CalendarInfo(
+                accountId: accountId,
+                id: id,
+                name: name.isEmpty ? 'Calendar' : name,
+                colour: colourFromHex(c['hexColor']) ??
+                    outlookCalendarColours[c['color']],
+                canEdit: c['canEdit'] != false,
+              ));
+      }
+      final link = json['@odata.nextLink'];
+      if (link is! String) break;
+      next = Uri.parse(link);
+    }
+    // The default one is the one every mailbox has, said or not.
+    if (!found.any((c) => c.isMain)) {
+      found.insert(0, CalendarInfo.main(accountId));
+    }
+    return found;
+  }
+
+  /// The colours of the mailbox's categories, by name: Outlook's master
+  /// list, which needs the mailbox's settings allowed.
+  Future<Map<String, int>> categoryColours() async {
+    final response = await _exchange(
+      () => http.Request('GET', Uri.parse('$base/me/outlook/masterCategories')),
+    );
+    if (response.statusCode >= 400) throw _failureFor(response);
+    final value = _jsonOf(response)['value'];
+    return {
+      for (final c in value is List ? value : const [])
+        if (c is Map && c['displayName'] is String)
+          c['displayName'] as String: ?outlookCategoryColours[c['color']],
+    };
+  }
+
   /// One of calendarView's events, asked for in UTC, as a [CalendarEvent]
   /// in local time; null for one with no id or no time.
-  static CalendarEvent? eventFrom(Map<String, Object?> json, String accountId) {
+  static CalendarEvent? eventFrom(
+    Map<String, Object?> json,
+    String accountId, {
+    String calendarId = CalendarEvent.mainCalendar,
+    bool readOnly = false,
+    Map<String, int> categoryColours = const {},
+  }) {
     final id = json['id'];
     if (id is! String) return null;
     final allDay = json['isAllDay'] == true;
@@ -1069,9 +1155,21 @@ class GraphCalendarApi {
     final online = json['onlineMeeting'];
     final joinUrl = online is Map ? online['joinUrl'] : null;
     final minutes = json['reminderMinutesBeforeStart'];
+    final categories = [
+      for (final c in json['categories'] is List
+          ? json['categories'] as List
+          : const [])
+        if (c is String && c.trim().isNotEmpty) c.trim(),
+    ];
     return CalendarEvent(
       id: id,
       accountId: accountId,
+      calendarId: calendarId,
+      readOnly: readOnly,
+      categories: categories,
+      colour: [
+        for (final c in categories) ?categoryColours[c],
+      ].firstOrNull,
       title: '${json['subject'] ?? ''}'.trim(),
       start: start,
       end: end.isBefore(start) ? start : end,

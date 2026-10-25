@@ -2,7 +2,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
-import 'calendar_event.dart' show EventShowAs;
+import 'calendar_event.dart' show CalendarEvent, EventShowAs;
 import 'mail_message.dart';
 import 'recurrence.dart';
 
@@ -32,7 +32,12 @@ class MeetingDraft {
     this.reminder,
     this.showAs,
     this.isPrivate = false,
+    this.calendarId = CalendarEvent.mainCalendar,
   });
+
+  /// Which of the account's calendars it goes on: its main one, or one
+  /// beside it.
+  final String calendarId;
 
   /// How it repeats, or null for one meeting.
   final Recurrence? recurrence;
@@ -144,7 +149,8 @@ class MeetingDraft {
       other.recurrence == recurrence &&
       other.reminder == reminder &&
       other.showAs == showAs &&
-      other.isPrivate == isPrivate;
+      other.isPrivate == isPrivate &&
+      other.calendarId == calendarId;
 
   bool get hasAttendees => attendees.isNotEmpty;
 
@@ -165,6 +171,7 @@ class MeetingDraft {
       allDay: allDay,
       timeZone: timeZone,
       online: online,
+      calendarId: calendarId,
     );
   }
 

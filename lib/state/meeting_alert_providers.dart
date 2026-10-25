@@ -7,7 +7,8 @@ import '../data/calendar/calendar_upkeep.dart';
 import '../data/ui_state_store.dart';
 import '../domain/calendar_event.dart';
 import '../domain/meeting_alerts.dart';
-import 'calendar_view_providers.dart' show CalendarRange;
+import 'calendar_view_providers.dart'
+    show CalendarRange, internetCalendarReaderProvider;
 import 'providers.dart';
 import 'sync_providers.dart' show mailNotifierProvider;
 import 'widget_providers.dart' show homeScreenSurfaceProvider;
@@ -70,6 +71,7 @@ class AppCalendarKeeper implements CalendarKeeper {
       uiState,
       _ref.read(mailNotifierProvider),
       _ref.read(homeScreenSurfaceProvider),
+      links: _ref.read(internetCalendarReaderProvider),
       force: now,
     );
   }
