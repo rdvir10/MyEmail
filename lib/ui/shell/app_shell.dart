@@ -1,3 +1,5 @@
+import '../../data/calendar/phone_calendar_sync.dart';
+import '../../state/calendar_view_providers.dart' show phoneCalendarProvider;
 import 'dart:async';
 import 'dart:isolate';
 import 'dart:ui' show IsolateNameServer;
@@ -246,6 +248,7 @@ class _AppShellState extends ConsumerState<AppShell>
     ref.invalidate(foldersProvider);
     _restartStalledSync();
     unawaited(_wakeSnoozed());
+    unawaited(_syncPhoneCalendars());
   }
 
   /// Hidden or paused since the app was last in front; see
@@ -277,7 +280,18 @@ class _AppShellState extends ConsumerState<AppShell>
     if (!mounted) return;
     ref.read(listRefreshProvider.notifier).ping();
     unawaited(_wakeSnoozed());
+    unawaited(_syncPhoneCalendars());
   }
+
+  /// Microsoft calendars in the phone's calendar, brought up to date while
+  /// the app is in front, every quarter hour at most; the background does
+  /// it otherwise. Never throws.
+  Future<void> _syncPhoneCalendars() => syncPhoneCalendarsIfDue(
+        ref.read(mailEngineProvider),
+        ref.read(uiStateStoreProvider),
+        phone: ref.read(phoneCalendarProvider),
+        every: const Duration(minutes: 15),
+      );
 
   /// Snoozed mail whose time has come, back in its folder while the app is
   /// in front, and the background job set for the next due.

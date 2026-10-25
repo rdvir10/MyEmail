@@ -4,10 +4,13 @@ import 'dart:math';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
+import '../../domain/calendar_event.dart';
 import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
+import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
+import '../imap/imap_mapping.dart' show htmlToText;
 import '../mail_engine.dart';
 
 /// A thin client over the Google Calendar API: one call, to put a meeting
@@ -474,6 +477,142 @@ class GoogleCalendarApi {
       busy.add((start: from, end: to));
     }
     return busy;
+  }
+
+  /// Every event on the primary calendar between [start] and [end], each
+  /// occurrence of a series on its own, as [accountId]'s.
+  Future<List<CalendarEvent>> events(
+    DateTime start,
+    DateTime end, {
+    required String accountId,
+  }) async {
+    final found = <CalendarEvent>[];
+    String? token;
+    for (var page = 0; page < 10; page++) {
+      final response = await _authorised(() => http.Request(
+            'GET',
+            _eventsAt(null, {
+              'timeMin': start.toUtc().toIso8601String(),
+              'timeMax': end.toUtc().toIso8601String(),
+              'singleEvents': 'true',
+              'orderBy': 'startTime',
+              'maxResults': '250',
+              'pageToken': ?token,
+            }),
+          ));
+      if (response.statusCode >= 400) throw _failureFor(response);
+      final json = _jsonOf(response);
+      final items = json['items'];
+      for (final e in items is List ? items : const []) {
+        if (e is! Map) continue;
+        final event = eventFrom(e.cast<String, Object?>(), accountId);
+        if (event != null) found.add(event);
+      }
+      final next = json['nextPageToken'];
+      if (next is! String || next.isEmpty) break;
+      token = next;
+    }
+    return found;
+  }
+
+  /// One of Google's events as a [CalendarEvent] in local time; null for
+  /// one with no id or no time, or cancelled.
+  static CalendarEvent? eventFrom(Map<String, Object?> json, String accountId) {
+    final id = json['id'];
+    if (id is! String || json['status'] == 'cancelled') return null;
+    final allDay = json['start'] is Map && (json['start'] as Map)['date'] is String;
+    DateTime? at(Object? value) {
+      final t = _timeOf(value);
+      if (t == null) return null;
+      return allDay ? DateTime(t.year, t.month, t.day) : t.toLocal();
+    }
+
+    final start = at(json['start']), end = at(json['end']);
+    if (start == null || end == null) return null;
+    MailAddress? address(Object? v) {
+      if (v is! Map) return null;
+      final email = '${v['email'] ?? ''}'.trim();
+      if (email.isEmpty) return null;
+      final name = '${v['displayName'] ?? ''}'.trim();
+      return MailAddress(email: email, name: name.isEmpty ? null : name);
+    }
+
+    EventResponse response(Object? status) => switch ('$status') {
+          'accepted' => EventResponse.accepted,
+          'tentative' => EventResponse.tentative,
+          'declined' => EventResponse.declined,
+          'needsAction' => EventResponse.notResponded,
+          _ => EventResponse.none,
+        };
+    final attendees = json['attendees'] is List
+        ? (json['attendees'] as List).whereType<Map>().toList()
+        : const <Map>[];
+    final organizer = json['organizer'];
+    final mine = attendees.where((a) => a['self'] == true).firstOrNull;
+    final isOrganizer = organizer is Map && organizer['self'] == true;
+    final points = json['conferenceData'] is Map
+        ? (json['conferenceData'] as Map)['entryPoints']
+        : null;
+    final Map? videoPoint = points is List
+        ? points
+            .whereType<Map>()
+            .where((p) => p['entryPointType'] == 'video')
+            .firstOrNull
+        : null;
+    final video = videoPoint?['uri'];
+    final hangout = json['hangoutLink'];
+    final reminders = json['reminders'];
+    final overrides = reminders is Map ? reminders['overrides'] : null;
+    final minutes = [
+      for (final o in overrides is List ? overrides : const [])
+        if (o is Map && o['minutes'] is num) (o['minutes'] as num).toInt(),
+    ];
+    final description = json['description'];
+    var preview = description is String ? htmlToText(description).trim() : '';
+    if (preview.length > 300) preview = '${preview.substring(0, 300)}…';
+    return CalendarEvent(
+      id: id,
+      accountId: accountId,
+      title: '${json['summary'] ?? ''}'.trim(),
+      start: start,
+      end: end.isBefore(start) ? start : end,
+      allDay: allDay,
+      location: '${json['location'] ?? ''}'.trim(),
+      organizer: address(organizer),
+      attendees: [
+        for (final a in attendees)
+          if (a['resource'] != true)
+            if (address(a) case final who?)
+              EventAttendee(
+                who,
+                response: a['organizer'] == true
+                    ? EventResponse.organizer
+                    : response(a['responseStatus']),
+                optional: a['optional'] == true,
+              ),
+      ],
+      joinUrl: video is String
+          ? video
+          : hangout is String
+              ? hangout
+              : null,
+      webLink: json['htmlLink'] is String ? json['htmlLink'] as String : null,
+      showAs: json['transparency'] == 'transparent'
+          ? EventShowAs.free
+          : mine?['responseStatus'] == 'tentative'
+              ? EventShowAs.tentative
+              : EventShowAs.busy,
+      response: isOrganizer
+          ? EventResponse.organizer
+          : mine == null
+              ? EventResponse.none
+              : response(mine['responseStatus']),
+      isOrganizer: isOrganizer,
+      reminderMinutes: minutes.isEmpty
+          ? null
+          : minutes.reduce((a, b) => a > b ? a : b),
+      preview: preview,
+    );
   }
 
   /// An event's start or end for [busy]: a whole day's from the phone's

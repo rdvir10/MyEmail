@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
+import '../../domain/calendar_event.dart';
 import '../../domain/account.dart';
 import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
@@ -311,6 +312,39 @@ class AccountCalendar {
 
   /// When [account]'s own calendar is busy between [start] and [end]; see
   /// `MailEngine.busyTimes`.
+  /// Every event on [account]'s calendar between [start] and [end]; see
+  /// `MailEngine.calendarEvents`.
+  Future<List<CalendarEvent>> events(
+    Account account,
+    DateTime start,
+    DateTime end,
+  ) async {
+    if (account.isShared) throw const CalendarUnavailable(_sharedOnly);
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          return await api.events(start, end, accountId: account.id);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          return await api.events(start, end, accountId: account.id);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  /// Whether [account] has a calendar the app can read: one signed in with
+  /// Microsoft or Google itself, not a shared mailbox.
+  static bool canRead(Account account) =>
+      account.authMethod == AuthMethod.oauth && !account.isShared;
+
   Future<List<TimeSpan>> busyTimes(
     Account account,
     DateTime start,
@@ -430,6 +464,10 @@ class AccountCalendar {
   static const _appPasswordOnly =
       "The app cannot reach this account's calendar: an app password covers "
       'its mail and nothing else.';
+
+  static const _sharedOnly =
+      "A shared mailbox's calendar is not reached here: its meetings are on "
+      'the account it is shared with.';
 
   /// A Meet link from the Gmail account, on its token for Meet. What goes
   /// wrong with that sign-in is said in that account's name: it is not the

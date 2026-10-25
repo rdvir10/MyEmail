@@ -1,3 +1,4 @@
+import '../calendar/calendar_screen.dart';
 import '../quick_steps/apply_quick_step.dart';
 import '../../state/quick_steps.dart';
 import '../common/bottom_message.dart';
@@ -89,6 +90,7 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
   static const _onItsOwn = {
     AppCommand.newMessage,
     AppCommand.newMeeting,
+    AppCommand.calendar,
     AppCommand.reply,
     AppCommand.replyAll,
     AppCommand.forward,
@@ -158,6 +160,8 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
         await openCompose(context, ref, kind: ComposeKind.newMessage);
       case AppCommand.newMeeting:
         await openNewMeeting(context, ref);
+      case AppCommand.calendar:
+        await CalendarScreen.open(context);
       case AppCommand.reply:
         if (message != null) {
           await openCompose(context, ref,
@@ -292,6 +296,7 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
 enum AppCommand {
   newMessage,
   newMeeting,
+  calendar,
   reply,
   replyAll,
   forward,
@@ -356,6 +361,8 @@ AppCommand? commandFor(
     return switch (key) {
       LogicalKeyboardKey.keyN => AppCommand.newMessage,
       LogicalKeyboardKey.keyM when shift => AppCommand.newMeeting,
+      // Outlook's own key for the Calendar; with Shift it is a Quick Step.
+      LogicalKeyboardKey.digit2 when !shift => AppCommand.calendar,
       LogicalKeyboardKey.keyR =>
         shift ? AppCommand.replyAll : AppCommand.reply,
       LogicalKeyboardKey.keyF =>
@@ -421,6 +428,7 @@ const shortcutHelp = <String, List<ShortcutHelp>>{
   'Anywhere': [
     ShortcutHelp('Ctrl+N', 'New message'),
     ShortcutHelp('Ctrl+Shift+M', 'New meeting'),
+    ShortcutHelp('Ctrl+2', 'Calendar'),
     ShortcutHelp('Ctrl+R', 'Reply'),
     ShortcutHelp('Ctrl+Shift+R', 'Reply all'),
     ShortcutHelp('Ctrl+F', 'Forward'),

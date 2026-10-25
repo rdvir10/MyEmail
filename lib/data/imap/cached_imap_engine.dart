@@ -11,6 +11,7 @@ import '../../domain/folder_role.dart';
 import '../../domain/mail_credentials.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/address_suggestions.dart';
+import '../../domain/calendar_event.dart';
 import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_attachment.dart';
@@ -1151,6 +1152,14 @@ class CachedImapEngine implements MailEngine {
         ),
     };
   }
+
+  @override
+  Future<List<CalendarEvent>> calendarEvents(
+    String accountId,
+    DateTime start,
+    DateTime end,
+  ) =>
+      _calendars.events(_accountFor(accountId), start, end);
 
   @override
   Future<List<TimeSpan>> busyTimes(

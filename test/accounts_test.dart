@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/data/mailbox_settings/server_settings.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/account.dart';
@@ -268,6 +269,14 @@ class _EmptyEngine implements MailEngine {
   @override
   Future<List<MailTip>> mailTips(String accountId, List<String> emails) =>
       _inner.mailTips(accountId, emails);
+
+  @override
+  Future<List<CalendarEvent>> calendarEvents(
+    String accountId,
+    DateTime start,
+    DateTime end,
+  ) =>
+      _inner.calendarEvents(accountId, start, end);
 
   @override
   ServerSettings? serverSettings(String accountId) =>

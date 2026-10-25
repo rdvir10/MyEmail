@@ -50,6 +50,10 @@ dependencies:
   # really running. See packages/myemail_power.
   myemail_power:
     path: packages/myemail_power
+  # Our own too: Microsoft calendars written into the phone's calendar, from
+  # the background worker as well as the app. See packages/phone_calendar.
+  phone_calendar:
+    path: packages/phone_calendar
   flutter_local_notifications: ^22.3.1
   # For a reminder's time, which the notifications plugin takes as one.
   timezone: ^0.11.1

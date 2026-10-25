@@ -80,6 +80,17 @@ abstract final class UiStateKeys {
 
   /// The searches kept in the tree's Saved searches.
   static const savedSearches = 'search.saved.v1';
+
+  /// The accounts whose calendars are in the phone's own calendar, and
+  /// when that was last brought up to date; see `PhoneCalendarSync`. Read
+  /// by the background worker too. Not in the backup: the calendars are
+  /// this phone's.
+  static const phoneCalendars = 'calendar.phone.v1';
+  static const phoneCalendarsSynced = 'calendar.phone-synced.v1';
+
+  /// The calendar view: Agenda, Day or Week, and the accounts it leaves out.
+  static const calendarView = 'calendar.view.v1';
+  static const hiddenCalendars = 'calendar.hidden.v1';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.

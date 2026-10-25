@@ -8,6 +8,7 @@ import '../../domain/draft.dart';
 import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/address_suggestions.dart';
+import '../../domain/calendar_event.dart';
 import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_attachment.dart';
@@ -879,6 +880,104 @@ class SampleMailEngine implements MailEngine {
     return settings[accountId] ??= MemoryServerSettings(
       microsoft: account.provider == MailProvider.outlook,
     );
+  }
+
+  /// Each account's events, for a test to fill; an account not in it has a
+  /// made-up working week, the same each week.
+  final Map<String, List<CalendarEvent>> events = {};
+
+  /// What [calendarEvents] throws instead, by account, for a test.
+  final Map<String, Exception> calendarRefusals = {};
+
+  @override
+  Future<List<CalendarEvent>> calendarEvents(
+    String accountId,
+    DateTime start,
+    DateTime end,
+  ) async {
+    await _latency();
+    final refusal = calendarRefusals[accountId];
+    if (refusal != null) throw refusal;
+    final given = events[accountId];
+    final all = given ?? _sampleWeeks(accountId, start, end);
+    return [
+      for (final e in all)
+        if (e.start.isBefore(end) && e.end.isAfter(start)) e,
+    ];
+  }
+
+  /// A working week of meetings, the same each week: a stand-up each
+  /// weekday morning, a review on Tuesdays online, lunch on Thursdays,
+  /// and a day out on the first Friday of the month.
+  static List<CalendarEvent> _sampleWeeks(
+    String accountId,
+    DateTime start,
+    DateTime end,
+  ) {
+    final found = <CalendarEvent>[];
+    for (var day = DateTime(start.year, start.month, start.day);
+        day.isBefore(end);
+        day = DateTime(day.year, day.month, day.day + 1)) {
+      final key = '${day.year}-${day.month}-${day.day}';
+      DateTime at(int h, int m) =>
+          DateTime(day.year, day.month, day.day, h, m);
+      if (day.weekday <= DateTime.friday) {
+        found.add(CalendarEvent(
+          id: '$accountId-standup-$key',
+          accountId: accountId,
+          title: 'Stand-up',
+          start: at(9, 30),
+          end: at(9, 45),
+          location: 'Meeting room 2',
+          reminderMinutes: 5,
+          response: EventResponse.accepted,
+        ));
+      }
+      if (day.weekday == DateTime.tuesday) {
+        found.add(CalendarEvent(
+          id: '$accountId-review-$key',
+          accountId: accountId,
+          title: 'Project review',
+          start: at(14, 0),
+          end: at(15, 0),
+          joinUrl: 'https://teams.microsoft.com/l/meetup-join/sample',
+          organizer: const MailAddress(email: 'dana@example.com', name: 'Dana Levi'),
+          attendees: const [
+            EventAttendee(MailAddress(email: 'dana@example.com', name: 'Dana Levi'),
+                response: EventResponse.organizer),
+            EventAttendee(MailAddress(email: 'yossi@example.com', name: 'Yossi Cohen'),
+                response: EventResponse.accepted),
+          ],
+          reminderMinutes: 15,
+          response: EventResponse.tentative,
+          showAs: EventShowAs.tentative,
+        ));
+      }
+      if (day.weekday == DateTime.thursday) {
+        found.add(CalendarEvent(
+          id: '$accountId-lunch-$key',
+          accountId: accountId,
+          title: 'Lunch with Yossi',
+          start: at(12, 30),
+          end: at(13, 30),
+          location: 'Café Noir',
+          isOrganizer: true,
+          response: EventResponse.organizer,
+        ));
+      }
+      if (day.weekday == DateTime.friday && day.day <= 7) {
+        found.add(CalendarEvent(
+          id: '$accountId-out-$key',
+          accountId: accountId,
+          title: 'Day out',
+          start: day,
+          end: DateTime(day.year, day.month, day.day + 1),
+          allDay: true,
+          showAs: EventShowAs.outOfOffice,
+        ));
+      }
+    }
+    return found;
   }
 
   /// The sample calendars' busy times, by address in lower case, for a test

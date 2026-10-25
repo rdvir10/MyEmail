@@ -13,6 +13,7 @@ import '../../domain/sender_blocks.dart';
 import '../ui_state_store.dart';
 import '../../domain/sync_prefs.dart';
 import '../account_store.dart';
+import '../calendar/phone_calendar_sync.dart';
 import '../cache/mail_database.dart';
 import '../graph/graph_id_map.dart';
 import '../folder_list_store.dart';
@@ -590,6 +591,8 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
           fromCache: !full,
           synced: report.synced,
         );
+        // At most every half hour, whatever the pass's own pace.
+        await syncPhoneCalendarsIfDue(liveEngine, PrefsUiStateStore(prefs));
         await state.writeLastLivePass(DateTime.now());
         return report;
       },
@@ -749,6 +752,8 @@ Future<bool> _runOnePass() async {
       surface: homeScreenSurface(),
       store: PrefsWidgetStateStore(),
     ).refresh(engine, synced: report.synced);
+    // Never throws, and does nothing where no calendar is shown there.
+    await syncPhoneCalendarsIfDue(engine, PrefsUiStateStore(prefs));
 
     debugPrint('[myemail] background pass: $report');
     for (final failure in report.failures) {

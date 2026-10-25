@@ -19,6 +19,7 @@ import 'contacts/account_people.dart' show PeopleSearchAccess;
 import 'mailbox_settings/server_settings.dart';
 import '../domain/draft.dart';
 import '../domain/address_suggestions.dart';
+import '../domain/calendar_event.dart';
 import '../domain/calendar_invite.dart';
 import '../domain/calendar_meeting.dart';
 import '../domain/mail_attachment.dart';
@@ -292,6 +293,16 @@ abstract class MailEngine {
     required String emailAddress,
     required String displayName,
   });
+
+  /// Every event on [accountId]'s calendar between [start] and [end], each
+  /// occurrence on its own: the calendar view's. Throws `SignInNeedsConsent`
+  /// while the account has not allowed its calendar, and
+  /// [CalendarUnavailable] for one that cannot have one here.
+  Future<List<CalendarEvent>> calendarEvents(
+    String accountId,
+    DateTime start,
+    DateTime end,
+  );
 
   /// When [accountId]'s own calendar is busy between [start] and [end].
   /// Throws as [meetingOnCalendar] does.

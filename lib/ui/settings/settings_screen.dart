@@ -10,6 +10,7 @@ import '../../state/update_providers.dart';
 import 'about_screen.dart';
 import 'accounts_screen.dart';
 import 'auto_replies_screen.dart';
+import 'calendar_settings_screen.dart';
 import 'rules_screen.dart';
 import 'backup_screen.dart';
 import 'notifications_screen.dart';
@@ -116,6 +117,12 @@ class SettingsScreen extends ConsumerWidget {
             title: 'Rules',
             subtitle: 'What the server does with mail as it arrives',
             onTap: () => _open(context, const RulesScreen()),
+          ),
+          _Row(
+            icon: Icons.calendar_month_outlined,
+            title: 'Calendar',
+            subtitle: "Microsoft calendars in the phone's calendar",
+            onTap: () => _open(context, const CalendarSettingsScreen()),
           ),
           const Divider(height: 1),
           const _SectionHeading('This app'),

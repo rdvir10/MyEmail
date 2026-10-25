@@ -4,8 +4,10 @@ import 'dart:math';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
+import '../../domain/calendar_event.dart';
 import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
+import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
 import '../../domain/text_direction.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
@@ -751,6 +753,120 @@ class GraphCalendarApi {
       next = Uri.parse(link);
     }
     return busy;
+  }
+
+  /// Every event on the calendar between [start] and [end], each
+  /// occurrence of a series on its own, as [accountId]'s.
+  Future<List<CalendarEvent>> events(
+    DateTime start,
+    DateTime end, {
+    required String accountId,
+  }) async {
+    final found = <CalendarEvent>[];
+    var next = Uri.parse('$base/me/calendarView').replace(queryParameters: {
+      'startDateTime': start.toUtc().toIso8601String(),
+      'endDateTime': end.toUtc().toIso8601String(),
+      r'$select': 'subject,start,end,isAllDay,location,organizer,attendees,'
+          'onlineMeeting,webLink,showAs,responseStatus,isOrganizer,'
+          'isCancelled,isReminderOn,reminderMinutesBeforeStart,bodyPreview',
+      r'$orderby': 'start/dateTime',
+      r'$top': '200',
+    });
+    for (var page = 0; page < 20; page++) {
+      final response = await _exchange(
+        () => http.Request('GET', next)..headers['Prefer'] = _inUtc,
+      );
+      if (response.statusCode >= 400) throw _failureFor(response);
+      final json = _jsonOf(response);
+      final value = json['value'];
+      for (final e in value is List ? value : const []) {
+        if (e is! Map) continue;
+        final event = eventFrom(e.cast<String, Object?>(), accountId);
+        if (event != null) found.add(event);
+      }
+      final link = json['@odata.nextLink'];
+      if (link is! String) break;
+      next = Uri.parse(link);
+    }
+    return found;
+  }
+
+  /// One of calendarView's events, asked for in UTC, as a [CalendarEvent]
+  /// in local time; null for one with no id or no time.
+  static CalendarEvent? eventFrom(Map<String, Object?> json, String accountId) {
+    final id = json['id'];
+    if (id is! String) return null;
+    final allDay = json['isAllDay'] == true;
+    DateTime? at(Object? value) {
+      if (value is! Map) return null;
+      final text = value['dateTime'];
+      if (text is! String) return null;
+      final utc = DateTime.tryParse(text.endsWith('Z') ? text : '${text}Z');
+      if (utc == null) return null;
+      // A whole day is the day it names, from the phone's own midnight.
+      return allDay ? DateTime(utc.year, utc.month, utc.day) : utc.toLocal();
+    }
+
+    final start = at(json['start']), end = at(json['end']);
+    if (start == null || end == null) return null;
+    MailAddress? address(Object? v) {
+      final e = v is Map ? v['emailAddress'] : null;
+      if (e is! Map) return null;
+      final email = '${e['address'] ?? ''}'.trim();
+      if (email.isEmpty) return null;
+      final name = '${e['name'] ?? ''}'.trim();
+      return MailAddress(email: email, name: name.isEmpty ? null : name);
+    }
+
+    EventResponse response(Object? status) =>
+        switch (status is Map ? '${status['response']}' : '') {
+          'organizer' => EventResponse.organizer,
+          'accepted' => EventResponse.accepted,
+          'tentativelyAccepted' => EventResponse.tentative,
+          'declined' => EventResponse.declined,
+          'notResponded' => EventResponse.notResponded,
+          _ => EventResponse.none,
+        };
+    final attendees = json['attendees'];
+    final location = json['location'];
+    final online = json['onlineMeeting'];
+    final joinUrl = online is Map ? online['joinUrl'] : null;
+    final minutes = json['reminderMinutesBeforeStart'];
+    return CalendarEvent(
+      id: id,
+      accountId: accountId,
+      title: '${json['subject'] ?? ''}'.trim(),
+      start: start,
+      end: end.isBefore(start) ? start : end,
+      allDay: allDay,
+      location: location is Map ? '${location['displayName'] ?? ''}'.trim() : '',
+      organizer: address(json['organizer']),
+      attendees: [
+        for (final a in attendees is List ? attendees : const [])
+          if (a is Map && a['type'] != 'resource')
+            if (address(a) case final who?)
+              EventAttendee(
+                who,
+                response: response(a['status']),
+                optional: a['type'] == 'optional',
+              ),
+      ],
+      joinUrl: joinUrl is String && joinUrl.isNotEmpty ? joinUrl : null,
+      webLink: json['webLink'] is String ? json['webLink'] as String : null,
+      showAs: switch ('${json['showAs']}') {
+        'free' => EventShowAs.free,
+        'tentative' => EventShowAs.tentative,
+        'oof' => EventShowAs.outOfOffice,
+        'workingElsewhere' => EventShowAs.workingElsewhere,
+        _ => EventShowAs.busy,
+      },
+      response: response(json['responseStatus']),
+      isOrganizer: json['isOrganizer'] == true,
+      cancelled: json['isCancelled'] == true,
+      reminderMinutes:
+          json['isReminderOn'] == true && minutes is num ? minutes.toInt() : null,
+      preview: '${json['bodyPreview'] ?? ''}'.trim(),
+    );
   }
 
   /// When each of [emails] is busy between [start] and [end], as Exchange

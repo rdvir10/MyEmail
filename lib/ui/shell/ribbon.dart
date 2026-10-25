@@ -1,3 +1,4 @@
+import '../calendar/calendar_screen.dart';
 import '../../domain/quick_step.dart';
 import '../quick_steps/apply_quick_step.dart';
 import '../common/bottom_message.dart';
@@ -170,6 +171,14 @@ class _RibbonState extends ConsumerState<Ribbon> {
         // Outlook's Read Aloud, on its Home tab too: the open message read
         // out, or stopped where it is being read.
         _ReadAloudButton(message: has ? message : null),
+        // Outlook's Calendar, which its module bar opens; last, so the mail
+        // commands keep their places.
+        const _Separator(),
+        _Button(
+          icon: Icons.calendar_month_outlined,
+          label: 'Calendar',
+          onPressed: () => CalendarScreen.open(context),
+        ),
       ],
     );
   }

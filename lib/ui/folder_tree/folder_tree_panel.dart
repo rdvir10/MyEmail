@@ -1,3 +1,4 @@
+import '../calendar/calendar_screen.dart';
 import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -191,6 +192,14 @@ class FolderTreePanel extends ConsumerWidget {
         // rather than behind Settings. Absent when nothing is hidden: a
         // control for nothing is noise.
         const _HiddenFoldersRow(),
+        // Outlook's Calendar, beside the mail, as its module bar has it.
+        ListTile(
+          key: const ValueKey('open-calendar'),
+          dense: true,
+          leading: const Icon(Icons.calendar_month_outlined, size: 20),
+          title: const Text('Calendar'),
+          onTap: () => CalendarScreen.open(context),
+        ),
         // One entry, not four. Quick Steps, accounts and notifications all
         // live behind it now; the tree is for folders.
         ListTile(

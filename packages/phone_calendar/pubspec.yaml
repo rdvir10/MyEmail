@@ -1,0 +1,22 @@
+name: phone_calendar
+description: >-
+  MyEmail's own way into the phone's calendar provider: a read-only
+  calendar per Microsoft account, kept in step from Outlook. A plugin so
+  that the background worker's Flutter engine has it as well as the app's.
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.2
+  flutter: ">=3.35.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.rdvir.myemail.calendar
+        pluginClass: PhoneCalendarPlugin

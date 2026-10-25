@@ -39,6 +39,7 @@ Future<void> openNewMeeting(
   String title = '',
   String notes = '',
   List<MailAddress> attendees = const [],
+  DateTime? start,
 }) async {
   final accounts = ref.read(accountsProvider).value ?? const <Account>[];
   final chosen = accountId ??
@@ -64,6 +65,7 @@ Future<void> openNewMeeting(
         title: title,
         notes: notes,
         attendees: attendees,
+        start: start,
       ),
     ),
   );
