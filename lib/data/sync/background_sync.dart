@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../../domain/account.dart';
+import '../../domain/calendar_invite.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
@@ -198,7 +199,8 @@ class BackgroundSync {
     if (!announce || fresh.isEmpty) return 0;
 
     final batch = [
-      for (final m in fresh.take(maxPerFolder)) MailNotification.forMessage(m),
+      for (final m in fresh.take(maxPerFolder))
+        MailNotification.forMessage(m, invitation: await _isInvitation(m)),
     ];
     await _makeRoom(account, batch);
     await notifier.showNewMail(
@@ -207,6 +209,27 @@ class BackgroundSync {
       notifications: batch,
     );
     return batch.length;
+  }
+
+  /// How long a pass waits for an invitation's body before announcing it
+  /// as mail like any other.
+  static const invitationReadFor = Duration(seconds: 15);
+
+  /// Whether [message] is an invitation to answer, so its notification has
+  /// Accept and Decline: meeting mail whose calendar part is a request,
+  /// not a cancellation or someone's answer. The header cannot say which,
+  /// so the body is read, and kept, which also opens it sooner. False
+  /// where it cannot be told.
+  Future<bool> _isInvitation(MailMessage message) async {
+    if (!message.isMeeting) return false;
+    try {
+      final body =
+          await engine.loadMessageBody(message.id).timeout(invitationReadFor);
+      return CalendarInvite.parse(body.calendar ?? '')?.isRequest ?? false;
+    } catch (e) {
+      debugPrint('[myemail] could not tell whether an invitation: $e');
+      return false;
+    }
   }
 
   /// Take down the oldest of [account]'s rows that [batch] would put over

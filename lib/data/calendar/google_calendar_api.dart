@@ -505,9 +505,14 @@ class GoogleCalendarApi {
       if (response.statusCode >= 400) throw _failureFor(response);
       final json = _jsonOf(response);
       final items = json['items'];
+      final usual = _reminderOf(json['defaultReminders']);
       for (final e in items is List ? items : const []) {
         if (e is! Map) continue;
-        final event = eventFrom(e.cast<String, Object?>(), accountId);
+        final event = eventFrom(
+          e.cast<String, Object?>(),
+          accountId,
+          calendarReminder: usual,
+        );
         if (event != null) found.add(event);
       }
       final next = json['nextPageToken'];
@@ -517,9 +522,33 @@ class GoogleCalendarApi {
     return found;
   }
 
+  /// The minutes before of the earliest of [reminders], a list as Google
+  /// gives one, those that pop up on the phone before any by mail; null
+  /// for none.
+  static int? _reminderOf(Object? reminders) {
+    final all = [
+      for (final r in reminders is List ? reminders : const [])
+        if (r is Map && r['minutes'] is num) r,
+    ];
+    final popups = [
+      for (final r in all)
+        if (r['method'] == 'popup') r,
+    ];
+    final minutes = [
+      for (final r in popups.isEmpty ? all : popups)
+        (r['minutes'] as num).toInt(),
+    ];
+    return minutes.isEmpty ? null : minutes.reduce((a, b) => a > b ? a : b);
+  }
+
   /// One of Google's events as a [CalendarEvent] in local time; null for
-  /// one with no id or no time, or cancelled.
-  static CalendarEvent? eventFrom(Map<String, Object?> json, String accountId) {
+  /// one with no id or no time, or cancelled. [calendarReminder] is its
+  /// calendar's own reminder, in minutes, for an event that keeps to it.
+  static CalendarEvent? eventFrom(
+    Map<String, Object?> json,
+    String accountId, {
+    int? calendarReminder,
+  }) {
     final id = json['id'];
     if (id is! String || json['status'] == 'cancelled') return null;
     final allDay = json['start'] is Map && (json['start'] as Map)['date'] is String;
@@ -610,9 +639,11 @@ class GoogleCalendarApi {
               ? EventResponse.none
               : response(mine['responseStatus']),
       isOrganizer: isOrganizer,
-      reminderMinutes: minutes.isEmpty
-          ? null
-          : minutes.reduce((a, b) => a > b ? a : b),
+      reminderMinutes: minutes.isNotEmpty
+          ? minutes.reduce((a, b) => a > b ? a : b)
+          : reminders is Map && reminders['useDefault'] == true
+              ? calendarReminder
+              : null,
       preview: preview,
       seriesId: json['recurringEventId'] is String &&
               (json['recurringEventId'] as String).isNotEmpty

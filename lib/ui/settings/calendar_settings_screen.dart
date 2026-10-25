@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/auth/microsoft_oauth.dart';
 import '../../data/calendar/phone_calendar_sync.dart';
 import '../../domain/account.dart';
+import '../../domain/calendar_prefs.dart';
 import '../../domain/error_report.dart' show ReadableError;
 import '../../state/calendar_view_providers.dart';
 import '../../state/providers.dart';
@@ -13,9 +14,9 @@ import '../../domain/time_zones.dart' show placeOf;
 import '../calendar/time_zone_picker.dart';
 import '../messages/date_format.dart' show formatClock;
 
-/// Settings, Calendar: how MyEmail's calendar shows the day, and Microsoft
-/// accounts' calendars in the phone's own calendar, as Outlook for
-/// Android's Sync calendars.
+/// Settings, Calendar: how MyEmail's calendar shows the day, its reminders
+/// and the morning's agenda, and Microsoft accounts' calendars in the
+/// phone's own calendar, as Outlook for Android's Sync calendars.
 class CalendarSettingsScreen extends ConsumerWidget {
   const CalendarSettingsScreen({super.key});
 
@@ -40,6 +41,11 @@ class CalendarSettingsScreen extends ConsumerWidget {
     String hour(int h) => h == 24
         ? (use24h ? '24:00' : 'Midnight')
         : formatClock(DateTime(2000, 1, 1, h), use24h: use24h);
+    String minutes(int m) =>
+        formatClock(DateTime(2000, 1, 1, m ~/ 60, m % 60), use24h: use24h);
+    final readable = ref.watch(calendarAccountsProvider);
+    final inPhone = ref.watch(phoneCalendarsProvider);
+    final agendaAt = prefs.agendaAt;
     return Scaffold(
       appBar: AppBar(title: const Text('Calendar'), centerTitle: false),
       body: ListView(
@@ -143,6 +149,71 @@ class CalendarSettingsScreen extends ConsumerWidget {
             value: prefs.datesInMail,
             onChanged: (on) => setPrefs(prefs.copyWith(datesInMail: on)),
           ),
+          const Divider(),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 18, 16, 6),
+            child: Text('Reminders', style: heading),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+            child: Text(
+              "Before each meeting, at its own reminder time, with Join, "
+              "Running late and Snooze. A Google account's start off: Google "
+              "Calendar on the phone reminds you of those already, as the "
+              "phone's calendar does of a Microsoft one shown in it.",
+              style: muted,
+            ),
+          ),
+          for (final a in readable)
+            SwitchListTile(
+              key: ValueKey('meeting-reminders:${a.id}'),
+              secondary: CircleAvatar(
+                radius: 10,
+                backgroundColor: Color(a.colorValue),
+              ),
+              title: Text(a.displayName),
+              subtitle: Text(a.emailAddress),
+              value: prefs.remindsFor(a, inPhoneCalendar: inPhone.contains(a.id)),
+              onChanged: (on) => setPrefs(prefs.copyWith(
+                meetingReminders: {...prefs.meetingReminders, a.id: on},
+              )),
+            ),
+          if (readable.isEmpty)
+            const ListTile(
+              title: Text('No account here with a calendar MyEmail reads.'),
+            ),
+          SwitchListTile(
+            key: const ValueKey('calendar-agenda'),
+            title: const Text('Morning agenda'),
+            subtitle: Text(agendaAt == null
+                ? 'Off'
+                : 'At ${minutes(agendaAt)} on the days of your work week: '
+                    'how many meetings, and when the first begins. A day '
+                    'with nothing on stays quiet.'),
+            value: agendaAt != null,
+            onChanged: (on) => setPrefs(on
+                ? prefs.copyWith(agendaAt: CalendarPrefs.defaultAgendaAt)
+                : prefs.copyWith(noAgenda: true)),
+          ),
+          if (agendaAt != null)
+            ListTile(
+              key: const ValueKey('calendar-agenda-time'),
+              title: const Text('Agenda time'),
+              trailing: Text(minutes(agendaAt)),
+              onTap: () async {
+                final picked = await showTimePicker(
+                  context: context,
+                  initialTime: TimeOfDay(
+                    hour: agendaAt ~/ 60,
+                    minute: agendaAt % 60,
+                  ),
+                );
+                if (picked == null) return;
+                setPrefs(prefs.copyWith(
+                  agendaAt: picked.hour * 60 + picked.minute,
+                ));
+              },
+            ),
           const Divider(),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 18, 16, 6),

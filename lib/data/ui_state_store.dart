@@ -102,6 +102,22 @@ abstract final class UiStateKeys {
   /// backup.
   static const calendarPrefs = 'calendar.prefs.v1';
 
+  /// The meeting reminders and the morning agenda set with Android, and
+  /// when they were last brought up to date; see `CalendarUpkeep`. Read by
+  /// the background worker too. Not in the backup: they are this phone's.
+  static const meetingReminders = 'calendar.reminders-set.v1';
+  static const agendaSet = 'calendar.agenda-set.v1';
+  static const calendarKeptUp = 'calendar.kept-up.v1';
+
+  /// Whether the phone's clock is set to 24 hours, as the app last saw it,
+  /// for what the background writes: it has no screen to ask.
+  static const clock24h = 'clock.24h.v1';
+
+  /// My Day in the folder pane's place, and the meetings swiped off the
+  /// bar over the mail. This device's.
+  static const myDay = 'calendar.my-day.v1';
+  static const meetingBarDismissed = 'calendar.bar-dismissed.v1';
+
   /// Settings, Claude (Duet), and what the uploader has sent and when; see
   /// `DuetUploader`. Read by the background worker too. Not in the backup:
   /// the key that goes with them is a secret of this phone's.

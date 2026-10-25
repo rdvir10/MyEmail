@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The strip down a meeting's side, drawn white so the widget can tint it
+     to the meeting's account colour, as the mailbox tile is tinted. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FFFFFFFF" />
+    <corners android:radius="2dp" />
+</shape>

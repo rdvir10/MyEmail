@@ -1,12 +1,17 @@
 import '../../domain/account.dart';
+import '../../domain/calendar_invite.dart';
 import '../../domain/draft.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/meeting_alerts.dart' show MeetingRef;
 import '../../domain/signature.dart';
+import '../calendar/calendar_upkeep.dart' show findKeptMeeting;
+import '../calendar/running_late.dart';
 import '../compose/reply_draft.dart';
 import '../imap/imap_mapping.dart' show splitFolderId, splitMessageId;
 import '../mail_engine.dart';
 
-/// What the buttons on a new-mail notification do.
+/// What the buttons on a new-mail notification do, and those on a
+/// meeting's reminder.
 ///
 /// Free of the app on purpose. Android hands a notification action to
 /// whichever isolate is to hand: the running app if there is one, or a second
@@ -23,6 +28,7 @@ class NotificationActions {
     required this.engine,
     this.signatures = const {},
     this.accounts = const [],
+    this.clock = DateTime.now,
   });
 
   final MailEngine engine;
@@ -33,17 +39,40 @@ class NotificationActions {
   /// Every account, so reply-all can leave the person's own addresses off.
   final List<Account> accounts;
 
+  final DateTime Function() clock;
+
   /// The ids Android sends back. Stable strings: they are baked into
   /// notifications that may still be on screen after an update.
   static const replyId = 'mailtree.reply';
   static const replyAllId = 'mailtree.reply-all';
   static const deleteId = 'mailtree.delete';
 
+  /// An invitation's.
+  static const acceptId = 'mailtree.accept';
+  static const declineId = 'mailtree.decline';
+
+  /// A meeting reminder's. Join brings the app forward, which opens the
+  /// meeting's link; Snooze needs no mail, and is done where it is
+  /// pressed (see `snoozeMeetingReminder`). Running late is written down
+  /// and carried out with the rest.
+  static const joinId = 'mailtree.join';
+  static const lateId = 'mailtree.late';
+  static const snoozeId = 'mailtree.snooze';
+
+  /// Whether [actionId] is a press to write down and carry out here.
   static bool isKnown(String? actionId) =>
-      actionId == replyId || actionId == replyAllId || actionId == deleteId;
+      actionId == replyId ||
+      actionId == replyAllId ||
+      actionId == deleteId ||
+      actionId == acceptId ||
+      actionId == declineId ||
+      actionId == lateId;
 
   /// Carry out [actionId] on [messageId], with whatever was typed into the
   /// shade. Never throws: this runs where there is nobody to catch it.
+  ///
+  /// For Running late, [messageId] is the reminder's payload, the meeting
+  /// (`MeetingRef.payload`), and what was typed the minutes.
   ///
   /// For a reply, [beforeSend] is called just before the send, so the queue
   /// can write down that a send was begun, and [sendStarted] says one was
@@ -63,8 +92,85 @@ class NotificationActions {
             all: false, sendStarted: sendStarted, beforeSend: beforeSend),
         replyAllId => _reply(messageId, typed,
             all: true, sendStarted: sendStarted, beforeSend: beforeSend),
+        acceptId => _answer(messageId, InviteResponse.accepted),
+        declineId => _answer(messageId, InviteResponse.declined),
+        lateId => _late(messageId, typed,
+            sendStarted: sendStarted, beforeSend: beforeSend),
         _ => Future.value(ActionOutcome.unknown),
       };
+
+  /// Answer the invitation in [messageId] as its card would: on the
+  /// calendar where the account has one, and by mail to the organiser
+  /// otherwise, from the account it came to.
+  Future<ActionOutcome> _answer(
+    String messageId,
+    InviteResponse response,
+  ) async {
+    final CalendarInvite? invite;
+    try {
+      final body = await engine.loadMessageBody(messageId);
+      invite = CalendarInvite.parse(body.calendar ?? '');
+    } on ConnectionFailed {
+      return ActionOutcome.offline;
+    } catch (_) {
+      return ActionOutcome.gone;
+    }
+    if (invite == null || !invite.isRequest) return ActionOutcome.notAnswerable;
+    try {
+      await engine.respondToInvite(messageId, invite, response);
+    } on ConnectionFailed {
+      return ActionOutcome.offline;
+    } catch (_) {
+      return ActionOutcome.notAnswered;
+    }
+    // Answered is dealt with, as a reply is. Best-effort.
+    try {
+      await engine.setRead(messageId, true);
+    } catch (_) {
+      // Never mind.
+    }
+    return ActionOutcome.answered;
+  }
+
+  /// Tell the people on the meeting in [payload] that it starts late for
+  /// you, by the minutes picked or typed into its reminder: the message the
+  /// meeting's sheet sends.
+  Future<ActionOutcome> _late(
+    String payload,
+    String? typed, {
+    bool sendStarted = false,
+    Future<void> Function()? beforeSend,
+  }) async {
+    final meeting = MeetingRef.fromPayload(payload);
+    if (meeting == null) return ActionOutcome.unknown;
+    // Begun on an earlier try and never heard back from: not twice.
+    if (sendStarted) return ActionOutcome.toldLate;
+    if (!clock().isBefore(meeting.end)) return ActionOutcome.meetingOver;
+    final event = await findKeptMeeting(engine, meeting);
+    if (event == null) return ActionOutcome.lateNotSent;
+    final own = accounts
+            .where((a) => a.id == event.accountId)
+            .map((a) => a.emailAddress)
+            .firstOrNull ??
+        '';
+    final draft = runningLateDraft(
+      event,
+      ownEmail: own,
+      minutes: lateMinutesIn(typed),
+    );
+    if (draft == null) return ActionOutcome.nobodyToTell;
+    await beforeSend?.call();
+    try {
+      await engine.sendDraft(draft);
+      return ActionOutcome.toldLate;
+    } on SendMayHaveGone {
+      return ActionOutcome.toldLate;
+    } on ConnectionFailed {
+      return ActionOutcome.offline;
+    } catch (_) {
+      return ActionOutcome.lateNotSent;
+    }
+  }
 
   Future<ActionOutcome> _delete(String messageId) async {
     try {
@@ -216,6 +322,24 @@ enum ActionOutcome {
   /// No connection. Nothing is wrong with the press: it waits for one.
   offline,
 
+  /// An invitation answered, from its notification.
+  answered,
+
+  /// Not an invitation that can be answered: a cancellation, say, or one
+  /// whose meeting could not be read.
+  notAnswerable,
+
+  /// An invitation whose answer did not go.
+  notAnswered,
+
+  /// The people on a meeting told it starts late for you.
+  toldLate,
+  nobodyToTell,
+  lateNotSent,
+
+  /// Running late pressed, and carried out, after the meeting was over.
+  meetingOver,
+
   /// A reply that could be neither sent nor saved. What was typed is kept
   /// in the queue to try again, and shown if it is finally given up on.
   notKept,
@@ -247,5 +371,14 @@ enum ActionOutcome {
         failed => 'That did not work. The message is where it was.',
         offline => null,
         notKept => 'Your reply could not be sent, or kept in Drafts.',
+        answered => null,
+        notAnswerable =>
+          'That invitation cannot be answered from here. Open it in MyEmail.',
+        notAnswered => 'Your answer did not go. Open the invitation in '
+            'MyEmail to answer it.',
+        toldLate => null,
+        nobodyToTell => 'There is nobody on that meeting to tell.',
+        lateNotSent => 'Your running-late message could not be sent.',
+        meetingOver => 'That meeting is over, so nobody was told.',
       };
 }

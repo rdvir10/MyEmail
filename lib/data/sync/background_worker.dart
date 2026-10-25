@@ -13,6 +13,7 @@ import '../../domain/sender_blocks.dart';
 import '../ui_state_store.dart';
 import '../../domain/sync_prefs.dart';
 import '../account_store.dart';
+import '../calendar/calendar_upkeep.dart';
 import '../calendar/phone_calendar_sync.dart';
 import '../duet/duet_uploader.dart';
 import '../cache/mail_database.dart';
@@ -546,9 +547,10 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
     engine = liveEngine;
 
     final state = PrefsSyncStateStore();
+    final notifier = AndroidMailNotifier();
     final sync = BackgroundSync(
       engine: liveEngine,
-      notifier: AndroidMailNotifier(),
+      notifier: notifier,
       state: state,
     );
 
@@ -594,6 +596,14 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
         );
         // At most every half hour, whatever the pass's own pace.
         await syncPhoneCalendarsIfDue(liveEngine, PrefsUiStateStore(prefs));
+        // Meeting reminders, the morning's agenda and the calendar widget,
+        // every quarter hour at most.
+        await keepCalendarUpIfDue(
+          liveEngine,
+          PrefsUiStateStore(prefs),
+          notifier,
+          homeScreenSurface(),
+        );
         // The Inboxes for Duet, at most every five minutes.
         await sendToDuetIfDue(
           liveEngine,
@@ -745,9 +755,10 @@ Future<bool> _runOnePass() async {
       ),
     );
 
+    final notifier = AndroidMailNotifier();
     final report = await BackgroundSync(
       engine: engine,
-      notifier: AndroidMailNotifier(),
+      notifier: notifier,
       state: PrefsSyncStateStore(),
     ).run();
     announceBackgroundPassDone();
@@ -761,6 +772,14 @@ Future<bool> _runOnePass() async {
     ).refresh(engine, synced: report.synced);
     // Never throws, and does nothing where no calendar is shown there.
     await syncPhoneCalendarsIfDue(engine, PrefsUiStateStore(prefs));
+    // Meeting reminders, the morning's agenda and the calendar widget.
+    // Never throws either.
+    await keepCalendarUpIfDue(
+      engine,
+      PrefsUiStateStore(prefs),
+      notifier,
+      homeScreenSurface(),
+    );
     // Nor this, where nothing is sent to Duet.
     await sendToDuetIfDue(engine, PrefsUiStateStore(prefs), SecureCredentialStore());
 

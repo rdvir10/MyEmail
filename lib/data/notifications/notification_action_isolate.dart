@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../domain/meeting_alerts.dart';
 import '../../domain/signature.dart';
 import '../account_store.dart';
 import '../cache/mail_database.dart';
@@ -15,6 +16,7 @@ import '../secure_credential_store.dart';
 import '../sync/background_worker.dart';
 import '../ui_state_store.dart';
 import 'android_mail_notifier.dart';
+import 'mail_notifier.dart';
 import 'notification_actions.dart';
 import 'pending_actions.dart';
 
@@ -37,6 +39,10 @@ import 'pending_actions.dart';
 void notificationActionEntryPoint(NotificationResponse response) {
   final actionId = response.actionId;
   final messageId = response.payload;
+  if (actionId == NotificationActions.snoozeId) {
+    snoozeMeetingReminder(response.id, messageId);
+    return;
+  }
   if (!NotificationActions.isKnown(actionId) ||
       messageId == null ||
       messageId.isEmpty) {
@@ -74,6 +80,33 @@ Future<void> queueNotificationAction(PendingAction action) async {
     debugPrint('$stack');
   }
   await AndroidMailNotifier().dropEmptySummaries(gone: {action.messageId});
+}
+
+/// Snooze on the meeting reminder [id], whose [payload] is its meeting:
+/// the same reminder again [snoozeFor] on, or as the meeting begins if
+/// that is sooner, for as long as the meeting is on. Done where it is
+/// pressed, the app open or not: it needs no mail, and no connection.
+///
+/// Never throws.
+Future<void> snoozeMeetingReminder(
+  int? id,
+  String? payload, {
+  MailNotifier? notifier,
+  DateTime Function() clock = DateTime.now,
+}) async {
+  final meeting = MeetingRef.fromPayload(payload);
+  if (id == null || meeting == null) return;
+  final at = snoozedUntil(meeting, clock());
+  if (at == null) return;
+  try {
+    if (notifier == null) DartPluginRegistrant.ensureInitialized();
+    await (notifier ?? AndroidMailNotifier()).scheduleMeetingReminder(
+      MeetingReminder(id: id, at: at, meeting: meeting),
+    );
+  } catch (e, stack) {
+    debugPrint('[myemail] meeting reminder not snoozed: $e');
+    debugPrint('$stack');
+  }
 }
 
 /// The name the running app listens under to hear that presses were

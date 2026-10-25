@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The calendar widget: the day across the top, and under it today's and
+     tomorrow's meetings, as many as fit. The rows are added by
+     CalendarWidgetProvider.kt from calendar_widget_row.xml. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/calendar_widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/calendar_widget_background"
+    android:paddingStart="14dp"
+    android:paddingEnd="10dp"
+    android:paddingTop="10dp"
+    android:paddingBottom="10dp">
+
+    <!-- Tapped, the calendar. -->
+    <LinearLayout
+        android:id="@+id/calendar_widget_header"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:minHeight="28dp">
+
+        <TextView
+            android:id="@+id/calendar_widget_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/calendar_widget_today"
+            android:textColor="@color/calendar_widget_accent"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:maxLines="1" />
+
+        <TextView
+            android:id="@+id/calendar_widget_date"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:textColor="@color/calendar_widget_muted"
+            android:textSize="13sp"
+            android:maxLines="1"
+            android:ellipsize="end" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/calendar_widget_list"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginTop="4dp"
+        android:orientation="vertical" />
+</LinearLayout>

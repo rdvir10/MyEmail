@@ -16,12 +16,18 @@ abstract class HomeScreenSurface {
   /// Ask Android to redraw the widgets. Values written before this are what
   /// it will draw, so this is always the last call.
   Future<void> redraw();
+
+  /// The same for the calendar widget, from what `CalendarUpkeep` wrote.
+  Future<void> redrawCalendar();
 }
 
 /// The name Android knows the widget by. It must match the receiver in
 /// AndroidManifest.xml, and there is nothing to check it at compile time, so
 /// it lives here once rather than at each call.
 const mailboxWidgetProvider = 'MailboxCountWidgetProvider';
+
+/// The calendar widget's, likewise.
+const calendarWidgetProvider = 'CalendarWidgetProvider';
 
 class AndroidHomeScreenSurface implements HomeScreenSurface {
   const AndroidHomeScreenSurface();
@@ -40,6 +46,10 @@ class AndroidHomeScreenSurface implements HomeScreenSurface {
   @override
   Future<void> redraw() =>
       HomeWidget.updateWidget(androidName: mailboxWidgetProvider);
+
+  @override
+  Future<void> redrawCalendar() =>
+      HomeWidget.updateWidget(androidName: calendarWidgetProvider);
 }
 
 /// Does nothing, for the browser preview and anywhere else without a home
@@ -58,6 +68,9 @@ class NoHomeScreenSurface implements HomeScreenSurface {
 
   @override
   Future<void> redraw() async {}
+
+  @override
+  Future<void> redrawCalendar() async {}
 }
 
 /// Records what it was asked to show. The default in tests.
@@ -82,6 +95,11 @@ class FakeHomeScreenSurface implements HomeScreenSurface {
 
   @override
   Future<void> redraw() async => redraws++;
+
+  int calendarRedraws = 0;
+
+  @override
+  Future<void> redrawCalendar() async => calendarRedraws++;
 }
 
 /// The one to use on this device.

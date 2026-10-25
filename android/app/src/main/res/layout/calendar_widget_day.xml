@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A line between the days, "Tomorrow", or the line saying there is
+     nothing more today. -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/calendar_day_text"
+    android:layout_width="match_parent"
+    android:layout_height="24dp"
+    android:gravity="bottom"
+    android:paddingBottom="2dp"
+    android:textColor="@color/calendar_widget_muted"
+    android:textSize="12sp"
+    android:textStyle="bold"
+    android:maxLines="1" />

@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../domain/account.dart';
 import '../../domain/mail_folder.dart';
+import '../../domain/meeting_alerts.dart';
 import 'mail_notifier.dart';
 import 'notification_actions.dart';
 import 'notification_action_isolate.dart';
@@ -153,6 +154,20 @@ class AndroidMailNotifier implements MailNotifier {
         android: AndroidInitializationSettings('@drawable/ic_stat_mail'),
       ),
       onDidReceiveNotificationResponse: (response) {
+        // A meeting reminder's Join brings the app forward to open the
+        // meeting's link; Snooze is done here and now.
+        if (response.actionId == NotificationActions.joinId) {
+          _launchPayload = MeetingRef.joining(response.payload);
+          return;
+        }
+        if (response.actionId == NotificationActions.snoozeId) {
+          unawaited(snoozeMeetingReminder(
+            response.id,
+            response.payload,
+            notifier: this,
+          ));
+          return;
+        }
         if (!NotificationActions.isKnown(response.actionId)) {
           _launchPayload = response.payload;
           return;
@@ -184,7 +199,10 @@ class AndroidMailNotifier implements MailNotifier {
     // above: the app was not running to receive it. It arrives here instead.
     final launch = await _plugin.getNotificationAppLaunchDetails();
     if (launch?.didNotificationLaunchApp ?? false) {
-      _launchPayload = launch?.notificationResponse?.payload;
+      final response = launch?.notificationResponse;
+      _launchPayload = response?.actionId == NotificationActions.joinId
+          ? MeetingRef.joining(response?.payload)
+          : response?.payload;
     }
 
     _ready = true;
@@ -220,6 +238,26 @@ class AndroidMailNotifier implements MailNotifier {
         category: AndroidNotificationCategory.reminder,
       ),
     );
+    await _scheduleAt(
+      id,
+      at,
+      details,
+      title: title,
+      body: body,
+      payload: payload,
+    );
+    return true;
+  }
+
+  /// A notification set with Android for [at], on time where it is let be.
+  Future<void> _scheduleAt(
+    int id,
+    DateTime at,
+    NotificationDetails details, {
+    required String title,
+    required String body,
+    required String payload,
+  }) async {
     // An instant, so UTC will do: nothing repeats by the clock.
     final when = tz.TZDateTime.from(at.toUtc(), tz.UTC);
     Future<void> schedule(AndroidScheduleMode mode) => _plugin.zonedSchedule(
@@ -239,6 +277,126 @@ class AndroidMailNotifier implements MailNotifier {
       debugPrint('[myemail] exact reminder refused, set inexact: $e');
       await schedule(AndroidScheduleMode.inexactAllowWhileIdle);
     }
+  }
+
+  /// Meeting reminders and the morning's agenda, each a channel of its
+  /// own, so Android's settings can quieten one and keep the other.
+  static const meetingChannelId = 'mailtree.meetings';
+  static const agendaChannelId = 'mailtree.agenda';
+
+  @override
+  Future<bool> scheduleMeetingReminder(MeetingReminder reminder) async {
+    await ensureReady();
+    await _android?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        meetingChannelId,
+        'Meeting reminders',
+        description: 'A meeting on one of your calendars is about to begin.',
+        importance: Importance.high,
+      ),
+    );
+    final meeting = reminder.meeting;
+    final lasts = meeting.end.difference(reminder.at).inMilliseconds;
+    final details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        meetingChannelId,
+        'Meeting reminders',
+        importance: Importance.high,
+        priority: Priority.high,
+        category: AndroidNotificationCategory.event,
+        // The time left to its start in the corner, counting down.
+        when: meeting.start.millisecondsSinceEpoch,
+        usesChronometer: true,
+        chronometerCountDown: true,
+        // Gone by itself once the meeting is over.
+        timeoutAfter: lasts > 0 ? lasts : null,
+        styleInformation: BigTextStyleInformation(meeting.body),
+        actions: [
+          if (reminder.canJoin)
+            const AndroidNotificationAction(
+              NotificationActions.joinId,
+              'Join',
+              showsUserInterface: true,
+              cancelNotification: true,
+            ),
+          // Outlook's three, as chips under the row; a number typed in
+          // does as well.
+          if (reminder.canTellLate)
+            const AndroidNotificationAction(
+              NotificationActions.lateId,
+              'Running late',
+              inputs: [
+                AndroidNotificationActionInput(
+                  label: 'Minutes late',
+                  choices: ['5 min late', '10 min late', '15 min late'],
+                ),
+              ],
+              showsUserInterface: false,
+              cancelNotification: true,
+            ),
+          const AndroidNotificationAction(
+            NotificationActions.snoozeId,
+            'Snooze',
+            showsUserInterface: false,
+            cancelNotification: true,
+          ),
+        ],
+      ),
+    );
+    await _scheduleAt(
+      reminder.id,
+      reminder.at,
+      details,
+      title: meeting.title,
+      body: meeting.body,
+      payload: meeting.payload,
+    );
+    return true;
+  }
+
+  @override
+  Future<bool> scheduleAgenda({
+    required int id,
+    required DateTime at,
+    required String title,
+    required String body,
+    required List<String> lines,
+    required String payload,
+  }) async {
+    await ensureReady();
+    await _android?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        agendaChannelId,
+        'Morning agenda',
+        description: "The day's meetings, on a working morning.",
+        importance: Importance.defaultImportance,
+      ),
+    );
+    final midnight = DateTime(at.year, at.month, at.day + 1);
+    final details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        agendaChannelId,
+        'Morning agenda',
+        importance: Importance.defaultImportance,
+        priority: Priority.defaultPriority,
+        category: AndroidNotificationCategory.event,
+        // The day's, so gone at its end rather than left under the next.
+        timeoutAfter: midnight.difference(at).inMilliseconds,
+        styleInformation: InboxStyleInformation(
+          lines,
+          contentTitle: title,
+          summaryText: body,
+        ),
+      ),
+    );
+    await _scheduleAt(
+      id,
+      at,
+      details,
+      title: title,
+      body: body,
+      payload: payload,
+    );
     return true;
   }
 
@@ -291,6 +449,30 @@ class AndroidMailNotifier implements MailNotifier {
     // no more honest. Anything that goes wrong afterwards says so in a
     // notification of its own.
     const replyBox = AndroidNotificationActionInput(label: 'Reply');
+    // An invitation answers from the shade, as its card would; Reply
+    // stays, for a word to the organiser.
+    const invitationActions = <AndroidNotificationAction>[
+      AndroidNotificationAction(
+        NotificationActions.acceptId,
+        'Accept',
+        showsUserInterface: false,
+        cancelNotification: true,
+      ),
+      AndroidNotificationAction(
+        NotificationActions.declineId,
+        'Decline',
+        showsUserInterface: false,
+        cancelNotification: true,
+      ),
+      AndroidNotificationAction(
+        NotificationActions.replyId,
+        'Reply',
+        inputs: [replyBox],
+        showsUserInterface: false,
+        cancelNotification: true,
+        semanticAction: SemanticAction.reply,
+      ),
+    ];
     const actions = <AndroidNotificationAction>[
       AndroidNotificationAction(
         NotificationActions.replyId,
@@ -335,7 +517,7 @@ class AndroidMailNotifier implements MailNotifier {
             importance: Importance.high,
             priority: Priority.high,
             category: AndroidNotificationCategory.email,
-            actions: actions,
+            actions: n.invitation ? invitationActions : actions,
             when: n.when.millisecondsSinceEpoch,
             color: Color(account.colorValue),
             largeIcon: await _badgeFor(account.colorValue),

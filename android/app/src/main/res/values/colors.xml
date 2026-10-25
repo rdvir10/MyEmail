@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The calendar widget, on a light home screen; values-night has the
+         dark one. -->
+    <color name="calendar_widget_surface">#F2FFFFFF</color>
+    <color name="calendar_widget_text">#FF1D1B20</color>
+    <color name="calendar_widget_muted">#FF5F5C66</color>
+    <color name="calendar_widget_accent">#FFC75100</color>
+    <color name="calendar_widget_join">#1FC75100</color>
+</resources>

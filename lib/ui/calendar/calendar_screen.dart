@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/auth/microsoft_oauth.dart';
 import '../../data/calendar/account_calendar.dart' show AccountCalendar;
+import '../../data/calendar/calendar_upkeep.dart' show findKeptMeeting;
 import '../../data/mail_engine.dart' show CalendarUnavailable;
 import '../../domain/account.dart';
 import '../../domain/calendar_change.dart';
@@ -15,6 +16,7 @@ import '../../domain/calendar_event.dart';
 import '../../domain/calendar_invite.dart' show InviteResponse;
 import '../../domain/calendar_prefs.dart';
 import '../../domain/error_report.dart' show ReadableError;
+import '../../domain/meeting_alerts.dart' show MeetingRef;
 import '../../domain/search_refinement.dart' show weekStartFor;
 import '../../domain/time_zones.dart';
 import '../../state/calendar_view_providers.dart';
@@ -33,10 +35,23 @@ import 'event_actions.dart';
 /// each calendar at once, and read again behind it. Reached from the
 /// folder pane's foot, the ribbon, and Ctrl+2.
 class CalendarScreen extends ConsumerStatefulWidget {
-  const CalendarScreen({super.key});
+  const CalendarScreen({super.key, this.day, this.event});
 
-  static Future<void> open(BuildContext context) => Navigator.of(context)
-      .push(MaterialPageRoute<void>(builder: (_) => const CalendarScreen()));
+  /// The day it opens on: today where none is given.
+  final DateTime? day;
+
+  /// A meeting whose sheet opens over it: one a reminder, the agenda or
+  /// the widget was tapped for.
+  final CalendarEvent? event;
+
+  static Future<void> open(
+    BuildContext context, {
+    DateTime? day,
+    CalendarEvent? event,
+  }) =>
+      Navigator.of(context).push(MaterialPageRoute<void>(
+        builder: (_) => CalendarScreen(day: day, event: event),
+      ));
 
   @override
   ConsumerState<CalendarScreen> createState() => _CalendarScreenState();
@@ -130,12 +145,12 @@ const _home = 100000;
 class _CalendarScreenState extends ConsumerState<CalendarScreen> {
   /// The day the view is on: the one Agenda opens at, Day shows, Week
   /// starts with, and Month has picked.
-  DateTime _day = _midnight(DateTime.now());
+  late DateTime _day = _midnight(widget.day ?? DateTime.now());
 
   /// The day the pages were last laid out from, and how many pages on
   /// from it the one on screen is. Laid out again from [_day] by a jump
   /// (Today, a date picked, Back and On in Agenda) and by another view.
-  DateTime _origin = _midnight(DateTime.now());
+  late DateTime _origin = _day;
   int _offset = 0;
   int _layouts = 0;
   CalendarViewMode? _laidOutMode;
@@ -149,6 +164,21 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
   bool _pinching = false;
 
   final GlobalKey<_PagerState> _pager = GlobalKey();
+
+  @override
+  void initState() {
+    super.initState();
+    final event = widget.event;
+    if (event == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final account = ref
+          .read(calendarAccountsProvider)
+          .where((a) => a.id == event.accountId)
+          .firstOrNull;
+      showEventDetails(context, ref, event, account);
+    });
+  }
 
   @override
   void dispose() {
@@ -2257,6 +2287,23 @@ class _Block extends StatelessWidget {
 /// [event]'s details, and what can be done with it: answer it, join it,
 /// change it, write to the people on it. Each action closes the sheet and
 /// runs on the calendar screen's own [context] and [ref].
+/// The calendar on [meeting]'s day, with its sheet over it: a reminder,
+/// the widget or a link tapped for it. The sheet only where the device
+/// kept the meeting; the day alone otherwise.
+Future<void> openMeeting(
+  BuildContext context,
+  WidgetRef ref,
+  MeetingRef meeting,
+) async {
+  final event = await findKeptMeeting(ref.read(mailEngineProvider), meeting);
+  if (!context.mounted) return;
+  await CalendarScreen.open(
+    context,
+    day: event?.start ?? meeting.start,
+    event: event,
+  );
+}
+
 Future<void> showEventDetails(
   BuildContext context,
   WidgetRef ref,

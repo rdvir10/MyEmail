@@ -42,6 +42,7 @@ import 'list_groups.dart';
 import '../shell/app_shell.dart';
 import '../shell/pane_focus.dart';
 import '../../state/put_away_providers.dart';
+import '../calendar/next_meeting_bar.dart';
 import 'list_keyboard.dart';
 import 'message_tile.dart';
 import 'rows_on_screen.dart';
@@ -237,6 +238,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       node: ref.watch(paneFocusProvider).list,
       child: Column(
         children: [
+          // The next meeting, from a quarter of an hour before it; nothing
+          // at all otherwise.
+          const NextMeetingBar(),
           // The selection bar takes the search bar's place while messages are
           // ticked. Both at once would be two rows of controls above a list
           // that has shrunk to make room for them, and searching is not what

@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/compose/reply_draft.dart' show escapeHtml;
+import '../../data/calendar/running_late.dart';
 import '../../data/mail_engine.dart' show MailEngine;
 import '../../domain/account.dart';
 import '../../domain/calendar_change.dart';
@@ -420,9 +420,6 @@ Future<void> emailEveryone(
   );
 }
 
-/// How late, as Outlook for Android offers it.
-const lateBy = [5, 10, 15];
-
 /// Tell them [event] starts late for you: a short message, sent straight
 /// away, to its organiser, or to everyone on it when it is yours.
 Future<void> runningLate(
@@ -449,23 +446,18 @@ Future<void> runningLate(
   );
   if (minutes == null || !context.mounted) return;
   final own = isOwnEvent(event);
-  final to = own
-      ? everyoneOn(event, account.emailAddress)
-      : [?event.organizer];
-  if (to.isEmpty) {
+  final draft = runningLateDraft(
+    event,
+    ownEmail: account.emailAddress,
+    minutes: minutes,
+  );
+  if (draft == null) {
     _tell(messenger, 'There is nobody on it to tell.');
     return;
   }
-  final words = "I'm running about $minutes minutes late"
-      "${own ? '; please wait for me before we start' : ''}.";
+  final to = draft.to;
   try {
-    await ref.read(mailEngineProvider).sendDraft(Draft(
-          accountId: account.id,
-          kind: ComposeKind.newMessage,
-          to: to,
-          subject: 'Running late: ${event.title}',
-          htmlBody: '<p>${escapeHtml(words)}</p>',
-        ));
+    await ref.read(mailEngineProvider).sendDraft(draft);
     _tell(messenger, own || to.length > 1
         ? 'Told them you are running $minutes minutes late.'
         : 'Told ${_name(to.single)} you are running $minutes minutes late.');

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Join, a pill in the accent's tint. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/calendar_widget_join" />
+    <corners android:radius="14dp" />
+</shape>

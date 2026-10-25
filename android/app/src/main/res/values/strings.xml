@@ -5,4 +5,14 @@
     <!-- Shown under the icon before a mailbox has been chosen, and if the one
          it was showing has since gone. -->
     <string name="mailbox_widget_unset">Tap to set up</string>
+    <!-- The calendar widget. -->
+    <string name="calendar_widget_label">Calendar</string>
+    <string name="calendar_widget_description">Today\'s and tomorrow\'s meetings, from every account, with Join.</string>
+    <string name="calendar_widget_today">Today</string>
+    <string name="calendar_widget_tomorrow">Tomorrow</string>
+    <string name="calendar_widget_join">Join</string>
+    <string name="calendar_widget_all_day">All day</string>
+    <string name="calendar_widget_declined">Declined</string>
+    <string name="calendar_widget_nothing_more">Nothing more today</string>
+    <string name="calendar_widget_nothing">Nothing today or tomorrow</string>
 </resources>

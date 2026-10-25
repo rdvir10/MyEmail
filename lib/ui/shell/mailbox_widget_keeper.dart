@@ -7,6 +7,7 @@ import '../../data/widget/widget_setup_channel.dart';
 import '../../data/widget/widget_taps.dart';
 import '../../state/providers.dart';
 import '../../state/widget_providers.dart';
+import '../calendar/calendar_screen.dart' show CalendarScreen, openMeeting;
 
 /// Keeps the home-screen widgets in step with the app being used.
 ///
@@ -38,10 +39,23 @@ class _MailboxWidgetKeeperState extends ConsumerState<MailboxWidgetKeeper>
     _caughtUp();
 
     // Opened by tapping a widget: go where it was pointing.
-    folderAppOpenedOn().then((folderId) {
-      if (folderId != null && mounted) _openFolder(folderId);
+    widgetLinkAppOpenedOn().then((uri) {
+      if (!mounted) return;
+      if (folderFromWidgetLink(uri) case final folderId?) _openFolder(folderId);
+      if (calendarFromWidgetLink(uri) case final link?) _openCalendar(link);
     });
-    _taps = listenForWidgetTaps(_openFolder);
+    _taps = listenForWidgetTaps(_openFolder, onCalendar: _openCalendar);
+  }
+
+  /// The calendar widget tapped: the meeting, or the calendar on its day.
+  void _openCalendar(CalendarLink link) {
+    if (!mounted) return;
+    final meeting = link.meeting;
+    if (meeting != null) {
+      openMeeting(context, ref, meeting);
+    } else {
+      CalendarScreen.open(context, day: link.day);
+    }
   }
 
   StreamSubscription<Uri?>? _taps;

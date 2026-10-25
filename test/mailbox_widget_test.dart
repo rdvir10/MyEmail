@@ -666,6 +666,9 @@ class _BrokenSurface implements HomeScreenSurface {
 
   @override
   Future<void> redraw() async => throw StateError('no');
+
+  @override
+  Future<void> redrawCalendar() async => throw StateError('no');
 }
 
 /// The app coming to the front while a pass is counting: the mark moves

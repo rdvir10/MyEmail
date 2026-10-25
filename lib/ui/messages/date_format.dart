@@ -1,5 +1,9 @@
 import 'package:flutter/foundation.dart' show immutable;
 
+import '../../domain/clock_text.dart';
+
+export '../../domain/clock_text.dart' show formatClock;
+
 /// The date column of a message list, Outlook style: the time for today, day
 /// and month within the current year, the full date otherwise.
 ///
@@ -104,15 +108,6 @@ String formatMessageDateLong(DateTime date, {bool use24h = true}) {
   final d = date.toLocal();
   return '${_weekdays[d.weekday - 1]} ${d.day} ${_months[d.month - 1]} '
       '${d.year}, ${formatClock(d, use24h: use24h)}';
-}
-
-/// A time of day as the phone's clock writes it: "20:14" or "8:14 PM".
-String formatClock(DateTime time, {required bool use24h}) {
-  final t = time.toLocal();
-  String two(int v) => v.toString().padLeft(2, '0');
-  if (use24h) return '${two(t.hour)}:${two(t.minute)}';
-  final hour = t.hour % 12 == 0 ? 12 : t.hour % 12;
-  return '$hour:${two(t.minute)} ${t.hour < 12 ? 'AM' : 'PM'}';
 }
 
 const _months = [

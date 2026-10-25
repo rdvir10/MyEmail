@@ -1,6 +1,11 @@
 import '../../data/duet/duet_uploader.dart';
 import '../../data/calendar/phone_calendar_sync.dart';
-import '../../state/calendar_view_providers.dart' show phoneCalendarProvider;
+import '../../state/calendar_view_providers.dart'
+    show
+        calendarPrefsProvider,
+        calendarRefreshProvider,
+        hiddenCalendarsProvider,
+        phoneCalendarProvider;
 import 'dart:async';
 import 'dart:isolate';
 import 'dart:ui' show IsolateNameServer;
@@ -10,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/imap/imap_mapping.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/meeting_alerts.dart' show MeetingRef, calendarDayOf;
 import '../../data/notifications/notification_action_isolate.dart';
 import '../../data/notifications/notification_actions.dart';
 import '../../data/sync/pass_signal.dart';
@@ -22,6 +28,7 @@ import '../../state/message_transfer.dart';
 import '../../state/sync_providers.dart';
 import '../../domain/display_settings.dart';
 import '../../state/display_providers.dart';
+import '../../state/meeting_alert_providers.dart';
 import '../../state/meeting_providers.dart';
 import '../../state/pane_widths.dart';
 import '../../state/providers.dart';
@@ -31,6 +38,9 @@ import '../../domain/draft.dart';
 import '../accounts/add_account_screen.dart';
 import '../compose/open_compose.dart';
 import '../meetings/new_meeting_screen.dart';
+import '../calendar/calendar_screen.dart' show CalendarScreen, openMeeting;
+import '../calendar/my_day_pane.dart';
+import '../calendar/next_meeting_bar.dart' show joinMeeting;
 import '../folder_tree/folder_tree_panel.dart';
 import '../messages/message_list_pane.dart';
 import '../messages/reading_pane.dart';
@@ -114,7 +124,17 @@ class _AppShellState extends ConsumerState<AppShell>
       unawaited(ref
           .read(preparedMeetingLedgerProvider)
           .dropLeftovers(ref.read(mailEngineProvider)));
+      unawaited(ref.read(calendarKeeperProvider).keepUp());
     });
+    // A calendar changed here, or what is said about meetings: the
+    // reminders, the agenda and the widget at once.
+    void keepUpNow() => unawaited(ref.read(calendarKeeperProvider).keepUp(
+          now: true,
+        ));
+    ref.listenManual(calendarRefreshProvider, (_, _) => keepUpNow());
+    ref.listenManual(calendarPrefsProvider, (_, _) => keepUpNow());
+    ref.listenManual(hiddenCalendarsProvider, (_, _) => keepUpNow());
+    ref.listenManual(workWeekProvider, (_, _) => keepUpNow());
     _listenForPressesDone();
     _listenForPassesDone();
     _keepAsking();
@@ -251,6 +271,7 @@ class _AppShellState extends ConsumerState<AppShell>
     unawaited(_wakeSnoozed());
     unawaited(_syncPhoneCalendars());
     unawaited(_sendToDuet());
+    unawaited(ref.read(calendarKeeperProvider).keepUp());
   }
 
   /// Hidden or paused since the app was last in front; see
@@ -284,6 +305,8 @@ class _AppShellState extends ConsumerState<AppShell>
     unawaited(_wakeSnoozed());
     unawaited(_syncPhoneCalendars());
     unawaited(_sendToDuet());
+    // Every quarter hour at most.
+    unawaited(ref.read(calendarKeeperProvider).keepUp());
   }
 
   /// The Inboxes for Duet, sent while the app is in front, every five
@@ -414,6 +437,20 @@ class _AppShellState extends ConsumerState<AppShell>
   Future<void> _openLaunchMessage({bool reread = false}) async {
     final payload = await ref.read(mailNotifierProvider).takeLaunchPayload();
     if (payload == null || !mounted) return;
+    // A meeting's reminder: Join pressed, or the reminder tapped; or the
+    // morning's agenda.
+    if (MeetingRef.fromPayload(payload) case final meeting?) {
+      if (MeetingRef.isJoin(payload)) {
+        if (meeting.joinUrl case final url?) unawaited(joinMeeting(url));
+      } else {
+        unawaited(openMeeting(context, ref, meeting));
+      }
+      return;
+    }
+    if (calendarDayOf(payload) case final day?) {
+      unawaited(CalendarScreen.open(context, day: day));
+      return;
+    }
     final String folderId;
     try {
       (folderId, _) = splitMessageId(payload);
@@ -592,7 +629,8 @@ class _MediumPanes extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final showTree = ref.watch(folderPaneVisibleProvider);
+        final myDay = ref.watch(myDayShownProvider);
+        final showTree = ref.watch(folderPaneVisibleProvider) || myDay;
         final panes = ref.watch(paneWidthsProvider).fitted(
               constraints.maxWidth,
               hasReadingPane: false,
@@ -602,7 +640,7 @@ class _MediumPanes extends ConsumerWidget {
         return Row(
           children: [
             if (showTree) ...[
-              _TreePane(width: panes.tree),
+              _TreePane(width: panes.tree, myDay: myDay),
               PaneDivider(
                 onDrag: notifier.dragTree,
                 onReset: notifier.reset,
@@ -689,7 +727,8 @@ class _WidePanes extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final showTree = ref.watch(folderPaneVisibleProvider);
+        final myDay = ref.watch(myDayShownProvider);
+        final showTree = ref.watch(folderPaneVisibleProvider) || myDay;
         final panes = ref.watch(paneWidthsProvider).fitted(
               constraints.maxWidth,
               hasReadingPane: true,
@@ -699,7 +738,7 @@ class _WidePanes extends ConsumerWidget {
         return Row(
           children: [
             if (showTree) ...[
-              _TreePane(width: panes.tree),
+              _TreePane(width: panes.tree, myDay: myDay),
               PaneDivider(
                 onDrag: notifier.dragTree,
                 onReset: notifier.reset,
@@ -829,9 +868,12 @@ class _PaneDividerState extends State<PaneDivider> {
 // -----------------------------------------------------------------------------
 
 class _TreePane extends StatelessWidget {
-  const _TreePane({required this.width});
+  const _TreePane({required this.width, this.myDay = false});
 
   final double width;
+
+  /// Today's meetings in the folders' place: see [MyDayPane].
+  final bool myDay;
 
   @override
   Widget build(BuildContext context) {
@@ -839,7 +881,7 @@ class _TreePane extends StatelessWidget {
       width: width,
       child: Material(
         color: Theme.of(context).colorScheme.surfaceContainerLow,
-        child: const FolderTreePanel(),
+        child: myDay ? const MyDayPane() : const FolderTreePanel(),
       ),
     );
   }
@@ -854,7 +896,8 @@ class _FolderTitleBar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final folder = folderOnScreen(ref);
-    final paneShown = ref.watch(folderPaneVisibleProvider);
+    final myDay = ref.watch(myDayShownProvider);
+    final paneShown = ref.watch(folderPaneVisibleProvider) && !myDay;
     return Column(
       children: [
         Padding(
@@ -873,8 +916,27 @@ class _FolderTitleBar extends ConsumerWidget {
                       : Icons.keyboard_double_arrow_right,
                   size: 20,
                 ),
+                onPressed: () {
+                  // My Day has the folders' place: the folders come back.
+                  if (myDay) {
+                    ref.read(myDayShownProvider.notifier).set(false);
+                    if (ref.read(folderPaneVisibleProvider)) return;
+                  }
+                  ref.read(folderPaneVisibleProvider.notifier).toggle();
+                },
+              ),
+              // New Outlook's My Day: today's meetings in the folder
+              // pane's place. Here for the same reason, and on a tablet
+              // held either way.
+              IconButton(
+                key: const ValueKey('my-day-toggle'),
+                tooltip: myDay ? 'Hide My Day' : 'My Day',
+                visualDensity: VisualDensity.compact,
+                isSelected: myDay,
+                icon: const Icon(Icons.view_agenda_outlined, size: 20),
+                selectedIcon: const Icon(Icons.view_agenda, size: 20),
                 onPressed: () =>
-                    ref.read(folderPaneVisibleProvider.notifier).toggle(),
+                    ref.read(myDayShownProvider.notifier).toggle(),
               ),
               const SizedBox(width: 4),
               Expanded(

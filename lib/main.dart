@@ -55,6 +55,7 @@ import 'state/calendar_providers.dart';
 import 'data/calendar/device_calendar.dart';
 import 'data/ai/date_finder.dart';
 import 'state/date_providers.dart';
+import 'state/meeting_alert_providers.dart';
 import 'ui/shell/window_host.dart';
 import 'ui/shell/file_drop_host.dart';
 import 'ui/shell/mailbox_widget_keeper.dart';
@@ -192,6 +193,7 @@ Future<void> main() async {
           speechEngineProvider.overrideWithValue(AndroidSpeechEngine()),
           deviceCalendarProvider.overrideWithValue(const AndroidDeviceCalendar()),
           dateFinderProvider.overrideWithValue(const AndroidDateFinder()),
+          calendarKeeperProvider.overrideWith(AppCalendarKeeper.new),
           fileBridgeProvider.overrideWithValue(platformFileBridge()),
           deviceContactsProvider.overrideWithValue(platformDeviceContacts()),
           attachmentFilesProvider

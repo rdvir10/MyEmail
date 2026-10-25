@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../../domain/account.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/meeting_alerts.dart' show MeetingReminder;
 
 /// One notification, already reduced to what a notification can show.
 @immutable
@@ -13,6 +14,7 @@ class MailNotification {
     required this.body,
     required this.payload,
     required this.when,
+    this.invitation = false,
   });
 
   /// Stable for a given message. Android knows a notification by this and
@@ -30,6 +32,10 @@ class MailNotification {
 
   final DateTime when;
 
+  /// An invitation to a meeting, answered from the notification with
+  /// Accept and Decline rather than deleted from it.
+  final bool invitation;
+
   /// Android notification ids are 32-bit signed and there is no id registry to
   /// allocate from, so the message id is hashed into that space. Each row is
   /// posted with the message id as its tag as well, so two messages whose ids
@@ -38,7 +44,10 @@ class MailNotification {
   /// intent unique by tag (third_party/flutter_local_notifications/MYEMAIL.md).
   static int idForMessage(String messageId) => messageId.hashCode & 0x7fffffff;
 
-  factory MailNotification.forMessage(MailMessage message) {
+  factory MailNotification.forMessage(
+    MailMessage message, {
+    bool invitation = false,
+  }) {
     final subject = message.subject.trim();
     final preview = message.preview.trim();
     return MailNotification(
@@ -50,6 +59,7 @@ class MailNotification {
       ].join('\n'),
       payload: message.id,
       when: message.date,
+      invitation: invitation,
     );
   }
 }
@@ -120,8 +130,26 @@ abstract class MailNotifier {
     required String payload,
   });
 
-  /// The reminder [id] taken back, shown or not.
+  /// The reminder [id] taken back, shown or not: Follow Up's, a meeting's
+  /// or the morning's agenda.
   Future<void> cancelReminder(int id);
+
+  /// [reminder], a meeting's, at its time: the meeting's title, when and
+  /// where it is, a count down to its start, and Join, Running late and
+  /// Snooze where each can be done. A tap opens the meeting. Gone by
+  /// itself once the meeting is over. False where it could not be set.
+  Future<bool> scheduleMeetingReminder(MeetingReminder reminder);
+
+  /// The morning's agenda at [at]: [title] and [body], with [lines] when
+  /// it is opened out. A tap opens [payload], the calendar on its day.
+  Future<bool> scheduleAgenda({
+    required int id,
+    required DateTime at,
+    required String title,
+    required String body,
+    required List<String> lines,
+    required String payload,
+  });
 }
 
 /// Records instead of posting. Used by the tests and by the browser preview,
@@ -206,7 +234,38 @@ class FakeMailNotifier implements MailNotifier {
   }
 
   @override
-  Future<void> cancelReminder(int id) async => reminders.remove(id);
+  Future<void> cancelReminder(int id) async {
+    reminders.remove(id);
+    meetingReminders.remove(id);
+    agendas.remove(id);
+  }
+
+  /// The meetings' reminders set and not taken back, by id.
+  final Map<int, MeetingReminder> meetingReminders = {};
+
+  @override
+  Future<bool> scheduleMeetingReminder(MeetingReminder reminder) async {
+    meetingReminders[reminder.id] = reminder;
+    return true;
+  }
+
+  /// The morning agendas set and not taken back, by id.
+  final Map<int, ({DateTime at, String title, String body, List<String> lines, String payload})>
+      agendas = {};
+
+  @override
+  Future<bool> scheduleAgenda({
+    required int id,
+    required DateTime at,
+    required String title,
+    required String body,
+    required List<String> lines,
+    required String payload,
+  }) async {
+    agendas[id] =
+        (at: at, title: title, body: body, lines: lines, payload: payload);
+    return true;
+  }
 
   /// What a tapped notification carried. Set by a test; read once.
   String? launchPayload;
