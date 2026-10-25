@@ -1158,8 +1158,27 @@ class CachedImapEngine implements MailEngine {
     String accountId,
     DateTime start,
     DateTime end,
+  ) async {
+    // When it was asked, not answered: a read asked for after this one and
+    // answered first is the newer, and this one must not undo it.
+    final asked = DateTime.now();
+    final events = await _calendars.events(_accountFor(accountId), start, end);
+    try {
+      await cache.keepCalendar(accountId, start, end, events, readAt: asked);
+    } catch (e) {
+      // The calendar was read; only opening faster next time is lost.
+      debugPrint('[myemail] could not keep the calendar read: $e');
+    }
+    return events;
+  }
+
+  @override
+  Future<KeptCalendar> keptCalendarEvents(
+    String accountId,
+    DateTime start,
+    DateTime end,
   ) =>
-      _calendars.events(_accountFor(accountId), start, end);
+      cache.keptCalendar(accountId, start, end);
 
   @override
   Future<List<TimeSpan>> busyTimes(

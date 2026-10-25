@@ -88,9 +88,19 @@ abstract final class UiStateKeys {
   static const phoneCalendars = 'calendar.phone.v1';
   static const phoneCalendarsSynced = 'calendar.phone-synced.v1';
 
-  /// The calendar view: Agenda, Day or Week, and the accounts it leaves out.
+  /// The calendar view: Agenda, Day, Week or Month, and the accounts it
+  /// leaves out.
   static const calendarView = 'calendar.view.v1';
   static const hiddenCalendars = 'calendar.hidden.v1';
+
+  /// How many days Week shows, and how tall an hour is drawn: this
+  /// device's, so not in the backup. See `WeekSpan`.
+  static const calendarWeekSpan = 'calendar.week-span.v1';
+  static const calendarHourHeight = 'calendar.hour-height.v1';
+
+  /// Declined meetings and the working day; see `CalendarPrefs`. In the
+  /// backup.
+  static const calendarPrefs = 'calendar.prefs.v1';
 
   /// Settings, Claude (Duet), and what the uploader has sent and when; see
   /// `DuetUploader`. Read by the background worker too. Not in the backup:

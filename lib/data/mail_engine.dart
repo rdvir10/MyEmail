@@ -13,6 +13,7 @@ export '../domain/opened_headers.dart';
 export '../domain/recoverable_message.dart';
 export '../domain/free_busy.dart';
 export '../domain/mail_tip.dart';
+export '../domain/calendar_reads.dart' show KeptCalendar;
 export 'contacts/account_people.dart' show PeopleSearchAccess, PeopleSearchState;
 import 'auth/oauth_token.dart';
 import 'contacts/account_people.dart' show PeopleSearchAccess;
@@ -22,6 +23,7 @@ import '../domain/address_suggestions.dart';
 import '../domain/calendar_event.dart';
 import '../domain/calendar_invite.dart';
 import '../domain/calendar_meeting.dart';
+import '../domain/calendar_reads.dart';
 import '../domain/mail_attachment.dart';
 import '../domain/mail_folder.dart';
 import '../domain/mail_message.dart';
@@ -298,7 +300,19 @@ abstract class MailEngine {
   /// occurrence on its own: the calendar view's. Throws `SignInNeedsConsent`
   /// while the account has not allowed its calendar, and
   /// [CalendarUnavailable] for one that cannot have one here.
+  ///
+  /// What it finds is kept on the device, for [keptCalendarEvents].
   Future<List<CalendarEvent>> calendarEvents(
+    String accountId,
+    DateTime start,
+    DateTime end,
+  );
+
+  /// What [calendarEvents] last found for [accountId] between [start] and
+  /// [end], with no network at all, and when that stretch was read: null
+  /// where some of it never was. Shown while [calendarEvents] asks again,
+  /// as [cachedMessages] is while [loadMessages] does.
+  Future<KeptCalendar> keptCalendarEvents(
     String accountId,
     DateTime start,
     DateTime end,

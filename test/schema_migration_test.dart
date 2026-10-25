@@ -7,6 +7,7 @@ import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/cache/folder_sync.dart';
 import 'package:myemail/data/cache/mail_database.dart';
 import 'package:myemail/data/graph/graph_id_map.dart';
+import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:sqlite3/sqlite3.dart' show sqlite3;
 
@@ -60,8 +61,16 @@ void main() {
   // and every test here would still have passed, while every device
   // upgrading from 2.35 or earlier failed on every cache read.
 
-  /// What schema 15 added: the table of snoozed mail.
+  /// What schema 16 added: the calendar as last read.
+  Future<void> dropSchema16(MailDatabase db) async {
+    await db.customStatement('DROP TABLE IF EXISTS kept_events');
+    await db.customStatement('DROP TABLE IF EXISTS calendar_reads');
+  }
+
+  /// What schema 15 added: the table of snoozed mail. And everything after
+  /// it.
   Future<void> dropSchema15(MailDatabase db) async {
+    await dropSchema16(db);
     await db.customStatement('DROP TABLE IF EXISTS snoozed_messages');
   }
 
@@ -273,8 +282,17 @@ void main() {
     await db.close();
   }
 
-  /// A database as it stood at schema 14, the release before this one: no
-  /// table for snoozed mail.
+  /// A database as it stood at schema 15, the release before this one:
+  /// nowhere to keep the calendar.
+  Future<void> buildVersion15() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await dropSchema16(db);
+    await db.customStatement('PRAGMA user_version = 15');
+    await db.close();
+  }
+
+  /// A database as it stood at schema 14: no table for snoozed mail.
   Future<void> buildVersion14() async {
     final db = MailDatabase(NativeDatabase(file));
     await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
@@ -895,6 +913,38 @@ void main() {
     expect((await store.readSnoozed()).single.until, until);
     await store.removeSnoozed('acct-1', '<m1@example.com>');
     expect(await store.readSnoozed(), isEmpty);
+  });
+
+  test('a version 15 database gains somewhere to keep the calendar, and '
+      'keeps its rows', () async {
+    await buildVersion15();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    expect((await store.readMessages('acct-1', 'INBOX')).single.subject,
+        'Cached before the upgrade');
+    final from = DateTime(2026, 10, 26), to = DateTime(2026, 11, 2);
+    expect((await store.keptCalendar('acct-1', from, to)).readAt, isNull);
+
+    await store.keepCalendar(
+      'acct-1',
+      from,
+      to,
+      [
+        CalendarEvent(
+          id: 'e1',
+          accountId: 'acct-1',
+          title: 'Kept',
+          start: DateTime(2026, 10, 27, 9),
+          end: DateTime(2026, 10, 27, 10),
+        ),
+      ],
+      readAt: DateTime(2026, 10, 25, 12),
+    );
+    final kept = await store.keptCalendar('acct-1', from, to);
+    expect(kept.events.single.title, 'Kept');
+    expect(kept.readAt, DateTime(2026, 10, 25, 12));
   });
 
   test('and so does one coming up from before arrival times were kept',

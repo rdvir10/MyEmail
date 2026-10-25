@@ -9,9 +9,11 @@ import '../../state/calendar_view_providers.dart';
 import '../../state/providers.dart';
 import '../accounts/microsoft_sign_in_screen.dart';
 import '../common/bottom_message.dart';
+import '../messages/date_format.dart' show formatClock;
 
-/// Settings, Calendar: Microsoft accounts' calendars in the phone's own
-/// calendar, as Outlook for Android's Sync calendars.
+/// Settings, Calendar: how MyEmail's calendar shows the day, and Microsoft
+/// accounts' calendars in the phone's own calendar, as Outlook for
+/// Android's Sync calendars.
 class CalendarSettingsScreen extends ConsumerWidget {
   const CalendarSettingsScreen({super.key});
 
@@ -24,17 +26,95 @@ class CalendarSettingsScreen extends ConsumerWidget {
     ];
     final muted = theme.textTheme.bodySmall
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final heading = theme.textTheme.labelMedium
+        ?.copyWith(color: theme.colorScheme.primary);
+    final prefs = ref.watch(calendarPrefsProvider);
+    final setPrefs = ref.read(calendarPrefsProvider.notifier).set;
+    final span = ref.watch(calendarWeekSpanProvider) ??
+        (MediaQuery.sizeOf(context).width >= 700
+            ? WeekSpan.sevenDays
+            : WeekSpan.threeDays);
+    final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
+    String hour(int h) => h == 24
+        ? (use24h ? '24:00' : 'Midnight')
+        : formatClock(DateTime(2000, 1, 1, h), use24h: use24h);
     return Scaffold(
       appBar: AppBar(title: const Text('Calendar'), centerTitle: false),
       body: ListView(
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 18, 16, 6),
-            child: Text(
-              "In the phone's calendar",
-              style: theme.textTheme.labelMedium
-                  ?.copyWith(color: theme.colorScheme.primary),
+            child: Text('In MyEmail', style: heading),
+          ),
+          SwitchListTile(
+            key: const ValueKey('calendar-declined-switch'),
+            title: const Text('Show declined meetings'),
+            subtitle: const Text(
+              'Faint and struck through. Off, they are left out. Outlook '
+              'takes a meeting you decline off its calendar itself; Google '
+              'keeps it.',
             ),
+            value: prefs.showDeclined,
+            onChanged: (on) => setPrefs(prefs.copyWith(showDeclined: on)),
+          ),
+          ListTile(
+            title: const Text('Week shows'),
+            subtitle: const Text('Kept on this device'),
+            trailing: DropdownButton<WeekSpan>(
+              key: const ValueKey('calendar-week-span'),
+              value: span,
+              onChanged: (chosen) {
+                if (chosen != null) {
+                  ref.read(calendarWeekSpanProvider.notifier).set(chosen);
+                }
+              },
+              items: [
+                for (final s in WeekSpan.values)
+                  DropdownMenuItem(value: s, child: Text(s.choice)),
+              ],
+            ),
+          ),
+          ListTile(
+            title: const Text('Working day'),
+            subtitle: const Text(
+              'Where Day and Week open, with the hours outside it shaded',
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButton<int>(
+                  key: const ValueKey('calendar-day-start'),
+                  value: prefs.dayStart,
+                  onChanged: (h) {
+                    if (h != null) setPrefs(prefs.copyWith(dayStart: h));
+                  },
+                  items: [
+                    for (var h = 0; h < 24; h++)
+                      DropdownMenuItem(value: h, child: Text(hour(h))),
+                  ],
+                ),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 6),
+                  child: Text('to'),
+                ),
+                DropdownButton<int>(
+                  key: const ValueKey('calendar-day-end'),
+                  value: prefs.dayEnd,
+                  onChanged: (h) {
+                    if (h != null) setPrefs(prefs.copyWith(dayEnd: h));
+                  },
+                  items: [
+                    for (var h = prefs.dayStart + 1; h <= 24; h++)
+                      DropdownMenuItem(value: h, child: Text(hour(h))),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const Divider(),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 18, 16, 6),
+            child: Text("In the phone's calendar", style: heading),
           ),
           for (final account in accounts) _PhoneCalendarRow(account: account),
           if (accounts.isEmpty)

@@ -5,6 +5,8 @@ import 'package:drift_flutter/drift_flutter.dart';
 import 'package:sqlite3/common.dart' show CommonDatabase;
 
 import '../../domain/address_suggestions.dart';
+import '../../domain/calendar_event.dart';
+import '../../domain/calendar_reads.dart';
 import '../../domain/mail_message.dart';
 import 'cache_store.dart';
 
@@ -150,7 +152,52 @@ class SnoozedMessages extends Table {
   Set<Column> get primaryKey => {accountId, messageId};
 }
 
-@DriftDatabase(tables: [FolderStates, Messages, GraphIds, SnoozedMessages])
+/// Calendar events as last read, so the calendar opens at once and with no
+/// signal; see `CacheStore.keepCalendar`. Here rather than in a file of
+/// their own for the reason [SnoozedMessages] is: the background worker
+/// keeps what it reads too. Added in schema 16.
+@DataClassName('KeptEventRow')
+class KeptEvents extends Table {
+  TextColumn get accountId => text()();
+
+  /// '' for the account's main calendar: `CalendarEvent.mainCalendar`.
+  TextColumn get calendarId => text()();
+  TextColumn get eventId => text()();
+
+  /// When it starts and ends, in milliseconds since the epoch, for finding
+  /// what falls in a stretch without reading every row.
+  IntColumn get startsAt => integer()();
+  IntColumn get endsAt => integer()();
+
+  /// The event itself, as `CalendarEvent.toJson` writes it.
+  TextColumn get data => text()();
+
+  @override
+  Set<Column> get primaryKey => {accountId, calendarId, eventId};
+}
+
+/// Which stretches of each calendar [KeptEvents] answers for, and when
+/// each was read: see `CalendarRead`. Added in schema 16.
+@DataClassName('CalendarReadRow')
+class CalendarReads extends Table {
+  TextColumn get accountId => text()();
+  TextColumn get calendarId => text()();
+  IntColumn get startsAt => integer()();
+  IntColumn get endsAt => integer()();
+  IntColumn get readAt => integer()();
+
+  @override
+  Set<Column> get primaryKey => {accountId, calendarId, startsAt};
+}
+
+@DriftDatabase(tables: [
+  FolderStates,
+  Messages,
+  GraphIds,
+  SnoozedMessages,
+  KeptEvents,
+  CalendarReads,
+])
 class MailDatabase extends _$MailDatabase {
   MailDatabase(super.executor);
 
@@ -218,7 +265,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 15;
+  int get schemaVersion => 16;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -406,6 +453,12 @@ class MailDatabase extends _$MailDatabase {
     if (from < 15) {
       // Snooze. A table of its own, empty until something is snoozed.
       await m.createTable(snoozedMessages);
+    }
+    if (from < 16) {
+      // The calendar as last read. Empty until the calendar is next shown,
+      // which reads it as it always has and keeps what it finds.
+      await m.createTable(keptEvents);
+      await m.createTable(calendarReads);
     }
   }
 
@@ -1142,7 +1195,135 @@ class DriftCacheStore implements CacheStore {
       await (db.delete(db.folderStates)
             ..where((t) => t.accountId.equals(accountId)))
           .go();
+      await (db.delete(db.keptEvents)
+            ..where((t) => t.accountId.equals(accountId)))
+          .go();
+      await (db.delete(db.calendarReads)
+            ..where((t) => t.accountId.equals(accountId)))
+          .go();
     });
+  }
+
+  /// The events of [accountId]'s [calendarId] that fall in [start]..[end]:
+  /// as `eventIsIn` counts it, which a row's times alone can say.
+  Expression<bool> _keptIn(
+    $KeptEventsTable t,
+    String accountId,
+    String calendarId,
+    DateTime start,
+    DateTime end,
+  ) {
+    final from = start.millisecondsSinceEpoch, to = end.millisecondsSinceEpoch;
+    return t.accountId.equals(accountId) &
+        t.calendarId.equals(calendarId) &
+        t.startsAt.isSmallerThanValue(to) &
+        (t.endsAt.isBiggerThanValue(from) |
+            (t.endsAt.equalsExp(t.startsAt) &
+                t.startsAt.isBiggerOrEqualValue(from)));
+  }
+
+  static CalendarRead _readOf(CalendarReadRow r) => CalendarRead(
+        calendarId: r.calendarId,
+        start: DateTime.fromMillisecondsSinceEpoch(r.startsAt),
+        end: DateTime.fromMillisecondsSinceEpoch(r.endsAt),
+        readAt: DateTime.fromMillisecondsSinceEpoch(r.readAt),
+      );
+
+  @override
+  Future<void> keepCalendar(
+    String accountId,
+    DateTime start,
+    DateTime end,
+    List<CalendarEvent> events, {
+    required DateTime readAt,
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async {
+    final read = CalendarRead(
+      calendarId: calendarId,
+      start: start,
+      end: end,
+      readAt: readAt,
+    );
+    // Encoded before the transaction, which holds the write lock the
+    // background worker may be waiting on.
+    final rows = [
+      for (final e in events)
+        KeptEventsCompanion.insert(
+          accountId: accountId,
+          calendarId: calendarId,
+          eventId: e.id,
+          startsAt: e.start.millisecondsSinceEpoch,
+          endsAt: e.end.millisecondsSinceEpoch,
+          data: jsonEncode(e.toJson()),
+        ),
+    ];
+    final before = readAt.subtract(keptCalendarBack).millisecondsSinceEpoch;
+    await db.transaction(() async {
+      final mine = (db.select(db.calendarReads)
+        ..where((t) =>
+            t.accountId.equals(accountId) & t.calendarId.equals(calendarId)));
+      final reads = [for (final r in await mine.get()) _readOf(r)];
+      if (readIsStale(reads, read)) return;
+      await (db.delete(db.keptEvents)
+            ..where((t) => _keptIn(t, accountId, calendarId, start, end)))
+          .go();
+      await db.batch((b) => b.insertAllOnConflictUpdate(db.keptEvents, rows));
+      await (db.delete(db.keptEvents)
+            ..where((t) =>
+                t.accountId.equals(accountId) &
+                t.endsAt.isSmallerThanValue(before)))
+          .go();
+      await (db.delete(db.calendarReads)
+            ..where((t) =>
+                t.accountId.equals(accountId) & t.calendarId.equals(calendarId)))
+          .go();
+      await db.batch((b) => b.insertAll(db.calendarReads, [
+            for (final r in withRead(reads, read))
+              if (r.end.millisecondsSinceEpoch >= before)
+                CalendarReadsCompanion.insert(
+                  accountId: accountId,
+                  calendarId: r.calendarId,
+                  startsAt: r.start.millisecondsSinceEpoch,
+                  endsAt: r.end.millisecondsSinceEpoch,
+                  readAt: r.readAt.millisecondsSinceEpoch,
+                ),
+          ]));
+    });
+  }
+
+  @override
+  Future<KeptCalendar> keptCalendar(
+    String accountId,
+    DateTime start,
+    DateTime end, {
+    Set<String> calendarIds = const {CalendarEvent.mainCalendar},
+  }) async {
+    final events = <CalendarEvent>[];
+    final reads = <CalendarRead>[];
+    for (final id in calendarIds) {
+      final rows = await (db.select(db.keptEvents)
+            ..where((t) => _keptIn(t, accountId, id, start, end)))
+          .get();
+      for (final r in rows) {
+        try {
+          final e = CalendarEvent.fromJson(jsonDecode(r.data));
+          if (e != null) events.add(e);
+        } on FormatException {
+          // A row the app cannot read is passed over: the next read of
+          // its stretch writes it again.
+        }
+      }
+      final mine = await (db.select(db.calendarReads)
+            ..where((t) =>
+                t.accountId.equals(accountId) & t.calendarId.equals(id)))
+          .get();
+      reads.addAll(mine.map(_readOf));
+    }
+    events.sort(byStart);
+    return (
+      events: events,
+      readAt: readAtOverAll(reads, start, end, calendarIds),
+    );
   }
 
   // ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/meeting.dart';
 import '../../domain/message_move.dart';
+import '../cache/cache_store.dart' show MemoryCalendarKeep;
 import '../compose/quote_builder.dart';
 import '../imap/imap_mapping.dart';
 import '../auth/oauth_token.dart';
@@ -184,6 +185,7 @@ class SampleMailEngine implements MailEngine {
     _accounts.removeWhere((a) => a.id == accountId || a.sharedVia == accountId);
     _folders.remove(accountId);
     _messages.removeWhere((key, _) => key.startsWith('$accountId:'));
+    _keptCalendars.forget(accountId);
   }
 
   static const _seedAccounts = <Account>[
@@ -900,11 +902,24 @@ class SampleMailEngine implements MailEngine {
     if (refusal != null) throw refusal;
     final given = events[accountId];
     final all = given ?? _sampleWeeks(accountId, start, end);
-    return [
+    final found = [
       for (final e in all)
         if (e.start.isBefore(end) && e.end.isAfter(start)) e,
     ];
+    _keptCalendars.keep(accountId, start, end, found, readAt: DateTime.now());
+    return found;
   }
+
+  /// What [calendarEvents] found, kept as the real engine keeps it.
+  final MemoryCalendarKeep _keptCalendars = MemoryCalendarKeep();
+
+  @override
+  Future<KeptCalendar> keptCalendarEvents(
+    String accountId,
+    DateTime start,
+    DateTime end,
+  ) async =>
+      _keptCalendars.kept(accountId, start, end);
 
   /// A working week of meetings, the same each week: a stand-up each
   /// weekday morning, a review on Tuesdays online, lunch on Thursdays,

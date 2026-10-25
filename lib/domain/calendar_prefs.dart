@@ -1,0 +1,75 @@
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
+
+/// How the calendar shows the day, chosen in Settings, Calendar, and
+/// carried by the backup: whether meetings you declined still show, and
+/// the working day, where Day and Week open and outside which the hours are
+/// shaded.
+@immutable
+class CalendarPrefs {
+  const CalendarPrefs({
+    this.showDeclined = false,
+    this.dayStart = 9,
+    this.dayEnd = 17,
+  });
+
+  /// A meeting you declined that its calendar keeps (Google's do; Outlook
+  /// takes them off itself): shown faint and struck through, or not at all.
+  final bool showDeclined;
+
+  /// The working day in whole hours, [dayStart] before [dayEnd].
+  final int dayStart;
+  final int dayEnd;
+
+  CalendarPrefs copyWith({bool? showDeclined, int? dayStart, int? dayEnd}) {
+    final start = dayStart ?? this.dayStart;
+    final end = dayEnd ?? this.dayEnd;
+    return CalendarPrefs(
+      showDeclined: showDeclined ?? this.showDeclined,
+      dayStart: start,
+      // Never a day that ends before it starts: the other end gives way.
+      dayEnd: end > start ? end : (start + 1).clamp(1, 24),
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+        'showDeclined': showDeclined,
+        'dayStart': dayStart,
+        'dayEnd': dayEnd,
+      };
+
+  /// What [toJson] wrote; anything missing or out of range is the default.
+  factory CalendarPrefs.fromJson(Object? json) {
+    if (json is! Map) return const CalendarPrefs();
+    int hour(Object? v, int otherwise, int min, int max) =>
+        v is int && v >= min && v <= max ? v : otherwise;
+    final start = hour(json['dayStart'], 9, 0, 23);
+    final end = hour(json['dayEnd'], 17, 1, 24);
+    return CalendarPrefs(
+      showDeclined: json['showDeclined'] == true,
+      dayStart: end > start ? start : 9,
+      dayEnd: end > start ? end : 17,
+    );
+  }
+
+  /// The prefs kept as text, or null for text that is not them.
+  static CalendarPrefs? tryParse(String text) {
+    try {
+      final json = jsonDecode(text);
+      return json is Map ? CalendarPrefs.fromJson(json) : null;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is CalendarPrefs &&
+      other.showDeclined == showDeclined &&
+      other.dayStart == dayStart &&
+      other.dayEnd == dayEnd;
+
+  @override
+  int get hashCode => Object.hash(showDeclined, dayStart, dayEnd);
+}

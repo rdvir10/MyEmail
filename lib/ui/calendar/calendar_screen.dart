@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -8,6 +9,7 @@ import '../../data/auth/microsoft_oauth.dart';
 import '../../data/mail_engine.dart' show CalendarUnavailable;
 import '../../domain/account.dart';
 import '../../domain/calendar_event.dart';
+import '../../domain/calendar_prefs.dart';
 import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/search_refinement.dart' show weekStartFor;
 import '../../state/calendar_view_providers.dart';
@@ -20,9 +22,9 @@ import '../meetings/new_meeting_screen.dart' show openNewMeeting;
 import '../messages/date_format.dart';
 
 /// Outlook's Calendar, beside the mail: every account's events as an
-/// agenda, a day or a week. Read from each account's calendar as it is
-/// shown; nothing here is kept. Reached from the folder pane's foot, the
-/// ribbon, and Ctrl+2.
+/// agenda, a day, a week or a month. Shown from what the device kept of
+/// each calendar at once, and read again behind it. Reached from the
+/// folder pane's foot, the ribbon, and Ctrl+2.
 class CalendarScreen extends ConsumerStatefulWidget {
   const CalendarScreen({super.key});
 
@@ -41,6 +43,8 @@ DateTime _plus(DateTime day, int days) =>
 bool _sameDay(DateTime a, DateTime b) =>
     a.year == b.year && a.month == b.month && a.day == b.day;
 
+String _dayKey(DateTime d) => '${d.year}-${d.month}-${d.day}';
+
 const _months = [
   'January', 'February', 'March', 'April', 'May', 'June', 'July',
   'August', 'September', 'October', 'November', 'December',
@@ -48,44 +52,183 @@ const _months = [
 
 const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-class _CalendarScreenState extends ConsumerState<CalendarScreen> {
-  DateTime _day = _midnight(DateTime.now());
+/// What one page of Day, Week or Month shows: its days, the stretch the
+/// calendars are asked for, and for Month, the month itself.
+typedef CalendarPage = ({
+  List<DateTime> days,
+  CalendarRange range,
+  DateTime? month,
+});
 
-  /// How far the agenda runs from [_day]; Show more adds a month.
-  int _agendaDays = 30;
-
-  /// A week on a tablet, three days on a phone, as Outlook for Android.
-  int _weekDays(BuildContext context) =>
-      MediaQuery.sizeOf(context).width >= 700 ? 7 : 3;
-
-  CalendarRange _range(CalendarViewMode mode, int weekDays) {
-    switch (mode) {
-      case CalendarViewMode.agenda:
-        return (start: _day, end: _plus(_day, _agendaDays));
-      case CalendarViewMode.day:
-        return (start: _day, end: _plus(_day, 1));
-      case CalendarViewMode.week:
-        final first = weekDays == 7
-            ? weekStartFor(_day, workWeek: ref.read(workWeekProvider))
-            : _day;
-        return (start: first, end: _plus(first, weekDays));
-    }
+/// The page [offset] pages from the one holding [origin], in [mode]. A
+/// week starts where the [workWeek]'s run of days does; Work week shows
+/// those days alone, and Month every week its days touch.
+@visibleForTesting
+CalendarPage calendarPage(
+  CalendarViewMode mode,
+  WeekSpan span,
+  Set<int> workWeek,
+  DateTime origin,
+  int offset,
+) {
+  CalendarPage run(DateTime first, int count) {
+    final days = [for (var i = 0; i < count; i++) _plus(first, i)];
+    return (
+      days: days,
+      range: (start: first, end: _plus(first, count)),
+      month: null,
+    );
   }
 
-  void _move(CalendarViewMode mode, int weekDays, int direction) =>
-      setState(() => _day = _plus(
-            _day,
-            direction *
-                switch (mode) {
-                  CalendarViewMode.agenda => 7,
-                  CalendarViewMode.day => 1,
-                  CalendarViewMode.week => weekDays,
-                },
-          ));
+  final day = _midnight(origin);
+  switch (mode) {
+    case CalendarViewMode.agenda:
+    case CalendarViewMode.day:
+      return run(_plus(day, offset), 1);
+    case CalendarViewMode.week:
+      switch (span) {
+        case WeekSpan.threeDays:
+          return run(_plus(day, 3 * offset), 3);
+        case WeekSpan.sevenDays:
+          return run(
+              _plus(weekStartFor(day, workWeek: workWeek), 7 * offset), 7);
+        case WeekSpan.workWeek:
+          final first =
+              _plus(weekStartFor(day, workWeek: workWeek), 7 * offset);
+          final worked = [
+            for (var i = 0; i < 7; i++)
+              if (workWeek.isEmpty || workWeek.contains(_plus(first, i).weekday))
+                _plus(first, i),
+          ];
+          return (
+            days: worked,
+            range: (start: worked.first, end: _plus(worked.last, 1)),
+            month: null,
+          );
+      }
+    case CalendarViewMode.month:
+      final month = DateTime(day.year, day.month + offset, 1);
+      final first = weekStartFor(month, workWeek: workWeek);
+      final last = DateTime(month.year, month.month + 1, 0);
+      final weeks = ((last.difference(first).inDays + 1) / 7).ceil();
+      final page = run(first, weeks * 7);
+      return (days: page.days, range: page.range, month: month);
+  }
+}
 
-  String _title(CalendarRange range) {
-    final last = _plus(range.end, -1);
-    final from = range.start;
+/// The page number of the page holding the day the pages were laid out
+/// from: far enough in to swipe back for years.
+const _home = 100000;
+
+class _CalendarScreenState extends ConsumerState<CalendarScreen> {
+  /// The day the view is on: the one Agenda opens at, Day shows, Week
+  /// starts with, and Month has picked.
+  DateTime _day = _midnight(DateTime.now());
+
+  /// The day the pages were last laid out from, and how many pages on
+  /// from it the one on screen is. Laid out again from [_day] by a jump
+  /// (Today, a date picked, Back and On in Agenda) and by another view.
+  DateTime _origin = _midnight(DateTime.now());
+  int _offset = 0;
+  int _layouts = 0;
+  CalendarViewMode? _laidOutMode;
+  WeekSpan? _laidOutSpan;
+
+  /// The hour at the top of Day and Week, the same on every page, so a
+  /// swipe lands where the last day was.
+  final ValueNotifier<double> _topHour = ValueNotifier(8);
+
+  /// Pinching the hours, when the pages must not turn.
+  bool _pinching = false;
+
+  final GlobalKey<_PagerState> _pager = GlobalKey();
+
+  @override
+  void dispose() {
+    _topHour.dispose();
+    super.dispose();
+  }
+
+  /// What Week shows: as chosen on this device, or a week on a tablet and
+  /// three days on a phone.
+  WeekSpan _span(BuildContext context, {bool watch = true}) =>
+      (watch
+          ? ref.watch(calendarWeekSpanProvider)
+          : ref.read(calendarWeekSpanProvider)) ??
+      (MediaQuery.sizeOf(context).width >= 700
+          ? WeekSpan.sevenDays
+          : WeekSpan.threeDays);
+
+  CalendarPage _page(CalendarViewMode mode, WeekSpan span, [int? offset]) =>
+      calendarPage(mode, span, ref.read(workWeekProvider), _origin,
+          offset ?? _offset);
+
+  /// The pages laid out again from [day], which the view is now on, opening
+  /// at the hour that page opens at.
+  void _jump(DateTime day) {
+    setState(() {
+      _day = _midnight(day);
+      _origin = _day;
+      _offset = 0;
+      _layouts++;
+    });
+    final mode = ref.read(calendarViewProvider);
+    _topHour.value =
+        _openingHour(_page(mode, _span(context, watch: false)).days);
+  }
+
+  void _setMode(CalendarViewMode mode, {DateTime? day}) {
+    if (day != null) _day = _midnight(day);
+    ref.read(calendarViewProvider.notifier).set(mode);
+    _jump(_day);
+  }
+
+  void _setSpan(WeekSpan span) {
+    ref.read(calendarWeekSpanProvider.notifier).set(span);
+    _jump(_day);
+  }
+
+  /// Where Day and Week open: an hour before now on a page with today,
+  /// otherwise a little before the working day starts.
+  double _openingHour(List<DateTime> days) {
+    final now = DateTime.now();
+    if (days.any((d) => _sameDay(d, now))) {
+      return math.max(0, now.hour - 1).toDouble();
+    }
+    return math.max(0, ref.read(calendarPrefsProvider).dayStart - 0.5);
+  }
+
+  /// A page turned to: the day the view is now on goes with it.
+  void _turned(CalendarViewMode mode, WeekSpan span, int offset) {
+    final page = _page(mode, span, offset);
+    final today = _midnight(DateTime.now());
+    setState(() {
+      _offset = offset;
+      _day = switch (mode) {
+        CalendarViewMode.month => page.month!.year == today.year &&
+                page.month!.month == today.month
+            ? today
+            : page.month!,
+        _ => page.days.first,
+      };
+    });
+  }
+
+  void _move(CalendarViewMode mode, int direction) {
+    if (mode == CalendarViewMode.agenda) {
+      _jump(_plus(_day, 7 * direction));
+      return;
+    }
+    final pager = _pager.currentState;
+    if (pager != null) pager.turn(direction);
+  }
+
+  String _title(CalendarViewMode mode, CalendarPage page) {
+    if (page.month case final month?) {
+      return '${_months[month.month - 1]} ${month.year}';
+    }
+    final from = mode == CalendarViewMode.agenda ? _day : page.days.first;
+    final last = mode == CalendarViewMode.agenda ? _day : page.days.last;
     if (from.month == last.month && from.year == last.year) {
       return '${_months[from.month - 1]} ${from.year}';
     }
@@ -95,14 +238,18 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
         : '${short(from)} ${from.year} – ${short(last)} ${last.year}';
   }
 
-  /// A new meeting from the view: on the day shown, at the next hour today
-  /// or nine on another day.
-  DateTime? _newMeetingStart(CalendarViewMode mode) {
+  /// A new meeting from the view: at the next hour on a page with today,
+  /// otherwise when the working day starts on the day the view is on.
+  DateTime? _newMeetingStart(CalendarViewMode mode, CalendarPage page) {
     if (mode == CalendarViewMode.agenda) return null;
     final now = DateTime.now();
-    return _sameDay(_day, now)
-        ? DateTime(now.year, now.month, now.day, now.hour + 1)
-        : DateTime(_day.year, _day.month, _day.day, 9);
+    if (mode != CalendarViewMode.month &&
+        page.days.any((d) => _sameDay(d, now))) {
+      return DateTime(now.year, now.month, now.day, now.hour + 1);
+    }
+    final day = mode == CalendarViewMode.month ? _day : page.days.first;
+    return DateTime(day.year, day.month, day.day,
+        ref.read(calendarPrefsProvider).dayStart);
   }
 
   Future<void> _chooseCalendars(List<Account> accounts) =>
@@ -138,14 +285,36 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
         ),
       );
 
+  Future<void> _pickDate() async {
+    final picked = await pickCalendarDate(context, _day);
+    if (picked != null && mounted) _jump(picked);
+  }
+
   @override
   Widget build(BuildContext context) {
     final mode = ref.watch(calendarViewProvider);
-    final weekDays = _weekDays(context);
-    final range = _range(mode, weekDays);
+    final span = _span(context);
+    ref.watch(workWeekProvider);
+    if (mode != _laidOutMode || span != _laidOutSpan) {
+      // Another view, or another week: laid out again from the day the
+      // view is on, which is where the last one was.
+      final first = _laidOutMode == null;
+      _laidOutMode = mode;
+      _laidOutSpan = span;
+      _origin = _day;
+      _offset = 0;
+      _layouts++;
+      if (first) _topHour.value = _openingHour(_page(mode, span).days);
+    }
+    final page = _page(mode, span);
+    final range = mode == CalendarViewMode.agenda
+        ? (start: _day, end: _plus(_day, _AgendaState.chunk))
+        : page.range;
     final load = ref.watch(calendarEventsProvider(range));
     final accounts = ref.watch(calendarAccountsProvider);
+    final prefs = ref.watch(calendarPrefsProvider);
     final colours = {for (final a in accounts) a.id: Color(a.colorValue)};
+    final wide = MediaQuery.sizeOf(context).width >= 700;
     void details(CalendarEvent e) => showEventDetails(
           context,
           e,
@@ -157,71 +326,85 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
     final Widget content;
     if (accounts.isEmpty) {
       content = const _NoCalendars();
-    } else if (load.value case final value?) {
-      content = switch (mode) {
-        CalendarViewMode.agenda => _Agenda(
-            start: _day,
-            days: _agendaDays,
-            events: value.events,
-            colours: colours,
-            onTap: details,
-            onMore: () => setState(() => _agendaDays += 30),
-          ),
-        CalendarViewMode.day => _Timeline(
-            key: ValueKey('day-$_day'),
-            days: [_day],
-            events: value.events,
-            colours: colours,
-            onTap: details,
-            onSlot: newMeetingAt,
-          ),
-        CalendarViewMode.week => _Timeline(
-            key: ValueKey('week-${range.start}-$weekDays'),
-            days: [
-              for (var i = 0; i < weekDays; i++) _plus(range.start, i),
-            ],
-            events: value.events,
-            colours: colours,
-            onTap: details,
-            onSlot: newMeetingAt,
-            onDay: (day) {
-              setState(() => _day = day);
-              ref.read(calendarViewProvider.notifier).set(CalendarViewMode.day);
-            },
-          ),
-      };
-    } else if (load.hasError) {
-      content = Center(child: Text('${load.error}'));
+    } else if (mode == CalendarViewMode.agenda) {
+      content = _Agenda(
+        key: ValueKey('agenda-$_day'),
+        from: _day,
+        colours: colours,
+        onTap: details,
+      );
     } else {
-      content = const Center(child: CircularProgressIndicator());
+      content = _Pager(
+        key: _pager,
+        identity: '${mode.name}-${span.name}-$_layouts',
+        onTurned: (offset) => _turned(mode, span, offset),
+        locked: _pinching,
+        page: (offset) {
+          final p = _page(mode, span, offset);
+          return _CalendarPageView(
+            page: p,
+            mode: mode,
+            wide: wide,
+            selected: _day,
+            colours: colours,
+            topHour: _topHour,
+            onTap: details,
+            onSlot: newMeetingAt,
+            onSelect: (day) => setState(() => _day = day),
+            onOpenDay: (day) => _setMode(CalendarViewMode.day, day: day),
+            onPinching: (pinching) => setState(() => _pinching = pinching),
+          );
+        },
+      );
     }
-    final problems = load.value?.problems ?? const <String, Object>{};
+    final value = load.value;
+    final problems = value?.problems ?? const <String, Object>{};
+    final keptAt = value?.keptAt;
+    final stale = keptAt != null &&
+        value?.reading == false &&
+        DateTime.now().difference(keptAt) > const Duration(minutes: 5);
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_title(range)),
         centerTitle: false,
+        title: InkWell(
+          key: const ValueKey('calendar-title'),
+          onTap: _pickDate,
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    _title(mode, page),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const Icon(Icons.arrow_drop_down),
+              ],
+            ),
+          ),
+        ),
         actions: [
           IconButton(
             key: const ValueKey('calendar-previous'),
             tooltip: 'Back',
             icon: const Icon(Icons.chevron_left),
-            onPressed: () => _move(mode, weekDays, -1),
+            onPressed: () => _move(mode, -1),
           ),
           IconButton(
             key: const ValueKey('calendar-next'),
             tooltip: 'On',
             icon: const Icon(Icons.chevron_right),
-            onPressed: () => _move(mode, weekDays, 1),
+            onPressed: () => _move(mode, 1),
           ),
           IconButton(
             key: const ValueKey('calendar-today'),
             tooltip: 'Today',
             icon: const Icon(Icons.today_outlined),
-            onPressed: () => setState(() {
-              _day = _midnight(DateTime.now());
-              _agendaDays = 30;
-            }),
+            onPressed: () => _jump(DateTime.now()),
           ),
           if (accounts.length > 1)
             IconButton(
@@ -230,10 +413,51 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
               icon: const Icon(Icons.filter_list),
               onPressed: () => _chooseCalendars(accounts),
             ),
-          IconButton(
-            tooltip: 'Refresh',
-            icon: const Icon(Icons.refresh),
-            onPressed: () => ref.invalidate(calendarEventsProvider),
+          PopupMenuButton<String>(
+            key: const ValueKey('calendar-menu'),
+            tooltip: 'More',
+            onSelected: (choice) {
+              switch (choice) {
+                case 'declined':
+                  ref.read(calendarPrefsProvider.notifier).set(
+                      prefs.copyWith(showDeclined: !prefs.showDeclined));
+                case 'refresh':
+                  ref.read(calendarRefreshProvider.notifier).now();
+                default:
+                  final chosen = WeekSpan.values
+                      .where((s) => 'span:${s.name}' == choice)
+                      .firstOrNull;
+                  if (chosen != null) {
+                    if (mode != CalendarViewMode.week) {
+                      ref
+                          .read(calendarViewProvider.notifier)
+                          .set(CalendarViewMode.week);
+                    }
+                    _setSpan(chosen);
+                  }
+              }
+            },
+            itemBuilder: (context) => [
+              for (final s in WeekSpan.values)
+                CheckedPopupMenuItem(
+                  key: ValueKey('calendar-span:${s.name}'),
+                  value: 'span:${s.name}',
+                  checked: s == span,
+                  child: Text('Week shows ${s.choice.toLowerCase()}'),
+                ),
+              const PopupMenuDivider(),
+              CheckedPopupMenuItem(
+                key: const ValueKey('calendar-show-declined'),
+                value: 'declined',
+                checked: prefs.showDeclined,
+                child: const Text('Show declined meetings'),
+              ),
+              const PopupMenuItem(
+                key: ValueKey('calendar-refresh'),
+                value: 'refresh',
+                child: Text('Refresh'),
+              ),
+            ],
           ),
         ],
       ),
@@ -242,8 +466,8 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
           : FloatingActionButton(
               key: const ValueKey('calendar-new-meeting'),
               tooltip: 'New meeting',
-              onPressed: () =>
-                  openNewMeeting(context, ref, start: _newMeetingStart(mode)),
+              onPressed: () => openNewMeeting(context, ref,
+                  start: _newMeetingStart(mode, page)),
               child: const Icon(Icons.add),
             ),
       body: Column(
@@ -257,22 +481,29 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
                   ButtonSegment(
                     value: m,
                     label: Text(
-                      m == CalendarViewMode.week && weekDays != 7
-                          ? '$weekDays days'
-                          : m.label,
+                      m == CalendarViewMode.week ? span.label : m.label,
                       key: ValueKey('calendar-view-${m.name}'),
+                      maxLines: 1,
+                      overflow: TextOverflow.fade,
+                      softWrap: false,
                     ),
                   ),
               ],
               selected: {mode},
-              onSelectionChanged: (chosen) =>
-                  ref.read(calendarViewProvider.notifier).set(chosen.first),
+              onSelectionChanged: (chosen) => _setMode(chosen.first),
             ),
           ),
+          if (value?.reading == true && value?.events.isNotEmpty == true)
+            const LinearProgressIndicator(minHeight: 2),
           for (final MapEntry(:key, :value) in problems.entries)
             if (accounts.where((a) => a.id == key).firstOrNull
                 case final account?)
               _ProblemBar(account: account, error: value),
+          if (stale)
+            _KeptBar(
+              keptAt: keptAt,
+              onRefresh: () => ref.read(calendarRefreshProvider.notifier).now(),
+            ),
           Expanded(child: content),
         ],
       ),
@@ -296,6 +527,38 @@ class _NoCalendars extends StatelessWidget {
           ),
         ),
       );
+}
+
+/// What is shown was read a while ago and could not be read again: when,
+/// and Refresh.
+class _KeptBar extends StatelessWidget {
+  const _KeptBar({required this.keptAt, required this.onRefresh});
+
+  final DateTime keptAt;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
+    final clock = formatClock(keptAt, use24h: use24h);
+    final when = _sameDay(keptAt, DateTime.now())
+        ? clock
+        : '${formatDay(keptAt)}, $clock';
+    return Material(
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: ListTile(
+        key: const ValueKey('calendar-kept'),
+        dense: true,
+        leading: const Icon(Icons.history),
+        title: Text('As read at $when'),
+        trailing: TextButton(
+          onPressed: onRefresh,
+          child: const Text('Refresh'),
+        ),
+      ),
+    );
+  }
 }
 
 /// One account's calendar could not be read: why, and Allow where a
@@ -350,7 +613,7 @@ class _ProblemBarState extends ConsumerState<_ProblemBar> {
           content: Text(e is ReadableError ? e.message : '$e'),
         ));
     } finally {
-      ref.invalidate(calendarEventsProvider);
+      ref.read(calendarRefreshProvider.notifier).now();
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -397,80 +660,404 @@ class _ProblemBarState extends ConsumerState<_ProblemBar> {
   }
 }
 
+// --- paging ---------------------------------------------------------------------
+
+/// Day, Week and Month as pages to swipe between, each read as it comes
+/// near: the pages either side are laid out ahead, which reads them.
+class _Pager extends StatefulWidget {
+  const _Pager({
+    super.key,
+    required this.identity,
+    required this.page,
+    required this.onTurned,
+    required this.locked,
+  });
+
+  /// Which layout of the pages this is: another starts again at the page
+  /// the view is on.
+  final String identity;
+
+  /// The page [offset] pages on from where the layout started.
+  final Widget Function(int offset) page;
+  final void Function(int offset) onTurned;
+
+  /// Held still, while the hours are pinched.
+  final bool locked;
+
+  @override
+  State<_Pager> createState() => _PagerState();
+}
+
+class _PagerState extends State<_Pager> {
+  PageController _controller = PageController(initialPage: _home);
+
+  @override
+  void didUpdateWidget(_Pager old) {
+    super.didUpdateWidget(old);
+    if (old.identity != widget.identity) {
+      // A new controller for the new layout; the old one goes once the
+      // frame that still shows it is done.
+      final spent = _controller;
+      _controller = PageController(initialPage: _home);
+      WidgetsBinding.instance.addPostFrameCallback((_) => spent.dispose());
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void turn(int direction) {
+    if (!_controller.hasClients) return;
+    final at = _controller.page?.round() ?? _home;
+    _controller.animateToPage(
+      at + direction,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => PageView.builder(
+        key: ValueKey('pager-${widget.identity}'),
+        controller: _controller,
+        allowImplicitScrolling: true,
+        physics: widget.locked ? const NeverScrollableScrollPhysics() : null,
+        onPageChanged: (index) => widget.onTurned(index - _home),
+        itemBuilder: (context, index) => widget.page(index - _home),
+      );
+}
+
+/// One page: its events read, then drawn as Day and Week draw them or as
+/// Month does.
+class _CalendarPageView extends ConsumerWidget {
+  const _CalendarPageView({
+    required this.page,
+    required this.mode,
+    required this.wide,
+    required this.selected,
+    required this.colours,
+    required this.topHour,
+    required this.onTap,
+    required this.onSlot,
+    required this.onSelect,
+    required this.onOpenDay,
+    required this.onPinching,
+  });
+
+  final CalendarPage page;
+  final CalendarViewMode mode;
+  final bool wide;
+  final DateTime selected;
+  final Map<String, Color> colours;
+  final ValueNotifier<double> topHour;
+  final void Function(CalendarEvent) onTap;
+  final void Function(DateTime) onSlot;
+  final void Function(DateTime) onSelect;
+  final void Function(DateTime) onOpenDay;
+  final void Function(bool) onPinching;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final load = ref.watch(calendarEventsProvider(page.range));
+    final prefs = ref.watch(calendarPrefsProvider);
+    final value = load.value;
+    if (value == null) {
+      return load.hasError
+          ? Center(child: Text('${load.error}'))
+          : const Center(child: CircularProgressIndicator());
+    }
+    final events = shownEvents(value.events, prefs);
+    if (mode == CalendarViewMode.month) {
+      final month = page.month!;
+      if (wide) {
+        return _MonthGrid(
+          days: page.days,
+          month: month,
+          events: events,
+          colours: colours,
+          selected: null,
+          titles: true,
+          onDay: onOpenDay,
+          onEvent: onTap,
+        );
+      }
+      // A day picked from the next month's first days, drawn faint at the
+      // foot of this one, stays picked; one from further off is not here.
+      final picked =
+          page.days.any((d) => _sameDay(d, selected)) ? selected : month;
+      return Column(
+        children: [
+          _MonthGrid(
+            days: page.days,
+            month: month,
+            events: events,
+            colours: colours,
+            selected: picked,
+            titles: false,
+            rowHeight: 46,
+            onDay: (d) => _sameDay(d, picked) ? onOpenDay(d) : onSelect(d),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: _DayList(
+              day: picked,
+              events: eventsOn(picked, events),
+              colours: colours,
+              onTap: onTap,
+              onOpen: () => onOpenDay(picked),
+            ),
+          ),
+        ],
+      );
+    }
+    return _Timeline(
+      days: page.days,
+      events: events,
+      colours: colours,
+      prefs: prefs,
+      topHour: topHour,
+      onTap: onTap,
+      onSlot: onSlot,
+      onDay: mode == CalendarViewMode.week ? onOpenDay : null,
+      onPinching: onPinching,
+    );
+  }
+}
+
 // --- the agenda -----------------------------------------------------------------
 
-class _Agenda extends StatelessWidget {
+/// Days with something on, from [from] on and back before it: the month
+/// ahead first, more as the end comes near, and the month before above,
+/// more as the top does.
+class _Agenda extends StatefulWidget {
   const _Agenda({
-    required this.start,
-    required this.days,
+    super.key,
+    required this.from,
+    required this.colours,
+    required this.onTap,
+  });
+
+  final DateTime from;
+  final Map<String, Color> colours;
+  final void Function(CalendarEvent) onTap;
+
+  @override
+  State<_Agenda> createState() => _AgendaState();
+}
+
+class _AgendaState extends State<_Agenda> {
+  /// Days read at a time, and how many lots at most either way.
+  static const chunk = 30;
+  static const most = 24;
+
+  int _ahead = 1;
+  int _behind = 1;
+  final _scroll = ScrollController();
+  final _centre = UniqueKey();
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_nearEdge);
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// More days read as the end being scrolled towards comes near: only
+  /// that end, so a short month behind is not read away at the first
+  /// scroll down.
+  void _nearEdge() {
+    if (!_scroll.hasClients) return;
+    final p = _scroll.position;
+    switch (p.userScrollDirection) {
+      case ScrollDirection.reverse
+          when p.pixels > p.maxScrollExtent - 600 && _ahead < most:
+        setState(() => _ahead++);
+      case ScrollDirection.forward
+          when p.pixels < p.minScrollExtent + 600 && _behind < most:
+        setState(() => _behind++);
+      default:
+    }
+  }
+
+  CalendarRange _lot(int k) => (
+        start: _plus(widget.from, chunk * k),
+        end: _plus(widget.from, chunk * (k + 1)),
+      );
+
+  @override
+  Widget build(BuildContext context) => CustomScrollView(
+        controller: _scroll,
+        center: _centre,
+        slivers: [
+          if (_behind < most)
+            SliverToBoxAdapter(
+              child: Center(
+                child: TextButton(
+                  key: const ValueKey('agenda-earlier'),
+                  onPressed: () => setState(() => _behind++),
+                  child: const Text('Show the 30 days before'),
+                ),
+              ),
+            ),
+          for (var k = _behind; k >= 1; k--)
+            _AgendaLot(
+              range: _lot(-k),
+              earlierFirst: false,
+              colours: widget.colours,
+              onTap: widget.onTap,
+            ),
+          _AgendaLot(
+            key: _centre,
+            range: _lot(0),
+            earlierFirst: true,
+            always: widget.from,
+            colours: widget.colours,
+            onTap: widget.onTap,
+          ),
+          for (var k = 1; k < _ahead; k++)
+            _AgendaLot(
+              range: _lot(k),
+              earlierFirst: true,
+              colours: widget.colours,
+              onTap: widget.onTap,
+            ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 88),
+              child: Center(
+                child: _ahead < most
+                    ? TextButton(
+                        key: const ValueKey('agenda-more'),
+                        onPressed: () => setState(() => _ahead++),
+                        child: const Text('Show the next 30 days'),
+                      )
+                    : null,
+              ),
+            ),
+          ),
+        ],
+      );
+}
+
+/// One lot of the agenda's days, read as it comes into view. Above the
+/// day it opens at, the days run upwards: the list grows from the middle.
+class _AgendaLot extends ConsumerWidget {
+  const _AgendaLot({
+    super.key,
+    required this.range,
+    required this.earlierFirst,
+    required this.colours,
+    required this.onTap,
+    this.always,
+  });
+
+  final CalendarRange range;
+
+  /// In order of date down the screen; false above the middle, where the
+  /// list is laid out from the bottom up.
+  final bool earlierFirst;
+  final Map<String, Color> colours;
+  final void Function(CalendarEvent) onTap;
+
+  /// A day shown even with nothing on: the one the agenda opens at.
+  final DateTime? always;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final load = ref.watch(calendarEventsProvider(range));
+    final prefs = ref.watch(calendarPrefsProvider);
+    final value = load.value;
+    if (value == null) {
+      return SliverToBoxAdapter(
+        child: always == null
+            ? const SizedBox(height: 24)
+            : const Padding(
+                padding: EdgeInsets.all(24),
+                child: Center(child: CircularProgressIndicator()),
+              ),
+      );
+    }
+    final events = shownEvents(value.events, prefs);
+    final days = <Widget>[];
+    for (var d = range.start; d.isBefore(range.end); d = _plus(d, 1)) {
+      final on = eventsOn(d, events);
+      final keep = always != null && _sameDay(d, always!);
+      if (on.isEmpty && !keep) continue;
+      days.add(_AgendaDay(day: d, events: on, colours: colours, onTap: onTap));
+    }
+    return SliverList(
+      delegate: SliverChildListDelegate(
+        earlierFirst ? days : days.reversed.toList(),
+      ),
+    );
+  }
+}
+
+/// A day's heading, and its events under it.
+class _AgendaDay extends StatelessWidget {
+  const _AgendaDay({
+    required this.day,
     required this.events,
     required this.colours,
     required this.onTap,
-    required this.onMore,
   });
 
-  final DateTime start;
-  final int days;
+  final DateTime day;
   final List<CalendarEvent> events;
   final Map<String, Color> colours;
   final void Function(CalendarEvent) onTap;
-  final VoidCallback onMore;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final today = _midnight(DateTime.now());
-    final rows = <Widget>[];
-    for (var i = 0; i < days; i++) {
-      final day = _plus(start, i);
-      final on = eventsOn(day, events);
-      if (on.isEmpty) continue;
-      final name = formatDay(day);
-      final label = _sameDay(day, today)
-          ? 'Today · $name'
-          : _sameDay(day, _plus(today, 1))
-              ? 'Tomorrow · $name'
-              : name;
-      rows.add(Container(
-        key: ValueKey('agenda-day:${day.year}-${day.month}-${day.day}'),
-        width: double.infinity,
-        color: theme.colorScheme.surfaceContainerLow,
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
-        child: Text(
-          label,
-          style: theme.textTheme.labelLarge?.copyWith(
-            color: _sameDay(day, today) ? theme.colorScheme.primary : null,
+    final name = formatDay(day);
+    final label = _sameDay(day, today)
+        ? 'Today · $name'
+        : _sameDay(day, _plus(today, 1))
+            ? 'Tomorrow · $name'
+            : name;
+    return Column(
+      key: ValueKey('agenda-day:${_dayKey(day)}'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          color: theme.colorScheme.surfaceContainerLow,
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
+          child: Text(
+            label,
+            style: theme.textTheme.labelLarge?.copyWith(
+              color: _sameDay(day, today) ? theme.colorScheme.primary : null,
+            ),
           ),
         ),
-      ));
-      for (final e in on) {
-        rows.add(_AgendaRow(
-          event: e,
-          day: day,
-          colour: colours[e.accountId] ?? theme.colorScheme.primary,
-          onTap: () => onTap(e),
-        ));
-      }
-    }
-    if (rows.isEmpty) {
-      rows.add(Padding(
-        padding: const EdgeInsets.all(24),
-        child: Text(
-          'Nothing on the calendar in these $days days.',
-          textAlign: TextAlign.center,
-        ),
-      ));
-    }
-    rows.add(Center(
-      child: TextButton(
-        key: const ValueKey('agenda-more'),
-        onPressed: onMore,
-        child: const Text('Show the next 30 days'),
-      ),
-    ));
-    return ListView(
-      padding: const EdgeInsets.only(bottom: 88),
-      children: rows,
+        if (events.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+            child: Text(
+              _sameDay(day, today)
+                  ? 'Nothing on the calendar today.'
+                  : 'Nothing on the calendar this day.',
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ),
+        for (final e in events)
+          _AgendaRow(
+            event: e,
+            day: day,
+            colour: colours[e.accountId] ?? theme.colorScheme.primary,
+            onTap: () => onTap(e),
+          ),
+      ],
     );
   }
 }
@@ -512,8 +1099,10 @@ class _AgendaRow extends StatelessWidget {
       if (e.joinUrl != null && e.location.isEmpty) 'Online',
       if (e.response == EventResponse.tentative) 'Tentative',
       if (e.response == EventResponse.notResponded) 'Not answered',
+      if (e.declined) 'Declined',
       if (e.cancelled) 'Cancelled',
     ].join(' · ');
+    final faint = e.showAs == EventShowAs.free || e.declined;
     return InkWell(
       key: ValueKey('agenda-event:${e.id}'),
       onTap: onTap,
@@ -536,7 +1125,7 @@ class _AgendaRow extends StatelessWidget {
               width: 4,
               height: 40,
               decoration: BoxDecoration(
-                color: e.showAs == EventShowAs.free ? colour.withAlpha(110) : colour,
+                color: faint ? colour.withAlpha(110) : colour,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -550,7 +1139,12 @@ class _AgendaRow extends StatelessWidget {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.bodyLarge?.copyWith(
-                      decoration: e.cancelled ? TextDecoration.lineThrough : null,
+                      decoration: e.cancelled || e.declined
+                          ? TextDecoration.lineThrough
+                          : null,
+                      color: e.declined
+                          ? theme.colorScheme.onSurfaceVariant
+                          : null,
                     ),
                   ),
                   if (subtitle.isNotEmpty)
@@ -579,23 +1173,442 @@ class _AgendaRow extends StatelessWidget {
   }
 }
 
-// --- the day and the week ---------------------------------------------------------
+// --- the month ------------------------------------------------------------------
 
-/// Days side by side, hour by hour: the day view, and the week's.
-class _Timeline extends StatefulWidget {
-  const _Timeline({
-    super.key,
+/// A month as a grid, a week to a row: each day's number, and its events as
+/// dots ([titles] false: the phone, and choosing a date) or as titles.
+class _MonthGrid extends StatelessWidget {
+  const _MonthGrid({
     required this.days,
+    required this.month,
+    required this.events,
+    required this.colours,
+    required this.selected,
+    required this.titles,
+    required this.onDay,
+    this.onEvent,
+    this.rowHeight,
+  });
+
+  /// Whole weeks, from the first day of the month's first week.
+  final List<DateTime> days;
+
+  /// The first of the month shown; days outside it are drawn faint.
+  final DateTime month;
+  final List<CalendarEvent> events;
+  final Map<String, Color> colours;
+  final DateTime? selected;
+  final bool titles;
+  final void Function(DateTime) onDay;
+  final void Function(CalendarEvent)? onEvent;
+
+  /// Each week's height, or null for an equal share of what there is.
+  final double? rowHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.textTheme.labelSmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final weeks = [
+      for (var w = 0; w < days.length ~/ 7; w++) days.sublist(w * 7, w * 7 + 7),
+    ];
+    Widget week(List<DateTime> row) => Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (final d in row)
+              Expanded(
+                child: _MonthDay(
+                  day: d,
+                  inMonth: d.month == month.month,
+                  selected: selected != null && _sameDay(d, selected!),
+                  events: eventsOn(d, events),
+                  colours: colours,
+                  titles: titles,
+                  onTap: () => onDay(d),
+                  onEvent: onEvent,
+                ),
+              ),
+          ],
+        );
+    return Column(
+      mainAxisSize: rowHeight == null ? MainAxisSize.max : MainAxisSize.min,
+      children: [
+        Row(
+          children: [
+            for (final d in weeks.first)
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Text(
+                    _weekdays[d.weekday - 1],
+                    style: muted,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+          ],
+        ),
+        for (final row in weeks)
+          if (rowHeight case final height?)
+            SizedBox(height: height, child: week(row))
+          else
+            Expanded(child: week(row)),
+      ],
+    );
+  }
+}
+
+class _MonthDay extends StatelessWidget {
+  const _MonthDay({
+    required this.day,
+    required this.inMonth,
+    required this.selected,
+    required this.events,
+    required this.colours,
+    required this.titles,
+    required this.onTap,
+    required this.onEvent,
+  });
+
+  final DateTime day;
+  final bool inMonth;
+  final bool selected;
+  final List<CalendarEvent> events;
+  final Map<String, Color> colours;
+  final bool titles;
+  final VoidCallback onTap;
+  final void Function(CalendarEvent)? onEvent;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final today = _sameDay(day, DateTime.now());
+    final scheme = theme.colorScheme;
+    Color colourOf(CalendarEvent e) => colours[e.accountId] ?? scheme.primary;
+    final number = Container(
+      width: 26,
+      height: 26,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: selected
+            ? scheme.primary
+            : today
+                ? scheme.primaryContainer
+                : null,
+      ),
+      child: Text(
+        '${day.day}',
+        style: theme.textTheme.labelLarge?.copyWith(
+          color: selected
+              ? scheme.onPrimary
+              : !inMonth
+                  ? scheme.onSurfaceVariant.withAlpha(120)
+                  : today
+                      ? scheme.onPrimaryContainer
+                      : null,
+          fontWeight: today || selected ? FontWeight.bold : null,
+        ),
+      ),
+    );
+    final Widget body;
+    if (!titles) {
+      body = Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          number,
+          const SizedBox(height: 3),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              for (final e in events.take(3))
+                Container(
+                  width: 5,
+                  height: 5,
+                  margin: const EdgeInsets.symmetric(horizontal: 1),
+                  decoration: BoxDecoration(
+                    color: e.declined ? colourOf(e).withAlpha(90) : colourOf(e),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+            ],
+          ),
+        ],
+      );
+    } else {
+      body = LayoutBuilder(
+        builder: (context, constraints) {
+          const line = 17.0;
+          final room = ((constraints.maxHeight - 30) / line).floor();
+          final shown = events.length <= room
+              ? events
+              : events.take(math.max(0, room - 1)).toList();
+          final more = events.length - shown.length;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Align(alignment: Alignment.topLeft, child: number),
+              const SizedBox(height: 2),
+              for (final e in shown)
+                _MonthEvent(
+                  event: e,
+                  colour: colourOf(e),
+                  onTap: onEvent == null ? null : () => onEvent!(e),
+                ),
+              if (more > 0)
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Text(
+                    '+$more more',
+                    style: theme.textTheme.labelSmall
+                        ?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                ),
+            ],
+          );
+        },
+      );
+    }
+    return InkWell(
+      key: ValueKey('month-day:${_dayKey(day)}'),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(2),
+        decoration: BoxDecoration(
+          border: Border(
+            top: BorderSide(color: theme.dividerColor, width: 0.5),
+            left: BorderSide(color: theme.dividerColor, width: 0.5),
+          ),
+          color: inMonth ? null : scheme.surfaceContainerLow,
+        ),
+        child: ClipRect(child: body),
+      ),
+    );
+  }
+}
+
+/// An event's line in a month box on a tablet.
+class _MonthEvent extends StatelessWidget {
+  const _MonthEvent({required this.event, required this.colour, this.onTap});
+
+  final CalendarEvent event;
+  final Color colour;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
+    final e = event;
+    final faint = e.declined ||
+        e.showAs == EventShowAs.free ||
+        e.response == EventResponse.tentative ||
+        e.response == EventResponse.notResponded;
+    final text = e.allDay
+        ? e.title
+        : '${formatClock(e.start, use24h: use24h)} ${e.title}';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 1),
+      child: Material(
+        color: faint ? colour.withAlpha(40) : colour,
+        borderRadius: BorderRadius.circular(3),
+        child: InkWell(
+          key: ValueKey('month-event:${e.id}'),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+            child: Text(
+              text.isEmpty ? '(No title)' : text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                color: faint ? colour : Colors.white,
+                decoration: e.cancelled || e.declined
+                    ? TextDecoration.lineThrough
+                    : null,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The picked day's events, under the month on a phone.
+class _DayList extends StatelessWidget {
+  const _DayList({
+    required this.day,
     required this.events,
     required this.colours,
     required this.onTap,
+    required this.onOpen,
+  });
+
+  final DateTime day;
+  final List<CalendarEvent> events;
+  final Map<String, Color> colours;
+  final void Function(CalendarEvent) onTap;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 88),
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 6, 8, 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(formatDay(day), style: theme.textTheme.labelLarge),
+              ),
+              TextButton(
+                key: const ValueKey('month-open-day'),
+                onPressed: onOpen,
+                child: const Text('Open day'),
+              ),
+            ],
+          ),
+        ),
+        if (events.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+            child: Text(
+              'Nothing on the calendar this day.',
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ),
+        for (final e in events)
+          _AgendaRow(
+            event: e,
+            day: day,
+            colour: colours[e.accountId] ?? theme.colorScheme.primary,
+            onTap: () => onTap(e),
+          ),
+      ],
+    );
+  }
+}
+
+// --- choosing a date ------------------------------------------------------------
+
+/// A month to choose a day from, with a dot on the days that have events:
+/// the calendar's title opens it, as Outlook's does.
+Future<DateTime?> pickCalendarDate(BuildContext context, DateTime initial) =>
+    showModalBottomSheet<DateTime>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => _DatePicker(initial: initial),
+    );
+
+class _DatePicker extends ConsumerStatefulWidget {
+  const _DatePicker({required this.initial});
+
+  final DateTime initial;
+
+  @override
+  ConsumerState<_DatePicker> createState() => _DatePickerState();
+}
+
+class _DatePickerState extends ConsumerState<_DatePicker> {
+  late DateTime _month = DateTime(widget.initial.year, widget.initial.month);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final page = calendarPage(
+      CalendarViewMode.month,
+      WeekSpan.sevenDays,
+      ref.watch(workWeekProvider),
+      _month,
+      0,
+    );
+    final load = ref.watch(calendarEventsProvider(page.range));
+    final prefs = ref.watch(calendarPrefsProvider);
+    final accounts = ref.watch(calendarAccountsProvider);
+    final colours = {for (final a in accounts) a.id: Color(a.colorValue)};
+    void step(int months) =>
+        setState(() => _month = DateTime(_month.year, _month.month + months));
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                IconButton(
+                  key: const ValueKey('pick-previous'),
+                  tooltip: 'Month before',
+                  icon: const Icon(Icons.chevron_left),
+                  onPressed: () => step(-1),
+                ),
+                Expanded(
+                  child: Text(
+                    '${_months[_month.month - 1]} ${_month.year}',
+                    key: const ValueKey('pick-month'),
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.titleMedium,
+                  ),
+                ),
+                IconButton(
+                  key: const ValueKey('pick-next'),
+                  tooltip: 'Month after',
+                  icon: const Icon(Icons.chevron_right),
+                  onPressed: () => step(1),
+                ),
+              ],
+            ),
+            _MonthGrid(
+              days: page.days,
+              month: _month,
+              events: shownEvents(load.value?.events ?? const [], prefs),
+              colours: colours,
+              selected: widget.initial,
+              titles: false,
+              rowHeight: 44,
+              onDay: (d) => Navigator.of(context).pop(d),
+            ),
+            TextButton(
+              key: const ValueKey('pick-today'),
+              onPressed: () => Navigator.of(context).pop(DateTime.now()),
+              child: const Text('Today'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// --- the day and the week ---------------------------------------------------------
+
+/// Days side by side, hour by hour: the day view, and the week's. Pinch to
+/// make the hours taller or shorter.
+class _Timeline extends ConsumerStatefulWidget {
+  const _Timeline({
+    required this.days,
+    required this.events,
+    required this.colours,
+    required this.prefs,
+    required this.topHour,
+    required this.onTap,
     required this.onSlot,
+    required this.onPinching,
     this.onDay,
   });
 
   final List<DateTime> days;
   final List<CalendarEvent> events;
   final Map<String, Color> colours;
+  final CalendarPrefs prefs;
+
+  /// The hour at the top, shared with the pages either side.
+  final ValueNotifier<double> topHour;
   final void Function(CalendarEvent) onTap;
 
   /// A new meeting at a time tapped on.
@@ -604,34 +1617,114 @@ class _Timeline extends StatefulWidget {
   /// A day's name tapped on, in the week.
   final void Function(DateTime)? onDay;
 
+  /// A pinch begun, or ended: the pages hold still for it.
+  final void Function(bool) onPinching;
+
   @override
-  State<_Timeline> createState() => _TimelineState();
+  ConsumerState<_Timeline> createState() => _TimelineState();
 }
 
-class _TimelineState extends State<_Timeline> {
-  static const hourHeight = 56.0;
+class _TimelineState extends ConsumerState<_Timeline> {
   static const gutter = 48.0;
 
   late final ScrollController _scroll = ScrollController(
-    initialScrollOffset: () {
-      final now = DateTime.now();
-      final hour = widget.days.any((d) => _sameDay(d, now))
-          ? math.max(0, now.hour - 1)
-          : 8;
-      return hour * hourHeight;
-    }(),
+    initialScrollOffset: widget.topHour.value * ref.read(calendarHourHeightProvider),
   );
+
+  /// The hour's height while a pinch is under way, kept once it ends.
+  double? _pinched;
+  final Map<int, Offset> _pointers = {};
+  double _pinchFrom = 0;
+  double _heightFrom = 0;
+  double _focusHour = 0;
+  double _focusY = 0;
+
+  /// A scroll this page made to follow another, not to be passed on.
+  bool _following = false;
+
+  double get _height => _pinched ?? ref.read(calendarHourHeightProvider);
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_scrolled);
+    widget.topHour.addListener(_follow);
+  }
 
   @override
   void dispose() {
+    widget.topHour.removeListener(_follow);
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _scrolled() {
+    if (_following || _pinched != null || !_scroll.hasClients) return;
+    widget.topHour.value = _scroll.offset / _height;
+  }
+
+  void _follow() {
+    if (!_scroll.hasClients || !_scroll.position.hasContentDimensions) return;
+    final want = (widget.topHour.value * _height)
+        .clamp(0.0, _scroll.position.maxScrollExtent);
+    if ((_scroll.offset - want).abs() < 1) return;
+    _following = true;
+    _scroll.jumpTo(want);
+    _following = false;
+  }
+
+  double _spread() {
+    final points = _pointers.values.toList();
+    return (points[0].dy - points[1].dy).abs();
+  }
+
+  void _down(PointerDownEvent e) {
+    _pointers[e.pointer] = e.localPosition;
+    if (_pointers.length != 2) return;
+    final spread = _spread();
+    if (spread < 24) return;
+    _pinchFrom = spread;
+    _heightFrom = _height;
+    final points = _pointers.values.toList();
+    _focusY = (points[0].dy + points[1].dy) / 2;
+    _focusHour = (_scroll.offset + _focusY) / _heightFrom;
+    setState(() => _pinched = _heightFrom);
+    widget.onPinching(true);
+  }
+
+  void _moved(PointerMoveEvent e) {
+    if (!_pointers.containsKey(e.pointer)) return;
+    _pointers[e.pointer] = e.localPosition;
+    if (_pinched == null || _pointers.length != 2) return;
+    final height = (_heightFrom * _spread() / _pinchFrom)
+        .clamp(CalendarHourHeight.smallest, CalendarHourHeight.largest);
+    setState(() => _pinched = height);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scroll.hasClients) return;
+      final at = (_focusHour * height - _focusY)
+          .clamp(0.0, _scroll.position.maxScrollExtent);
+      _following = true;
+      _scroll.jumpTo(at);
+      _following = false;
+    });
+  }
+
+  void _up(PointerEvent e) {
+    _pointers.remove(e.pointer);
+    final height = _pinched;
+    if (height == null || _pointers.length >= 2) return;
+    ref.read(calendarHourHeightProvider.notifier).set(height);
+    setState(() => _pinched = null);
+    widget.onPinching(false);
+    if (_scroll.hasClients) widget.topHour.value = _scroll.offset / height;
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
+    final double hourHeight =
+        _pinched ?? ref.watch(calendarHourHeightProvider);
     final now = DateTime.now();
     final muted = theme.textTheme.labelSmall
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
@@ -645,37 +1738,38 @@ class _TimelineState extends State<_Timeline> {
     final anyAllDay = allDay.values.any((l) => l.isNotEmpty);
     return Column(
       children: [
-        if (widget.days.length > 1)
-          Row(
-            children: [
-              const SizedBox(width: gutter),
-              for (final d in widget.days)
-                Expanded(
-                  child: InkWell(
-                    key: ValueKey('week-day:${d.year}-${d.month}-${d.day}'),
-                    onTap: widget.onDay == null ? null : () => widget.onDay!(d),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      child: Column(
-                        children: [
-                          Text(_weekdays[d.weekday - 1], style: muted),
-                          Text(
-                            '${d.day}',
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              color: _sameDay(d, now)
-                                  ? theme.colorScheme.primary
-                                  : null,
-                              fontWeight:
-                                  _sameDay(d, now) ? FontWeight.bold : null,
-                            ),
+        Row(
+          children: [
+            const SizedBox(width: gutter),
+            for (final d in widget.days)
+              Expanded(
+                child: InkWell(
+                  key: ValueKey(widget.onDay == null
+                      ? 'day-head:${_dayKey(d)}'
+                      : 'week-day:${_dayKey(d)}'),
+                  onTap: widget.onDay == null ? null : () => widget.onDay!(d),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Column(
+                      children: [
+                        Text(_weekdays[d.weekday - 1], style: muted),
+                        Text(
+                          '${d.day}',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            color: _sameDay(d, now)
+                                ? theme.colorScheme.primary
+                                : null,
+                            fontWeight:
+                                _sameDay(d, now) ? FontWeight.bold : null,
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
-            ],
-          ),
+              ),
+          ],
+        ),
         if (anyAllDay)
           Padding(
             padding: const EdgeInsets.only(bottom: 4),
@@ -709,43 +1803,55 @@ class _TimelineState extends State<_Timeline> {
           ),
         const Divider(height: 1),
         Expanded(
-          child: SingleChildScrollView(
-            controller: _scroll,
-            child: SizedBox(
-              height: 24 * hourHeight,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: gutter,
-                    child: Stack(
-                      children: [
-                        for (var h = 1; h < 24; h++)
-                          Positioned(
-                            top: h * hourHeight - 7,
-                            right: 6,
-                            child: Text(
-                              formatClock(DateTime(2000, 1, 1, h), use24h: use24h),
-                              style: muted,
+          child: Listener(
+            onPointerDown: _down,
+            onPointerMove: _moved,
+            onPointerUp: _up,
+            onPointerCancel: _up,
+            child: SingleChildScrollView(
+              controller: _scroll,
+              physics: _pinched != null
+                  ? const NeverScrollableScrollPhysics()
+                  : null,
+              child: SizedBox(
+                height: 24 * hourHeight,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: gutter,
+                      child: Stack(
+                        children: [
+                          for (var h = 1; h < 24; h++)
+                            Positioned(
+                              top: h * hourHeight - 7,
+                              right: 6,
+                              child: Text(
+                                formatClock(DateTime(2000, 1, 1, h),
+                                    use24h: use24h),
+                                style: muted,
+                              ),
                             ),
-                          ),
-                      ],
-                    ),
-                  ),
-                  for (final d in widget.days)
-                    Expanded(
-                      child: _DayColumn(
-                        day: d,
-                        events: [
-                          for (final e in eventsOn(d, widget.events))
-                            if (!e.allDay) e,
                         ],
-                        colours: widget.colours,
-                        onTap: widget.onTap,
-                        onSlot: widget.onSlot,
                       ),
                     ),
-                ],
+                    for (final d in widget.days)
+                      Expanded(
+                        child: _DayColumn(
+                          day: d,
+                          events: [
+                            for (final e in eventsOn(d, widget.events))
+                              if (!e.allDay) e,
+                          ],
+                          colours: widget.colours,
+                          hourHeight: hourHeight,
+                          prefs: widget.prefs,
+                          onTap: widget.onTap,
+                          onSlot: widget.onSlot,
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -760,6 +1866,8 @@ class _DayColumn extends StatelessWidget {
     required this.day,
     required this.events,
     required this.colours,
+    required this.hourHeight,
+    required this.prefs,
     required this.onTap,
     required this.onSlot,
   });
@@ -767,10 +1875,10 @@ class _DayColumn extends StatelessWidget {
   final DateTime day;
   final List<CalendarEvent> events;
   final Map<String, Color> colours;
+  final double hourHeight;
+  final CalendarPrefs prefs;
   final void Function(CalendarEvent) onTap;
   final void Function(DateTime) onSlot;
-
-  static const hourHeight = _TimelineState.hourHeight;
 
   @override
   Widget build(BuildContext context) {
@@ -782,6 +1890,7 @@ class _DayColumn extends StatelessWidget {
       return clipped.difference(day).inMinutes / 60 * hourHeight;
     }
 
+    final offHours = theme.colorScheme.surfaceContainerHighest.withAlpha(110);
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
@@ -795,6 +1904,21 @@ class _DayColumn extends StatelessWidget {
           },
           child: Stack(
             children: [
+              // Outside the working day, shaded as Outlook shades it.
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: prefs.dayStart * hourHeight,
+                child: ColoredBox(color: offHours),
+              ),
+              Positioned(
+                top: prefs.dayEnd * hourHeight,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: ColoredBox(color: offHours),
+              ),
               for (var h = 0; h < 24; h++)
                 Positioned(
                   top: h * hourHeight,
@@ -860,16 +1984,19 @@ class _Block extends StatelessWidget {
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
     final faint = event.showAs == EventShowAs.free ||
         event.response == EventResponse.tentative ||
-        event.response == EventResponse.notResponded;
+        event.response == EventResponse.notResponded ||
+        event.declined;
     final style = TextStyle(
       color: faint ? colour : Colors.white,
       fontSize: 12,
-      decoration: event.cancelled ? TextDecoration.lineThrough : null,
+      decoration: event.cancelled || event.declined
+          ? TextDecoration.lineThrough
+          : null,
     );
     return Padding(
       padding: EdgeInsets.only(bottom: compact ? 2 : 0),
       child: Material(
-        color: faint ? colour.withAlpha(40) : colour,
+        color: faint ? colour.withAlpha(event.declined ? 20 : 40) : colour,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(4),
           side: faint ? BorderSide(color: colour) : BorderSide.none,
@@ -961,7 +2088,9 @@ class _EventDetails extends StatelessWidget {
             Text(
               e.title.isEmpty ? '(No title)' : e.title,
               style: theme.textTheme.titleLarge?.copyWith(
-                decoration: e.cancelled ? TextDecoration.lineThrough : null,
+                decoration: e.cancelled || e.declined
+                    ? TextDecoration.lineThrough
+                    : null,
               ),
             ),
             if (e.cancelled)

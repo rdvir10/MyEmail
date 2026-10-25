@@ -34,12 +34,14 @@ class EventAttendee {
 
 /// One event on an account's calendar, as the calendar view shows it: an
 /// occurrence, a recurring meeting's each one on its own. Read from the
-/// account's calendar when the view asks, never kept.
+/// account's calendar when the view asks, and kept on the device until the
+/// next read (see `CacheStore.keepCalendar`), so the view opens at once.
 @immutable
 class CalendarEvent {
   const CalendarEvent({
     required this.id,
     required this.accountId,
+    this.calendarId = mainCalendar,
     required this.title,
     required this.start,
     required this.end,
@@ -60,6 +62,14 @@ class CalendarEvent {
   /// The calendar's own id for this occurrence.
   final String id;
   final String accountId;
+
+  /// Which of the account's calendars it is on: [mainCalendar] for the
+  /// one every account has, Outlook's Calendar and Google's primary.
+  /// Google's ids are a calendar's own, so a change to an event names it.
+  final String calendarId;
+
+  /// [calendarId] for the account's main calendar.
+  static const mainCalendar = '';
   final String title;
 
   /// Local time. For a whole day, the first day at midnight, and [end] the
@@ -91,6 +101,10 @@ class CalendarEvent {
   /// The first lines of what it says.
   final String preview;
 
+  /// The account said no and the calendar kept it all the same, as
+  /// Google's does; Outlook takes a declined meeting off itself.
+  bool get declined => response == EventResponse.declined;
+
   /// Whether any of it falls on [day], a date at midnight.
   bool fallsOn(DateTime day) {
     final from = DateTime(day.year, day.month, day.day);
@@ -101,11 +115,117 @@ class CalendarEvent {
         (end.isAfter(from) || (end == start && !start.isBefore(from)));
   }
 
+  /// As kept on the device: see [CalendarEvent.fromJson]. A whole day's
+  /// times are its dates, which mean the same day wherever the phone is; a
+  /// timed event's are instants, in UTC.
+  Map<String, Object?> toJson() {
+    String at(DateTime t) => allDay
+        ? '${t.year.toString().padLeft(4, '0')}-'
+            '${t.month.toString().padLeft(2, '0')}-'
+            '${t.day.toString().padLeft(2, '0')}'
+        : t.toUtc().toIso8601String();
+    Map<String, Object?> address(MailAddress a) => {
+          'email': a.email,
+          if (a.name != null) 'name': a.name,
+        };
+    return {
+      'id': id,
+      'accountId': accountId,
+      if (calendarId != mainCalendar) 'calendarId': calendarId,
+      'title': title,
+      'start': at(start),
+      'end': at(end),
+      if (allDay) 'allDay': true,
+      if (location.isNotEmpty) 'location': location,
+      if (organizer != null) 'organizer': address(organizer!),
+      if (attendees.isNotEmpty)
+        'attendees': [
+          for (final a in attendees)
+            {
+              ...address(a.address),
+              if (a.response != EventResponse.none) 'response': a.response.name,
+              if (a.optional) 'optional': true,
+            },
+        ],
+      if (joinUrl != null) 'joinUrl': joinUrl,
+      if (webLink != null) 'webLink': webLink,
+      if (showAs != EventShowAs.busy) 'showAs': showAs.name,
+      if (response != EventResponse.none) 'response': response.name,
+      if (isOrganizer) 'isOrganizer': true,
+      if (cancelled) 'cancelled': true,
+      if (reminderMinutes != null) 'reminderMinutes': reminderMinutes,
+      if (preview.isNotEmpty) 'preview': preview,
+    };
+  }
+
+  /// What [toJson] wrote, or null for anything that is not one: a kept
+  /// row the app cannot read is passed over, never thrown.
+  static CalendarEvent? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final id = json['id'], accountId = json['accountId'];
+    if (id is! String || accountId is! String) return null;
+    final allDay = json['allDay'] == true;
+    DateTime? at(Object? value) {
+      if (value is! String) return null;
+      final t = DateTime.tryParse(value);
+      if (t == null) return null;
+      return allDay ? DateTime(t.year, t.month, t.day) : t.toLocal();
+    }
+
+    final start = at(json['start']), end = at(json['end']);
+    if (start == null || end == null) return null;
+    MailAddress? address(Object? v) {
+      if (v is! Map || v['email'] is! String) return null;
+      final name = v['name'];
+      return MailAddress(
+        email: v['email'] as String,
+        name: name is String ? name : null,
+      );
+    }
+
+    T named<T extends Enum>(List<T> values, Object? name, T otherwise) =>
+        values.where((v) => v.name == name).firstOrNull ?? otherwise;
+    String? text(Object? v) => v is String ? v : null;
+    final attendees = json['attendees'];
+    final minutes = json['reminderMinutes'];
+    return CalendarEvent(
+      id: id,
+      accountId: accountId,
+      calendarId: text(json['calendarId']) ?? mainCalendar,
+      title: text(json['title']) ?? '',
+      start: start,
+      end: end.isBefore(start) ? start : end,
+      allDay: allDay,
+      location: text(json['location']) ?? '',
+      organizer: address(json['organizer']),
+      attendees: [
+        for (final a in attendees is List ? attendees : const [])
+          if (address(a) case final who?)
+            EventAttendee(
+              who,
+              response: named(EventResponse.values, (a as Map)['response'],
+                  EventResponse.none),
+              optional: a['optional'] == true,
+            ),
+      ],
+      joinUrl: text(json['joinUrl']),
+      webLink: text(json['webLink']),
+      showAs: named(EventShowAs.values, json['showAs'], EventShowAs.busy),
+      response:
+          named(EventResponse.values, json['response'], EventResponse.none),
+      isOrganizer: json['isOrganizer'] == true,
+      cancelled: json['cancelled'] == true,
+      reminderMinutes: minutes is num ? minutes.toInt() : null,
+      preview: text(json['preview']) ?? '',
+    );
+  }
+
   @override
   bool operator ==(Object other) =>
       other is CalendarEvent &&
       other.id == id &&
       other.accountId == accountId &&
+      other.calendarId == calendarId &&
       other.title == title &&
       other.start == start &&
       other.end == end &&
@@ -126,6 +246,7 @@ class CalendarEvent {
   int get hashCode => Object.hash(
         id,
         accountId,
+        calendarId,
         title,
         start,
         end,

@@ -7,6 +7,7 @@ import 'package:myemail/data/calendar/google_calendar_api.dart';
 import 'package:myemail/data/calendar/phone_calendar.dart';
 import 'package:myemail/data/calendar/phone_calendar_sync.dart';
 import 'package:myemail/data/graph/graph_calendar_api.dart';
+import 'package:myemail/data/mail_engine.dart' show ConnectionFailed;
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
@@ -318,8 +319,9 @@ void main() {
       Widget home, {
       FakePhoneCalendar? phone,
       void Function(SampleMailEngine engine, Account hadco)? prepare,
+      Size size = const Size(1000, 1400),
     }) async {
-      tester.view.physicalSize = const Size(1000, 1400);
+      tester.view.physicalSize = size;
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
@@ -451,6 +453,235 @@ void main() {
       await tester.pumpAndSettle();
       expect(c.read(phoneCalendarsProvider), isEmpty);
       expect(find.textContaining('calendar permission'), findsOneWidget);
+    });
+
+    CalendarEvent at(
+      Account hadco,
+      String id,
+      String title,
+      DateTime start, {
+      Duration length = const Duration(hours: 1),
+      EventResponse response = EventResponse.none,
+    }) =>
+        CalendarEvent(
+          id: id,
+          accountId: hadco.id,
+          title: title,
+          start: start,
+          end: start.add(length),
+          response: response,
+        );
+
+    String day(DateTime d) => '${d.year}-${d.month}-${d.day}';
+
+    testWidgets('a meeting you declined is left out, and shown struck '
+        'through once Show declined meetings is on (#1)', (tester) async {
+      final t = today();
+      final (c, _) = await pump(tester, const CalendarScreen(),
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          at(hadco, 'no', 'Said no', DateTime(t.year, t.month, t.day + 1, 10),
+              response: EventResponse.declined),
+          at(hadco, 'yes', 'Going', DateTime(t.year, t.month, t.day + 1, 12),
+              response: EventResponse.accepted),
+        ];
+      });
+      expect(find.text('Going'), findsOneWidget);
+      expect(find.text('Said no'), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('calendar-menu')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('calendar-show-declined')));
+      await tester.pumpAndSettle();
+      expect(c.read(calendarPrefsProvider).showDeclined, isTrue);
+      expect(find.text('Said no'), findsOneWidget);
+      expect(tester.widget<Text>(find.text('Said no')).style?.decoration,
+          TextDecoration.lineThrough);
+      expect(find.text('Declined'), findsOneWidget);
+    });
+
+    testWidgets('what was read is shown again when the calendar cannot be '
+        'read (#2)', (tester) async {
+      final t = today();
+      final (c, hadco) = await pump(tester, const CalendarScreen(),
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          at(hadco, 'k', 'Kept meeting',
+              DateTime(t.year, t.month, t.day + 1, 10)),
+        ];
+      });
+      expect(find.text('Kept meeting'), findsOneWidget);
+
+      (c.read(mailEngineProvider) as SampleMailEngine)
+              .calendarRefusals[hadco.id] =
+          const ConnectionFailed('No connection.');
+      c.read(calendarRefreshProvider.notifier).now();
+      await tester.pumpAndSettle();
+      expect(find.text('Kept meeting'), findsOneWidget);
+      expect(find.text('No connection.'), findsOneWidget);
+    });
+
+    testWidgets('the title opens a month to pick a day from, and the view '
+        'goes there (#3)', (tester) async {
+      await pump(tester, const CalendarScreen());
+      await tester.tap(find.byKey(const ValueKey('calendar-view-day')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('calendar-title')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('pick-next')));
+      await tester.pumpAndSettle();
+
+      final t = today();
+      final target = DateTime(t.year, t.month + 1, 15);
+      await tester.tap(find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byKey(ValueKey('month-day:${day(target)}')),
+      ));
+      await tester.pumpAndSettle();
+      expect(find.byKey(ValueKey('day-head:${day(target)}')), findsOneWidget);
+    });
+
+    testWidgets('a swipe turns to the next day, and Back to the one before '
+        '(#4)', (tester) async {
+      await pump(tester, const CalendarScreen());
+      await tester.tap(find.byKey(const ValueKey('calendar-view-day')));
+      await tester.pumpAndSettle();
+      final t = today();
+      final tomorrow = DateTime(t.year, t.month, t.day + 1);
+      expect(find.byKey(ValueKey('day-head:${day(t)}')), findsOneWidget);
+
+      await tester.fling(find.byType(PageView), const Offset(-500, 0), 1500);
+      await tester.pumpAndSettle();
+      expect(find.byKey(ValueKey('day-head:${day(tomorrow)}')), findsOneWidget);
+      expect(find.byKey(ValueKey('day-head:${day(t)}')), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('calendar-previous')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(ValueKey('day-head:${day(t)}')), findsOneWidget);
+    });
+
+    testWidgets('Month on a tablet: titles in the boxes, and a day opens Day '
+        '(#5)', (tester) async {
+      final t = today();
+      final board = DateTime(t.year, t.month, t.day == 10 ? 11 : 10);
+      final (c, _) = await pump(tester, const CalendarScreen(),
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          at(hadco, 'board', 'Board',
+              DateTime(board.year, board.month, board.day, 10)),
+        ];
+      });
+      await tester.tap(find.byKey(const ValueKey('calendar-view-month')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('month-event:board')), findsOneWidget);
+
+      await tester.tap(find.byKey(ValueKey('month-day:${day(board)}')));
+      await tester.pumpAndSettle();
+      expect(c.read(calendarViewProvider), CalendarViewMode.day);
+      expect(find.byKey(ValueKey('day-head:${day(board)}')), findsOneWidget);
+    });
+
+    testWidgets('Month on a phone: dots, the day picked listed under it, and '
+        'a second tap opens it (#5)', (tester) async {
+      final t = today();
+      final board = DateTime(t.year, t.month, t.day == 10 ? 11 : 10);
+      final (c, _) = await pump(tester, const CalendarScreen(),
+          size: const Size(400, 800), prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          at(hadco, 'board', 'Board',
+              DateTime(board.year, board.month, board.day, 10)),
+        ];
+      });
+      await tester.tap(find.byKey(const ValueKey('calendar-view-month')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('month-event:board')), findsNothing,
+          reason: 'dots on a phone, not titles');
+
+      final cell = find.byKey(ValueKey('month-day:${day(board)}'));
+      await tester.tap(cell);
+      await tester.pumpAndSettle();
+      expect(find.text('Board'), findsOneWidget, reason: 'listed under it');
+      await tester.tap(cell);
+      await tester.pumpAndSettle();
+      expect(c.read(calendarViewProvider), CalendarViewMode.day);
+    });
+
+    testWidgets('Week shows the work week alone once chosen (#6)',
+        (tester) async {
+      final (c, _) = await pump(tester, const CalendarScreen());
+      await tester.tap(find.byKey(const ValueKey('calendar-menu')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('calendar-span:workWeek')));
+      await tester.pumpAndSettle();
+      expect(c.read(calendarViewProvider), CalendarViewMode.week);
+      expect(c.read(calendarWeekSpanProvider), WeekSpan.workWeek);
+      final heads = find.byWidgetPredicate((w) =>
+          w.key is ValueKey<String> &&
+          (w.key! as ValueKey<String>).value.startsWith('week-day:'));
+      expect(heads, findsNWidgets(5), reason: 'Monday to Friday');
+      expect(find.text('Work week'), findsOneWidget,
+          reason: 'on the view button');
+    });
+
+    testWidgets('the agenda goes back before the day it opens at (#7)',
+        (tester) async {
+      final t = today();
+      await pump(tester, const CalendarScreen(), prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          at(hadco, 'past', 'Earlier meeting',
+              DateTime(t.year, t.month, t.day - 3, 10)),
+          at(hadco, 'soon', 'Later meeting',
+              DateTime(t.year, t.month, t.day + 2, 10)),
+        ];
+      });
+      expect(find.text('Later meeting'), findsOneWidget);
+      expect(find.text('Earlier meeting'), findsNothing, reason: 'above');
+
+      await tester.drag(find.byType(CustomScrollView), const Offset(0, 500));
+      await tester.pumpAndSettle();
+      expect(find.text('Earlier meeting'), findsOneWidget);
+    });
+
+    testWidgets('a pinch makes the hours taller, and the height is kept (#8)',
+        (tester) async {
+      final (c, _) = await pump(tester, const CalendarScreen());
+      await tester.tap(find.byKey(const ValueKey('calendar-view-day')));
+      await tester.pumpAndSettle();
+      final centre = tester.getCenter(find.byType(SingleChildScrollView));
+      final a = await tester.startGesture(centre - const Offset(0, 40),
+          pointer: 7);
+      final b = await tester.startGesture(centre + const Offset(0, 40),
+          pointer: 8);
+      await tester.pump();
+      await a.moveBy(const Offset(0, -40));
+      await b.moveBy(const Offset(0, 40));
+      await tester.pump();
+      await a.up();
+      await b.up();
+      await tester.pumpAndSettle();
+      expect(c.read(calendarHourHeightProvider), closeTo(112, 0.5),
+          reason: 'the fingers twice as far apart');
+    });
+
+    testWidgets('Settings, Calendar: declined meetings, what Week shows, and '
+        'the working day', (tester) async {
+      final (c, _) = await pump(tester, const CalendarSettingsScreen(),
+          phone: FakePhoneCalendar());
+      await tester.tap(find.byKey(const ValueKey('calendar-declined-switch')));
+      await tester.pumpAndSettle();
+      expect(c.read(calendarPrefsProvider).showDeclined, isTrue);
+
+      await tester.tap(find.byKey(const ValueKey('calendar-week-span')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Work week').last);
+      await tester.pumpAndSettle();
+      expect(c.read(calendarWeekSpanProvider), WeekSpan.workWeek);
+
+      await tester.tap(find.byKey(const ValueKey('calendar-day-start')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('08:00').last);
+      await tester.pumpAndSettle();
+      expect(c.read(calendarPrefsProvider).dayStart, 8);
     });
   });
 }

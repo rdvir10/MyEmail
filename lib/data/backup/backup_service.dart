@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../../domain/account.dart';
+import '../../domain/calendar_prefs.dart';
 import '../../domain/display_settings.dart';
 import '../../domain/quick_step.dart';
 import '../../domain/settings_backup.dart';
@@ -62,6 +63,7 @@ class BackupService {
     UiStateKeys.workWeek: _Shape.ids,
     UiStateKeys.senderBlocks: _Shape.text,
     UiStateKeys.savedSearches: _Shape.text,
+    UiStateKeys.calendarPrefs: _Shape.text,
     // Deliberately absent: UiStateKeys.selected, which is where you happened
     // to be standing, and UiStateKeys.recentMoves, which is a short history
     // rather than a setting. Neither is worth carrying and both would be odd
@@ -308,6 +310,8 @@ bool _readable(String key, String value) {
         return (jsonDecode(value) as Map<String, dynamic>)
             .values
             .every((v) => v is int);
+      case UiStateKeys.calendarPrefs:
+        return CalendarPrefs.tryParse(value) != null;
       default:
         return true;
     }

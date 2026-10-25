@@ -279,6 +279,14 @@ class _EmptyEngine implements MailEngine {
       _inner.calendarEvents(accountId, start, end);
 
   @override
+  Future<KeptCalendar> keptCalendarEvents(
+    String accountId,
+    DateTime start,
+    DateTime end,
+  ) =>
+      _inner.keptCalendarEvents(accountId, start, end);
+
+  @override
   ServerSettings? serverSettings(String accountId) =>
       _inner.serverSettings(accountId);
 

@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
 
 import '../../domain/address_suggestions.dart';
+import '../../domain/calendar_event.dart';
+import '../../domain/calendar_reads.dart';
 import '../../domain/mail_message.dart';
 
 /// Per-folder bookkeeping the sync needs between runs.
@@ -295,6 +297,31 @@ abstract class CacheStore {
   /// Back, or gone: no longer waited for.
   Future<void> removeSnoozed(String accountId, String messageId);
 
+  /// What [accountId]'s calendar [calendarId] held from [start] to [end]
+  /// when it was read at [readAt]: every event kept before for that
+  /// stretch goes, and [events] are kept in its place. Not kept where a
+  /// read of the same stretch kept since is newer, an answer that came
+  /// back after one asked for later. Events and reads that ended longer
+  /// ago than [keptCalendarBack] are let go at the same time.
+  Future<void> keepCalendar(
+    String accountId,
+    DateTime start,
+    DateTime end,
+    List<CalendarEvent> events, {
+    required DateTime readAt,
+    String calendarId = CalendarEvent.mainCalendar,
+  });
+
+  /// The events kept for [accountId] that fall between [start] and [end],
+  /// earliest first, on [calendarIds], and when that stretch of all of them
+  /// was read (see [readAtOver]). Nothing kept is no events and no time.
+  Future<KeptCalendar> keptCalendar(
+    String accountId,
+    DateTime start,
+    DateTime end, {
+    Set<String> calendarIds = const {CalendarEvent.mainCalendar},
+  });
+
   /// The newest [limit] flagged messages in all of [accountId]'s folders,
   /// each with the folder it is in, as [readMessages] reads them.
   Future<List<({String path, CachedMessage message})>> readFlagged(
@@ -507,6 +534,29 @@ class MemoryCacheStore implements CacheStore {
   @override
   Future<void> removeSnoozed(String accountId, String messageId) async =>
       _snoozed.remove(_k(accountId, messageId));
+
+  final MemoryCalendarKeep _calendars = MemoryCalendarKeep();
+
+  @override
+  Future<void> keepCalendar(
+    String accountId,
+    DateTime start,
+    DateTime end,
+    List<CalendarEvent> events, {
+    required DateTime readAt,
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async =>
+      _calendars.keep(accountId, start, end, events,
+          readAt: readAt, calendarId: calendarId);
+
+  @override
+  Future<KeptCalendar> keptCalendar(
+    String accountId,
+    DateTime start,
+    DateTime end, {
+    Set<String> calendarIds = const {CalendarEvent.mainCalendar},
+  }) async =>
+      _calendars.kept(accountId, start, end, calendarIds: calendarIds);
 
   @override
   Future<List<({String path, CachedMessage message})>> readFlagged(
@@ -808,5 +858,85 @@ class MemoryCacheStore implements CacheStore {
     final prefix = '$accountId$_separator';
     _messages.removeWhere((k, _) => k.startsWith(prefix));
     _states.removeWhere((k, _) => k.startsWith(prefix));
+    _calendars.forget(accountId);
   }
+}
+
+/// [CacheStore.keepCalendar] and [CacheStore.keptCalendar] in memory, for
+/// [MemoryCacheStore] and the sample engine.
+class MemoryCalendarKeep {
+  final Map<String, List<CalendarRead>> _reads = {};
+  final Map<String, Map<(String, String), CalendarEvent>> _events = {};
+
+  void keep(
+    String accountId,
+    DateTime start,
+    DateTime end,
+    List<CalendarEvent> events, {
+    required DateTime readAt,
+    String calendarId = CalendarEvent.mainCalendar,
+  }) {
+    final read = CalendarRead(
+      calendarId: calendarId,
+      start: start,
+      end: end,
+      readAt: readAt,
+    );
+    final reads = _reads[accountId] ?? const [];
+    if (readIsStale(reads, read)) return;
+    final kept = _events.putIfAbsent(accountId, () => {});
+    kept.removeWhere(
+        (k, e) => e.calendarId == calendarId && eventIsIn(e, start, end));
+    for (final e in events) {
+      kept[(e.calendarId, e.id)] = e;
+    }
+    final before = readAt.subtract(keptCalendarBack);
+    kept.removeWhere((_, e) => e.end.isBefore(before));
+    _reads[accountId] = [
+      for (final r in withRead(reads, read))
+        if (!r.end.isBefore(before)) r,
+    ];
+  }
+
+  KeptCalendar kept(
+    String accountId,
+    DateTime start,
+    DateTime end, {
+    Set<String> calendarIds = const {CalendarEvent.mainCalendar},
+  }) {
+    final events = [
+      for (final e in (_events[accountId] ?? const {}).values)
+        if (calendarIds.contains(e.calendarId) && eventIsIn(e, start, end)) e,
+    ]..sort(byStart);
+    final reads = _reads[accountId] ?? const [];
+    return (events: events, readAt: readAtOverAll(reads, start, end, calendarIds));
+  }
+
+  void forget(String accountId) {
+    _reads.remove(accountId);
+    _events.remove(accountId);
+  }
+}
+
+/// Earliest first, and the shorter first of two that start together.
+int byStart(CalendarEvent a, CalendarEvent b) {
+  final byStart = a.start.compareTo(b.start);
+  return byStart != 0 ? byStart : a.end.compareTo(b.end);
+}
+
+/// [readAtOver] for several calendars at once: the oldest of their times,
+/// or null where any of them has a part never read.
+DateTime? readAtOverAll(
+  List<CalendarRead> reads,
+  DateTime start,
+  DateTime end,
+  Set<String> calendarIds,
+) {
+  DateTime? oldest;
+  for (final id in calendarIds) {
+    final at = readAtOver(reads, start, end, calendarId: id);
+    if (at == null) return null;
+    if (oldest == null || at.isBefore(oldest)) oldest = at;
+  }
+  return oldest;
 }
