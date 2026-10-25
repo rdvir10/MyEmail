@@ -1,3 +1,4 @@
+import '../../data/duet/duet_uploader.dart';
 import '../../data/calendar/phone_calendar_sync.dart';
 import '../../state/calendar_view_providers.dart' show phoneCalendarProvider;
 import 'dart:async';
@@ -249,6 +250,7 @@ class _AppShellState extends ConsumerState<AppShell>
     _restartStalledSync();
     unawaited(_wakeSnoozed());
     unawaited(_syncPhoneCalendars());
+    unawaited(_sendToDuet());
   }
 
   /// Hidden or paused since the app was last in front; see
@@ -281,7 +283,16 @@ class _AppShellState extends ConsumerState<AppShell>
     ref.read(listRefreshProvider.notifier).ping();
     unawaited(_wakeSnoozed());
     unawaited(_syncPhoneCalendars());
+    unawaited(_sendToDuet());
   }
+
+  /// The Inboxes for Duet, sent while the app is in front, every five
+  /// minutes at most; the background does it otherwise. Never throws.
+  Future<void> _sendToDuet() => sendToDuetIfDue(
+        ref.read(mailEngineProvider),
+        ref.read(uiStateStoreProvider),
+        ref.read(credentialStoreProvider),
+      );
 
   /// Microsoft calendars in the phone's calendar, brought up to date while
   /// the app is in front, every quarter hour at most; the background does

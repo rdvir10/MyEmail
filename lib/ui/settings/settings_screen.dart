@@ -11,6 +11,8 @@ import 'about_screen.dart';
 import 'accounts_screen.dart';
 import 'auto_replies_screen.dart';
 import 'calendar_settings_screen.dart';
+import 'duet_screen.dart';
+import '../../state/duet_providers.dart';
 import 'rules_screen.dart';
 import 'backup_screen.dart';
 import 'notifications_screen.dart';
@@ -123,6 +125,17 @@ class SettingsScreen extends ConsumerWidget {
             title: 'Calendar',
             subtitle: "Microsoft calendars in the phone's calendar",
             onTap: () => _open(context, const CalendarSettingsScreen()),
+          ),
+          _Row(
+            icon: Icons.auto_awesome_outlined,
+            title: 'Claude (Duet)',
+            subtitle: switch (ref.watch(duetSettingsProvider)) {
+              final d when !d.enabled || d.accounts.isEmpty => 'Off',
+              final d when d.accounts.length == 1 =>
+                'One Inbox sent to your connector',
+              final d => '${d.accounts.length} Inboxes sent to your connector',
+            },
+            onTap: () => _open(context, const DuetScreen()),
           ),
           const Divider(height: 1),
           const _SectionHeading('This app'),

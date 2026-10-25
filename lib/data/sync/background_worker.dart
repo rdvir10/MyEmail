@@ -14,6 +14,7 @@ import '../ui_state_store.dart';
 import '../../domain/sync_prefs.dart';
 import '../account_store.dart';
 import '../calendar/phone_calendar_sync.dart';
+import '../duet/duet_uploader.dart';
 import '../cache/mail_database.dart';
 import '../graph/graph_id_map.dart';
 import '../folder_list_store.dart';
@@ -593,6 +594,12 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
         );
         // At most every half hour, whatever the pass's own pace.
         await syncPhoneCalendarsIfDue(liveEngine, PrefsUiStateStore(prefs));
+        // The Inboxes for Duet, at most every five minutes.
+        await sendToDuetIfDue(
+          liveEngine,
+          PrefsUiStateStore(prefs),
+          SecureCredentialStore(),
+        );
         await state.writeLastLivePass(DateTime.now());
         return report;
       },
@@ -754,6 +761,8 @@ Future<bool> _runOnePass() async {
     ).refresh(engine, synced: report.synced);
     // Never throws, and does nothing where no calendar is shown there.
     await syncPhoneCalendarsIfDue(engine, PrefsUiStateStore(prefs));
+    // Nor this, where nothing is sent to Duet.
+    await sendToDuetIfDue(engine, PrefsUiStateStore(prefs), SecureCredentialStore());
 
     debugPrint('[myemail] background pass: $report');
     for (final failure in report.failures) {

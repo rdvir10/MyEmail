@@ -91,6 +91,14 @@ abstract final class UiStateKeys {
   /// The calendar view: Agenda, Day or Week, and the accounts it leaves out.
   static const calendarView = 'calendar.view.v1';
   static const hiddenCalendars = 'calendar.hidden.v1';
+
+  /// Settings, Claude (Duet), and what the uploader has sent and when; see
+  /// `DuetUploader`. Read by the background worker too. Not in the backup:
+  /// the key that goes with them is a secret of this phone's.
+  static const duet = 'duet.settings.v1';
+  static const duetSent = 'duet.sent.v1';
+  static const duetLastRun = 'duet.last-run.v1';
+  static const duetStatus = 'duet.status.v1';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.
