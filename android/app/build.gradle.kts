@@ -24,6 +24,16 @@ android {
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
+    // Both devices are arm64, and the APK is built for arm64 alone. The ML
+    // Kit libraries bring x86 and 32-bit copies of their native code as
+    // well, eight megabytes for nothing. Left out as the APK is packed:
+    // abiFilters did not do it, Flutter's own build setting them again.
+    packaging {
+        jniLibs {
+            excludes += listOf("lib/x86/**", "lib/x86_64/**", "lib/armeabi-v7a/**")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -44,9 +54,6 @@ android {
         // Android 8.0 at least: ML Kit's on-device AI (the summary, proofread
         // and rewrite) needs it. Both of Ron's devices are far past it.
         minSdk = maxOf(flutter.minSdkVersion, 26)
-        // Both devices are arm64. The ML Kit libraries bring x86 and 32-bit
-        // copies of their native code as well, eight megabytes for nothing.
-        ndk { abiFilters += "arm64-v8a" }
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
