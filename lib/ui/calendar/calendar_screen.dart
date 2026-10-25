@@ -29,8 +29,10 @@ import '../common/bottom_message.dart';
 import '../meetings/new_meeting_screen.dart' show openNewMeeting;
 import '../messages/date_format.dart';
 import '../../state/date_providers.dart' show deviceZoneProvider;
+import 'calendar_search_screen.dart';
 import 'event_actions.dart';
 import 'event_colours.dart';
+import 'meeting_mail.dart';
 
 /// Outlook's Calendar, beside the mail: every account's events as an
 /// agenda, a day, a week or a month. Shown from what the device kept of
@@ -466,6 +468,12 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
             tooltip: 'On',
             icon: const Icon(Icons.chevron_right),
             onPressed: () => _move(mode, 1),
+          ),
+          IconButton(
+            key: const ValueKey('calendar-search'),
+            tooltip: 'Search the calendar',
+            icon: const Icon(Icons.search),
+            onPressed: () => CalendarSearchScreen.open(context),
           ),
           IconButton(
             key: const ValueKey('calendar-today'),
@@ -2801,6 +2809,20 @@ class _EventDetails extends StatelessWidget {
                     if (a.optional) 'Optional',
                   ].join(' · ')),
                 ),
+            ],
+            // The invitation and the answers about it, from its account's
+            // mail.
+            if (account != null && e.title.trim().isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: TextButton.icon(
+                  key: const ValueKey('event-mail-about'),
+                  onPressed: () => showMeetingMail(context, e),
+                  icon: const Icon(Icons.forum_outlined, size: 18),
+                  label: const Text('Mail about this meeting'),
+                ),
+              ),
             ],
             if (e.preview.isNotEmpty) ...[
               const SizedBox(height: 16),

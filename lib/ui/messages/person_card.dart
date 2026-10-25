@@ -4,11 +4,17 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/contacts/device_contacts.dart';
+import '../../domain/calendar_event.dart';
+import '../../domain/calendar_finding.dart';
 import '../../domain/draft.dart';
 import '../../domain/mail_message.dart';
+import '../../state/calendar_view_providers.dart';
 import '../../state/contact_providers.dart';
 import '../../state/sync_providers.dart' show syncSettingsProvider;
+import '../calendar/calendar_screen.dart' show CalendarScreen;
+import '../calendar/calendar_search_screen.dart';
 import '../compose/open_compose.dart';
+import 'date_format.dart';
 
 /// The card for one person on a message, the sender or anyone it went to:
 /// who they are, whether the phone's contacts have them, and what can be
@@ -56,6 +62,10 @@ Future<void> showPersonCard(
         accountId: accountId,
         to: [person],
       );
+    case _OpenMeeting(:final event):
+      await CalendarScreen.open(context, day: event.start, event: event);
+    case _AllMeetings():
+      await CalendarSearchScreen.open(context, query: person.email);
     case _CopyAddress():
       await Clipboard.setData(ClipboardData(text: person.email));
       say('Address copied.');
@@ -87,6 +97,16 @@ final class _NewEmail extends _PersonAction {
 
 final class _CopyAddress extends _PersonAction {
   const _CopyAddress();
+}
+
+final class _OpenMeeting extends _PersonAction {
+  const _OpenMeeting(this.event);
+
+  final CalendarEvent event;
+}
+
+final class _AllMeetings extends _PersonAction {
+  const _AllMeetings();
 }
 
 final class _Vip extends _PersonAction {
@@ -186,6 +206,8 @@ class PersonCard extends ConsumerWidget {
             title: const Text('New email'),
             onTap: () => choose(const _NewEmail()),
           ),
+          // Outlook's contact card: the meetings you have with them.
+          _MeetingsWith(person: person, choose: choose),
           ListTile(
             leading: const Icon(Icons.copy_outlined),
             title: const Text('Copy address'),
@@ -221,5 +243,64 @@ class PersonCard extends ConsumerWidget {
   static String _initial(MailAddress a) {
     final d = a.display.trim();
     return d.isEmpty ? '?' : d.characters.first.toUpperCase();
+  }
+}
+
+/// The next meeting with [person] and the last, from a year either way of
+/// every calendar, and All meetings, the calendar searched for them.
+/// Nothing where there is no calendar, or no meeting with them.
+class _MeetingsWith extends ConsumerWidget {
+  const _MeetingsWith({required this.person, required this.choose});
+
+  final MailAddress person;
+  final void Function(_PersonAction action) choose;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (ref.watch(calendarAccountsProvider).isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final now = DateTime.now();
+    final load = ref.watch(calendarEventsProvider(searchSpan(now))).value;
+    final found = meetingsWith(load?.events ?? const [], person.email, now);
+    if (found.next == null && found.last == null) {
+      return const SizedBox.shrink();
+    }
+    final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
+    String when(CalendarEvent e) => e.allDay
+        ? formatDay(e.start)
+        : '${formatDay(e.start)}, ${formatClock(e.start, use24h: use24h)}';
+    String title(CalendarEvent e) =>
+        e.title.trim().isEmpty ? '(No title)' : e.title.trim();
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (found.next case final next?)
+          ListTile(
+            key: const ValueKey('person-next-meeting'),
+            leading: const Icon(Icons.event_outlined),
+            title: Text('Next: ${title(next)}',
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+            subtitle: Text(when(next)),
+            onTap: () => choose(_OpenMeeting(next)),
+          ),
+        if (found.last case final last?)
+          ListTile(
+            key: const ValueKey('person-last-meeting'),
+            leading: const Icon(Icons.history),
+            title: Text('Last: ${title(last)}',
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+            subtitle: Text(when(last)),
+            onTap: () => choose(_OpenMeeting(last)),
+          ),
+        ListTile(
+          key: const ValueKey('person-all-meetings'),
+          leading: const Icon(Icons.manage_search),
+          title: const Text('All meetings with them'),
+          onTap: () => choose(const _AllMeetings()),
+        ),
+      ],
+    );
   }
 }

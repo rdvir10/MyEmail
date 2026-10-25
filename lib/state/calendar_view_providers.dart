@@ -246,6 +246,10 @@ typedef CalendarLoad = ({
 /// calendar opened again, within it is not read again.
 const calendarFreshFor = Duration(minutes: 1);
 
+/// The same for a read of months, a search's or a person card's year
+/// either way, which is a great deal more to ask again.
+const calendarLongFreshFor = Duration(minutes: 30);
+
 /// Reads kept from before this time are read again whatever their age:
 /// moved on by Refresh, and by anything the app changes on a calendar.
 class CalendarRefresh extends Notifier<DateTime> {
@@ -365,11 +369,14 @@ final calendarEventsProvider = StreamProvider.autoDispose
       }),
   ]);
   final now = DateTime.now();
+  final freshFor = range.end.difference(range.start) > const Duration(days: 62)
+      ? calendarLongFreshFor
+      : calendarFreshFor;
   bool fresh(KeptCalendar? k) {
     final at = k?.readAt;
     return at != null &&
         !at.isBefore(notBefore) &&
-        now.difference(at) < calendarFreshFor;
+        now.difference(at) < freshFor;
   }
 
   CalendarLoad load(

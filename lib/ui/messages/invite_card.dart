@@ -17,6 +17,7 @@ import '../../state/providers.dart';
 import '../../domain/free_busy.dart';
 import 'date_format.dart';
 import 'invite_answers.dart';
+import 'invite_clashes.dart';
 
 /// The meeting mail inside a message, under its header: what, when, where,
 /// who, and what can be done about it.
@@ -428,8 +429,12 @@ class _InviteCardState extends ConsumerState<InviteCard> {
               Icons.update,
               'Proposed: ${describeWhen(i, use24h: use24h)}',
             ),
-          ] else
+          ] else ...[
             _line(theme, Icons.schedule, describeWhen(i, use24h: use24h)),
+            // What else is on then, on any of the calendars.
+            if (i.isRequest && done == null && answered == null)
+              InviteClashes(invite: i),
+          ],
           if (i.location != null && i.location!.trim().isNotEmpty)
             _line(theme, Icons.place_outlined, i.location!),
           if (i.isReply || i.isDeclineCounter)
