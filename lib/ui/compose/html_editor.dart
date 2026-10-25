@@ -269,6 +269,23 @@ class HtmlEditorController extends ChangeNotifier {
     await web.runJavaScript('window.mailtreeFocus();');
   }
 
+  /// The words the phone's AI is to work on: those selected, or with none
+  /// selected, all the message's own (not the signature, not the quote).
+  /// Where they came from is kept, for [replaceAiText].
+  Future<String> aiText() async {
+    final web = _web;
+    if (web == null) return '';
+    final result =
+        await web.runJavaScriptReturningResult('window.mailtreeAiText();');
+    if (result.toString() == 'null') return '';
+    return _decodeJsString(result);
+  }
+
+  /// [text] in place of the words [aiText] read.
+  Future<void> replaceAiText(String text) async {
+    await _web?.runJavaScript('window.mailtreeAiReplace(${jsonEncode(text)});');
+  }
+
   /// Line spacing for the lines selected, or for all that is written when
   /// nothing is: null for single, else a CSS line height such as `150%`.
   Future<void> setLineSpacing(String? lineHeight) async {
@@ -649,6 +666,58 @@ String editorDocument(String bodyHtml,
     orientAll();
   };
 
+  // The phone's AI on what is written: the words selected, or with none
+  // selected all this message's own, up to the signature or the quote.
+  // The range is kept, so the answer goes back where the words came from
+  // after the dialog showing it has had the focus.
+  var aiRange = null;
+  function ownRange() {
+    var range = document.createRange();
+    range.setStart(body, 0);
+    var stop = null;
+    for (var n = body.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 1 && (n.tagName === 'BLOCKQUOTE' ||
+          n.classList.contains('mailtree-signature') ||
+          n.classList.contains('mailtree-quote'))) {
+        stop = n;
+        break;
+      }
+    }
+    if (stop) range.setEndBefore(stop);
+    else range.setEnd(body, body.childNodes.length);
+    return range;
+  }
+
+  window.mailtreeAiText = function () {
+    var sel = window.getSelection();
+    aiRange = sel.rangeCount && !sel.isCollapsed &&
+        body.contains(sel.getRangeAt(0).commonAncestorContainer)
+      ? sel.getRangeAt(0).cloneRange()
+      : ownRange();
+    // Laid out, off the page, so its lines read as lines: a range's own
+    // text runs the paragraphs together.
+    var holder = document.createElement('div');
+    holder.style.position = 'fixed';
+    holder.style.left = '-10000px';
+    holder.style.width = '600px';
+    holder.appendChild(aiRange.cloneContents());
+    document.documentElement.appendChild(holder);
+    var text = holder.innerText;
+    holder.remove();
+    return text;
+  };
+
+  window.mailtreeAiReplace = function (text) {
+    if (!aiRange) return;
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(aiRange);
+    document.execCommand('insertText', false, text);
+    aiRange = null;
+    orientAll();
+    reportFormats();
+  };
+
   window.mailtreeInsert = function (html) {
     document.execCommand('insertHTML', false, html);
     orientAll();
@@ -889,10 +958,14 @@ class EditorToolbar extends StatelessWidget {
     required this.enabled,
     this.onPicture,
     this.signatures,
+    this.assistant,
   });
 
   final HtmlEditorController controller;
   final bool enabled;
+
+  /// Proofread or rewrite, by the phone's AI, where it has it.
+  final Widget? assistant;
 
   /// A picture in the text, from the gallery or the camera.
   final VoidCallback? onPicture;
@@ -1067,6 +1140,7 @@ class EditorToolbar extends StatelessWidget {
                   onPressed: enabled ? onPicture : null,
                 ),
               ?signatures,
+              ?assistant,
               IconButton(
                 tooltip: 'Remove formatting',
                 icon: const Icon(Icons.format_clear),

@@ -1,3 +1,4 @@
+import 'ai_writing.dart';
 import 'dart:async';
 
 import '../common/bottom_message.dart';
@@ -1310,6 +1311,11 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
               enabled: !_sending,
               onPicture: () => insertPicture(context, ref, _editor),
               signatures: _signatureMenu(),
+              assistant: AiWritingButton(
+                enabled: !_sending,
+                read: _editor.aiText,
+                write: _editor.replaceAiText,
+              ),
             ),
           ],
         ),

@@ -118,6 +118,8 @@ open class MainActivity : FlutterActivity() {
         CalendarBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         // Read Aloud, in the phone's own voice.
         speech = SpeechBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        // The phone's own AI: summaries, proofreading, suggested replies.
+        AiBridge(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
 
         files = FilesBridge(this, flutterEngine.dartExecutor.binaryMessenger)
             .also {

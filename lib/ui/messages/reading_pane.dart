@@ -22,6 +22,7 @@ import '../../state/window_providers.dart';
 import '../../domain/window_handoff.dart';
 import '../compose/open_compose.dart';
 import '../meetings/new_meeting_screen.dart';
+import 'ai_message_bars.dart';
 import 'attachment_bar.dart';
 import 'date_format.dart';
 import '../shell/pane_focus.dart';
@@ -463,6 +464,8 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
             ReadReceiptBar(message: message),
             const Divider(height: 1),
             ReadAloudBar(messageId: message.id),
+            // A long English message summed up on the phone, where it can.
+            if (body.value case final b?) AiSummaryBar(message: message, body: b),
             Expanded(
               child: body.when(
                 loading: () => const Center(
@@ -483,6 +486,9 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                 data: (b) => _bodyView(theme, b),
               ),
             ),
+            // Short replies to start one with, as Outlook for Android has.
+            if (body.value case final b?)
+              SuggestedReplies(message: message, body: b),
           ],
         ),
       ),
