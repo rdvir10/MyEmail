@@ -20,6 +20,7 @@ import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/calendar_event.dart';
+import 'package:myemail/domain/calendar_prefs.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/calendar_view_providers.dart';
 import 'package:myemail/state/providers.dart';
@@ -976,6 +977,36 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('New meeting'), findsOneWidget);
       expect(find.text('Planning'), findsOneWidget);
+    });
+
+    testWidgets('a second time zone down the side of Day, set in Settings '
+        '(#24)', (tester) async {
+      final (c, _) = await pump(tester, const CalendarSettingsScreen(),
+          phone: FakePhoneCalendar());
+      await tester.tap(find.byKey(const ValueKey('calendar-second-zone')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const ValueKey('zone-search')), 'Tokyo');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('zone:Asia/Tokyo')));
+      await tester.pumpAndSettle();
+      expect(c.read(calendarPrefsProvider).secondZone, 'Asia/Tokyo');
+
+      await tester.tap(find.byKey(const ValueKey('calendar-dates-in-mail')));
+      await tester.pumpAndSettle();
+      expect(c.read(calendarPrefsProvider).datesInMail, isFalse);
+    });
+
+    testWidgets('the Day view shows the second zone\'s hours beside its own',
+        (tester) async {
+      final (c, _) = await pump(tester, const CalendarScreen());
+      c
+          .read(calendarPrefsProvider.notifier)
+          .set(const CalendarPrefs(secondZone: 'Asia/Tokyo'));
+      await tester.tap(find.byKey(const ValueKey('calendar-view-day')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('second-zone-name')), findsOneWidget);
+      expect(find.text('Tokyo'), findsOneWidget);
+      expect(find.byKey(const ValueKey('second-zone-hour:9')), findsOneWidget);
     });
   });
 }

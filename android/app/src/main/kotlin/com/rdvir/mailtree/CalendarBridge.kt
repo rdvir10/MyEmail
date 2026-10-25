@@ -64,6 +64,22 @@ class CalendarBridge(
                         call.argument<List<String>>("attendees")?.let {
                             if (it.isNotEmpty()) putExtra(Intent.EXTRA_EMAIL, it.joinToString(","))
                         }
+                        // How it repeats, as the provider's own column has it.
+                        call.argument<String>("rrule")?.let {
+                            putExtra(CalendarContract.Events.RRULE, it)
+                        }
+                        if (call.argument<Boolean>("free") == true) {
+                            putExtra(
+                                CalendarContract.Events.AVAILABILITY,
+                                CalendarContract.Events.AVAILABILITY_FREE,
+                            )
+                        }
+                        if (call.argument<Boolean>("private") == true) {
+                            putExtra(
+                                CalendarContract.Events.ACCESS_LEVEL,
+                                CalendarContract.Events.ACCESS_PRIVATE,
+                            )
+                        }
                     }
                     try {
                         activity.startActivity(intent)

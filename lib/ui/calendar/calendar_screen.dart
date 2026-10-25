@@ -16,6 +16,7 @@ import '../../domain/calendar_invite.dart' show InviteResponse;
 import '../../domain/calendar_prefs.dart';
 import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/search_refinement.dart' show weekStartFor;
+import '../../domain/time_zones.dart';
 import '../../state/calendar_view_providers.dart';
 import '../../state/meeting_providers.dart' show workWeekProvider;
 import '../../state/providers.dart';
@@ -24,6 +25,7 @@ import '../accounts/microsoft_sign_in_screen.dart';
 import '../common/bottom_message.dart';
 import '../meetings/new_meeting_screen.dart' show openNewMeeting;
 import '../messages/date_format.dart';
+import '../../state/date_providers.dart' show deviceZoneProvider;
 import 'event_actions.dart';
 
 /// Outlook's Calendar, beside the mail: every account's events as an
@@ -318,6 +320,8 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
     final load = ref.watch(calendarEventsProvider(range));
     final accounts = ref.watch(calendarAccountsProvider);
     final prefs = ref.watch(calendarPrefsProvider);
+    // Read now, for the sheet, which names the zone a meeting was set in.
+    ref.watch(deviceZoneProvider);
     final colours = {for (final a in accounts) a.id: Color(a.colorValue)};
     final wide = MediaQuery.sizeOf(context).width >= 700;
     void details(CalendarEvent e) => showEventDetails(
@@ -1667,7 +1671,9 @@ class _Drag {
 }
 
 class _TimelineState extends ConsumerState<_Timeline> {
-  static const gutter = 48.0;
+  /// The hours down the side: the phone's own, and a second zone's beside
+  /// them where Settings, Calendar names one.
+  double get gutter => widget.prefs.secondZone == null ? 48.0 : 92.0;
 
   late final ScrollController _scroll = ScrollController(
     initialScrollOffset: widget.topHour.value * ref.read(calendarHourHeightProvider),
@@ -1842,7 +1848,21 @@ class _TimelineState extends ConsumerState<_Timeline> {
       children: [
         Row(
           children: [
-            const SizedBox(width: gutter),
+            SizedBox(
+              width: gutter,
+              child: widget.prefs.secondZone == null
+                  ? null
+                  : Padding(
+                      padding: const EdgeInsets.only(left: 4),
+                      child: Text(
+                        placeOf(widget.prefs.secondZone!),
+                        key: const ValueKey('second-zone-name'),
+                        style: muted,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+            ),
             for (final d in widget.days)
               Expanded(
                 child: InkWell(
@@ -1925,7 +1945,27 @@ class _TimelineState extends ConsumerState<_Timeline> {
                       width: gutter,
                       child: Stack(
                         children: [
-                          for (var h = 1; h < 24; h++)
+                          for (var h = 1; h < 24; h++) ...[
+                            if (widget.prefs.secondZone case final zone?)
+                              Positioned(
+                                top: h * hourHeight - 7,
+                                left: 4,
+                                child: Text(
+                                  formatClock(
+                                    wallClockIn(
+                                      DateTime(widget.days.first.year,
+                                          widget.days.first.month,
+                                          widget.days.first.day, h),
+                                      zone,
+                                    ),
+                                    use24h: use24h,
+                                  ),
+                                  key: ValueKey('second-zone-hour:$h'),
+                                  style: muted?.copyWith(
+                                    color: muted.color?.withAlpha(150),
+                                  ),
+                                ),
+                              ),
                             Positioned(
                               top: h * hourHeight - 7,
                               right: 6,
@@ -1935,6 +1975,7 @@ class _TimelineState extends ConsumerState<_Timeline> {
                                 style: muted,
                               ),
                             ),
+                          ],
                         ],
                       ),
                     ),
@@ -2279,6 +2320,27 @@ String describeAnswers(AnswerCounts counts) => [
       if (counts.notAnswered > 0) '${counts.notAnswered} not answered',
     ].join(' · ');
 
+/// Where [event] was set in another zone than the phone's ([deviceZone]),
+/// that zone's times for it: "Set in New York time: 10:00–11:00". Null for
+/// one set in the phone's own, a whole day, or a zone not known.
+String? setInZone(
+  CalendarEvent event,
+  String? deviceZone, {
+  required bool use24h,
+}) {
+  final named = event.timeZone;
+  if (event.allDay || named == null) return null;
+  final zone = ianaZoneOf(named);
+  if (zone == null) return null;
+  if (deviceZone != null && ianaZoneOf(deviceZone) == zone) return null;
+  final from = wallClockIn(event.start, zone);
+  final to = wallClockIn(event.end, zone);
+  // The same clock, under another name: nothing to say.
+  if (from == event.start && to == event.end) return null;
+  return 'Set in ${placeOf(zone)} time: ${formatClock(from, use24h: use24h)}'
+      '–${formatClock(to, use24h: use24h)}';
+}
+
 class _EventDetails extends StatelessWidget {
   const _EventDetails({
     required this.event,
@@ -2437,6 +2499,10 @@ class _EventDetails extends StatelessWidget {
               Text('Cancelled by the organiser', style: muted),
             const SizedBox(height: 8),
             Text(when, key: const ValueKey('event-when')),
+            if (setInZone(e, hostRef.read(deviceZoneProvider).value,
+                    use24h: use24h)
+                case final setIn?)
+              Text(setIn, key: const ValueKey('event-set-in'), style: muted),
             if (e.location.isNotEmpty) ...[
               const SizedBox(height: 4),
               Text(e.location, style: muted),

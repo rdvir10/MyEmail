@@ -27,7 +27,11 @@ import '../common/bottom_message.dart';
 import '../common/problem_view.dart';
 import '../compose/header_fields.dart';
 import '../shell/put_away.dart';
+import '../../domain/found_dates.dart' show readQuickMeeting;
+import '../../domain/time_zones.dart';
+import '../../state/date_providers.dart' show dateFinderProvider;
 import '../messages/date_format.dart' show formatClock, formatDay;
+import 'meeting_options.dart';
 
 /// Open the new-meeting screen.
 ///
@@ -88,8 +92,10 @@ Future<void> openNewMeetingFromMessage(
   BuildContext context,
   WidgetRef ref,
   MailMessage message,
-  MailBody body,
-) {
+  MailBody body, {
+  DateTime? start,
+  bool allDay = false,
+}) {
   final text = body.text.trim();
   // Cut, as a body can run to pages; the message itself stays where it is.
   final notes = text.length > 2000 ? '${text.substring(0, 2000)}…' : text;
@@ -106,6 +112,8 @@ Future<void> openNewMeetingFromMessage(
           a.emailAddress.trim().toLowerCase(),
       },
     ),
+    start: start,
+    allDay: allDay,
   );
 }
 
@@ -268,6 +276,33 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   late DateTime _end = _endToBegin;
   late bool _allDay = _allDayToBegin;
   bool _sending = false;
+
+  /// More's choices: the repeat, reminder, show as, privacy and zone. A
+  /// meeting being changed starts from how it shows and its privacy, and
+  /// its reminder as it is.
+  late final MeetingOptions _optionsToBegin = switch (_editing?.event) {
+    final e? => MeetingOptions(showAs: e.showAs, isPrivate: e.isPrivate),
+    null => const MeetingOptions(),
+  };
+  late MeetingOptions _options = _optionsToBegin;
+
+  /// The line a meeting is typed in, "Lunch with Dana Thursday 1pm", and
+  /// whether it is being read.
+  final _quick = TextEditingController();
+  bool _reading = false;
+
+  /// [instant] as the times are set: on the clock of the zone More chose,
+  /// where it chose one. A whole day is its dates, whatever the zone.
+  DateTime _shown(DateTime instant) {
+    final zone = _options.zone;
+    return zone == null || _allDay ? instant : wallClockIn(instant, zone);
+  }
+
+  /// A time picked on that clock, as the instant the screen keeps.
+  DateTime _unshown(DateTime wall) {
+    final zone = _options.zone;
+    return zone == null || _allDay ? wall : instantIn(wall, zone);
+  }
 
   /// The kinds a meeting from this account can be held online as, empty
   /// while it has not said, or where there is none: the switch is on the
@@ -501,6 +536,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     _attendees.dispose();
     _location.dispose();
     _notes.dispose();
+    _quick.dispose();
     super.dispose();
   }
 
@@ -526,7 +562,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       _title.text == _titleToBegin &&
       _attendees.text == _attendeesToBegin &&
       _location.text == _locationToBegin &&
-      _notes.text == _notesToBegin;
+      _notes.text == _notesToBegin &&
+      _options == _optionsToBegin &&
+      _quick.text.isEmpty;
 
   /// Move the start, and the end with it, so the meeting keeps its length:
   /// a meeting moved to Tuesday is still an hour long.
@@ -569,20 +607,27 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       // Then the times go as UTC, which every calendar reads.
     }
     DateTime day(DateTime t) => DateTime(t.year, t.month, t.day);
+    // Set in another zone: the times on its clock, and its name beside
+    // them, so a 10:00 New York call stays New York's 10:00.
+    final elsewhere = _allDay ? null : _options.zone;
     MeetingDraft draft({bool changed = false}) => MeetingDraft(
           accountId: _accountId,
           title: _title.text.trim(),
           attendees: attendees,
-          start: _allDay ? day(_start) : _start,
-          end: _allDay ? day(_end) : _end,
+          start: _allDay ? day(_start) : _shown(_start),
+          end: _allDay ? day(_end) : _shown(_end),
           allDay: _allDay,
           location: _location.text.trim(),
           notes: _notes.text.trim(),
-          timeZone: zone,
+          timeZone: elsewhere ?? zone,
           online: _online ? _onlineKind : null,
           prepared: _online ? _prepared : null,
           transactionId: _transactionId,
           changedSinceFailedSend: changed,
+          recurrence: _editing == null ? _options.repeat : null,
+          reminder: _options.reminder,
+          showAs: _options.showAs,
+          isPrivate: _options.isPrivate,
         );
     final now = draft();
     return _failedSends.any((tried) => !tried.sameMeetingAs(now))
@@ -729,6 +774,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       notes: _notes.text,
       attendees: attendees,
       timeZone: zone,
+      reminder: _options.reminder,
+      showAs: _options.showAs,
+      isPrivate: _options.isPrivate,
     );
     try {
       if (!change.isEmpty) {
@@ -755,6 +803,53 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       }
     } finally {
       if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  /// Ask for the meeting in a line, then read it.
+  Future<void> _askQuickAdd() async {
+    final line = await showDialog<String>(
+      context: context,
+      builder: (_) => _QuickAddDialog(controller: _quick),
+    );
+    if (line == null || line.trim().isEmpty || !mounted) return;
+    await _quickAdd();
+  }
+
+  /// The meeting typed in a line, read on the phone and put into the
+  /// fields: the title, the day and time, and a place after "at".
+  Future<void> _quickAdd() async {
+    final line = _quick.text.trim();
+    if (line.isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final finder = ref.read(dateFinderProvider);
+    setState(() => _reading = true);
+    final found = await finder.find(line);
+    if (!mounted) return;
+    final read = readQuickMeeting(
+      line,
+      found,
+      length: _allDay ? const Duration(hours: 1) : _end.difference(_start),
+    );
+    setState(() {
+      _reading = false;
+      if (read.title.isNotEmpty) _title.text = read.title;
+      if (read.location.isNotEmpty) _location.text = read.location;
+      if (read.start case final start?) {
+        _allDay = read.allDay;
+        _start = start;
+        _end = read.end ?? start.add(const Duration(hours: 1));
+      }
+      _quick.clear();
+    });
+    if (read.start == null) {
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(
+          duration: kBottomMessage,
+          content: Text('No day or time found in that: set them below. '
+              'The line is read in English.'),
+        ));
     }
   }
 
@@ -805,12 +900,18 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
           title: meeting.title,
           description: meeting.notes.isEmpty ? null : meeting.notes,
           location: meeting.location.isEmpty ? null : meeting.location,
-          start: meeting.start,
+          // The instants the screen keeps: the meeting's own may be on
+          // another zone's clock.
+          start: meeting.allDay ? meeting.start : _start,
           // Exclusive, which is how the calendar provider counts the end of
           // a whole day.
-          end: meeting.allDay ? dayAfter(meeting.end) : meeting.end,
+          end: meeting.allDay ? dayAfter(meeting.end) : _end,
           allDay: meeting.allDay,
           attendees: [for (final a in meeting.attendees) a.email],
+          rule: meeting.recurrence
+              ?.toRule(meeting.start, allDay: meeting.allDay),
+          free: meeting.showAs == EventShowAs.free,
+          private: meeting.isPrivate,
         );
     if (!mounted) return;
     if (ok) {
@@ -956,6 +1057,37 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
           title: Text(_editing == null ? 'New meeting' : 'Edit meeting'),
           centerTitle: false,
           actions: [
+            if (_editing == null)
+              IconButton(
+                key: const ValueKey('meeting-quick-open'),
+                tooltip: 'Type it in a line',
+                icon: _reading
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.auto_awesome_outlined),
+                onPressed: _sending || _reading ? null : _askQuickAdd,
+              ),
+            IconButton(
+              key: const ValueKey('meeting-more'),
+              tooltip: _editing == null
+                  ? 'Repeat, reminder, show as, private, time zone'
+                  : 'Reminder, show as, private',
+              icon: const Icon(Icons.tune),
+              onPressed: _sending
+                  ? null
+                  : () => showMeetingOptions(
+                        context,
+                        options: _options,
+                        start: _shown(_start),
+                        allDay: _allDay,
+                        workWeek: ref.read(workWeekProvider),
+                        editing: _editing != null,
+                        freeOrBusy: _account?.provider == MailProvider.gmail,
+                        onChanged: (o) => setState(() => _options = o),
+                      ),
+            ),
             IconButton(
               key: const ValueKey('meeting-send'),
               tooltip: _editing == null ? 'Send' : 'Save',
@@ -1056,24 +1188,42 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             ),
             _WhenRow(
               label: 'Start',
-              at: _start,
+              at: _shown(_start),
               allDay: _allDay,
               enabled: !_sending,
               dateEnabled: !(_editing?.wholeSeries ?? false),
               keyPrefix: 'start',
-              onDate: () => _pickDate(_start, _setStart),
-              onTime: () => _pickTime(_start, _setStart),
+              onDate: () =>
+                  _pickDate(_shown(_start), (at) => _setStart(_unshown(at))),
+              onTime: () =>
+                  _pickTime(_shown(_start), (at) => _setStart(_unshown(at))),
             ),
             _WhenRow(
               label: 'End',
-              at: _end,
+              at: _shown(_end),
               allDay: _allDay,
               enabled: !_sending,
               dateEnabled: !(_editing?.wholeSeries ?? false),
               keyPrefix: 'end',
-              onDate: () => _pickDate(_end, (at) => setState(() => _end = at)),
-              onTime: () => _pickTime(_end, (at) => setState(() => _end = at)),
+              onDate: () => _pickDate(_shown(_end),
+                  (at) => setState(() => _end = _unshown(at))),
+              onTime: () => _pickTime(_shown(_end),
+                  (at) => setState(() => _end = _unshown(at))),
             ),
+            if (_options.zone case final zone? when !_allDay)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(80, 0, 16, 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '${placeOf(zone)} time. Yours: ${formatDay(_start)}, '
+                    '${formatClock(_start, use24h: MediaQuery.alwaysUse24HourFormatOf(context))}–'
+                    '${formatClock(_end, use24h: MediaQuery.alwaysUse24HourFormatOf(context))}',
+                    key: const ValueKey('meeting-your-time'),
+                    style: muted,
+                  ),
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
               child: Row(
@@ -1193,6 +1343,41 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
               controller: _location,
               enabled: !_sending,
             ),
+            // What More holds, in a line, once anything is chosen there.
+            if (_options.summary(_shown(_start), editing: _editing != null)
+                case final summary when summary.isNotEmpty)
+              InkWell(
+                key: const ValueKey('meeting-more-summary'),
+                onTap: _sending
+                    ? null
+                    : () => showMeetingOptions(
+                          context,
+                          options: _options,
+                          start: _shown(_start),
+                          allDay: _allDay,
+                          workWeek: ref.read(workWeekProvider),
+                          editing: _editing != null,
+                          freeOrBusy: account?.provider == MailProvider.gmail,
+                          onChanged: (o) => setState(() => _options = o),
+                        ),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+                  child: Row(
+                    children: [
+                      Icon(Icons.tune, size: 16, color: muted?.color),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          summary,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: muted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             if (_invalid != null)
               Container(
                 width: double.infinity,
@@ -1510,4 +1695,40 @@ class _Notice extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The meeting in a line: "Lunch with Dana Thursday 1pm at Café Noir". The
+/// line stays in [controller], the screen's, so it outlives the dialog's
+/// closing.
+class _QuickAddDialog extends StatelessWidget {
+  const _QuickAddDialog({required this.controller});
+
+  final TextEditingController controller;
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Type it in a line'),
+        content: TextField(
+          key: const ValueKey('meeting-quick'),
+          controller: controller,
+          autofocus: true,
+          textInputAction: TextInputAction.done,
+          onSubmitted: (v) => Navigator.of(context).pop(v),
+          decoration: const InputDecoration(
+            hintText: 'Lunch with Dana Thursday 1pm at Café Noir',
+            helperText: 'Read on the phone, in English',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const ValueKey('meeting-quick-go'),
+            onPressed: () => Navigator.of(context).pop(controller.text),
+            child: const Text('Fill it in'),
+          ),
+        ],
+      );
 }

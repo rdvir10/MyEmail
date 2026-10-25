@@ -58,6 +58,8 @@ class CalendarEvent {
     this.reminderMinutes,
     this.preview = '',
     this.seriesId,
+    this.isPrivate = false,
+    this.timeZone,
   });
 
   /// The calendar's own id for this occurrence.
@@ -108,6 +110,14 @@ class CalendarEvent {
   /// series.
   final String? seriesId;
 
+  /// Kept to the account: others see only that the time is taken.
+  final bool isPrivate;
+
+  /// The zone it was set in, as the calendar names it: an IANA name from
+  /// Google, Windows' name from Exchange ("Eastern Standard Time"). Null
+  /// where it does not say.
+  final String? timeZone;
+
   CalendarEvent copyWith({
     DateTime? start,
     DateTime? end,
@@ -137,6 +147,8 @@ class CalendarEvent {
         reminderMinutes: reminderMinutes,
         preview: preview,
         seriesId: seriesId,
+        isPrivate: isPrivate,
+        timeZone: timeZone,
       );
 
   /// The account said no and the calendar kept it all the same, as
@@ -194,6 +206,8 @@ class CalendarEvent {
       if (reminderMinutes != null) 'reminderMinutes': reminderMinutes,
       if (preview.isNotEmpty) 'preview': preview,
       if (seriesId != null) 'seriesId': seriesId,
+      if (isPrivate) 'isPrivate': true,
+      if (timeZone != null) 'timeZone': timeZone,
     };
   }
 
@@ -257,6 +271,8 @@ class CalendarEvent {
       reminderMinutes: minutes is num ? minutes.toInt() : null,
       preview: text(json['preview']) ?? '',
       seriesId: text(json['seriesId']),
+      isPrivate: json['isPrivate'] == true,
+      timeZone: text(json['timeZone']),
     );
   }
 
@@ -281,10 +297,12 @@ class CalendarEvent {
       other.cancelled == cancelled &&
       other.reminderMinutes == reminderMinutes &&
       other.preview == preview &&
-      other.seriesId == seriesId;
+      other.seriesId == seriesId &&
+      other.isPrivate == isPrivate &&
+      other.timeZone == timeZone;
 
   @override
-  int get hashCode => Object.hash(
+  int get hashCode => Object.hashAll([
         id,
         accountId,
         calendarId,
@@ -304,7 +322,9 @@ class CalendarEvent {
         reminderMinutes,
         preview,
         seriesId,
-      );
+        isPrivate,
+        timeZone,
+      ]);
 
   @override
   String toString() => 'CalendarEvent($title, $start)';

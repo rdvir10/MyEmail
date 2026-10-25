@@ -1,10 +1,11 @@
 import 'package:flutter/foundation.dart'
-    show defaultTargetPlatform, kIsWeb, TargetPlatform, debugPrint, mapEquals;
+    show defaultTargetPlatform, kIsWeb, TargetPlatform, debugPrint, listEquals, mapEquals;
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../data/files/file_bridge.dart' show MailtoLink;
+import '../../domain/found_dates.dart';
 import '../../domain/html_safety.dart';
 import '../../domain/message_colours.dart';
 import '../../domain/trusted_senders.dart';
@@ -43,9 +44,17 @@ class HtmlBodyView extends StatefulWidget {
     this.onTrust,
     this.onMailto,
     this.inlinePictures = const {},
+    this.dates = const [],
+    this.onDate,
   });
 
   final String html;
+
+  /// Days and times in the message, underlined as links ([withDateLinks]);
+  /// a tap on one is [onDate], with when it means and whether it is a
+  /// whole day. Nothing is underlined without [onDate].
+  final List<FoundDate> dates;
+  final void Function(DateTime at, bool allDay)? onDate;
 
   /// The pictures [html] names by Content-ID, as data: URIs; see
   /// [withInlinePictures]. They come after the body, so a change here
@@ -107,6 +116,21 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
       ..setNavigationDelegate(
         NavigationDelegate(
           onNavigationRequest: (request) {
+            // One of the dates the message names, tapped: a meeting then.
+            // Never on its own, as no other link is.
+            if (readDateLink(request.url) case final date?) {
+              if (paneNavigation(
+                    request.url,
+                    loading: _loading,
+                    touchedAt: _touchedAt,
+                    now: DateTime.now(),
+                  ) ==
+                  PaneNavigation.openOutside) {
+                _touchedAt = null;
+                widget.onDate?.call(date.at, date.allDay);
+              }
+              return NavigationDecision.prevent;
+            }
             switch (paneNavigation(
               request.url,
               loading: _loading,
@@ -192,6 +216,10 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
       _load();
     } else if (!mapEquals(oldWidget.inlinePictures, widget.inlinePictures)) {
       _load();
+    } else if (!listEquals(oldWidget.dates, widget.dates) &&
+        widget.onDate != null) {
+      // Found after the message was shown: underlined now.
+      _load();
     }
   }
 
@@ -225,10 +253,13 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
   }
 
   void _load() {
-    final source = withInlinePictures(
+    var source = withInlinePictures(
       _showRemote ? widget.html : stripRemoteContent(widget.html),
       widget.inlinePictures,
     );
+    if (widget.onDate != null && widget.dates.isNotEmpty) {
+      source = withDateLinks(source, widget.dates);
+    }
     // The WebView's own background shows during the load and behind a short
     // body. Matching it to the document avoids a white flash on a dark screen.
     _loading = true;

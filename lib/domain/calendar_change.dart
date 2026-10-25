@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'calendar_event.dart';
 import 'calendar_invite.dart' show InviteResponse;
 import 'mail_message.dart' show MailAddress;
+import 'meeting.dart' show Reminder;
 
 /// What an edit changes on an event already on a calendar: whatever is
 /// null stays as it is, so the calendar is sent only what was changed. A
@@ -20,6 +21,9 @@ class EventChange {
     this.keptBelow,
     this.attendees,
     this.timeZone,
+    this.reminder,
+    this.showAs,
+    this.isPrivate,
   });
 
   final String? title;
@@ -47,6 +51,12 @@ class EventChange {
   /// where the device would not say, and the times then go as UTC.
   final String? timeZone;
 
+  /// When the calendar reminds of it, how it shows, and whether it is kept
+  /// to the account.
+  final Reminder? reminder;
+  final EventShowAs? showAs;
+  final bool? isPrivate;
+
   bool get isEmpty =>
       title == null &&
       start == null &&
@@ -54,7 +64,10 @@ class EventChange {
       allDay == null &&
       location == null &&
       notes == null &&
-      attendees == null;
+      attendees == null &&
+      reminder == null &&
+      showAs == null &&
+      isPrivate == null;
 
   /// Only who is on it changes.
   bool get onlyPeople =>
@@ -62,7 +75,10 @@ class EventChange {
       title == null &&
       !movesIt &&
       location == null &&
-      notes == null;
+      notes == null &&
+      reminder == null &&
+      showAs == null &&
+      isPrivate == null;
 
   /// Whether the times change.
   bool get movesIt => start != null && end != null;
@@ -77,6 +93,9 @@ class EventChange {
         keptBelow: keptBelow,
         attendees: attendees,
         timeZone: timeZone,
+        reminder: reminder,
+        showAs: showAs,
+        isPrivate: isPrivate,
       );
 
   /// What changes between [before] and the screen's [title], [start] and
@@ -93,6 +112,9 @@ class EventChange {
     required String notes,
     required List<MailAddress> attendees,
     String? timeZone,
+    Reminder? reminder,
+    EventShowAs? showAs,
+    bool? isPrivate,
   }) {
     String key(MailAddress a) => a.email.trim().toLowerCase();
     final had = [
@@ -114,6 +136,13 @@ class EventChange {
       keptBelow: notesChanged ? notesBefore.keptBelow : null,
       attendees: listEquals(had, now) ? null : attendees,
       timeZone: timeZone,
+      reminder: reminder == null ||
+              reminder.minutes == before.reminderMinutes
+          ? null
+          : reminder,
+      showAs: showAs == null || showAs == before.showAs ? null : showAs,
+      isPrivate:
+          isPrivate == null || isPrivate == before.isPrivate ? null : isPrivate,
     );
   }
 }

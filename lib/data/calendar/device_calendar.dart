@@ -11,7 +11,9 @@ abstract class DeviceCalendar {
   ///
   /// [attendees] are addresses, which the calendar app invites once the
   /// event is saved there: the way a meeting is sent from an account whose
-  /// calendar this app cannot reach itself.
+  /// calendar this app cannot reach itself. [rule] is how it repeats, an
+  /// RRULE as `Recurrence.toRule` writes it; [free] shows the time as free,
+  /// and [private] keeps it to the account.
   Future<bool> insertEvent({
     required String title,
     String? description,
@@ -20,6 +22,9 @@ abstract class DeviceCalendar {
     DateTime? end,
     bool allDay = false,
     List<String> attendees = const [],
+    String? rule,
+    bool free = false,
+    bool private = false,
   });
 
   /// The device's time zone by its IANA name, "Asia/Jerusalem", or null
@@ -47,6 +52,9 @@ class AndroidDeviceCalendar implements DeviceCalendar {
     DateTime? end,
     bool allDay = false,
     List<String> attendees = const [],
+    String? rule,
+    bool free = false,
+    bool private = false,
   }) async =>
       await _channel.invokeMethod<bool>('insert', {
         'title': title,
@@ -56,6 +64,10 @@ class AndroidDeviceCalendar implements DeviceCalendar {
         'end': end?.millisecondsSinceEpoch,
         'allDay': allDay,
         'attendees': attendees,
+        // The RRULE without its name, as the provider's column takes it.
+        if (rule != null) 'rrule': rule.replaceFirst('RRULE:', ''),
+        'free': free,
+        'private': private,
       }) ??
       false;
 
@@ -73,6 +85,9 @@ class InsertedEvent {
     this.end,
     this.allDay = false,
     this.attendees = const [],
+    this.rule,
+    this.free = false,
+    this.private = false,
   });
 
   final String title;
@@ -82,6 +97,9 @@ class InsertedEvent {
   final DateTime? end;
   final bool allDay;
   final List<String> attendees;
+  final String? rule;
+  final bool free;
+  final bool private;
 }
 
 /// Records what would have gone to the calendar. Tests, and the browser
@@ -109,6 +127,9 @@ class FakeDeviceCalendar implements DeviceCalendar {
     DateTime? end,
     bool allDay = false,
     List<String> attendees = const [],
+    String? rule,
+    bool free = false,
+    bool private = false,
   }) async {
     if (!supported) return false;
     inserted.add(InsertedEvent(
@@ -119,6 +140,9 @@ class FakeDeviceCalendar implements DeviceCalendar {
       end: end,
       allDay: allDay,
       attendees: attendees,
+      rule: rule,
+      free: free,
+      private: private,
     ));
     return true;
   }

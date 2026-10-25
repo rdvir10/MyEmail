@@ -9,6 +9,8 @@ import '../../state/calendar_view_providers.dart';
 import '../../state/providers.dart';
 import '../accounts/microsoft_sign_in_screen.dart';
 import '../common/bottom_message.dart';
+import '../../domain/time_zones.dart' show placeOf;
+import '../calendar/time_zone_picker.dart';
 import '../messages/date_format.dart' show formatClock;
 
 /// Settings, Calendar: how MyEmail's calendar shows the day, and Microsoft
@@ -110,6 +112,36 @@ class CalendarSettingsScreen extends ConsumerWidget {
                 ),
               ],
             ),
+          ),
+          ListTile(
+            key: const ValueKey('calendar-second-zone'),
+            title: const Text('Second time zone'),
+            subtitle: Text(prefs.secondZone == null
+                ? "None: Day and Week show the phone's own hours"
+                : '${placeOf(prefs.secondZone!)}, beside your own in Day and '
+                    'Week'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () async {
+              final chosen = await pickTimeZone(
+                context,
+                current: prefs.secondZone,
+                none: 'None',
+              );
+              if (chosen == null) return;
+              setPrefs(chosen.zone == null
+                  ? prefs.copyWith(noSecondZone: true)
+                  : prefs.copyWith(secondZone: chosen.zone));
+            },
+          ),
+          SwitchListTile(
+            key: const ValueKey('calendar-dates-in-mail'),
+            title: const Text('Find dates in mail'),
+            subtitle: const Text(
+              'Days and times in a message are underlined; a tap makes a '
+              'meeting then. Read on the phone, in English.',
+            ),
+            value: prefs.datesInMail,
+            onChanged: (on) => setPrefs(prefs.copyWith(datesInMail: on)),
           ),
           const Divider(),
           Padding(

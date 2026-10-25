@@ -279,9 +279,8 @@ class GraphCalendarApi {
       'isAllDay': meeting.allDay,
       // Left out when empty, so Exchange's own for a Teams meeting stands.
       if (location.isNotEmpty) 'location': {'displayName': location},
-      // A meeting now: reminded of, and busy, as one made at Send is.
-      'isReminderOn': true,
-      'showAs': 'busy',
+      // A meeting now: reminded of, and shown, as one made at Send is.
+      ..._choices(meeting, shell: true),
     });
     final first = await _exchange(() => _patch(id, details));
     if (first.statusCode == 404) {
@@ -565,6 +564,13 @@ class GraphCalendarApi {
         'isAllDay': change.allDay ?? before.allDay,
       },
       if (change.location != null) 'location': {'displayName': change.location},
+      if (change.reminder case final r?) ...{
+        'isReminderOn': r.isOn,
+        if (r.isOn) 'reminderMinutesBeforeStart': r.minutes,
+      },
+      if (change.showAs case final showAs?) 'showAs': graphShowAs(showAs),
+      if (change.isPrivate case final private?)
+        'sensitivity': private ? 'private' : 'normal',
       if (notes != null)
         'body': kept == null
             ? {'contentType': 'text', 'content': notes}
@@ -817,8 +823,48 @@ class GraphCalendarApi {
       'isOnlineMeeting': meeting.isOnline && !elsewhere,
       if (meeting.isOnline && !elsewhere && onlineMeetingProvider != null)
         'onlineMeetingProvider': onlineMeetingProvider,
+      ..._choices(meeting),
     };
   }
+
+  /// What the screen chose beyond the when and where: the repeat, the
+  /// reminder, how it shows, and privacy. Left out where nothing was
+  /// chosen, so the calendar's own way stands; for a meeting made ahead of
+  /// Send ([shell]), which was made quiet and free, the reminder and busy
+  /// are said either way.
+  static Map<String, Object?> _choices(
+    MeetingDraft meeting, {
+    bool shell = false,
+  }) {
+    final sent = meeting.asSent;
+    final reminder = meeting.reminder;
+    final showAs = meeting.showAs;
+    return {
+      if (meeting.recurrence case final r?)
+        // From the first meeting's own day, on its own clock: in UTC a
+        // late evening is the next day.
+        'recurrence': r.toGraph(meeting.start, timeZone: sent.timeZone),
+      if (reminder != null) ...{
+        'isReminderOn': reminder.isOn,
+        if (reminder.isOn) 'reminderMinutesBeforeStart': reminder.minutes,
+      } else if (shell)
+        'isReminderOn': true,
+      if (showAs != null)
+        'showAs': graphShowAs(showAs)
+      else if (shell)
+        'showAs': 'busy',
+      if (meeting.isPrivate) 'sensitivity': 'private',
+    };
+  }
+
+  /// Graph's name for how an event shows.
+  static String graphShowAs(EventShowAs showAs) => switch (showAs) {
+        EventShowAs.free => 'free',
+        EventShowAs.tentative => 'tentative',
+        EventShowAs.busy => 'busy',
+        EventShowAs.outOfOffice => 'oof',
+        EventShowAs.workingElsewhere => 'workingElsewhere',
+      };
 
   /// Start and end as Graph takes them: wall-clock values with the zone
   /// beside them, and a whole day ending at the next day's midnight.
@@ -959,7 +1005,7 @@ class GraphCalendarApi {
       r'$select': 'subject,start,end,isAllDay,location,organizer,attendees,'
           'onlineMeeting,webLink,showAs,responseStatus,isOrganizer,'
           'isCancelled,isReminderOn,reminderMinutesBeforeStart,bodyPreview,'
-          'seriesMasterId',
+          'seriesMasterId,sensitivity,originalStartTimeZone',
       r'$orderby': 'start/dateTime',
       r'$top': '200',
     });
@@ -1061,6 +1107,13 @@ class GraphCalendarApi {
               (json['seriesMasterId'] as String).isNotEmpty
           ? json['seriesMasterId'] as String
           : null,
+      isPrivate: json['sensitivity'] == 'private' ||
+          json['sensitivity'] == 'confidential',
+      timeZone: switch (json['originalStartTimeZone']) {
+        final String zone when zone.isNotEmpty && zone != 'tzone://Microsoft/Utc' =>
+          zone,
+        _ => null,
+      },
     );
   }
 

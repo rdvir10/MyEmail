@@ -104,4 +104,7 @@ dependencies {
     implementation("com.google.mlkit:genai-proofreading:1.0.0-beta1")
     implementation("com.google.mlkit:genai-rewriting:1.0.0-beta1")
     implementation("com.google.mlkit:smart-reply:17.0.4")
+    // Dates and times in text: a meeting typed in a line, and the dates in a
+    // message (EntityBridge). Its English model is fetched on first use.
+    implementation("com.google.mlkit:entity-extraction:16.0.0-beta6")
 }

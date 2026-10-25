@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/draft.dart';
+import '../../state/date_providers.dart' show messageDatesProvider;
+import 'dated_text.dart';
 import '../../domain/folder_role.dart';
 import '../../state/trusted_senders.dart';
 import '../../domain/trusted_senders.dart';
@@ -525,8 +527,15 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
         widget.message.from.email,
       );
 
+  /// A meeting at [at], made from this message: a date in it tapped.
+  void _meetingAt(MailBody b, DateTime at, bool allDay) =>
+      openNewMeetingFromMessage(context, ref, widget.message, b,
+          start: at, allDay: allDay);
+
   Widget _bodyView(ThemeData theme, MailBody b) {
     final html = b.html;
+    final dates =
+        ref.watch(messageDatesProvider(widget.message.id)).value ?? const [];
     // The WebView is a platform view: Android has it, the browser preview
     // does not. Text is the universal fallback.
     if (html != null && html.trim().isNotEmpty && !kIsWeb) {
@@ -536,6 +545,8 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
         showImages: _showsImages,
         inlinePictures: watchInlinePictures(ref, widget.message.id, html),
         senderEmail: widget.message.from.email,
+        dates: dates,
+        onDate: (at, allDay) => _meetingAt(b, at, allDay),
         onMailto: (link) => openMailto(context, ref, link,
             accountId: widget.message.accountId),
         onTrust: (entry) {
@@ -562,9 +573,11 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     return SingleChildScrollView(
       controller: _textScroll,
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
-      child: SelectableText(
-        b.text,
+      child: DatedText(
+        text: b.text,
+        dates: dates,
         style: theme.textTheme.bodyMedium?.copyWith(height: 1.45),
+        onDate: (at, allDay) => _meetingAt(b, at, allDay),
       ),
     );
   }

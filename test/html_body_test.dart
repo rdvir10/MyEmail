@@ -2,7 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:html/parser.dart' as html_parser;
+import 'package:myemail/data/ai/date_finder.dart';
 import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/found_dates.dart' show DateGrain;
+import 'package:myemail/state/date_providers.dart';
+import 'package:myemail/ui/meetings/new_meeting_screen.dart';
+import 'package:myemail/ui/messages/date_format.dart' show formatDay;
 import 'package:myemail/domain/html_safety.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/message_providers.dart';
@@ -582,6 +587,100 @@ void main() {
       final scheme = buildTheme(Brightness.dark).colorScheme;
       expect(darkPageColour, scheme.surface);
       expect(darkTextColour, scheme.onSurface);
+    });
+  });
+
+  // Calendar ideas #23: a day and time in a message is underlined, and a
+  // tap on it is a meeting then.
+  group('a date in a message', () {
+    final message = MailMessage(
+      id: 'acct-personal:INBOX#2',
+      accountId: 'acct-personal',
+      folderId: 'acct-personal:INBOX',
+      uid: 2,
+      subject: 'Site visit',
+      preview: '',
+      from: const MailAddress(email: 'dana@example.com', name: 'Dana Levi'),
+      to: const [MailAddress(email: 'personal@example.com')],
+      date: DateTime.now(),
+      isRead: true,
+    );
+    final soon = DateTime.now().add(const Duration(days: 3));
+    final when = DateTime(soon.year, soon.month, soon.day, 15);
+
+    testWidgets('is underlined, and a tap on it opens a meeting then',
+        (tester) async {
+      final web = FakeWebViewPlatform.install();
+      tester.view.physicalSize = const Size(1200, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        messageBodyProvider(message.id).overrideWith((ref) async =>
+            const MailBody(
+              text: 'Shall we meet Friday at 3pm by the gate?',
+              html: '<p>Shall we meet Friday at 3pm by the gate?</p>',
+            )),
+        dateFinderProvider.overrideWithValue(FakeDateFinder({
+          'Friday at 3pm': (at: when, grain: DateGrain.hour),
+        })),
+      ]);
+      addTearDown(c.dispose);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: MaterialApp(
+          home: Scaffold(body: ReadingPane(message: message, onPopOut: () {})),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      expect(web.loadedHtml.last, contains('myemail-date:'));
+
+      final link = RegExp(r'href="(myemail-date:[^"]+)"')
+          .firstMatch(web.loadedHtml.last)![1]!;
+      await tester.tap(find.byType(WebViewWidget));
+      final decision = await web.navigationHandler!(NavigationRequest(
+        url: link,
+        isMainFrame: true,
+      ));
+      await tester.pumpAndSettle();
+      expect(decision, NavigationDecision.prevent);
+      expect(find.byType(NewMeetingScreen), findsOneWidget);
+      expect(find.text('Site visit'), findsWidgets, reason: 'its subject');
+      expect(find.text(formatDay(when)), findsNWidgets(2));
+    });
+
+    testWidgets('is left alone where Settings, Calendar says not to look',
+        (tester) async {
+      final web = FakeWebViewPlatform.install();
+      tester.view.physicalSize = const Size(1200, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final ui = MemoryUiStateStore();
+      await ui.writeString(UiStateKeys.calendarPrefs, '{"datesInMail": false}');
+      final finder = FakeDateFinder({
+        'Friday at 3pm': (at: when, grain: DateGrain.hour),
+      });
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(ui),
+        messageBodyProvider(message.id).overrideWith((ref) async =>
+            const MailBody(
+              text: 'Shall we meet Friday at 3pm?',
+              html: '<p>Shall we meet Friday at 3pm?</p>',
+            )),
+        dateFinderProvider.overrideWithValue(finder),
+      ]);
+      addTearDown(c.dispose);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: MaterialApp(
+          home: Scaffold(body: ReadingPane(message: message, onPopOut: () {})),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      expect(web.loadedHtml.last, isNot(contains('myemail-date:')));
+      expect(finder.asked, isEmpty, reason: 'not even read');
     });
   });
 }

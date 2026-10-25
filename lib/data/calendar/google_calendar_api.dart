@@ -197,9 +197,10 @@ class GoogleCalendarApi {
       throw const PreparedMeetingLost('the event was deleted');
     }
     final fields = _patchOf(meeting);
-    // A meeting now: reminded of as the calendar reminds, and busy.
-    fields['reminders'] = {'useDefault': true};
-    fields['transparency'] = 'opaque';
+    // A meeting now: reminded of and shown as chosen, the calendar's own
+    // way and busy where nothing was.
+    fields['reminders'] ??= {'useDefault': true};
+    fields['transparency'] ??= 'opaque';
     final body = jsonEncode(fields);
     final response = await _authorised(
       () => http.Request(
@@ -617,6 +618,12 @@ class GoogleCalendarApi {
               (json['recurringEventId'] as String).isNotEmpty
           ? json['recurringEventId'] as String
           : null,
+      isPrivate: json['visibility'] == 'private' ||
+          json['visibility'] == 'confidential',
+      timeZone: switch (json['start']) {
+        {'timeZone': final String zone} when zone.isNotEmpty => zone,
+        _ => null,
+      },
     );
   }
 
@@ -749,6 +756,11 @@ class GoogleCalendarApi {
       },
       if (change.location != null) 'location': change.location,
       if (change.notes != null) 'description': change.notes,
+      if (change.reminder case final r?) 'reminders': remindersJson(r),
+      if (change.showAs case final showAs?)
+        'transparency': googleTransparency(showAs),
+      if (change.isPrivate case final private?)
+        'visibility': private ? 'private' : 'default',
     };
   }
 
@@ -953,8 +965,28 @@ class GoogleCalendarApi {
             'conferenceSolutionKey': {'type': 'hangoutsMeet'},
           },
         },
+      if (meeting.recurrence case final r?)
+        'recurrence': [r.toRule(meeting.start, allDay: meeting.allDay)],
+      if (meeting.reminder case final r?) 'reminders': remindersJson(r),
+      if (meeting.showAs case final showAs?)
+        'transparency': googleTransparency(showAs),
+      if (meeting.isPrivate) 'visibility': 'private',
     };
   }
+
+  /// A reminder as Google keeps one: on the phone, so many minutes before,
+  /// or none at all.
+  static Map<String, Object?> remindersJson(Reminder reminder) => {
+        'useDefault': false,
+        'overrides': [
+          if (reminder.isOn) {'method': 'popup', 'minutes': reminder.minutes},
+        ],
+      };
+
+  /// Google keeps only whether the time is free or taken: busy, tentative
+  /// and out of office all take it.
+  static String googleTransparency(EventShowAs showAs) =>
+      showAs == EventShowAs.free ? 'transparent' : 'opaque';
 
   /// Let go of the connection. Only one made here: a client handed in is
   /// closed by its owner.

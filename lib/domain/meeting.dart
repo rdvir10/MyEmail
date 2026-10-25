@@ -2,7 +2,9 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import 'calendar_event.dart' show EventShowAs;
 import 'mail_message.dart';
+import 'recurrence.dart';
 
 /// A meeting being set up: what goes on the calendar, and who is asked.
 ///
@@ -26,7 +28,25 @@ class MeetingDraft {
     this.prepared,
     this.transactionId,
     this.changedSinceFailedSend = false,
+    this.recurrence,
+    this.reminder,
+    this.showAs,
+    this.isPrivate = false,
   });
+
+  /// How it repeats, or null for one meeting.
+  final Recurrence? recurrence;
+
+  /// When its calendar reminds of it, or null for the calendar's own way.
+  final Reminder? reminder;
+
+  /// How it shows on the calendar it goes on, or null for busy, as every
+  /// calendar makes a meeting.
+  final EventShowAs? showAs;
+
+  /// Kept to the account: others who can see the calendar see the time
+  /// taken and nothing of what it is.
+  final bool isPrivate;
 
   /// Whose calendar it goes on, and who the invitations come from.
   final String accountId;
@@ -120,7 +140,11 @@ class MeetingDraft {
       other.location == location &&
       other.notes == notes &&
       other.timeZone == timeZone &&
-      other.online == online;
+      other.online == online &&
+      other.recurrence == recurrence &&
+      other.reminder == reminder &&
+      other.showAs == showAs &&
+      other.isPrivate == isPrivate;
 
   bool get hasAttendees => attendees.isNotEmpty;
 
@@ -153,6 +177,11 @@ class MeetingDraft {
     } else if (!end.isAfter(start)) {
       return 'The meeting has to end after it starts.';
     }
+    final last = recurrence?.until;
+    if (last != null &&
+        last.isBefore(DateTime(start.year, start.month, start.day))) {
+      return 'The repeat has to end on the first meeting or after it.';
+    }
     return null;
   }
 
@@ -165,6 +194,43 @@ class MeetingDraft {
       timeZone == null && !allDay
           ? (start: start.toUtc(), end: end.toUtc(), timeZone: 'UTC')
           : (start: start, end: end, timeZone: timeZone ?? 'UTC');
+}
+
+/// When a calendar reminds of a meeting: [minutes] before it starts, or not
+/// at all.
+@immutable
+class Reminder {
+  const Reminder.before(int this.minutes);
+  const Reminder.none() : minutes = null;
+
+  final int? minutes;
+
+  bool get isOn => minutes != null;
+
+  /// What New meeting offers, as Outlook does.
+  static const choices = [
+    Reminder.none(),
+    Reminder.before(0),
+    Reminder.before(5),
+    Reminder.before(15),
+    Reminder.before(30),
+    Reminder.before(60),
+    Reminder.before(1440),
+  ];
+
+  String get label => switch (minutes) {
+        null => 'None',
+        0 => 'At the start',
+        60 => '1 hour before',
+        1440 => '1 day before',
+        final m => '$m minutes before',
+      };
+
+  @override
+  bool operator ==(Object other) => other is Reminder && other.minutes == minutes;
+
+  @override
+  int get hashCode => minutes.hashCode;
 }
 
 /// Where a meeting is held online, which is what the screen's switch is

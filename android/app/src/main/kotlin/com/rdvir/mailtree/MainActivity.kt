@@ -120,6 +120,9 @@ open class MainActivity : FlutterActivity() {
         speech = SpeechBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         // The phone's own AI: summaries, proofreading, suggested replies.
         AiBridge(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
+        // Dates and times found in text, for a meeting typed in a line and
+        // the dates in a message.
+        EntityBridge(flutterEngine.dartExecutor.binaryMessenger)
 
         files = FilesBridge(this, flutterEngine.dartExecutor.binaryMessenger)
             .also {

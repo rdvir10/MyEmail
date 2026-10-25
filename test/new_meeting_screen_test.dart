@@ -11,7 +11,12 @@ import 'package:http/testing.dart' as http_testing;
 import 'package:myemail/data/auth/google_oauth.dart';
 import 'package:myemail/data/auth/microsoft_oauth.dart';
 import 'package:myemail/data/auth/oauth_token.dart';
+import 'package:myemail/data/ai/date_finder.dart';
 import 'package:myemail/data/calendar/device_calendar.dart';
+import 'package:myemail/domain/calendar_event.dart' show EventShowAs;
+import 'package:myemail/domain/found_dates.dart' show DateGrain;
+import 'package:myemail/domain/recurrence.dart';
+import 'package:myemail/state/date_providers.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
@@ -57,11 +62,13 @@ void main() {
     MicrosoftOAuth? oauth,
     GoogleOAuth? google,
     Future<bool> Function(Uri)? openInBrowser,
+    DateFinder? finder,
   }) {
     final c = ProviderContainer(overrides: [
       uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
       mailEngineProvider.overrideWithValue(engine),
       deviceCalendarProvider.overrideWithValue(calendar),
+      if (finder != null) dateFinderProvider.overrideWithValue(finder),
       if (oauth != null) microsoftOAuthProvider.overrideWithValue(oauth),
       if (google != null) ...[
         googleClientIdProvider.overrideWithValue(google.clientId),
@@ -84,11 +91,13 @@ void main() {
     MicrosoftOAuth? oauth,
     GoogleOAuth? google,
     Future<bool> Function(Uri)? openInBrowser,
+    DateFinder? finder,
   }) async {
     final c = container(
       oauth: oauth,
       google: google,
       openInBrowser: openInBrowser,
+      finder: finder,
     );
     await tester.pumpWidget(UncontrolledProviderScope(
       container: c,
@@ -1845,6 +1854,111 @@ void main() {
       );
     });
   });
+  group('More, and a meeting typed in a line (calendar ideas #20 to #24)', () {
+    Future<void> openMore(WidgetTester tester) async {
+      await tester.tap(find.byKey(const ValueKey('meeting-more')));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> choose(WidgetTester tester, String key, String item) async {
+      await tester.tap(find.byKey(ValueKey(key)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(item).last);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a weekly repeat on two days, ending after a number of '
+        'times, a reminder, free and private', (tester) async {
+      tester.view.physicalSize = const Size(1000, 2000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await pumpScreen(tester);
+      await type(tester, 'meeting-title', 'Stand-up');
+      await openMore(tester);
+      // 1 October 2026 is a Thursday.
+      await choose(tester, 'meeting-repeat', 'Every week');
+      await tester.tap(find.byKey(const ValueKey('meeting-repeat-day:1')));
+      await tester.pumpAndSettle();
+      await choose(tester, 'meeting-repeat-ends', 'After a number of times');
+      await choose(tester, 'meeting-reminder', '30 minutes before');
+      await choose(tester, 'meeting-show-as', 'Free');
+      await tester.tap(find.byKey(const ValueKey('meeting-private')));
+      await tester.pumpAndSettle();
+      // Down again: the line under the place says what was chosen.
+      await tester.tapAt(const Offset(500, 20));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('meeting-more-summary')), findsOneWidget);
+      expect(
+        find.textContaining('Every week on Monday and Thursday, 10 times'),
+        findsOneWidget,
+      );
+
+      await send(tester);
+      final m = engine.meetings.single;
+      expect(m.recurrence?.kind, RepeatKind.weekly);
+      expect(m.recurrence?.daysFrom(m.start), {1, 4});
+      expect(m.recurrence?.count, 10);
+      expect(m.reminder, const Reminder.before(30));
+      expect(m.showAs, EventShowAs.free);
+      expect(m.isPrivate, isTrue);
+    });
+
+    testWidgets('a meeting set in another zone keeps that clock, and says '
+        'what it is here', (tester) async {
+      tester.view.physicalSize = const Size(1000, 2000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await pumpScreen(tester);
+      await type(tester, 'meeting-title', 'Call with New York');
+      await openMore(tester);
+      await tester.tap(find.byKey(const ValueKey('meeting-zone')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.byKey(const ValueKey('zone-search')), 'New_York');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('zone:America/New_York')));
+      await tester.pumpAndSettle();
+      await tester.tapAt(const Offset(500, 20));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('meeting-your-time')), findsOneWidget);
+
+      await send(tester);
+      final m = engine.meetings.single;
+      expect(m.timeZone, 'America/New_York');
+      // Nine in the morning here, on the phone's clock, is New York's.
+      final here = DateTime(2026, 10, 1, 9);
+      final there = here.toUtc().subtract(const Duration(hours: 4));
+      expect(m.start, DateTime(there.year, there.month, there.day, there.hour,
+          there.minute));
+    });
+
+    testWidgets('a meeting typed in a line fills the fields', (tester) async {
+      final finder = FakeDateFinder({
+        'Thursday 1pm': (at: DateTime(2026, 10, 8, 13), grain: DateGrain.hour),
+      });
+      await pumpScreen(tester, finder: finder);
+      await tester.tap(find.byKey(const ValueKey('meeting-quick-open')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const ValueKey('meeting-quick')),
+          'Lunch with Dana Thursday 1pm at Café Noir');
+      await tester.tap(find.byKey(const ValueKey('meeting-quick-go')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(field('meeting-title')).controller!.text,
+        'Lunch with Dana',
+      );
+      expect(
+        tester.widget<TextField>(field('meeting-location')).controller!.text,
+        'Café Noir',
+      );
+      expect(find.text(formatDay(DateTime(2026, 10, 8))), findsNWidgets(2));
+      expect(find.text('1:00 PM'), findsOneWidget);
+      expect(find.text('2:00 PM'), findsOneWidget);
+    });
+  });
+
 }
 
 /// An engine for an account whose calendar cannot be reached: a Gmail
