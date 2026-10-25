@@ -16,6 +16,7 @@ export '../domain/mail_tip.dart';
 export 'contacts/account_people.dart' show PeopleSearchAccess, PeopleSearchState;
 import 'auth/oauth_token.dart';
 import 'contacts/account_people.dart' show PeopleSearchAccess;
+import 'mailbox_settings/server_settings.dart';
 import '../domain/draft.dart';
 import '../domain/address_suggestions.dart';
 import '../domain/calendar_invite.dart';
@@ -273,6 +274,11 @@ abstract class MailEngine {
   /// [accountId] goes to them: see [MailTip]. A Microsoft account only;
   /// empty for any other, and where it could not be asked.
   Future<List<MailTip>> mailTips(String accountId, List<String> emails);
+
+  /// [accountId]'s settings on its server: its automatic replies, and the
+  /// rules the server runs on its mail. Null for an account signed in with
+  /// an app password, which reaches mail and nothing else.
+  ServerSettings? serverSettings(String accountId);
 
   /// When [accountId]'s own calendar is busy between [start] and [end].
   /// Throws as [meetingOnCalendar] does.

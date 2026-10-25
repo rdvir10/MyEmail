@@ -43,6 +43,8 @@ import 'move_to_sheet.dart';
 import 'person_card.dart';
 import 'read_receipt_bar.dart';
 import 'unsubscribe_link.dart';
+import '../settings/rules_screen.dart';
+import '../settings/server_settings_access.dart';
 
 /// One open message: a fixed header with actions, then the body.
 ///
@@ -251,6 +253,18 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
 
   /// Snooze, from the header: like a delete, a screen of its own goes once
   /// a time is chosen.
+  /// Outlook's Create rule, from the message's sender: on the account it
+  /// came to, where that account's server runs rules.
+  VoidCallback? _createRuleFor(MailMessage message) {
+    final account = ref
+        .watch(accountsProvider)
+        .value
+        ?.where((a) => a.id == message.accountId)
+        .firstOrNull;
+    if (account == null || !canReachServerSettings(account)) return null;
+    return () => openRuleEditor(context, account, message: message);
+  }
+
   Future<void> _snooze(MailMessage message) async {
     final listId = _listId;
     if (listId == null) return;
@@ -384,6 +398,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                       listId: listId, messages: [message]);
                 },
                 onSnooze: () => _snooze(message),
+                onCreateRule: _createRuleFor(message),
                 onToggleRead: () => _act(
                   (a) => a.setRead(context, [message], !message.isRead),
                 ),
@@ -556,6 +571,7 @@ class _Header extends StatelessWidget {
     required this.onToggleFlag,
     this.onFollowUp,
     this.onSnooze,
+    this.onCreateRule,
     required this.onToggleRead,
     required this.onCompose,
     required this.onDelete,
@@ -614,6 +630,9 @@ class _Header extends StatelessWidget {
 
   /// Out of the list until a time chosen.
   final VoidCallback? onSnooze;
+
+  /// A server rule for mail like this.
+  final VoidCallback? onCreateRule;
   final VoidCallback onToggleRead;
   final VoidCallback onDelete;
 
@@ -789,6 +808,7 @@ class _Header extends StatelessWidget {
                       'flag' => onToggleFlag(),
                       'followUp' => onFollowUp?.call(),
                       'snooze' => onSnooze?.call(),
+                      'rule' => onCreateRule?.call(),
                       'fullScreen' => onFullScreen?.call(),
                       'archive' => onArchive?.call(),
                       'pin' => onTogglePin?.call(),
@@ -859,6 +879,11 @@ class _Header extends StatelessWidget {
                         const PopupMenuItem(
                           value: 'snooze',
                           child: Text('Snooze…'),
+                        ),
+                      if (onCreateRule != null)
+                        const PopupMenuItem(
+                          value: 'rule',
+                          child: Text('Create rule…'),
                         ),
                       if (onTogglePin != null)
                         PopupMenuItem(

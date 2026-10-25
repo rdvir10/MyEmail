@@ -111,6 +111,12 @@ class MicrosoftOAuth implements OAuthRefresher {
     'https://graph.microsoft.com/People.Read',
   ];
 
+  /// The mailbox's own settings: Automatic Replies, and the Inbox rules
+  /// the server runs. On its own for the same reason as [calendarScopes].
+  static const mailboxSettingsScopes = [
+    'https://graph.microsoft.com/MailboxSettings.ReadWrite',
+  ];
+
   static Future<void> _realSleep(Duration d) => Future<void>.delayed(d);
 
   /// Where the redirect lands after a successful sign-in.

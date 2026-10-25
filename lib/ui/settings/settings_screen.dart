@@ -9,6 +9,8 @@ import '../quick_steps/quick_steps_screen.dart';
 import '../../state/update_providers.dart';
 import 'about_screen.dart';
 import 'accounts_screen.dart';
+import 'auto_replies_screen.dart';
+import 'rules_screen.dart';
 import 'backup_screen.dart';
 import 'notifications_screen.dart';
 import 'signatures_screen.dart';
@@ -102,6 +104,18 @@ class SettingsScreen extends ConsumerWidget {
             title: 'Signatures',
             subtitle: 'What is added to the end of a message',
             onTap: () => _open(context, const SignaturesScreen()),
+          ),
+          _Row(
+            icon: Icons.reply_all_outlined,
+            title: 'Automatic replies',
+            subtitle: 'Out of office, sent by the server',
+            onTap: () => _open(context, const AutoRepliesScreen()),
+          ),
+          _Row(
+            icon: Icons.rule_outlined,
+            title: 'Rules',
+            subtitle: 'What the server does with mail as it arrives',
+            onTap: () => _open(context, const RulesScreen()),
           ),
           const Divider(height: 1),
           const _SectionHeading('This app'),

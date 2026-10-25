@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/mail_engine.dart';
+import 'package:myemail/data/mailbox_settings/server_settings.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/widget/home_screen_surface.dart';
 import 'package:myemail/data/widget/widget_state_store.dart';
@@ -251,6 +252,10 @@ class _SingleAccountReversedEngine implements MailEngine {
   @override
   Future<List<MailTip>> mailTips(String accountId, List<String> emails) =>
       _inner.mailTips(accountId, emails);
+
+  @override
+  ServerSettings? serverSettings(String accountId) =>
+      _inner.serverSettings(accountId);
 
   @override
   Future<List<TimeSpan>> busyTimes(

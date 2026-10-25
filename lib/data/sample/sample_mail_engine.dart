@@ -20,6 +20,7 @@ import '../imap/imap_mapping.dart';
 import '../auth/oauth_token.dart';
 import '../contacts/account_people.dart' show AccountPeople;
 import '../mail_engine.dart';
+import '../mailbox_settings/server_settings.dart';
 import 'sample_messages.dart';
 
 /// In-memory stand-in for the real IMAP engine, used for layout work and tests.
@@ -840,6 +841,19 @@ class SampleMailEngine implements MailEngine {
     return [
       for (final e in emails) ?tips[e.toLowerCase()],
     ];
+  }
+
+  /// Each account's server settings, kept in memory, as Outlook's or
+  /// Gmail's as the account is; a test may put its own in first.
+  final Map<String, ServerSettings> settings = {};
+
+  @override
+  ServerSettings? serverSettings(String accountId) {
+    final account = _accounts.where((a) => a.id == accountId).firstOrNull;
+    if (account == null) return null;
+    return settings[accountId] ??= MemoryServerSettings(
+      microsoft: account.provider == MailProvider.outlook,
+    );
   }
 
   /// The sample calendars' busy times, by address in lower case, for a test

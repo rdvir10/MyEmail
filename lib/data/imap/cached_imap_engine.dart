@@ -40,7 +40,10 @@ import '../credential_store.dart';
 import '../folder_list_store.dart';
 import '../graph/graph_id_map.dart';
 import '../graph/graph_mail_api.dart';
+import '../graph/graph_settings_api.dart';
 import '../graph/graph_transport.dart';
+import '../mailbox_settings/gmail_settings_api.dart';
+import '../mailbox_settings/server_settings.dart';
 import '../mail_engine.dart';
 import 'enough_mail_transport.dart';
 import 'imap_mapping.dart';
@@ -1010,6 +1013,50 @@ class CachedImapEngine implements MailEngine {
       debugPrint('[myemail] mail tips not read: $e');
       return const [];
     }
+  }
+
+  /// Each account's server settings, made when first asked for.
+  final Map<String, ServerSettings> _serverSettings = {};
+
+  @override
+  ServerSettings? serverSettings(String accountId) {
+    final account =
+        accountStore.read().where((a) => a.id == accountId).firstOrNull;
+    if (account == null || account.authMethod != AuthMethod.oauth) {
+      return null;
+    }
+    // A token asked for the settings by name: a mailbox approved for mail
+    // alone goes on reading its mail, and this says it needs consent.
+    Future<String> token(List<String> scopes, bool force) =>
+        oauthTokens.accessToken(accountId, force: force, scopes: scopes);
+    Future<GraphTransport> graph() async {
+      final t = await _transport(accountId);
+      if (t is! GraphTransport) {
+        throw const ConnectionFailed(
+          'This account does not reach Microsoft Graph.',
+        );
+      }
+      return t;
+    }
+
+    return _serverSettings[accountId] ??= switch (account.provider) {
+      MailProvider.outlook => GraphServerSettings(
+          api: GraphSettingsApi(
+            accessToken: ({bool force = false}) =>
+                token(MicrosoftOAuth.mailboxSettingsScopes, force),
+          ),
+          folderIdOf: (path) async => (await graph()).folderIdOf(path),
+          pathsById: () async => (await graph()).folderPathsById(),
+        ),
+      MailProvider.gmail => GmailServerSettings(
+          api: GmailSettingsApi(
+            accessToken: ({bool force = false}) =>
+                token(GoogleOAuth.gmailSettingsScopes, force),
+          ),
+          isArchive: (path) async =>
+              _isAllMail(accountId, await _transport(accountId), path),
+        ),
+    };
   }
 
   @override

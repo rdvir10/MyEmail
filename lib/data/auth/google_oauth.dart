@@ -65,14 +65,16 @@ class GoogleOAuth implements OAuthRefresher {
   /// `https://mail.google.com/` is the only scope Gmail's IMAP and SMTP
   /// servers accept for XOAUTH2; the narrower Gmail API scopes do not
   /// work there. `calendar.events` is for meetings created in the app.
-  /// [meetScopes] is for Meet links made for other accounts' meetings, and
-  /// [contactsScopes] for suggesting recipients from Google's contacts.
+  /// [meetScopes] is for Meet links made for other accounts' meetings,
+  /// [contactsScopes] for suggesting recipients from Google's contacts, and
+  /// [gmailSettingsScopes] for the vacation responder and filters.
   /// `openid` and `email` bring back an ID token naming the account.
   static const scopes = [
     'https://mail.google.com/',
     'https://www.googleapis.com/auth/calendar.events',
     ...meetScopes,
     ...contactsScopes,
+    ...gmailSettingsScopes,
     'openid',
     'email',
   ];
@@ -94,6 +96,13 @@ class GoogleOAuth implements OAuthRefresher {
   /// Meet, not as a dead sign-in; the mail keeps its own token regardless.
   static const meetScopes = [
     'https://www.googleapis.com/auth/meetings.space.created',
+  ];
+
+  /// Gmail's settings: the vacation responder, and the filters Gmail runs
+  /// on mail as it arrives. `https://mail.google.com/` reads them but does
+  /// not change them; only this does. Named on its own, as [meetScopes].
+  static const gmailSettingsScopes = [
+    'https://www.googleapis.com/auth/gmail.settings.basic',
   ];
 
   /// The custom-scheme way back, for an Android client that has it enabled.
@@ -251,7 +260,9 @@ class GoogleOAuth implements OAuthRefresher {
             ? 'Google Meet'
             : missing.any(contactsScopes.contains)
                 ? 'your contacts'
-                : 'the calendar';
+                : missing.any(gmailSettingsScopes.contains)
+                    ? "Gmail's settings"
+                    : 'the calendar';
         throw SignInNeedsConsent(
           'This Google account needs signing in again: it was set up before '
           'the app asked permission for $wanted. Open Settings, then '

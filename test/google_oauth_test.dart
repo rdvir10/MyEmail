@@ -360,6 +360,23 @@ void main() {
       );
     });
 
+    test("and one from before Gmail's settings were asked for says so",
+        () async {
+      final o = oauth(handler: (_) async => json({
+            'access_token': 'new',
+            'expires_in': 3600,
+            'scope': 'https://mail.google.com/ openid email',
+          }));
+
+      expect(
+        () => o.refresh(stored, scopes: GoogleOAuth.gmailSettingsScopes),
+        throwsA(isA<SignInNeedsConsent>()
+            .having((e) => e.message, 'message', contains("Gmail's settings"))),
+      );
+      expect(GoogleOAuth.scopes, containsAll(GoogleOAuth.gmailSettingsScopes),
+          reason: 'a new sign-in asks for them');
+    });
+
     test('no connection is not a sign-out either', () async {
       final o = oauth(handler: (_) async => throw Exception('offline'));
       expect(() => o.refresh(stored), throwsA(isA<SignInUnreachable>()));

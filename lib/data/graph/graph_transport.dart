@@ -1259,6 +1259,18 @@ class GraphTransport implements ImapTransport {
     api.close();
   }
 
+  /// The Graph id of the folder at [path], for a rule that moves mail
+  /// there. Throws for a folder the server does not have.
+  Future<String> folderIdOf(String path) => _folderId(path);
+
+  /// Every folder's path by its Graph id, for reading a rule's folder.
+  Future<Map<String, String>> folderPathsById() async {
+    if (_folderIds.isEmpty) await listFolders();
+    return {
+      for (final MapEntry(:key, :value) in _folderIds.entries) value: key,
+    };
+  }
+
   // --- plumbing --------------------------------------------------------------
 
   Future<String> _folderId(String path) async {
