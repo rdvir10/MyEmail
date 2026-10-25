@@ -187,10 +187,69 @@ class CalendarRefresh extends Notifier<DateTime> {
   DateTime build() => DateTime.fromMillisecondsSinceEpoch(0);
 
   void now() => state = DateTime.now();
+
+  /// Reads from before [time] are read again; one made since, of what an
+  /// action changed, is shown as it is.
+  void since(DateTime time) => state = time;
 }
 
 final calendarRefreshProvider =
     NotifierProvider<CalendarRefresh, DateTime>(CalendarRefresh.new);
+
+/// A change the app made to [before]: [now] is where it went, or null for
+/// one taken off (or waiting out its Undo), made at [at].
+typedef PendingChange = ({CalendarEvent before, CalendarEvent? now, DateTime at});
+
+/// Changes the app has made that the calendars may not show yet, so the
+/// views show them at once. Each stands only while a view still has the
+/// event as it was before it, and for a couple of minutes at most: once the
+/// calendar has been read again, what it says is what shows.
+class CalendarPending extends Notifier<Map<String, PendingChange>> {
+  @override
+  Map<String, PendingChange> build() => const {};
+
+  static String keyOf(CalendarEvent e) =>
+      '${e.accountId}\u0000${e.calendarId}\u0000${e.id}';
+
+  void hide(CalendarEvent e) => state = {
+        ...state,
+        keyOf(e): (before: e, now: null, at: DateTime.now()),
+      };
+
+  void moved(CalendarEvent before, CalendarEvent now) => state = {
+        ...state,
+        keyOf(before): (before: before, now: now, at: DateTime.now()),
+      };
+
+  /// Undone, or refused: the event shows as the calendar has it.
+  void settle(CalendarEvent e) => state = {...state}..remove(keyOf(e));
+}
+
+final calendarPendingProvider =
+    NotifierProvider<CalendarPending, Map<String, PendingChange>>(
+        CalendarPending.new);
+
+/// How long a change made here is shown over what a view read before it.
+const pendingFor = Duration(minutes: 2);
+
+/// [events] with what is [pending] put in: one taken off left out, one
+/// moved where it went, while the event read is still as it was before.
+List<CalendarEvent> withPending(
+  List<CalendarEvent> events,
+  Map<String, PendingChange> pending, {
+  DateTime? now,
+}) {
+  if (pending.isEmpty) return events;
+  final since = (now ?? DateTime.now()).subtract(pendingFor);
+  return [
+    for (final e in events)
+      if (pending[CalendarPending.keyOf(e)] case final p?
+          when p.before == e && p.at.isAfter(since))
+        ?p.now
+      else
+        e,
+  ];
+}
 
 /// [CalendarLoad] over a range, every shown account at once: first what the
 /// device kept, at once, then each account read again unless its kept read

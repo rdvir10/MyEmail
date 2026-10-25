@@ -1,10 +1,12 @@
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
+import '../../domain/calendar_change.dart';
 import '../../domain/calendar_event.dart';
 import '../../domain/account.dart';
 import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
+import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
 import '../auth/google_oauth.dart' show GoogleOAuth;
 import '../auth/microsoft_oauth.dart'
@@ -455,6 +457,227 @@ class AccountCalendar {
         } finally {
           api.close();
         }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  // --- events the calendar shows ----------------------------------------------
+
+  /// The event a change to [event] goes to: the series it is one meeting
+  /// of, for [wholeSeries], or the meeting itself.
+  static String _target(CalendarEvent event, bool wholeSeries) =>
+      wholeSeries ? (event.seriesId ?? event.id) : event.id;
+
+  /// Answer [event] on [account]'s calendar; see `MailEngine.respondToEvent`.
+  Future<void> respondToEvent(
+    Account account,
+    CalendarEvent event,
+    InviteResponse response, {
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
+    bool wholeSeries = false,
+  }) async {
+    final id = _target(event, wholeSeries);
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          await api.respond(id, response,
+              note: note, send: send, proposal: proposal);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        if (proposal != null) {
+          throw const CalendarRefused(
+            'Google Calendar takes no new time from a guest. Answer, and say '
+            'what time suits you in the note.',
+          );
+        }
+        final api = _googleApi(account);
+        try {
+          await api.respond(id, response,
+              note: note, send: send, calendarId: event.calendarId);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  /// [event]'s notes in full; see `MailEngine.eventNotes`.
+  Future<EventNotes> eventNotes(
+    Account account,
+    CalendarEvent event, {
+    bool wholeSeries = false,
+  }) async {
+    final id = _target(event, wholeSeries);
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          return await api.notes(id);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          return await api.notes(id, calendarId: event.calendarId);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  /// Change [event], [account]'s own; see `MailEngine.updateEvent`. For
+  /// [wholeSeries] the series keeps its days: see [forSeries].
+  Future<void> updateEvent(
+    Account account,
+    CalendarEvent event,
+    EventChange change, {
+    bool wholeSeries = false,
+  }) async {
+    if (!isOwnEvent(event)) {
+      throw ArgumentError('Only the organiser can change this meeting.');
+    }
+    if (change.isEmpty) return;
+    final series = wholeSeries && event.seriesId != null;
+    final id = _target(event, series);
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          var sent = change;
+          if (series && change.movesIt) {
+            final times = await api.seriesTimes(id);
+            if (times == null) throw const EventGone();
+            sent = forSeries(change, times);
+          }
+          await api.update(id, sent, before: event);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          var sent = change;
+          if (series && change.movesIt) {
+            final times =
+                await api.seriesTimes(id, calendarId: event.calendarId);
+            if (times == null) throw const EventGone();
+            sent = forSeries(change, times);
+          }
+          await api.update(id, sent,
+              before: event, calendarId: event.calendarId);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  /// Cancel [event], [account]'s own; see `MailEngine.cancelEvent`.
+  Future<void> cancelEvent(
+    Account account,
+    CalendarEvent event, {
+    String note = '',
+    bool wholeSeries = false,
+  }) async {
+    if (!isOwnEvent(event)) {
+      throw ArgumentError('Only the organiser can cancel this meeting.');
+    }
+    final id = _target(event, wholeSeries);
+    final others = hasOthers(event, account.emailAddress);
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          // Graph's cancel is for a meeting with people on it; an
+          // appointment is simply deleted.
+          others ? await api.cancel(id, note: note) : await api.deleteEvent(id);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          others
+              ? await api.cancel(id, calendarId: event.calendarId)
+              : await api.removeQuietly(id, calendarId: event.calendarId);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  /// Take [event] off [account]'s calendar; see `MailEngine.removeEvent`.
+  Future<void> removeEvent(
+    Account account,
+    CalendarEvent event, {
+    bool wholeSeries = false,
+  }) async {
+    final own = isOwnEvent(event);
+    if (own && hasOthers(event, account.emailAddress)) {
+      throw ArgumentError('Taking your own meeting off would cancel it for '
+          'everyone on it: cancel it instead.');
+    }
+    final id = _target(event, wholeSeries);
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          // Someone else's: declined first, so they know, then off the
+          // calendar, where Exchange has not taken it off itself.
+          if (!own) await api.respond(id, InviteResponse.declined);
+          await api.deleteEvent(id);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          if (!own) {
+            await api.respond(id, InviteResponse.declined,
+                calendarId: event.calendarId);
+          }
+          await api.removeQuietly(id, calendarId: event.calendarId);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  /// Forward [event] to [to]; see `MailEngine.forwardEvent`.
+  Future<void> forwardEvent(
+    Account account,
+    CalendarEvent event,
+    List<MailAddress> to, {
+    String note = '',
+  }) async {
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          await api.forward(event.id, to, note: note);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        throw const CalendarRefused(
+          'Google Calendar has no way to forward an invitation. Ask the '
+          'organiser to add them.',
+        );
       case MailProvider.gmail:
         throw const CalendarUnavailable(_appPasswordOnly);
     }

@@ -9,11 +9,14 @@ import '../../data/auth/microsoft_oauth.dart';
 import '../../data/auth/oauth_token.dart';
 import '../../data/mail_engine.dart';
 import '../../domain/account.dart';
+import '../../domain/calendar_change.dart';
+import '../../domain/calendar_event.dart';
 import '../../domain/error_report.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/meeting.dart';
 import '../../domain/text_direction.dart';
 import '../../state/calendar_providers.dart';
+import '../../state/calendar_view_providers.dart' show calendarRefreshProvider;
 import '../../state/compose_providers.dart'
     show addressesLookValid, formatAddresses, parseAddresses;
 import '../../state/meeting_providers.dart';
@@ -40,6 +43,9 @@ Future<void> openNewMeeting(
   String notes = '',
   List<MailAddress> attendees = const [],
   DateTime? start,
+  String location = '',
+  Duration? length,
+  bool allDay = false,
 }) async {
   final accounts = ref.read(accountsProvider).value ?? const <Account>[];
   final chosen = accountId ??
@@ -66,6 +72,9 @@ Future<void> openNewMeeting(
         notes: notes,
         attendees: attendees,
         start: start,
+        location: location,
+        length: length,
+        allDay: allDay,
       ),
     ),
   );
@@ -156,6 +165,10 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
     this.notes = '',
     this.attendees = const [],
     this.start,
+    this.location = '',
+    this.length,
+    this.allDay = false,
+    this.editing,
   });
 
   final String accountId;
@@ -165,8 +178,17 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
   /// Who is asked, to begin with: everyone on the message it was made from.
   final List<MailAddress> attendees;
 
-  /// When it starts. The next whole hour when null; the end is an hour on.
+  /// When it starts. The next whole hour when null; the end is [length]
+  /// on, an hour where that is null.
   final DateTime? start;
+  final String location;
+  final Duration? length;
+  final bool allDay;
+
+  /// A meeting already on a calendar, being changed: Edit on its sheet.
+  /// Everything is filled in from it, From is its account, and Save sends
+  /// the change in place of Send. Its link, if it has one, stays as it is.
+  final EventEdit? editing;
 
   @override
   ConsumerState<NewMeetingScreen> createState() => _NewMeetingScreenState();
@@ -183,28 +205,68 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// for, and can be changed from the header: Ron asked to choose the
   /// account before anything else about an invitation, and the calendar
   /// it lands on follows from it.
-  late String _accountId = widget.accountId;
+  late String _accountId = widget.editing?.event.accountId ?? widget.accountId;
 
-  late final _title = TextEditingController(text: widget.title);
+  EventEdit? get _editing => widget.editing;
+
+  late final String _titleToBegin = _editing?.event.title ?? widget.title;
+  late final String _notesToBegin = _editing?.notes.text ?? widget.notes;
+  late final String _locationToBegin =
+      _editing?.event.location ?? widget.location;
+
+  late final _title = TextEditingController(text: _titleToBegin);
   late final _attendees =
       TextEditingController(text: _attendeesToBegin);
 
   /// The attendees as the field starts, with a separator after them so the
-  /// next address can be typed straight on.
-  late final String _attendeesToBegin = widget.attendees.isEmpty
-      ? ''
-      : '${formatAddresses(widget.attendees)}, ';
-  final _location = TextEditingController();
-  late final _notes = TextEditingController(text: widget.notes);
+  /// next address can be typed straight on. A meeting being changed has
+  /// its own, less its organiser and the account itself.
+  late final String _attendeesToBegin = () {
+    final people = _editing == null
+        ? widget.attendees
+        : _peopleOn(_editing!.event);
+    return people.isEmpty ? '' : '${formatAddresses(people)}, ';
+  }();
+
+  /// Who [event] is with, as the attendees field lists them.
+  List<MailAddress> _peopleOn(CalendarEvent event) {
+    final own = (ref
+                .read(accountsProvider)
+                .value
+                ?.where((a) => a.id == event.accountId)
+                .firstOrNull
+                ?.emailAddress ??
+            '')
+        .trim()
+        .toLowerCase();
+    return [
+      for (final a in event.attendees)
+        if (a.response != EventResponse.organizer &&
+            a.address.email.trim().toLowerCase() != own)
+          a.address,
+    ];
+  }
+
+  late final _location = TextEditingController(text: _locationToBegin);
+  late final _notes = TextEditingController(text: _notesToBegin);
 
   /// The times as the screen opened, kept to tell a time picked from one
-  /// left alone.
-  late final DateTime _startToBegin = widget.start ?? _nextHour(DateTime.now());
-  late final DateTime _endToBegin = _startToBegin.add(const Duration(hours: 1));
+  /// left alone. A whole day ends on its last day here, where a calendar
+  /// counts the day after.
+  late final DateTime _startToBegin = _editing?.event.start ??
+      widget.start ??
+      _nextHour(DateTime.now());
+  late final DateTime _endToBegin = switch (_editing?.event) {
+    final e? => e.allDay ? DateTime(e.end.year, e.end.month, e.end.day - 1) : e.end,
+    null => widget.allDay
+        ? _startToBegin
+        : _startToBegin.add(widget.length ?? const Duration(hours: 1)),
+  };
+  late final bool _allDayToBegin = _editing?.event.allDay ?? widget.allDay;
 
   late DateTime _start = _startToBegin;
   late DateTime _end = _endToBegin;
-  bool _allDay = false;
+  late bool _allDay = _allDayToBegin;
   bool _sending = false;
 
   /// The kinds a meeting from this account can be held online as, empty
@@ -311,7 +373,8 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   void initState() {
     super.initState();
     _container = ProviderScope.containerOf(context, listen: false);
-    _askOnline();
+    // A meeting being changed keeps the link it has: there is no switch.
+    if (_editing == null) _askOnline();
   }
 
   /// Ask how a meeting from this account can be held online, and show the
@@ -456,14 +519,14 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// Online switch alone does not: its link is undone with the screen, and
   /// made again as easily.
   bool get _untouched =>
-      _accountId == widget.accountId &&
+      _accountId == (_editing?.event.accountId ?? widget.accountId) &&
       _start == _startToBegin &&
       _end == _endToBegin &&
-      !_allDay &&
-      _title.text == widget.title &&
+      _allDay == _allDayToBegin &&
+      _title.text == _titleToBegin &&
       _attendees.text == _attendeesToBegin &&
-      _location.text.isEmpty &&
-      _notes.text == widget.notes;
+      _location.text == _locationToBegin &&
+      _notes.text == _notesToBegin;
 
   /// Move the start, and the end with it, so the meeting keeps its length:
   /// a meeting moved to Tuesday is still an hour long.
@@ -528,6 +591,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   }
 
   Future<void> _send() async {
+    if (_editing case final edit?) return _save(edit);
     final attendees = parseAddresses(_attendees.text);
     if (!addressesLookValid(attendees)) {
       setState(() => _invalid = 'One of the addresses does not look right.');
@@ -572,6 +636,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       final created =
           await _container.read(mailEngineProvider).createMeeting(meeting);
       _sent = true;
+      _container.read(calendarRefreshProvider.notifier).now();
       // The one made ahead could not be used (deleted meanwhile, or its
       // calendar dropped the link) and the calendar made another: the old
       // one is undone, once more if need be, and the link shown, which may
@@ -617,6 +682,78 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       if (!_sent && prepared != null) {
         unawaited(ledger.record(prepared).catchError((_) {}));
       }
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  /// Send the change made to [edit]'s meeting: only what differs from how
+  /// it was, so a change of the people alone writes to them alone.
+  Future<void> _save(EventEdit edit) async {
+    final attendees = parseAddresses(_attendees.text);
+    if (!addressesLookValid(attendees)) {
+      setState(() => _invalid = 'One of the addresses does not look right.');
+      return;
+    }
+    if (_title.text.trim().isEmpty) {
+      setState(() => _invalid = 'Give the meeting a title.');
+      return;
+    }
+    DateTime day(DateTime t) => DateTime(t.year, t.month, t.day);
+    if (_allDay ? day(_end).isBefore(day(_start)) : !_end.isAfter(_start)) {
+      setState(() => _invalid = _allDay
+          ? 'The last day cannot be before the first.'
+          : 'The meeting has to end after it starts.');
+      return;
+    }
+    setState(() {
+      _sending = true;
+      _invalid = null;
+      _notice = null;
+      _offerConsent = false;
+      _problem = null;
+    });
+    String? zone;
+    try {
+      zone = await ref.read(deviceCalendarProvider).timeZoneId();
+    } catch (_) {
+      // Then the times go as UTC, which every calendar reads.
+    }
+    final change = EventChange.between(
+      edit.event,
+      notesBefore: edit.notes,
+      title: _title.text,
+      start: _allDay ? day(_start) : _start,
+      end: _allDay ? dayAfter(day(_end)) : _end,
+      allDay: _allDay,
+      location: _location.text,
+      notes: _notes.text,
+      attendees: attendees,
+      timeZone: zone,
+    );
+    try {
+      if (!change.isEmpty) {
+        await _container
+            .read(mailEngineProvider)
+            .updateEvent(edit.event, change, wholeSeries: edit.wholeSeries);
+        _container.read(calendarRefreshProvider.notifier).now();
+      }
+      if (!mounted) return;
+      final told = attendees.isNotEmpty || edit.event.attendees.isNotEmpty;
+      _leave(change.isEmpty
+          ? 'Nothing was changed.'
+          : told
+              ? 'Saved. Everyone on it is sent the change.'
+              : 'Saved.');
+    } catch (e) {
+      if (!mounted) return;
+      if (!_askForConsent(e, toPrepare: false)) {
+        setState(() => _problem = ProblemReport(
+              doing: 'Changing a meeting',
+              error: e,
+              account: _account,
+            ));
+      }
+    } finally {
       if (mounted) setState(() => _sending = false);
     }
   }
@@ -777,8 +914,12 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     final discard = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Discard this meeting?'),
-        content: const Text('Nothing has been sent.'),
+        title: Text(_editing == null
+            ? 'Discard this meeting?'
+            : 'Discard these changes?'),
+        content: Text(_editing == null
+            ? 'Nothing has been sent.'
+            : 'The meeting stays as it was.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -812,18 +953,19 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('New meeting'),
+          title: Text(_editing == null ? 'New meeting' : 'Edit meeting'),
           centerTitle: false,
           actions: [
             IconButton(
-              tooltip: 'Send',
+              key: const ValueKey('meeting-send'),
+              tooltip: _editing == null ? 'Send' : 'Save',
               icon: _sending
                   ? const SizedBox(
                       width: 18,
                       height: 18,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.send),
+                  : Icon(_editing == null ? Icons.send : Icons.check),
               onPressed: _sending ? null : _send,
             ),
             const SizedBox(width: 4),
@@ -832,8 +974,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
         body: Column(
           children: [
             // As the compose screen has it: with one account there is
-            // nothing to choose, and a menu with one entry is a puzzle.
-            if (accounts.length > 1)
+            // nothing to choose, and a menu with one entry is a puzzle. A
+            // meeting being changed stays on its calendar.
+            if (accounts.length > 1 && _editing == null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
                 child: Row(
@@ -884,7 +1027,12 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                 child: Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    'From ${account.emailAddress}',
+                    _editing == null
+                        ? 'From ${account.emailAddress}'
+                        : _editing!.wholeSeries
+                            ? 'Every meeting in the series, on '
+                                '${account.emailAddress}'
+                            : 'On ${account.emailAddress}',
                     style: theme.textTheme.labelSmall
                         ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                   ),
@@ -897,20 +1045,21 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
               enabled: !_sending,
               // A meeting from a message has its title; the cursor is
               // better off with the people then.
-              autofocus: widget.title.isEmpty,
+              autofocus: widget.title.isEmpty && _editing == null,
             ),
             RecipientField(
               key: const ValueKey('meeting-attendees'),
               label: 'Attendees',
               controller: _attendees,
               enabled: !_sending,
-              autofocus: widget.title.isNotEmpty,
+              autofocus: widget.title.isNotEmpty && _editing == null,
             ),
             _WhenRow(
               label: 'Start',
               at: _start,
               allDay: _allDay,
               enabled: !_sending,
+              dateEnabled: !(_editing?.wholeSeries ?? false),
               keyPrefix: 'start',
               onDate: () => _pickDate(_start, _setStart),
               onTime: () => _pickTime(_start, _setStart),
@@ -920,6 +1069,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
               at: _end,
               allDay: _allDay,
               enabled: !_sending,
+              dateEnabled: !(_editing?.wholeSeries ?? false),
               keyPrefix: 'end',
               onDate: () => _pickDate(_end, (at) => setState(() => _end = at)),
               onTime: () => _pickTime(_end, (at) => setState(() => _end = at)),
@@ -964,7 +1114,18 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             // a Teams link or a Meet link, rather than promising one that
             // cannot be made. With a choice, a menu in the label's place;
             // choosing from it is asking for a link.
-            if (_onlineKinds.isNotEmpty)
+            if (_editing?.event.joinUrl != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Online: it keeps its link as it is.',
+                    style: muted,
+                  ),
+                ),
+              ),
+            if (_onlineKinds.isNotEmpty && _editing == null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
                 child: Row(
@@ -1255,6 +1416,7 @@ class _WhenRow extends StatelessWidget {
     required this.at,
     required this.allDay,
     required this.enabled,
+    this.dateEnabled = true,
     required this.keyPrefix,
     required this.onDate,
     required this.onTime,
@@ -1264,6 +1426,9 @@ class _WhenRow extends StatelessWidget {
   final DateTime at;
   final bool allDay;
   final bool enabled;
+
+  /// False for every meeting of a series, which keep their days.
+  final bool dateEnabled;
   final String keyPrefix;
   final VoidCallback onDate;
   final VoidCallback onTime;
@@ -1285,7 +1450,7 @@ class _WhenRow extends StatelessWidget {
           ),
           TextButton(
             key: ValueKey('$keyPrefix-date'),
-            onPressed: enabled ? onDate : null,
+            onPressed: enabled && dateEnabled ? onDate : null,
             child: Text(formatDay(at)),
           ),
           if (!allDay)

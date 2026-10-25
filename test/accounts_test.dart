@@ -287,6 +287,56 @@ class _EmptyEngine implements MailEngine {
       _inner.keptCalendarEvents(accountId, start, end);
 
   @override
+  Future<void> respondToEvent(
+    CalendarEvent event,
+    InviteResponse response, {
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
+    bool wholeSeries = false,
+  }) =>
+      _inner.respondToEvent(event, response,
+          note: note, send: send, proposal: proposal, wholeSeries: wholeSeries);
+
+  @override
+  Future<EventNotes> eventNotes(
+    CalendarEvent event, {
+    bool wholeSeries = false,
+  }) =>
+      _inner.eventNotes(event, wholeSeries: wholeSeries);
+
+  @override
+  Future<void> updateEvent(
+    CalendarEvent event,
+    EventChange change, {
+    bool wholeSeries = false,
+  }) =>
+      _inner.updateEvent(event, change, wholeSeries: wholeSeries);
+
+  @override
+  Future<void> cancelEvent(
+    CalendarEvent event, {
+    String note = '',
+    bool wholeSeries = false,
+  }) =>
+      _inner.cancelEvent(event, note: note, wholeSeries: wholeSeries);
+
+  @override
+  Future<void> removeEvent(
+    CalendarEvent event, {
+    bool wholeSeries = false,
+  }) =>
+      _inner.removeEvent(event, wholeSeries: wholeSeries);
+
+  @override
+  Future<void> forwardEvent(
+    CalendarEvent event,
+    List<MailAddress> to, {
+    String note = '',
+  }) =>
+      _inner.forwardEvent(event, to, note: note);
+
+  @override
   ServerSettings? serverSettings(String accountId) =>
       _inner.serverSettings(accountId);
 

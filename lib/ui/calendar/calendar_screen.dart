@@ -2,13 +2,17 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
+import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/auth/microsoft_oauth.dart';
+import '../../data/calendar/account_calendar.dart' show AccountCalendar;
 import '../../data/mail_engine.dart' show CalendarUnavailable;
 import '../../domain/account.dart';
+import '../../domain/calendar_change.dart';
 import '../../domain/calendar_event.dart';
+import '../../domain/calendar_invite.dart' show InviteResponse;
 import '../../domain/calendar_prefs.dart';
 import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/search_refinement.dart' show weekStartFor;
@@ -20,6 +24,7 @@ import '../accounts/microsoft_sign_in_screen.dart';
 import '../common/bottom_message.dart';
 import '../meetings/new_meeting_screen.dart' show openNewMeeting;
 import '../messages/date_format.dart';
+import 'event_actions.dart';
 
 /// Outlook's Calendar, beside the mail: every account's events as an
 /// agenda, a day, a week or a month. Shown from what the device kept of
@@ -317,11 +322,14 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
     final wide = MediaQuery.sizeOf(context).width >= 700;
     void details(CalendarEvent e) => showEventDetails(
           context,
+          ref,
           e,
           accounts.where((a) => a.id == e.accountId).firstOrNull,
         );
     void newMeetingAt(DateTime start) =>
         openNewMeeting(context, ref, start: start);
+    void moved(CalendarEvent e, DateTime start, DateTime end) =>
+        moveEvent(context, ref, e, start, end);
 
     final Widget content;
     if (accounts.isEmpty) {
@@ -350,6 +358,7 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
             topHour: _topHour,
             onTap: details,
             onSlot: newMeetingAt,
+            onMove: moved,
             onSelect: (day) => setState(() => _day = day),
             onOpenDay: (day) => _setMode(CalendarViewMode.day, day: day),
             onPinching: (pinching) => setState(() => _pinching = pinching),
@@ -742,6 +751,7 @@ class _CalendarPageView extends ConsumerWidget {
     required this.topHour,
     required this.onTap,
     required this.onSlot,
+    required this.onMove,
     required this.onSelect,
     required this.onOpenDay,
     required this.onPinching,
@@ -755,6 +765,7 @@ class _CalendarPageView extends ConsumerWidget {
   final ValueNotifier<double> topHour;
   final void Function(CalendarEvent) onTap;
   final void Function(DateTime) onSlot;
+  final void Function(CalendarEvent, DateTime, DateTime) onMove;
   final void Function(DateTime) onSelect;
   final void Function(DateTime) onOpenDay;
   final void Function(bool) onPinching;
@@ -763,13 +774,14 @@ class _CalendarPageView extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final load = ref.watch(calendarEventsProvider(page.range));
     final prefs = ref.watch(calendarPrefsProvider);
+    final pending = ref.watch(calendarPendingProvider);
     final value = load.value;
     if (value == null) {
       return load.hasError
           ? Center(child: Text('${load.error}'))
           : const Center(child: CircularProgressIndicator());
     }
-    final events = shownEvents(value.events, prefs);
+    final events = shownEvents(withPending(value.events, pending), prefs);
     if (mode == CalendarViewMode.month) {
       final month = page.month!;
       if (wide) {
@@ -821,6 +833,7 @@ class _CalendarPageView extends ConsumerWidget {
       topHour: topHour,
       onTap: onTap,
       onSlot: onSlot,
+      onMove: onMove,
       onDay: mode == CalendarViewMode.week ? onOpenDay : null,
       onPinching: onPinching,
     );
@@ -974,6 +987,7 @@ class _AgendaLot extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final load = ref.watch(calendarEventsProvider(range));
     final prefs = ref.watch(calendarPrefsProvider);
+    final pending = ref.watch(calendarPendingProvider);
     final value = load.value;
     if (value == null) {
       return SliverToBoxAdapter(
@@ -985,7 +999,7 @@ class _AgendaLot extends ConsumerWidget {
               ),
       );
     }
-    final events = shownEvents(value.events, prefs);
+    final events = shownEvents(withPending(value.events, pending), prefs);
     final days = <Widget>[];
     for (var d = range.start; d.isBefore(range.end); d = _plus(d, 1)) {
       final on = eventsOn(d, events);
@@ -1588,7 +1602,8 @@ class _DatePickerState extends ConsumerState<_DatePicker> {
 // --- the day and the week ---------------------------------------------------------
 
 /// Days side by side, hour by hour: the day view, and the week's. Pinch to
-/// make the hours taller or shorter.
+/// make the hours taller or shorter; hold a meeting of the account's own to
+/// drag it to another time, or by its foot to make it longer or shorter.
 class _Timeline extends ConsumerStatefulWidget {
   const _Timeline({
     required this.days,
@@ -1599,6 +1614,7 @@ class _Timeline extends ConsumerStatefulWidget {
     required this.onTap,
     required this.onSlot,
     required this.onPinching,
+    this.onMove,
     this.onDay,
   });
 
@@ -1617,11 +1633,37 @@ class _Timeline extends ConsumerStatefulWidget {
   /// A day's name tapped on, in the week.
   final void Function(DateTime)? onDay;
 
-  /// A pinch begun, or ended: the pages hold still for it.
+  /// A pinch or a drag begun, or ended: the pages hold still for it.
   final void Function(bool) onPinching;
+
+  /// A meeting dragged to new times.
+  final void Function(CalendarEvent, DateTime, DateTime)? onMove;
 
   @override
   ConsumerState<_Timeline> createState() => _TimelineState();
+}
+
+/// A meeting being dragged: from which day and minute it was taken, and the
+/// times it would have if let go now.
+class _Drag {
+  _Drag({
+    required this.event,
+    required this.resize,
+    required this.fromDay,
+    required this.fromMinute,
+  })  : start = event.start,
+        end = event.end;
+
+  final CalendarEvent event;
+
+  /// Taken by its foot: the end moves, the start stays.
+  final bool resize;
+  final int fromDay;
+  final int fromMinute;
+  DateTime start;
+  DateTime end;
+
+  CalendarEvent get moved => event.copyWith(start: start, end: end);
 }
 
 class _TimelineState extends ConsumerState<_Timeline> {
@@ -1641,6 +1683,10 @@ class _TimelineState extends ConsumerState<_Timeline> {
 
   /// A scroll this page made to follow another, not to be passed on.
   bool _following = false;
+
+  /// The meeting being dragged, and the hours it is dragged over.
+  _Drag? _drag;
+  final GlobalKey _hours = GlobalKey();
 
   double get _height => _pinched ?? ref.read(calendarHourHeightProvider);
 
@@ -1717,6 +1763,62 @@ class _TimelineState extends ConsumerState<_Timeline> {
     setState(() => _pinched = null);
     widget.onPinching(false);
     if (_scroll.hasClients) widget.topHour.value = _scroll.offset / height;
+  }
+
+  /// Which day's column and which minute of it [global] is over.
+  (int, int)? _pointAt(Offset global) {
+    final box = _hours.currentContext?.findRenderObject();
+    if (box is! RenderBox) return null;
+    final local = box.globalToLocal(global);
+    final columns = widget.days.length;
+    final width = (box.size.width - gutter) / columns;
+    final day = ((local.dx - gutter) / width).floor().clamp(0, columns - 1);
+    return (day, (local.dy / _height * 60).round());
+  }
+
+  void _take(CalendarEvent event, Offset global, {required bool resize}) {
+    final at = _pointAt(global);
+    if (at == null) return;
+    HapticFeedback.selectionClick();
+    setState(() => _drag = _Drag(
+          event: event,
+          resize: resize,
+          fromDay: at.$1,
+          fromMinute: at.$2,
+        ));
+    widget.onPinching(true);
+  }
+
+  /// To the quarter hour, as Outlook moves a meeting.
+  void _dragTo(Offset global) {
+    final d = _drag;
+    final at = _pointAt(global);
+    if (d == null || at == null) return;
+    final minutes = ((at.$2 - d.fromMinute) / 15).round() * 15;
+    setState(() {
+      if (d.resize) {
+        final end = d.event.end.add(Duration(minutes: minutes));
+        final shortest = d.event.start.add(const Duration(minutes: 15));
+        d.end = end.isAfter(shortest) ? end : shortest;
+        return;
+      }
+      final s = d.event.start;
+      final days = at.$1 - d.fromDay;
+      final start = DateTime(s.year, s.month, s.day + days, s.hour, s.minute)
+          .add(Duration(minutes: minutes));
+      d.start = start;
+      d.end = start.add(d.event.end.difference(d.event.start));
+    });
+  }
+
+  void _drop() {
+    final d = _drag;
+    if (d == null) return;
+    setState(() => _drag = null);
+    widget.onPinching(false);
+    if (d.start != d.event.start || d.end != d.event.end) {
+      widget.onMove?.call(d.event, d.start, d.end);
+    }
   }
 
   @override
@@ -1814,6 +1916,7 @@ class _TimelineState extends ConsumerState<_Timeline> {
                   ? const NeverScrollableScrollPhysics()
                   : null,
               child: SizedBox(
+                key: _hours,
                 height: 24 * hourHeight,
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1848,6 +1951,11 @@ class _TimelineState extends ConsumerState<_Timeline> {
                           prefs: widget.prefs,
                           onTap: widget.onTap,
                           onSlot: widget.onSlot,
+                          dragged: _drag?.event,
+                          ghost: _drag?.moved,
+                          onTake: widget.onMove == null ? null : _take,
+                          onDrag: _dragTo,
+                          onDrop: _drop,
                         ),
                       ),
                   ],
@@ -1870,6 +1978,11 @@ class _DayColumn extends StatelessWidget {
     required this.prefs,
     required this.onTap,
     required this.onSlot,
+    this.dragged,
+    this.ghost,
+    this.onTake,
+    this.onDrag,
+    this.onDrop,
   });
 
   final DateTime day;
@@ -1879,6 +1992,19 @@ class _DayColumn extends StatelessWidget {
   final CalendarPrefs prefs;
   final void Function(CalendarEvent) onTap;
   final void Function(DateTime) onSlot;
+
+  /// The meeting being dragged, drawn faint where it was, and where it
+  /// would go, drawn over the day it would go to.
+  final CalendarEvent? dragged;
+  final CalendarEvent? ghost;
+
+  /// Held for a drag, which only a meeting of the account's own takes.
+  final void Function(CalendarEvent, Offset, {required bool resize})? onTake;
+  final void Function(Offset)? onDrag;
+  final VoidCallback? onDrop;
+
+  bool _canDrag(CalendarEvent e) =>
+      onTake != null && isOwnEvent(e) && !e.cancelled && !e.allDay;
 
   @override
   Widget build(BuildContext context) {
@@ -1943,11 +2069,68 @@ class _DayColumn extends StatelessWidget {
                   ),
                   left: width * slot.column / slot.columns + 1,
                   width: width / slot.columns - 2,
-                  child: _Block(
-                    event: slot.event,
-                    colour: colours[slot.event.accountId] ??
-                        theme.colorScheme.primary,
-                    onTap: () => onTap(slot.event),
+                  child: Opacity(
+                    opacity: dragged != null && _same(dragged!, slot.event)
+                        ? 0.35
+                        : 1,
+                    child: !_canDrag(slot.event)
+                        ? _Block(
+                            event: slot.event,
+                            colour: colours[slot.event.accountId] ??
+                                theme.colorScheme.primary,
+                            onTap: () => onTap(slot.event),
+                          )
+                        : LayoutBuilder(
+                            builder: (context, box) => GestureDetector(
+                              onLongPressStart: (d) => onTake!(
+                                slot.event,
+                                d.globalPosition,
+                                // Its foot: the bottom quarter, where there
+                                // is room to tell the two apart.
+                                resize: box.maxHeight >= 24 &&
+                                    d.localPosition.dy > box.maxHeight * 0.75,
+                              ),
+                              onLongPressMoveUpdate: (d) =>
+                                  onDrag?.call(d.globalPosition),
+                              onLongPressEnd: (_) => onDrop?.call(),
+                              onLongPressCancel: () => onDrop?.call(),
+                              child: _Block(
+                                event: slot.event,
+                                colour: colours[slot.event.accountId] ??
+                                    theme.colorScheme.primary,
+                                onTap: () => onTap(slot.event),
+                              ),
+                            ),
+                          ),
+                  ),
+                ),
+              if (ghost case final g? when g.fallsOn(day))
+                Positioned(
+                  top: y(g.start),
+                  height: math.max(hourHeight / 4, y(g.end) - y(g.start)),
+                  left: 1,
+                  right: 1,
+                  child: IgnorePointer(
+                    child: Container(
+                      key: const ValueKey('calendar-drag-ghost'),
+                      decoration: BoxDecoration(
+                        color: (colours[g.accountId] ?? theme.colorScheme.primary)
+                            .withAlpha(140),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(
+                          color: colours[g.accountId] ?? theme.colorScheme.primary,
+                          width: 2,
+                        ),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      child: Text(
+                        '${g.title}\n${formatClock(g.start, use24h: MediaQuery.alwaysUse24HourFormatOf(context))}'
+                        '–${formatClock(g.end, use24h: MediaQuery.alwaysUse24HourFormatOf(context))}',
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                      ),
+                    ),
                   ),
                 ),
               if (_sameDay(day, now))
@@ -1964,6 +2147,9 @@ class _DayColumn extends StatelessWidget {
     );
   }
 }
+
+bool _same(CalendarEvent a, CalendarEvent b) =>
+    a.id == b.id && a.accountId == b.accountId && a.calendarId == b.calendarId;
 
 /// An event as a block of its account's colour.
 class _Block extends StatelessWidget {
@@ -2027,9 +2213,12 @@ class _Block extends StatelessWidget {
 
 // --- an event, opened -------------------------------------------------------------
 
-/// [event]'s details: when and where, who, and the way to join it.
+/// [event]'s details, and what can be done with it: answer it, join it,
+/// change it, write to the people on it. Each action closes the sheet and
+/// runs on the calendar screen's own [context] and [ref].
 Future<void> showEventDetails(
   BuildContext context,
+  WidgetRef ref,
   CalendarEvent event,
   Account? account,
 ) =>
@@ -2037,14 +2226,71 @@ Future<void> showEventDetails(
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (sheet) => _EventDetails(event: event, account: account),
+      builder: (sheet) => _EventDetails(
+        event: event,
+        account: account,
+        host: context,
+        hostRef: ref,
+      ),
     );
 
+/// How a meeting's people answered, counted for its organiser: Outlook's
+/// Tracking. The organiser's own entry and the account's are not counted.
+typedef AnswerCounts = ({
+  int accepted,
+  int tentative,
+  int declined,
+  int notAnswered,
+});
+
+AnswerCounts answerCounts(CalendarEvent event, String ownEmail) {
+  final own = ownEmail.trim().toLowerCase();
+  var accepted = 0, tentative = 0, declined = 0, waiting = 0;
+  for (final a in event.attendees) {
+    if (a.response == EventResponse.organizer ||
+        a.address.email.trim().toLowerCase() == own) {
+      continue;
+    }
+    switch (a.response) {
+      case EventResponse.accepted:
+        accepted++;
+      case EventResponse.tentative:
+        tentative++;
+      case EventResponse.declined:
+        declined++;
+      default:
+        waiting++;
+    }
+  }
+  return (
+    accepted: accepted,
+    tentative: tentative,
+    declined: declined,
+    notAnswered: waiting,
+  );
+}
+
+/// [counts] as the sheet says them: "5 accepted · 1 declined · 2 not
+/// answered", leaving out what is none.
+String describeAnswers(AnswerCounts counts) => [
+      if (counts.accepted > 0) '${counts.accepted} accepted',
+      if (counts.tentative > 0) '${counts.tentative} tentative',
+      if (counts.declined > 0) '${counts.declined} declined',
+      if (counts.notAnswered > 0) '${counts.notAnswered} not answered',
+    ].join(' · ');
+
 class _EventDetails extends StatelessWidget {
-  const _EventDetails({required this.event, required this.account});
+  const _EventDetails({
+    required this.event,
+    required this.account,
+    required this.host,
+    required this.hostRef,
+  });
 
   final CalendarEvent event;
   final Account? account;
+  final BuildContext host;
+  final WidgetRef hostRef;
 
   @override
   Widget build(BuildContext context) {
@@ -2052,6 +2298,19 @@ class _EventDetails extends StatelessWidget {
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
     String clock(DateTime t) => formatClock(t, use24h: use24h);
     final e = event;
+    final account = this.account;
+    final email = account?.emailAddress ?? '';
+    final own = isOwnEvent(e);
+    final others = hasOthers(e, email);
+    // Only a calendar the app reaches takes a change; the rest is mail.
+    final reachable = account != null && AccountCalendar.canRead(account);
+    final microsoft = account?.provider == MailProvider.outlook;
+    final invited = !own && e.organizer != null && !e.cancelled;
+    final now = DateTime.now();
+    final soon = !e.allDay &&
+        others &&
+        now.isAfter(e.start.subtract(const Duration(hours: 1))) &&
+        now.isBefore(e.end);
     final lastDay = _plus(e.end, -1);
     final when = e.allDay
         ? (_sameDay(e.start, lastDay) || !lastDay.isAfter(e.start)
@@ -2076,22 +2335,103 @@ class _EventDetails extends StatelessWidget {
       if (uri != null) await launchUrl(uri, mode: LaunchMode.externalApplication);
     }
 
+    /// Close the sheet, then [act] on the calendar screen.
+    void then(
+      Future<void> Function(BuildContext, WidgetRef, CalendarEvent) act,
+    ) {
+      Navigator.of(context).pop();
+      act(host, hostRef, e);
+    }
+
+    final counts = answerCounts(e, email);
+    final waiting = notAnswered(e, email);
+    Widget answerButton(InviteResponse r, String label, String key) {
+      final chosen = e.response == eventResponseFor(r);
+      void tap() => then((c, ref, ev) => answerEvent(c, ref, ev, r));
+      void hold() => then((c, ref, ev) => answerEvent(c, ref, ev, r, asked: true));
+      return chosen
+          ? FilledButton.tonal(
+              key: ValueKey(key),
+              onPressed: tap,
+              onLongPress: hold,
+              child: Text(label),
+            )
+          : OutlinedButton(
+              key: ValueKey(key),
+              onPressed: tap,
+              onLongPress: hold,
+              child: Text(label),
+            );
+    }
+
     return SafeArea(
       child: ConstrainedBox(
         constraints: BoxConstraints(
-          maxHeight: MediaQuery.sizeOf(context).height * 0.8,
+          maxHeight: MediaQuery.sizeOf(context).height * 0.85,
         ),
         child: ListView(
           shrinkWrap: true,
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+          padding: const EdgeInsets.fromLTRB(20, 0, 8, 20),
           children: [
-            Text(
-              e.title.isEmpty ? '(No title)' : e.title,
-              style: theme.textTheme.titleLarge?.copyWith(
-                decoration: e.cancelled || e.declined
-                    ? TextDecoration.lineThrough
-                    : null,
-              ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(
+                    e.title.isEmpty ? '(No title)' : e.title,
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      decoration: e.cancelled || e.declined
+                          ? TextDecoration.lineThrough
+                          : null,
+                    ),
+                  ),
+                ),
+                if (reachable)
+                  PopupMenuButton<String>(
+                    key: const ValueKey('event-more'),
+                    tooltip: 'More',
+                    onSelected: (choice) => switch (choice) {
+                      'email' => then(emailEveryone),
+                      'invite' => then(invitePeople),
+                      'propose' => then(proposeForEvent),
+                      'duplicate' => then(duplicateEvent),
+                      'remove' => then(cancelOrDeleteEvent),
+                      _ => null,
+                    },
+                    itemBuilder: (context) => [
+                      if (others)
+                        const PopupMenuItem(
+                          key: ValueKey('event-email'),
+                          value: 'email',
+                          child: Text('Email everyone'),
+                        ),
+                      if (own || microsoft)
+                        PopupMenuItem(
+                          key: const ValueKey('event-invite'),
+                          value: 'invite',
+                          child: Text(own ? 'Invite people' : 'Forward'),
+                        ),
+                      if (invited && microsoft)
+                        const PopupMenuItem(
+                          key: ValueKey('event-propose'),
+                          value: 'propose',
+                          child: Text('Propose a new time'),
+                        ),
+                      const PopupMenuItem(
+                        key: ValueKey('event-duplicate'),
+                        value: 'duplicate',
+                        child: Text('Duplicate'),
+                      ),
+                      PopupMenuItem(
+                        key: const ValueKey('event-remove'),
+                        value: 'remove',
+                        child: Text(own
+                            ? (others ? 'Cancel meeting' : 'Delete')
+                            : 'Decline and remove'),
+                      ),
+                    ],
+                  ),
+              ],
             ),
             if (e.cancelled)
               Text('Cancelled by the organiser', style: muted),
@@ -2105,9 +2445,9 @@ class _EventDetails extends StatelessWidget {
               const SizedBox(height: 8),
               Row(
                 children: [
-                  CircleAvatar(radius: 6, backgroundColor: Color(account!.colorValue)),
+                  CircleAvatar(radius: 6, backgroundColor: Color(account.colorValue)),
                   const SizedBox(width: 8),
-                  Expanded(child: Text(account!.emailAddress, style: muted)),
+                  Expanded(child: Text(account.emailAddress, style: muted)),
                 ],
               ),
             ],
@@ -2115,7 +2455,31 @@ class _EventDetails extends StatelessWidget {
               const SizedBox(height: 4),
               Text(answer, style: muted),
             ],
-            if (e.joinUrl != null || e.webLink != null) ...[
+            if (invited && reachable) ...[
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  answerButton(InviteResponse.accepted, 'Accept', 'event-accept'),
+                  answerButton(InviteResponse.tentative, 'Maybe', 'event-tentative'),
+                  answerButton(InviteResponse.declined, 'Decline', 'event-decline'),
+                ],
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  'Hold an answer to add a note, or to answer without telling '
+                  'the organiser.',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                ),
+              ),
+            ],
+            if (e.joinUrl != null ||
+                e.webLink != null ||
+                (own && reachable) ||
+                soon) ...[
               const SizedBox(height: 16),
               Wrap(
                 spacing: 8,
@@ -2127,6 +2491,20 @@ class _EventDetails extends StatelessWidget {
                       onPressed: () => open(e.joinUrl!),
                       icon: const Icon(Icons.videocam_outlined),
                       label: const Text('Join'),
+                    ),
+                  if (own && reachable && !e.cancelled)
+                    OutlinedButton.icon(
+                      key: const ValueKey('event-edit'),
+                      onPressed: () => then(editEvent),
+                      icon: const Icon(Icons.edit_outlined),
+                      label: const Text('Edit'),
+                    ),
+                  if (soon && account != null)
+                    OutlinedButton.icon(
+                      key: const ValueKey('event-late'),
+                      onPressed: () => then(runningLate),
+                      icon: const Icon(Icons.schedule),
+                      label: const Text('Running late'),
                     ),
                   if (e.webLink != null)
                     OutlinedButton.icon(
@@ -2140,7 +2518,7 @@ class _EventDetails extends StatelessWidget {
                 ],
               ),
             ],
-            if (e.organizer != null && !e.isOrganizer) ...[
+            if (e.organizer != null && !own) ...[
               const SizedBox(height: 16),
               Text('Organiser', style: theme.textTheme.labelLarge),
               Text(e.organizer!.display),
@@ -2152,7 +2530,27 @@ class _EventDetails extends StatelessWidget {
                 '${e.attendees.length == 1 ? 'person' : 'people'}',
                 style: theme.textTheme.labelLarge,
               ),
-              for (final a in e.attendees)
+              if (own && others) ...[
+                Text(
+                  describeAnswers(counts),
+                  key: const ValueKey('event-answers'),
+                  style: muted,
+                ),
+                if (waiting.isNotEmpty && reachable)
+                  Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: TextButton.icon(
+                      key: const ValueKey('event-nudge'),
+                      onPressed: () => then((c, ref, ev) =>
+                          emailEveryone(c, ref, ev, notAnsweredOnly: true)),
+                      icon: const Icon(Icons.mail_outline, size: 18),
+                      label: Text(waiting.length == 1
+                          ? 'Email the one who has not answered'
+                          : 'Email the ${waiting.length} who have not answered'),
+                    ),
+                  ),
+              ],
+              for (final a in own ? _byAnswer(e.attendees) : e.attendees)
                 ListTile(
                   dense: true,
                   contentPadding: EdgeInsets.zero,
@@ -2180,5 +2578,18 @@ class _EventDetails extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// The people, as Outlook's Tracking groups them: the organiser, those
+  /// who accepted, said maybe, declined, then those yet to answer.
+  static List<EventAttendee> _byAnswer(List<EventAttendee> people) {
+    int rank(EventResponse r) => switch (r) {
+          EventResponse.organizer => 0,
+          EventResponse.accepted => 1,
+          EventResponse.tentative => 2,
+          EventResponse.declined => 3,
+          _ => 4,
+        };
+    return [...people]..sort((a, b) => rank(a.response).compareTo(rank(b.response)));
   }
 }

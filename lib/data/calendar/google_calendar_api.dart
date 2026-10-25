@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
+import '../../domain/calendar_change.dart';
 import '../../domain/calendar_event.dart';
 import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
@@ -612,7 +613,249 @@ class GoogleCalendarApi {
           ? null
           : minutes.reduce((a, b) => a > b ? a : b),
       preview: preview,
+      seriesId: json['recurringEventId'] is String &&
+              (json['recurringEventId'] as String).isNotEmpty
+          ? json['recurringEventId'] as String
+          : null,
     );
+  }
+
+  // --- events the calendar shows ---------------------------------------------
+
+  /// Answer [eventId], a meeting someone else organised, as its guest: the
+  /// account's own entry among the attendees given the answer and [note],
+  /// everyone else's sent back as they are. [send] false answers without
+  /// Google writing to the organiser, who sees it on a Google calendar all
+  /// the same. Google takes no new time from a guest.
+  Future<void> respond(
+    String eventId,
+    InviteResponse response, {
+    String note = '',
+    bool send = true,
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async {
+    final event = await _event(eventId, calendarId: calendarId);
+    if (event == null || event['status'] == 'cancelled') {
+      throw const EventGone();
+    }
+    final attendees = answeredAttendees(event, response, note: note);
+    if (attendees == null) {
+      throw const CalendarRefused(
+        'This meeting does not list you among those invited, so there is '
+        'no answer to give.',
+      );
+    }
+    await _patchEvent(
+      eventId,
+      {'attendees': attendees},
+      calendarId: calendarId,
+      sendUpdates: send ? 'all' : 'none',
+    );
+  }
+
+  /// [event]'s attendees with the account's own entry answered [response],
+  /// with [note], or null where the account is not among them.
+  static List<Map<String, Object?>>? answeredAttendees(
+    Map<String, Object?> event,
+    InviteResponse response, {
+    String note = '',
+  }) {
+    final attendees = event['attendees'];
+    if (attendees is! List) return null;
+    var mine = false;
+    final out = <Map<String, Object?>>[];
+    for (final a in attendees.whereType<Map>()) {
+      final entry = a.cast<String, Object?>();
+      if (entry['self'] != true) {
+        out.add(entry);
+        continue;
+      }
+      mine = true;
+      out.add({
+        ...entry,
+        'responseStatus': switch (response) {
+          InviteResponse.accepted => 'accepted',
+          InviteResponse.tentative => 'tentative',
+          InviteResponse.declined => 'declined',
+        },
+        if (note.trim().isNotEmpty) 'comment': note.trim(),
+      });
+    }
+    return mine ? out : null;
+  }
+
+  /// [eventId]'s notes, for changing them: its description, as text. Google
+  /// keeps the Meet details beside it, not in it, so there is nothing to
+  /// keep below.
+  Future<EventNotes> notes(
+    String eventId, {
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async {
+    final event = await _event(eventId, calendarId: calendarId);
+    if (event == null || event['status'] == 'cancelled') {
+      throw const EventGone();
+    }
+    final description = event['description'];
+    final text = description is! String
+        ? ''
+        : description.contains('<')
+            ? htmlToText(description)
+            : description;
+    return EventNotes(text: text.trim());
+  }
+
+  /// Change [eventId] as [change] says, and have Google send everyone on it
+  /// the change. A new list of people is merged into the one the event
+  /// has, so those who stay keep their answers. [before] is the event as
+  /// it was.
+  Future<void> update(
+    String eventId,
+    EventChange change, {
+    required CalendarEvent before,
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async {
+    final fields = changeJson(change, before: before);
+    final people = change.attendees;
+    if (people != null) {
+      final event = await _event(eventId, calendarId: calendarId);
+      if (event == null || event['status'] == 'cancelled') {
+        throw const EventGone();
+      }
+      fields['attendees'] = mergedAttendees(event['attendees'], people);
+    }
+    if (fields.isEmpty) return;
+    await _patchEvent(eventId, fields, calendarId: calendarId);
+  }
+
+  /// [change] as Google's patch takes it, less the people: see [update].
+  /// The other way of giving a time is emptied, or an event moved between
+  /// a time and a whole day would hold both.
+  static Map<String, Object?> changeJson(
+    EventChange change, {
+    required CalendarEvent before,
+  }) {
+    final allDay = change.allDay ?? before.allDay;
+    final zone = change.timeZone;
+    Map<String, Object?> at(DateTime t) => allDay
+        ? {'date': _date(t), 'dateTime': null, 'timeZone': null}
+        : zone == null
+            ? {'dateTime': _utc(t), 'timeZone': null, 'date': null}
+            : {'dateTime': _stamp(t), 'timeZone': zone, 'date': null};
+    return {
+      if (change.title != null) 'summary': change.title,
+      if (change.movesIt) ...{
+        'start': at(change.start!),
+        'end': at(change.end!),
+      },
+      if (change.location != null) 'location': change.location,
+      if (change.notes != null) 'description': change.notes,
+    };
+  }
+
+  /// [now], everyone who should be on the event after a change, as Google
+  /// takes them: the entries the event has for those who stay, answers and
+  /// all, the organiser's own among them, and a new one for each person
+  /// added.
+  static List<Map<String, Object?>> mergedAttendees(
+    Object? had,
+    List<MailAddress> now,
+  ) {
+    String key(Object? email) => '${email ?? ''}'.trim().toLowerCase();
+    final wanted = {for (final a in now) key(a.email)};
+    final kept = <String, Map<String, Object?>>{};
+    for (final a in had is List ? had.whereType<Map>() : const <Map>[]) {
+      final entry = a.cast<String, Object?>();
+      final email = key(entry['email']);
+      if (entry['organizer'] == true || wanted.contains(email)) {
+        kept[email] = entry;
+      }
+    }
+    return [
+      ...kept.values,
+      for (final a in now)
+        if (!kept.containsKey(key(a.email)))
+          {
+            'email': a.email.trim(),
+            if (a.name?.trim().isNotEmpty ?? false) 'displayName': a.name!.trim(),
+          },
+    ];
+  }
+
+  /// Cancel [eventId], which this account organised: Google deletes it and
+  /// sends everyone on it the cancellation. One gone already is done.
+  Future<void> cancel(
+    String eventId, {
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async {
+    final response = await _authorised(
+      () => http.Request(
+        'DELETE',
+        _eventsAt(eventId, {'sendUpdates': 'all'}, calendarId: calendarId),
+      ),
+    );
+    final status = response.statusCode;
+    if (status >= 400 && status != 404 && status != 410) {
+      throw _failureFor(response);
+    }
+  }
+
+  /// Take [eventId] off [calendarId], telling nobody: an appointment, or a
+  /// meeting already declined. One gone already is done.
+  Future<void> removeQuietly(
+    String eventId, {
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async {
+    final response = await _authorised(
+      () => http.Request(
+        'DELETE',
+        _eventsAt(eventId, {'sendUpdates': 'none'}, calendarId: calendarId),
+      ),
+    );
+    final status = response.statusCode;
+    if (status >= 400 && status != 404 && status != 410) {
+      throw _failureFor(response);
+    }
+  }
+
+  /// When series [seriesId] starts and ends, its first meeting's times,
+  /// for a change to every meeting of it. Null where it is gone.
+  Future<SeriesTimes?> seriesTimes(
+    String seriesId, {
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async {
+    final event = await _event(seriesId, calendarId: calendarId);
+    if (event == null || event['status'] == 'cancelled') return null;
+    final start = event['start'];
+    final from = _timeOf(start), to = _timeOf(event['end']);
+    if (from == null || to == null) return null;
+    return (
+      start: from,
+      end: to,
+      allDay: start is Map && start['date'] is String,
+    );
+  }
+
+  /// A patch to [eventId] with [fields], Google told to write to everyone
+  /// on it unless [sendUpdates] says otherwise.
+  Future<void> _patchEvent(
+    String eventId,
+    Map<String, Object?> fields, {
+    String calendarId = CalendarEvent.mainCalendar,
+    String sendUpdates = 'all',
+  }) async {
+    final body = jsonEncode(fields);
+    final response = await _authorised(
+      () => http.Request(
+        'PATCH',
+        _eventsAt(eventId, {'sendUpdates': sendUpdates}, calendarId: calendarId),
+      )
+        ..headers['Content-Type'] = 'application/json'
+        ..body = body,
+    );
+    if (response.statusCode == 404 || response.statusCode == 410) {
+      throw const EventGone();
+    }
+    if (response.statusCode >= 400) throw _failureFor(response);
   }
 
   /// An event's start or end for [busy]: a whole day's from the phone's
@@ -733,17 +976,30 @@ class GoogleCalendarApi {
     ].join();
   }
 
-  /// The account's events, or one of them, with [query]. Ids Google makes
+  /// The account's events, or one of them, with [query], on [calendarId]
+  /// (`CalendarEvent.mainCalendar` for the primary one). Ids Google makes
   /// are letters and digits, but one is encoded all the same.
-  static Uri _eventsAt(String? id, Map<String, String> query) => Uri.parse(
-        '$base/calendars/primary/events'
-        '${id == null ? '' : '/${Uri.encodeComponent(id)}'}',
+  static Uri _eventsAt(
+    String? id,
+    Map<String, String> query, {
+    String calendarId = CalendarEvent.mainCalendar,
+  }) =>
+      Uri.parse(
+        '$base/calendars/'
+        '${calendarId == CalendarEvent.mainCalendar ? 'primary' : Uri.encodeComponent(calendarId)}'
+        '/events${id == null ? '' : '/${Uri.encodeComponent(id)}'}',
       ).replace(queryParameters: query);
 
   /// The event as it stands, or null where it is gone.
-  Future<Map<String, Object?>?> _event(String id) async {
+  Future<Map<String, Object?>?> _event(
+    String id, {
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async {
     final response = await _authorised(
-      () => http.Request('GET', _eventsAt(id, {'conferenceDataVersion': '1'})),
+      () => http.Request(
+        'GET',
+        _eventsAt(id, {'conferenceDataVersion': '1'}, calendarId: calendarId),
+      ),
     );
     if (response.statusCode == 404 || response.statusCode == 410) return null;
     if (response.statusCode >= 400) throw _failureFor(response);

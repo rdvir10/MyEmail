@@ -23,10 +23,14 @@ typedef ProposedAnswer = ({
 Future<NotedAnswer?> askForNotedAnswer(
   BuildContext context, {
   bool canStayQuiet = false,
+  InviteResponse initial = InviteResponse.accepted,
 }) =>
     showDialog<NotedAnswer>(
       context: context,
-      builder: (_) => _NotedAnswerDialog(canStayQuiet: canStayQuiet),
+      builder: (_) => _NotedAnswerDialog(
+        canStayQuiet: canStayQuiet,
+        initial: initial,
+      ),
     );
 
 /// Asks for a new time for [invite], starting from the time it has. Null
@@ -35,22 +39,42 @@ Future<ProposedAnswer?> askForProposal(
   BuildContext context,
   CalendarInvite invite,
 ) =>
+    askForProposalAt(
+      context,
+      start: invite.start.toLocal(),
+      end: invite.end?.toLocal() ??
+          invite.start.toLocal().add(const Duration(hours: 1)),
+    );
+
+/// Asks for a new time for a meeting from [start] to [end], as it is now:
+/// the same dialog, for a meeting on the calendar. Null if backed out of.
+Future<ProposedAnswer?> askForProposalAt(
+  BuildContext context, {
+  required DateTime start,
+  required DateTime end,
+}) =>
     showDialog<ProposedAnswer>(
       context: context,
-      builder: (_) => _ProposeDialog(invite: invite),
+      builder: (_) => _ProposeDialog(start: start, end: end),
     );
 
 class _NotedAnswerDialog extends StatefulWidget {
-  const _NotedAnswerDialog({required this.canStayQuiet});
+  const _NotedAnswerDialog({
+    required this.canStayQuiet,
+    this.initial = InviteResponse.accepted,
+  });
 
   final bool canStayQuiet;
+
+  /// The answer chosen as it opens: the one held down to open it.
+  final InviteResponse initial;
 
   @override
   State<_NotedAnswerDialog> createState() => _NotedAnswerDialogState();
 }
 
 class _NotedAnswerDialogState extends State<_NotedAnswerDialog> {
-  InviteResponse _response = InviteResponse.accepted;
+  late InviteResponse _response = widget.initial;
   bool _send = true;
   final _note = TextEditingController();
 
@@ -125,19 +149,20 @@ class _NotedAnswerDialogState extends State<_NotedAnswerDialog> {
 }
 
 class _ProposeDialog extends StatefulWidget {
-  const _ProposeDialog({required this.invite});
+  const _ProposeDialog({required this.start, required this.end});
 
-  final CalendarInvite invite;
+  final DateTime start;
+  final DateTime end;
 
   @override
   State<_ProposeDialog> createState() => _ProposeDialogState();
 }
 
 class _ProposeDialogState extends State<_ProposeDialog> {
-  late DateTime _start = widget.invite.start.toLocal();
-  late Duration _length = widget.invite.end == null
-      ? const Duration(hours: 1)
-      : widget.invite.end!.difference(widget.invite.start);
+  late DateTime _start = widget.start;
+  late Duration _length = widget.end.isAfter(widget.start)
+      ? widget.end.difference(widget.start)
+      : const Duration(hours: 1);
   InviteResponse _response = InviteResponse.tentative;
   final _note = TextEditingController();
 

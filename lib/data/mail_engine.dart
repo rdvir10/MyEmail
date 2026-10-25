@@ -14,12 +14,14 @@ export '../domain/recoverable_message.dart';
 export '../domain/free_busy.dart';
 export '../domain/mail_tip.dart';
 export '../domain/calendar_reads.dart' show KeptCalendar;
+export '../domain/calendar_change.dart' show EventChange, EventNotes;
 export 'contacts/account_people.dart' show PeopleSearchAccess, PeopleSearchState;
 import 'auth/oauth_token.dart';
 import 'contacts/account_people.dart' show PeopleSearchAccess;
 import 'mailbox_settings/server_settings.dart';
 import '../domain/draft.dart';
 import '../domain/address_suggestions.dart';
+import '../domain/calendar_change.dart';
 import '../domain/calendar_event.dart';
 import '../domain/calendar_invite.dart';
 import '../domain/calendar_meeting.dart';
@@ -317,6 +319,67 @@ abstract class MailEngine {
     DateTime start,
     DateTime end,
   );
+
+  /// Answer [event], a meeting someone else organised, on its account's
+  /// calendar, as Outlook answers one there: with [note], without a word
+  /// to the organiser where [send] is false, and with a new time
+  /// ([proposal], Microsoft only, see [canProposeNewTime]). [wholeSeries]
+  /// answers every meeting of the series it is one of.
+  ///
+  /// Throws [CalendarUnavailable] for an account whose calendar the app
+  /// cannot reach, `SignInNeedsConsent` where the calendar is not allowed
+  /// yet, [EventGone] for a meeting no longer there, [CalendarRefused] for
+  /// what the calendar will not do, and as [sendDraft] does otherwise.
+  Future<void> respondToEvent(
+    CalendarEvent event,
+    InviteResponse response, {
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
+    bool wholeSeries = false,
+  });
+
+  /// [event]'s notes in full, for changing them, with what goes back under
+  /// new notes unchanged (a Teams meeting's block). Throws as
+  /// [respondToEvent] does.
+  Future<EventNotes> eventNotes(CalendarEvent event, {bool wholeSeries = false});
+
+  /// Change [event], the account's own (organised by it, or with nobody
+  /// else on it), as [change] says: the calendar tells everyone on it. For
+  /// [wholeSeries], every meeting of its series, which keep their days.
+  /// Refused with an [ArgumentError] for someone else's meeting. Throws as
+  /// [respondToEvent] does.
+  Future<void> updateEvent(
+    CalendarEvent event,
+    EventChange change, {
+    bool wholeSeries = false,
+  });
+
+  /// Cancel [event], the account's own: everyone on it is sent the
+  /// cancellation, with [note] where the calendar sends one (Microsoft's
+  /// does). One with nobody else on it is deleted. Throws as
+  /// [respondToEvent] does.
+  Future<void> cancelEvent(
+    CalendarEvent event, {
+    String note = '',
+    bool wholeSeries = false,
+  });
+
+  /// Take [event] off its calendar: someone else's meeting declined first,
+  /// so its organiser knows, and the account's own only where nobody else
+  /// is on it (otherwise it is [cancelEvent]'s, and this refuses it with an
+  /// [ArgumentError]). Throws as [respondToEvent] does.
+  Future<void> removeEvent(CalendarEvent event, {bool wholeSeries = false});
+
+  /// Forward [event] to [to], with [note]: Microsoft sends them the
+  /// invitation and, for someone else's meeting, tells its organiser.
+  /// Google has no forward and refuses it with [CalendarRefused]. Throws as
+  /// [respondToEvent] does.
+  Future<void> forwardEvent(
+    CalendarEvent event,
+    List<MailAddress> to, {
+    String note = '',
+  });
 
   /// When [accountId]'s own calendar is busy between [start] and [end].
   /// Throws as [meetingOnCalendar] does.
@@ -723,6 +786,33 @@ class CalendarUnavailable implements Exception, ReadableError {
 
   @override
   final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// A calendar would not do what was asked of a meeting, for a reason a
+/// person can read: Google has no way to forward an invitation, say, or
+/// the meeting does not list the account among those invited.
+class CalendarRefused implements Exception, ReadableError {
+  const CalendarRefused(this.message);
+
+  @override
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// The meeting a change was for is no longer on its calendar: deleted or
+/// cancelled elsewhere since the calendar was read.
+class EventGone implements Exception, ReadableError {
+  const EventGone();
+
+  @override
+  String get message =>
+      'This meeting is no longer on the calendar: it was deleted or '
+      'cancelled somewhere else.';
 
   @override
   String toString() => message;

@@ -12,6 +12,7 @@ import '../../domain/draft.dart';
 import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/mail_message.dart';
 import '../../state/calendar_providers.dart';
+import '../../state/calendar_view_providers.dart' show calendarRefreshProvider;
 import '../../state/providers.dart';
 import '../../domain/free_busy.dart';
 import 'date_format.dart';
@@ -58,8 +59,12 @@ class _InviteCardState extends ConsumerState<InviteCard> {
   }) async {
     setState(() => _busy = true);
     final messenger = ScaffoldMessenger.maybeOf(context);
+    // Every action here changes the calendar: the calendar view reads it
+    // again rather than showing what it kept from before.
+    final refresh = ref.read(calendarRefreshProvider.notifier);
     try {
       await action();
+      refresh.now();
       messenger
         ?..hideCurrentSnackBar()
         ..showSnackBar(

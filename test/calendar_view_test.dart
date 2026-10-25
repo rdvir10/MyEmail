@@ -7,7 +7,15 @@ import 'package:myemail/data/calendar/google_calendar_api.dart';
 import 'package:myemail/data/calendar/phone_calendar.dart';
 import 'package:myemail/data/calendar/phone_calendar_sync.dart';
 import 'package:myemail/data/graph/graph_calendar_api.dart';
+import 'package:myemail/data/calendar/device_calendar.dart'
+    show FakeDeviceCalendar;
 import 'package:myemail/data/mail_engine.dart' show ConnectionFailed;
+import 'package:myemail/domain/draft.dart';
+import 'package:myemail/state/calendar_providers.dart'
+    show deviceCalendarProvider;
+import 'package:myemail/ui/compose/compose_screen.dart' show ComposeScreen;
+
+import 'fakes/fake_webview.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
@@ -320,12 +328,13 @@ void main() {
       FakePhoneCalendar? phone,
       void Function(SampleMailEngine engine, Account hadco)? prepare,
       Size size = const Size(1000, 1400),
+      SampleMailEngine? using,
     }) async {
       tester.view.physicalSize = size;
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      final engine = SampleMailEngine();
+      final engine = using ?? SampleMailEngine();
       final hadco = (await tester.runAsync(() => engine.addOAuthAccount(
             displayName: 'Hadco',
             emailAddress: 'ron@hadco.example',
@@ -340,6 +349,8 @@ void main() {
       final c = ProviderContainer(overrides: [
         uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
         mailEngineProvider.overrideWithValue(engine),
+        deviceCalendarProvider.overrideWithValue(
+            FakeDeviceCalendar(timeZone: 'Asia/Jerusalem')),
         if (phone != null) phoneCalendarProvider.overrideWithValue(phone),
       ]);
       addTearDown(c.dispose);
@@ -683,5 +694,296 @@ void main() {
       await tester.pumpAndSettle();
       expect(c.read(calendarPrefsProvider).dayStart, 8);
     });
+
+    // --- acting on a meeting (batch 2) ---------------------------------------
+
+    const dana = MailAddress(email: 'dana@hadco.example', name: 'Dana Levi');
+    const yossi = MailAddress(email: 'yossi@hadco.example', name: 'Yossi');
+    const ron = MailAddress(email: 'ron@hadco.example');
+
+    /// A meeting tomorrow at ten: Dana's, inviting the account, or with
+    /// [own] the account's, with Yossi on it (or nobody, with [alone]).
+    CalendarEvent tomorrowAt10(
+      Account hadco, {
+      String id = 'm',
+      bool own = false,
+      bool alone = false,
+      List<EventAttendee>? people,
+    }) {
+      final t = today();
+      return CalendarEvent(
+        id: id,
+        accountId: hadco.id,
+        title: own ? (alone ? 'Dentist' : 'Planning') : 'Budget',
+        start: DateTime(t.year, t.month, t.day + 1, 10),
+        end: DateTime(t.year, t.month, t.day + 1, 11),
+        organizer: own ? null : dana,
+        isOrganizer: own,
+        response: own ? EventResponse.organizer : EventResponse.notResponded,
+        attendees: people ??
+            (alone
+                ? const []
+                : own
+                    ? const [EventAttendee(yossi, response: EventResponse.accepted)]
+                    : const [
+                        EventAttendee(dana, response: EventResponse.organizer),
+                        EventAttendee(ron, response: EventResponse.notResponded),
+                      ]),
+      );
+    }
+
+    Future<void> openSheet(WidgetTester tester, String id) async {
+      await tester.tap(find.byKey(ValueKey('agenda-event:$id')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('an invitation is answered from its sheet, and an answer '
+        'held down takes a note (#12)', (tester) async {
+      final engine = SampleMailEngine();
+      await pump(tester, const CalendarScreen(), using: engine,
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [tomorrowAt10(hadco)];
+      });
+      await openSheet(tester, 'm');
+      await tester.tap(find.byKey(const ValueKey('event-accept')));
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions, ['respond m accepted']);
+      expect(find.text('Accepted. Dana is told.'), findsOneWidget);
+
+      await openSheet(tester, 'm');
+      expect(
+        tester.widget(find.byKey(const ValueKey('event-accept'))),
+        isA<FilledButton>(),
+        reason: 'the answer it has stands out',
+      );
+      await tester.longPress(find.byKey(const ValueKey('event-decline')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.byKey(const ValueKey('answer-note')), 'Away that week');
+      await tester.tap(find.byKey(const ValueKey('answer-send')));
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions.last, 'respond m declined note=Away that week',
+          reason: 'the dialog opens on the answer held');
+    });
+
+    testWidgets('Edit opens the meeting filled in, and Save sends what changed '
+        '(#13)', (tester) async {
+      final engine = SampleMailEngine();
+      await pump(tester, const CalendarScreen(), using: engine,
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [tomorrowAt10(hadco, own: true)];
+      });
+      await openSheet(tester, 'm');
+      await tester.tap(find.byKey(const ValueKey('event-edit')));
+      await tester.pumpAndSettle();
+      expect(find.text('Edit meeting'), findsOneWidget);
+      expect(find.text('Planning'), findsOneWidget, reason: 'the title');
+
+      await tester.enterText(
+          find.descendant(
+            of: find.byKey(const ValueKey('meeting-title')),
+            matching: find.byType(TextField),
+          ),
+          'Planning, week 44');
+      await tester.tap(find.byKey(const ValueKey('meeting-send')));
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions, ['update m title=Planning, week 44']);
+      expect(find.textContaining('Saved. Everyone on it is sent the change'),
+          findsOneWidget);
+    });
+
+    testWidgets('a meeting of yours is cancelled with a note, and an '
+        'appointment deleted with Undo (#14)', (tester) async {
+      final engine = SampleMailEngine();
+      await pump(tester, const CalendarScreen(), using: engine,
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          tomorrowAt10(hadco, own: true),
+          tomorrowAt10(hadco, id: 'a1', own: true, alone: true),
+        ];
+      });
+      await openSheet(tester, 'm');
+      await tester.tap(find.byKey(const ValueKey('event-more')));
+      await tester.pumpAndSettle();
+      expect(find.text('Cancel meeting'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('event-remove')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.byKey(const ValueKey('cancel-note')), 'Moved to Monday');
+      await tester.tap(find.byKey(const ValueKey('cancel-go')));
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions, ['cancel m note=Moved to Monday']);
+
+      // The appointment: gone at once, back with Undo, and nothing asked of
+      // the calendar.
+      await openSheet(tester, 'a1');
+      await tester.tap(find.byKey(const ValueKey('event-more')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('event-remove')));
+      await tester.pumpAndSettle();
+      expect(find.text('Dentist'), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('delete-undo')));
+      await tester.pumpAndSettle();
+      expect(find.text('Dentist'), findsOneWidget);
+      expect(engine.calendarActions, hasLength(1));
+
+      // Again, and left: deleted once Undo has gone.
+      await openSheet(tester, 'a1');
+      await tester.tap(find.byKey(const ValueKey('event-more')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('event-remove')));
+      await tester.pumpAndSettle();
+      // The message's time runs from when it is fully in; then it goes, and
+      // the calendar is asked.
+      await tester.pump(const Duration(seconds: 6));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions.last, 'remove a1');
+      expect(find.text('Dentist'), findsNothing);
+    });
+
+    testWidgets('someone else\'s meeting is declined and taken off (#14)',
+        (tester) async {
+      final engine = SampleMailEngine();
+      await pump(tester, const CalendarScreen(), using: engine,
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [tomorrowAt10(hadco)];
+      });
+      await openSheet(tester, 'm');
+      await tester.tap(find.byKey(const ValueKey('event-more')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('event-remove')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('cancel-note')), findsNothing,
+          reason: 'no note to the organiser when declining this way');
+      await tester.tap(find.byKey(const ValueKey('cancel-go')));
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions, ['remove m declined']);
+    });
+
+    testWidgets('a meeting of yours dragged an hour later moves there (#15)',
+        (tester) async {
+      final engine = SampleMailEngine();
+      final (c, _) = await pump(tester, const CalendarScreen(), using: engine,
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          tomorrowAt10(hadco, id: 'a1', own: true, alone: true),
+        ];
+      });
+      await tester.tap(find.byKey(const ValueKey('calendar-view-day')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('calendar-next')));
+      await tester.pumpAndSettle();
+      final block = find.byKey(const ValueKey('calendar-event:a1'));
+      final hour = c.read(calendarHourHeightProvider);
+      final grip = tester.getTopLeft(block) + const Offset(10, 8);
+      final drag = await tester.startGesture(grip);
+      await tester.pump(const Duration(milliseconds: 700));
+      await drag.moveBy(Offset(0, hour / 2));
+      await tester.pump();
+      await drag.moveBy(Offset(0, hour / 2));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('calendar-drag-ghost')), findsOneWidget);
+      await drag.up();
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions, ['update a1 start=11:00 end=12:00']);
+    });
+
+    testWidgets('Email everyone, and those who have not answered (#16, #35)',
+        (tester) async {
+      FakeWebViewPlatform.install();
+      final t = today();
+      await pump(tester, const CalendarScreen(), prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          CalendarEvent(
+            id: 'm',
+            accountId: hadco.id,
+            title: 'Planning',
+            start: DateTime(t.year, t.month, t.day + 1, 10),
+            end: DateTime(t.year, t.month, t.day + 1, 11),
+            isOrganizer: true,
+            response: EventResponse.organizer,
+            attendees: const [
+              EventAttendee(yossi, response: EventResponse.accepted),
+              EventAttendee(dana, response: EventResponse.notResponded),
+              EventAttendee(MailAddress(email: 'ori@hadco.example'),
+                  response: EventResponse.declined),
+            ],
+          ),
+        ];
+      });
+      await openSheet(tester, 'm');
+      expect(find.text('1 accepted · 1 declined · 1 not answered'),
+          findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('event-nudge')));
+      await tester.pumpAndSettle();
+      final compose = tester.widget<ComposeScreen>(find.byType(ComposeScreen));
+      expect([for (final a in compose.draft.to) a.email], ['dana@hadco.example']);
+      expect(compose.draft.subject, 'Planning');
+    });
+
+    testWidgets('Running late tells the organiser, and Invite and Duplicate '
+        'go where they should (#17, #18, #19)', (tester) async {
+      final engine = _SendingEngine();
+      final t = DateTime.now();
+      final soon = DateTime(t.year, t.month, t.day, t.hour, t.minute)
+          .add(const Duration(minutes: 20));
+      await pump(tester, const CalendarScreen(), using: engine,
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          CalendarEvent(
+            id: 'm',
+            accountId: hadco.id,
+            title: 'Budget',
+            start: soon,
+            end: soon.add(const Duration(hours: 1)),
+            organizer: dana,
+            response: EventResponse.accepted,
+            attendees: const [EventAttendee(dana, response: EventResponse.organizer)],
+          ),
+          tomorrowAt10(hadco, id: 'p', own: true),
+        ];
+      });
+      await openSheet(tester, 'm');
+      await tester.tap(find.byKey(const ValueKey('event-late')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('late-10')));
+      await tester.pumpAndSettle();
+      expect(engine.drafts.single.to, [dana]);
+      expect(engine.drafts.single.subject, 'Running late: Budget');
+      expect(engine.drafts.single.htmlBody, contains('about 10 minutes late'));
+      expect(find.text('Told Dana you are running 10 minutes late.'),
+          findsOneWidget);
+
+      await openSheet(tester, 'p');
+      await tester.tap(find.byKey(const ValueKey('event-more')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('event-invite')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.byKey(const ValueKey('invite-addresses')), 'ori@hadco.example');
+      await tester.tap(find.byKey(const ValueKey('invite-go')));
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions.last,
+          'update p attendees=yossi@hadco.example,ori@hadco.example',
+          reason: 'everyone, as Exchange wants the list; only Ori is new');
+
+      await openSheet(tester, 'p');
+      await tester.tap(find.byKey(const ValueKey('event-more')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('event-duplicate')));
+      await tester.pumpAndSettle();
+      expect(find.text('New meeting'), findsOneWidget);
+      expect(find.text('Planning'), findsOneWidget);
+    });
   });
+}
+
+/// The sample engine, keeping what it was asked to send.
+class _SendingEngine extends SampleMailEngine {
+  final List<Draft> drafts = [];
+
+  @override
+  Future<void> sendDraft(Draft draft) async => drafts.add(draft);
 }

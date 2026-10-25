@@ -57,6 +57,7 @@ class CalendarEvent {
     this.cancelled = false,
     this.reminderMinutes,
     this.preview = '',
+    this.seriesId,
   });
 
   /// The calendar's own id for this occurrence.
@@ -100,6 +101,43 @@ class CalendarEvent {
 
   /// The first lines of what it says.
   final String preview;
+
+  /// The series this is one meeting of, by the calendar's id for the
+  /// series (Graph's seriesMasterId, Google's recurringEventId), or null
+  /// for a meeting on its own. A change can be made to this one or to the
+  /// series.
+  final String? seriesId;
+
+  CalendarEvent copyWith({
+    DateTime? start,
+    DateTime? end,
+    bool? allDay,
+    String? title,
+    String? location,
+    List<EventAttendee>? attendees,
+    EventResponse? response,
+  }) =>
+      CalendarEvent(
+        id: id,
+        accountId: accountId,
+        calendarId: calendarId,
+        title: title ?? this.title,
+        start: start ?? this.start,
+        end: end ?? this.end,
+        allDay: allDay ?? this.allDay,
+        location: location ?? this.location,
+        organizer: organizer,
+        attendees: attendees ?? this.attendees,
+        joinUrl: joinUrl,
+        webLink: webLink,
+        showAs: showAs,
+        response: response ?? this.response,
+        isOrganizer: isOrganizer,
+        cancelled: cancelled,
+        reminderMinutes: reminderMinutes,
+        preview: preview,
+        seriesId: seriesId,
+      );
 
   /// The account said no and the calendar kept it all the same, as
   /// Google's does; Outlook takes a declined meeting off itself.
@@ -155,6 +193,7 @@ class CalendarEvent {
       if (cancelled) 'cancelled': true,
       if (reminderMinutes != null) 'reminderMinutes': reminderMinutes,
       if (preview.isNotEmpty) 'preview': preview,
+      if (seriesId != null) 'seriesId': seriesId,
     };
   }
 
@@ -217,6 +256,7 @@ class CalendarEvent {
       cancelled: json['cancelled'] == true,
       reminderMinutes: minutes is num ? minutes.toInt() : null,
       preview: text(json['preview']) ?? '',
+      seriesId: text(json['seriesId']),
     );
   }
 
@@ -240,7 +280,8 @@ class CalendarEvent {
       other.isOrganizer == isOrganizer &&
       other.cancelled == cancelled &&
       other.reminderMinutes == reminderMinutes &&
-      other.preview == preview;
+      other.preview == preview &&
+      other.seriesId == seriesId;
 
   @override
   int get hashCode => Object.hash(
@@ -262,6 +303,7 @@ class CalendarEvent {
         cancelled,
         reminderMinutes,
         preview,
+        seriesId,
       );
 
   @override

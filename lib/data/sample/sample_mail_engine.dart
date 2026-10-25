@@ -8,6 +8,7 @@ import '../../domain/draft.dart';
 import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/address_suggestions.dart';
+import '../../domain/calendar_change.dart';
 import '../../domain/calendar_event.dart';
 import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
@@ -920,6 +921,148 @@ class SampleMailEngine implements MailEngine {
     DateTime end,
   ) async =>
       _keptCalendars.kept(accountId, start, end);
+
+  /// What the calendars were asked to do with their events, a line each,
+  /// for a test to read: "respond e1 accepted", "update e1 title=Lunch".
+  final List<String> calendarActions = [];
+
+  /// [event] in [events] put back as [now], or taken out where [now] is
+  /// null. The made-up weeks are made again for each read, so a change to
+  /// one of theirs is only written down.
+  void _changeEvent(CalendarEvent event, CalendarEvent? now) {
+    final list = events[event.accountId];
+    if (list == null) return;
+    final at = list.indexWhere(
+        (e) => e.id == event.id && e.calendarId == event.calendarId);
+    if (at < 0) return;
+    if (now == null) {
+      list.removeAt(at);
+    } else {
+      list[at] = now;
+    }
+  }
+
+  Future<void> _calendarCall(String accountId) async {
+    await _latency();
+    final refusal = calendarRefusals[accountId];
+    if (refusal != null) throw refusal;
+  }
+
+  @override
+  Future<void> respondToEvent(
+    CalendarEvent event,
+    InviteResponse response, {
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
+    bool wholeSeries = false,
+  }) async {
+    await _calendarCall(event.accountId);
+    calendarActions.add([
+      'respond ${event.id} ${response.name}',
+      if (!send) 'quietly',
+      if (note.isNotEmpty) 'note=$note',
+      if (proposal != null) 'proposal=${proposal.start.toIso8601String()}',
+      if (wholeSeries) 'series',
+    ].join(' '));
+    _changeEvent(event, event.copyWith(response: eventResponseFor(response)));
+  }
+
+  @override
+  Future<EventNotes> eventNotes(
+    CalendarEvent event, {
+    bool wholeSeries = false,
+  }) async {
+    await _calendarCall(event.accountId);
+    return EventNotes(text: event.preview);
+  }
+
+  @override
+  Future<void> updateEvent(
+    CalendarEvent event,
+    EventChange change, {
+    bool wholeSeries = false,
+  }) async {
+    await _calendarCall(event.accountId);
+    if (!isOwnEvent(event)) {
+      throw ArgumentError('Only the organiser can change this meeting.');
+    }
+    String clock(DateTime t) =>
+        '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+    calendarActions.add([
+      'update ${event.id}',
+      if (change.title != null) 'title=${change.title}',
+      if (change.movesIt) 'start=${clock(change.start!)}',
+      if (change.movesIt) 'end=${clock(change.end!)}',
+      if (change.location != null) 'location=${change.location}',
+      if (change.notes != null) 'notes=${change.notes}',
+      if (change.attendees case final people?)
+        'attendees=${[for (final a in people) a.email].join(',')}',
+      if (wholeSeries) 'series',
+    ].join(' '));
+    final had = {
+      for (final a in event.attendees) a.address.email.toLowerCase(): a,
+    };
+    _changeEvent(
+      event,
+      event.copyWith(
+        title: change.title,
+        start: change.start,
+        end: change.end,
+        allDay: change.allDay,
+        location: change.location,
+        attendees: change.attendees == null
+            ? null
+            : [
+                for (final a in change.attendees!)
+                  had[a.email.toLowerCase()] ??
+                      EventAttendee(a, response: EventResponse.notResponded),
+              ],
+      ),
+    );
+  }
+
+  @override
+  Future<void> cancelEvent(
+    CalendarEvent event, {
+    String note = '',
+    bool wholeSeries = false,
+  }) async {
+    await _calendarCall(event.accountId);
+    calendarActions.add([
+      'cancel ${event.id}',
+      if (note.isNotEmpty) 'note=$note',
+      if (wholeSeries) 'series',
+    ].join(' '));
+    _changeEvent(event, null);
+  }
+
+  @override
+  Future<void> removeEvent(
+    CalendarEvent event, {
+    bool wholeSeries = false,
+  }) async {
+    await _calendarCall(event.accountId);
+    calendarActions.add([
+      'remove ${event.id}',
+      if (!isOwnEvent(event)) 'declined',
+      if (wholeSeries) 'series',
+    ].join(' '));
+    _changeEvent(event, null);
+  }
+
+  @override
+  Future<void> forwardEvent(
+    CalendarEvent event,
+    List<MailAddress> to, {
+    String note = '',
+  }) async {
+    await _calendarCall(event.accountId);
+    calendarActions.add([
+      'forward ${event.id} to=${[for (final a in to) a.email].join(',')}',
+      if (note.isNotEmpty) 'note=$note',
+    ].join(' '));
+  }
 
   /// A working week of meetings, the same each week: a stand-up each
   /// weekday morning, a review on Tuesdays online, lunch on Thursdays,

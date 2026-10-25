@@ -1181,6 +1181,68 @@ class CachedImapEngine implements MailEngine {
       cache.keptCalendar(accountId, start, end);
 
   @override
+  Future<void> respondToEvent(
+    CalendarEvent event,
+    InviteResponse response, {
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
+    bool wholeSeries = false,
+  }) =>
+      _calendars.respondToEvent(
+        _accountFor(event.accountId),
+        event,
+        response,
+        note: note,
+        send: send,
+        proposal: proposal,
+        wholeSeries: wholeSeries,
+      );
+
+  @override
+  Future<EventNotes> eventNotes(
+    CalendarEvent event, {
+    bool wholeSeries = false,
+  }) =>
+      _calendars.eventNotes(_accountFor(event.accountId), event,
+          wholeSeries: wholeSeries);
+
+  @override
+  Future<void> updateEvent(
+    CalendarEvent event,
+    EventChange change, {
+    bool wholeSeries = false,
+  }) =>
+      _calendars.updateEvent(_accountFor(event.accountId), event, change,
+          wholeSeries: wholeSeries);
+
+  @override
+  Future<void> cancelEvent(
+    CalendarEvent event, {
+    String note = '',
+    bool wholeSeries = false,
+  }) =>
+      _calendars.cancelEvent(_accountFor(event.accountId), event,
+          note: note, wholeSeries: wholeSeries);
+
+  @override
+  Future<void> removeEvent(
+    CalendarEvent event, {
+    bool wholeSeries = false,
+  }) =>
+      _calendars.removeEvent(_accountFor(event.accountId), event,
+          wholeSeries: wholeSeries);
+
+  @override
+  Future<void> forwardEvent(
+    CalendarEvent event,
+    List<MailAddress> to, {
+    String note = '',
+  }) =>
+      _calendars.forwardEvent(_accountFor(event.accountId), event, to,
+          note: note);
+
+  @override
   Future<List<TimeSpan>> busyTimes(
     String accountId,
     DateTime start,

@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
+import '../../domain/calendar_change.dart';
 import '../../domain/calendar_event.dart';
 import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
@@ -450,6 +451,195 @@ class GraphCalendarApi {
     };
   }
 
+  // --- events the calendar shows ---------------------------------------------
+
+  /// Answer [eventId], a meeting someone else organised, on the calendar
+  /// itself: Outlook's Accept, Tentative and Decline. [send] false keeps
+  /// the answer from the organiser, [note] goes with it, and [proposal], a
+  /// new time, always goes.
+  Future<void> respond(
+    String eventId,
+    InviteResponse response, {
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
+  }) async {
+    final action = switch (response) {
+      InviteResponse.accepted => 'accept',
+      InviteResponse.tentative => 'tentativelyAccept',
+      InviteResponse.declined => 'decline',
+    };
+    final body = jsonEncode(answerJson(note: note, send: send, proposal: proposal));
+    final answer = await _exchange(
+      () => http.Request('POST', Uri.parse('${_eventUri(eventId)}/$action'))
+        ..headers['Content-Type'] = 'application/json'
+        ..body = body,
+    );
+    if (answer.statusCode == 404) throw const EventGone();
+    if (answer.statusCode >= 400) throw _failureFor(answer);
+  }
+
+  /// What an answer is sent with: see [respond].
+  static Map<String, Object?> answerJson({
+    String note = '',
+    bool send = true,
+    TimeSpan? proposal,
+  }) =>
+      {
+        // A new time goes with the answer only, so it is always sent.
+        'sendResponse': send || proposal != null,
+        if (note.trim().isNotEmpty) 'comment': note.trim(),
+        if (proposal != null)
+          'proposedNewTime': {
+            'start': {'dateTime': _stamp(proposal.start.toUtc()), 'timeZone': 'UTC'},
+            'end': {'dateTime': _stamp(proposal.end.toUtc()), 'timeZone': 'UTC'},
+          },
+      };
+
+  /// [eventId]'s notes, for changing them: its body as text, and on a
+  /// Teams meeting the block Exchange wrote, which goes back under any new
+  /// notes as it is.
+  Future<EventNotes> notes(String eventId) async {
+    final json = await _event(eventId);
+    if (json == null) throw const EventGone();
+    final html = _bodyIn(json) ?? '';
+    final split =
+        json['isOnlineMeeting'] == true ? splitTeamsBlock(html) : null;
+    return EventNotes(
+      text: _decodeNumeric(htmlToText(split?.notes ?? html)).trim(),
+      keptBelow: split?.block,
+    );
+  }
+
+  /// [html], an event's body, as what was written above Exchange's Teams
+  /// block and the block itself: from the element holding the first line
+  /// of underscores the block is fenced with. Null where there is none.
+  static ({String notes, String block})? splitTeamsBlock(String html) {
+    final fence = RegExp(r'_{20,}').firstMatch(html);
+    if (fence == null) return null;
+    final before = html.substring(0, fence.start);
+    final opens = RegExp(r'<div\b', caseSensitive: false).allMatches(before);
+    final at = opens.isEmpty ? fence.start : opens.last.start;
+    return (notes: html.substring(0, at), block: html.substring(at));
+  }
+
+  /// Change [eventId] as [change] says, everyone on it told by Exchange: a
+  /// change of time, place or notes to everyone, and of the people alone,
+  /// sent as nothing but the attendees, to those added or taken off.
+  /// [before] is the event as it was, for whom each attendee was.
+  Future<void> update(
+    String eventId,
+    EventChange change, {
+    required CalendarEvent before,
+  }) async {
+    final fields = changeJson(change, before: before);
+    if (fields.isEmpty) return;
+    final body = jsonEncode(fields);
+    final response = await _exchange(() => _patch(eventId, body));
+    if (response.statusCode == 404) throw const EventGone();
+    if (response.statusCode >= 400) throw _failureFor(response);
+  }
+
+  /// [change] as Graph's patch takes it: only what changes.
+  static Map<String, Object?> changeJson(
+    EventChange change, {
+    required CalendarEvent before,
+  }) {
+    final zone = change.timeZone;
+    Map<String, Object?> at(DateTime t, {required bool allDay}) => allDay
+        ? {'dateTime': _stamp(DateTime(t.year, t.month, t.day)), 'timeZone': zone ?? 'UTC'}
+        : zone == null
+            ? {'dateTime': _stamp(t.toUtc()), 'timeZone': 'UTC'}
+            : {'dateTime': _stamp(t), 'timeZone': zone};
+    final optional = {
+      for (final a in before.attendees)
+        if (a.optional) a.address.email.trim().toLowerCase(),
+    };
+    final notes = change.notes;
+    final kept = change.keptBelow;
+    return {
+      if (change.title != null) 'subject': change.title,
+      if (change.movesIt) ...{
+        'start': at(change.start!, allDay: change.allDay ?? before.allDay),
+        'end': at(change.end!, allDay: change.allDay ?? before.allDay),
+        'isAllDay': change.allDay ?? before.allDay,
+      },
+      if (change.location != null) 'location': {'displayName': change.location},
+      if (notes != null)
+        'body': kept == null
+            ? {'contentType': 'text', 'content': notes}
+            : {'contentType': 'html', 'content': bodyWithNotes(kept, notes)},
+      if (change.attendees case final people?)
+        'attendees': [
+          for (final a in people)
+            {
+              'emailAddress': {
+                'address': a.email,
+                if (a.name?.trim().isNotEmpty ?? false) 'name': a.name!.trim(),
+              },
+              'type': optional.contains(a.email.trim().toLowerCase())
+                  ? 'optional'
+                  : 'required',
+            },
+        ],
+    };
+  }
+
+  /// Cancel [eventId], which this account organised: Exchange sends
+  /// everyone on it the cancellation, with [note]. One gone already is
+  /// done.
+  Future<void> cancel(String eventId, {String note = ''}) async {
+    final body = jsonEncode({if (note.trim().isNotEmpty) 'Comment': note.trim()});
+    final response = await _exchange(
+      () => http.Request('POST', Uri.parse('${_eventUri(eventId)}/cancel'))
+        ..headers['Content-Type'] = 'application/json'
+        ..body = body,
+    );
+    if (response.statusCode == 404) return;
+    if (response.statusCode >= 400) throw _failureFor(response);
+  }
+
+  /// Forward [eventId] to [to]: Exchange sends them the invitation, and
+  /// for a meeting this account was invited to, tells the organiser and
+  /// adds them to the organiser's copy.
+  Future<void> forward(
+    String eventId,
+    List<MailAddress> to, {
+    String note = '',
+  }) async {
+    final body = jsonEncode({
+      'ToRecipients': [
+        for (final a in to)
+          {
+            'EmailAddress': {
+              'Address': a.email,
+              if (a.name?.trim().isNotEmpty ?? false) 'Name': a.name!.trim(),
+            },
+          },
+      ],
+      if (note.trim().isNotEmpty) 'Comment': note.trim(),
+    });
+    final response = await _exchange(
+      () => http.Request('POST', Uri.parse('${_eventUri(eventId)}/forward'))
+        ..headers['Content-Type'] = 'application/json'
+        ..body = body,
+    );
+    if (response.statusCode == 404) throw const EventGone();
+    if (response.statusCode >= 400) throw _failureFor(response);
+  }
+
+  /// When series [seriesId] starts and ends, its first meeting's times,
+  /// for a change to every meeting of it. Null where it is gone.
+  Future<SeriesTimes?> seriesTimes(String seriesId) async {
+    final json = await _meeting(seriesId);
+    if (json == null) return null;
+    final allDay = json['isAllDay'] == true;
+    final start = _utcTimeOf(json['start'], wholeDay: allDay);
+    final end = _utcTimeOf(json['end'], wholeDay: allDay);
+    if (start == null || end == null) return null;
+    return (start: start, end: end, allDay: allDay);
+  }
+
   /// A meeting as Graph gives it, asked for with [meetingFields] in UTC; null
   /// for one with no id or no start.
   static CalendarMeeting? meetingFromJson(
@@ -768,7 +958,8 @@ class GraphCalendarApi {
       'endDateTime': end.toUtc().toIso8601String(),
       r'$select': 'subject,start,end,isAllDay,location,organizer,attendees,'
           'onlineMeeting,webLink,showAs,responseStatus,isOrganizer,'
-          'isCancelled,isReminderOn,reminderMinutesBeforeStart,bodyPreview',
+          'isCancelled,isReminderOn,reminderMinutesBeforeStart,bodyPreview,'
+          'seriesMasterId',
       r'$orderby': 'start/dateTime',
       r'$top': '200',
     });
@@ -866,6 +1057,10 @@ class GraphCalendarApi {
       reminderMinutes:
           json['isReminderOn'] == true && minutes is num ? minutes.toInt() : null,
       preview: '${json['bodyPreview'] ?? ''}'.trim(),
+      seriesId: json['seriesMasterId'] is String &&
+              (json['seriesMasterId'] as String).isNotEmpty
+          ? json['seriesMasterId'] as String
+          : null,
     );
   }
 
