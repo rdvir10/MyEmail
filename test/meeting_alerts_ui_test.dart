@@ -194,6 +194,8 @@ void main() {
               of: find.byKey(const ValueKey('my-day-join')),
               matching: find.text('Join Weekly sync')),
           findsOneWidget);
+      expect(find.text('Tuesday 27 October'), findsOneWidget);
+      expect(find.text('Nothing on tomorrow'), findsOneWidget);
       expect(ui.readString(UiStateKeys.myDay), 'true');
 
       await tester.tap(find.byKey(const ValueKey('my-day-close')));
@@ -212,6 +214,54 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('my-day-event:c')));
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('event-accept')), findsOneWidget);
+    });
+
+    testWidgets("tomorrow's meetings under today's, its date opening the "
+        'calendar on it', (tester) async {
+      await ui.writeString(UiStateKeys.myDay, 'true');
+      await pump(tester, const AppShell(),
+          size: const Size(1400, 900),
+          clock: now,
+          events: (hadco) => [
+                meeting(hadco, 'c', DateTime(2026, 10, 26, 15)),
+                meeting(hadco, 'late', DateTime(2026, 10, 26, 23, 45),
+                    title: 'Launch watch'),
+                meeting(hadco, 't', DateTime(2026, 10, 27, 9),
+                    title: 'Planning'),
+              ]);
+      expect(find.byKey(const ValueKey('my-day-event:c')), findsOneWidget);
+      expect(find.byKey(const ValueKey('my-day-tomorrow:c')), findsNothing);
+      expect(find.byKey(const ValueKey('my-day-tomorrow:t')), findsOneWidget);
+      expect(find.byKey(const ValueKey('my-day-event:t')), findsNothing);
+      for (final day in ['my-day-event', 'my-day-tomorrow']) {
+        expect(find.byKey(ValueKey('$day:late')), findsOneWidget,
+            reason: 'over midnight, in both');
+      }
+      expect(find.text('Nothing on tomorrow'), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('my-day-tomorrow:t')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('event-accept')), findsOneWidget);
+      Navigator.of(tester.element(find.byKey(const ValueKey('event-accept'))))
+          .pop();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('my-day-tomorrow-date')));
+      await tester.pumpAndSettle();
+      expect(tester.widget<CalendarScreen>(find.byType(CalendarScreen)).day,
+          DateTime(2026, 10, 27));
+    });
+
+    testWidgets('a free day says so, with tomorrow still under it',
+        (tester) async {
+      await ui.writeString(UiStateKeys.myDay, 'true');
+      await pump(tester, const AppShell(),
+          size: const Size(1400, 900),
+          clock: now,
+          events: (hadco) => [meeting(hadco, 't', DateTime(2026, 10, 27, 9))]);
+      expect(find.text('Nothing on today'), findsOneWidget);
+      expect(find.byKey(const ValueKey('my-day-tomorrow:t')), findsOneWidget);
+      expect(find.byKey(const ValueKey('my-day-join')), findsNothing);
     });
   });
 

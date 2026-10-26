@@ -25,7 +25,8 @@ const _monthNames = [
 /// pane's place on a tablet, switched on and off from the bar over the
 /// list, beside Hide folders. The next
 /// meeting's Join at the top, each meeting's sheet a tap away, and the
-/// whole calendar from the date.
+/// whole calendar from the date. Tomorrow's meetings come after today's,
+/// under a date of their own that opens the calendar on that day.
 class MyDayPane extends ConsumerStatefulWidget {
   const MyDayPane({super.key});
 
@@ -56,16 +57,61 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
     final theme = Theme.of(context);
     final now = ref.watch(meetingClockProvider)();
     final range = dayRange(now);
+    final nextDay = dayRange(range.end);
     final load = ref.watch(calendarEventsProvider(range));
+    final nextLoad = ref.watch(calendarEventsProvider(nextDay));
     final prefs = ref.watch(calendarPrefsProvider);
     final accounts = ref.watch(calendarAccountsProvider);
     final colours = {for (final a in accounts) a.id: Color(a.colorValue)};
     final events = shownEvents(load.value?.events ?? const [], prefs);
-    final next = nextMeeting(events, now);
+    final nextEvents = shownEvents(nextLoad.value?.events ?? const [], prefs);
+    // Tomorrow's too, for the minutes before midnight.
+    final next = nextMeeting([...events, ...nextEvents], now);
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
     final muted = theme.textTheme.bodySmall
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
     final today = range.start;
+    final tomorrow = nextDay.start;
+
+    /// One day's meetings, keyed '[name]:id', or a line saying it has none.
+    List<Widget> meetings(
+      AsyncValue<CalendarLoad> load,
+      List<CalendarEvent> events, {
+      required String name,
+      required String none,
+    }) =>
+        [
+          if (events.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: load.isLoading || (load.value?.reading ?? false)
+                  ? const Align(
+                      alignment: AlignmentDirectional.centerStart,
+                      child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : Text(none, style: muted),
+            ),
+          for (final e in events)
+            _MyDayEvent(
+              tapKey: ValueKey('$name:${e.id}'),
+              event: e,
+              colour: colours[e.accountId] ?? theme.colorScheme.primary,
+              over: !e.end.isAfter(now),
+              next: identical(e, next),
+              use24h: use24h,
+              onTap: () => showEventDetails(
+                context,
+                ref,
+                e,
+                accounts.where((a) => a.id == e.accountId).firstOrNull,
+              ),
+            ),
+        ];
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -85,11 +131,8 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
                       children: [
                         Text('My Day', style: theme.textTheme.labelMedium
                             ?.copyWith(color: theme.colorScheme.primary)),
-                        Text(
-                          '${_weekdayNames[today.weekday - 1]} '
-                          '${today.day} ${_monthNames[today.month - 1]}',
-                          style: theme.textTheme.titleMedium,
-                        ),
+                        Text(_dateOf(today),
+                            style: theme.textTheme.titleMedium),
                       ],
                     ),
                   ),
@@ -121,49 +164,48 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
           ),
         const Divider(height: 1),
         Expanded(
-          child: events.isEmpty
-              ? Center(
-                  child: load.isLoading || (load.value?.reading ?? false)
-                      ? const SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : Text('Nothing on today', style: muted),
-                )
-              : ListView(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  children: [
-                    for (final e in events)
-                      _MyDayEvent(
-                        event: e,
-                        colour: colours[e.accountId] ??
-                            theme.colorScheme.primary,
-                        over: !e.end.isAfter(now),
-                        next: identical(e, next),
-                        use24h: use24h,
-                        onTap: () => showEventDetails(
-                          context,
-                          ref,
-                          e,
-                          accounts
-                              .where((a) => a.id == e.accountId)
-                              .firstOrNull,
-                        ),
-                      ),
-                  ],
+          child: ListView(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            children: [
+              ...meetings(load, events,
+                  name: 'my-day-event', none: 'Nothing on today'),
+              const Divider(height: 25, indent: 16, endIndent: 16),
+              InkWell(
+                key: const ValueKey('my-day-tomorrow-date'),
+                onTap: () => CalendarScreen.open(context, day: tomorrow),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Tomorrow', style: theme.textTheme.labelMedium
+                          ?.copyWith(color: theme.colorScheme.primary)),
+                      Text(_dateOf(tomorrow),
+                          style: theme.textTheme.titleSmall),
+                    ],
+                  ),
                 ),
+              ),
+              ...meetings(nextLoad, nextEvents,
+                  name: 'my-day-tomorrow', none: 'Nothing on tomorrow'),
+            ],
+          ),
         ),
       ],
     );
   }
 }
 
+/// "Monday 26 October".
+String _dateOf(DateTime day) =>
+    '${_weekdayNames[day.weekday - 1]} ${day.day} ${_monthNames[day.month - 1]}';
+
 String _titleOf(CalendarEvent e) =>
     e.title.trim().isEmpty ? '(No title)' : e.title.trim();
 
 class _MyDayEvent extends StatelessWidget {
   const _MyDayEvent({
+    required this.tapKey,
     required this.event,
     required this.colour,
     required this.over,
@@ -172,6 +214,8 @@ class _MyDayEvent extends StatelessWidget {
     required this.onTap,
   });
 
+  /// Today's and tomorrow's apart: a meeting over midnight is in both.
+  final Key tapKey;
   final CalendarEvent event;
   final Color colour;
   final bool over;
@@ -196,7 +240,7 @@ class _MyDayEvent extends StatelessWidget {
       // What is over stays, faded, as the calendar shows a day gone by.
       opacity: over ? 0.5 : 1,
       child: InkWell(
-        key: ValueKey('my-day-event:${e.id}'),
+        key: tapKey,
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 6, 12, 6),
