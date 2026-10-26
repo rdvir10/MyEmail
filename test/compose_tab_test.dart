@@ -110,6 +110,8 @@ void main() {
       final before = bodyFocused();
       await tab(tester);
       expect(bodyFocused(), before + 1, reason: 'the body is given the cursor');
+      // Ron's video of the tablet (3.6.0): Subject kept its cursor too.
+      expect(at(tester), 'elsewhere', reason: 'and Subject lets go of it');
 
       await fromBody(tester, 'tab');
       expect(at(tester), 'From');
