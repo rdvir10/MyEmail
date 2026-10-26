@@ -223,6 +223,21 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
     await done;
   }
 
+  /// An invitation answered from its card, to Deleted Items as Outlook
+  /// sends it, saying [said], the answer, with Undo; a screen of its own
+  /// goes with it, as after Delete.
+  Future<void> _deleteAnswered(String said) async {
+    final listId = _listId;
+    if (listId == null || !mounted) return;
+    final done = MessageActions(ref, listId).delete(
+      context,
+      [widget.message],
+      saying: '$said The invitation is in Deleted Items.',
+    );
+    if (widget.onPopOut == null) Navigator.of(context).maybePop();
+    await done;
+  }
+
   /// Archive, from the header, which like a delete takes a screen of its
   /// own with it at once.
   Future<void> _archive() async {
@@ -462,7 +477,11 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
             // The invitation, when the message carries one, before the body:
             // the answer is the point of the message.
             if (ref.watch(messageInviteProvider(message.id)) case final invite?)
-              InviteCard(message: message, invite: invite),
+              InviteCard(
+                message: message,
+                invite: invite,
+                onAnswered: _deleteAnswered,
+              ),
             ReadReceiptBar(message: message),
             const Divider(height: 1),
             ReadAloudBar(messageId: message.id),

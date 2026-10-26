@@ -392,6 +392,8 @@ class _AppShellState extends ConsumerState<AppShell>
             engine: ref.read(mailEngineProvider),
             accounts: ref.read(accountsProvider).value ?? const [],
             signatures: ref.read(signaturesProvider),
+            deleteAnswered:
+                ref.read(calendarPrefsProvider).deleteAnsweredInvites,
           ),
           () async {},
         ),

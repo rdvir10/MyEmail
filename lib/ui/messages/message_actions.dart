@@ -335,10 +335,13 @@ class MessageActions {
     }
   }
 
+  /// [saying] in place of "1 message deleted", for a delete that follows
+  /// something else: an invitation answered.
   Future<void> delete(
     BuildContext context,
-    List<MailMessage> messages,
-  ) async {
+    List<MailMessage> messages, {
+    String? saying,
+  }) async {
     if (messages.isEmpty) return;
     final to = _reporterFor(context);
     final (held, elsewhere) = _split(messages);
@@ -362,7 +365,7 @@ class MessageActions {
       }
       _say(
         to,
-        '${_count(messages.length)} deleted',
+        saying ?? '${_count(messages.length)} deleted',
         undo: moves,
         of: messages.length,
       );

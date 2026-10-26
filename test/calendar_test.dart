@@ -2,6 +2,9 @@ import 'package:enough_mail/enough_mail.dart' as em;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/domain/calendar_prefs.dart';
+import 'package:myemail/state/calendar_view_providers.dart'
+    show calendarPrefsProvider;
 import 'package:myemail/data/calendar/device_calendar.dart';
 import 'package:myemail/data/compose/smtp_sender.dart';
 import 'package:myemail/data/imap/imap_mapping.dart';
@@ -165,8 +168,8 @@ void main() {
       expect(find.textContaining('10:00 AM–11:00 AM'), findsOneWidget);
     });
 
-    testWidgets('Accept answers through the account and says so',
-        (tester) async {
+    testWidgets('Accept answers through the account, and the invitation goes '
+        'to Deleted Items, as Outlook sends it', (tester) async {
       final c = await pump(tester);
       final invite = await openInvite(tester, c);
 
@@ -175,6 +178,26 @@ void main() {
 
       expect(engine.inviteResponses.single.messageId, invite.id);
       expect(engine.inviteResponses.single.response, InviteResponse.accepted);
+      expect(
+          find.text('Accepted. The organiser has been told. The invitation '
+              'is in Deleted Items.'),
+          findsOneWidget);
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+      expect(c.read(messagesProvider(folder)).value!.any((m) => m.id == invite.id),
+          isFalse);
+    });
+
+    testWidgets('with answered invitations kept, the card says what you '
+        'answered', (tester) async {
+      final c = await pump(tester);
+      c.read(calendarPrefsProvider.notifier).set(
+          const CalendarPrefs().copyWith(deleteAnsweredInvites: false));
+      final invite = await openInvite(tester, c);
+
+      await tester.tap(find.text('Accept'));
+      await tester.pumpAndSettle();
+
+      expect(engine.inviteResponses.single.messageId, invite.id);
       expect(find.text('You accepted'), findsOneWidget);
       expect(find.text('Decline'), findsNothing, reason: 'answered once');
     });

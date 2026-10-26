@@ -12,7 +12,8 @@ import '../../domain/draft.dart';
 import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/mail_message.dart';
 import '../../state/calendar_providers.dart';
-import '../../state/calendar_view_providers.dart' show calendarRefreshProvider;
+import '../../state/calendar_view_providers.dart'
+    show calendarPrefsProvider, calendarRefreshProvider;
 import '../../state/providers.dart';
 import '../../domain/free_busy.dart';
 import 'date_format.dart';
@@ -37,10 +38,20 @@ import 'invite_clashes.dart';
 /// message is opened ([meetingOnCalendarProvider]), so an invitation moved
 /// or cancelled since says so, and nothing is offered that is done already.
 class InviteCard extends ConsumerStatefulWidget {
-  const InviteCard({super.key, required this.message, required this.invite});
+  const InviteCard({
+    super.key,
+    required this.message,
+    required this.invite,
+    this.onAnswered,
+  });
 
   final MailMessage message;
   final CalendarInvite invite;
+
+  /// The invitation answered, where Settings, Calendar says an answered one
+  /// goes to Deleted Items: the reading pane deletes it as its own Delete
+  /// would, saying [said], the answer's own line, with Undo.
+  final Future<void> Function(String said)? onAnswered;
 
   @override
   ConsumerState<InviteCard> createState() => _InviteCardState();
@@ -53,9 +64,10 @@ class _InviteCardState extends ConsumerState<InviteCard> {
 
   /// Do [action] with the buttons held, then say [done], or why not after
   /// [failed]. True when it worked.
+  /// [done] null says nothing: what follows says it.
   Future<bool> _run(
     Future<void> Function() action, {
-    required String done,
+    required String? done,
     required String failed,
   }) async {
     setState(() => _busy = true);
@@ -66,10 +78,12 @@ class _InviteCardState extends ConsumerState<InviteCard> {
     try {
       await action();
       refresh.now();
-      messenger
-        ?..hideCurrentSnackBar()
-        ..showSnackBar(
-            SnackBar(duration: kBottomMessage, content: Text(done)));
+      if (done != null) {
+        messenger
+          ?..hideCurrentSnackBar()
+          ..showSnackBar(
+              SnackBar(duration: kBottomMessage, content: Text(done)));
+      }
       return true;
     } catch (e) {
       messenger
@@ -99,6 +113,15 @@ class _InviteCardState extends ConsumerState<InviteCard> {
     // Read before the wait: the card may be gone by the time it is over.
     final responses = ref.read(inviteResponsesProvider.notifier);
     final engine = ref.read(mailEngineProvider);
+    final answered = widget.onAnswered;
+    final deleting = answered != null &&
+        ref.read(calendarPrefsProvider).deleteAnsweredInvites;
+    final said = proposal != null
+        ? '${response.word}, with a new time proposed. The organiser has '
+            'been told.'
+        : send
+            ? '${response.word}. The organiser has been told.'
+            : '${response.word}. The organiser was not told.';
     if (await _run(
       () => engine.respondToInvite(
         _id,
@@ -108,15 +131,13 @@ class _InviteCardState extends ConsumerState<InviteCard> {
         send: send,
         proposal: proposal,
       ),
-      done: proposal != null
-          ? '${response.word}, with a new time proposed. The organiser has '
-              'been told.'
-          : send
-              ? '${response.word}. The organiser has been told.'
-              : '${response.word}. The organiser was not told.',
+      done: deleting ? null : said,
       failed: 'Could not reply',
     )) {
       responses.record(_id, response);
+      // As Outlook does: the meeting is on the calendar, the invitation in
+      // Deleted Items.
+      if (deleting) await answered(said);
     }
   }
 

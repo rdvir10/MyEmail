@@ -20,6 +20,7 @@ class CalendarPrefs {
     this.datesInMail = true,
     this.meetingReminders = const {},
     this.agendaAt = defaultAgendaAt,
+    this.deleteAnsweredInvites = true,
   });
 
   /// A meeting you declined that its calendar keeps (Google's do; Outlook
@@ -48,6 +49,11 @@ class CalendarPrefs {
   /// Half past seven.
   static const defaultAgendaAt = 7 * 60 + 30;
 
+  /// An invitation answered, from its card or its notification, goes to
+  /// Deleted Items, as Outlook's "Delete meeting request from Inbox when
+  /// responding" sends it; the meeting stays on the calendar.
+  final bool deleteAnsweredInvites;
+
   /// Whether MyEmail reminds before [account]'s meetings: as switched, or
   /// else for a Microsoft account whose calendar is not in the phone's own
   /// ([inPhoneCalendar]), where nothing else would. Google Calendar on the
@@ -66,6 +72,7 @@ class CalendarPrefs {
     Map<String, bool>? meetingReminders,
     int? agendaAt,
     bool noAgenda = false,
+    bool? deleteAnsweredInvites,
   }) {
     final start = dayStart ?? this.dayStart;
     final end = dayEnd ?? this.dayEnd;
@@ -78,6 +85,8 @@ class CalendarPrefs {
       datesInMail: datesInMail ?? this.datesInMail,
       meetingReminders: meetingReminders ?? this.meetingReminders,
       agendaAt: noAgenda ? null : agendaAt ?? this.agendaAt,
+      deleteAnsweredInvites:
+          deleteAnsweredInvites ?? this.deleteAnsweredInvites,
     );
   }
 
@@ -89,6 +98,7 @@ class CalendarPrefs {
         'datesInMail': datesInMail,
         if (meetingReminders.isNotEmpty) 'reminders': meetingReminders,
         'agenda': agendaAt ?? false,
+        'deleteAnswered': deleteAnsweredInvites,
       };
 
   /// What [toJson] wrote; anything missing or out of range is the default.
@@ -117,6 +127,7 @@ class CalendarPrefs {
           : agenda is int && agenda >= 0 && agenda < 24 * 60
               ? agenda
               : defaultAgendaAt,
+      deleteAnsweredInvites: json['deleteAnswered'] != false,
     );
   }
 
@@ -139,7 +150,8 @@ class CalendarPrefs {
       other.secondZone == secondZone &&
       other.datesInMail == datesInMail &&
       mapEquals(other.meetingReminders, meetingReminders) &&
-      other.agendaAt == agendaAt;
+      other.agendaAt == agendaAt &&
+      other.deleteAnsweredInvites == deleteAnsweredInvites;
 
   @override
   int get hashCode => Object.hash(
@@ -153,5 +165,6 @@ class CalendarPrefs {
             Object.hash(key, value),
         ]),
         agendaAt,
+        deleteAnsweredInvites,
       );
 }

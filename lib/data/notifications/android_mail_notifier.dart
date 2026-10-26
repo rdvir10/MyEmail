@@ -279,6 +279,11 @@ class AndroidMailNotifier implements MailNotifier {
     }
   }
 
+  /// The calendar's notifications wear a calendar, not the envelope new
+  /// mail has: res/drawable/ic_stat_event.xml, kept in a release build by
+  /// res/raw/keep.xml, as the envelope is.
+  static const calendarIcon = '@drawable/ic_stat_event';
+
   /// Meeting reminders and the morning's agenda, each a channel of its
   /// own, so Android's settings can quieten one and keep the other.
   static const meetingChannelId = 'mailtree.meetings';
@@ -301,6 +306,7 @@ class AndroidMailNotifier implements MailNotifier {
       android: AndroidNotificationDetails(
         meetingChannelId,
         'Meeting reminders',
+        icon: calendarIcon,
         importance: Importance.high,
         priority: Priority.high,
         category: AndroidNotificationCategory.event,
@@ -377,6 +383,7 @@ class AndroidMailNotifier implements MailNotifier {
       android: AndroidNotificationDetails(
         agendaChannelId,
         'Morning agenda',
+        icon: calendarIcon,
         importance: Importance.defaultImportance,
         priority: Priority.defaultPriority,
         category: AndroidNotificationCategory.event,

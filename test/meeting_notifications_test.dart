@@ -312,6 +312,8 @@ void main() {
       expect(android.timeoutAfter, const Duration(minutes: 45).inMilliseconds,
           reason: 'gone once the meeting is over');
       expect(android.chronometerCountDown, isTrue);
+      expect(android.icon, '@drawable/ic_stat_event',
+          reason: "the calendar's own icon, not new mail's envelope");
     });
 
     test('Snooze pressed in the app sets it again', () async {

@@ -29,6 +29,7 @@ class NotificationActions {
     this.signatures = const {},
     this.accounts = const [],
     this.clock = DateTime.now,
+    this.deleteAnswered = false,
   });
 
   final MailEngine engine;
@@ -40,6 +41,10 @@ class NotificationActions {
   final List<Account> accounts;
 
   final DateTime Function() clock;
+
+  /// An invitation answered goes to Deleted Items, as Outlook sends it:
+  /// Settings, Calendar's choice, read where the press is carried out.
+  final bool deleteAnswered;
 
   /// The ids Android sends back. Stable strings: they are baked into
   /// notifications that may still be on screen after an update.
@@ -123,9 +128,14 @@ class NotificationActions {
     } catch (_) {
       return ActionOutcome.notAnswered;
     }
-    // Answered is dealt with, as a reply is. Best-effort.
+    // Answered is dealt with: to Deleted Items, as Outlook sends it, or
+    // read, as a reply leaves it. Best-effort, the answer having gone.
     try {
-      await engine.setRead(messageId, true);
+      if (deleteAnswered) {
+        await engine.deleteMessages([messageId]);
+      } else {
+        await engine.setRead(messageId, true);
+      }
     } catch (_) {
       // Never mind.
     }

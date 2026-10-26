@@ -143,6 +143,18 @@ class CalendarSettingsScreen extends ConsumerWidget {
             },
           ),
           SwitchListTile(
+            key: const ValueKey('calendar-delete-answered'),
+            title: const Text('Delete invitations once answered'),
+            subtitle: const Text(
+              'As Outlook does: once you accept, say maybe or decline, the '
+              'invitation goes to Deleted Items, and the meeting stays on '
+              'your calendar.',
+            ),
+            value: prefs.deleteAnsweredInvites,
+            onChanged: (on) =>
+                setPrefs(prefs.copyWith(deleteAnsweredInvites: on)),
+          ),
+          SwitchListTile(
             key: const ValueKey('calendar-dates-in-mail'),
             title: const Text('Find dates in mail'),
             subtitle: const Text(

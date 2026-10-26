@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The notification icon, kept.
+<!-- The notification icons, kept: the envelope, and the calendar the
+     meeting reminders and the morning agenda wear.
 
      A release build strips resources nothing in the Android half refers to,
      and this one is named only from Dart, as the string
@@ -9,4 +10,4 @@
      should be — on a release build only, which is the worst way to find out.
 -->
 <resources xmlns:tools="http://schemas.android.com/tools"
-    tools:keep="@drawable/ic_stat_mail" />
+    tools:keep="@drawable/ic_stat_mail,@drawable/ic_stat_event" />

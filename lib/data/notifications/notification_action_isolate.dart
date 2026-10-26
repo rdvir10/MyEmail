@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../domain/calendar_prefs.dart';
 import '../../domain/meeting_alerts.dart';
 import '../../domain/signature.dart';
 import '../account_store.dart';
@@ -321,11 +322,17 @@ Future<(NotificationActions, Future<void> Function())> _openActions() async {
     folderLists: PrefsFolderListStore(prefs),
     graphIdMap: DriftGraphIdMap(database),
   );
+  final uiState = PrefsUiStateStore(prefs);
   return (
     NotificationActions(
       engine: engine,
       accounts: accountStore.read(),
-      signatures: readSignatures(PrefsUiStateStore(prefs)),
+      signatures: readSignatures(uiState),
+      deleteAnswered: (CalendarPrefs.tryParse(
+                uiState.readString(UiStateKeys.calendarPrefs) ?? '',
+              ) ??
+              const CalendarPrefs())
+          .deleteAnsweredInvites,
     ),
     () async {
       await engine.close();
