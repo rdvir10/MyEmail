@@ -18,6 +18,7 @@ import 'backup_screen.dart';
 import 'notifications_screen.dart';
 import 'signatures_screen.dart';
 import 'sync_screen.dart';
+import 'threat_check_settings_screen.dart';
 import 'view_settings_screen.dart';
 import '../shell/app_shortcuts.dart';
 import 'home_widgets_screen.dart';
@@ -136,6 +137,12 @@ class SettingsScreen extends ConsumerWidget {
               final d => '${d.accounts.length} Inboxes sent to your connector',
             },
             onTap: () => _open(context, const DuetScreen()),
+          ),
+          _Row(
+            icon: Icons.security,
+            title: 'Threat check',
+            subtitle: 'Google Safe Browsing and VirusTotal keys',
+            onTap: () => _open(context, const ThreatCheckSettingsScreen()),
           ),
           const Divider(height: 1),
           const _SectionHeading('This app'),

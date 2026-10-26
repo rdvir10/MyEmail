@@ -1427,6 +1427,17 @@ class CachedImapEngine implements MailEngine {
   }
 
   @override
+  Future<Map<String, String>> messageHeaders(
+    String messageId,
+    List<String> names,
+  ) async {
+    final (folderId, uid) = splitMessageId(messageId);
+    final (accountId, path) = splitFolderId(folderId);
+    final t = await _transport(accountId);
+    return t.headerValues(path, uid, names);
+  }
+
+  @override
   bool answersReadReceipts(String accountId) =>
       accountStore.read().where((a) => a.id == accountId).firstOrNull?.provider ==
       MailProvider.gmail;

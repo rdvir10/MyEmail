@@ -927,6 +927,24 @@ class SampleMailEngine implements MailEngine {
     return found;
   }
 
+  /// Each message's headers, by message id, for a test to fill: names in
+  /// lower case. A message not in it has none.
+  final Map<String, Map<String, String>> headers = {};
+
+  @override
+  Future<Map<String, String>> messageHeaders(
+    String messageId,
+    List<String> names,
+  ) async {
+    await _latency();
+    final all = headers[messageId] ?? const {};
+    final wanted = {for (final n in names) n.toLowerCase()};
+    return {
+      for (final MapEntry(:key, :value) in all.entries)
+        if (wanted.contains(key.toLowerCase())) key.toLowerCase(): value,
+    };
+  }
+
   /// Each account's calendars, for a test to fill; an account not in it
   /// has its main one alone.
   final Map<String, List<CalendarInfo>> calendarLists = {};

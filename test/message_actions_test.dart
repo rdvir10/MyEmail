@@ -263,6 +263,13 @@ class _RefusingEngine implements MailEngine {
       _inner.keptCalendarsOf(accountId);
 
   @override
+  Future<Map<String, String>> messageHeaders(
+    String messageId,
+    List<String> names,
+  ) =>
+      _inner.messageHeaders(messageId, names);
+
+  @override
   Future<void> respondToEvent(
     CalendarEvent event,
     InviteResponse response, {

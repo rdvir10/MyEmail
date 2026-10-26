@@ -39,6 +39,7 @@ import 'message_actions.dart';
 import 'follow_up_sheet.dart';
 import 'junk_actions.dart';
 import 'snooze_sheet.dart';
+import 'threat_check_sheet.dart';
 import 'message_source.dart';
 import 'print_message.dart';
 import 'read_aloud_bar.dart';
@@ -397,6 +398,7 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
                 senderBlocked:
                     ref.watch(senderBlocksProvider).blocks(message.from.email),
                 onJunk: (choice) => _junk(choice, message),
+                onCheckThreats: () => showThreatCheck(context, message),
                 onOpenWindow:
                     (ref.watch(windowsAvailableProvider).value ?? false) &&
                         widget.onPopOut != null
@@ -618,6 +620,7 @@ class _Header extends StatelessWidget {
     this.inJunk = false,
     this.senderBlocked = false,
     this.onJunk,
+    this.onCheckThreats,
     this.pinned = false,
     this.onTogglePin,
     this.onPopOut,
@@ -694,6 +697,9 @@ class _Header extends StatelessWidget {
   /// The Block menu: `block`, `unblock`, `never`, `neverDomain` and
   /// `notJunk`.
   final ValueChanged<String>? onJunk;
+
+  /// Check for threats: the sheet on its sender, links and attachments.
+  final VoidCallback? onCheckThreats;
 
   /// Narrow: Delete takes the flag's place in the row and the flag moves
   /// into the menu.
@@ -855,6 +861,7 @@ class _Header extends StatelessWidget {
                       'read' => onReadAloud?.call(),
                       'resend' => onResend?.call(),
                       'event' => onCreateEvent?.call(),
+                      'threats' => onCheckThreats?.call(),
                       'block' ||
                       'unblock' ||
                       'never' ||
@@ -933,9 +940,17 @@ class _Header extends StatelessWidget {
                         enabled: onSaveSource != null,
                         child: const Text('Save source…'),
                       ),
-                      // Outlook's Block menu.
-                      if (onJunk != null) ...[
+                      // Check for threats, then Outlook's Block menu: what
+                      // to do about a message that looks wrong.
+                      if (onCheckThreats != null || onJunk != null)
                         const PopupMenuDivider(),
+                      if (onCheckThreats != null)
+                        const PopupMenuItem(
+                          key: ValueKey('menu-check-threats'),
+                          value: 'threats',
+                          child: Text('Check for threats…'),
+                        ),
+                      if (onJunk != null) ...[
                         if (inJunk)
                           const PopupMenuItem(
                             value: 'notJunk',

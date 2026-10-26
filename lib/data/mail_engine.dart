@@ -230,6 +230,15 @@ abstract class MailEngine {
   /// [listAttachments] does when the server cannot be asked.
   Future<OpenedHeaders> openedHeaders(String messageId);
 
+  /// [names] of [messageId]'s headers as the server has them, by name in
+  /// lower case, the first of each: for Check for threats, which reads the
+  /// receiving server's sender checks and spam verdicts. A header the
+  /// message lacks is left out. Throws as [openedHeaders] does.
+  Future<Map<String, String>> messageHeaders(
+    String messageId,
+    List<String> names,
+  );
+
   /// Whether the app answers read-receipt requests on [accountId]: a Gmail
   /// account, where nothing else does. Not a Microsoft one for now: whether
   /// Exchange sends a receipt itself when the app marks a message read is
