@@ -258,6 +258,7 @@ void main() {
 
       final field = tester.widget<TextField>(toField());
       expect(field.controller?.text, 'Omer Tal <omer@example.com>, ');
+      expect(field.focusNode!.hasFocus, isFalse, reason: 'and on to Cc');
     });
 
     testWidgets('Esc closes the list and leaves the message open',

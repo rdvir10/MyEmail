@@ -2,7 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
@@ -49,6 +52,10 @@ class HtmlEditor extends StatefulWidget {
 class _HtmlEditorState extends State<HtmlEditor> {
   late final WebViewController _web;
 
+  /// The page's place in Flutter's focus: it has it while the page does.
+  /// See [EditorPage].
+  final _pageFocus = FocusNode(debugLabel: 'Editor page', skipTraversal: true);
+
   /// Set when the editor document has finished loading. From then on every
   /// navigation is refused, including about: and data:, which are only
   /// allowed for the load itself.
@@ -62,6 +69,7 @@ class _HtmlEditorState extends State<HtmlEditor> {
   @override
   void initState() {
     super.initState();
+    widget.controller._pageFocus = _pageFocus;
     _web = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(Colors.white)
@@ -125,7 +133,156 @@ class _HtmlEditorState extends State<HtmlEditor> {
   }
 
   @override
-  Widget build(BuildContext context) => WebViewWidget(controller: _web);
+  void didUpdateWidget(HtmlEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller)) {
+      if (identical(oldWidget.controller._pageFocus, _pageFocus)) {
+        oldWidget.controller._pageFocus = null;
+      }
+      widget.controller._pageFocus = _pageFocus;
+    }
+  }
+
+  @override
+  void dispose() {
+    if (identical(widget.controller._pageFocus, _pageFocus)) {
+      widget.controller._pageFocus = null;
+    }
+    _pageFocus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final platform = _web.platform;
+    if (platform is AndroidWebViewController) {
+      return EditorPage(
+        webView: platform.webViewIdentifier,
+        focusNode: _pageFocus,
+      );
+    }
+    return Focus(
+      focusNode: _pageFocus,
+      onKeyEvent: _keysForThePage,
+      child: WebViewWidget(controller: _web),
+    );
+  }
+}
+
+/// Every key, while the page has the focus, is the page's. Flutter's own
+/// shortcuts would take the arrows on the way, to move the focus about,
+/// and Space and Enter to press whatever it was on. Skipped rather than
+/// handled, so Android hands each one on to the page, whose script
+/// reports back the ones the screen answers to: Tab, Esc and Ctrl+Enter.
+KeyEventResult _keysForThePage(FocusNode _, KeyEvent _) =>
+    KeyEventResult.skipRemainingHandlers;
+
+/// The editor's WebView on Android, and its place in Flutter's focus.
+///
+/// Built as the WebView plugin builds its own, but for the one thing the
+/// plugin leaves out: Android's focus going to the page is passed on to
+/// Flutter's. Without it a tap in the message left Flutter's focus, and
+/// its cursor, in the field above: two cursors showed, and what a
+/// keyboard typed went on into the field (3.6.1).
+///
+/// [focusNode] has the focus while the page does. Taking it, however it
+/// came (a tap, Tab, the keyboard's Next, a dialog closing), the page
+/// takes Android's focus as well, and Flutter's text input is told the
+/// keyboard is the page's, as Flutter's own platform views tell it: the
+/// field the cursor came from lets go of the keyboard without taking it
+/// down, and stops catching what is typed. Losing it to something else on
+/// the same screen that is not a text field, the page lets go of Android's:
+/// a text field takes that itself as it shows its keyboard, and letting go
+/// first would take the keyboard down between the two. To a menu or a
+/// dialog in front it keeps it, and Flutter's comes back as they close.
+class EditorPage extends StatefulWidget {
+  const EditorPage({
+    super.key,
+    required this.webView,
+    required this.focusNode,
+  });
+
+  /// The WebView as the plugin knows it: what the platform view is made
+  /// from, and what the editor bridge finds it by.
+  final int webView;
+
+  final FocusNode focusNode;
+
+  @override
+  State<EditorPage> createState() => _EditorPageState();
+}
+
+class _EditorPageState extends State<EditorPage> {
+  /// The platform view, as Flutter's text input knows it, once made.
+  int? _viewId;
+
+  @override
+  Widget build(BuildContext context) => Focus(
+        focusNode: widget.focusNode,
+        onFocusChange: _focusChanged,
+        onKeyEvent: _keysForThePage,
+        child: PlatformViewLink(
+          viewType: _webViewType,
+          surfaceFactory: (context, controller) => AndroidViewSurface(
+            controller: controller as AndroidViewController,
+            gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+            hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+          ),
+          onCreatePlatformView: (params) {
+            _viewId = params.id;
+            return PlatformViewsService.initSurfaceAndroidView(
+              id: params.id,
+              viewType: _webViewType,
+              layoutDirection: TextDirection.ltr,
+              creationParams: widget.webView,
+              creationParamsCodec: const StandardMessageCodec(),
+              onFocus: () {
+                if (mounted) widget.focusNode.requestFocus();
+              },
+            )
+              ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
+              ..create();
+          },
+        ),
+      );
+
+  void _focusChanged(bool focused) {
+    if (focused) {
+      final id = _viewId;
+      if (id != null) unawaited(_keyboardIsThePages(id));
+      unawaited(focusEditorView(widget.webView));
+      return;
+    }
+    // Once the focus has finished moving: a text field taking it has by
+    // then shown its keyboard, and taken Android's focus with it.
+    scheduleMicrotask(() {
+      if (!mounted || widget.focusNode.hasFocus) return;
+      final now = FocusManager.instance.primaryFocus;
+      final screen = widget.focusNode.enclosingScope;
+      if (now == null || screen == null) return;
+      // A menu, a dialog or another screen in front gives Flutter's focus
+      // back as it closes. The page keeps Android's meanwhile, and the
+      // keyboard stays up, as it did for a formatting menu before.
+      if (now != screen && !now.ancestors.contains(screen)) return;
+      unawaited(blurEditorView(widget.webView));
+    });
+  }
+}
+
+/// What the WebView plugin registers its Android views under.
+const _webViewType = 'plugins.flutter.io/webview';
+
+/// Flutter's text input told that the keyboard belongs to the platform
+/// view [viewId], as Flutter's own platform views tell it.
+Future<void> _keyboardIsThePages(int viewId) async {
+  try {
+    await SystemChannels.textInput.invokeMethod<void>(
+      'TextInput.setPlatformViewClient',
+      <String, Object>{'platformViewId': viewId},
+    );
+  } on PlatformException {
+    // The page still has Android's focus, and with it the keys.
+  }
 }
 
 const _editorChannel = MethodChannel('mailtree/editor');
@@ -137,6 +294,20 @@ Future<bool> focusEditorView(int webView) async {
   try {
     return await _editorChannel
             .invokeMethod<bool>('focus', {'webView': webView}) ??
+        false;
+  } on PlatformException {
+    return false;
+  } on MissingPluginException {
+    return false;
+  }
+}
+
+/// Android's focus taken off the editor's WebView, which the plugin knows
+/// by [webView], where it has it. False where there is no such view.
+Future<bool> blurEditorView(int webView) async {
+  try {
+    return await _editorChannel
+            .invokeMethod<bool>('blur', {'webView': webView}) ??
         false;
   } on PlatformException {
     return false;
@@ -177,6 +348,12 @@ class HtmlEditorController extends ChangeNotifier {
   Future<void> get ready => _readyCompleter.future;
 
   bool get isReady => _web != null;
+
+  /// The page's place in Flutter's focus, while the editor is on screen.
+  FocusNode? _pageFocus;
+
+  /// Whether the cursor is in the message, rather than somewhere around it.
+  bool get hasFocus => _pageFocus?.hasFocus ?? false;
 
   void _attach(WebViewController web) {
     _web = web;
@@ -256,12 +433,16 @@ class HtmlEditorController extends ChangeNotifier {
   /// Give the body the keyboard, with the caret back where it last was,
   /// or where writing starts (above the quote) if it has not been in yet.
   ///
-  /// A WebView takes keys only once Android has given it focus, which
-  /// Flutter's own focus does not do, so that comes first: without it the
-  /// caret showed in the body and the keys went on to the field above.
+  /// Flutter's focus comes first, so the field the cursor comes from lets
+  /// go of it. Then Android's: a WebView takes keys only once Android has
+  /// focused it, and without that the caret showed in the body and the
+  /// keys went on to the field above. The page taking Flutter's focus asks
+  /// for Android's too (see [EditorPage]), but not where it had Flutter's
+  /// already.
   Future<void> focus() async {
     final web = _web;
     if (web == null) return;
+    _pageFocus?.requestFocus();
     final platform = web.platform;
     if (platform is AndroidWebViewController) {
       await focusEditorView(platform.webViewIdentifier);

@@ -205,7 +205,10 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     // the once: the page finishing again is no reason to take it back.
     if (!mounted || _caretPlaced) return;
     _caretPlaced = true;
+    // Nor if it has been tapped into meanwhile: the caret is where the
+    // tap put it.
     if (widget.draft.to.isNotEmpty &&
+        !_editor.hasFocus &&
         !_tabStops().any((stop) => stop?.hasFocus ?? false)) {
       await _editor.focus();
     }
@@ -632,6 +635,12 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       null,
     ];
   }
+
+  /// The keyboard's Next, or Enter, in a field: on to the next stop, as
+  /// Tab goes. Flutter's own order went from Cc to the Bcc button, and from
+  /// Subject to the editor's frame without its page, where nothing typed
+  /// went anywhere.
+  void _next() => _tab(back: false);
 
   /// One stop on, or back. From anywhere else, a button or nothing at all,
   /// Tab starts at the first stop and Shift+Tab at the body.
@@ -1224,12 +1233,14 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
               // A new message starts with the cursor here. A reply already
               // has its recipients, so the cursor is better off in the body.
               autofocus: widget.draft.to.isEmpty,
+              onNext: _next,
             ),
             RecipientField(
               label: 'Cc',
               controller: _cc,
               focusNode: _ccFocus,
               enabled: !_sending,
+              onNext: _next,
               trailing: _showBcc
                   ? null
                   : TextButton(
@@ -1243,6 +1254,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
                 controller: _bcc,
                 focusNode: _bccFocus,
                 enabled: !_sending,
+                onNext: _next,
               ),
             // Exchange's word on the recipients, from a Microsoft account.
             if (account?.provider == MailProvider.outlook)
@@ -1256,6 +1268,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
               controller: _subject,
               focusNode: _subjectFocus,
               enabled: !_sending,
+              onNext: _next,
             ),
             if (_importance != Importance.normal || _readReceipt)
               _MessageOptions(

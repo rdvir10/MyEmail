@@ -172,6 +172,42 @@ void main() {
     });
   });
 
+  group("the keyboard's Next", () {
+    testWidgets('goes the way Tab does, not to the Bcc button or the frame',
+        (tester) async {
+      await open(tester, draft());
+      expect(at(tester), 'To');
+
+      await tester.testTextInput.receiveAction(TextInputAction.next);
+      await tester.pumpAndSettle();
+      expect(at(tester), 'Cc');
+      await tester.testTextInput.receiveAction(TextInputAction.next);
+      await tester.pumpAndSettle();
+      expect(at(tester), 'Subject', reason: 'not the Bcc button after Cc');
+
+      final before = bodyFocused();
+      await tester.testTextInput.receiveAction(TextInputAction.next);
+      await tester.pumpAndSettle();
+      expect(bodyFocused(), before + 1, reason: 'the body is given the cursor');
+      expect(at(tester), 'elsewhere', reason: 'and Subject lets go of it');
+    });
+  });
+
+  group('in the body', () {
+    testWidgets('the arrows are left for the page, and the focus stays',
+        (tester) async {
+      await open(tester, draft());
+      await tab(tester);
+      await tab(tester);
+      await tab(tester);
+      expect(at(tester), 'elsewhere', reason: 'the body has it');
+
+      expect(await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp), isFalse);
+      await tester.pumpAndSettle();
+      expect(at(tester), 'elsewhere', reason: 'not moved up to Subject');
+    });
+  });
+
   group('the cursor starts', () {
     testWidgets('in the body, for a reply', (tester) async {
       await open(

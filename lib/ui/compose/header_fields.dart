@@ -27,6 +27,7 @@ class HeaderField extends StatelessWidget {
     this.autofocus = false,
     this.keyboardType = TextInputType.text,
     this.focusNode,
+    this.onNext,
   });
 
   final String label;
@@ -37,6 +38,10 @@ class HeaderField extends StatelessWidget {
 
   /// The field's own, for a screen that moves the cursor itself.
   final FocusNode? focusNode;
+
+  /// The keyboard's Next, or Enter, for a screen that moves the cursor
+  /// itself; Flutter's own order otherwise, which stops on buttons too.
+  final VoidCallback? onNext;
 
   @override
   Widget build(BuildContext context) {
@@ -67,6 +72,12 @@ class HeaderField extends StatelessWidget {
                 style: theme.textTheme.bodyMedium,
                 keyboardType: keyboardType,
                 textInputAction: TextInputAction.next,
+                onEditingComplete: onNext == null
+                    ? null
+                    : () {
+                        controller.clearComposing();
+                        onNext!();
+                      },
                 textDirection: firstStrongDirection(value.text) ??
                     Directionality.of(context),
                 decoration: InputDecoration(
@@ -116,6 +127,7 @@ class RecipientField extends ConsumerStatefulWidget {
     this.trailing,
     this.autofocus = false,
     this.focusNode,
+    this.onNext,
   });
 
   final String label;
@@ -127,6 +139,10 @@ class RecipientField extends ConsumerStatefulWidget {
   /// The field's own, for a screen that moves the cursor itself. Left to
   /// whoever made it to dispose.
   final FocusNode? focusNode;
+
+  /// The keyboard's Next, or Enter, for a screen that moves the cursor
+  /// itself: after the person the suggestions offer is chosen.
+  final VoidCallback? onNext;
 
   @override
   ConsumerState<RecipientField> createState() => _RecipientFieldState();
@@ -346,7 +362,16 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
       style: theme.textTheme.bodyMedium,
       keyboardType: TextInputType.emailAddress,
       textInputAction: TextInputAction.next,
-      onSubmitted: (_) => _submitted(),
+      onEditingComplete: widget.onNext == null
+          ? null
+          : () {
+              widget.controller.clearComposing();
+              _submitted();
+              widget.onNext!();
+            },
+      onSubmitted: (_) {
+        if (widget.onNext == null) _submitted();
+      },
       decoration: InputDecoration(
         border: UnderlineInputBorder(
           borderSide: BorderSide(color: theme.dividerColor),

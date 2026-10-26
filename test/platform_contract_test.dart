@@ -165,6 +165,7 @@ void main() {
       ));
 
       await focusEditorView(7);
+      await blurEditorView(7);
 
       expect(calls, isNotEmpty);
       for (final (channel, call) in calls) {
@@ -202,6 +203,7 @@ void main() {
           'mailtree/calendar insert',
           'mailtree/calendar timeZone',
           'mailtree/editor focus',
+          'mailtree/editor blur',
           'mailtree/files startDragMany',
           'mailtree/files openWith',
           'mailtree/files defaultApp',
