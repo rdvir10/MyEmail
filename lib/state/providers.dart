@@ -745,7 +745,8 @@ class ExpandedFolders extends FolderIdSet {
 final expandedFoldersProvider =
     NotifierProvider<ExpandedFolders, Set<String>>(ExpandedFolders.new);
 
-/// Accounts whose folders are folded away in the tree.
+/// Accounts whose folders are folded away in the tree, and Favourites, by
+/// [kFavoritesSectionId].
 ///
 /// Holds account ids rather than folder ids, so it deliberately does not take
 /// part in the folder-rename remapping the other sets do.

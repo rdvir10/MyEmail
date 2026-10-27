@@ -18,6 +18,7 @@ import 'package:myemail/ui/settings/settings_screen.dart';
 import 'package:myemail/ui/settings/signatures_screen.dart';
 import 'package:myemail/ui/settings/view_settings_screen.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
+import 'package:myemail/ui/shell/ribbon.dart';
 
 void _useSize(WidgetTester tester, Size size) {
   tester.view.physicalSize = size;
@@ -364,19 +365,39 @@ void main() {
   group('Settings hub', () {
     testWidgets('one entry in the tree replaces the loose ones',
         (tester) async {
-      _useSize(tester, const Size(1400, 900));
+      // A tablet standing up: two panes, and no ribbon.
+      _useSize(tester, const Size(900, 1400));
       await tester.pumpWidget(app(const AppShell()));
       await tester.pumpAndSettle();
 
-      // Scoped to the tree: the ribbon has its own Quick Steps button, and
-      // this test is about what the tree's footer offers.
       final tree = find.byType(FolderTreePanel);
       expect(find.descendant(of: tree, matching: find.text('Settings')),
+          findsOneWidget);
+      expect(find.descendant(of: tree, matching: find.text('Calendar')),
           findsOneWidget);
       expect(find.descendant(of: tree, matching: find.text('Quick Steps')),
           findsNothing);
       expect(find.descendant(of: tree, matching: find.text('Add account')),
           findsNothing);
+    });
+
+    testWidgets('where the ribbon has Settings and Calendar, the tree has '
+        'neither', (tester) async {
+      // Ron, on the tablet lying down: they were in both (3.7.1).
+      _useSize(tester, const Size(1400, 900));
+      await tester.pumpWidget(app(const AppShell()));
+      await tester.pumpAndSettle();
+
+      final tree = find.byType(FolderTreePanel);
+      expect(find.descendant(of: tree, matching: find.text('Settings')),
+          findsNothing);
+      expect(find.descendant(of: tree, matching: find.text('Calendar')),
+          findsNothing);
+      final ribbon = find.byType(Ribbon);
+      expect(find.descendant(of: ribbon, matching: find.text('Settings')),
+          findsOneWidget);
+      expect(find.descendant(of: ribbon, matching: find.text('Calendar')),
+          findsOneWidget);
     });
 
     testWidgets('each row says what is currently set', (tester) async {

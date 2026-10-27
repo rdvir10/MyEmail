@@ -90,6 +90,11 @@ class AppShell extends ConsumerStatefulWidget {
         ReadingPanePosition.right => width >= AppShell.wideBreakpoint,
       };
 
+  /// Whether the [Ribbon] is across the top: a wide screen's, wherever the
+  /// pane is. The folder tree asks too, and leaves out the Calendar and
+  /// Settings it carries.
+  static bool hasRibbon(double width) => width >= AppShell.wideBreakpoint;
+
   const AppShell({super.key});
 
   static const double mediumBreakpoint = 600;
@@ -515,7 +520,7 @@ class _AppShellState extends ConsumerState<AppShell>
     // The ribbon goes with the screen, not with the pane. It is where the
     // button that moves the pane lives, so tying it to one position would let
     // a single press take the pane away and the way back with it.
-    final ribbon = width >= AppShell.wideBreakpoint;
+    final ribbon = AppShell.hasRibbon(width);
 
     final Widget layout;
     if (width < AppShell.mediumBreakpoint) {

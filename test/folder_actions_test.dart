@@ -267,6 +267,35 @@ void main() {
       expect(find.text('FAVOURITES'), findsNothing);
     });
 
+    testWidgets('the Favourites heading folds them away, and back',
+        (tester) async {
+      // Ron asked (3.7.1); an account's heading folds its folders the same way.
+      await _pumpTree(tester);
+      await _openMenuFor(tester, find.text('Travel'));
+      await tester.tap(find.text('Add to Favourites'));
+      await tester.pumpAndSettle();
+      expect(find.text('Travel'), findsNWidgets(2));
+
+      await tester.tap(find.text('FAVOURITES'));
+      await tester.pumpAndSettle();
+      expect(find.text('Travel'), findsOneWidget,
+          reason: 'still under its account');
+      expect(find.text('FAVOURITES'), findsOneWidget,
+          reason: 'the heading stays, to bring them back');
+      final heading = find.ancestor(
+        of: find.text('FAVOURITES'),
+        matching: find.byType(InkWell),
+      );
+      expect(
+          find.descendant(of: heading.first, matching: find.text('1')),
+          findsOneWidget,
+          reason: 'how many it folds away');
+
+      await tester.tap(find.text('FAVOURITES'));
+      await tester.pumpAndSettle();
+      expect(find.text('Travel'), findsNWidgets(2));
+    });
+
     testWidgets('move to top level re-parents the subtree', (tester) async {
       await _pumpTree(tester);
       // Expand Finance so Receipts is visible.

@@ -14,6 +14,7 @@ import '../common/problem_view.dart';
 import '../settings/edit_account_screen.dart';
 import '../messages/message_actions.dart';
 import '../settings/settings_screen.dart';
+import '../shell/app_shell.dart' show AppShell;
 import '../shell/pane_focus.dart';
 import 'folder_actions.dart';
 import 'folder_tile.dart';
@@ -77,11 +78,17 @@ class FolderTreePanel extends ConsumerWidget {
                                 ? null
                                 : ref.watch(folderLoadErrorsProvider)[
                                     row.accountId!],
-                            onToggleCollapsed: row.accountId == null
-                                ? null
-                                : () => ref
-                                    .read(collapsedAccountsProvider.notifier)
-                                    .toggle(row.accountId!),
+                            // An account's folders, or Favourites, folded
+                            // away by their heading.
+                            onToggleCollapsed: switch (row.accountId ??
+                                (row.canCollapse
+                                    ? kFavoritesSectionId
+                                    : null)) {
+                              final section? => () => ref
+                                  .read(collapsedAccountsProvider.notifier)
+                                  .toggle(section),
+                              null => null,
+                            },
                             canAcceptRoot: row.accountId == null
                                 ? null
                                 : (d) => canDropOnRoot(d.folder, row.accountId!),
@@ -192,24 +199,29 @@ class FolderTreePanel extends ConsumerWidget {
         // rather than behind Settings. Absent when nothing is hidden: a
         // control for nothing is noise.
         const _HiddenFoldersRow(),
-        // Outlook's Calendar, beside the mail, as its module bar has it.
-        ListTile(
-          key: const ValueKey('open-calendar'),
-          dense: true,
-          leading: const Icon(Icons.calendar_month_outlined, size: 20),
-          title: const Text('Calendar'),
-          onTap: () => CalendarScreen.open(context),
-        ),
-        // One entry, not four. Quick Steps, accounts and notifications all
-        // live behind it now; the tree is for folders.
-        ListTile(
-          dense: true,
-          leading: const Icon(Icons.settings_outlined, size: 20),
-          title: const Text('Settings'),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+        // Not where the ribbon is, which has them both: Ron found them
+        // twice on the tablet (3.7.1). The phone's drawer, and a screen
+        // too narrow for the ribbon, keep them.
+        if (!AppShell.hasRibbon(MediaQuery.sizeOf(context).width)) ...[
+          // Outlook's Calendar, beside the mail, as its module bar has it.
+          ListTile(
+            key: const ValueKey('open-calendar'),
+            dense: true,
+            leading: const Icon(Icons.calendar_month_outlined, size: 20),
+            title: const Text('Calendar'),
+            onTap: () => CalendarScreen.open(context),
           ),
-        ),
+          // One entry, not four. Quick Steps, accounts and notifications
+          // all live behind it now; the tree is for folders.
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.settings_outlined, size: 20),
+            title: const Text('Settings'),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+            ),
+          ),
+        ],
       ],
         ),
       ),
@@ -473,8 +485,8 @@ class _SectionHeader extends ConsumerStatefulWidget {
   final bool Function(DraggedFolder dragged)? canAcceptRoot;
   final void Function(DraggedFolder dragged)? onDropToRoot;
 
-  /// Fold this account's folders away, or bring them back. Null for a heading
-  /// that does not belong to an account.
+  /// Fold this account's folders, or the favourites, away, or bring them
+  /// back. Null for a heading that cannot fold: Saved searches.
   final VoidCallback? onToggleCollapsed;
 
   /// The heading picked up, and let go wherever it was let go. Null for a

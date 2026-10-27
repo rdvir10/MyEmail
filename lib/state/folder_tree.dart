@@ -30,13 +30,12 @@ class SectionHeaderRow extends TreeRow {
   final String? accountId;
   final int? accentColor;
 
-  /// Whether this account's folders are folded away, or null for a heading
-  /// that cannot be folded at all.
+  /// Whether this heading's folders are folded away, or null for a heading
+  /// that cannot be folded at all: Saved searches, and an account's in the
+  /// tree's search.
   ///
-  /// Favourites is the null case. Its rows are copies of folders that also
-  /// appear under their own account, so folding it away hides nothing — the
-  /// originals are still there — and the chevron would promise something it
-  /// does not do.
+  /// Favourites folds too, though its rows are copies of folders still
+  /// under their own accounts: Ron asked for it (3.7.1), for the room.
   final bool? isCollapsed;
 
   /// How many folders are folded away, shown only while collapsed. Without it
@@ -134,7 +133,8 @@ class FolderTreeInput {
   /// Why an account's folders are missing, by account id.
   final Map<String, String> accountErrors;
 
-  /// Accounts folded down to just their heading.
+  /// Accounts folded down to just their heading, and Favourites, by
+  /// [kFavoritesSectionId].
   ///
   /// Distinct from [hiddenIds] on purpose. Hiding is a decision about a folder
   /// you do not want to see again; collapsing is about how much room a mailbox
@@ -164,6 +164,11 @@ class FolderTreeInput {
   /// between them on an ordinary day.
   final bool accountsOnly;
 }
+
+/// Favourites among the folded accounts ([FolderTreeInput.collapsedAccountIds]):
+/// its heading folds the section away as an account's folds its folders, and
+/// is kept, and backed up, with theirs.
+const kFavoritesSectionId = 'section:favourites';
 
 const kUnifiedInboxId = 'unified:inbox';
 
@@ -293,8 +298,14 @@ List<TreeRow> buildTreeRows(FolderTreeInput input) {
 
   final favorites = _favoriteRows(input);
   if (favorites.isNotEmpty) {
-    rows.add(const SectionHeaderRow(title: 'Favourites', subtitle: null));
-    rows.addAll(favorites);
+    final folded = input.collapsedAccountIds.contains(kFavoritesSectionId);
+    rows.add(SectionHeaderRow(
+      title: 'Favourites',
+      subtitle: null,
+      isCollapsed: folded,
+      folderCount: favorites.length,
+    ));
+    if (!folded) rows.addAll(favorites);
   }
 
   // Outlook's Search Folders: a search kept to run again, which a tap runs.

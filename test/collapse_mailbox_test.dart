@@ -103,25 +103,54 @@ void main() {
     expect(headerFor(rows, 'a').canCollapse, isTrue);
   });
 
-  test('Favourites cannot be collapsed', () {
-    // Its rows are copies of folders that also appear under their account, so
-    // folding it away hides nothing and the chevron would be a lie.
-    final rows = buildTreeRows(
-      FolderTreeInput(
-        accounts: [account('a', 'Personal')],
-        foldersByAccount: {
-          'a': [folder('a', 'INBOX', FolderRole.inbox)],
-        },
-        expandedIds: const {},
-        favoriteIds: {MailFolder.idFor('a', 'INBOX')},
-      ),
-    );
-
-    final favourites = rows.whereType<SectionHeaderRow>().firstWhere(
-          (h) => h.accountId == null,
+  group('Favourites', () {
+    // Folded away by its heading too, as Ron asked (3.7.1): its rows are
+    // copies of folders still under their accounts, but they take room.
+    List<TreeRow> rows({Set<String> collapsed = const {}}) => buildTreeRows(
+          FolderTreeInput(
+            accounts: [account('a', 'Personal')],
+            foldersByAccount: {
+              'a': [
+                folder('a', 'INBOX', FolderRole.inbox),
+                folder('a', 'Sent', FolderRole.sent),
+              ],
+            },
+            expandedIds: const {},
+            favoriteIds: {
+              MailFolder.idFor('a', 'INBOX'),
+              MailFolder.idFor('a', 'Sent'),
+            },
+            collapsedAccountIds: collapsed,
+          ),
         );
-    expect(favourites.canCollapse, isFalse);
-    expect(favourites.isCollapsed, isNull);
+
+    SectionHeaderRow heading(List<TreeRow> rows) =>
+        rows.whereType<SectionHeaderRow>().firstWhere(
+              (h) => h.title == 'Favourites',
+            );
+
+    List<FolderRow> favourites(List<TreeRow> rows) => [
+          for (final r in rows)
+            if (r is FolderRow && r.inFavorites) r,
+        ];
+
+    test('open, it can be folded', () {
+      final open = rows();
+
+      expect(heading(open).canCollapse, isTrue);
+      expect(heading(open).isCollapsed, isFalse);
+      expect(favourites(open), hasLength(2));
+    });
+
+    test('folded, its heading stays and says how many, and the folders '
+        'stay under their account', () {
+      final shut = rows(collapsed: {kFavoritesSectionId});
+
+      expect(heading(shut).isCollapsed, isTrue);
+      expect(heading(shut).folderCount, 2);
+      expect(favourites(shut), isEmpty);
+      expect(foldersOf(shut, 'a'), hasLength(2));
+    });
   });
 
   test('collapsing does not change what the unified Inbox counts', () {
