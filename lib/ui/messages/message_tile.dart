@@ -74,7 +74,9 @@ class MessageTile extends StatelessWidget {
   final MailMessage message;
   final bool isSelected;
   final VoidCallback onTap;
-  final VoidCallback? onLongPress;
+
+  /// A hold, with where the finger is, so a menu can open under it.
+  final void Function(Offset at)? onLongPress;
 
   /// Shown as a thin bar on the left in the unified Inbox, so the reader can
   /// tell at a glance which account a message came through.
@@ -268,55 +270,65 @@ class MessageTile extends StatelessWidget {
           selected: isSelected,
           flagged: message.isFlagged,
         ),
-        child: InkWell(
-          // While selecting, a tap ticks rather than opens. Opening a message
-          // mid-selection would take the list off screen and lose the ticks
-          // with it, which is not what a tap means once checkboxes are up.
-          onTap: isSelecting ? () => onTicked?.call(!isTicked!) : onTap,
-          onLongPress: onLongPress,
-          onSecondaryTapUp: onContextMenu == null
+        // The hold from outside the ink, as the date bar has it: InkWell's
+        // own does not say where the finger is.
+        child: GestureDetector(
+          onLongPressStart: onLongPress == null
               ? null
-              : (d) => onContextMenu!(d.globalPosition),
-          child: Padding(
-            padding: EdgeInsets.fromLTRB(
-              8,
-              density.verticalPadding,
-              6,
-              density.verticalPadding,
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (isSelecting)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 4),
-                    child: RowCheckbox(
-                      value: isTicked,
-                      onChanged: (v) => onTicked?.call(v ?? false),
-                      singleLine: singleLine,
+              : (d) {
+                  Feedback.forLongPress(context);
+                  onLongPress!(d.globalPosition);
+                },
+          child: InkWell(
+            // While selecting, a tap ticks rather than opens. Opening a
+            // message mid-selection would take the list off screen and lose
+            // the ticks with it, which is not what a tap means once
+            // checkboxes are up.
+            onTap: isSelecting ? () => onTicked?.call(!isTicked!) : onTap,
+            onSecondaryTapUp: onContextMenu == null
+                ? null
+                : (d) => onContextMenu!(d.globalPosition),
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(
+                8,
+                density.verticalPadding,
+                6,
+                density.verticalPadding,
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (isSelecting)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: RowCheckbox(
+                        value: isTicked,
+                        onChanged: (v) => onTicked?.call(v ?? false),
+                        singleLine: singleLine,
+                      ),
+                    ),
+                  RowGutter(
+                    unread: unread,
+                    accountColor: accountColor,
+                    singleLine: singleLine,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: ConstrainedBox(
+                      // One line tall, whether or not the checkbox is up, so
+                      // starting a selection does not make every row jump.
+                      constraints: BoxConstraints(
+                        minHeight: singleLine ? RowCheckbox.singleLineSize : 0,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: lines,
+                      ),
                     ),
                   ),
-                RowGutter(
-                  unread: unread,
-                  accountColor: accountColor,
-                  singleLine: singleLine,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: ConstrainedBox(
-                    // One line tall, whether or not the checkbox is up, so
-                    // starting a selection does not make every row jump.
-                    constraints: BoxConstraints(
-                      minHeight: singleLine ? RowCheckbox.singleLineSize : 0,
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: lines,
-                    ),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),

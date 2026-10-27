@@ -354,7 +354,7 @@ void main() {
 
       final tile =
           tester.widget<MessageTile>(find.byType(MessageTile).first);
-      // The menu is on the right button; a long press ticks instead.
+      // The menu is on the right button, and on a hold.
       await tester.tap(find.byType(MessageTile).first, buttons: kSecondaryButton);
       await tester.pumpAndSettle();
       expect(find.text('Flag it'), findsOneWidget);

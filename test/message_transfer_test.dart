@@ -81,6 +81,17 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  /// [entry] from under More, in [m]'s right-click menu.
+  Future<void> fromMore(WidgetTester tester, MailMessage m, String entry) async {
+    await tester.tap(find.byKey(ValueKey('tile:${m.id}')),
+        buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(PopupMenuItem<String>, entry));
+    await tester.pumpAndSettle();
+  }
+
   test('the file name says which message it was', () {
     final m = MailMessage(
       id: 'a:INBOX#1',
@@ -116,10 +127,7 @@ void main() {
       await pump(tester);
       final m = first(tester);
 
-      await tester.tap(find.byKey(ValueKey('tile:${m.id}')), buttons: kSecondaryButton);
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Copy'));
-      await tester.pumpAndSettle();
+      await fromMore(tester, m, 'Copy');
 
       expect(bridge.copied.single, endsWith(emlFileName(m)));
       expect(files.written[emlFileName(m)], contains('Subject: ${m.subject}'));
@@ -143,10 +151,7 @@ void main() {
     testWidgets('pasting it into a message attaches it', (tester) async {
       await pump(tester);
       final m = first(tester);
-      await tester.tap(find.byKey(ValueKey('tile:${m.id}')), buttons: kSecondaryButton);
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Copy'));
-      await tester.pumpAndSettle();
+      await fromMore(tester, m, 'Copy');
       // The fake clipboard holds what the fake bridge was given.
       bridge.onClipboard = [
         IncomingFile(
@@ -219,6 +224,66 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(bridge.draggedFiles, isEmpty);
+    });
+
+    // A hold that is let go where it was opens the row's menu (3.7.0); one
+    // pulled somewhere was a drag, and must not.
+    testWidgets('a pull onto a folder moves it there, and no menu follows',
+        (tester) async {
+      final c = await pump(tester);
+      final m = first(tester);
+      final folder = c.read(effectiveSelectedFolderIdProvider)!;
+      final to = folderAt(
+        tester,
+        (f) =>
+            f.id != m.folderId &&
+            f.accountId == m.accountId &&
+            f.capabilities.canAcceptMessages,
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byKey(ValueKey('tile:${m.id}'))),
+      );
+      await tester.pump(const Duration(seconds: 1));
+      await gesture.moveTo(to - const Offset(0, 4));
+      await tester.pump();
+      await gesture.moveTo(to);
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      final list = c.read(messagesProvider(folder)).value!;
+      expect(list.any((x) => x.id == m.id), isFalse, reason: 'moved out');
+      expect(find.byType(PopupMenuItem<String>), findsNothing);
+    });
+
+    testWidgets('held and let go where it was, the row opens its menu',
+        (tester) async {
+      await pump(tester);
+      final m = first(tester);
+
+      await tester.longPress(find.byKey(ValueKey('tile:${m.id}')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('menu-reply')), findsOneWidget);
+      expect(find.widgetWithText(PopupMenuItem<String>, 'Move to…'),
+          findsOneWidget);
+      expect(bridge.draggedFiles, isEmpty);
+    });
+
+    testWidgets('in split screen too, rather than a drag out', (tester) async {
+      windows.multiWindow = true;
+      final c = await pump(tester);
+      await c.read(multiWindowModeProvider.notifier).refresh();
+      await tester.pumpAndSettle();
+      final m = first(tester);
+
+      await tester.longPress(find.byKey(ValueKey('tile:${m.id}')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('menu-reply')), findsOneWidget);
+      expect(bridge.draggedFiles, isEmpty,
+          reason: 'the drag out waits for the finger to move');
     });
   });
 

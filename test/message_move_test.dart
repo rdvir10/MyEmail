@@ -584,12 +584,15 @@ void main() {
       await tester.tap(find.byType(MessageTile).first, buttons: kSecondaryButton);
       await tester.pumpAndSettle();
 
-      // Scoped to the menu's entries: the ribbon above the panes carries
-      // its own Delete and Move, so a bare find.text would match either.
-      Finder entry(String text) => find.widgetWithText(PopupMenuItem<String>, text);
-      for (final text in ['Reply', 'Reply all', 'Forward', 'Move to…', 'Delete']) {
-        expect(entry(text), findsOneWidget, reason: text);
+      // Reply, Reply all, Forward and Delete are the row of icons across
+      // its top (3.7.0). Scoped to the menu's entries: the ribbon above the
+      // panes carries its own Delete and Move, so a bare find.text would
+      // match either.
+      for (final key in ['reply', 'replyAll', 'forward', 'delete']) {
+        expect(find.byKey(ValueKey('menu-$key')), findsOneWidget, reason: key);
       }
+      Finder entry(String text) => find.widgetWithText(PopupMenuItem<String>, text);
+      expect(entry('Move to…'), findsOneWidget);
       expect(
         find.descendant(
           of: find.byType(PopupMenuItem<String>),

@@ -118,6 +118,8 @@ void main() {
         buttons: kSecondaryButton,
       );
       await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'More'));
+      await tester.pumpAndSettle();
       await tester.tap(
         find.widgetWithText(PopupMenuItem<String>, 'Open in new window'),
       );

@@ -1,7 +1,9 @@
 import '../common/bottom_message.dart';
+import 'package:flutter/gestures.dart' show kTouchSlop;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/account.dart';
 import '../../domain/display_settings.dart';
 import '../../domain/message_filter.dart';
 import '../../domain/message_sort.dart';
@@ -32,7 +34,11 @@ import 'forward_as_attachment.dart';
 import 'follow_up_sheet.dart';
 import 'junk_actions.dart';
 import 'message_actions.dart';
+import 'print_message.dart';
 import 'snooze_sheet.dart';
+import 'threat_check_sheet.dart';
+import '../settings/rules_screen.dart' show openRuleEditor;
+import '../settings/server_settings_access.dart' show canReachServerSettings;
 import '../../state/sender_blocks.dart';
 import '../compose/open_compose.dart';
 import '../meetings/new_meeting_screen.dart';
@@ -56,9 +62,9 @@ import 'search_bar.dart';
 /// the behaviour in through [onOpen].
 ///
 /// Gestures per row: tap opens, swipe left deletes, swipe right moves (via
-/// the Move-to sheet), long-press lifts the message so it can be dropped on
-/// a folder in the tree, and a long-press menu is offered where there is no
-/// tree to drop onto.
+/// the Move-to sheet), and a hold lifts the message so it can be dropped on
+/// a folder in the tree. Let go where it was, the hold opens the row's
+/// menu, the one a right click opens: a finger's way of asking for it.
 class MessageListPane extends ConsumerStatefulWidget {
   const MessageListPane({super.key, required this.onOpen});
 
@@ -73,6 +79,12 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
   /// against something, and this is the something.
   final _listKey = GlobalKey();
   final _scroll = ScrollController();
+
+  /// Where the finger last went down on a row that can be pulled, and
+  /// whether the pull has gone out of the app: a hold let go where it was
+  /// opens the row's menu, a pull does not.
+  Offset? _heldAt;
+  bool _pulledOut = false;
 
   @override
   void dispose() {
@@ -387,10 +399,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     widget.onOpen(m);
                   },
                   // No drag out of a search: the hits are not one folder's
-                  // rows. A long press ticks, as it does in a folder.
-                  onLongPress: () => ref
-                      .read(selectedMessageIdsProvider.notifier)
-                      .addAll([m.id]),
+                  // rows. A hold opens the menu, as a right click does.
+                  onLongPress: (at) =>
+                      _showMessageMenu(context, ref, actions, m, at),
                   onContextMenu: (at) =>
                       _showMessageMenu(context, ref, actions, m, at),
                 );
@@ -619,11 +630,15 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                         onTap: () => ref
                             .read(expandedConversationsProvider.notifier)
                             .toggle(conversation.id),
-                        // A long press ticks the thread, the way it ticks a
-                        // message. The menu is on the right button.
-                        onLongPress: () => ref
-                            .read(selectedMessageIdsProvider.notifier)
-                            .addAll(ids),
+                        // A hold opens the thread's menu, as the right
+                        // button does; its Select all ticks the thread.
+                        onLongPress: (at) => _showConversationMenu(
+                          context,
+                          ref,
+                          actions,
+                          conversation,
+                          at,
+                        ),
                         onContextMenu: (at) => _showConversationMenu(
                           context,
                           ref,
@@ -670,8 +685,12 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                                 .select(m.id);
                             widget.onOpen(m);
                           },
-                          onContextMenu: (at) =>
-                              _showMessageMenu(context, ref, actions, m, at),
+                          onLongPress: (at) => _showMessageMenu(
+                              context, ref, actions, m, at,
+                              tickable: false),
+                          onContextMenu: (at) => _showMessageMenu(
+                              context, ref, actions, m, at,
+                              tickable: false),
                         ),
                       ),
                     );
@@ -717,9 +736,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                       widget.onOpen(m);
                     },
                     // No long press of its own: the draggable around this
-                    // row owns the long press, and ticks on its behalf. Two
-                    // long-press recognisers on one row and the inner one
-                    // wins the gesture, which is a drag that never starts.
+                    // row owns the long press, and opens the menu on its
+                    // behalf. Two long-press recognisers on one row and the
+                    // inner one wins the gesture, which is a drag that never
+                    // starts.
                     onContextMenu: (at) =>
                         _showMessageMenu(context, ref, actions, m, at),
                     key: ValueKey('tile:${m.id}'),
@@ -728,35 +748,55 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     key: ValueKey(m.id),
                     messages: [m],
                     actions: actions,
-                    child: LongPressDraggable<DraggedMessages>(
-                      data: DraggedMessages([m]),
-                      dragAnchorStrategy: pointerDragAnchorStrategy,
-                      feedback: _DragFeedback(message: m),
-                      childWhenDragging: Opacity(opacity: 0.35, child: tile),
-                      // Sharing the screen, the pull becomes a drag out of the
-                      // app — as .eml files the other window can take — and
-                      // Android takes the finger, which ends this one. Every
-                      // ticked message comes along if this row is one of them.
-                      // A long press ticks: it is how selecting starts on a
-                      // screen with no right button. Adds rather than starts,
-                      // so a long press mid-selection takes one more. Held
-                      // on and pulled, the row is being dragged, within the
-                      // app or — sharing the screen — out of it.
-                      onDragStarted: () {
-                        final wasTicked = ticked.contains(m.id);
-                        ref.read(selectedMessageIdsProvider.notifier).addAll([
-                          m.id,
-                        ]);
-                        if (!ref.read(multiWindowModeProvider)) return;
-                        final all = wasTicked
-                            ? [
-                                for (final x in messages)
-                                  if (ticked.contains(x.id)) x,
-                              ]
-                            : [m];
-                        dragMessages(ref, all);
-                      },
-                      child: tile,
+                    child: Listener(
+                      onPointerDown: (e) => _heldAt = e.position,
+                      child: LongPressDraggable<DraggedMessages>(
+                        data: DraggedMessages([m]),
+                        dragAnchorStrategy: pointerDragAnchorStrategy,
+                        feedback: _DragFeedback(message: m),
+                        childWhenDragging: Opacity(opacity: 0.35, child: tile),
+                        onDragStarted: () => _pulledOut = false,
+                        // Sharing the screen, the pull becomes a drag out of
+                        // the app — as .eml files the other window can take —
+                        // once the finger moves, and Android takes the
+                        // finger, which ends this one. Every ticked message
+                        // comes along if this row is one of them.
+                        onDragUpdate: (d) {
+                          final from = _heldAt;
+                          if (_pulledOut ||
+                              from == null ||
+                              (d.globalPosition - from).distance < kTouchSlop ||
+                              !ref.read(multiWindowModeProvider)) {
+                            return;
+                          }
+                          _pulledOut = true;
+                          final now = ref.read(selectedMessageIdsProvider);
+                          dragMessages(
+                            ref,
+                            now.contains(m.id)
+                                ? [
+                                    for (final x in messages)
+                                      if (now.contains(x.id)) x,
+                                  ]
+                                : [m],
+                          );
+                        },
+                        // Held and let go where it was: the row's menu, as a
+                        // right click opens it, since a finger has no right
+                        // button. Pulled onto a folder, or anywhere else,
+                        // it was a drag.
+                        onDragEnd: (d) {
+                          final from = _heldAt;
+                          if (d.wasAccepted ||
+                              _pulledOut ||
+                              from == null ||
+                              (d.offset - from).distance >= kTouchSlop) {
+                            return;
+                          }
+                          _showMessageMenu(context, ref, actions, m, d.offset);
+                        },
+                        child: tile,
+                      ),
                     ),
                   );
                   // Inside an open thread, indented so the run of replies reads
@@ -942,14 +982,19 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     );
   }
 
+  /// A row of the list's menus: a little shorter than a menu's own, since
+  /// Ron found the message's menu longer than the screen (3.7.0). [more]
+  /// says another menu comes after it.
   static PopupMenuItem<String> _item(
     String value,
     IconData icon,
     String text, {
     Color? color,
+    bool more = false,
   }) {
     return PopupMenuItem<String>(
       value: value,
+      height: 40,
       child: Row(
         children: [
           Icon(icon, size: 20, color: color),
@@ -960,10 +1005,13 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
               style: color == null ? null : TextStyle(color: color),
             ),
           ),
+          if (more) const Icon(Icons.chevron_right, size: 20),
         ],
       ),
     );
   }
+
+  static const _gap = PopupMenuDivider(height: 9);
 
   /// The whole thread at once.
   ///
@@ -977,6 +1025,11 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     Conversation conversation,
     Offset at,
   ) async {
+    final ticked = ref.read(selectedMessageIdsProvider);
+    if (ticked.length > 1 &&
+        conversation.messages.any((m) => ticked.contains(m.id))) {
+      return _showTickedMenu(context, ref, actions, at);
+    }
     final count = conversation.length;
     final unread = conversation.hasUnread;
     final flagged = conversation.isFlagged;
@@ -986,7 +1039,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
 
     final choice = await _menuAt(context, at, [
       _item('select', Icons.checklist, 'Select all $count'),
-      const PopupMenuDivider(),
+      _gap,
       _item('move', Icons.drive_file_move_outline, 'Move all $count to…'),
       _item('archive', Icons.archive_outlined, 'Archive all $count'),
       _item(
@@ -1006,7 +1059,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         pinned ? Icons.push_pin : Icons.push_pin_outlined,
         pinned ? 'Unpin' : 'Pin to top',
       ),
-      const PopupMenuDivider(),
+      _gap,
       _item('delete', Icons.delete_outline, 'Delete all $count', color: error),
     ]);
     if (choice == null || !context.mounted) return;
@@ -1040,61 +1093,47 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     }
   }
 
-  /// Everything that can be done to one message, from a right click.
+  /// Everything that can be done to one message, from a right click or a
+  /// hold: Reply, Reply all, Forward and Delete as a row of icons across
+  /// the top, what is done most by name under them, and the rest behind
+  /// More, so the menu fits on the screen (3.7.0). With several ticked and
+  /// this one among them, it is their menu instead. [tickable] is false for
+  /// a row that cannot be ticked: your reply from Sent, inside the thread
+  /// it answers.
   Future<void> _showMessageMenu(
     BuildContext context,
     WidgetRef ref,
     MessageActions actions,
     MailMessage message,
-    Offset at,
-  ) async {
+    Offset at, {
+    bool tickable = true,
+  }) async {
+    final ticked = ref.read(selectedMessageIdsProvider);
+    if (tickable && ticked.length > 1 && ticked.contains(message.id)) {
+      return _showTickedMenu(context, ref, actions, at);
+    }
     final steps = ref.read(quickStepsProvider);
-    final folderIndex = ref.read(folderIndexProvider);
     final error = Theme.of(context).colorScheme.error;
-    final windows = ref.read(windowsAvailableProvider).value ?? false;
-    final choice = await _menuAt(context, at, [
-      if (windows) ...[
-        _item('window', Icons.open_in_new, 'Open in new window'),
-        const PopupMenuDivider(),
-      ],
-      _item('reply', Icons.reply, 'Reply'),
-      _item('replyAll', Icons.reply_all, 'Reply all'),
-      _item('forward', Icons.forward, 'Forward'),
-      _item(
-        'forwardAttach',
-        Icons.attach_email_outlined,
-        'Forward as attachment',
-      ),
-      const PopupMenuDivider(),
-      // Only the steps that can finish on this message: one that files
-      // into another account's folder cannot.
-      for (final step in steps.where((s) => s.appliesTo(message.accountId)))
-        PopupMenuItem<String>(
-          value: 'qs:${step.id}',
-          child: Row(
-            children: [
-              Icon(iconForQuickStep(step), size: 20),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(step.name),
-                    Text(
-                      describeQuickStep(step, folderIndex),
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+    final inJunk = isInJunk(ref, message);
+    var choice = await _menuAt(context, at, [
+      _MenuIcons([
+        (value: 'reply', icon: Icons.reply, tooltip: 'Reply', color: null),
+        (
+          value: 'replyAll',
+          icon: Icons.reply_all,
+          tooltip: 'Reply all',
+          color: null,
         ),
-      if (steps.isNotEmpty) const PopupMenuDivider(),
-      _item('copy', Icons.copy_outlined, 'Copy'),
-      _item('event', Icons.event_outlined, 'Meeting from this message…'),
-      _item('select', Icons.checklist, 'Select'),
+        (value: 'forward', icon: Icons.forward, tooltip: 'Forward', color: null),
+        (
+          value: 'delete',
+          icon: Icons.delete_outline,
+          tooltip: 'Delete',
+          color: error,
+        ),
+      ]),
+      _gap,
+      if (tickable) _item('select', Icons.checklist, 'Select'),
       _item('move', Icons.drive_file_move_outline, 'Move to…'),
       if (archiveTargetFor(
                 ref.read(foldersProvider).value ?? const {},
@@ -1121,17 +1160,38 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         _item('pin', Icons.push_pin, 'Unpin')
       else
         _item('pin', Icons.push_pin_outlined, 'Pin to top'),
-      const PopupMenuDivider(),
-      if (isInJunk(ref, message))
-        _item('notJunk', Icons.report_off_outlined, 'Not junk')
-      else if (!ref.read(senderBlocksProvider).blocks(message.from.email))
-        _item('block', Icons.block, 'Block sender'),
-      _item('delete', Icons.delete_outline, 'Delete', color: error),
+      if (inJunk) _item('notJunk', Icons.report_off_outlined, 'Not junk'),
+      // Only the steps that can finish on this message: one that files
+      // into another account's folder cannot. A line each, by name.
+      for (final step in steps.where((s) => s.appliesTo(message.accountId)))
+        _item('qs:${step.id}', iconForQuickStep(step), step.name),
+      _gap,
+      _item('more', Icons.more_horiz, 'More', more: true),
     ]);
+    if (choice == 'more' && context.mounted) {
+      choice = await _menuAt(context, at, [
+        if (ref.read(windowsAvailableProvider).value ?? false)
+          _item('window', Icons.open_in_new, 'Open in new window'),
+        _item(
+          'forwardAttach',
+          Icons.attach_email_outlined,
+          'Forward as attachment',
+        ),
+        _item('copy', Icons.copy_outlined, 'Copy'),
+        _item('event', Icons.event_outlined, 'Meeting from this message…'),
+        _item('print', Icons.print_outlined, 'Print or save as PDF…'),
+        _item('threats', Icons.shield_outlined, 'Check for threats…'),
+        if (_ruleAccountFor(ref, message) != null)
+          _item('rule', Icons.rule, 'Create rule…'),
+        if (!inJunk &&
+            !ref.read(senderBlocksProvider).blocks(message.from.email))
+          _item('block', Icons.block, 'Block sender'),
+      ]);
+    }
     if (choice == null || !context.mounted) return;
 
     if (choice.startsWith('qs:')) {
-      final step = steps.firstWhere((s) => s.id == choice.substring(3));
+      final step = steps.firstWhere((s) => s.id == choice!.substring(3));
       await applyQuickStep(context, ref,
           step: step, message: message, listId: actions.listId);
       return;
@@ -1180,6 +1240,32 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             .loadMessageBody(message.id);
         if (!context.mounted) return;
         await openNewMeetingFromMessage(context, ref, message, body);
+      // The body as the reading pane would show it, read first: from the
+      // list it may not have been opened yet.
+      case 'print':
+        final MailBody body;
+        try {
+          body = await ref.read(mailEngineProvider).loadMessageBody(message.id);
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context)
+              ..hideCurrentSnackBar()
+              ..showSnackBar(SnackBar(
+                duration: kBottomMessage,
+                content: Text('Could not print. $e'),
+              ));
+          }
+          return;
+        }
+        if (!context.mounted) return;
+        await printMessage(context, ref, message, body);
+      case 'threats':
+        await showThreatCheck(context, message);
+      case 'rule':
+        final account = _ruleAccountFor(ref, message);
+        if (account != null) {
+          await openRuleEditor(context, account, message: message);
+        }
       case 'select':
         ref.read(selectedMessageIdsProvider.notifier).addAll([message.id]);
       case 'move':
@@ -1209,6 +1295,155 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
         await actions.delete(context, [message]);
     }
   }
+
+  /// The account a rule made from [message] would go on, where its server
+  /// runs rules: Outlook's Create rule, as the open message's menu has it.
+  static Account? _ruleAccountFor(WidgetRef ref, MailMessage message) {
+    final account = ref
+        .read(accountsProvider)
+        .value
+        ?.where((a) => a.id == message.accountId)
+        .firstOrNull;
+    return account != null && canReachServerSettings(account) ? account : null;
+  }
+
+  /// What is ticked, from a right click or a hold on one of the ticked
+  /// rows, as Outlook acts on the selection: the selection bar's actions,
+  /// each saying how many it is about, and the ticks let go once done, as
+  /// the bar lets them go. Read and flag go the way most of them are not.
+  Future<void> _showTickedMenu(
+    BuildContext context,
+    WidgetRef ref,
+    MessageActions actions,
+    Offset at,
+  ) async {
+    final ticked = ref.read(selectedMessageIdsProvider);
+    final listed = ref.read(searchQueryProvider).trim().isNotEmpty
+        ? ref.read(searchResultsProvider).value
+        : ref.read(messagesProvider(actions.listId)).value;
+    final chosen = [
+      for (final m in listed ?? const <MailMessage>[])
+        if (ticked.contains(m.id)) m,
+    ];
+    if (chosen.isEmpty) return;
+    final n = chosen.length;
+    final mostlyUnread = chosen.where((m) => !m.isRead).length > n / 2;
+    final mostlyUnflagged = chosen.where((m) => !m.isFlagged).length > n / 2;
+    final pins = ref.read(pinnedMessagesProvider);
+    final pinned = chosen.every((m) => pins.contains(m.id));
+    final error = Theme.of(context).colorScheme.error;
+
+    final choice = await _menuAt(context, at, [
+      _item('move', Icons.drive_file_move_outline, 'Move $n to…'),
+      _item('archive', Icons.archive_outlined, 'Archive $n'),
+      _item(
+        'read',
+        mostlyUnread
+            ? Icons.mark_email_read_outlined
+            : Icons.mark_email_unread_outlined,
+        mostlyUnread ? 'Mark $n as read' : 'Mark $n as unread',
+      ),
+      _item(
+        'flag',
+        mostlyUnflagged ? Icons.flag_outlined : Icons.flag,
+        mostlyUnflagged ? 'Flag $n' : 'Remove flags',
+      ),
+      _item('followUp', Icons.alarm_outlined, 'Follow up…'),
+      _item('snooze', Icons.snooze_outlined, 'Snooze…'),
+      _item(
+        'pin',
+        pinned ? Icons.push_pin : Icons.push_pin_outlined,
+        pinned ? 'Unpin' : 'Pin to top',
+      ),
+      _item(
+        'forwardAttach',
+        Icons.attach_email_outlined,
+        'Forward $n as attachments',
+      ),
+      _gap,
+      _item('delete', Icons.delete_outline, 'Delete $n', color: error),
+    ]);
+    if (choice == null || !context.mounted) return;
+
+    final selection = ref.read(selectedMessageIdsProvider.notifier);
+    switch (choice) {
+      // Let go only when something moved, as the bar's Move: the sheet
+      // closed without a choice keeps them ticked for another try.
+      case 'move':
+        if (await actions.moveWithPrompt(context, chosen)) selection.clear();
+      case 'archive':
+        if (await actions.archive(context, chosen)) selection.clear();
+      case 'read':
+        await actions.setRead(context, chosen, mostlyUnread);
+        selection.clear();
+      case 'flag':
+        await actions.setFlagged(context, chosen, mostlyUnflagged);
+        selection.clear();
+      case 'followUp':
+        await showFollowUpSheet(context, ref,
+            listId: actions.listId, messages: chosen);
+      case 'snooze':
+        if (await showSnoozeSheet(context, ref,
+            listId: actions.listId, messages: chosen)) {
+          selection.clear();
+        }
+      case 'pin':
+        ref.read(pinnedMessagesProvider.notifier).setPinned(
+              [for (final m in chosen) m.id],
+              !pinned,
+            );
+        selection.clear();
+      case 'forwardAttach':
+        await forwardAsAttachment(context, ref, chosen);
+        selection.clear();
+      case 'delete':
+        await actions.delete(context, chosen);
+        selection.clear();
+    }
+  }
+}
+
+/// One of the buttons across the top of a message's menu.
+typedef _MenuIcon = ({
+  String value,
+  IconData icon,
+  String tooltip,
+  Color? color,
+});
+
+/// The commonest things done to a message as a row of icons at the top of
+/// its menu, as Windows' own menus have them: four rows of the menu in
+/// one. Each says what it is when held, or under a mouse.
+class _MenuIcons extends PopupMenuEntry<String> {
+  const _MenuIcons(this.buttons);
+
+  final List<_MenuIcon> buttons;
+
+  @override
+  double get height => 48;
+
+  @override
+  bool represents(String? value) => buttons.any((b) => b.value == value);
+
+  @override
+  State<_MenuIcons> createState() => _MenuIconsState();
+}
+
+class _MenuIconsState extends State<_MenuIcons> {
+  @override
+  Widget build(BuildContext context) => Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          for (final b in widget.buttons)
+            IconButton(
+              key: ValueKey('menu-${b.value}'),
+              tooltip: b.tooltip,
+              icon: Icon(b.icon, color: b.color),
+              // As a menu's own row closes it, with what was chosen.
+              onPressed: () => Navigator.of(context).pop(b.value),
+            ),
+        ],
+      );
 }
 
 /// A row that does whatever Settings says a swipe should do.

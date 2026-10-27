@@ -232,21 +232,97 @@ void main() {
     });
   });
 
-  testWidgets('a long press ticks the message, and one more', (tester) async {
-    // The way selecting starts on a screen with no right button.
+  testWidgets('a hold opens the menu, whose Select starts ticking',
+      (tester) async {
+    // A finger's right click (3.7.0): a hold ticked before, and the menu
+    // was a mouse's alone.
     final c = await pump(tester);
     final tiles = tester.widgetList<MessageTile>(find.byType(MessageTile));
     final first = tiles.first.message.id;
     final second = tiles.elementAt(1).message.id;
 
-    await tester.longPress(find.byType(MessageTile).first);
+    await tester.longPress(find.byKey(ValueKey('tile:$first')));
+    await tester.pumpAndSettle();
+    expect(c.read(selectedMessageIdsProvider), isEmpty,
+        reason: 'the hold ticks nothing by itself');
+    expect(find.byKey(const ValueKey('menu-reply')), findsOneWidget);
+    await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Select'));
     await tester.pumpAndSettle();
     expect(c.read(selectedMessageIdsProvider), {first});
     expect(find.byType(Checkbox), findsWidgets);
 
-    await tester.longPress(find.byKey(ValueKey('tile:$second')));
+    await tester.tap(find.byKey(ValueKey('tile:$second')));
     await tester.pumpAndSettle();
-    expect(c.read(selectedMessageIdsProvider), {first, second});
+    expect(c.read(selectedMessageIdsProvider), {first, second},
+        reason: 'and from there a tap ticks one more');
+  });
+
+  group('with several ticked', () {
+    Future<(ProviderContainer, List<MailMessage>)> twoTicked(
+      WidgetTester tester,
+    ) async {
+      final c = await pump(tester);
+      final unread = [
+        for (final t in tester.widgetList<MessageTile>(find.byType(MessageTile)))
+          if (!t.message.isRead) t.message,
+      ];
+      expect(unread.length, greaterThan(2));
+      c.read(selectedMessageIdsProvider.notifier)
+          .addAll([unread[0].id, unread[1].id]);
+      await tester.pumpAndSettle();
+      return (c, unread);
+    }
+
+    MailMessage now(ProviderContainer c, String id) => c
+        .read(messagesProvider(c.read(effectiveSelectedFolderIdProvider)!))
+        .value!
+        .firstWhere((m) => m.id == id);
+
+    testWidgets('the menu on a ticked one acts on all of them', (tester) async {
+      final (c, unread) = await twoTicked(tester);
+
+      await tester.tap(find.byKey(ValueKey('tile:${unread[1].id}')),
+          buttons: kSecondaryButton);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('menu-reply')), findsNothing,
+          reason: 'nothing that is for one message alone');
+      await tester.tap(
+          find.widgetWithText(PopupMenuItem<String>, 'Mark 2 as read'));
+      await tester.pumpAndSettle();
+
+      expect(now(c, unread[0].id).isRead, isTrue);
+      expect(now(c, unread[1].id).isRead, isTrue);
+      expect(now(c, unread[2].id).isRead, isFalse);
+      expect(c.read(selectedMessageIdsProvider), isEmpty,
+          reason: 'let go once done, as the bar lets them go');
+    });
+
+    testWidgets('and so does a hold on one', (tester) async {
+      final (_, unread) = await twoTicked(tester);
+
+      await tester.longPress(find.byKey(ValueKey('tile:${unread[0].id}')));
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(PopupMenuItem<String>, 'Delete 2'),
+          findsOneWidget);
+    });
+
+    testWidgets('the menu on one not ticked is its own', (tester) async {
+      final (c, unread) = await twoTicked(tester);
+
+      await tester.tap(find.byKey(ValueKey('tile:${unread[2].id}')),
+          buttons: kSecondaryButton);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('menu-reply')), findsOneWidget);
+      await tester.tap(
+          find.widgetWithText(PopupMenuItem<String>, 'Mark as read'));
+      await tester.pumpAndSettle();
+
+      expect(now(c, unread[2].id).isRead, isTrue);
+      expect(now(c, unread[0].id).isRead, isFalse);
+      expect(c.read(selectedMessageIdsProvider),
+          {unread[0].id, unread[1].id});
+    });
   });
 
   testWidgets('the right-click menu offers Select too', (tester) async {
@@ -420,7 +496,8 @@ void main() {
       );
     });
 
-    testWidgets('a long press ticks the whole thread', (tester) async {
+    testWidgets('a hold opens its menu, whose Select all ticks the thread',
+        (tester) async {
       final c = await pump(tester);
       c.read(displayProvider.notifier).setConversations(true);
       await tester.pumpAndSettle();
@@ -431,6 +508,12 @@ void main() {
       await tester.longPress(
         find.byKey(ValueKey('thread:${thread.conversation.id}')),
       );
+      await tester.pumpAndSettle();
+      expect(c.read(selectedMessageIdsProvider), isEmpty);
+      await tester.tap(find.widgetWithText(
+        PopupMenuItem<String>,
+        'Select all ${thread.conversation.length}',
+      ));
       await tester.pumpAndSettle();
 
       expect(

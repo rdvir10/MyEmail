@@ -65,14 +65,22 @@ void main() {
   Finder inBar(Finder f) =>
       find.descendant(of: find.byType(SelectionBar), matching: f);
 
+  /// A hold on the hit, and Select in the menu it opens.
+  Future<void> holdAndSelect(WidgetTester tester, MailMessage m) async {
+    await tester.longPress(find.byKey(ValueKey('search:${m.id}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Select'));
+    await tester.pumpAndSettle();
+  }
+
   group('in search results', () {
-    testWidgets('a long press ticks a hit and the bar appears', (tester) async {
+    testWidgets('a hold opens the menu, its Select ticks the hit and the bar '
+        'appears', (tester) async {
       final c = await pump(tester);
       final hits = await search(tester, 'invoice');
       expect(hits.length, greaterThan(1));
 
-      await tester.longPress(find.byKey(ValueKey('search:${hits.first.message.id}')));
-      await tester.pumpAndSettle();
+      await holdAndSelect(tester, hits.first.message);
 
       expect(c.read(selectedMessageIdsProvider), {hits.first.message.id});
       expect(find.byType(SelectionBar), findsOneWidget);
@@ -82,8 +90,7 @@ void main() {
     testWidgets('Select all takes every hit, not a screenful', (tester) async {
       final c = await pump(tester);
       final hits = await search(tester, 'the');
-      await tester.longPress(find.byKey(ValueKey('search:${hits.first.message.id}')));
-      await tester.pumpAndSettle();
+      await holdAndSelect(tester, hits.first.message);
 
       await tester.tap(find.byTooltip('Select all results'));
       await tester.pumpAndSettle();
@@ -200,9 +207,7 @@ void main() {
       // after it, over a list still showing the hits for 'invoice'.
       final c = await pump(tester);
       final hits = await search(tester, 'invoice');
-      await tester.longPress(
-          find.byKey(ValueKey('search:${hits.first.message.id}')));
-      await tester.pumpAndSettle();
+      await holdAndSelect(tester, hits.first.message);
       expect(find.byType(SelectionBar), findsOneWidget);
 
       c.read(selectedMessageIdsProvider.notifier).clear();
@@ -468,6 +473,8 @@ void main() {
 
       await tester.tap(find.byKey(ValueKey('tile:${m.id}')), buttons: kSecondaryButton);
       await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'More'));
+      await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Forward as attachment'));
       await tester.pump(const Duration(milliseconds: 300));
       await tester.pumpAndSettle();
@@ -508,6 +515,8 @@ void main() {
 
       await tester.tap(find.byKey(ValueKey('tile:${m.id}')),
           buttons: kSecondaryButton);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'More'));
       await tester.pumpAndSettle();
       await tester.tap(
           find.widgetWithText(PopupMenuItem<String>, 'Forward as attachment'));

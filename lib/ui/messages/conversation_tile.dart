@@ -73,7 +73,9 @@ class ConversationTile extends StatelessWidget {
   /// the selection is and is painted like a selected message.
   final bool isSelected;
   final VoidCallback onTap;
-  final VoidCallback? onLongPress;
+
+  /// A hold, with where the finger is, so a menu can open under it.
+  final void Function(Offset at)? onLongPress;
   final ListDensity density;
   final Color? accountColor;
 
@@ -271,59 +273,67 @@ class ConversationTile extends StatelessWidget {
           selected: isSelected,
           flagged: conversation.isFlagged,
         ),
-        child: InkWell(
-          onTap: onTap,
-          onLongPress: onLongPress,
-          onSecondaryTapUp: onContextMenu == null
+        // The hold from outside the ink, as on a message row.
+        child: GestureDetector(
+          onLongPressStart: onLongPress == null
               ? null
-              : (d) => onContextMenu!(d.globalPosition),
-          child: Padding(
-            padding: EdgeInsets.fromLTRB(
-              8,
-              density.verticalPadding,
-              6,
-              density.verticalPadding,
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (isSelecting)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 4),
-                    child: RowCheckbox(
-                      tristate: true,
-                      value: tickedCount == conversation.length
-                          ? true
-                          : tickedCount == 0
-                              ? false
-                              : null,
-                      // Some ticked reads as "not all": the next press
-                      // takes the rest, the one after that lets go.
-                      onChanged: (_) => onTicked?.call(
-                        tickedCount != conversation.length,
+              : (d) {
+                  Feedback.forLongPress(context);
+                  onLongPress!(d.globalPosition);
+                },
+          child: InkWell(
+            onTap: onTap,
+            onSecondaryTapUp: onContextMenu == null
+                ? null
+                : (d) => onContextMenu!(d.globalPosition),
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(
+                8,
+                density.verticalPadding,
+                6,
+                density.verticalPadding,
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (isSelecting)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: RowCheckbox(
+                        tristate: true,
+                        value: tickedCount == conversation.length
+                            ? true
+                            : tickedCount == 0
+                                ? false
+                                : null,
+                        // Some ticked reads as "not all": the next press
+                        // takes the rest, the one after that lets go.
+                        onChanged: (_) => onTicked?.call(
+                          tickedCount != conversation.length,
+                        ),
+                        singleLine: singleLine,
                       ),
-                      singleLine: singleLine,
+                    ),
+                  RowGutter(
+                    unread: unread,
+                    accountColor: accountColor,
+                    singleLine: singleLine,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: singleLine ? RowCheckbox.singleLineSize : 0,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: lines,
+                      ),
                     ),
                   ),
-                RowGutter(
-                  unread: unread,
-                  accountColor: accountColor,
-                  singleLine: singleLine,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      minHeight: singleLine ? RowCheckbox.singleLineSize : 0,
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: lines,
-                    ),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
