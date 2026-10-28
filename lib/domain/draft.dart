@@ -42,11 +42,14 @@ class DraftAttachment {
   int get size => bytes.length;
 
   /// "12 KB", "3.4 MB": what a person needs to judge whether to send it.
-  String get readableSize {
-    if (size < 1024) return '$size B';
-    if (size < 1024 * 1024) return '${(size / 1024).round()} KB';
-    return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
-  }
+  String get readableSize => readableBytes(size);
+}
+
+/// [size] bytes as [DraftAttachment.readableSize] says them.
+String readableBytes(int size) {
+  if (size < 1024) return '$size B';
+  if (size < 1024 * 1024) return '${(size / 1024).round()} KB';
+  return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
 }
 
 /// A message being written.

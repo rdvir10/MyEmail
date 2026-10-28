@@ -87,9 +87,11 @@ Future<void> openCompose(
   if (ref.read(composeInWindowProvider) &&
       (ref.read(windowsAvailableProvider).value ?? false)) {
     // A window the system did not open falls through to here.
-    if (await ref
-        .read(windowOpenerProvider)
-        .open(ComposeWindow(draft, disposable: disposable))) {
+    if (await ref.read(windowOpenerProvider).open(ComposeWindow(
+          draft,
+          disposable: disposable,
+          offerSmallerPictures: true,
+        ))) {
       return;
     }
     if (!context.mounted) return;
@@ -97,7 +99,13 @@ Future<void> openCompose(
 
   await Navigator.of(context).push(
     MaterialPageRoute<bool>(
-      builder: (_) => ComposeScreen(draft: draft, disposable: disposable),
+      // What is attached has just come in: a forward's files, or what was
+      // shared or dropped.
+      builder: (_) => ComposeScreen(
+        draft: draft,
+        disposable: disposable,
+        offerSmallerPictures: true,
+      ),
     ),
   );
 }

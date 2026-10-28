@@ -21,6 +21,7 @@ sealed class WindowRequest {
         'compose' => ComposeWindow(
             _draftFromJson(json['draft'] as Map),
             disposable: json['disposable'] == true,
+            offerSmallerPictures: json['offerSmallerPictures'] == true,
           ),
         'message' => MessageWindow(_messageFromJson(json['message'] as Map)),
         final other => throw FormatException('not a window: $other'),
@@ -34,7 +35,11 @@ sealed class WindowRequest {
 
 /// A message being written, moved to a window of its own.
 class ComposeWindow extends WindowRequest {
-  const ComposeWindow(this.draft, {this.disposable = false});
+  const ComposeWindow(
+    this.draft, {
+    this.disposable = false,
+    this.offerSmallerPictures = false,
+  });
 
   final Draft draft;
 
@@ -43,11 +48,16 @@ class ComposeWindow extends WindowRequest {
   /// another window, which holds typing that exists nowhere else.
   final bool disposable;
 
+  /// Its files have just come in, so big pictures among them are offered
+  /// smaller as it opens; not for one moved across, asked about already.
+  final bool offerSmallerPictures;
+
   @override
   Map<String, Object?> toJson() => {
         'window': 'compose',
         'draft': _draftToJson(draft),
         if (disposable) 'disposable': true,
+        if (offerSmallerPictures) 'offerSmallerPictures': true,
       };
 }
 

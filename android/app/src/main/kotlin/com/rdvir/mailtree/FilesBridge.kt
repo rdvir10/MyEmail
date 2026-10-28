@@ -458,9 +458,19 @@ class FilesBridge(
                 val fitted = Bitmap.createBitmap(
                     decoded, 0, 0, decoded.width, decoded.height, matrix, true,
                 )
+                // A JPEG cannot be see-through: what was, in a screenshot or
+                // a logo, goes white rather than black.
+                val flat = if (!fitted.hasAlpha()) fitted else
+                    Bitmap.createBitmap(fitted.width, fitted.height, Bitmap.Config.ARGB_8888)
+                        .also {
+                            Canvas(it).apply {
+                                drawColor(Color.WHITE)
+                                drawBitmap(fitted, 0f, 0f, null)
+                            }
+                        }
                 val folder = File(activity.cacheDir, "incoming").apply { mkdirs() }
                 val out = File(folder, "picture-${UUID.randomUUID()}.jpg")
-                out.outputStream().use { fitted.compress(Bitmap.CompressFormat.JPEG, quality, it) }
+                out.outputStream().use { flat.compress(Bitmap.CompressFormat.JPEG, quality, it) }
                 out.path
             } catch (e: Exception) {
                 android.util.Log.e("MyEmail", "could not scale the picture", e)

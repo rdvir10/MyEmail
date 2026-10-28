@@ -28,6 +28,7 @@ import 'domain/sender_blocks.dart';
 import 'data/widget/home_screen_surface.dart';
 import 'data/contacts/device_contacts.dart';
 import 'data/files/attachment_files.dart';
+import 'data/files/draft_files.dart';
 import 'data/files/file_bridge.dart';
 import 'data/widget/widget_setup_channel.dart';
 import 'data/widget/widget_state_store.dart';
@@ -203,6 +204,10 @@ Future<void> main() async {
           deviceContactsProvider.overrideWithValue(platformDeviceContacts()),
           attachmentFilesProvider
               .overrideWithValue(const DiskAttachmentFiles()),
+          draftFilesProvider.overrideWithValue(const DiskDraftFiles()),
+          pictureShrinkerProvider.overrideWith(
+            (ref) => DevicePictureShrinker(ref.watch(fileBridgeProvider)),
+          ),
           releaseFeedProvider.overrideWithValue(HttpReleaseFeed()),
           apkInstallerProvider.overrideWithValue(AndroidApkInstaller()),
           homeScreenSurfaceProvider

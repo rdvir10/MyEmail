@@ -54,11 +54,16 @@ class _WindowHostState extends ConsumerState<WindowHost> {
     if (!mounted) return;
     final Widget screen;
     switch (widget.request) {
-      case ComposeWindow(:final draft, :final disposable):
+      case ComposeWindow(
+          :final draft,
+          :final disposable,
+          :final offerSmallerPictures,
+        ):
         screen = ComposeScreen(
           draft: draft,
           disposable: disposable,
           inWindow: true,
+          offerSmallerPictures: offerSmallerPictures,
         );
       case MessageWindow(:final message):
         // The message's own folder is the list its actions go through:

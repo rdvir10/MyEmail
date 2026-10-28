@@ -86,6 +86,17 @@ void main() {
       final files = (back as ComposeWindow).draft.attachments;
       expect(files.map((a) => a.forwardedMessageId), ['acct:INBOX#12', null]);
     });
+
+    test('says whether its pictures are still to be offered smaller', () {
+      // A new message opening in a window asks there; one moved across from
+      // another window was asked about already.
+      ComposeWindow back(ComposeWindow w) =>
+          WindowRequest.decode(w.encode()) as ComposeWindow;
+
+      expect(back(ComposeWindow(draft, offerSmallerPictures: true))
+          .offerSmallerPictures, isTrue);
+      expect(back(ComposeWindow(draft)).offerSmallerPictures, isFalse);
+    });
   });
 
   group('a message', () {

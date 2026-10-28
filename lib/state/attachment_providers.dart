@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/files/attachment_files.dart';
+import '../data/files/draft_files.dart';
 import '../data/files/file_bridge.dart';
 import '../data/ui_state_store.dart';
 import '../domain/html_safety.dart';
@@ -20,6 +21,13 @@ final fileBridgeProvider = Provider<FileBridge>((ref) => FakeFileBridge());
 
 final attachmentFilesProvider =
     Provider<AttachmentFiles>((ref) => MemoryAttachmentFiles());
+
+/// The files of a message being written, put where another app can open
+/// them, and its pictures made smaller. main() overrides both on a device.
+final draftFilesProvider = Provider<DraftFiles>((ref) => MemoryDraftFiles());
+
+final pictureShrinkerProvider =
+    Provider<PictureShrinker>((ref) => const NoPictureShrinker());
 
 /// What is attached to one message.
 ///

@@ -18,6 +18,10 @@ import '../../domain/address_suggestions.dart'
 import '../../domain/signature.dart';
 import 'free_times.dart';
 import 'insert_picture.dart';
+import 'smaller_pictures.dart';
+import '../../data/files/message_files.dart' show emlMimeType;
+import '../messages/attached_message_screen.dart' show openAttachedMessage;
+import '../messages/attachment_bar.dart' show attachmentIcon;
 import 'mail_tips_line.dart';
 import 'mention_suggestions.dart';
 import '../../domain/send_checks.dart';
@@ -45,9 +49,15 @@ class ComposeScreen extends ConsumerStatefulWidget {
     required this.draft,
     this.disposable = true,
     this.inWindow = false,
+    this.offerSmallerPictures = false,
   });
 
   final Draft draft;
+
+  /// The draft's files have just come in, shared, dropped or forwarded:
+  /// big pictures among them are offered smaller as the window opens. Not
+  /// for a draft opened again, which was asked about before.
+  final bool offerSmallerPictures;
 
   /// In a window of its own, where Undo Send does not hold the message:
   /// the window closes as it goes, and there is no bar left to undo on.
@@ -167,6 +177,11 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     final drops = ref.read(dropTargetProvider);
     _drops = drops;
     drops.claim(_takeIncoming);
+    if (widget.offerSmallerPictures && _attachments.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _offerSmaller(List.of(_attachments));
+      });
+    }
   }
 
   @override
@@ -461,6 +476,38 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       return;
     }
     setState(() => _attachments = [..._attachments, ...added]);
+    await _offerSmaller(added);
+  }
+
+  /// [added] have just come into the message: big pictures among them are
+  /// offered smaller, and what is chosen takes their place.
+  Future<void> _offerSmaller(List<DraftAttachment> added) async {
+    final smaller = await offerSmallerPictures(context, added);
+    if (!mounted || smaller.isEmpty) return;
+    setState(() => _attachments = [
+          for (final a in _attachments) smaller[a] ?? a,
+        ]);
+  }
+
+  /// A file on the message opened, to see what is going: in whatever app
+  /// opens that sort of thing, or here, as an email, a message forwarded
+  /// as a file.
+  Future<void> _openAttachment(DraftAttachment a) async {
+    if (a.mimeType == emlMimeType &&
+        await openAttachedMessage(
+          context,
+          a.bytes,
+          key: 'draft/${identityHashCode(a)}',
+        )) {
+      return;
+    }
+    if (!mounted) return;
+    try {
+      final path = await ref.read(draftFilesProvider).write(a);
+      await ref.read(fileBridgeProvider).open(path, mimeType: a.mimeType);
+    } catch (e) {
+      if (mounted) _say('Nothing here opens that sort of file.');
+    }
   }
 
   Future<void> _pasteAttachment() async {
@@ -501,8 +548,9 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
         }
       }
     }
-    if (mounted) {
+    if (mounted && added.isNotEmpty) {
       setState(() => _attachments = [..._attachments, ...added]);
+      await _offerSmaller(added);
     }
   }
 
@@ -1278,6 +1326,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
             if (_attachments.isNotEmpty)
               _AttachmentStrip(
                 attachments: _attachments,
+                onOpen: _openAttachment,
                 onRemove: _sending
                     ? null
                     : (a) => setState(
@@ -1420,9 +1469,16 @@ class _Notice extends StatelessWidget {
 }
 
 class _AttachmentStrip extends StatelessWidget {
-  const _AttachmentStrip({required this.attachments, this.onRemove});
+  const _AttachmentStrip({
+    required this.attachments,
+    required this.onOpen,
+    this.onRemove,
+  });
 
   final List<DraftAttachment> attachments;
+
+  /// A tap on a file: opened, to see what is going (3.7.2).
+  final void Function(DraftAttachment) onOpen;
   final void Function(DraftAttachment)? onRemove;
 
   @override
@@ -1434,8 +1490,11 @@ class _AttachmentStrip extends StatelessWidget {
         runSpacing: 4,
         children: [
           for (final a in attachments)
-            Chip(
+            InputChip(
+              key: ValueKey('attached:${identityHashCode(a)}'),
+              avatar: Icon(attachmentIcon(a.mimeType), size: 18),
               label: Text('${a.fileName}  ${a.readableSize}'),
+              onPressed: () => onOpen(a),
               onDeleted: onRemove == null ? null : () => onRemove!(a),
             ),
         ],
