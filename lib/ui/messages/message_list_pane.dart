@@ -67,9 +67,18 @@ import 'search_bar.dart';
 /// a folder in the tree. Let go where it was, the hold opens the row's
 /// menu, the one a right click opens: a finger's way of asking for it.
 class MessageListPane extends ConsumerStatefulWidget {
-  const MessageListPane({super.key, required this.onOpen});
+  const MessageListPane({
+    super.key,
+    required this.onOpen,
+    this.filterBar = true,
+  });
 
   final void Function(MailMessage message) onOpen;
+
+  /// Whether All / Unread / Filter and By Date sit over the list. A
+  /// tablet's folder bar has them instead, beside the folder's name where
+  /// it is wide enough (see FolderBarLayout).
+  final bool filterBar;
 
   @override
   ConsumerState<MessageListPane> createState() => _MessageListPaneState();
@@ -273,7 +282,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           ] else if (ref.watch(searchShownProvider)) ...[
             const MessageSearchBar(),
             const Divider(height: 1),
-          ] else ...[
+          ] else if (widget.filterBar) ...[
             // Outlook's All / Unread and Filter, over the list. Not while
             // searching or selecting, whose bars take this place.
             ListFilterBar(listId: folderId),

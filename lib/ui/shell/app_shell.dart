@@ -42,10 +42,13 @@ import '../calendar/calendar_screen.dart' show CalendarScreen, openMeeting;
 import '../calendar/my_day_pane.dart';
 import '../calendar/next_meeting_bar.dart' show joinMeeting;
 import '../folder_tree/folder_tree_panel.dart';
+import '../messages/filter_bar.dart' show ListFilterChoices;
+import '../messages/list_columns.dart' show SortButton;
 import '../messages/message_list_pane.dart';
 import '../messages/reading_pane.dart';
 import '../messages/view_options_sheet.dart';
 import 'app_shortcuts.dart';
+import 'folder_bar_layout.dart';
 import 'folder_heading.dart';
 import 'pane_focus.dart';
 import 'put_away.dart';
@@ -662,9 +665,13 @@ class _MediumPanes extends ConsumerWidget {
                     child: readingPaneBelow
                         // Opening a message only changes what the pane
                         // below shows; there is nothing to push.
-                        ? const MessageListPane(onOpen: _noOpen)
+                        ? const MessageListPane(
+                            onOpen: _noOpen,
+                            filterBar: false,
+                          )
                         : MessageListPane(
                             onOpen: (m) => _pushMessage(context, m),
+                            filterBar: false,
                           ),
                   ),
                   if (readingPaneBelow) ...[
@@ -759,7 +766,9 @@ class _WidePanes extends ConsumerWidget {
                   const _FolderTitleBar(),
                   // Opening a message on the wide layout only changes which
                   // one the reading pane shows; there is nothing to push.
-                  const Expanded(child: MessageListPane(onOpen: _noOpen)),
+                  const Expanded(
+                    child: MessageListPane(onOpen: _noOpen, filterBar: false),
+                  ),
                 ],
               ),
             ),
@@ -895,80 +904,113 @@ class _TreePane extends StatelessWidget {
 }
 
 /// The selected folder's name above the message list, where the phone's app
-/// bar would otherwise show it.
+/// bar would otherwise show it, with the list's All / Unread / Filter and
+/// By Date: beside the name where the list is wide enough, under it where
+/// it is not (see [FolderBarLayout]).
 class _FolderTitleBar extends ConsumerWidget {
   const _FolderTitleBar();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final folderId = ref.watch(effectiveSelectedFolderIdProvider);
     final folder = folderOnScreen(ref);
     final myDay = ref.watch(myDayShownProvider);
     final paneShown = ref.watch(folderPaneVisibleProvider) && !myDay;
+    // Not while the list is selecting or searching, whose own bars take
+    // the filters' place over it.
+    final filtering = folderId != null &&
+        !ref.watch(isSelectingProvider) &&
+        !ref.watch(searchShownProvider);
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(8, 6, 20, 6),
-          child: Row(
-            children: [
-              // Deliberately here rather than in the folder pane itself: a
-              // button that lives on the pane disappears with it, and then
-              // there is no way back. This bar is on screen either way.
-              IconButton(
-                tooltip: paneShown ? 'Hide folders' : 'Show folders',
-                visualDensity: VisualDensity.compact,
-                icon: Icon(
-                  paneShown
-                      ? Icons.keyboard_double_arrow_left
-                      : Icons.keyboard_double_arrow_right,
-                  size: 20,
-                ),
-                onPressed: () {
-                  // My Day has the folders' place: the folders come back.
-                  if (myDay) {
-                    ref.read(myDayShownProvider.notifier).set(false);
-                    if (ref.read(folderPaneVisibleProvider)) return;
-                  }
-                  ref.read(folderPaneVisibleProvider.notifier).toggle();
-                },
-              ),
-              // New Outlook's My Day: today's meetings in the folder
-              // pane's place. Here for the same reason, and on a tablet
-              // held either way.
-              IconButton(
-                key: const ValueKey('my-day-toggle'),
-                tooltip: myDay ? 'Hide My Day' : 'My Day',
-                visualDensity: VisualDensity.compact,
-                isSelected: myDay,
-                icon: const Icon(Icons.view_agenda_outlined, size: 20),
-                selectedIcon: const Icon(Icons.view_agenda, size: 20),
-                onPressed: () =>
-                    ref.read(myDayShownProvider.notifier).toggle(),
-              ),
-              const SizedBox(width: 4),
-              Expanded(
-                child: FolderHeading(nameStyle: theme.textTheme.titleMedium),
-              ),
-              if (folder != null && folder.unreadCount > 0)
-                Text(
-                  '${folder.unreadCount} unread',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
+        FolderBarLayout(
+          lineColor: DividerTheme.of(context).color ??
+              theme.colorScheme.outlineVariant,
+          lead: Padding(
+            padding: const EdgeInsets.fromLTRB(8, 6, 0, 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Deliberately here rather than in the folder pane itself: a
+                // button that lives on the pane disappears with it, and then
+                // there is no way back. This bar is on screen either way.
+                IconButton(
+                  tooltip: paneShown ? 'Hide folders' : 'Show folders',
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(
+                    paneShown
+                        ? Icons.keyboard_double_arrow_left
+                        : Icons.keyboard_double_arrow_right,
+                    size: 20,
                   ),
+                  onPressed: () {
+                    // My Day has the folders' place: the folders come back.
+                    if (myDay) {
+                      ref.read(myDayShownProvider.notifier).set(false);
+                      if (ref.read(folderPaneVisibleProvider)) return;
+                    }
+                    ref.read(folderPaneVisibleProvider.notifier).toggle();
+                  },
                 ),
-              IconButton(
-                tooltip: 'Search',
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.search, size: 20),
-                onPressed: () => ref.read(searchOpenProvider.notifier).open(),
-              ),
-              IconButton(
-                tooltip: 'View and sort',
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.more_vert, size: 20),
-                onPressed: () => showViewOptions(context),
-              ),
-            ],
+                // New Outlook's My Day: today's meetings in the folder
+                // pane's place. Here for the same reason, and on a tablet
+                // held either way.
+                IconButton(
+                  key: const ValueKey('my-day-toggle'),
+                  tooltip: myDay ? 'Hide My Day' : 'My Day',
+                  visualDensity: VisualDensity.compact,
+                  isSelected: myDay,
+                  icon: const Icon(Icons.view_agenda_outlined, size: 20),
+                  selectedIcon: const Icon(Icons.view_agenda, size: 20),
+                  onPressed: () =>
+                      ref.read(myDayShownProvider.notifier).toggle(),
+                ),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: FolderHeading(nameStyle: theme.textTheme.titleMedium),
+                ),
+              ],
+            ),
+          ),
+          filters: filtering
+              ? Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: ListFilterChoices(listId: folderId),
+                )
+              : null,
+          sort: filtering
+              ? const Padding(
+                  padding: EdgeInsets.only(right: 6),
+                  child: SortButton(),
+                )
+              : null,
+          actions: Padding(
+            padding: const EdgeInsets.fromLTRB(0, 6, 20, 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (folder != null && folder.unreadCount > 0)
+                  Text(
+                    '${folder.unreadCount} unread',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                IconButton(
+                  tooltip: 'Search',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.search, size: 20),
+                  onPressed: () => ref.read(searchOpenProvider.notifier).open(),
+                ),
+                IconButton(
+                  tooltip: 'View and sort',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.more_vert, size: 20),
+                  onPressed: () => showViewOptions(context),
+                ),
+              ],
+            ),
           ),
         ),
         const Divider(height: 1),
