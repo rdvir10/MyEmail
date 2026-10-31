@@ -54,6 +54,7 @@ class BackupService {
     UiStateKeys.quickSteps: _Shape.text,
     UiStateKeys.signatures: _Shape.text,
     UiStateKeys.paneWidths: _Shape.text,
+    UiStateKeys.listColumns: _Shape.text,
     UiStateKeys.folderPane: _Shape.text,
     UiStateKeys.display: _Shape.text,
     UiStateKeys.trustedSenders: _Shape.ids,
@@ -307,7 +308,7 @@ bool _readable(String key, String value) {
       case UiStateKeys.display:
         DisplaySettings.fromJson(jsonDecode(value) as Map<String, dynamic>);
         return true;
-      case UiStateKeys.paneWidths:
+      case UiStateKeys.paneWidths || UiStateKeys.listColumns:
         return (jsonDecode(value) as Map<String, dynamic>)
             .values
             .every((v) => v is int);

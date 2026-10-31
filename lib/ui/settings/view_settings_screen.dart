@@ -392,6 +392,16 @@ class ViewSettingsScreen extends ConsumerWidget {
             ),
           ),
           SwitchListTile(
+            title: const Text('Show in groups'),
+            subtitle: const Text(
+              'Bars over the list: Today, Yesterday, Last Week, or Large '
+              'and Small when it is sorted by size. Off, the list runs '
+              'without them, as Outlook\'s Show in Groups does.',
+            ),
+            value: display.showGroups,
+            onChanged: notifier.setShowGroups,
+          ),
+          SwitchListTile(
             title: const Text('Attachments on the row'),
             subtitle: const Text(
               "The names of a message's files under it, each opened with a "

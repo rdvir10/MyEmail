@@ -398,9 +398,11 @@ class ListRows {
 /// what it shows; null while it shows the folder.
 List<MailMessage>? searchRows(WidgetRef ref) {
   if (ref.read(searchQueryProvider).trim().isEmpty) return null;
+  final display = ref.read(displayProvider);
   return sortMessages(
     ref.read(searchResultsProvider).value ?? const [],
-    ref.read(displayProvider).sort,
+    display.sort,
+    reversed: display.sortReversed,
     accountRank: ref.read(accountRankProvider),
   );
 }
@@ -414,12 +416,16 @@ List<MailMessage> folderRows(
   bool unfolding = false,
 }) {
   final display = ref.read(displayProvider);
-  final closed = ref.read(collapsedDateGroupsProvider)[listId];
+  // With the bars off nothing is under a closed one.
+  final closed = display.showGroups
+      ? ref.read(collapsedDateGroupsProvider)[listId]
+      : null;
   return visibleMessages(
     ref.read(sortedMessagesProvider(listId)),
     conversations: display.conversations,
     expandedIds: ref.read(expandedConversationsProvider),
     sort: display.sort,
+    reversed: display.sortReversed,
     folded: unfolding
         ? null
         : foldedUnder(
@@ -430,7 +436,7 @@ List<MailMessage> folderRows(
     pinned: ref.read(pinnedMessagesProvider),
     // The Pinned bar is drawn only where the list has bars at all.
     pinnedClosed: !unfolding &&
-        display.sort.hasBars &&
+        display.listHasBars &&
         (closed?.contains(ListGroup.pinned.key) ?? false),
     accountRank: ref.read(accountRankProvider),
     others: ref.read(conversationExtrasProvider(listId)).value ?? const [],

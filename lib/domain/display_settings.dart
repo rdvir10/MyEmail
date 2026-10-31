@@ -226,6 +226,8 @@ class DisplaySettings {
     this.swipeLeft = SwipeAction.delete,
     this.alwaysShowImages = false,
     this.sort = MessageSort.dateNewest,
+    this.sortReversed = false,
+    this.showGroups = true,
     this.textSize = TextSize.standard,
     this.showAllInboxes = true,
     this.theme = ThemeChoice.system,
@@ -264,6 +266,19 @@ class DisplaySettings {
   /// What the list is ordered by. The default is what every list did
   /// before this was a choice.
   final MessageSort sort;
+
+  /// [sort] the other way round: Z to A, smallest first. Outlook's arrow
+  /// beside "By Date", and a second tap on a column's header. The dates
+  /// are two choices of their own and never set this.
+  final bool sortReversed;
+
+  /// The bars over the list's groups (Today, Last Week, Large): Outlook's
+  /// Show in Groups. On, as the list always had them, until turned off.
+  final bool showGroups;
+
+  /// Whether the list draws bars over its groups: the order has them and
+  /// they are on.
+  bool get listHasBars => showGroups && sort.hasBars;
 
   final ReadingPanePosition readingPane;
   final ListDensity density;
@@ -305,6 +320,8 @@ class DisplaySettings {
     SwipeAction? swipeLeft,
     bool? alwaysShowImages,
     MessageSort? sort,
+    bool? sortReversed,
+    bool? showGroups,
     TextSize? textSize,
     bool? showAllInboxes,
     ThemeChoice? theme,
@@ -323,6 +340,8 @@ class DisplaySettings {
       swipeLeft: swipeLeft ?? this.swipeLeft,
       alwaysShowImages: alwaysShowImages ?? this.alwaysShowImages,
       sort: sort ?? this.sort,
+      sortReversed: sortReversed ?? this.sortReversed,
+      showGroups: showGroups ?? this.showGroups,
       textSize: textSize ?? this.textSize,
       showAllInboxes: showAllInboxes ?? this.showAllInboxes,
       theme: theme ?? this.theme,
@@ -343,6 +362,8 @@ class DisplaySettings {
         'swipeLeft': swipeLeft.name,
         'alwaysShowImages': alwaysShowImages,
         'sort': sort.name,
+        'sortReversed': sortReversed,
+        'showGroups': showGroups,
         'textSize': textSize.name,
         'showAllInboxes': showAllInboxes,
         'theme': theme.name,
@@ -404,6 +425,11 @@ class DisplaySettings {
       // written by 2.23.0 has the field and direction it used to keep as
       // two. Either way it lands on an order that was already being shown.
       sort: _sortFrom(json),
+      // From 3.8.0: a record from before runs the way it did, under bars.
+      sortReversed:
+          json['sortReversed'] is bool ? json['sortReversed'] as bool : false,
+      showGroups:
+          json['showGroups'] is bool ? json['showGroups'] as bool : true,
       // An install from before swipes were configurable has neither key, and
       // falls back to exactly what it was already doing.
       swipeRight: _byName(
@@ -447,6 +473,8 @@ class DisplaySettings {
       other.swipeLeft == swipeLeft &&
       other.alwaysShowImages == alwaysShowImages &&
       other.sort == sort &&
+      other.sortReversed == sortReversed &&
+      other.showGroups == showGroups &&
       other.textSize == textSize &&
       other.showAllInboxes == showAllInboxes &&
       other.theme == theme &&
@@ -469,6 +497,8 @@ class DisplaySettings {
         swipeLeft,
         alwaysShowImages,
         sort,
+        sortReversed,
+        showGroups,
         textSize,
         showAllInboxes,
         theme,
@@ -490,7 +520,8 @@ class DisplaySettings {
       'conversations: $conversations, '
       'swipe: ${swipeRight.name}/${swipeLeft.name}, '
       'images: $alwaysShowImages, '
-      'sort: ${sort.name}, '
+      'sort: ${sort.name}${sortReversed ? ' reversed' : ''}, '
+      'groups: $showGroups, '
       'text: ${textSize.name}, '
       'all inboxes: $showAllInboxes, '
       'theme: ${theme.name})';

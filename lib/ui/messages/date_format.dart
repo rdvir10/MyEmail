@@ -28,6 +28,16 @@ String formatMessageDate(DateTime date, {DateTime? now, bool use24h = true}) {
   return '${two(d.day)}/${two(d.month)}/${d.year}';
 }
 
+/// The Received column's form, "Sat 31 Oct 11:20 AM", with the year when
+/// it is not this year's: Outlook's column, which says the day and the time
+/// on every row, where the short form leaves the day to the bar above.
+String formatMessageDateColumn(
+  DateTime date, {
+  DateTime? now,
+  bool use24h = true,
+}) =>
+    '${formatDay(date, now: now)} ${formatClock(date, use24h: use24h)}';
+
 /// Which bar a message sits under in a list sorted by date, the way
 /// Outlook groups one: today and yesterday, each day earlier this week, then
 /// last week, two and three weeks ago, earlier this month, last month, and

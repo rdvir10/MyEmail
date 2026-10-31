@@ -6,9 +6,12 @@ import '../../domain/message_filter.dart';
 import '../../state/list_filter.dart';
 import '../../state/providers.dart';
 import '../folder_tree/recover_deleted_screen.dart';
+import 'list_columns.dart' show SortButton;
 
 /// Outlook's All and Unread over the list, and its Filter menu beside them
-/// for flagged mail, mail with files, and mail sent to you directly.
+/// for flagged mail, mail with files, and mail sent to you directly; at the
+/// other end, as Outlook has it, "By Date" and the arrow that turns the
+/// order round (see [SortButton]).
 ///
 /// A filter narrows the list on the device at once and asks the server for
 /// the rest (see `filterHitsProvider`); the small spinner at the end says
@@ -107,6 +110,7 @@ class ListFilterBar extends ConsumerWidget {
                 label: const Text('Recover'),
               ),
             ),
+          const SortButton(),
         ],
       ),
     );

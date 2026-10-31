@@ -38,6 +38,35 @@ enum MessageSort {
   /// In date order, where the list has its date bars.
   bool get byDate => this == dateNewest || this == dateOldest;
 
+  /// The word after "By" on the list's sort button, as Outlook's "By Date".
+  String get shortLabel => switch (this) {
+        dateNewest || dateOldest => 'Date',
+        sender => 'From',
+        recipient => 'To',
+        subject => 'Subject',
+        size => 'Size',
+        attachments => 'Attachments',
+        flag => 'Flag',
+        importance => 'Importance',
+        account => 'Account',
+      };
+
+  /// Which way the list runs, turned round when [reversed]: what the arrow
+  /// beside the sort button says.
+  String directionLabel({bool reversed = false}) {
+    final up = ascending != reversed;
+    return switch (this) {
+      dateNewest || dateOldest => up ? 'Oldest on top' : 'Newest on top',
+      sender || recipient || subject => up ? 'A to Z' : 'Z to A',
+      size => up ? 'Smallest on top' : 'Largest on top',
+      attachments =>
+        up ? 'Without attachments on top' : 'With attachments on top',
+      flag => up ? 'Not flagged on top' : 'Flagged on top',
+      importance => up ? 'Low importance on top' : 'High importance on top',
+      account => up ? 'Accounts in folder order' : 'Accounts in reverse order',
+    };
+  }
+
   /// Whether the list draws bars over its groups: a day, a size, flagged or
   /// not. Sorted by a name or a subject there is a group for every name,
   /// and a bar over each would be a list of bars.
@@ -54,11 +83,13 @@ enum MessageSort {
       };
 }
 
-/// The order of two messages under one choice.
+/// The order of two messages under one choice, the other way round when
+/// [reversed]: Z to A, smallest first.
 ///
 /// Always broken by date, newest first, and then by id: two messages from
 /// the same sender with the same subject still need a settled order, or
-/// the list shuffles itself on every rebuild.
+/// the list shuffles itself on every rebuild. Reversed, a sender's mail
+/// still reads newest first: only the choice itself turns round.
 ///
 /// [accountRank] is each account's place in the folder pane, for
 /// [MessageSort.account]; an account not in it goes last.
@@ -66,6 +97,7 @@ int compareMessages(
   MailMessage a,
   MailMessage b,
   MessageSort sort, {
+  bool reversed = false,
   Map<String, int> accountRank = const {},
 }) {
   final first = switch (sort) {
@@ -83,7 +115,7 @@ int compareMessages(
     MessageSort.account => (accountRank[a.accountId] ?? _last)
         .compareTo(accountRank[b.accountId] ?? _last),
   };
-  if (first != 0) return first;
+  if (first != 0) return reversed ? -first : first;
   if (!sort.byDate) {
     final byDate = b.date.compareTo(a.date);
     if (byDate != 0) return byDate;
@@ -91,16 +123,24 @@ int compareMessages(
   return a.id.compareTo(b.id);
 }
 
-/// [messages] in the order [sort] puts them, with the [pinned] ones (by id)
-/// at the top, in that same order among themselves.
+/// [messages] in the order [sort] puts them, or the other way round when
+/// [reversed], with the [pinned] ones (by id) at the top, in that same
+/// order among themselves.
 List<MailMessage> sortMessages(
   List<MailMessage> messages,
   MessageSort sort, {
+  bool reversed = false,
   Map<String, int> accountRank = const {},
   Set<String> pinned = const {},
 }) {
   final sorted = [...messages]
-    ..sort((a, b) => compareMessages(a, b, sort, accountRank: accountRank));
+    ..sort((a, b) => compareMessages(
+          a,
+          b,
+          sort,
+          reversed: reversed,
+          accountRank: accountRank,
+        ));
   if (pinned.isEmpty) return sorted;
   return [
     for (final m in sorted)

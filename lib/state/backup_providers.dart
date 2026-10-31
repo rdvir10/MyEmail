@@ -10,6 +10,7 @@ import 'display_providers.dart';
 import 'meeting_providers.dart' show workWeekProvider;
 import 'search_providers.dart' show savedSearchesProvider;
 import 'sender_blocks.dart';
+import 'list_columns.dart';
 import 'pane_widths.dart';
 import 'providers.dart';
 import 'quick_steps.dart';
@@ -51,6 +52,7 @@ const reloadedAfterRestore = {
   UiStateKeys.quickSteps,
   UiStateKeys.signatures,
   UiStateKeys.paneWidths,
+  UiStateKeys.listColumns,
   UiStateKeys.folderPane,
   UiStateKeys.display,
   UiStateKeys.trustedSenders,
@@ -80,6 +82,7 @@ void reloadRestoredSettings(WidgetRef ref) {
     ..invalidate(quickStepsProvider)
     ..invalidate(signaturesProvider)
     ..invalidate(paneWidthsProvider)
+    ..invalidate(listColumnsProvider)
     ..invalidate(folderPaneVisibleProvider)
     ..invalidate(displayProvider)
     ..invalidate(trustedSendersProvider)

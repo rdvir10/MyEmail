@@ -799,9 +799,11 @@ final sortedMessagesProvider =
         return newestFirst(a, b);
       });
   }
+  final display = ref.watch(displayProvider);
   return sortMessages(
     dated,
-    ref.watch(displayProvider).sort,
+    display.sort,
+    reversed: display.sortReversed,
     accountRank: ref.watch(accountRankProvider),
     pinned: ref.watch(pinnedMessagesProvider),
   );

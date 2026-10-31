@@ -40,7 +40,30 @@ class Display extends Notifier<DisplaySettings> {
 
   void setTheme(ThemeChoice theme) => state = state.copyWith(theme: theme);
 
-  void setSort(MessageSort sort) => state = state.copyWith(sort: sort);
+  /// Arranged by [sort], from the start of its own direction: newest
+  /// first, A to Z, largest first.
+  void setSort(MessageSort sort) =>
+      state = state.copyWith(sort: sort, sortReversed: false);
+
+  /// The same order the other way round: Outlook's arrow beside "By Date".
+  /// The two dates are choices of their own and swap; any other order runs
+  /// backwards.
+  void reverseSort() => state = switch (state.sort) {
+        MessageSort.dateNewest =>
+          state.copyWith(sort: MessageSort.dateOldest, sortReversed: false),
+        MessageSort.dateOldest =>
+          state.copyWith(sort: MessageSort.dateNewest, sortReversed: false),
+        _ => state.copyWith(sortReversed: !state.sortReversed),
+      };
+
+  /// A tap on a column's header, as Outlook takes one: that column's
+  /// order, or the other way round when the list is in it already.
+  void sortByColumn(MessageSort sort) {
+    final already = sort.byDate ? state.sort.byDate : state.sort == sort;
+    already ? reverseSort() : setSort(sort);
+  }
+
+  void setShowGroups(bool on) => state = state.copyWith(showGroups: on);
 
   void setAlwaysShowImages(bool on) =>
       state = state.copyWith(alwaysShowImages: on);

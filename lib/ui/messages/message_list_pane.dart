@@ -44,6 +44,7 @@ import '../compose/open_compose.dart';
 import '../meetings/new_meeting_screen.dart';
 import 'conversation_tile.dart';
 import 'filter_bar.dart';
+import 'list_columns.dart';
 import 'list_groups.dart';
 import '../shell/app_shell.dart';
 import '../shell/pane_focus.dart';
@@ -279,23 +280,31 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             const Divider(height: 1),
           ],
           Expanded(
-            child: MessageListKeyboard(
-              listId: folderId,
-              rows: searching ? _searchRows : null,
-              onScreen: () => messagesOnScreen(_listKey),
-              // Where there is no reading pane a message opens as its own
-              // screen, so landing on one would mean walking into a folder and
-              // finding a message already open on top of it.
-              // Not while searching: the results are not this folder's list,
-              // so landing would pick a message that is not on screen.
-              landOnOpen:
-                  !searching &&
-                  AppShell.hasReadingPane(
-                    MediaQuery.sizeOf(context).width,
-                    ref.watch(displayProvider).readingPane,
-                  ),
-              onOpen: widget.onOpen,
-              child: body,
+            // Outlook's column headers over the list, where it is wide
+            // enough for columns (see ListColumnsArea).
+            child: ListColumnsArea(
+              outgoing: !searching &&
+                  (folder?.role == FolderRole.sent ||
+                      folder?.role == FolderRole.drafts),
+              child: MessageListKeyboard(
+                listId: folderId,
+                rows: searching ? _searchRows : null,
+                onScreen: () => messagesOnScreen(_listKey),
+                // Where there is no reading pane a message opens as its own
+                // screen, so landing on one would mean walking into a folder
+                // and finding a message already open on top of it.
+                // Not while searching: the results are not this folder's
+                // list, so landing would pick a message that is not on
+                // screen.
+                landOnOpen:
+                    !searching &&
+                    AppShell.hasReadingPane(
+                      MediaQuery.sizeOf(context).width,
+                      ref.watch(displayProvider).readingPane,
+                    ),
+                onOpen: widget.onOpen,
+                child: body,
+              ),
             ),
           ),
         ],
@@ -362,9 +371,11 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             final selecting = ticked.isNotEmpty;
             // The order the list is in applies to what a search turns up
             // too: the same question asked of a smaller set.
+            final display = ref.watch(displayProvider);
             final ordered = sortMessages(
               results,
-              ref.watch(displayProvider).sort,
+              display.sort,
+              reversed: display.sortReversed,
               accountRank: ref.watch(accountRankProvider),
             );
             final formats = ref.watch(rowFormatsProvider);
@@ -511,6 +522,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
                     conversationsInOrder(
                       messages,
                       display.sort,
+                      reversed: display.sortReversed,
                       accountRank: ref.watch(accountRankProvider),
                       pinned: pinned,
                       others: others,
@@ -525,12 +537,13 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
             // One more row than there are messages while the folder has
             // older mail: reaching it fetches the next page.
             // Sorted by sender, recipient or subject there are no bars: a
-            // group for every name is a bar over every row or two.
+            // group for every name is a bar over every row or two. Nor
+            // where they are turned off (Show in groups).
             // Grouped as Outlook groups them (see listGroupOf), with the
             // pinned rows under a bar of their own above the rest.
             final now = DateTime.now();
             final accountNames = ref.watch(accountNamesProvider);
-            final items = display.sort.hasBars
+            final items = display.listHasBars
                 ? _underBars(
                     rows,
                     (row) => isPinned(row.messages)

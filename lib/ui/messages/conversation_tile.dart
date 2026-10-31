@@ -1,10 +1,14 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../domain/display_settings.dart';
+import '../../domain/mail_attachment.dart' show formatMessageSize;
 import '../../domain/mail_message.dart';
 import '../../domain/row_format.dart';
 import '../../state/conversations.dart';
 import 'date_format.dart';
+import 'list_columns.dart';
 import 'message_tile.dart';
 import 'row_attachments.dart';
 
@@ -127,7 +131,8 @@ class ConversationTile extends StatelessWidget {
       if (pinned) pinMark(scheme),
       ...actionMarks(lead, scheme),
     ];
-    final fixed = rowEdges +
+    final columns = ColumnLayout.maybeOf(context);
+    double fixed() => rowEdges +
         marks.length * markWidth +
         12 +
         textWidth(context, '${conversation.everything.length}', theme.textTheme.labelSmall) +
@@ -138,8 +143,9 @@ class ConversationTile extends StatelessWidget {
         (previews
             ? 6
             : (conversation.hasAttachments ? 20 : 0) + 18);
-    final oneLine = rowsOnOneLine(context, width: width, fixed: fixed);
-    final singleLine = oneLine && !previews;
+    final oneLine =
+        columns == null && rowsOnOneLine(context, width: width, fixed: fixed());
+    final singleLine = (columns != null || oneLine) && !previews;
     // Your replies from Sent are counted: they are in the thread when it
     // opens, as Outlook counts them.
     Widget badge({required bool bold}) => _CountBadge(
@@ -167,7 +173,106 @@ class ConversationTile extends StatelessWidget {
     );
 
     final List<Widget> lines;
-    if (oneLine) {
+    if (columns != null) {
+      // Under the list's headers, as a message row has them (see
+      // MessageTile): the count and the arrow ride with the subject, and
+      // the size is the whole thread's, as the count is.
+      final from = math.max(24.0, columns.from - (columns.width - width));
+      final bytes = conversation.everything
+          .fold<int>(0, (total, m) => total + m.sizeBytes);
+      lines = [
+        Row(
+          children: [
+            if (columns.files > 0)
+              SizedBox(
+                width: columns.files,
+                child: conversation.hasAttachments
+                    ? Align(
+                        alignment: Alignment.centerLeft,
+                        child: Icon(
+                          Icons.attach_file,
+                          size: 14,
+                          color: scheme.onSurfaceVariant,
+                          semanticLabel: 'Attachment',
+                        ),
+                      )
+                    : null,
+              ),
+            SizedBox(
+              width: from,
+              child: Row(
+                children: [
+                  if (from >= marks.length * markWidth + 40) ...marks,
+                  Expanded(
+                    child: Text(
+                      showRecipients
+                          ? recipientsLine(lead, short: true)
+                          : leadSender.display,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: first,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: ColumnLayout.gap),
+            badge(bold: unread),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                conversation.subject,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: first,
+              ),
+            ),
+            Icon(
+              isExpanded ? Icons.expand_less : Icons.expand_more,
+              size: 18,
+              color: scheme.onSurfaceVariant,
+            ),
+            if (columns.received > 0) ...[
+              const SizedBox(width: ColumnLayout.gap),
+              SizedBox(
+                width: columns.received,
+                child: Text(
+                  formatMessageDateColumn(
+                    conversation.newest.date,
+                    use24h: MediaQuery.alwaysUse24HourFormatOf(context),
+                  ),
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.ellipsis,
+                  style: dateStyle,
+                ),
+              ),
+            ],
+            if (columns.size > 0) ...[
+              const SizedBox(width: ColumnLayout.gap),
+              SizedBox(
+                width: columns.size,
+                child: Text(
+                  bytes > 0 ? formatMessageSize(bytes) : '',
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.ellipsis,
+                  style: dateStyle,
+                ),
+              ),
+            ],
+            const SizedBox(width: 6),
+          ],
+        ),
+        if (previews) ...[
+          SizedBox(height: density.lineGap),
+          Padding(
+            padding: EdgeInsets.only(left: columns.files, right: 6),
+            child: preview,
+          ),
+        ],
+      ];
+    } else if (oneLine) {
       lines = [
         Row(
           children: [
@@ -256,7 +361,7 @@ class ConversationTile extends StatelessWidget {
       lines.addAll([
         SizedBox(height: density.lineGap + 3),
         Padding(
-          padding: const EdgeInsets.only(right: 6),
+          padding: EdgeInsets.only(left: columns?.files ?? 0, right: 6),
           child: RowAttachments(files: files),
         ),
       ]);

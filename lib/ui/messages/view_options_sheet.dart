@@ -43,6 +43,11 @@ class _ViewOptions extends ConsumerWidget {
                 // ignore: deprecated_member_use
                 groupValue: display.sort,
                 title: Text(sort.label),
+                // Turned round by the arrow over the list, which the
+                // label alone would not say.
+                subtitle: sort == display.sort && display.sortReversed
+                    ? Text(sort.directionLabel(reversed: true))
+                    : null,
                 // ignore: deprecated_member_use
                 onChanged: (chosen) {
                   if (chosen != null) notifier.setSort(chosen);
@@ -56,6 +61,13 @@ class _ViewOptions extends ConsumerWidget {
               subtitle: const Text('Group a thread into one row'),
               value: display.conversations,
               onChanged: notifier.setConversations,
+            ),
+            SwitchListTile(
+              dense: true,
+              title: const Text('Show in groups'),
+              subtitle: const Text('Bars such as Today and Last Week'),
+              value: display.showGroups,
+              onChanged: notifier.setShowGroups,
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),

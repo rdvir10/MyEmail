@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import '../../domain/follow_up.dart' show dueLabel;
 import 'package:flutter/material.dart';
 
@@ -6,6 +8,7 @@ import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/row_format.dart';
 import 'date_format.dart';
+import 'list_columns.dart';
 import 'row_attachments.dart';
 
 /// One row of the message list: sender, subject, preview, date, and the
@@ -18,7 +21,8 @@ import 'row_attachments.dart';
 /// Read and unread sit on the same ground, as they do in Outlook. What is
 /// unread says so on its first line alone: bold, with a dot and a blue time.
 /// A tablet puts the subject on that first line too, beside the sender, so
-/// the row reads across like Outlook's (see [rowsOnOneLine]).
+/// the row reads across like Outlook's (see [rowsOnOneLine]); under the
+/// list's column headers each part sits in its column (see [ColumnLayout]).
 class MessageTile extends StatelessWidget {
   const MessageTile({
     super.key,
@@ -132,7 +136,8 @@ class MessageTile extends StatelessWidget {
       if (pinned) pinMark(scheme),
       ...actionMarks(message, scheme),
     ];
-    final fixed = rowEdges +
+    final columns = ColumnLayout.maybeOf(context);
+    double fixed() => rowEdges +
         marks.length * markWidth +
         12 +
         8 +
@@ -151,13 +156,25 @@ class MessageTile extends StatelessWidget {
                           theme.textTheme.labelSmall,
                         )
                     : 0));
-    final oneLine = rowsOnOneLine(context, width: width, fixed: fixed);
-    final singleLine = oneLine && !showsPreview;
+    final oneLine =
+        columns == null && rowsOnOneLine(context, width: width, fixed: fixed());
+    final singleLine = (columns != null || oneLine) && !showsPreview;
     final chipWidth = width * 0.35;
     const end = SizedBox(width: 6);
 
     final List<Widget> lines;
-    if (oneLine) {
+    if (columns != null) {
+      lines = _columnLines(
+        context,
+        columns,
+        width: width,
+        marks: marks,
+        first: first,
+        dateStyle: dateStyle,
+        dueMark: dueMark,
+        chipWidth: chipWidth,
+      );
+    } else if (oneLine) {
       lines = [
         Row(
           children: [
@@ -255,7 +272,7 @@ class MessageTile extends StatelessWidget {
       lines.addAll([
         SizedBox(height: density.lineGap + 3),
         Padding(
-          padding: const EdgeInsets.only(right: 6),
+          padding: EdgeInsets.only(left: columns?.files ?? 0, right: 6),
           child: RowAttachments(files: files),
         ),
       ]);
@@ -336,13 +353,145 @@ class MessageTile extends StatelessWidget {
     );
   }
 
+  /// The row as columns under the list's headers: the paperclip, who, the
+  /// subject, when and how big, each under its header, with the preview
+  /// under who and the subject.
+  List<Widget> _columnLines(
+    BuildContext context,
+    ColumnLayout columns, {
+    required double width,
+    required List<Widget> marks,
+    required TextStyle? first,
+    required TextStyle? dateStyle,
+    required Widget? dueMark,
+    required double chipWidth,
+  }) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    // A row indented inside an open thread gives the indent back out of its
+    // From column, so its subject still starts under Subject.
+    final from = math.max(24.0, columns.from - (columns.width - width));
+    final meeting = message.isMeeting ? 1 : 0;
+    // Marks in a From column dragged too narrow for them would push the
+    // name out of it altogether.
+    final withMarks = from >= (marks.length + meeting) * markWidth + 40;
+    return [
+      Row(
+        children: [
+          if (columns.files > 0)
+            SizedBox(
+              width: columns.files,
+              child: message.hasAttachments
+                  ? Align(
+                      alignment: Alignment.centerLeft,
+                      child: Icon(
+                        Icons.attach_file,
+                        size: 14,
+                        color: scheme.onSurfaceVariant,
+                        semanticLabel: 'Attachment',
+                      ),
+                    )
+                  : null,
+            ),
+          SizedBox(
+            key: const ValueKey('row-from'),
+            width: from,
+            child: Row(
+              children: [
+                if (withMarks) ...[
+                  ...marks,
+                  // An invitation says so before who sent it, where
+                  // Outlook's icon column has it.
+                  if (message.isMeeting)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: Icon(Icons.event, size: 14, color: scheme.primary),
+                    ),
+                ],
+                Expanded(
+                  child: Text(
+                    showRecipients
+                        ? recipientsLine(message, short: true)
+                        : message.from.display,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: first,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: ColumnLayout.gap),
+          Expanded(
+            child: Text(
+              message.subject,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: first,
+            ),
+          ),
+          ?dueMark,
+          if (columns.received > 0) ...[
+            const SizedBox(width: ColumnLayout.gap),
+            SizedBox(
+              width: columns.received,
+              child: Text(
+                formatMessageDateColumn(
+                  message.date,
+                  use24h: MediaQuery.alwaysUse24HourFormatOf(context),
+                ),
+                key: const ValueKey('row-received'),
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.ellipsis,
+                style: dateStyle,
+              ),
+            ),
+          ],
+          if (columns.size > 0) ...[
+            const SizedBox(width: ColumnLayout.gap),
+            SizedBox(
+              width: columns.size,
+              child: Text(
+                message.sizeBytes > 0
+                    ? formatMessageSize(message.sizeBytes)
+                    : '',
+                key: const ValueKey('row-size'),
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.ellipsis,
+                style: dateStyle,
+              ),
+            ),
+          ],
+          const SizedBox(width: 6),
+        ],
+      ),
+      if (showsPreview) ...[
+        SizedBox(height: density.lineGap),
+        Padding(
+          padding: EdgeInsets.only(left: columns.files),
+          child: _previewLine(
+            theme,
+            scheme,
+            trailing: const SizedBox(width: 6),
+            chipWidth: chipWidth,
+            withMarks: false,
+          ),
+        ),
+      ],
+    ];
+  }
+
   /// The preview, after the folder a search hit is in, with the marks and
-  /// [trailing] at the end.
+  /// [trailing] at the end; without the marks under columns, which have
+  /// them in columns of their own.
   Widget _previewLine(
     ThemeData theme,
     ColorScheme scheme, {
     required Widget trailing,
     required double chipWidth,
+    bool withMarks = true,
   }) =>
       Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -380,7 +529,7 @@ class MessageTile extends StatelessWidget {
               style: listPreviewStyle(theme),
             ),
           ),
-          ..._marks(theme, scheme),
+          if (withMarks) ..._marks(theme, scheme),
           trailing,
         ],
       );
@@ -495,6 +644,21 @@ class RowCheckbox extends StatelessWidget {
 
   /// The height of a row of one line.
   static const double singleLineSize = 24;
+
+  /// How wide it is, as Material sizes a checkbox: its tap target (shrunk
+  /// in a row of one line), less the compact density's 8. The column
+  /// headers keep this much room while the list is selecting.
+  static double widthOf(BuildContext context, {required bool singleLine}) {
+    final theme = Theme.of(context);
+    final target = singleLine
+        ? MaterialTapTargetSize.shrinkWrap
+        : theme.checkboxTheme.materialTapTargetSize ??
+            theme.materialTapTargetSize;
+    final square = target == MaterialTapTargetSize.padded
+        ? kMinInteractiveDimension
+        : kMinInteractiveDimension - 8;
+    return square + VisualDensity.compact.baseSizeAdjustment.dx;
+  }
 
   @override
   Widget build(BuildContext context) {

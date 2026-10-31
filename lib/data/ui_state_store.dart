@@ -38,6 +38,9 @@ abstract final class UiStateKeys {
   // Notification preferences are deliberately NOT here: they are read by the
   // background isolate, which cannot see this store's cache. See SyncStateKeys.
   static const paneWidths = 'panes.v1';
+
+  /// The message list's columns: their widths, and which are put away.
+  static const listColumns = 'list.columns.v1';
   static const folderPane = 'panes.folder-visible';
   static const display = 'display.v1';
   static const trustedSenders = 'images.trusted.v1';

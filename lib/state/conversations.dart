@@ -97,9 +97,10 @@ class Conversation {
 /// one is its messages newest first. The messages folded into a closed
 /// thread are not there: landing on one would select a row nobody can see.
 ///
-/// [sort] orders the threads, as the rows are drawn. The keys used to walk
-/// them newest first whatever was chosen, so with oldest first Home went to
-/// the bottom of the screen and Down went up.
+/// [sort] orders the threads, as the rows are drawn, the other way round
+/// when [reversed]. The keys used to walk them newest first whatever was
+/// chosen, so with oldest first Home went to the bottom of the screen and
+/// Down went up.
 ///
 /// [folded] says whether a row is under a closed bar, and those rows are
 /// left out too. It is asked about the message that stands for the row, a
@@ -114,6 +115,7 @@ List<MailMessage> visibleMessages(
   required bool conversations,
   required Set<String> expandedIds,
   required MessageSort sort,
+  bool reversed = false,
   bool Function(MailMessage row)? folded,
   Set<String> pinned = const {},
   bool pinnedClosed = false,
@@ -135,6 +137,7 @@ List<MailMessage> visibleMessages(
     for (final c in conversationsInOrder(
       messages,
       sort,
+      reversed: reversed,
       accountRank: accountRank,
       pinned: pinned,
       others: others,
@@ -149,24 +152,26 @@ List<MailMessage> visibleMessages(
 }
 
 /// [messages] as conversations, in the order the list shows them: by each
-/// one's newest message, under [sort], with the threads holding any of
-/// [pinned] first. [others] join the threads they belong to; see
+/// one's newest message, under [sort] (the other way round when
+/// [reversed]), with the threads holding any of [pinned] first. [others] join the threads they belong to; see
 /// [groupIntoConversations].
 List<Conversation> conversationsInOrder(
   List<MailMessage> messages,
   MessageSort sort, {
+  bool reversed = false,
   Map<String, int> accountRank = const {},
   Set<String> pinned = const {},
   List<MailMessage> others = const [],
 }) {
   final grouped = groupIntoConversations(messages, others: others);
-  final sorted = sort == MessageSort.dateNewest
+  final sorted = sort == MessageSort.dateNewest && !reversed
       ? grouped
       : ([...grouped]
         ..sort((a, b) => compareMessages(
               a.newest,
               b.newest,
               sort,
+              reversed: reversed,
               accountRank: accountRank,
             )));
   if (pinned.isEmpty) return sorted;
