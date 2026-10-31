@@ -318,7 +318,8 @@ void main() {
   });
 
   group('a thread, read and unread', () {
-    ConversationTile thread({bool unread = true}) => ConversationTile(
+    ConversationTile thread({bool unread = true, bool expanded = false}) =>
+        ConversationTile(
           conversation: Conversation([
             message(id: 'a:INBOX#1', read: true, date: DateTime(2026, 9, 29, 9)),
             message(
@@ -326,7 +327,7 @@ void main() {
                 read: !unread,
                 date: DateTime(2026, 9, 29, 10)),
           ]),
-          isExpanded: false,
+          isExpanded: expanded,
           onTap: () {},
         );
     FontWeight? weightOf(WidgetTester tester, String text) =>
@@ -354,6 +355,30 @@ void main() {
             .color,
         Colors.transparent,
       );
+    });
+
+    testWidgets('opens by an arrow at its start, as a group bar does',
+        (tester) async {
+      final arrow = find.byKey(const ValueKey('thread-arrow'));
+      double turns() => tester
+          .widget<AnimatedRotation>(find.descendant(
+            of: arrow,
+            matching: find.byType(AnimatedRotation),
+          ))
+          .turns;
+
+      await pump(tester, thread());
+      expect(
+        tester.getTopLeft(arrow).dx,
+        lessThan(tester
+            .getTopLeft(find.text('Crystal R <crystalr@hadco-metal.com>'))
+            .dx),
+      );
+      expect(turns(), -0.25, reason: 'closed, it points right');
+
+      await pump(tester, thread(expanded: true));
+      await tester.pumpAndSettle();
+      expect(turns(), 0, reason: 'open, it points down');
     });
 
     testWidgets('on a tablet the count and subject share the first line',

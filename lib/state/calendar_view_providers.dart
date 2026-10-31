@@ -112,6 +112,31 @@ class CalendarHourHeight extends Notifier<double> {
 final calendarHourHeightProvider =
     NotifierProvider<CalendarHourHeight, double>(CalendarHourHeight.new);
 
+/// Whether Day and Week fold their all-day events to one line, each day's
+/// first and how many more, as Ron asked: a week of holidays, birthdays
+/// and days out pushed the hours down the screen. Open until folded, as
+/// they always were, and kept, as the hours' height is.
+class CalendarAllDayFolded extends Notifier<bool> {
+  static const _folded = 'folded';
+
+  @override
+  bool build() =>
+      ref
+          .watch(uiStateStoreProvider)
+          .readString(UiStateKeys.calendarAllDayFolded) ==
+      _folded;
+
+  void toggle() {
+    state = !state;
+    ref
+        .read(uiStateStoreProvider)
+        .writeString(UiStateKeys.calendarAllDayFolded, state ? _folded : null);
+  }
+}
+
+final calendarAllDayFoldedProvider =
+    NotifierProvider<CalendarAllDayFolded, bool>(CalendarAllDayFolded.new);
+
 /// Declined meetings and the working day: Settings, Calendar.
 class CalendarPrefsNotifier extends Notifier<CalendarPrefs> {
   @override

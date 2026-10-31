@@ -20,8 +20,8 @@ import 'row_attachments.dart';
 /// flagged, and the replied or
 /// forwarded mark of the message the row is headed by (a thread you had
 /// answered showed no arrow until it was opened). Two differences, each
-/// earning its place: the count says how many messages are inside, and a
-/// chevron says it opens.
+/// earning its place: the count says how many messages are inside, and an
+/// arrow at the row's start says it opens, as the group bars' does.
 ///
 /// The sender is the newest one who is not you, name and address, as it is
 /// on a message row. A thread you answered last would otherwise be headed
@@ -132,7 +132,25 @@ class ConversationTile extends StatelessWidget {
       ...actionMarks(lead, scheme),
     ];
     final columns = ColumnLayout.maybeOf(context);
+    // The group bars' arrow, where theirs is: at the start, pointing right
+    // while the thread is closed and down while it is open. It had been a
+    // chevron at the end of the subject; Ron asked for it on the left,
+    // like the bars'.
+    final arrow = Padding(
+      key: const ValueKey('thread-arrow'),
+      padding: const EdgeInsets.only(right: 4),
+      child: AnimatedRotation(
+        turns: isExpanded ? 0 : -0.25,
+        duration: const Duration(milliseconds: 150),
+        child: Icon(
+          Icons.expand_more,
+          size: 16,
+          color: scheme.onSurfaceVariant,
+        ),
+      ),
+    );
     double fixed() => rowEdges +
+        threadArrowWidth +
         marks.length * markWidth +
         12 +
         textWidth(context, '${conversation.everything.length}', theme.textTheme.labelSmall) +
@@ -140,9 +158,7 @@ class ConversationTile extends StatelessWidget {
         6 +
         8 +
         textWidth(context, dateText, dateStyle) +
-        (previews
-            ? 6
-            : (conversation.hasAttachments ? 20 : 0) + 18);
+        (previews ? 6 : (conversation.hasAttachments ? 20 : 0) + 6);
     final oneLine =
         columns == null && rowsOnOneLine(context, width: width, fixed: fixed());
     final singleLine = (columns != null || oneLine) && !previews;
@@ -159,11 +175,7 @@ class ConversationTile extends StatelessWidget {
         const SizedBox(width: 6),
         Icon(Icons.attach_file, size: 14, color: scheme.onSurfaceVariant),
       ],
-      Icon(
-        isExpanded ? Icons.expand_less : Icons.expand_more,
-        size: 18,
-        color: scheme.onSurfaceVariant,
-      ),
+      const SizedBox(width: 6),
     ];
     final preview = Text(
       conversation.newest.preview,
@@ -175,8 +187,9 @@ class ConversationTile extends StatelessWidget {
     final List<Widget> lines;
     if (columns != null) {
       // Under the list's headers, as a message row has them (see
-      // MessageTile): the count and the arrow ride with the subject, and
-      // the size is the whole thread's, as the count is.
+      // MessageTile): the arrow starts the From column, the count rides
+      // with the subject, and the size is the whole thread's, as the count
+      // is.
       final from = math.max(24.0, columns.from - (columns.width - width));
       final bytes = conversation.everything
           .fold<int>(0, (total, m) => total + m.sizeBytes);
@@ -202,7 +215,9 @@ class ConversationTile extends StatelessWidget {
               width: from,
               child: Row(
                 children: [
-                  if (from >= marks.length * markWidth + 40) ...marks,
+                  arrow,
+                  if (from >= threadArrowWidth + marks.length * markWidth + 40)
+                    ...marks,
                   Expanded(
                     child: Text(
                       showRecipients
@@ -226,11 +241,6 @@ class ConversationTile extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: first,
               ),
-            ),
-            Icon(
-              isExpanded ? Icons.expand_less : Icons.expand_more,
-              size: 18,
-              color: scheme.onSurfaceVariant,
             ),
             if (columns.received > 0) ...[
               const SizedBox(width: ColumnLayout.gap),
@@ -276,6 +286,7 @@ class ConversationTile extends StatelessWidget {
       lines = [
         Row(
           children: [
+            arrow,
             ...marks,
             Expanded(
               flex: 2,
@@ -317,6 +328,7 @@ class ConversationTile extends StatelessWidget {
       lines = [
         Row(
           children: [
+            arrow,
             ...marks,
             Expanded(
               child: Text(
@@ -453,6 +465,9 @@ class ConversationTile extends StatelessWidget {
   /// Who heads the row: see [leadMessage].
   MailAddress get leadSender => leadMessage.from;
 }
+
+/// The arrow at the start of a thread's row, with the space after it.
+const double threadArrowWidth = 16 + 4;
 
 /// The message that heads [conversation]'s row: the newest one not from
 /// [ownAddresses], or the newest where everyone in it is you. The list

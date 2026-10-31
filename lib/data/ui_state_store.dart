@@ -101,6 +101,9 @@ abstract final class UiStateKeys {
   static const calendarWeekSpan = 'calendar.week-span.v1';
   static const calendarHourHeight = 'calendar.hour-height.v1';
 
+  /// Whether Day and Week fold their all-day events to a line.
+  static const calendarAllDayFolded = 'calendar.all-day-folded.v1';
+
   /// Declined meetings and the working day; see `CalendarPrefs`. In the
   /// backup.
   static const calendarPrefs = 'calendar.prefs.v1';

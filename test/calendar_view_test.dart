@@ -402,6 +402,44 @@ void main() {
       expect(find.text('Dana'), findsOneWidget, reason: 'the organiser');
     });
 
+    testWidgets('all-day events fold to a line, the first and how many more',
+        (tester) async {
+      final t = today();
+      const titles = ['Holiday', 'Birthday', 'Office day'];
+      final (c, _) = await pump(tester, const CalendarScreen(),
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          for (final title in titles)
+            CalendarEvent(
+              id: title,
+              accountId: hadco.id,
+              title: title,
+              start: DateTime(t.year, t.month, t.day),
+              end: DateTime(t.year, t.month, t.day + 1),
+              allDay: true,
+            ),
+        ];
+      });
+      await tester.tap(find.byKey(const ValueKey('calendar-view-day')));
+      await tester.pumpAndSettle();
+      int shown() =>
+          titles.where((x) => find.text(x).evaluate().isNotEmpty).length;
+      expect(shown(), 3, reason: 'open, as they always were');
+
+      await tester.tap(find.byKey(const ValueKey('all-day-fold')));
+      await tester.pumpAndSettle();
+      expect(c.read(calendarAllDayFoldedProvider), isTrue);
+      expect(shown(), 1);
+      expect(find.text('+2'), findsOneWidget);
+
+      // The count opens them all again.
+      await tester.tap(find.byKey(
+          ValueKey('all-day-more:${t.year}-${t.month}-${t.day}')));
+      await tester.pumpAndSettle();
+      expect(c.read(calendarAllDayFoldedProvider), isFalse);
+      expect(shown(), 3);
+    });
+
     testWidgets('Day shows the hours, and Week the days, each a tap from '
         'its day', (tester) async {
       final (c, _) = await pump(tester, const CalendarScreen());

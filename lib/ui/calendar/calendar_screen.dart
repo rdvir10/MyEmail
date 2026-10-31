@@ -1977,6 +1977,15 @@ class _TimelineState extends ConsumerState<_Timeline> {
         ],
     };
     final anyAllDay = allDay.values.any((l) => l.isNotEmpty);
+    final folded = ref.watch(calendarAllDayFoldedProvider);
+    final fold = ref.read(calendarAllDayFoldedProvider.notifier).toggle;
+    Widget block(CalendarEvent e) => _Block(
+          event: e,
+          colour: widget.colours[e] ?? theme.colorScheme.primary,
+          edge: widget.colours.edgeOf(e),
+          onTap: () => widget.onTap(e),
+          compact: true,
+        );
     return Column(
       children: [
         Row(
@@ -2031,28 +2040,78 @@ class _TimelineState extends ConsumerState<_Timeline> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // The group bars' arrow before the words: a tap folds every
+                // day's all-day events to one line, and opens them again.
                 SizedBox(
                   width: gutter,
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 4, left: 4),
-                    child: Text('All day', style: muted),
+                  child: Tooltip(
+                    message: folded
+                        ? 'Show all-day events'
+                        : 'Fold all-day events',
+                    child: InkWell(
+                      key: const ValueKey('all-day-fold'),
+                      onTap: fold,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(2, 4, 2, 2),
+                        child: Row(
+                          children: [
+                            AnimatedRotation(
+                              turns: folded ? -0.25 : 0,
+                              duration: const Duration(milliseconds: 150),
+                              child: Icon(
+                                Icons.expand_more,
+                                size: 14,
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                            const SizedBox(width: 2),
+                            Flexible(
+                              child: Text(
+                                'All day',
+                                style: muted,
+                                maxLines: 2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
                 ),
                 for (final d in widget.days)
                   Expanded(
-                    child: Column(
-                      children: [
-                        for (final e in allDay[d]!)
-                          _Block(
-                            event: e,
-                            colour: widget.colours[e] ??
-                                theme.colorScheme.primary,
-                            edge: widget.colours.edgeOf(e),
-                            onTap: () => widget.onTap(e),
-                            compact: true,
-                          ),
-                      ],
-                    ),
+                    child: !folded
+                        ? Column(
+                            children: [for (final e in allDay[d]!) block(e)],
+                          )
+                        // Folded, a day's first, and how many more: a tap
+                        // on the count opens them all.
+                        : allDay[d]!.isEmpty
+                            ? const SizedBox.shrink()
+                            : Row(
+                                children: [
+                                  Expanded(child: block(allDay[d]!.first)),
+                                  if (allDay[d]!.length > 1)
+                                    InkWell(
+                                      key: ValueKey(
+                                        'all-day-more:${_dayKey(d)}',
+                                      ),
+                                      onTap: fold,
+                                      child: Padding(
+                                        padding: const EdgeInsets.fromLTRB(
+                                          3,
+                                          0,
+                                          3,
+                                          2,
+                                        ),
+                                        child: Text(
+                                          '+${allDay[d]!.length - 1}',
+                                          style: muted,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
                   ),
               ],
             ),
