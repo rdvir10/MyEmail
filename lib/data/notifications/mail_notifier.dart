@@ -15,7 +15,8 @@ class MailNotification {
     required this.payload,
     required this.when,
     this.invitation = false,
-  });
+    bool meeting = false,
+  }) : meeting = meeting || invitation;
 
   /// Stable for a given message. Android knows a notification by this and
   /// the message id together (see [MailNotifier.withdraw]), which is how one
@@ -35,6 +36,11 @@ class MailNotification {
   /// An invitation to a meeting, answered from the notification with
   /// Accept and Decline rather than deleted from it.
   final bool invitation;
+
+  /// Mail about a meeting of any kind: an invitation, an update, a
+  /// cancellation, someone's answer. It wears the calendar's icon rather
+  /// than the envelope. Always true of an [invitation].
+  final bool meeting;
 
   /// Android notification ids are 32-bit signed and there is no id registry to
   /// allocate from, so the message id is hashed into that space. Each row is
@@ -60,6 +66,7 @@ class MailNotification {
       payload: message.id,
       when: message.date,
       invitation: invitation,
+      meeting: message.isMeeting,
     );
   }
 }

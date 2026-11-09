@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The notification icons, kept: the envelope, and the calendar the
-     meeting reminders and the morning agenda wear.
+     meeting reminders, the morning agenda and mail about a meeting wear.
 
      A release build strips resources nothing in the Android half refers to,
      and this one is named only from Dart, as the string

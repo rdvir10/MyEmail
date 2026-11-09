@@ -279,8 +279,9 @@ class AndroidMailNotifier implements MailNotifier {
     }
   }
 
-  /// The calendar's notifications wear a calendar, not the envelope new
-  /// mail has: res/drawable/ic_stat_event.xml, kept in a release build by
+  /// The calendar's notifications, and mail about a meeting, wear a
+  /// calendar, not the envelope other mail has:
+  /// res/drawable/ic_stat_event.xml, kept in a release build by
   /// res/raw/keep.xml, as the envelope is.
   static const calendarIcon = '@drawable/ic_stat_event';
 
@@ -524,6 +525,9 @@ class AndroidMailNotifier implements MailNotifier {
             importance: Importance.high,
             priority: Priority.high,
             category: AndroidNotificationCategory.email,
+            // Meeting mail wears the calendar, as the reminders do; the
+            // rest the envelope set in ensureReady.
+            icon: n.meeting ? calendarIcon : null,
             actions: n.invitation ? invitationActions : actions,
             when: n.when.millisecondsSinceEpoch,
             color: Color(account.colorValue),

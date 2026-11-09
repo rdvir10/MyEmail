@@ -390,6 +390,46 @@ void main() {
         NotificationActions.replyAllId,
         NotificationActions.deleteId,
       ]);
+      String? iconOf(int id) =>
+          plugin.shown.firstWhere((s) => s.id == id).details.android!.icon;
+      expect(iconOf(1), '@drawable/ic_stat_event',
+          reason: 'meeting mail wears the calendar, as the reminders do');
+      expect(iconOf(2), isNull, reason: 'other mail keeps the envelope');
+    });
+
+    test('a cancellation wears the calendar too, without Accept', () async {
+      const account = Account(
+        id: 'a',
+        displayName: 'Personal',
+        emailAddress: 'me@example.com',
+        provider: MailProvider.gmail,
+        authMethod: AuthMethod.oauth,
+        colorValue: 0xFF0F6CBD,
+      );
+      final inbox = MailFolder.at(
+        accountId: 'a',
+        path: 'INBOX',
+        role: FolderRole.inbox,
+        capabilities: FolderCapabilities.forGmail(FolderRole.inbox),
+      );
+      await notifier.showNewMail(
+        account: account,
+        folder: inbox,
+        notifications: [
+          MailNotification(
+            id: 3,
+            title: 'Dana Levi',
+            body: 'Cancelled: Planning',
+            payload: 'a:INBOX#3',
+            when: DateTime(2026, 10, 25),
+            meeting: true,
+          ),
+        ],
+      );
+      final android =
+          plugin.shown.firstWhere((s) => s.id == 3).details.android!;
+      expect(android.icon, '@drawable/ic_stat_event');
+      expect(android.actions!.first.id, NotificationActions.replyId);
     });
   });
 
@@ -416,6 +456,11 @@ void main() {
       expect(
         {for (final n in notifier.posted) n.payload: n.invitation},
         {'a:INBOX#2': true, 'a:INBOX#3': false, 'a:INBOX#4': false},
+      );
+      expect(
+        {for (final n in notifier.posted) n.payload: n.meeting},
+        {'a:INBOX#2': true, 'a:INBOX#3': true, 'a:INBOX#4': false},
+        reason: 'a cancellation is meeting mail, so it wears the calendar',
       );
     });
   });
