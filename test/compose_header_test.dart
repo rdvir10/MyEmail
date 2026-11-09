@@ -94,9 +94,26 @@ void main() {
       // shouted over the message: a rule under the field, like the body.
       await open(tester, draft());
 
+      final subject = tester.widget<TextField>(field('Subject'));
+      expect(subject.decoration?.border, isA<UnderlineInputBorder>());
+      expect(subject.decoration?.filled, isFalse);
+      // A recipients line has its rule under the bubbles and the field
+      // together.
       final to = tester.widget<TextField>(field('To'));
-      expect(to.decoration?.border, isA<UnderlineInputBorder>());
       expect(to.decoration?.filled, isFalse);
+      expect(
+        find.ancestor(
+          of: field('To'),
+          matching: find.byWidgetPredicate((w) =>
+              w is DecoratedBox &&
+              w.decoration is BoxDecoration &&
+              ((w.decoration as BoxDecoration).border as Border?)
+                      ?.bottom
+                      .style ==
+                  BorderStyle.solid),
+        ),
+        findsOneWidget,
+      );
       expect(find.text('To'), findsOneWidget, reason: 'the name, to the left');
     });
 

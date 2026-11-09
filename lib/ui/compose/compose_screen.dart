@@ -106,6 +106,33 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// Bcc is the one line that stays hidden until asked for: it is rare, and
   /// a row nobody uses on every message is a row between them and the body.
   bool _showBcc = false;
+
+  /// A person is being dragged from one line to another: Bcc shows while
+  /// they are, to be dropped on, and stays if they were.
+  bool _carrying = false;
+
+  /// To, Cc and Bcc, between which a person is dragged, or moved from the
+  /// menu on their bubble.
+  late final _lines = RecipientLines(
+    lines: [
+      (label: 'To', controller: _to),
+      (label: 'Cc', controller: _cc),
+      (label: 'Bcc', controller: _bcc),
+    ],
+    reveal: (line) {
+      if (identical(line, _bcc) && !_showBcc && mounted) {
+        setState(() => _showBcc = true);
+      }
+    },
+    onCarrying: (carrying) {
+      if (!mounted) return;
+      setState(() {
+        _carrying = carrying;
+        if (!carrying && _bcc.text.trim().isNotEmpty) _showBcc = true;
+      });
+    },
+  );
+
   bool _sending = false;
   /// Something the person can correct by typing — a missing recipient, an
   /// address with a typo. Not a failure, and nothing to report.
@@ -1282,6 +1309,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
               // has its recipients, so the cursor is better off in the body.
               autofocus: widget.draft.to.isEmpty,
               onNext: _next,
+              lines: _lines,
             ),
             RecipientField(
               label: 'Cc',
@@ -1289,6 +1317,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
               focusNode: _ccFocus,
               enabled: !_sending,
               onNext: _next,
+              lines: _lines,
               trailing: _showBcc
                   ? null
                   : TextButton(
@@ -1296,13 +1325,14 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
                       child: const Text('Bcc'),
                     ),
             ),
-            if (_showBcc)
+            if (_showBcc || _carrying)
               RecipientField(
                 label: 'Bcc',
                 controller: _bcc,
                 focusNode: _bccFocus,
                 enabled: !_sending,
                 onNext: _next,
+                lines: _lines,
               ),
             // Exchange's word on the recipients, from a Microsoft account.
             if (account?.provider == MailProvider.outlook)

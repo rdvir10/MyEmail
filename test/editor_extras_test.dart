@@ -10,6 +10,7 @@ import 'package:myemail/domain/signature.dart';
 import 'package:myemail/state/compose_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
+import 'package:myemail/ui/compose/header_fields.dart';
 import 'package:myemail/ui/compose/html_editor.dart';
 import 'package:myemail/ui/compose/insert_picture.dart';
 
@@ -144,8 +145,14 @@ void main() {
 
     expect(page.ranJavaScript,
         contains('window.mailtreeMention("Dana Levi", "dana@example.com");'));
-    expect(find.text('Dana Levi <dana@example.com>'), findsOneWidget,
+    final to = find.byWidgetPredicate(
+        (w) => w is RecipientField && w.label == 'To');
+    expect(tester.widget<RecipientField>(to).controller.text,
+        contains('Dana Levi <dana@example.com>'),
         reason: 'on To now');
+    expect(find.descendant(of: to, matching: find.text('Dana Levi')),
+        findsOneWidget,
+        reason: 'as a bubble');
     expect(chip, findsNothing);
   });
 

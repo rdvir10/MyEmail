@@ -111,6 +111,11 @@ void main() {
         findsOneWidget,
       );
 
+      // Dana taken off with her bubble's menu, and a list typed in.
+      await tester.tap(find.text('Dana Levi'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Remove'));
+      await tester.pumpAndSettle();
       await tester.enterText(field('To'), 'all@contoso.com');
       await wait(tester);
       expect(find.textContaining('automatic reply'), findsNothing);

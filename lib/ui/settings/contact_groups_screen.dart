@@ -190,6 +190,8 @@ class _ContactGroupEditorState extends ConsumerState<ContactGroupEditor> {
             controller: _members,
             focusNode: _membersFocus,
             enabled: true,
+            // Everyone, always: the group's people are what the page is for.
+            folds: false,
           ),
           if (_problem != null)
             Padding(
@@ -204,7 +206,7 @@ class _ContactGroupEditorState extends ConsumerState<ContactGroupEditor> {
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
             child: Text(
               'Type names or addresses, with commas between, and choose from '
-              'what is suggested.',
+              'what is suggested. Tap a person to edit or remove them.',
               style: theme.textTheme.bodySmall
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),

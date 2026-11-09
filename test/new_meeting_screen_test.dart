@@ -33,6 +33,7 @@ import 'package:myemail/state/put_away_providers.dart';
 import 'package:myemail/ui/accounts/google_sign_in_screen.dart';
 import 'package:myemail/ui/accounts/microsoft_sign_in_screen.dart';
 import 'package:myemail/ui/common/problem_view.dart';
+import 'package:myemail/ui/compose/header_fields.dart';
 import 'package:myemail/ui/meetings/new_meeting_screen.dart';
 import 'package:myemail/ui/messages/date_format.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
@@ -1710,7 +1711,11 @@ void main() {
 
       expect(find.byType(NewMeetingScreen), findsOneWidget);
       expect(
-        tester.widget<TextField>(field('meeting-attendees')).controller!.text,
+        tester
+            .widget<RecipientField>(
+                find.byKey(const ValueKey('meeting-attendees')))
+            .controller
+            .text,
         contains(open.from.email),
       );
     });
@@ -1786,7 +1791,11 @@ void main() {
       expect(find.text(account.emailAddress), findsOneWidget,
           reason: 'from the account the message came to');
       expect(
-        tester.widget<TextField>(field('meeting-attendees')).controller!.text,
+        tester
+            .widget<RecipientField>(
+                find.byKey(const ValueKey('meeting-attendees')))
+            .controller
+            .text,
         contains(open.from.email),
         reason: 'everyone on the message, as Reply with Meeting has them',
       );

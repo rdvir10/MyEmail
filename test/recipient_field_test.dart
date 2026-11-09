@@ -11,6 +11,7 @@ import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/contact_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
+import 'package:myemail/ui/compose/header_fields.dart';
 
 import 'fakes/fake_webview.dart';
 
@@ -82,6 +83,13 @@ void main() {
         matching: find.byType(TextField),
       );
 
+  /// Everyone on To, as the message will have them: the bubbles, then
+  /// what is being typed.
+  String toLine(WidgetTester tester) => tester
+      .widget<RecipientField>(find.byType(RecipientField).first)
+      .controller
+      .text;
+
   Future<void> type(WidgetTester tester, String text) async {
     await tester.enterText(toField(), text);
     // The suggestions are looked up after the keystroke, and the engine
@@ -102,7 +110,7 @@ void main() {
       expect(find.text('Rosa Lind'), findsOneWidget);
     });
 
-    testWidgets('choosing one writes it in, with a comma for the next',
+    testWidgets('choosing one makes them a bubble, ready for the next',
         (tester) async {
       await open(tester);
       await type(tester, 'ro');
@@ -111,7 +119,9 @@ void main() {
       await tester.pumpAndSettle();
 
       final field = tester.widget<TextField>(toField());
-      expect(field.controller?.text, 'Ron Dvir <ron@example.com>, ');
+      expect(field.controller?.text, '', reason: 'typing starts again');
+      expect(toLine(tester), 'Ron Dvir <ron@example.com>');
+      expect(find.text('Ron Dvir'), findsOneWidget, reason: 'the bubble');
     });
 
     testWidgets('the second name is completed on its own', (tester) async {
@@ -123,10 +133,9 @@ void main() {
       await tester.tap(find.text('Ron Dvir'));
       await tester.pumpAndSettle();
 
-      final field = tester.widget<TextField>(toField());
       expect(
-        field.controller?.text,
-        'Rosa Lind <rosa@example.com>, Ron Dvir <ron@example.com>, ',
+        toLine(tester),
+        'Rosa Lind <rosa@example.com>, Ron Dvir <ron@example.com>',
       );
     });
   });
@@ -241,8 +250,7 @@ void main() {
       await tester.tap(find.text('Dana Levi'));
       await tester.pumpAndSettle();
 
-      final field = tester.widget<TextField>(toField());
-      expect(field.controller?.text, 'Dana Levi <dana@example.com>, ');
+      expect(toLine(tester), 'Dana Levi <dana@example.com>');
       expect(find.text('Omer Tal'), findsNothing);
     });
 
@@ -257,7 +265,7 @@ void main() {
       await tester.pumpAndSettle();
 
       final field = tester.widget<TextField>(toField());
-      expect(field.controller?.text, 'Omer Tal <omer@example.com>, ');
+      expect(toLine(tester), 'Omer Tal <omer@example.com>');
       expect(field.focusNode!.hasFocus, isFalse, reason: 'and on to Cc');
     });
 
@@ -284,9 +292,11 @@ void main() {
       await tester.pumpAndSettle();
 
       final to = tester.widget<TextField>(toField());
-      expect(to.controller?.text, 'Dana Levi <dana@example.com>, ');
+      expect(toLine(tester), 'Dana Levi <dana@example.com>');
       expect(to.focusNode!.hasFocus, isFalse, reason: 'on to Cc');
-      expect(find.text('Dana Levi'), findsNothing);
+      // The list closed: its rows have the address beside the name, and
+      // the bubble the name alone.
+      expect(find.text('dana@example.com'), findsNothing);
     });
 
     testWidgets('nobody already in the field is offered again',
@@ -295,7 +305,9 @@ void main() {
 
       await type(tester, 'Dana Levi <dana@example.com>, d');
 
-      expect(find.text('Dana Levi'), findsNothing);
+      // Dana is a bubble now, and not in the list, whose rows have the
+      // address beside the name.
+      expect(find.text('dana@example.com'), findsNothing);
       expect(find.text('deals@shop.example'), findsOneWidget);
     });
   });

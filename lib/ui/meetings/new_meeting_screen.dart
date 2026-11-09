@@ -231,14 +231,13 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   late final _attendees =
       TextEditingController(text: _attendeesToBegin);
 
-  /// The attendees as the field starts, with a separator after them so the
-  /// next address can be typed straight on. A meeting being changed has
-  /// its own, less its organiser and the account itself.
+  /// The attendees as the field starts, a bubble each. A meeting being
+  /// changed has its own, less its organiser and the account itself.
   late final String _attendeesToBegin = () {
     final people = _editing == null
         ? widget.attendees
         : _peopleOn(_editing!.event);
-    return people.isEmpty ? '' : '${formatAddresses(people)}, ';
+    return formatAddresses(people);
   }();
 
   /// Who [event] is with, as the attendees field lists them.
