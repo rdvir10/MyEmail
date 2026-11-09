@@ -1005,11 +1005,36 @@ class CachedImapEngine implements MailEngine {
         'A new time can be proposed only from a Microsoft account.',
       );
     }
-    // Over mail, an answer the organiser is not sent is no answer at all.
+    // Do Not Send a Response: the answer on the account's calendar alone,
+    // which for Gmail is where Google put the invitation. Over mail, an
+    // answer the organiser is not sent is no answer at all.
     if (!send) {
+      if (!canAnswerQuietly(accountId)) {
+        throw const SendFailed(
+          'This account answers by mail, so the organiser has to be sent '
+          'the response.',
+        );
+      }
+      final account = _accountFor(accountId);
+      String? linked;
+      if (account.provider == MailProvider.outlook) {
+        try {
+          linked = await t.linkedEventId(path, uid);
+        } catch (_) {
+          linked = null;
+        }
+      }
+      if (await _calendars.answerQuietly(
+        account,
+        invite,
+        response,
+        linkedEventId: linked,
+      )) {
+        return;
+      }
       throw const SendFailed(
-        'An answer can be kept from the organiser only on a Microsoft '
-        'account.',
+        "It isn't on your calendar, so it can only be answered by sending "
+        'the response.',
       );
     }
 
@@ -1092,6 +1117,15 @@ class CachedImapEngine implements MailEngine {
     return account != null &&
         account.provider == MailProvider.outlook &&
         !account.isShared;
+  }
+
+  /// Signed in with Microsoft or Google, so with a calendar the app
+  /// reaches, and not a shared mailbox, answered by mail.
+  @override
+  bool canAnswerQuietly(String accountId) {
+    final account =
+        accountStore.read().where((a) => a.id == accountId).firstOrNull;
+    return account != null && AccountCalendar.canRead(account);
   }
 
   @override

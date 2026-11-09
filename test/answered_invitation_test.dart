@@ -7,6 +7,7 @@ import 'package:myemail/data/notifications/notification_actions.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/calendar_invite.dart';
+import 'package:myemail/domain/calendar_meeting.dart';
 import 'package:myemail/domain/calendar_prefs.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_message.dart';
@@ -47,6 +48,8 @@ void main() {
     return (engine, (await engine.loadMessages(inbox.id)).first);
   }
 
+  // A notification posted before 3.9.0, whose buttons answer at once; a
+  // newer one's open the invitation, whose card asks (meeting_card_test).
   group('from its notification', () {
     test('answered, then in Deleted Items', () async {
       final (engine, message) = await invitation();
@@ -71,9 +74,12 @@ void main() {
   });
 
   group('from its card', () {
+    /// The invitation open in a reading pane. [prepare] is handed the engine
+    /// and the message before the pane is built.
     Future<(ProviderContainer, SampleMailEngine, MailMessage)> pump(
       WidgetTester tester, {
       bool delete = true,
+      void Function(SampleMailEngine, MailMessage)? prepare,
     }) async {
       FakeWebViewPlatform.install();
       tester.view.physicalSize = const Size(1200, 1600);
@@ -81,6 +87,7 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       final (engine, message) = (await tester.runAsync(invitation))!;
+      prepare?.call(engine, message);
       final ui = MemoryUiStateStore();
       await ui.writeString(
         UiStateKeys.calendarPrefs,
@@ -109,11 +116,22 @@ void main() {
       return (c, engine, message);
     }
 
+    /// Press [answer] on the card, then [how] in the menu it asks with.
+    Future<void> answer(
+      WidgetTester tester,
+      String answer, {
+      String how = 'answer-now',
+    }) async {
+      await tester.tap(find.text(answer));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(ValueKey(how)));
+      await tester.pumpAndSettle();
+    }
+
     testWidgets('Accept, and the invitation goes to Deleted Items, with Undo',
         (tester) async {
       final (_, engine, message) = await pump(tester);
-      await tester.tap(find.text('Accept'));
-      await tester.pumpAndSettle();
+      await answer(tester, 'Accept');
       expect(engine.inviteAnswers.single.response, InviteResponse.accepted);
       expect(
           find.text('Accepted. The organiser has been told. The invitation is '
@@ -127,13 +145,39 @@ void main() {
 
     testWidgets('kept where Settings, Calendar says so', (tester) async {
       final (_, engine, message) = await pump(tester, delete: false);
-      await tester.tap(find.text('Accept'));
-      await tester.pumpAndSettle();
+      await answer(tester, 'Accept');
       expect(find.text('Accepted. The organiser has been told.'),
           findsOneWidget);
       final inbox = (await tester
           .runAsync(() => engine.loadMessages(message.folderId)))!;
       expect(inbox.any((m) => m.id == message.id), isTrue);
+    });
+
+    testWidgets('answered without telling the organiser, it goes to Deleted '
+        'Items all the same, as in Outlook', (tester) async {
+      final (_, engine, message) = await pump(
+        tester,
+        // On the account's calendar, which can take an answer alone.
+        prepare: (engine, message) => engine
+          ..answersQuietly.add(message.accountId)
+          ..calendar['plan-1@example.com'] = CalendarMeeting(
+            accountId: message.accountId,
+            eventId: 'e-1',
+            start: DateTime.utc(2026, 10, 28, 10),
+          ),
+      );
+      await answer(tester, 'Decline', how: 'answer-quiet');
+
+      final given = engine.inviteAnswers.single;
+      expect(given.response, InviteResponse.declined);
+      expect(given.send, isFalse);
+      expect(
+          find.text('Declined. The organiser was not told. The invitation is '
+              'in Deleted Items.'),
+          findsOneWidget);
+      final inbox = (await tester
+          .runAsync(() => engine.loadMessages(message.folderId)))!;
+      expect(inbox.any((m) => m.id == message.id), isFalse);
     });
   });
 }

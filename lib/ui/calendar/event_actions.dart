@@ -118,36 +118,24 @@ Future<bool?> askWholeSeries(
 
 // --- answering ----------------------------------------------------------------
 
-/// Answer [event] as [response], telling the organiser. With [asked], the
-/// answer is asked for first, with a note or without a word to them.
+/// Answer [event] as [response], as the sheet's question was answered (see
+/// `askHowToAnswer`): telling the organiser, with [note] where there is
+/// one, or, [send] false, not telling them at all.
 Future<void> answerEvent(
   BuildContext context,
   WidgetRef ref,
   CalendarEvent event,
   InviteResponse response, {
-  bool asked = false,
+  String note = '',
+  bool send = true,
 }) async {
   final messenger = ScaffoldMessenger.of(context);
-  var note = '';
-  var send = true;
-  var chosen = response;
-  if (asked) {
-    final answer = await askForNotedAnswer(
-      context,
-      canStayQuiet: true,
-      initial: response,
-    );
-    if (answer == null || !context.mounted) return;
-    chosen = answer.response;
-    note = answer.note;
-    send = answer.send;
-  }
   final series = await askWholeSeries(context, event, doing: 'Answer');
   if (series == null || !context.mounted) return;
   try {
     await ref.read(mailEngineProvider).respondToEvent(
           event,
-          chosen,
+          response,
           note: note,
           send: send,
           wholeSeries: series,
@@ -156,8 +144,8 @@ Future<void> answerEvent(
     _tell(
       messenger,
       send && who != null
-          ? '${chosen.word}. ${_name(who)} is told.'
-          : '${chosen.word}. The organiser was not told.',
+          ? '${response.word}. ${_name(who)} is told.'
+          : '${response.word}. The organiser was not told.',
     );
     unawaited(settleCalendar(ref, event));
   } catch (e) {

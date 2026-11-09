@@ -203,6 +203,10 @@ class _RefusingEngine implements MailEngine {
       _inner.canProposeNewTime(accountId);
 
   @override
+  bool canAnswerQuietly(String accountId) =>
+      _inner.canAnswerQuietly(accountId);
+
+  @override
   Future<void> setFollowUp(
     List<String> messageIds, {
     DateTime? due,

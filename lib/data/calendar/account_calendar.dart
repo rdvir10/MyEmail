@@ -594,6 +594,40 @@ class AccountCalendar {
     }
   }
 
+  /// Answer the meeting [invite] is about on [account]'s calendar without
+  /// a word to its organiser: Outlook's Do Not Send a Response. Found as
+  /// [meetingFor] finds it. False where the calendar does not have it, or
+  /// has it cancelled; throws as [meetingFor] does.
+  Future<bool> answerQuietly(
+    Account account,
+    CalendarInvite invite,
+    InviteResponse response, {
+    String? linkedEventId,
+  }) async {
+    final meeting =
+        await meetingFor(account, invite, linkedEventId: linkedEventId);
+    if (meeting == null || meeting.isCancelled) return false;
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          await api.respond(meeting.eventId, response, send: false);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          await api.respond(meeting.eventId, response, send: false);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+    return true;
+  }
+
   /// [event]'s notes in full; see `MailEngine.eventNotes`.
   Future<EventNotes> eventNotes(
     Account account,

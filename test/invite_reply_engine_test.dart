@@ -115,6 +115,9 @@ void main() {
       'refused, and nothing goes', () async {
     final account = await personal();
 
+    // An app password reaches the mail and no calendar, where an answer
+    // kept from the organiser would have to go.
+    expect(engine.canAnswerQuietly(account.id), isFalse);
     await expectLater(
       engine.respondToInvite(
         '${account.id}:INBOX#1',
@@ -122,7 +125,11 @@ void main() {
         InviteResponse.accepted,
         send: false,
       ),
-      throwsA(isA<SendFailed>()),
+      throwsA(isA<SendFailed>().having(
+        (e) => e.message,
+        'message',
+        contains('answers by mail'),
+      )),
     );
     await expectLater(
       engine.respondToInvite(

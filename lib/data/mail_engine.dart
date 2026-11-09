@@ -269,10 +269,12 @@ abstract class MailEngine {
   /// reads otherwise, sent from the account the invitation came to.
   ///
   /// [note] goes to the organiser with it, as Outlook's Edit the Response
-  /// before Sending. [send] false answers without telling them: on the
-  /// calendar on Microsoft, and nothing at all over mail. [proposal] is a
-  /// new time, with a tentative or declined answer; only where
-  /// [canProposeNewTime].
+  /// before Sending. [send] false answers without telling them, Outlook's
+  /// Do Not Send a Response: on the account's calendar alone, where
+  /// [canAnswerQuietly], and refused with a [SendFailed] saying why where
+  /// the calendar does not have the meeting; over mail an answer not sent
+  /// is no answer. [proposal] is a new time, with a tentative or declined
+  /// answer; only where [canProposeNewTime].
   Future<void> respondToInvite(
     String messageId,
     CalendarInvite invite,
@@ -285,6 +287,12 @@ abstract class MailEngine {
   /// Whether an invitation to [accountId] can be answered with a new time:
   /// a Microsoft account. Google Calendar ignores a time proposed by mail.
   bool canProposeNewTime(String accountId);
+
+  /// Whether an invitation to [accountId] can be answered without a word
+  /// to its organiser: an account whose calendar the app reaches, a
+  /// Microsoft one or Gmail signed in with Google, and not a shared
+  /// mailbox, which answers by mail.
+  bool canAnswerQuietly(String accountId);
 
   /// What Exchange says about each of [emails] before a message from
   /// [accountId] goes to them: see [MailTip]. A Microsoft account only;

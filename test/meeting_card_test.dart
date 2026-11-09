@@ -107,8 +107,13 @@ void main() {
 
   setUp(() => calendar = FakeDeviceCalendar());
 
-  /// The card for [engine]'s message, settled.
-  Future<void> show(WidgetTester tester, _MeetingMail engine) async {
+  /// The card for [engine]'s message, settled. [before] is handed the
+  /// providers before the card is first built.
+  Future<void> show(
+    WidgetTester tester,
+    _MeetingMail engine, {
+    void Function(ProviderContainer)? before,
+  }) async {
     tester.platformDispatcher.alwaysUse24HourFormatTestValue = true;
     addTearDown(tester.platformDispatcher.clearAlwaysUse24HourTestValue);
     final c = ProviderContainer(overrides: [
@@ -116,6 +121,7 @@ void main() {
       deviceCalendarProvider.overrideWithValue(calendar),
     ]);
     addTearDown(c.dispose);
+    before?.call(c);
     await tester.pumpWidget(UncontrolledProviderScope(
       container: c,
       child: MaterialApp(
@@ -311,77 +317,132 @@ void main() {
     });
   });
 
-  // Outlook's Edit the Response before Sending, Do Not Send a Response and
-  // Propose New Time, behind the menu beside the three answers.
-  group('more answers', () {
+  // Each answer asks first, as Outlook does: Send the response now, Edit
+  // the response before sending, or Do not send a response.
+  group('answering asks how it goes', () {
     String invitation() => mail('REQUEST', extra: organisedByDana);
 
-    Future<void> choose(WidgetTester tester, String entry) async {
-      await tester.tap(find.byKey(const ValueKey('more-answers')));
+    /// Press [answer], then pick [how] from the menu under it.
+    Future<void> answer(WidgetTester tester, String answer, Key how) async {
+      await tester.tap(find.text(answer));
       await tester.pumpAndSettle();
-      await tester.tap(find.text(entry));
+      await tester.tap(find.byKey(how));
       await tester.pumpAndSettle();
     }
 
-    testWidgets('an answer with a note goes with the note', (tester) async {
+    const now = ValueKey('answer-now');
+    const edit = ValueKey('answer-edit');
+    const quiet = ValueKey('answer-quiet');
+
+    testWidgets('nothing goes until it is asked', (tester) async {
       final engine = _MeetingMail(invitation());
       await show(tester, engine);
 
-      await choose(tester, 'Answer with a note…');
-      await tester.tap(find.descendant(
-        of: find.byType(SegmentedButton<InviteResponse>),
-        matching: find.text('Tentative'),
-      ));
+      await tester.tap(find.text('Accept'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Send the response now'), findsOneWidget);
+      expect(find.text('Edit the response before sending'), findsOneWidget);
+      expect(find.text('Do not send a response'), findsOneWidget);
+      expect(engine.inviteAnswers, isEmpty);
+    });
+
+    testWidgets('Send the response now tells the organiser, with nothing '
+        'more', (tester) async {
+      final engine = _MeetingMail(invitation());
+      await show(tester, engine);
+
+      await answer(tester, 'Accept', now);
+
+      final given = engine.inviteAnswers.single;
+      expect(given.response, InviteResponse.accepted);
+      expect(given.note, isEmpty);
+      expect(given.send, isTrue);
+      expect(find.text('Accepted. The organiser has been told.'),
+          findsOneWidget);
+      expect(find.text('You accepted'), findsOneWidget);
+    });
+
+    testWidgets('Edit the response before sending sends the message with '
+        'it', (tester) async {
+      final engine = _MeetingMail(invitation());
+      await show(tester, engine);
+
+      await answer(tester, 'Tentative', edit);
+      expect(find.text('Tentative: Ron and Dana'), findsOneWidget);
       await tester.enterText(
-          find.byKey(const ValueKey('answer-note')), 'Running late.');
-      expect(find.byKey(const ValueKey('answer-tell')), findsNothing,
-          reason: 'over mail, an answer not sent is no answer');
+          find.byKey(const ValueKey('answer-note')), '  Running late.  ');
       await tester.tap(find.byKey(const ValueKey('answer-send')));
       await tester.pumpAndSettle();
 
-      final answer = engine.inviteAnswers.single;
-      expect(answer.response, InviteResponse.tentative);
-      expect(answer.note, 'Running late.');
-      expect(answer.send, isTrue);
-      expect(answer.proposal, isNull);
+      final given = engine.inviteAnswers.single;
+      expect(given.response, InviteResponse.tentative);
+      expect(given.note, 'Running late.');
+      expect(given.send, isTrue);
+      expect(given.proposal, isNull);
       expect(find.text('Tentative. The organiser has been told.'),
           findsOneWidget);
-      expect(find.text('You tentative'), findsOneWidget);
     });
 
-    testWidgets('on a Microsoft account, can be kept from the organiser',
+    testWidgets('Do not send a response answers on the calendar alone',
         (tester) async {
       final engine = _MeetingMail(invitation())
-        ..proposesNewTimes.add('acct-personal');
+        ..answersQuietly.add('acct-personal')
+        ..calendar[uid] = onCalendar();
       await show(tester, engine);
 
-      await choose(tester, 'Answer with a note…');
-      await tester.enterText(
-          find.byKey(const ValueKey('answer-note')), 'Not sent.');
-      await tester.tap(find.byKey(const ValueKey('answer-tell')));
-      await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<TextField>(find.byKey(const ValueKey('answer-note')))
-            .enabled,
-        isFalse,
-      );
-      await tester.tap(find.byKey(const ValueKey('answer-send')));
-      await tester.pumpAndSettle();
+      await answer(tester, 'Decline', quiet);
 
-      final answer = engine.inviteAnswers.single;
-      expect(answer.response, InviteResponse.accepted);
-      expect(answer.send, isFalse);
-      expect(answer.note, isEmpty, reason: 'a note to nobody is not kept');
-      expect(find.text('Accepted. The organiser was not told.'),
+      final given = engine.inviteAnswers.single;
+      expect(given.response, InviteResponse.declined);
+      expect(given.send, isFalse);
+      expect(given.note, isEmpty);
+      expect(find.text('Declined. The organiser was not told.'),
           findsOneWidget);
     });
 
-    testWidgets('Cancel answers nothing', (tester) async {
+    testWidgets('Do not send a response is greyed, saying why, where the '
+        'account answers by mail', (tester) async {
       final engine = _MeetingMail(invitation());
       await show(tester, engine);
 
-      await choose(tester, 'Answer with a note…');
+      await tester.tap(find.text('Accept'));
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<PopupMenuItem<Object?>>(find.byKey(quiet)).enabled,
+          isFalse);
+      expect(find.text('This account answers by mail.'), findsOneWidget);
+      await tester.tap(find.byKey(now));
+      await tester.pumpAndSettle();
+      expect(engine.inviteAnswers.single.send, isTrue);
+    });
+
+    testWidgets('and where the calendar does not have the meeting',
+        (tester) async {
+      final engine = _MeetingMail(invitation())
+        ..answersQuietly.add('acct-personal');
+      await show(tester, engine);
+
+      await tester.tap(find.text('Accept'));
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<PopupMenuItem<Object?>>(find.byKey(quiet)).enabled,
+          isFalse);
+      expect(find.text("It isn't on your calendar."), findsOneWidget);
+    });
+
+    testWidgets('backing out of either question answers nothing',
+        (tester) async {
+      final engine = _MeetingMail(invitation());
+      await show(tester, engine);
+
+      await tester.tap(find.text('Accept'));
+      await tester.pumpAndSettle();
+      await tester.tapAt(Offset.zero);
+      await tester.pumpAndSettle();
+      expect(find.text('Send the response now'), findsNothing);
+
+      await answer(tester, 'Decline', edit);
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
 
@@ -389,16 +450,39 @@ void main() {
       expect(find.text('Accept'), findsOneWidget);
     });
 
+    testWidgets('begun on the notification, it is asked as the card opens',
+        (tester) async {
+      final engine = _MeetingMail(invitation());
+      await show(
+        tester,
+        engine,
+        before: (c) => c
+            .read(askedAnswerProvider.notifier)
+            .ask(message.id, InviteResponse.declined),
+      );
+
+      // A dialog, there being no button pressed to drop a menu from.
+      expect(find.text('Decline: Ron and Dana'), findsOneWidget);
+      expect(engine.inviteAnswers, isEmpty);
+      await tester.tap(find.byKey(now));
+      await tester.pumpAndSettle();
+
+      expect(engine.inviteAnswers.single.response, InviteResponse.declined);
+      expect(engine.inviteAnswers.single.send, isTrue);
+    });
+
     testWidgets('a new time is offered only where the account can propose '
         'one', (tester) async {
       await show(tester, _MeetingMail(invitation()));
+      expect(find.byKey(const ValueKey('more-answers')), findsNothing);
+    });
 
+    Future<void> choose(WidgetTester tester, String entry) async {
       await tester.tap(find.byKey(const ValueKey('more-answers')));
       await tester.pumpAndSettle();
-
-      expect(find.text('Answer with a note…'), findsOneWidget);
-      expect(find.text('Propose a new time…'), findsNothing);
-    });
+      await tester.tap(find.text(entry));
+      await tester.pumpAndSettle();
+    }
 
     testWidgets('a new time goes as a tentative answer with the time, the '
         'meeting\'s length kept', (tester) async {

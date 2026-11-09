@@ -836,6 +836,16 @@ class SampleMailEngine implements MailEngine {
   bool canProposeNewTime(String accountId) =>
       proposesNewTimes.contains(accountId);
 
+  /// Which accounts can answer without telling the organiser, as one whose
+  /// calendar the app reaches can: those a test names here, and those that
+  /// propose new times, as a Microsoft account does both.
+  final Set<String> answersQuietly = {};
+
+  @override
+  bool canAnswerQuietly(String accountId) =>
+      answersQuietly.contains(accountId) ||
+      proposesNewTimes.contains(accountId);
+
   /// What [mailTips] answers, by address, for a test to fill.
   final Map<String, MailTip> tips = {};
 

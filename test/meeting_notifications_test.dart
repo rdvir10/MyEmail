@@ -395,6 +395,65 @@ void main() {
       expect(iconOf(1), '@drawable/ic_stat_event',
           reason: 'meeting mail wears the calendar, as the reminders do');
       expect(iconOf(2), isNull, reason: 'other mail keeps the envelope');
+      final invitation =
+          plugin.shown.firstWhere((s) => s.id == 1).details.android!.actions!;
+      expect(
+        [for (final a in invitation) a.showsUserInterface],
+        [true, true, false],
+        reason: 'Accept and Decline open the invitation, which asks how the '
+            'answer goes; Reply is typed in the shade',
+      );
+    });
+
+    test('Accept pressed opens the invitation with the answer begun, and '
+        'takes its row down by its tag', () async {
+      await notifier.ensureReady();
+      plugin.tapped!(const NotificationResponse(
+        notificationResponseType:
+            NotificationResponseType.selectedNotificationAction,
+        actionId: NotificationActions.acceptId,
+        id: 1,
+        payload: 'a:INBOX#1',
+      ));
+      await pumpEventQueue();
+
+      final payload = await notifier.takeLaunchPayload();
+      final begun = NotificationActions.answerBegun(payload);
+      expect(begun?.messageId, 'a:INBOX#1');
+      expect(begun?.response, InviteResponse.accepted);
+      expect(queued, isEmpty, reason: 'not answered behind your back');
+      expect(plugin.cancelled, [(id: 1, tag: 'a:INBOX#1')]);
+    });
+
+    test('Decline that started the app does the same', () async {
+      plugin.launch = const NotificationAppLaunchDetails(
+        true,
+        notificationResponse: NotificationResponse(
+          notificationResponseType:
+              NotificationResponseType.selectedNotificationAction,
+          actionId: NotificationActions.declineId,
+          id: 1,
+          payload: 'a:INBOX#1',
+        ),
+      );
+      final begun =
+          NotificationActions.answerBegun(await notifier.takeLaunchPayload());
+      await pumpEventQueue();
+
+      expect(begun?.messageId, 'a:INBOX#1');
+      expect(begun?.response, InviteResponse.declined);
+      expect(plugin.cancelled, [(id: 1, tag: 'a:INBOX#1')]);
+    });
+
+    test('a tap on the invitation itself opens it, with nothing begun',
+        () async {
+      await notifier.ensureReady();
+      plugin.tapped!(const NotificationResponse(
+        notificationResponseType: NotificationResponseType.selectedNotification,
+        id: 1,
+        payload: 'a:INBOX#1',
+      ));
+      expect(await notifier.takeLaunchPayload(), 'a:INBOX#1');
     });
 
     test('a cancellation wears the calendar too, without Accept', () async {
@@ -430,6 +489,31 @@ void main() {
           plugin.shown.firstWhere((s) => s.id == 3).details.android!;
       expect(android.icon, '@drawable/ic_stat_event');
       expect(android.actions!.first.id, NotificationActions.replyId);
+    });
+  });
+
+  group('an answer begun on a notification', () {
+    test('carries the message and the answer to the app, and back', () {
+      const id = 'acct-hadco:Inbox/Projects#42';
+      final payload =
+          NotificationActions.answering(NotificationActions.declineId, id);
+      final begun = NotificationActions.answerBegun(payload);
+      expect(begun?.messageId, id, reason: 'colons and all');
+      expect(begun?.response, InviteResponse.declined);
+    });
+
+    test('anything else is handed on as it was', () {
+      expect(
+          NotificationActions.answering(NotificationActions.replyId, 'a:I#1'),
+          'a:I#1');
+      expect(NotificationActions.answering(null, 'a:I#1'), 'a:I#1');
+      expect(
+          NotificationActions.answering(NotificationActions.acceptId, null),
+          isNull);
+      expect(NotificationActions.answerBegun('a:INBOX#1'), isNull);
+      expect(NotificationActions.answerBegun('myemail-answer:maybe:a:I#1'),
+          isNull);
+      expect(NotificationActions.answerBegun(null), isNull);
     });
   });
 
@@ -604,6 +688,15 @@ class _Plugin implements FlutterLocalNotificationsPlugin {
   @override
   Future<NotificationAppLaunchDetails?> getNotificationAppLaunchDetails() async =>
       launch;
+
+  final List<({int id, String? tag})> cancelled = [];
+
+  @override
+  Future<void> cancel({required int id, String? tag}) async =>
+      cancelled.add((id: id, tag: tag));
+
+  @override
+  Future<List<ActiveNotification>> getActiveNotifications() async => const [];
 
   @override
   T? resolvePlatformSpecificImplementation<

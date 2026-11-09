@@ -32,6 +32,30 @@ final inviteResponsesProvider =
   InviteResponses.new,
 );
 
+/// An answer begun on an invitation's notification, Accept or Decline
+/// pressed there: the app opens the invitation, and its card asks how the
+/// answer goes, as its own buttons do. Taken once.
+class AskedAnswer
+    extends Notifier<({String messageId, InviteResponse response})?> {
+  @override
+  ({String messageId, InviteResponse response})? build() => null;
+
+  void ask(String messageId, InviteResponse response) =>
+      state = (messageId: messageId, response: response);
+
+  /// The answer begun for [messageId], cleared as it is taken; null where
+  /// none was.
+  InviteResponse? take(String messageId) {
+    final asked = state;
+    if (asked == null || asked.messageId != messageId) return null;
+    state = null;
+    return asked.response;
+  }
+}
+
+final askedAnswerProvider = NotifierProvider<AskedAnswer,
+    ({String messageId, InviteResponse response})?>(AskedAnswer.new);
+
 /// The meeting a message is about, as its account's calendar has it now, by
 /// message id; null where it is not on it. See `MailEngine.meetingOnCalendar`
 /// for what it throws.

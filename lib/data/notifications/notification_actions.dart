@@ -52,9 +52,47 @@ class NotificationActions {
   static const replyAllId = 'mailtree.reply-all';
   static const deleteId = 'mailtree.delete';
 
-  /// An invitation's.
+  /// An invitation's. Since 3.9.0 they bring the app forward, which opens
+  /// the invitation and asks how the answer goes, as its card's own
+  /// buttons do (see [answering]). One on a notification posted before
+  /// that still arrives here to be carried out, as it was then.
   static const acceptId = 'mailtree.accept';
   static const declineId = 'mailtree.decline';
+
+  static const _answering = 'myemail-answer:';
+
+  /// What the app is handed when [actionId] was pressed on the
+  /// notification for [messageId]: for Accept and Decline, the message
+  /// with the answer begun (see [answerBegun]); [messageId] itself for
+  /// anything else, as a tap opens it.
+  static String? answering(String? actionId, String? messageId) {
+    if (messageId == null || messageId.isEmpty) return messageId;
+    final response = switch (actionId) {
+      acceptId => InviteResponse.accepted,
+      declineId => InviteResponse.declined,
+      _ => null,
+    };
+    return response == null
+        ? messageId
+        : '$_answering${response.name}:$messageId';
+  }
+
+  /// The message and the answer begun in [payload], made by [answering];
+  /// null for any other payload.
+  static ({String messageId, InviteResponse response})? answerBegun(
+    String? payload,
+  ) {
+    if (payload == null || !payload.startsWith(_answering)) return null;
+    final rest = payload.substring(_answering.length);
+    final colon = rest.indexOf(':');
+    if (colon <= 0) return null;
+    final name = rest.substring(0, colon);
+    final response =
+        InviteResponse.values.where((r) => r.name == name).firstOrNull;
+    final messageId = rest.substring(colon + 1);
+    if (response == null || messageId.isEmpty) return null;
+    return (messageId: messageId, response: response);
+  }
 
   /// A meeting reminder's. Join brings the app forward, which opens the
   /// meeting's link; Snooze needs no mail, and is done where it is

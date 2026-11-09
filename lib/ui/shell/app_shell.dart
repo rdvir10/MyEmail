@@ -1,5 +1,6 @@
 import '../../data/duet/duet_uploader.dart';
 import '../../data/calendar/phone_calendar_sync.dart';
+import '../../state/calendar_providers.dart' show askedAnswerProvider;
 import '../../state/calendar_view_providers.dart'
     show
         calendarPrefsProvider,
@@ -445,8 +446,16 @@ class _AppShellState extends ConsumerState<AppShell>
   /// landed on another message instead. Read again, the list has it from
   /// the device at once, and it is selected once it is there.
   Future<void> _openLaunchMessage({bool reread = false}) async {
-    final payload = await ref.read(mailNotifierProvider).takeLaunchPayload();
+    var payload = await ref.read(mailNotifierProvider).takeLaunchPayload();
     if (payload == null || !mounted) return;
+    // Accept or Decline on an invitation's notification: the invitation is
+    // opened like any message, and its card asks how the answer goes.
+    if (NotificationActions.answerBegun(payload) case final begun?) {
+      ref
+          .read(askedAnswerProvider.notifier)
+          .ask(begun.messageId, begun.response);
+      payload = begun.messageId;
+    }
     // A meeting's reminder: Join pressed, or the reminder tapped; or the
     // morning's agenda.
     if (MeetingRef.fromPayload(payload) case final meeting?) {

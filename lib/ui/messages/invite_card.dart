@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -23,9 +25,11 @@ import 'invite_clashes.dart';
 /// The meeting mail inside a message, under its header: what, when, where,
 /// who, and what can be done about it.
 ///
-/// - An invitation: the three answers, sent to the organiser through the
-///   account it came to. Add to calendar hands it to the device's calendar
-///   app, where the account's own calendar does not have it already.
+/// - An invitation: the three answers, each asking first, as Outlook does,
+///   whether the organiser is sent it, with a message or without, through
+///   the account it came to. Add to calendar hands it to the device's
+///   calendar app, where the account's own calendar does not have it
+///   already.
 /// - A cancellation: Remove from calendar while the account's calendar
 ///   still has it, as Outlook's button does.
 /// - A new time proposed to you as organiser: the time the meeting has now
@@ -141,29 +145,61 @@ class _InviteCardState extends ConsumerState<InviteCard> {
     }
   }
 
-  /// The menu beside the three answers: one with a note, or without a word
-  /// to the organiser, and on a Microsoft account, a new time.
-  Future<void> _moreAnswers(String choice) async {
-    if (choice == 'note') {
-      // A Microsoft account answers on its calendar, the organiser told or
-      // not; the same calendar takes a new time.
-      final answer = await askForNotedAnswer(
-        context,
-        canStayQuiet: ref
-            .read(mailEngineProvider)
-            .canProposeNewTime(widget.message.accountId),
-      );
-      if (answer == null || !mounted) return;
-      await _respond(answer.response, note: answer.note, send: answer.send);
-    } else if (choice == 'propose') {
-      final answer = await askForProposal(context, widget.invite);
-      if (answer == null || !mounted) return;
-      await _respond(
-        answer.response,
-        note: answer.note,
-        proposal: answer.proposal,
-      );
+  /// Accept, Tentative or Decline, asked first as Outlook asks: Send the
+  /// response now, Edit the response before sending, or Do not send a
+  /// response. From under [anchor], the button pressed; as a dialog with
+  /// none, for an answer begun on the notification. [quietRefusal]: see
+  /// [askHowToAnswer].
+  Future<void> _answer(
+    InviteResponse response, {
+    BuildContext? anchor,
+    String? quietRefusal,
+  }) async {
+    final answer = await askHowToAnswer(
+      context,
+      response,
+      title: widget.invite.summary,
+      anchor: anchor,
+      quietRefusal: quietRefusal,
+    );
+    if (answer == null || !mounted) return;
+    await _respond(answer.response, note: answer.note, send: answer.send);
+  }
+
+  /// Why this invitation cannot be answered without a word to its
+  /// organiser, or null where it can: on the account's own calendar, which
+  /// has to have it.
+  String? _quietRefusal({
+    required bool settled,
+    required CalendarMeeting? meeting,
+    required Object? failure,
+  }) {
+    if (!ref
+        .read(mailEngineProvider)
+        .canAnswerQuietly(widget.message.accountId)) {
+      return 'This account answers by mail.';
     }
+    if (failure is CalendarUnavailable || failure is SignInNeedsConsent) {
+      return "The app can't reach this account's calendar yet.";
+    }
+    if (settled && meeting == null) return "It isn't on your calendar.";
+    return null;
+  }
+
+  /// Set while an answer begun on the notification waits for the frame
+  /// that asks it, so a rebuild meanwhile does not ask twice.
+  bool _askingBegun = false;
+
+  /// The menu beside the three answers: on a Microsoft account, a new time.
+  Future<void> _moreAnswers(String choice) async {
+    if (choice != 'propose') return;
+    final answer = await askForProposal(context, widget.invite);
+    if (answer == null || !mounted) return;
+    await _respond(
+      answer.response,
+      note: answer.note,
+      proposal: answer.proposal,
+    );
   }
 
   Future<void> _addToCalendar() async {
@@ -376,6 +412,27 @@ class _InviteCardState extends ConsumerState<InviteCard> {
         failure is! SignInNeedsConsent &&
         (i.isCancellation || i.isCounter);
     final cancelledOnCalendar = meeting != null && meeting.isCancelled;
+    final canAnswer = answered == null && i.isRequest && !cancelledOnCalendar;
+    final quietRefusal =
+        _quietRefusal(settled: settled, meeting: meeting, failure: failure);
+    final canPropose = ref
+        .read(mailEngineProvider)
+        .canProposeNewTime(widget.message.accountId);
+
+    // Accept or Decline pressed on the invitation's notification, which
+    // opened it: asked here, once the card is up.
+    final begun = ref.watch(askedAnswerProvider);
+    if (begun != null && begun.messageId == _id && !_askingBegun) {
+      _askingBegun = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _askingBegun = false;
+        if (!mounted) return;
+        final response = ref.read(askedAnswerProvider.notifier).take(_id);
+        if (response == null || !canAnswer || _busy) return;
+        unawaited(_answer(response, quietRefusal: quietRefusal));
+      });
+    }
+
     final canRemove = done == null &&
         meeting != null &&
         !mine &&
@@ -478,39 +535,40 @@ class _InviteCardState extends ConsumerState<InviteCard> {
                   avatar: const Icon(Icons.check, size: 16),
                   label: Text('You ${answered.word.toLowerCase()}'),
                 )
-              else if (i.isRequest && !cancelledOnCalendar) ...[
-                FilledButton(
-                  onPressed: _busy ? null : () => _respond(InviteResponse.accepted),
-                  child: const Text('Accept'),
-                ),
-                OutlinedButton(
-                  onPressed: _busy ? null : () => _respond(InviteResponse.tentative),
-                  child: const Text('Tentative'),
-                ),
-                OutlinedButton(
-                  onPressed: _busy ? null : () => _respond(InviteResponse.declined),
-                  child: const Text('Decline'),
-                ),
-                PopupMenuButton<String>(
-                  key: const ValueKey('more-answers'),
-                  tooltip: 'More answers',
-                  enabled: !_busy,
-                  icon: const Icon(Icons.more_horiz),
-                  onSelected: _moreAnswers,
-                  itemBuilder: (_) => [
-                    const PopupMenuItem(
-                      value: 'note',
-                      child: Text('Answer with a note…'),
-                    ),
-                    if (ref
-                        .read(mailEngineProvider)
-                        .canProposeNewTime(widget.message.accountId))
-                      const PopupMenuItem(
+              else if (canAnswer) ...[
+                // Each asks how the answer goes before it goes, from a
+                // menu under the button pressed.
+                for (final (response, label) in const [
+                  (InviteResponse.accepted, 'Accept'),
+                  (InviteResponse.tentative, 'Tentative'),
+                  (InviteResponse.declined, 'Decline'),
+                ])
+                  Builder(builder: (button) {
+                    final press = _busy
+                        ? null
+                        : () => _answer(
+                              response,
+                              anchor: button,
+                              quietRefusal: quietRefusal,
+                            );
+                    return response == InviteResponse.accepted
+                        ? FilledButton(onPressed: press, child: Text(label))
+                        : OutlinedButton(onPressed: press, child: Text(label));
+                  }),
+                if (canPropose)
+                  PopupMenuButton<String>(
+                    key: const ValueKey('more-answers'),
+                    tooltip: 'More answers',
+                    enabled: !_busy,
+                    icon: const Icon(Icons.more_horiz),
+                    onSelected: _moreAnswers,
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(
                         value: 'propose',
                         child: Text('Propose a new time…'),
                       ),
-                  ],
-                ),
+                    ],
+                  ),
               ],
               if (canRemove)
                 FilledButton.icon(

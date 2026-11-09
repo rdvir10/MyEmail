@@ -168,6 +168,16 @@ class AndroidMailNotifier implements MailNotifier {
           ));
           return;
         }
+        // An invitation's Accept or Decline brings the app forward to open
+        // the invitation and ask how the answer goes.
+        if (_opensInvitation(response.actionId)) {
+          _launchPayload = NotificationActions.answering(
+            response.actionId,
+            response.payload,
+          );
+          unawaited(_takeDownOpened(response.id, response.payload));
+          return;
+        }
         if (!NotificationActions.isKnown(response.actionId)) {
           _launchPayload = response.payload;
           return;
@@ -202,10 +212,34 @@ class AndroidMailNotifier implements MailNotifier {
       final response = launch?.notificationResponse;
       _launchPayload = response?.actionId == NotificationActions.joinId
           ? MeetingRef.joining(response?.payload)
-          : response?.payload;
+          : NotificationActions.answering(
+              response?.actionId,
+              response?.payload,
+            );
+      if (_opensInvitation(response?.actionId)) {
+        unawaited(_takeDownOpened(response?.id, response?.payload));
+      }
     }
 
     _ready = true;
+  }
+
+  static bool _opensInvitation(String? actionId) =>
+      actionId == NotificationActions.acceptId ||
+      actionId == NotificationActions.declineId;
+
+  /// A message's row taken down as one of its buttons opens the app. The
+  /// plugin takes it down for such a button by its id alone, and a
+  /// message's row also has the message id for a tag, so it stayed.
+  /// Without [ensureReady], which may be what is running.
+  Future<void> _takeDownOpened(int? id, String? messageId) async {
+    if (id == null || messageId == null || messageId.isEmpty) return;
+    try {
+      await _plugin.cancel(id: id, tag: messageId);
+      await dropEmptySummaries(gone: {messageId});
+    } catch (e) {
+      debugPrint('[myemail] could not take an opened notification down: $e');
+    }
   }
 
   /// Follow Up's reminders, a channel of their own: Android's settings can
@@ -457,19 +491,20 @@ class AndroidMailNotifier implements MailNotifier {
     // no more honest. Anything that goes wrong afterwards says so in a
     // notification of its own.
     const replyBox = AndroidNotificationActionInput(label: 'Reply');
-    // An invitation answers from the shade, as its card would; Reply
-    // stays, for a word to the organiser.
+    // An invitation's Accept and Decline open it in the app, which asks
+    // how the answer goes as its card does: sent now, with a message, or
+    // not sent at all. Reply stays, for a word to the organiser.
     const invitationActions = <AndroidNotificationAction>[
       AndroidNotificationAction(
         NotificationActions.acceptId,
         'Accept',
-        showsUserInterface: false,
+        showsUserInterface: true,
         cancelNotification: true,
       ),
       AndroidNotificationAction(
         NotificationActions.declineId,
         'Decline',
-        showsUserInterface: false,
+        showsUserInterface: true,
         cancelNotification: true,
       ),
       AndroidNotificationAction(

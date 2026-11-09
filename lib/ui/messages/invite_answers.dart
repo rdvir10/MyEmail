@@ -3,9 +3,8 @@ import 'package:flutter/material.dart';
 import '../../domain/calendar_invite.dart';
 import '../../domain/free_busy.dart';
 
-/// An answer to an invitation with more to it than a tap gives: a note to
-/// the organiser, or no word to them at all. Outlook's Edit the Response
-/// before Sending and Do Not Send a Response, in one place.
+/// An answer to an invitation as it goes: with a note to the organiser, or
+/// with no word to them at all ([send] false).
 typedef NotedAnswer = ({InviteResponse response, String note, bool send});
 
 /// A new time proposed: Outlook's Propose New Time, as a tentative or a
@@ -16,22 +15,206 @@ typedef ProposedAnswer = ({
   String note,
 });
 
-/// Asks for an answer with a note. Null if backed out of. [canStayQuiet]
-/// where the account answers on a calendar of its own, which can take an
-/// answer without a word to the organiser; over mail, an answer not sent
-/// is no answer, so the choice is not offered.
-Future<NotedAnswer?> askForNotedAnswer(
-  BuildContext context, {
-  bool canStayQuiet = false,
-  InviteResponse initial = InviteResponse.accepted,
-}) =>
-    showDialog<NotedAnswer>(
-      context: context,
-      builder: (_) => _NotedAnswerDialog(
-        canStayQuiet: canStayQuiet,
-        initial: initial,
+/// Outlook's three ways an answer goes, as its Accept, Tentative and
+/// Decline ask on the PC.
+enum _How { sendNow, edit, quiet }
+
+/// Asks how [response], to the meeting called [title], goes, as Outlook
+/// does: Send the response now, Edit the response before sending (a
+/// message to the organiser, asked for next), or Do not send a response.
+///
+/// A menu under [anchor], the button pressed; a dialog where there is
+/// none, as when the answer began on a notification. [quietRefusal] says
+/// why Do not send a response cannot be done here, which shows it greyed
+/// with that line under it; null where it can. Null if backed out of.
+Future<NotedAnswer?> askHowToAnswer(
+  BuildContext context,
+  InviteResponse response, {
+  required String title,
+  BuildContext? anchor,
+  String? quietRefusal,
+}) async {
+  final named = title.trim().isEmpty ? '(No title)' : title.trim();
+  final heading = '${_label(response)}: $named';
+  final how = anchor != null
+      ? await _menuUnder(anchor, quietRefusal)
+      : await showDialog<_How>(
+          context: context,
+          builder: (context) => _HowDialog(
+            heading: heading,
+            quietRefusal: quietRefusal,
+          ),
+        );
+  if (how == null || !context.mounted) return null;
+  switch (how) {
+    case _How.sendNow:
+      return (response: response, note: '', send: true);
+    case _How.quiet:
+      return (response: response, note: '', send: false);
+    case _How.edit:
+      final note = await showDialog<String>(
+        context: context,
+        builder: (_) => _ResponseMessageDialog(heading: heading),
+      );
+      if (note == null) return null;
+      return (response: response, note: note.trim(), send: true);
+  }
+}
+
+/// The three as a menu dropping from [anchor], as Outlook's does from the
+/// button.
+Future<_How?> _menuUnder(BuildContext anchor, String? quietRefusal) {
+  final button = anchor.findRenderObject()! as RenderBox;
+  final overlay =
+      Navigator.of(anchor).overlay!.context.findRenderObject()! as RenderBox;
+  final position = RelativeRect.fromRect(
+    Rect.fromPoints(
+      button.localToGlobal(button.size.bottomLeft(Offset.zero),
+          ancestor: overlay),
+      button.localToGlobal(button.size.bottomRight(Offset.zero),
+          ancestor: overlay),
+    ),
+    Offset.zero & overlay.size,
+  );
+  return showMenu<_How>(
+    context: anchor,
+    position: position,
+    items: [
+      const PopupMenuItem(
+        key: ValueKey('answer-now'),
+        value: _How.sendNow,
+        child: Text(_sendNow),
       ),
+      const PopupMenuItem(
+        key: ValueKey('answer-edit'),
+        value: _How.edit,
+        child: Text(_edit),
+      ),
+      PopupMenuItem(
+        key: const ValueKey('answer-quiet'),
+        value: _How.quiet,
+        enabled: quietRefusal == null,
+        child: _QuietLabel(refusal: quietRefusal),
+      ),
+    ],
+  );
+}
+
+// Outlook's own words for them.
+const _sendNow = 'Send the response now';
+const _edit = 'Edit the response before sending';
+const _quiet = 'Do not send a response';
+
+/// Do not send a response, with why not under it where it cannot be done.
+class _QuietLabel extends StatelessWidget {
+  const _QuietLabel({this.refusal});
+
+  final String? refusal;
+
+  @override
+  Widget build(BuildContext context) {
+    final why = refusal;
+    if (why == null) return const Text(_quiet);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(_quiet),
+        // No colour of its own: the greyed one of the item around it.
+        Text(why, style: const TextStyle(fontSize: 12)),
+      ],
     );
+  }
+}
+
+/// The three as a dialog, for an answer with no button to drop them from.
+class _HowDialog extends StatelessWidget {
+  const _HowDialog({required this.heading, this.quietRefusal});
+
+  final String heading;
+  final String? quietRefusal;
+
+  @override
+  Widget build(BuildContext context) {
+    void choose(_How how) => Navigator.of(context).pop(how);
+    final quiet = quietRefusal == null;
+    return SimpleDialog(
+      title: Text(heading),
+      children: [
+        SimpleDialogOption(
+          key: const ValueKey('answer-now'),
+          onPressed: () => choose(_How.sendNow),
+          child: const Text(_sendNow),
+        ),
+        SimpleDialogOption(
+          key: const ValueKey('answer-edit'),
+          onPressed: () => choose(_How.edit),
+          child: const Text(_edit),
+        ),
+        SimpleDialogOption(
+          key: const ValueKey('answer-quiet'),
+          onPressed: quiet ? () => choose(_How.quiet) : null,
+          child: quiet
+              ? const Text(_quiet)
+              : DefaultTextStyle.merge(
+                  style: TextStyle(color: Theme.of(context).disabledColor),
+                  child: _QuietLabel(refusal: quietRefusal),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Edit the response before sending: a message to the organiser, which
+/// goes with the answer. Empty sends the answer alone. The message, or
+/// null if backed out of.
+class _ResponseMessageDialog extends StatefulWidget {
+  const _ResponseMessageDialog({required this.heading});
+
+  final String heading;
+
+  @override
+  State<_ResponseMessageDialog> createState() => _ResponseMessageDialogState();
+}
+
+class _ResponseMessageDialogState extends State<_ResponseMessageDialog> {
+  final _message = TextEditingController();
+
+  @override
+  void dispose() {
+    _message.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: Text(widget.heading),
+        content: TextField(
+          key: const ValueKey('answer-note'),
+          controller: _message,
+          autofocus: true,
+          minLines: 3,
+          maxLines: 8,
+          textCapitalization: TextCapitalization.sentences,
+          decoration: const InputDecoration(
+            labelText: 'Message to the organiser',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const ValueKey('answer-send'),
+            onPressed: () => Navigator.of(context).pop(_message.text),
+            child: const Text('Send'),
+          ),
+        ],
+      );
+}
 
 /// Asks for a new time for [invite], starting from the time it has. Null
 /// if backed out of.
@@ -57,96 +240,6 @@ Future<ProposedAnswer?> askForProposalAt(
       context: context,
       builder: (_) => _ProposeDialog(start: start, end: end),
     );
-
-class _NotedAnswerDialog extends StatefulWidget {
-  const _NotedAnswerDialog({
-    required this.canStayQuiet,
-    this.initial = InviteResponse.accepted,
-  });
-
-  final bool canStayQuiet;
-
-  /// The answer chosen as it opens: the one held down to open it.
-  final InviteResponse initial;
-
-  @override
-  State<_NotedAnswerDialog> createState() => _NotedAnswerDialogState();
-}
-
-class _NotedAnswerDialogState extends State<_NotedAnswerDialog> {
-  late InviteResponse _response = widget.initial;
-  bool _send = true;
-  final _note = TextEditingController();
-
-  @override
-  void dispose() {
-    _note.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Answer'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SegmentedButton<InviteResponse>(
-                segments: [
-                  for (final r in InviteResponse.values)
-                    ButtonSegment(value: r, label: Text(_label(r))),
-                ],
-                selected: {_response},
-                onSelectionChanged: (s) => setState(() => _response = s.first),
-                showSelectedIcon: false,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                key: const ValueKey('answer-note'),
-                controller: _note,
-                enabled: _send,
-                minLines: 2,
-                maxLines: 5,
-                decoration: const InputDecoration(
-                  labelText: 'A note to the organiser',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              if (widget.canStayQuiet)
-                SwitchListTile(
-                  key: const ValueKey('answer-tell'),
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Tell the organiser'),
-                  subtitle: Text(
-                    _send
-                        ? 'They get your answer, with the note.'
-                        : 'Your calendar has the answer; the organiser is '
-                            'not told.',
-                  ),
-                  value: _send,
-                  onChanged: (on) => setState(() => _send = on),
-                ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            key: const ValueKey('answer-send'),
-            onPressed: () => Navigator.of(context).pop((
-              response: _response,
-              note: _send ? _note.text : '',
-              send: _send,
-            )),
-            child: Text(_send ? 'Send' : 'Answer'),
-          ),
-        ],
-      );
-}
 
 class _ProposeDialog extends StatefulWidget {
   const _ProposeDialog({required this.start, required this.end});

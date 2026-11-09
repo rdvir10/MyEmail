@@ -776,16 +776,23 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    testWidgets('an invitation is answered from its sheet, and an answer '
-        'held down takes a note (#12)', (tester) async {
+    testWidgets('an invitation is answered from its sheet, each answer asking '
+        'first how it goes, as Outlook does (#12)', (tester) async {
       final engine = SampleMailEngine();
       await pump(tester, const CalendarScreen(), using: engine,
           prepare: (engine, hadco) {
         engine.events[hadco.id] = [tomorrowAt10(hadco)];
       });
-      await openSheet(tester, 'm');
-      await tester.tap(find.byKey(const ValueKey('event-accept')));
-      await tester.pumpAndSettle();
+      Future<void> answer(String button, String how) async {
+        await openSheet(tester, 'm');
+        await tester.tap(find.byKey(ValueKey(button)));
+        await tester.pumpAndSettle();
+        expect(find.text('Send the response now'), findsOneWidget);
+        await tester.tap(find.byKey(ValueKey(how)));
+        await tester.pumpAndSettle();
+      }
+
+      await answer('event-accept', 'answer-now');
       expect(engine.calendarActions, ['respond m accepted']);
       expect(find.text('Accepted. Dana is told.'), findsOneWidget);
 
@@ -795,14 +802,24 @@ void main() {
         isA<FilledButton>(),
         reason: 'the answer it has stands out',
       );
-      await tester.longPress(find.byKey(const ValueKey('event-decline')));
+      Navigator.of(tester.element(find.byKey(const ValueKey('event-accept'))))
+          .pop();
       await tester.pumpAndSettle();
+
+      await answer('event-tentative', 'answer-quiet');
+      expect(engine.calendarActions.last, 'respond m tentative quietly',
+          reason: 'on the calendar, with no word to the organiser');
+      expect(find.text('Tentative. The organiser was not told.'),
+          findsOneWidget);
+
+      // Last: declined, it leaves the agenda.
+      await answer('event-decline', 'answer-edit');
       await tester.enterText(
           find.byKey(const ValueKey('answer-note')), 'Away that week');
       await tester.tap(find.byKey(const ValueKey('answer-send')));
       await tester.pumpAndSettle();
-      expect(engine.calendarActions.last, 'respond m declined note=Away that week',
-          reason: 'the dialog opens on the answer held');
+      expect(engine.calendarActions.last,
+          'respond m declined note=Away that week');
     });
 
     testWidgets('Edit opens the meeting filled in, and Save sends what changed '

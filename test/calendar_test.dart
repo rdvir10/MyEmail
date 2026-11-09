@@ -175,6 +175,9 @@ void main() {
 
       await tester.tap(find.text('Accept'));
       await tester.pumpAndSettle();
+      expect(engine.inviteResponses, isEmpty, reason: 'asked first');
+      await tester.tap(find.text('Send the response now'));
+      await tester.pumpAndSettle();
 
       expect(engine.inviteResponses.single.messageId, invite.id);
       expect(engine.inviteResponses.single.response, InviteResponse.accepted);
@@ -195,6 +198,8 @@ void main() {
       final invite = await openInvite(tester, c);
 
       await tester.tap(find.text('Accept'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Send the response now'));
       await tester.pumpAndSettle();
 
       expect(engine.inviteResponses.single.messageId, invite.id);

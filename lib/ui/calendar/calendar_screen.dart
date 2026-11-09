@@ -28,6 +28,7 @@ import '../accounts/microsoft_sign_in_screen.dart';
 import '../common/bottom_message.dart';
 import '../meetings/new_meeting_screen.dart' show openNewMeeting;
 import '../messages/date_format.dart';
+import '../messages/invite_answers.dart' show askHowToAnswer;
 import '../../state/date_providers.dart' show deviceZoneProvider;
 import 'calendar_search_screen.dart';
 import 'event_actions.dart';
@@ -2642,21 +2643,33 @@ class _EventDetails extends StatelessWidget {
     final waiting = notAnswered(e, email);
     Widget answerButton(InviteResponse r, String label, String key) {
       final chosen = e.response == eventResponseFor(r);
-      void tap() => then((c, ref, ev) => answerEvent(c, ref, ev, r));
-      void hold() => then((c, ref, ev) => answerEvent(c, ref, ev, r, asked: true));
-      return chosen
-          ? FilledButton.tonal(
-              key: ValueKey(key),
-              onPressed: tap,
-              onLongPress: hold,
-              child: Text(label),
-            )
-          : OutlinedButton(
-              key: ValueKey(key),
-              onPressed: tap,
-              onLongPress: hold,
-              child: Text(label),
-            );
+      return Builder(builder: (button) {
+        // Asked first, as Outlook asks, from a menu under the button while
+        // the sheet is still up; answered once it has closed.
+        Future<void> tap() async {
+          final answer = await askHowToAnswer(
+            context,
+            r,
+            title: e.title,
+            anchor: button,
+          );
+          if (answer == null || !context.mounted) return;
+          then((c, ref, ev) => answerEvent(c, ref, ev, r,
+              note: answer.note, send: answer.send));
+        }
+
+        return chosen
+            ? FilledButton.tonal(
+                key: ValueKey(key),
+                onPressed: tap,
+                child: Text(label),
+              )
+            : OutlinedButton(
+                key: ValueKey(key),
+                onPressed: tap,
+                child: Text(label),
+              );
+      });
     }
 
     return SafeArea(
@@ -2764,15 +2777,6 @@ class _EventDetails extends StatelessWidget {
                   answerButton(InviteResponse.tentative, 'Maybe', 'event-tentative'),
                   answerButton(InviteResponse.declined, 'Decline', 'event-decline'),
                 ],
-              ),
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  'Hold an answer to add a note, or to answer without telling '
-                  'the organiser.',
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-                ),
               ),
             ],
             if (e.joinUrl != null ||
