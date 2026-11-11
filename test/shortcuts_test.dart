@@ -29,6 +29,7 @@ import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 import 'package:myemail/ui/shell/app_shortcuts.dart';
 import 'package:myemail/ui/shell/pane_focus.dart';
+import 'package:myemail/ui/shell/ribbon.dart';
 import 'package:myemail/ui/shell/window_host.dart';
 
 import 'helpers/open_search.dart';
@@ -716,6 +717,79 @@ void main() {
         // A fresh press is a fresh delete, of the one being looked at.
         await press(tester, LogicalKeyboardKey.delete);
         expect(rows(c), isNot(contains(ids[2])));
+      });
+    });
+
+    group('Move with messages ticked', () {
+      // Ron, 2026-11-11: Shift+Down to tick a run, then Move, and another
+      // message went: the ribbon and Ctrl+Shift+V took the open one alone.
+      List<String> rows(ProviderContainer c) => [
+            for (final m in c.read(sortedMessagesProvider(
+                c.read(effectiveSelectedFolderIdProvider)!)))
+              m.id,
+          ];
+
+      Future<void> chooseFolder(WidgetTester tester, ProviderContainer c,
+          String accountId) async {
+        final to = c.read(foldersProvider).value![accountId]!.firstWhere(
+            (f) => f.role == FolderRole.user && f.parentId == null);
+        await tester.tap(find.byKey(ValueKey('move-tree-${to.id}')));
+        await tester.pumpAndSettle();
+      }
+
+      testWidgets('Ctrl+Shift+V moves the ticked ones', (tester) async {
+        final c = await pump(tester);
+        final ids = rows(c);
+        final account = c
+            .read(messagesProvider(c.read(effectiveSelectedFolderIdProvider)!))
+            .value!
+            .first
+            .accountId;
+        await press(tester, LogicalKeyboardKey.arrowDown, shift: true);
+        await press(tester, LogicalKeyboardKey.arrowDown, shift: true);
+        await press(tester, LogicalKeyboardKey.arrowDown);
+        expect(selected(c), ids[3]);
+
+        await press(tester, LogicalKeyboardKey.keyV, control: true, shift: true);
+        await chooseFolder(tester, c, account);
+
+        expect(rows(c).toSet().intersection(ids.take(3).toSet()), isEmpty);
+        expect(rows(c), contains(ids[3]));
+        expect(c.read(selectedMessageIdsProvider), isEmpty);
+      });
+
+      testWidgets("the ribbon's Move moves the ticked ones", (tester) async {
+        final c = await pump(tester);
+        final ids = rows(c);
+        final account = c
+            .read(messagesProvider(c.read(effectiveSelectedFolderIdProvider)!))
+            .value!
+            .first
+            .accountId;
+        await press(tester, LogicalKeyboardKey.arrowDown, shift: true);
+        await press(tester, LogicalKeyboardKey.arrowDown, shift: true);
+
+        await tester.tap(find.descendant(
+            of: find.byType(Ribbon), matching: find.text('Move')));
+        await tester.pumpAndSettle();
+        await chooseFolder(tester, c, account);
+
+        expect(rows(c).toSet().intersection(ids.take(3).toSet()), isEmpty);
+        expect(rows(c), contains(ids[3]));
+        expect(c.read(selectedMessageIdsProvider), isEmpty);
+      });
+
+      testWidgets('closing the picker keeps the ticks', (tester) async {
+        final c = await pump(tester);
+        final ids = rows(c);
+        await press(tester, LogicalKeyboardKey.arrowDown, shift: true);
+
+        await press(tester, LogicalKeyboardKey.keyV, control: true, shift: true);
+        await tester.tapAt(const Offset(5, 5));
+        await tester.pumpAndSettle();
+
+        expect(c.read(selectedMessageIdsProvider), ids.take(2).toSet());
+        expect(rows(c), containsAll(ids.take(2)));
       });
     });
 

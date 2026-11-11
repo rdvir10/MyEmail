@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
 import '../../domain/password_expiry.dart';
@@ -42,6 +43,10 @@ class GraphProfileApi {
         throw ConnectionFailed('Could not reach Microsoft. ($e)');
       }
       if (response.statusCode == 401 && !forced) continue;
+      final said = response.statusCode < 400
+          ? response.body
+          : _errorCode(response.body);
+      debugPrint('[myemail] password date: ${response.statusCode} $said');
       if (response.statusCode == 401 || response.statusCode == 403) {
         throw const AuthenticationFailed(
           'Microsoft would not say when the password was changed.',
@@ -56,8 +61,26 @@ class GraphProfileApi {
     }
   }
 
+  /// The error's code alone, for the log: a refusal's message can name
+  /// the tenant.
+  static String _errorCode(String body) {
+    try {
+      final json = jsonDecode(body);
+      if (json is Map && json['error'] is Map) {
+        return '${(json['error'] as Map)['code']}';
+      }
+    } on FormatException {
+      // Not JSON.
+    }
+    return '';
+  }
+
   /// Graph's answer as a [PasswordAge]. `passwordPolicies` is a list in a
   /// string, "DisablePasswordExpiration, DisableStrongPassword", or null.
+  ///
+  /// A user brought over from an organisation's own servers can have
+  /// 1601-01-01, Windows' day nought, meaning no date at all: read as one,
+  /// the password expired 154,000 days ago. Anything before 2000 is none.
   static PasswordAge passwordAgeFrom(String body) {
     Object? json;
     try {
@@ -69,7 +92,11 @@ class GraphProfileApi {
     final changed = json['lastPasswordChangeDateTime'];
     final policies = json['passwordPolicies'];
     return PasswordAge(
-      lastChanged: changed is String ? DateTime.tryParse(changed) : null,
+      lastChanged:
+          switch (changed is String ? DateTime.tryParse(changed) : null) {
+        final t? when t.year >= 2000 => t,
+        _ => null,
+      },
       neverExpires: policies is String &&
           policies
               .split(',')

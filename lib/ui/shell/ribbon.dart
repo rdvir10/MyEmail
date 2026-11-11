@@ -86,9 +86,38 @@ class _RibbonState extends ConsumerState<Ribbon> {
     );
   }
 
+  /// Delete, Archive, Move and Read on [commandTargets]: the ticked
+  /// messages where any are ticked, the open one otherwise. The ticks go
+  /// once it is done, as the selection bar's buttons let them go; a Move
+  /// whose picker was closed keeps them for another try.
+  Future<void> _onTargets(
+    String listId,
+    MailMessage? message,
+    Future<Object?> Function(MessageActions actions, List<MailMessage> chosen)
+        act,
+  ) async {
+    final ticking = ref.read(selectedMessageIdsProvider).isNotEmpty;
+    final chosen = commandTargets(ref, listId, message);
+    if (chosen.isEmpty) return;
+    final result = await act(MessageActions(ref, listId), chosen);
+    if (ticking && result != false && mounted) {
+      ref.read(selectedMessageIdsProvider.notifier).clear();
+    }
+  }
+
   Widget _actions(String? listId, MailMessage? message) {
     // Parameters promote; the build method's local would not reach here.
     final has = message != null && listId != null;
+    // Ticked messages are what Delete, Archive, Move and Read act on, with
+    // or without one open.
+    final ticked = listId == null || ref.watch(selectedMessageIdsProvider).isEmpty
+        ? const <MailMessage>[]
+        : tickedMessages(ref, listId);
+    final some = has || ticked.isNotEmpty;
+    // Read or Unread by what most of them are, as the selection bar says.
+    final markRead = ticked.isNotEmpty
+        ? ticked.where((m) => !m.isRead).length > ticked.length / 2
+        : !(message?.isRead ?? false);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -114,15 +143,17 @@ class _RibbonState extends ConsumerState<Ribbon> {
         _Button(
           icon: Icons.delete_outline,
           label: 'Delete',
-          onPressed: has
-              ? () => MessageActions(ref, listId).delete(context, [message])
+          onPressed: some
+              ? () => _onTargets(listId!, message,
+                  (actions, chosen) => actions.delete(context, chosen))
               : null,
         ),
         _Button(
           icon: Icons.archive_outlined,
           label: 'Archive',
-          onPressed: has
-              ? () => MessageActions(ref, listId).archive(context, [message])
+          onPressed: some
+              ? () => _onTargets(listId!, message,
+                  (actions, chosen) => actions.archive(context, chosen))
               : null,
         ),
         _Button(
@@ -145,27 +176,25 @@ class _RibbonState extends ConsumerState<Ribbon> {
         _Button(
           icon: Icons.drive_file_move_outline,
           label: 'Move',
-          onPressed: has
-              ? () => MessageActions(
-                  ref,
-                  listId,
-                ).moveWithPrompt(context, [message])
+          onPressed: some
+              ? () => _onTargets(listId!, message,
+                  (actions, chosen) => actions.moveWithPrompt(context, chosen))
               : null,
         ),
         _Button(
           // The icon and the label say what pressing it will do, not
           // what the message currently is. A button labelled with the
           // present state reads as a status light.
-          icon: message?.isRead ?? false
-              ? Icons.mark_email_unread_outlined
-              : Icons.mark_email_read_outlined,
-          label: message?.isRead ?? false ? 'Unread' : 'Read',
+          icon: markRead
+              ? Icons.mark_email_read_outlined
+              : Icons.mark_email_unread_outlined,
+          label: markRead ? 'Read' : 'Unread',
           // Through the list's actions, as the shortcuts and menus are:
           // the list alone knows only its own rows, so a search hit from
           // another folder was left as it was, and a refusal was never said.
-          onPressed: has
-              ? () => MessageActions(ref, listId)
-                    .setRead(context, [message], !message.isRead)
+          onPressed: some
+              ? () => _onTargets(listId!, message,
+                  (actions, chosen) => actions.setRead(context, chosen, markRead))
               : null,
         ),
         // Outlook's Read Aloud, on its Home tab too: the open message read

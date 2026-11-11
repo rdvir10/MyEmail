@@ -129,6 +129,15 @@ void main() {
       expect(age.neverExpires, isTrue);
     });
 
+    test("Windows' day nought is no date", () {
+      // What Graph gives a user synced from the office's own servers.
+      final age = GraphProfileApi.passwordAgeFrom(
+        '{"lastPasswordChangeDateTime":"1601-01-01T00:00:00Z",'
+        '"passwordPolicies":null}',
+      );
+      expect(age.lastChanged, isNull);
+    });
+
     test('a personal account says neither', () {
       final age = GraphProfileApi.passwordAgeFrom(
         '{"lastPasswordChangeDateTime":null,"passwordPolicies":null}',

@@ -151,6 +151,19 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
     }
   }
 
+  /// The ticked messages, in the shell, where any are ticked; null on a
+  /// message's own screen, which acts on its message, or with none ticked.
+  /// See [commandTargets].
+  List<MailMessage>? _ticked(String listId) {
+    if (widget.message != null) return null;
+    final ticked = tickedMessages(ref, listId);
+    return ticked.isEmpty ? null : ticked;
+  }
+
+  void _clearTicks() {
+    if (mounted) ref.read(selectedMessageIdsProvider.notifier).clear();
+  }
+
   Future<void> _run(AppCommand command) async {
     final listId = ref.read(effectiveSelectedFolderIdProvider);
     final message = _target(listId);
@@ -199,7 +212,11 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
         final body = ref.read(messageBodyProvider(message.id)).value;
         if (body != null) await reader.start(message, body);
       case AppCommand.delete:
-        if (message != null && listId != null) {
+        if (listId == null) return;
+        if (_ticked(listId) case final ticked?) {
+          await MessageActions(ref, listId).delete(context, ticked);
+          _clearTicks();
+        } else if (message != null) {
           final done = MessageActions(ref, listId).delete(context, [message]);
           _leaveItsScreen();
           await done;
@@ -208,18 +225,33 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
       case AppCommand.markUnread:
         // Through the list's actions, as the menu does, so a search hit
         // from another folder is changed too.
-        if (message != null && listId != null) {
-          await MessageActions(ref, listId)
-              .setRead(context, [message], command == AppCommand.markRead);
-        }
+        if (listId == null) return;
+        final ticked = _ticked(listId);
+        final chosen = ticked ?? [?message];
+        if (chosen.isEmpty) return;
+        await MessageActions(ref, listId)
+            .setRead(context, chosen, command == AppCommand.markRead);
+        if (ticked != null) _clearTicks();
       case AppCommand.flag:
-        if (message != null && listId != null) {
+        if (listId == null) return;
+        if (_ticked(listId) case final ticked?) {
+          final mostlyUnflagged =
+              ticked.where((m) => !m.isFlagged).length > ticked.length / 2;
+          await MessageActions(ref, listId)
+              .setFlagged(context, ticked, mostlyUnflagged);
+          _clearTicks();
+        } else if (message != null) {
           await MessageActions(ref, listId)
               .setFlagged(context, [message], !message.isFlagged);
         }
       case AppCommand.move:
-        if (message == null || listId == null) return;
+        if (listId == null) return;
         final actions = MessageActions(ref, listId);
+        if (_ticked(listId) case final ticked?) {
+          if (await actions.moveWithPrompt(context, ticked)) _clearTicks();
+          return;
+        }
+        if (message == null) return;
         if (widget.message == null) {
           await actions.moveWithPrompt(context, [message]);
           return;

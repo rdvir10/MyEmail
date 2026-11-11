@@ -987,6 +987,9 @@ class CachedImapEngine implements MailEngine {
     );
     try {
       return await api.passwordAge();
+    } catch (e) {
+      debugPrint('[myemail] password date not read: ${e.runtimeType}: $e');
+      rethrow;
     } finally {
       api.close();
     }

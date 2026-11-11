@@ -18,6 +18,35 @@ import '../../state/search_providers.dart';
 import '../../state/sync_providers.dart' show backgroundSchedulerProvider;
 import 'move_to_sheet.dart';
 
+/// The messages ticked in [listId]'s list, in its order: the search hits
+/// while a search is showing. Empty when nothing is ticked.
+List<MailMessage> tickedMessages(WidgetRef ref, String listId) {
+  final ticked = ref.read(selectedMessageIdsProvider);
+  if (ticked.isEmpty) return const [];
+  final listed = ref.read(searchQueryProvider).trim().isNotEmpty
+      ? ref.read(searchResultsProvider).value
+      : ref.read(messagesProvider(listId)).value;
+  return [
+    for (final m in listed ?? const <MailMessage>[])
+      if (ticked.contains(m.id)) m,
+  ];
+}
+
+/// What a command from the ribbon or the keyboard acts on: the ticked
+/// messages where any are ticked, as the selection bar's buttons and the
+/// list's Delete do, or else [open], the message being read. The open
+/// message alone took a selection made with Shift and the arrows to be
+/// the last row it reached, and Move moved that one only.
+List<MailMessage> commandTargets(
+  WidgetRef ref,
+  String listId,
+  MailMessage? open,
+) {
+  final ticked = tickedMessages(ref, listId);
+  if (ticked.isNotEmpty) return ticked;
+  return [?open];
+}
+
 /// Move and delete, shared by the swipe gestures, the message menu and the
 /// drop-onto-a-folder gesture, so all three behave the same.
 ///
