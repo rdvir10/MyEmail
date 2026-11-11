@@ -118,6 +118,44 @@ void main() {
     });
   });
 
+  group("Microsoft's sign-out after a change", () {
+    final now = DateTime.utc(2026, 11, 11, 9);
+
+    test('takes the date the new password was good from', () {
+      expect(
+        MicrosoftOAuth.passwordChangedAt(
+          "AADSTS50173: The provided grant has expired due to it being "
+          "revoked, a fresh auth token is needed. The user might have "
+          "changed or reset their password. The grant was issued on "
+          "'2026-09-01T07:00:00.0000000Z' and the TokensValidFrom date "
+          "(before which tokens are not valid) for this user is "
+          "'2026-11-10T14:22:05.0000000Z'. Trace ID: x",
+          now,
+        ),
+        DateTime.utc(2026, 11, 10, 14, 22, 5),
+      );
+    });
+
+    test('a changed password without a date is now', () {
+      expect(
+        MicrosoftOAuth.passwordChangedAt(
+            'AADSTS50133: Session is invalid due to expiration or recent '
+            'password change.',
+            now),
+        now,
+      );
+    });
+
+    test('any other refusal says nothing about the password', () {
+      expect(
+        MicrosoftOAuth.passwordChangedAt(
+            'AADSTS700082: The refresh token has expired due to inactivity.',
+            now),
+        isNull,
+      );
+    });
+  });
+
   group('GraphProfileApi', () {
     test('reads the date and the never-expires policy', () {
       final age = GraphProfileApi.passwordAgeFrom(
@@ -260,6 +298,49 @@ void main() {
       expect(container.read(passwordWarningProvider('work')), isNull);
     });
 
+    test('with no date from Microsoft, counts from the one put in',
+        () async {
+      container = make({'work': PasswordAge.unknown});
+      await container.read(accountsProvider.future);
+      container
+          .read(passwordChangedProvider.notifier)
+          .set('work', DateTime(2026, 9, 12, 12));
+      await container.read(passwordKeeperProvider).keepUp();
+
+      expect(notifier.reminders[PasswordExpiry.reminderId('work', 14)]!.at,
+          DateTime(2026, 11, 27, 9));
+      expect(container.read(passwordExpiryProvider('work'))!.expires,
+          DateTime(2026, 12, 11, 12));
+      expect(store.readOrder(UiStateKeys.passwordChanged),
+          {'work': DateTime(2026, 9, 12, 12).millisecondsSinceEpoch ~/ 1000});
+    });
+
+    test('signed out by a change, starts counting again from it', () async {
+      container = make({
+        'work': SignInExpired('Signed out.',
+            passwordChangedAt: DateTime(2026, 11, 9, 15)),
+      });
+      await container.read(accountsProvider.future);
+      container
+          .read(passwordChangedProvider.notifier)
+          .set('work', DateTime(2026, 8, 1, 12));
+      await container.read(passwordKeeperProvider).keepUp();
+
+      expect(container.read(passwordChangedProvider.notifier).of('work'),
+          DateTime(2026, 11, 9, 15));
+      expect(notifier.reminders[PasswordExpiry.reminderId('work', 14)]!.at,
+          DateTime(2027, 1, 24, 9));
+    });
+
+    test('an older sign-out does not move a later date back', () async {
+      container = make(const {});
+      final dates = container.read(passwordChangedProvider.notifier);
+      dates.set('work', DateTime(2026, 11, 9, 15));
+      dates.signedOutAt('work', DateTime(2026, 11, 9, 15));
+      dates.signedOutAt('work', DateTime(2026, 10, 1));
+      expect(dates.of('work'), DateTime(2026, 11, 9, 15));
+    });
+
     test('the folder list says so from 14 days before', () async {
       container = make({
         'work': PasswordAge(lastChanged: DateTime(2026, 9, 12, 8, 30)),
@@ -324,6 +405,36 @@ void main() {
                   of: find.byType(ListView), matching: find.byType(Scrollable))
               .first);
       expect(find.byKey(const ValueKey('password-allow')), findsOneWidget);
+    });
+
+    testWidgets('no date from Microsoft: Changed it today counts from today',
+        (tester) async {
+      await tester.pumpWidget(app(
+        _Engine({'work': PasswordAge.unknown}),
+        DateTime(2026, 11, 11, 10),
+      ));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+          find.byKey(const ValueKey('password-days')), 200,
+          scrollable: find
+              .descendant(
+                  of: find.byType(ListView), matching: find.byType(Scrollable))
+              .first);
+      expect(
+        tester.widget<Text>(find.byKey(const ValueKey('password-line'))).data,
+        startsWith('Microsoft keeps no date for this password'),
+      );
+      expect(find.text('Change it at Microsoft'), findsNothing);
+
+      await tester.ensureVisible(
+          find.byKey(const ValueKey('password-changed-today')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('password-changed-today')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<Text>(find.byKey(const ValueKey('password-line'))).data,
+        'Last changed Wed 11 Nov 2026. Expires Tue 9 Feb 2027, in 90 days.',
+      );
     });
 
     testWidgets('a shared mailbox has no password of its own',

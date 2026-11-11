@@ -375,7 +375,10 @@ class MicrosoftOAuth implements OAuthRefresher {
       // invalid_grant is the refresh token being revoked, expired, or
       // invalidated by a password change. Nothing to do but sign in again.
       if (e.error == 'invalid_grant') {
-        throw SignInExpired(_readableAadError(e));
+        throw SignInExpired(
+          _readableAadError(e),
+          passwordChangedAt: passwordChangedAt(description, _clock()),
+        );
       }
       throw SignInFailed(_readableAadError(e));
     }
@@ -441,6 +444,23 @@ class MicrosoftOAuth implements OAuthRefresher {
     return json;
   }
 
+  /// When the password was changed, where a refused refresh says it was:
+  /// AADSTS50173, the sign-in revoked ("The user might have changed or
+  /// reset their password"), carries the moment tokens were good from in
+  /// "the TokensValidFrom date (before which tokens are not valid) for this
+  /// user is '...'"; AADSTS50133 is a password changed or expired. [now]
+  /// where neither has a date in it; null for any other refusal. An
+  /// administrator revoking the sign-ins also gives 50173, so this is the
+  /// likeliest reading, not a certainty.
+  static DateTime? passwordChangedAt(String description, DateTime now) {
+    if (!description.contains('AADSTS50173') &&
+        !description.contains('AADSTS50133')) {
+      return null;
+    }
+    final m = RegExp(r"TokensValidFrom[^']*'([^']+)'").firstMatch(description);
+    return (m == null ? null : DateTime.tryParse(m[1]!)) ?? now;
+  }
+
   /// Microsoft's error_description is a paragraph with a correlation ID, a
   /// timestamp and a trace ID in it. The first line carries the meaning; the
   /// rest is for a support ticket.
@@ -470,6 +490,12 @@ class MicrosoftOAuth implements OAuthRefresher {
       return 'This account has not been allowed to do that. If it is a work '
           'or school account, an administrator has to approve the app for '
           'your organisation before anyone there can use it.';
+    }
+    if (description.contains('AADSTS50173') ||
+        description.contains('AADSTS50133')) {
+      return 'Microsoft signed the app out of this account, most likely '
+          'because its password was changed. Sign in again: nothing cached '
+          'is lost.';
     }
     if (description.contains('AADSTS530035')) {
       return 'Your organisation blocks this way of signing in. Sign in again '
@@ -618,9 +644,14 @@ class SignInNeedsConsent implements Exception, NeedsSignIn, ReadableError {
 /// does not come back on its own; the account must sign in again.
 @immutable
 class SignInExpired implements Exception, NeedsSignIn, ReadableError {
-  const SignInExpired(this.message);
+  const SignInExpired(this.message, {this.passwordChangedAt});
   @override
   final String message;
+
+  /// When the password was changed, where Microsoft's refusal says the
+  /// sign-in went because of a change: see
+  /// [MicrosoftOAuth.passwordChangedAt].
+  final DateTime? passwordChangedAt;
 
   @override
   bool get needsAdministrator => false;

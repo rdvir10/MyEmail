@@ -140,6 +140,11 @@ abstract final class UiStateKeys {
   /// backup: the ids are this device's.
   static const passwordDays = 'accounts.password-days.v1';
 
+  /// When each Microsoft account's password was last changed, in seconds,
+  /// where Microsoft keeps no date: put in by hand, or from a sign-out.
+  /// Not in the backup.
+  static const passwordChanged = 'accounts.password-changed.v1';
+
   /// The password reminders set with Android, by id, so one no longer
   /// wanted can be taken back.
   static const passwordReminders = 'accounts.password-reminders.v1';

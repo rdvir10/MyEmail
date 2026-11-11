@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/auth/microsoft_oauth.dart' show SignInExpired;
 import '../data/ui_state_store.dart';
 import '../domain/account.dart';
 import '../domain/password_expiry.dart';
@@ -55,14 +56,66 @@ final passwordAgeProvider = FutureProvider.family<PasswordAge, String>(
   retry: notRetried,
 );
 
+/// When each account's password was last changed, by account id, where
+/// Microsoft keeps no date for it: put in on the account's settings, or
+/// taken from Microsoft signing the app out after a change. A user whose
+/// password lives on the organisation's own servers (Hadco's) has none in
+/// Microsoft's cloud.
+class PasswordChangedDates extends Notifier<Map<String, int>> {
+  @override
+  Map<String, int> build() =>
+      ref.watch(uiStateStoreProvider).readOrder(UiStateKeys.passwordChanged);
+
+  DateTime? of(String accountId) => switch (state[accountId]) {
+        final s? => DateTime.fromMillisecondsSinceEpoch(s * 1000),
+        null => null,
+      };
+
+  void set(String accountId, DateTime? at) {
+    final next = {...state}..remove(accountId);
+    if (at != null) next[accountId] = at.millisecondsSinceEpoch ~/ 1000;
+    state = next;
+    ref
+        .read(uiStateStoreProvider)
+        .writeOrder(UiStateKeys.passwordChanged, next);
+  }
+
+  /// Microsoft signed [accountId] out at [at] after what looks like a
+  /// password change. Taken only where it is later than the date held:
+  /// the same refusal comes again on every try until the account signs in.
+  void signedOutAt(String accountId, DateTime at) {
+    final held = of(accountId);
+    if (held != null && !at.isAfter(held.add(const Duration(minutes: 1)))) {
+      return;
+    }
+    debugPrint('[myemail] password changed, by the sign-out: $at');
+    set(accountId, at);
+  }
+}
+
+final passwordChangedProvider =
+    NotifierProvider<PasswordChangedDates, Map<String, int>>(
+        PasswordChangedDates.new);
+
+/// [age] with the date put in here where Microsoft keeps none.
+PasswordAge passwordAgeWith(PasswordAge age, DateTime? putIn) =>
+    age.lastChanged != null || putIn == null
+        ? age
+        : PasswordAge(lastChanged: putIn, neverExpires: age.neverExpires);
+
 /// When [accountId]'s password runs out; null where that cannot be said.
+/// Microsoft's date where it has one, the one put in here otherwise, even
+/// while Microsoft cannot be asked.
 final passwordExpiryProvider =
     Provider.family<PasswordExpiry?, String>((ref, accountId) {
-  final age = ref.watch(passwordAgeProvider(accountId)).value;
+  final asked = ref.watch(passwordAgeProvider(accountId));
+  ref.watch(passwordChangedProvider);
+  final putIn = ref.read(passwordChangedProvider.notifier).of(accountId);
+  final age = asked.value ?? (putIn == null ? null : PasswordAge.unknown);
   if (age == null) return null;
   final days =
       ref.watch(passwordDaysProvider)[accountId] ?? PasswordExpiry.defaultDays;
-  return PasswordExpiry.of(age, days);
+  return PasswordExpiry.of(passwordAgeWith(age, putIn), days);
 });
 
 /// The line under [accountId] in the folder list, from
@@ -114,14 +167,24 @@ class PasswordKeeper {
     final stored = store.readOrder(UiStateKeys.passwordReminders);
     final wanted = <String, int>{};
     for (final account in accounts) {
-      final PasswordAge age;
+      final dates = _ref.read(passwordChangedProvider.notifier);
+      PasswordAge? age;
       try {
         age = await (reread
             ? _ref.refresh(passwordAgeProvider(account.id).future)
             : _ref.read(passwordAgeProvider(account.id).future));
+      } on SignInExpired catch (e) {
+        // Signed out by a password change: the new password's day, which
+        // is what the count starts from.
+        if (e.passwordChangedAt case final at?) {
+          dates.signedOutAt(account.id, at);
+        }
       } catch (_) {
-        // Not allowed, or not reachable just now: whatever was set for it
-        // stays as it was.
+        // Not allowed, or not reachable just now.
+      }
+      final putIn = dates.of(account.id);
+      if (age == null && putIn == null) {
+        // Nothing to go on: whatever was set for it stays as it was.
         for (final d in PasswordExpiry.reminderDays) {
           final id = '${PasswordExpiry.reminderId(account.id, d)}';
           if (stored[id] case final at?) wanted[id] = at;
@@ -129,7 +192,10 @@ class PasswordKeeper {
         continue;
       }
       final days = _ref.read(passwordDaysProvider.notifier).of(account.id);
-      final expiry = PasswordExpiry.of(age, days);
+      final expiry = PasswordExpiry.of(
+        passwordAgeWith(age ?? PasswordAge.unknown, putIn),
+        days,
+      );
       if (expiry == null) continue;
       for (final r in expiry.reminders(now)) {
         final id = PasswordExpiry.reminderId(account.id, r.daysBefore);

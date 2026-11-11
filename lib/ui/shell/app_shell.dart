@@ -17,6 +17,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/imap/imap_mapping.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/meeting_alerts.dart' show MeetingRef, calendarDayOf;
+import '../../data/auth/microsoft_oauth.dart' show SignInExpired;
 import '../../domain/account.dart';
 import '../../domain/password_expiry.dart' show passwordAccountOf;
 import '../../state/password_providers.dart';
@@ -142,12 +143,22 @@ class _AppShellState extends ConsumerState<AppShell>
     });
     // A password's days changed on an account's settings: its reminders
     // move with them.
-    ref.listenManual(
-      passwordDaysProvider,
-      (_, _) => unawaited(ref
-          .read(passwordKeeperProvider)
-          .keepUp(force: true, reread: false)),
-    );
+    void passwordsMoved() => unawaited(
+        ref.read(passwordKeeperProvider).keepUp(force: true, reread: false));
+    ref.listenManual(passwordDaysProvider, (_, _) => passwordsMoved());
+    ref.listenManual(passwordChangedProvider, (_, _) => passwordsMoved());
+    // An account signed out because its password was changed: the new
+    // password's day, for counting to the next.
+    ref.listenManual(folderLoadErrorsProvider, (_, next) {
+      for (final problem in next.values) {
+        if (problem.error case SignInExpired(:final passwordChangedAt?)
+            when hasOwnMicrosoftPassword(problem.account)) {
+          ref
+              .read(passwordChangedProvider.notifier)
+              .signedOutAt(problem.account.id, passwordChangedAt);
+        }
+      }
+    });
     // A calendar changed here, or what is said about meetings: the
     // reminders, the agenda and the widget at once.
     void keepUpNow() => unawaited(ref.read(calendarKeeperProvider).keepUp(

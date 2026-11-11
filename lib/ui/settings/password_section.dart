@@ -75,6 +75,23 @@ class _PasswordSectionState extends ConsumerState<PasswordSection> {
     }
   }
 
+  /// When the password was last changed, chosen on a calendar: up to a
+  /// year back, as no rule lasts longer.
+  Future<void> _pickDate(DateTime now, DateTime? held) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: held ?? now,
+      firstDate: now.subtract(const Duration(days: 400)),
+      lastDate: now,
+      helpText: 'Password last changed',
+    );
+    if (picked == null || !mounted) return;
+    ref.read(passwordChangedProvider.notifier).set(
+          account.id,
+          DateTime(picked.year, picked.month, picked.day, 12),
+        );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -85,6 +102,22 @@ class _PasswordSectionState extends ConsumerState<PasswordSection> {
     final now = ref.watch(passwordClockProvider)();
     final days = ref.watch(passwordDaysProvider)[account.id] ??
         PasswordExpiry.defaultDays;
+    ref.watch(passwordChangedProvider);
+    final putIn = ref.read(passwordChangedProvider.notifier).of(account.id);
+    // Microsoft keeps no date for this password, or cannot be asked: the
+    // one put in here is what is counted from.
+    final ownDate = switch (age) {
+      AsyncData(value: PasswordAge(lastChanged: null, neverExpires: false)) =>
+        true,
+      AsyncError(error: SignInNeedsConsent()) => false,
+      AsyncError() => true,
+      _ => false,
+    };
+    String counted(DateTime changed) => expiry == null
+        ? 'Last changed ${passwordDay(changed)}.'
+        : 'Last changed ${passwordDay(changed)}. '
+            '${expiry.daysLeft(now) < 0 ? 'Expired' : 'Expires'} '
+            '${passwordDay(expiry.expires)}, ${expiry.when(now)}.';
 
     final (String line, _Offer offer) = switch (age) {
       AsyncError(error: SignInNeedsConsent()) => (
@@ -94,12 +127,21 @@ class _PasswordSectionState extends ConsumerState<PasswordSection> {
               'works once they have.',
           _Offer.allow,
         ),
+      AsyncError() when putIn != null => (counted(putIn), _Offer.retry),
       AsyncError(:final error) => (
           error is ReadableError ? error.message : '$error',
           _Offer.retry,
         ),
+      AsyncData(value: PasswordAge(lastChanged: null, neverExpires: false))
+          when putIn != null =>
+        (counted(putIn), _Offer.none),
+      AsyncData(value: PasswordAge(lastChanged: null, neverExpires: false)) => (
+          "Microsoft keeps no date for this password: your organisation's "
+              'own servers do. Put in when you last changed it.',
+          _Offer.none,
+        ),
       AsyncData(value: PasswordAge(lastChanged: null)) => (
-          'Microsoft does not say when this password was last changed.',
+          'Microsoft says this password never expires.',
           _Offer.none,
         ),
       AsyncData(value: PasswordAge(:final lastChanged?, neverExpires: true)) =>
@@ -108,14 +150,8 @@ class _PasswordSectionState extends ConsumerState<PasswordSection> {
               'never expires.',
           _Offer.none,
         ),
-      AsyncData(value: PasswordAge(:final lastChanged?)) => (
-          expiry == null
-              ? 'Last changed ${passwordDay(lastChanged)}.'
-              : 'Last changed ${passwordDay(lastChanged)}. '
-                  '${expiry.daysLeft(now) < 0 ? 'Expired' : 'Expires'} '
-                  '${passwordDay(expiry.expires)}, ${expiry.when(now)}.',
-          _Offer.none,
-        ),
+      AsyncData(value: PasswordAge(:final lastChanged?)) =>
+        (counted(lastChanged), _Offer.none),
       _ => ('Checking when it was last changed…', _Offer.none),
     };
     final near = expiry != null && expiry.isNear(now);
@@ -162,6 +198,40 @@ class _PasswordSectionState extends ConsumerState<PasswordSection> {
             ),
           ),
         ],
+        if (ownDate) ...[
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              OutlinedButton.icon(
+                key: const ValueKey('password-changed-on'),
+                onPressed: () => _pickDate(now, putIn),
+                icon: const Icon(Icons.event_outlined, size: 18),
+                label: Text(putIn == null
+                    ? 'When it was last changed'
+                    : 'Changed ${passwordDay(putIn)}'),
+              ),
+              TextButton(
+                key: const ValueKey('password-changed-today'),
+                onPressed: () => ref
+                    .read(passwordChangedProvider.notifier)
+                    .set(account.id, now),
+                child: const Text('Changed it today'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'When it is changed, Microsoft signs the app out of this '
+            'account, and the app takes the new date from that by itself. '
+            'On a Windows computer at work, "net user" followed by your user '
+            'name and "/domain", typed in a Command Prompt, shows it as '
+            'Password last set.',
+            style: small,
+          ),
+        ],
         const SizedBox(height: 16),
         TextField(
           key: const ValueKey('password-days'),
@@ -177,7 +247,7 @@ class _PasswordSectionState extends ConsumerState<PasswordSection> {
           ),
           onChanged: _setDays,
         ),
-        if (expiry != null && days > 0) ...[
+        if (expiry != null && days > 0 && !ownDate) ...[
           const SizedBox(height: 12),
           Align(
             alignment: Alignment.centerLeft,
