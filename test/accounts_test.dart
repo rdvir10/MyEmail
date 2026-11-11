@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/domain/password_expiry.dart';
 import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/domain/calendar_event.dart';
@@ -204,6 +205,10 @@ class _EmptyEngine implements MailEngine {
   @override
   Future<PeopleSearchAccess> peopleSearchAccess(String accountId) =>
       _inner.peopleSearchAccess(accountId);
+
+  @override
+  Future<PasswordAge> passwordAge(String accountId) =>
+      _inner.passwordAge(accountId);
 
   @override
   Future<Uint8List> fetchAttachment(String messageId, String attachmentId) =>

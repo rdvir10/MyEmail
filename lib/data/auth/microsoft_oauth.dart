@@ -125,6 +125,13 @@ class MicrosoftOAuth implements OAuthRefresher {
     'https://graph.microsoft.com/Mail.Send.Shared',
   ];
 
+  /// The account's own profile: when its password was last changed, and
+  /// whether it ever expires. On its own for the same reason as
+  /// [calendarScopes].
+  static const profileScopes = [
+    'https://graph.microsoft.com/User.Read',
+  ];
+
   static Future<void> _realSleep(Duration d) => Future<void>.delayed(d);
 
   /// Where the redirect lands after a successful sign-in.

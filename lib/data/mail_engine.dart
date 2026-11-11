@@ -37,6 +37,7 @@ import '../domain/recoverable_message.dart';
 import '../domain/free_busy.dart';
 import '../domain/mail_tip.dart';
 import '../domain/opened_headers.dart';
+import '../domain/password_expiry.dart';
 
 /// Everything the UI is allowed to know about talking to mail.
 ///
@@ -217,6 +218,12 @@ abstract class MailEngine {
 
   /// Whether [accountId]'s address book can be searched online, asked now.
   Future<PeopleSearchAccess> peopleSearchAccess(String accountId);
+
+  /// When [accountId]'s password was last changed, as Microsoft says, for
+  /// a Microsoft work account signed in on its own. [PasswordAge.unknown]
+  /// for any other. Throws `SignInNeedsConsent` where the account has not
+  /// allowed its profile to be read, and as [listAttachments] does.
+  Future<PasswordAge> passwordAge(String accountId);
 
   /// What is attached to a message. Cheap: no file is downloaded.
   Future<List<MailAttachment>> listAttachments(String messageId);

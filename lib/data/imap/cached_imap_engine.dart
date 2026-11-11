@@ -6,6 +6,7 @@ import 'package:collection/collection.dart';
 import 'package:enough_mail/enough_mail.dart' as em;
 
 import '../../domain/account.dart';
+import '../../domain/password_expiry.dart';
 import '../../domain/account_colours.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_credentials.dart';
@@ -41,6 +42,7 @@ import '../credential_store.dart';
 import '../folder_list_store.dart';
 import '../graph/graph_id_map.dart';
 import '../graph/graph_mail_api.dart';
+import '../graph/graph_profile_api.dart';
 import '../graph/graph_settings_api.dart';
 import '../graph/graph_transport.dart';
 import '../mailbox_settings/gmail_settings_api.dart';
@@ -964,6 +966,30 @@ class CachedImapEngine implements MailEngine {
       return const PeopleSearchAccess(PeopleSearchState.notPossible);
     }
     return _people.access(account);
+  }
+
+  @override
+  Future<PasswordAge> passwordAge(String accountId) async {
+    final account =
+        accountStore.read().where((a) => a.id == accountId).firstOrNull;
+    if (account == null ||
+        account.provider != MailProvider.outlook ||
+        account.authMethod != AuthMethod.oauth ||
+        account.isShared) {
+      return PasswordAge.unknown;
+    }
+    final api = GraphProfileApi(
+      accessToken: ({bool force = false}) => oauthTokens.accessToken(
+        accountId,
+        force: force,
+        scopes: MicrosoftOAuth.profileScopes,
+      ),
+    );
+    try {
+      return await api.passwordAge();
+    } finally {
+      api.close();
+    }
   }
 
   @override

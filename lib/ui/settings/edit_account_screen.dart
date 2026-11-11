@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/error_report.dart';
@@ -6,10 +8,12 @@ import '../common/problem_view.dart';
 import '../../data/auth/oauth_token.dart';
 import '../../domain/account.dart';
 import '../../domain/account_colours.dart';
+import '../../state/password_providers.dart';
 import '../../state/providers.dart';
 import '../accounts/google_sign_in_screen.dart';
 import '../accounts/microsoft_sign_in_screen.dart';
 import '../shell/put_away.dart';
+import 'password_section.dart';
 
 /// Rename an account, recolour it, or sign it in again.
 ///
@@ -89,6 +93,9 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen>
           );
       // The tree lists this account again, so its "Sign in again" goes.
       ref.invalidate(foldersProvider);
+      // A new password is the usual reason for signing in again.
+      ref.invalidate(passwordAgeProvider(widget.account.id));
+      unawaited(ref.read(passwordKeeperProvider).keepUp(force: true));
       if (!mounted) return;
       _password.clear();
       final updated = ref
@@ -404,6 +411,12 @@ class _EditAccountScreenState extends ConsumerState<EditAccountScreen>
                 ],
               ),
             ],
+          ],
+          if (hasOwnMicrosoftPassword(_account)) ...[
+            const SizedBox(height: 28),
+            const Divider(height: 1),
+            const SizedBox(height: 16),
+            PasswordSection(account: _account),
           ],
           const SizedBox(height: 28),
           FilledButton(

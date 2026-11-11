@@ -17,6 +17,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/imap/imap_mapping.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/meeting_alerts.dart' show MeetingRef, calendarDayOf;
+import '../../domain/account.dart';
+import '../../domain/password_expiry.dart' show passwordAccountOf;
+import '../../state/password_providers.dart';
+import '../settings/edit_account_screen.dart';
 import '../../data/notifications/notification_action_isolate.dart';
 import '../../data/notifications/notification_actions.dart';
 import '../../data/sync/pass_signal.dart';
@@ -134,7 +138,16 @@ class _AppShellState extends ConsumerState<AppShell>
           .read(preparedMeetingLedgerProvider)
           .dropLeftovers(ref.read(mailEngineProvider)));
       unawaited(ref.read(calendarKeeperProvider).keepUp());
+      unawaited(ref.read(passwordKeeperProvider).keepUp());
     });
+    // A password's days changed on an account's settings: its reminders
+    // move with them.
+    ref.listenManual(
+      passwordDaysProvider,
+      (_, _) => unawaited(ref
+          .read(passwordKeeperProvider)
+          .keepUp(force: true, reread: false)),
+    );
     // A calendar changed here, or what is said about meetings: the
     // reminders, the agenda and the widget at once.
     void keepUpNow() => unawaited(ref.read(calendarKeeperProvider).keepUp(
@@ -281,6 +294,8 @@ class _AppShellState extends ConsumerState<AppShell>
     unawaited(_syncPhoneCalendars());
     unawaited(_sendToDuet());
     unawaited(ref.read(calendarKeeperProvider).keepUp());
+    // Every six hours at most.
+    unawaited(ref.read(passwordKeeperProvider).keepUp());
   }
 
   /// Hidden or paused since the app was last in front; see
@@ -316,6 +331,8 @@ class _AppShellState extends ConsumerState<AppShell>
     unawaited(_sendToDuet());
     // Every quarter hour at most.
     unawaited(ref.read(calendarKeeperProvider).keepUp());
+    // Every six hours at most.
+    unawaited(ref.read(passwordKeeperProvider).keepUp());
   }
 
   /// The Inboxes for Duet, sent while the app is in front, every five
@@ -468,6 +485,18 @@ class _AppShellState extends ConsumerState<AppShell>
     }
     if (calendarDayOf(payload) case final day?) {
       unawaited(CalendarScreen.open(context, day: day));
+      return;
+    }
+    // A password's reminder: the account's settings, where it says when.
+    if (passwordAccountOf(payload) case final accountId?) {
+      final account = (ref.read(accountsProvider).value ?? const <Account>[])
+          .where((a) => a.id == accountId)
+          .firstOrNull;
+      if (account != null) {
+        unawaited(Navigator.of(context).push(MaterialPageRoute<void>(
+          builder: (_) => EditAccountScreen(account: account),
+        )));
+      }
       return;
     }
     final String folderId;

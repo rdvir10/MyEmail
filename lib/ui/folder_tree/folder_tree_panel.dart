@@ -9,6 +9,8 @@ import '../messages/search_bar.dart' show askSearchFolderName;
 import '../../state/folder_drag.dart';
 import '../../state/folder_tree.dart';
 import '../../domain/error_report.dart';
+import '../../domain/account.dart';
+import '../../state/password_providers.dart';
 import '../../state/providers.dart';
 import '../common/problem_view.dart';
 import '../settings/edit_account_screen.dart';
@@ -655,6 +657,50 @@ class _SectionHeaderState extends ConsumerState<_SectionHeader> {
                   ),
                 ),
               ],
+            ),
+          ),
+        ],
+      );
+    }
+
+    // A Microsoft account's password running out, from two weeks before.
+    // Tapped, the account's settings, which say when and why.
+    final password = row.accountId == null
+        ? null
+        : ref.watch(passwordWarningProvider(row.accountId!));
+    if (password != null) {
+      header = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          header,
+          InkWell(
+            key: ValueKey('password-warning-${row.accountId}'),
+            onTap: () {
+              final account = (ref.read(accountsProvider).value ??
+                      const <Account>[])
+                  .where((a) => a.id == row.accountId)
+                  .firstOrNull;
+              if (account == null) return;
+              Navigator.of(context).push(MaterialPageRoute<void>(
+                builder: (_) => EditAccountScreen(account: account),
+              ));
+            },
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 12, 10),
+              child: Row(
+                children: [
+                  Icon(Icons.key_outlined,
+                      size: 14, color: theme.colorScheme.error),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      password,
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: theme.colorScheme.error),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ],

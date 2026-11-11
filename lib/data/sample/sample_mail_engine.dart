@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import '../../domain/account.dart';
 import '../../domain/account_colours.dart';
 import '../../domain/draft.dart';
+import '../../domain/password_expiry.dart';
 import '../../domain/folder_capabilities.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/address_suggestions.dart';
@@ -652,6 +653,10 @@ class SampleMailEngine implements MailEngine {
           : PeopleSearchState.notPossible,
     );
   }
+
+  @override
+  Future<PasswordAge> passwordAge(String accountId) async =>
+      PasswordAge.unknown;
 
   @override
   Future<List<MailAttachment>> listAttachments(String messageId) async {

@@ -134,6 +134,15 @@ abstract final class UiStateKeys {
   static const duetSent = 'duet.sent.v1';
   static const duetLastRun = 'duet.last-run.v1';
   static const duetStatus = 'duet.status.v1';
+
+  /// How many days each Microsoft account's password lasts, by account id,
+  /// where it is not `PasswordExpiry.defaultDays`; 0 for never. Not in the
+  /// backup: the ids are this device's.
+  static const passwordDays = 'accounts.password-days.v1';
+
+  /// The password reminders set with Android, by id, so one no longer
+  /// wanted can be taken back.
+  static const passwordReminders = 'accounts.password-reminders.v1';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.
