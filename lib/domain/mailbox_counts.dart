@@ -84,7 +84,7 @@ class MailboxCounts {
   /// How much of it has not been read.
   final int unread;
 
-  /// How many arrived since the app was last opened.
+  /// How many arrived since this mailbox was last looked at.
   final int fresh;
 
   /// The number this widget is set to show.
@@ -99,7 +99,7 @@ class MailboxCounts {
 /// How many of [messages] arrived after [mark].
 ///
 /// A null mark means the app has never been opened since the widget was
-/// placed. That counts as none rather than all: a fresh install would
+/// placed, nor the mailbox looked at. That counts as none rather than all: a fresh install would
 /// otherwise announce four thousand new messages, which is true in a useless
 /// way.
 ///

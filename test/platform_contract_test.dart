@@ -337,12 +337,13 @@ void main() {
       'MailboxCountWidgetProvider.kt',
     ).readAsStringSync();
 
-    // Keys with their variable part taken out: widget.*.folder.
+    // Keys with their variable part taken out: widget.*.folder. Written
+    // through text() and number(), which gather them for one call.
     Map<String, String> written() => {
           for (final m in RegExp(
-            r"surface\.put(String|Int)\(\s*'(widget|count)\.\$\{[^}]+\}\.(\w+)'",
+            r"\b(text|number)\(\s*'(widget|count)\.\$\{[^}]+\}\.(\w+)'",
           ).allMatches(dart))
-            '${m[2]}.*.${m[3]}': m[1] == 'Int' ? 'number' : 'string',
+            '${m[2]}.*.${m[3]}': m[1] == 'number' ? 'number' : 'string',
         };
 
     Map<String, String> read() {

@@ -178,6 +178,14 @@ open class MainActivity : FlutterActivity() {
                     // without asking, a widget's mailbox is remembered and
                     // recounted forever after it is gone.
                     "placedWidgets" -> result.success(placedWidgetIds())
+                    // Every value a refresh writes, in one go, and the
+                    // widgets drawn from them at once if any changed.
+                    "showValues" -> result.success(
+                        MailboxCountWidgetProvider.show(
+                            applicationContext,
+                            call.arguments as? Map<*, *> ?: emptyMap<String, Any?>(),
+                        ),
+                    )
                     else -> result.notImplemented()
                 }
             }

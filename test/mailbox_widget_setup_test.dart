@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/data/widget/home_screen_surface.dart';
+import 'package:myemail/data/widget/mailbox_widgets.dart';
 import 'package:myemail/data/widget/widget_state_store.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/mail_message.dart';
@@ -323,36 +324,56 @@ void main() {
     });
   });
 
-  group('the mark that "new" counts from', () {
-    Future<void> pumpKeeper(WidgetTester tester) async {
-      final c = container();
-      await tester.pumpWidget(
-        UncontrolledProviderScope(
-          container: c,
-          child: const MaterialApp(
-            home: MailboxWidgetKeeper(child: SizedBox.shrink()),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
+  group('what "new" counts from', () {
+    // The keeper's own clock, which the test moves; DateTime.now() does not
+    // follow the test's.
+    late DateTime clock;
+    late _CountingEngine engine;
+    late String inbox;
+    late ProviderContainer c;
+
+    setUp(() {
+      clock = DateTime.now();
+      MailboxWidgetKeeper.now = () => clock;
+    });
+    tearDown(() => MailboxWidgetKeeper.now = DateTime.now);
+
+    const away = [
+      AppLifecycleState.inactive,
+      AppLifecycleState.hidden,
+      AppLifecycleState.paused,
+    ];
+    const back = [
+      AppLifecycleState.hidden,
+      AppLifecycleState.inactive,
+      AppLifecycleState.resumed,
+    ];
+
+    void go(WidgetTester tester, List<AppLifecycleState> states) {
+      for (final state in states) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
     }
 
-    testWidgets('opening the app moves it', (tester) async {
-      await pumpKeeper(tester);
+    /// Long enough for the sample engine's delays and a redraw.
+    Future<void> settle(WidgetTester tester) async {
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+    }
 
-      expect(store.openedAt, isNotNull);
-    });
-
-    testWidgets('coming back counts once, and leaving syncs nothing',
-        (tester) async {
-      // Each resume and pause ran the refresh twice, and each run synced
-      // every widget folder over the network alongside the app's own sync.
-      final engine = _CountingEngine();
-      final inbox = (await tester.runAsync(
+    /// A widget on the Personal Inbox, its mail already fetched once so the
+    /// cache has something to count, and the app opened on All inboxes.
+    Future<void> pumpKeeper(WidgetTester tester) async {
+      engine = _CountingEngine();
+      inbox = (await tester.runAsync(
         () => engine.loadFolders('acct-personal'),
       ))!
           .firstWhere((f) => f.role == FolderRole.inbox)
           .id;
+      await tester.runAsync(
+        () => engine.loadMessages(inbox, limit: MailboxWidgets.window),
+      );
       store.mailboxes['7'] = WidgetMailbox(folderId: inbox);
       const channel = MethodChannel('mailtree/widget');
       final messenger =
@@ -360,7 +381,7 @@ void main() {
       messenger.setMockMethodCallHandler(channel, (_) async => <String>['7']);
       addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
 
-      final c = ProviderContainer(
+      c = ProviderContainer(
         overrides: [
           uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
           homeScreenSurfaceProvider.overrideWithValue(surface),
@@ -377,83 +398,140 @@ void main() {
           ),
         ),
       );
-      await tester.pumpAndSettle();
-
+      await settle(tester);
+      // And the redraw the folders arriving asked for.
+      await tester.pump(MailboxWidgetKeeper.settle);
+      await settle(tester);
       engine.synced.clear();
-      for (final state in const [
-        AppLifecycleState.inactive,
-        AppLifecycleState.hidden,
-        AppLifecycleState.paused,
-      ]) {
-        tester.binding.handleAppLifecycleStateChanged(state);
-      }
-      await tester.pumpAndSettle();
+    }
+
+    testWidgets('the first opening sets where it starts', (tester) async {
+      await pumpKeeper(tester);
+
+      expect(store.openedAt, isNotNull);
+    });
+
+    testWidgets('and opening the app again does not move it', (tester) async {
+      // It was the one mark every widget counted from, moved each time the
+      // app came to the front, which took every widget to zero.
+      store.openedAt = DateTime.utc(2000);
+
+      await pumpKeeper(tester);
+
+      expect(store.openedAt, DateTime.utc(2000));
+    });
+
+    testWidgets('a mailbox chosen is looked at, and redrawn at once',
+        (tester) async {
+      store.openedAt = DateTime.utc(2000);
+      await pumpKeeper(tester);
+      expect(c.read(effectiveSelectedFolderIdProvider), kUnifiedInboxId);
+      expect(surface.values['count.$inbox.new'], greaterThan(0));
+      final redraws = surface.redraws;
+
+      c.read(selectedFolderIdProvider.notifier).select(inbox);
+      await settle(tester);
+
+      expect(store.seen.keys, [inbox],
+          reason: 'All inboxes was on screen for no time at all');
+      expect(surface.values['count.$inbox.new'], 0);
+      expect(surface.redraws, redraws + 1,
+          reason: 'without waiting for the app to go away');
+    });
+
+    testWidgets('the one the app opens on, left at once, is not',
+        (tester) async {
+      await pumpKeeper(tester);
+
+      go(tester, away);
+      await settle(tester);
+
+      expect(store.seen, isEmpty);
+    });
+
+    testWidgets('but one it stays on a moment is, as it goes', (tester) async {
+      await pumpKeeper(tester);
+
+      clock = clock.add(const Duration(seconds: 2));
+      go(tester, away);
+      await settle(tester);
+
+      expect(store.seen, {kUnifiedInboxId: clock.toUtc()});
+    });
+
+    testWidgets('a widget tapped to come back is the mailbox looked at',
+        (tester) async {
+      // The app comes back on whatever it was left showing, and the tap
+      // moves it a moment later. That moment was a look at every Inbox.
+      await pumpKeeper(tester);
+      clock = clock.add(const Duration(minutes: 1));
+      go(tester, away);
+      await settle(tester);
+      final left = store.seen[kUnifiedInboxId];
+      expect(left, isNotNull);
+
+      clock = clock.add(const Duration(hours: 1));
+      go(tester, back);
+      // What the tap does once the app is in front.
+      c.read(selectedFolderIdProvider.notifier).select(inbox);
+      await settle(tester);
+
+      expect(store.seen[kUnifiedInboxId], left);
+      expect(store.seen[inbox], clock.toUtc());
+    });
+
+    testWidgets('neither leaving nor coming back syncs anything',
+        (tester) async {
+      // Each resume synced every widget's folder over the network, alongside
+      // the app's own sync, for a widget nobody can see while the app is in
+      // front.
+      await pumpKeeper(tester);
+
+      go(tester, away);
+      await settle(tester);
       expect(engine.synced, isEmpty,
           reason: 'on the way out the counts come from the cache');
       expect(surface.values['widget.7.folder'], inbox);
 
-      for (final state in const [
-        AppLifecycleState.hidden,
-        AppLifecycleState.inactive,
-        AppLifecycleState.resumed,
-      ]) {
-        tester.binding.handleAppLifecycleStateChanged(state);
-      }
-      await tester.pumpAndSettle();
-      expect(engine.synced, [inbox], reason: 'one refresh, not two');
+      go(tester, back);
+      await settle(tester);
+      expect(engine.synced, isEmpty);
     });
 
     testWidgets('focus back without going away moves nothing',
         (tester) async {
       // The notification shade pushed back up, or the app tapped again in
       // split screen: the mail was on screen all along.
-      final engine = _CountingEngine();
-      final inbox = (await tester.runAsync(
-        () => engine.loadFolders('acct-personal'),
-      ))!
-          .firstWhere((f) => f.role == FolderRole.inbox)
-          .id;
-      store.mailboxes['7'] = WidgetMailbox(folderId: inbox);
-      final c = ProviderContainer(
-        overrides: [
-          uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
-          homeScreenSurfaceProvider.overrideWithValue(surface),
-          widgetStateStoreProvider.overrideWithValue(store),
-          mailEngineProvider.overrideWithValue(engine),
-        ],
-      );
-      addTearDown(c.dispose);
-      await tester.pumpWidget(
-        UncontrolledProviderScope(
-          container: c,
-          child: const MaterialApp(
-            home: MailboxWidgetKeeper(child: SizedBox.shrink()),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      engine.synced.clear();
-      final mark = store.openedAt;
+      await pumpKeeper(tester);
+      clock = clock.add(const Duration(minutes: 1));
 
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await tester.pumpAndSettle();
+      go(tester, const [
+        AppLifecycleState.inactive,
+        AppLifecycleState.resumed,
+      ]);
+      await settle(tester);
 
+      expect(store.seen, isEmpty);
       expect(engine.synced, isEmpty);
-      expect(store.openedAt, mark);
     });
 
-    testWidgets('and so does leaving', (tester) async {
-      // Otherwise "new since you last looked" would count the mail you read
-      // just before putting the phone down.
+    testWidgets('counts that move while the app is used are redrawn',
+        (tester) async {
+      // So the widget is right by the time the home screen is back, rather
+      // than a moment after.
       await pumpKeeper(tester);
-      store.openedAt = null;
+      final redraws = surface.redraws;
+      // Something for the redraw to change.
+      surface.values.remove('widget.7.mode');
 
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-      await tester.pumpAndSettle();
+      c.read(foldersProvider.notifier).countUnread(inbox, -1);
+      await tester.pump(MailboxWidgetKeeper.settle ~/ 2);
+      expect(surface.redraws, redraws, reason: 'left to settle first');
 
-      expect(store.openedAt, isNotNull);
+      await tester.pump(MailboxWidgetKeeper.settle);
+      await settle(tester);
+      expect(surface.redraws, redraws + 1);
+      expect(surface.values['widget.7.mode'], 'all');
     });
   });
 }

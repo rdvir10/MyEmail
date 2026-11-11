@@ -297,10 +297,69 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
             else -> fallback
         }
 
-    private companion object {
+    companion object {
         /** The app's own orange, for a widget placed before there was a
          *  choice of colour. */
-        const val DEFAULT_COLOUR = 0xFFFF7A18.toInt()
+        private const val DEFAULT_COLOUR = 0xFFFF7A18.toInt()
+
+        /**
+         * The file the home_widget plugin keeps its values in, and hands to
+         * onUpdate. Its own constant is internal to the plugin.
+         */
+        private const val PREFERENCES = "HomeWidgetPreferences"
+
+        /**
+         * Write what the app sent and draw every placed widget from it,
+         * here and now. True when any value changed; nothing is written
+         * when none did. The widgets are drawn either way, as every refresh
+         * has drawn them: a widget's size is worked out as it is drawn, so
+         * a tablet turned round since the last one is put right by this.
+         *
+         * Instead of the plugin's one value per call: each of those wrote
+         * the whole file to disk before it answered, and the redraw went
+         * round by a broadcast after the last of twenty-odd, so the numbers
+         * changed a moment after the home screen was back rather than as it
+         * came. apply() puts the values in memory, where the drawing below
+         * reads them, and writes the file behind it.
+         *
+         * Never throws, for the reason the class says: this runs in the
+         * app's own process.
+         */
+        fun show(context: Context, values: Map<*, *>): Boolean = try {
+            val prefs = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            val stored = prefs.all
+            val editor = prefs.edit()
+            var changed = false
+            for ((key, value) in values) {
+                if (key !is String) continue
+                // A key that is not there reads as null, which is the same.
+                if (stored[key] == value) continue
+                when (value) {
+                    null -> editor.remove(key)
+                    is String -> editor.putString(key, value)
+                    is Int -> editor.putInt(key, value)
+                    is Long -> editor.putLong(key, value)
+                    is Boolean -> editor.putBoolean(key, value)
+                    else -> continue
+                }
+                changed = true
+            }
+            if (changed) editor.apply()
+            drawAll(context, prefs)
+            changed
+        } catch (e: Exception) {
+            android.util.Log.e("MyEmail", "widget values not shown", e)
+            false
+        }
+
+        private fun drawAll(context: Context, prefs: SharedPreferences) {
+            val manager = AppWidgetManager.getInstance(context)
+            val ids = manager.getAppWidgetIds(
+                android.content.ComponentName(context, MailboxCountWidgetProvider::class.java),
+            )
+            if (ids.isEmpty()) return
+            MailboxCountWidgetProvider().onUpdate(context, manager, ids, prefs)
+        }
     }
 
     /**

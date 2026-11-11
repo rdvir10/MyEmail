@@ -19,7 +19,7 @@ import 'widget_state_store.dart';
 /// open, and by the background sync pass when it is not.
 ///
 /// So this is called from three places, and each one matters:
-///  * the app coming to the front, which moves the mark "new" counts from;
+///  * the app, as a mailbox is looked at and as its counts move;
 ///  * the end of a sync, which is when the numbers have actually changed;
 ///  * setting a widget up, which is when it first has a mailbox to count.
 class MailboxWidgets {
@@ -49,28 +49,20 @@ class MailboxWidgets {
     await refresh(engine);
   }
 
-  /// You have just looked at your mail, so "new" starts counting from here.
-  ///
-  /// Called when the app comes to the front and again when it goes away, so
-  /// the number means "arrived since you last had this in front of you"
-  /// rather than "since you opened it this morning and read it all".
-  ///
-  /// The mark moves first and the numbers are written second, which is what
-  /// makes the widget go to zero as you open the app rather than a sync later.
-  ///
-  /// [placed] is Android's answer to which widgets are on the home screen,
-  /// still on its way while the mark is written; see [refresh] for it and
-  /// for [fromCache], which lets the app going away redraw from what it
-  /// already holds rather than sync every widget's folder on its way out.
-  Future<void> markCaughtUp(
-    DateTime now,
-    MailEngine engine, {
-    Future<List<String>?>? placed,
-    bool fromCache = false,
-  }) async {
-    await store.writeOpenedAt(now);
-    await refresh(engine, placed: await placed, fromCache: fromCache);
+  /// The app has been opened. The first time with a widget placed is where
+  /// "new" starts for a mailbox that has not been looked at since; after
+  /// that each mailbox counts from its own last look, see [seen].
+  Future<void> opened(DateTime now) async {
+    if (await store.readOpenedAt() == null) await store.writeOpenedAt(now);
   }
+
+  /// [folderId] has been on screen up to [now], so its widget's "new"
+  /// starts again from here. For All inboxes, so does every Inbox's; for an
+  /// Inbox, its share of All inboxes.
+  ///
+  /// The mark only. The app redraws once it has written it, see [refresh].
+  Future<void> seen(String folderId, DateTime now) =>
+      store.writeSeen(folderId, now);
 
   /// Recount and redraw.
   ///
@@ -104,10 +96,8 @@ class MailboxWidgets {
       final mailboxes = await store.readMailboxes();
       if (mailboxes.isEmpty) return;
 
-      final mark = await store.readOpenedAt();
       final accounts = await engine.loadAccounts();
-      final counts = <String, MailboxCounts>{};
-      final recent = <String, List<MailMessage>>{};
+      final counted = <String, _Counted>{};
       // Could not be counted this time. One account needing a sign-in used
       // to stop every widget here, Gmail and All inboxes included, until it
       // was signed in again; now only its own widget keeps what it showed.
@@ -118,57 +108,59 @@ class MailboxWidgets {
             engine,
             accounts,
             folderId,
-            mark,
             fromCache: fromCache,
             synced: synced,
           );
-          if (count != null) {
-            counts[folderId] = count.counts;
-            recent[folderId] = count.recent;
-          }
+          if (count != null) counted[folderId] = count;
         } catch (e) {
           debugPrint('[myemail] could not count $folderId for a widget: $e');
           unknown.add(folderId);
         }
       }
 
+      // Everything for Android in one go, each value by its kind: the
+      // widget reads a string or a number per key, and the platform
+      // contract test holds these two to what it reads.
+      final values = <String, Object?>{};
+      void text(String key, String? value) => values[key] = value;
+      void number(String key, int value) => values[key] = value;
+
       for (final entry in mailboxes.entries) {
         final mailbox = entry.value;
-        final found = counts[mailbox.folderId];
+        final found = counted[mailbox.folderId];
         final kept = unknown.contains(mailbox.folderId);
         // A folder that has gone leaves the widget unassigned rather than
         // showing zeroes, which would read as an empty mailbox.
-        await surface.putString(
+        text(
           'widget.${entry.key}.folder',
           found == null && !kept ? null : mailbox.folderId,
         );
-        await surface.putString('widget.${entry.key}.mode', mailbox.counts.name);
-        await surface.putString('widget.${entry.key}.label', mailbox.label);
+        text('widget.${entry.key}.mode', mailbox.counts.name);
+        text('widget.${entry.key}.label', mailbox.label);
         // Written on every pass rather than once at setup: a widget on its
         // account's colour has to follow a recolour in Settings. Signed and
         // inside 32 bits, as WidgetColour.argb explains.
-        await surface.putInt(
+        number(
           'widget.${entry.key}.colour',
           mailbox.tileColour(accounts).toSigned(32),
         );
       }
-      // The mark again, now that the counting is done. A background pass
-      // spends seconds syncing, and if the app was opened and left in that
-      // time the mark moved and the widget went to zero; writing what was
-      // counted against the old mark put "3 new" back for mail already read.
-      final markNow = await store.readOpenedAt();
-      for (final c in counts.values) {
-        await surface.putString('count.${c.folderId}.label', c.label);
-        await surface.putInt('count.${c.folderId}.total', c.total);
-        await surface.putInt('count.${c.folderId}.unread', c.unread);
-        await surface.putInt(
-          'count.${c.folderId}.new',
-          markNow == mark
-              ? c.fresh
-              : arrivedSince(recent[c.folderId] ?? const [], markNow),
-        );
+      // The marks as they are now the counting is done, not as they were
+      // when it began. A background pass spends seconds syncing, and a
+      // mailbox looked at in that time has gone to zero; counting against
+      // the marks read before put "3 new" back for mail already read.
+      final marks = SeenMarks(
+        opened: await store.readOpenedAt(),
+        folders: await store.readSeen(),
+      );
+      for (final c in counted.values) {
+        final counts = c.counts(marks);
+        text('count.${c.folderId}.label', counts.label);
+        number('count.${c.folderId}.total', counts.total);
+        number('count.${c.folderId}.unread', counts.unread);
+        number('count.${c.folderId}.new', counts.fresh);
       }
-      await surface.redraw();
+      await surface.show(values);
     } catch (e, stack) {
       // A widget that is briefly out of date is a far smaller thing than a
       // sync pass that fails, or an app that will not open, because a folder
@@ -178,13 +170,12 @@ class MailboxWidgets {
     }
   }
 
-  /// The counts for one mailbox, and the recent messages they were counted
-  /// from, so "new" can be counted again against a mark that moved.
-  Future<({MailboxCounts counts, List<MailMessage> recent})?> _count(
+  /// One mailbox's numbers, and the recent messages "new" is counted from
+  /// once the marks are known.
+  Future<_Counted?> _count(
     MailEngine engine,
     List<Account> accounts,
-    String folderId,
-    DateTime? mark, {
+    String folderId, {
     required bool fromCache,
     required Set<String>? synced,
   }) async {
@@ -204,7 +195,7 @@ class MailboxWidgets {
     if (folderId == kUnifiedInboxId) {
       var total = 0;
       var unread = 0;
-      final recent = <MailMessage>[];
+      final recent = <_Recent>[];
       for (final account in accounts) {
         // An account that cannot be asked counts as it was last seen,
         // rather than taking All inboxes down with it.
@@ -218,22 +209,20 @@ class MailboxWidgets {
           if (folder.role != FolderRole.inbox) continue;
           total += folder.totalCount;
           unread += folder.unreadCount;
+          List<MailMessage> mail;
           try {
-            recent.addAll(await messages(folder.id));
+            mail = await messages(folder.id);
           } catch (_) {
-            recent.addAll(
-                await engine.cachedMessages(folder.id, limit: window));
+            mail = await engine.cachedMessages(folder.id, limit: window);
           }
+          recent.add((folderId: folder.id, inbox: true, messages: mail));
         }
       }
-      return (
-        counts: MailboxCounts(
-          folderId: folderId,
-          label: 'All inboxes',
-          total: total,
-          unread: unread,
-          fresh: arrivedSince(recent, mark),
-        ),
+      return _Counted(
+        folderId: folderId,
+        label: 'All inboxes',
+        total: total,
+        unread: unread,
         recent: recent,
       );
     }
@@ -249,16 +238,58 @@ class MailboxWidgets {
     // Deleted, renamed, or the account removed.
     if (folder == null) return null;
 
-    final recent = await messages(folderId);
-    return (
-      counts: MailboxCounts(
-        folderId: folderId,
-        label: '${folder.displayName} · ${account.displayName}',
-        total: folder.totalCount,
-        unread: folder.unreadCount,
-        fresh: arrivedSince(recent, mark),
-      ),
-      recent: recent,
+    return _Counted(
+      folderId: folderId,
+      label: '${folder.displayName} · ${account.displayName}',
+      total: folder.totalCount,
+      unread: folder.unreadCount,
+      recent: [
+        (
+          folderId: folderId,
+          inbox: folder.role == FolderRole.inbox,
+          messages: await messages(folderId),
+        ),
+      ],
     );
   }
+}
+
+/// One folder's recent mail, and whether it is an Inbox, which decides
+/// whether a look at All inboxes covers it.
+typedef _Recent = ({String folderId, bool inbox, List<MailMessage> messages});
+
+/// A mailbox counted, all but "new", which waits for the marks.
+class _Counted {
+  _Counted({
+    required this.folderId,
+    required this.label,
+    required this.total,
+    required this.unread,
+    required this.recent,
+  });
+
+  final String folderId;
+  final String label;
+  final int total;
+  final int unread;
+
+  /// One entry for a folder; one per Inbox for All inboxes, each counted
+  /// from its own mark.
+  final List<_Recent> recent;
+
+  MailboxCounts counts(SeenMarks marks) => MailboxCounts(
+        folderId: folderId,
+        label: label,
+        total: total,
+        unread: unread,
+        fresh: recent.fold(
+          0,
+          (n, r) =>
+              n +
+              arrivedSince(
+                r.messages,
+                marks.markFor(r.folderId, inbox: r.inbox),
+              ),
+        ),
+      );
 }

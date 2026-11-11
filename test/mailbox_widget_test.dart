@@ -172,8 +172,7 @@ void main() {
           surface.values['count.$inbox.label'], contains(account.displayName));
     });
 
-    test('opening the app moves the mark and takes the count back to zero',
-        () async {
+    test('looking at a mailbox takes its count back to zero', () async {
       final inbox = await anInbox();
       await widgets.setUp(appWidgetId: '7', mailbox: WidgetMailbox(folderId: inbox), engine: engine);
       // A mark from long ago: everything in the window arrived after it.
@@ -181,17 +180,105 @@ void main() {
       await widgets.refresh(engine);
       expect(surface.values['count.$inbox.new'], greaterThan(0));
 
-      await widgets.markCaughtUp(DateTime.now().toUtc(), engine);
+      await widgets.seen(inbox, DateTime.now().toUtc());
+      await widgets.refresh(engine, fromCache: true);
 
       expect(surface.values['count.$inbox.new'], 0);
-      expect(store.openedAt!.isAfter(DateTime.utc(2001)), isTrue);
+    });
+
+    group('each mailbox counts from its own last look', () {
+      // Opening one mailbox took every widget to zero: they all counted from
+      // the last time the app came to the front.
+      late String first;
+      late String second;
+
+      setUp(() async {
+        final accounts = await engine.loadAccounts();
+        Future<String> inboxOf(int i) async =>
+            (await engine.loadFolders(accounts[i].id))
+                .firstWhere((f) => f.role == FolderRole.inbox)
+                .id;
+        first = await inboxOf(0);
+        second = await inboxOf(1);
+        store.mailboxes['1'] = WidgetMailbox(folderId: first);
+        store.mailboxes['2'] = WidgetMailbox(folderId: second);
+        store.mailboxes['3'] = const WidgetMailbox(folderId: kUnifiedInboxId);
+        store.openedAt = DateTime.utc(2000);
+        await widgets.refresh(engine);
+      });
+
+      Object? fresh(String folderId) => surface.values['count.$folderId.new'];
+
+      test('so one looked at leaves the others alone', () async {
+        final untouched = fresh(second);
+        expect(untouched, greaterThan(0));
+
+        await widgets.seen(first, DateTime.now().toUtc());
+        await widgets.refresh(engine, fromCache: true);
+
+        expect(fresh(first), 0);
+        expect(fresh(second), untouched);
+      });
+
+      test('an Inbox looked at comes off All inboxes, and only it',
+          () async {
+        final all = fresh(kUnifiedInboxId)! as int;
+        final firsts = fresh(first)! as int;
+
+        await widgets.seen(first, DateTime.now().toUtc());
+        await widgets.refresh(engine, fromCache: true);
+
+        expect(fresh(kUnifiedInboxId), all - firsts);
+      });
+
+      test('and All inboxes looked at is every Inbox looked at', () async {
+        await widgets.seen(kUnifiedInboxId, DateTime.now().toUtc());
+        await widgets.refresh(engine, fromCache: true);
+
+        expect(fresh(kUnifiedInboxId), 0);
+        expect(fresh(first), 0);
+        expect(fresh(second), 0);
+      });
+
+      test('a mark never moves back', () async {
+        final now = DateTime.now().toUtc();
+        await widgets.seen(first, now);
+        await widgets.seen(first, DateTime.utc(2001));
+
+        expect(store.seen[first], now);
+      });
+    });
+
+    test('the app opened again leaves where "new" starts alone', () async {
+      store.openedAt = DateTime.utc(2000);
+
+      await widgets.opened(DateTime.now().toUtc());
+
+      expect(store.openedAt, DateTime.utc(2000));
+    });
+
+    test('nothing is written when nothing changed', () async {
+      // Push's minute check ends in a refresh, most of which change nothing,
+      // and each wrote every value to disk, one at a time.
+      final inbox = await anInbox();
+      await widgets.setUp(
+          appWidgetId: '7', mailbox: WidgetMailbox(folderId: inbox), engine: engine);
+      final writes = surface.writes;
+      final redraws = surface.redraws;
+
+      await widgets.refresh(engine, fromCache: true);
+
+      expect(surface.writes, writes);
+      expect(surface.redraws, redraws + 1,
+          reason: 'drawn again all the same, for a tablet turned round');
     });
 
     test('a mark moved while counting is what "new" is counted from',
         () async {
       // A background pass reads the mark, then spends seconds syncing. The
-      // app opened and closed in that time takes the widget to zero, and
-      // the pass then wrote back what it had counted against the old mark.
+      // mailbox looked at in the app in that time takes the widget to zero,
+      // and the pass then wrote back what it had counted against the old
+      // mark.
       final inbox = await anInbox();
       await widgets.setUp(
           appWidgetId: '7', mailbox: WidgetMailbox(folderId: inbox), engine: engine);
@@ -669,10 +756,14 @@ class _BrokenSurface implements HomeScreenSurface {
 
   @override
   Future<void> redrawCalendar() async => throw StateError('no');
+
+  @override
+  Future<bool> show(Map<String, Object?> values) async =>
+      throw StateError('no');
 }
 
-/// The app coming to the front while a pass is counting: the mark moves
-/// under it.
+/// The mailbox looked at in the app while a pass is counting: its mark
+/// moves under it.
 class _MarkMovingEngine extends SampleMailEngine {
   _MarkMovingEngine(this.store);
 
@@ -686,7 +777,7 @@ class _MarkMovingEngine extends SampleMailEngine {
   }) async {
     final messages =
         await super.loadMessages(folderId, offset: offset, limit: limit);
-    store.openedAt = DateTime.now().toUtc();
+    store.seen[folderId] = DateTime.now().toUtc();
     return messages;
   }
 }

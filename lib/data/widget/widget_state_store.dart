@@ -134,20 +134,63 @@ class WidgetMailbox {
       '${colour == null ? '' : ', ${colour!.name}'})';
 }
 
+/// What "new" on a widget counts from, mailbox by mailbox.
+///
+/// It was one time for every widget, the last time the app came to the
+/// front, so opening one mailbox took every widget's count to zero, the
+/// mailboxes nobody had looked at included.
+class SeenMarks {
+  const SeenMarks({this.opened, this.folders = const {}});
+
+  /// When the app was first opened with a widget placed: where a mailbox
+  /// not looked at since then counts from.
+  final DateTime? opened;
+
+  /// When each mailbox was last on screen, by folder id, All inboxes under
+  /// its own.
+  final Map<String, DateTime> folders;
+
+  /// Where "new" in [folderId] counts from: the latest of the app's first
+  /// opening, the folder's own last look and, for an Inbox, the last look at
+  /// All inboxes, which showed it too. Null when there is none of those.
+  DateTime? markFor(String folderId, {required bool inbox}) {
+    var latest = opened;
+    for (final seen in [
+      folders[folderId],
+      if (inbox) folders[kUnifiedInboxId],
+    ]) {
+      if (seen != null && (latest == null || seen.isAfter(latest))) {
+        latest = seen;
+      }
+    }
+    return latest;
+  }
+}
+
 /// What the home-screen widgets need remembered between runs.
 ///
-/// Two things: what each placed widget shows, and when the app was last in
-/// front, which is what "new since" counts from.
+/// Three things: what each placed widget shows, when each mailbox was last
+/// on screen, which is what "new since" counts from, and when the app was
+/// first opened, for a mailbox not looked at since.
 ///
 /// [SharedPreferencesAsync] rather than the cached flavour the rest of the
 /// app uses, for the same reason the sync state store does it: the background
 /// pass runs in its own isolate, and a cache loaded at construction would not
 /// see what the other isolate wrote.
 abstract class WidgetStateStore {
-  /// When the app was last brought to the front. Null until it has been
-  /// opened once since the widget was placed.
+  /// When the app was first opened with a widget placed. Null until then.
+  ///
+  /// It used to move every time the app came to the front, and was the one
+  /// mark every widget counted from. It now stays where it was and only
+  /// stands in for a mailbox that has not been looked at since.
   Future<DateTime?> readOpenedAt();
   Future<void> writeOpenedAt(DateTime when);
+
+  /// When each mailbox was last on screen, by folder id.
+  Future<Map<String, DateTime>> readSeen();
+
+  /// [folderId] on screen at [when]. A mark only moves forward.
+  Future<void> writeSeen(String folderId, DateTime when);
 
   /// Android's widget id to what that widget shows.
   Future<Map<String, WidgetMailbox>> readMailboxes();
@@ -168,6 +211,7 @@ abstract class WidgetStateStore {
 abstract final class WidgetStateKeys {
   static const openedAt = 'widget.openedAt.v1';
   static const mailboxes = 'widget.mailboxes.v1';
+  static const seen = 'widget.seen.v1';
 }
 
 class PrefsWidgetStateStore implements WidgetStateStore {
@@ -186,6 +230,37 @@ class PrefsWidgetStateStore implements WidgetStateStore {
   @override
   Future<void> writeOpenedAt(DateTime when) =>
       _prefs.setString(WidgetStateKeys.openedAt, when.toUtc().toIso8601String());
+
+  @override
+  Future<Map<String, DateTime>> readSeen() async {
+    final raw = await _prefs.getString(WidgetStateKeys.seen);
+    if (raw == null || raw.isEmpty) return const {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return const {};
+      return {
+        for (final MapEntry(:key, :value) in decoded.entries)
+          if (key is String && value is String)
+            key: ?DateTime.tryParse(value),
+      };
+    } on FormatException {
+      return const {};
+    }
+  }
+
+  @override
+  Future<void> writeSeen(String folderId, DateTime when) async {
+    final seen = {...await readSeen()};
+    final before = seen[folderId];
+    if (before != null && !when.isAfter(before)) return;
+    seen[folderId] = when;
+    await _prefs.setString(
+      WidgetStateKeys.seen,
+      jsonEncode({
+        for (final e in seen.entries) e.key: e.value.toUtc().toIso8601String(),
+      }),
+    );
+  }
 
   @override
   Future<Map<String, WidgetMailbox>> readMailboxes() async {
@@ -247,12 +322,22 @@ class PrefsWidgetStateStore implements WidgetStateStore {
 class MemoryWidgetStateStore implements WidgetStateStore {
   DateTime? openedAt;
   final Map<String, WidgetMailbox> mailboxes = {};
+  final Map<String, DateTime> seen = {};
 
   @override
   Future<DateTime?> readOpenedAt() async => openedAt;
 
   @override
   Future<void> writeOpenedAt(DateTime when) async => openedAt = when;
+
+  @override
+  Future<Map<String, DateTime>> readSeen() async => Map.of(seen);
+
+  @override
+  Future<void> writeSeen(String folderId, DateTime when) async {
+    final before = seen[folderId];
+    if (before == null || when.isAfter(before)) seen[folderId] = when;
+  }
 
   @override
   Future<Map<String, WidgetMailbox>> readMailboxes() async => Map.of(mailboxes);
