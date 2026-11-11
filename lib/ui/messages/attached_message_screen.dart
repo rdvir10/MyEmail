@@ -1,12 +1,13 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/files/attached_message.dart';
 import '../../data/files/message_files.dart' show emlMimeType;
+import '../../domain/draft.dart' show ComposeKind;
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import '../../state/attachment_providers.dart';
@@ -23,17 +24,26 @@ import 'html_body_view.dart';
 /// is not one after all, and the caller hands it to another app instead.
 ///
 /// [key] names where it came from, so the files inside it are kept apart
-/// from every other message's.
+/// from every other message's. [accountId] is the account the outer
+/// message came to, which a reply goes from; [answerable] is false for a
+/// file on a message still being written, which is only looked at.
 Future<bool> openAttachedMessage(
   BuildContext context,
   Uint8List bytes, {
   required String key,
+  String? accountId,
+  bool answerable = true,
 }) async {
   final message = AttachedMessage.parse(bytes);
   if (message == null || !context.mounted) return false;
   await Navigator.of(context).push(
     MaterialPageRoute<void>(
-      builder: (_) => AttachedMessageScreen(message: message, storeKey: key),
+      builder: (_) => AttachedMessageScreen(
+        message: message,
+        storeKey: key,
+        accountId: accountId,
+        answerable: answerable,
+      ),
     ),
   );
   return true;
@@ -42,19 +52,43 @@ Future<bool> openAttachedMessage(
 /// An email that came attached to another: who it is from and to, what is
 /// attached to it, and the message itself, as Outlook opens one.
 ///
-/// Read only. Nothing here is in a mailbox, so there is nothing to reply
-/// from, move or flag; a file in it opens, saves and shares as any other.
+/// Nothing here is in a mailbox, so there is nothing to move or flag. It
+/// can be answered and forwarded as a message in the mailbox can, as
+/// itself rather than as a file: Reply, Reply all and Forward, and their
+/// keys. A file in it opens, saves and shares as any other.
 class AttachedMessageScreen extends ConsumerWidget {
   const AttachedMessageScreen({
     super.key,
     required this.message,
     required this.storeKey,
+    this.accountId,
+    this.answerable = true,
   });
 
   final AttachedMessage message;
 
   /// Where its files are written; see [openAttachedMessage].
   final String storeKey;
+
+  /// The account an answer goes from, the one the outer message came to.
+  /// Null where that is not known: then as a new message would be.
+  final String? accountId;
+
+  /// Whether Reply, Reply all and Forward are offered.
+  final bool answerable;
+
+  Future<void> _answer(
+    BuildContext context,
+    WidgetRef ref,
+    ComposeKind kind,
+  ) =>
+      openCompose(
+        context,
+        ref,
+        kind: kind,
+        accountId: accountId,
+        attached: message,
+      );
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -67,10 +101,32 @@ class AttachedMessageScreen extends ConsumerWidget {
       color: scheme.onSurfaceVariant,
     );
 
-    return Scaffold(
+    final screen = Scaffold(
       appBar: AppBar(
         title: Text(m.subject, maxLines: 1, overflow: TextOverflow.ellipsis),
         centerTitle: false,
+        actions: [
+          if (answerable) ...[
+            IconButton(
+              key: const ValueKey('attached-reply'),
+              tooltip: 'Reply',
+              icon: const Icon(Icons.reply),
+              onPressed: () => _answer(context, ref, ComposeKind.reply),
+            ),
+            IconButton(
+              key: const ValueKey('attached-reply-all'),
+              tooltip: 'Reply all',
+              icon: const Icon(Icons.reply_all),
+              onPressed: () => _answer(context, ref, ComposeKind.replyAll),
+            ),
+            IconButton(
+              key: const ValueKey('attached-forward'),
+              tooltip: 'Forward',
+              icon: const Icon(Icons.forward),
+              onPressed: () => _answer(context, ref, ComposeKind.forward),
+            ),
+          ],
+        ],
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -162,6 +218,23 @@ class AttachedMessageScreen extends ConsumerWidget {
         ],
       ),
     );
+    if (!answerable) return screen;
+    // The keys the message screen answers to, on this message: a route of
+    // its own, it is out of the shell's reach, so Ctrl+R did nothing here.
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyR, control: true): () =>
+            _answer(context, ref, ComposeKind.reply),
+        const SingleActivator(
+          LogicalKeyboardKey.keyR,
+          control: true,
+          shift: true,
+        ): () => _answer(context, ref, ComposeKind.replyAll),
+        const SingleActivator(LogicalKeyboardKey.keyF, control: true): () =>
+            _answer(context, ref, ComposeKind.forward),
+      },
+      child: Focus(autofocus: true, child: screen),
+    );
   }
 
   static String _initial(MailAddress a) {
@@ -250,6 +323,8 @@ class _FileActions {
           context,
           bytes,
           key: '${screen.storeKey}/${file.id}',
+          accountId: screen.accountId,
+          answerable: screen.answerable,
         )) {
       return;
     }

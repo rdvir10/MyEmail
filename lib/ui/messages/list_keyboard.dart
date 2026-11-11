@@ -135,10 +135,13 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
   void _move(int delta) {
     final next = _list.step(_selected, delta);
     if (next == null) return;
-    _goTo(next);
+    _goTo(next, delta);
   }
 
-  void _goTo(String id) {
+  /// [direction] is the way the key went, so the list shows the rows past
+  /// the one it lands on: see [KeyStep].
+  void _goTo(String id, int direction) {
+    ref.read(keyStepProvider.notifier).about(direction);
     // A key press is a choice, so from here the message counts as opened.
     ref.read(selectedMessageIdProvider.notifier).select(id);
     ref.read(lastOpenedInFolderProvider.notifier).remember(widget.listId, id);
@@ -227,10 +230,10 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
         _move(-10);
         return KeyEventResult.handled;
       case LogicalKeyboardKey.home:
-        if (_messages.isNotEmpty) _goTo(_messages.first.id);
+        if (_messages.isNotEmpty) _goTo(_messages.first.id, -1);
         return KeyEventResult.handled;
       case LogicalKeyboardKey.end:
-        if (_messages.isNotEmpty) _goTo(_messages.last.id);
+        if (_messages.isNotEmpty) _goTo(_messages.last.id, 1);
         return KeyEventResult.handled;
       case LogicalKeyboardKey.arrowRight:
         _setThreadOpen(true);
@@ -335,6 +338,40 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
     );
   }
 }
+
+/// Which way a key last moved the selection: 1 down the list, -1 up, 0 for
+/// anything else (a click, a tap, the app landing somewhere).
+///
+/// The list brings a row reached by a key on screen with the next rows past
+/// it, the way the key was going. Scrolled only as far as the row itself,
+/// the row after it was always out of sight, and ticking down a list with
+/// Shift+Down meant ticking blind. A click does not scroll: the list
+/// moving under the pointer would put a double click on another message.
+class KeyStep extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  /// A key is about to move the selection [direction]. Held until the list
+  /// takes it, or until the next frame, where the selection had nowhere to
+  /// go, so a click after it is not taken for a key.
+  void about(int direction) {
+    state = direction.sign;
+    WidgetsBinding.instance
+      ..addPostFrameCallback((_) {
+        if (ref.mounted) state = 0;
+      })
+      ..ensureVisualUpdate();
+  }
+
+  /// The way the key went, once: 0 after.
+  int take() {
+    final direction = state;
+    if (direction != 0) state = 0;
+    return direction;
+  }
+}
+
+final keyStepProvider = NotifierProvider<KeyStep, int>(KeyStep.new);
 
 /// A list's rows as it draws them, for walking them from the keyboard.
 ///

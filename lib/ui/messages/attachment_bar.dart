@@ -8,6 +8,7 @@ import '../../data/files/file_bridge.dart' show DefaultApp;
 import '../../data/files/message_files.dart' show emlMimeType;
 import '../../domain/mail_attachment.dart';
 import '../../state/attachment_providers.dart';
+import '../../state/providers.dart' show folderIndexProvider;
 import 'attached_message_screen.dart';
 import 'attachment_save.dart';
 import 'save_all.dart';
@@ -344,10 +345,18 @@ class AttachmentActions {
     if (attachment.openAs == emlMimeType) {
       final bytes = await file.readAsBytes();
       if (!context.mounted) return;
+      // Answered from the account the outer message came to.
+      final hash = messageId.lastIndexOf('#');
+      final accountId = hash < 0
+          ? null
+          : ref
+              .read(folderIndexProvider)[messageId.substring(0, hash)]
+              ?.accountId;
       if (await openAttachedMessage(
         context,
         bytes,
         key: AttachmentDownloads.keyFor(messageId, attachment),
+        accountId: accountId,
       )) {
         return;
       }

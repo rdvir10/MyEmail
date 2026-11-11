@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/files/attached_message.dart';
@@ -10,9 +10,11 @@ import 'package:myemail/data/files/attachment_files.dart';
 import 'package:myemail/data/graph/graph_mail_api.dart';
 import 'package:myemail/data/graph/graph_transport.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/state/attachment_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/ui/compose/compose_screen.dart';
 import 'package:myemail/ui/messages/attached_message_screen.dart';
 import 'package:myemail/ui/messages/attachment_bar.dart';
 
@@ -283,6 +285,158 @@ void main() {
 
       expect(find.byType(AttachedMessageScreen), findsOneWidget);
       expect(find.text('shapes.pdf'), findsOneWidget);
+    });
+  });
+
+  group('answered', () {
+    // Asked to be answered somewhere else, and part of a conversation.
+    final asked = Uint8List.fromList(utf8.encode([
+      'From: Michael Reznik <michaelr@example.com>',
+      'Reply-To: Orders <orders@example.com>',
+      'To: Rolland Kloes <rollandk@example.com>',
+      'Cc: Dana Levi <dana@example.com>',
+      'Subject: Extrusion shape pictures',
+      'Message-ID: <shapes-1@example.com>',
+      'In-Reply-To: <shapes-0@example.com>',
+      'Date: Sat, 03 Oct 2026 14:30:00 -0400',
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'The new shapes are in.',
+      '',
+    ].join('\r\n')));
+
+    late ProviderContainer c;
+    late String accountId;
+
+    Future<void> pumpOpen(
+      WidgetTester tester,
+      Uint8List bytes, {
+      bool answerable = true,
+    }) async {
+      tester.view.physicalSize = const Size(1200, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      c = ProviderContainer();
+      addTearDown(c.dispose);
+      // Read once the accounts have loaded, under the test's own clock: an
+      // await of them out here waits on a timer that never runs.
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: MaterialApp(
+          home: Builder(
+            builder: (context) => ElevatedButton(
+              onPressed: () => openAttachedMessage(
+                context,
+                bytes,
+                key: 'm1/a1',
+                accountId: accountId,
+                answerable: answerable,
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      c.listen(accountsProvider, (_, _) {});
+      await tester.pumpAndSettle();
+      accountId = c.read(accountsProvider).value!.first.id;
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+    }
+
+    /// Past openCompose's wait before it shows a spinner, which a timer
+    /// keeps and pumpAndSettle alone stops short of.
+    Future<Draft> composed(WidgetTester tester) async {
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pumpAndSettle();
+      expect(find.byType(ComposeScreen), findsOneWidget);
+      return tester.widget<ComposeScreen>(find.byType(ComposeScreen)).draft;
+    }
+
+    testWidgets('Reply goes where it asks, in its conversation',
+        (tester) async {
+      await pumpOpen(tester, asked);
+      await tester.tap(find.byKey(const ValueKey('attached-reply')));
+      final draft = await composed(tester);
+
+      expect(draft.kind, ComposeKind.reply);
+      expect(draft.accountId, accountId,
+          reason: 'from the account the outer message came to');
+      expect(draft.to.single.email, 'orders@example.com');
+      expect(draft.cc, isEmpty);
+      expect(draft.subject, 'Re: Extrusion shape pictures');
+      expect(draft.inReplyTo, 'shapes-1@example.com');
+      expect(draft.references, ['shapes-0@example.com']);
+      expect(draft.htmlBody, contains('The new shapes are in.'));
+      expect(draft.originalMessageId, isNull,
+          reason: 'it is in no folder, so nothing is marked answered');
+    });
+
+    testWidgets('Reply all keeps everyone else it went to', (tester) async {
+      await pumpOpen(tester, asked);
+      await tester.tap(find.byKey(const ValueKey('attached-reply-all')));
+      final draft = await composed(tester);
+
+      expect(draft.kind, ComposeKind.replyAll);
+      expect(draft.to.single.email, 'orders@example.com');
+      expect(draft.cc.map((a) => a.email),
+          ['rollandk@example.com', 'dana@example.com']);
+    });
+
+    testWidgets('Forward carries it as itself: its text, picture and files',
+        (tester) async {
+      await pumpOpen(tester, eml);
+      await tester.tap(find.byKey(const ValueKey('attached-forward')));
+      final draft = await composed(tester);
+
+      expect(draft.kind, ComposeKind.forward);
+      expect(draft.to, isEmpty);
+      expect(draft.subject, 'Fwd: Extrusion shape pictures');
+      expect(draft.htmlBody, contains('Shapes below'));
+      expect(draft.htmlBody, contains('data:image/png;base64,'),
+          reason: 'the picture it shows, in place');
+      expect(draft.attachments.map((a) => a.fileName),
+          ['shapes.pdf', 'Older thread.eml'],
+          reason: 'its files, not the picture a second time');
+      expect(utf8.decode(draft.attachments.first.bytes), '%PDF-1.4');
+      final inner = AttachedMessage.parse(draft.attachments.last.bytes)!;
+      expect(inner.subject, 'Older thread');
+      expect(draft.lostAttachmentNames, isEmpty);
+      expect(draft.originalMessageId, isNull);
+    });
+
+    testWidgets('Ctrl+R, Ctrl+Shift+R and Ctrl+F answer it too',
+        (tester) async {
+      Future<void> keys(LogicalKeyboardKey key, {bool shift = false}) async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        if (shift) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyEvent(key);
+        if (shift) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      }
+
+      await pumpOpen(tester, asked);
+      for (final (key, shift, kind) in [
+        (LogicalKeyboardKey.keyR, false, ComposeKind.reply),
+        (LogicalKeyboardKey.keyR, true, ComposeKind.replyAll),
+        (LogicalKeyboardKey.keyF, false, ComposeKind.forward),
+      ]) {
+        await keys(key, shift: shift);
+        expect((await composed(tester)).kind, kind);
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+        expect(find.byType(AttachedMessageScreen), findsOneWidget);
+      }
+    });
+
+    testWidgets('an email on a message being written is only looked at',
+        (tester) async {
+      await pumpOpen(tester, asked, answerable: false);
+      expect(find.byType(AttachedMessageScreen), findsOneWidget);
+      expect(find.byKey(const ValueKey('attached-reply')), findsNothing);
+      expect(find.byKey(const ValueKey('attached-forward')), findsNothing);
     });
   });
 }

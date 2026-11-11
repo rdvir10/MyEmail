@@ -23,6 +23,9 @@ class AttachedMessage {
     required this.body,
     required this.files,
     required this.inlinePictures,
+    required this.replyTo,
+    required this.messageId,
+    required this.inReplyTo,
   });
 
   /// The message in [bytes], or null if they are not one.
@@ -113,10 +116,12 @@ class AttachedMessage {
 
     walk(mime, null);
 
+    final sender =
+        from == null ? const MailAddress(email: '') : addressFromMime(from);
     return AttachedMessage._(
       mime,
       subject: (subject == null || subject.isEmpty) ? '(No subject)' : subject,
-      from: from == null ? const MailAddress(email: '') : addressFromMime(from),
+      from: sender,
       to: [
         for (final a in mime.to ?? const <em.MailAddress>[]) addressFromMime(a),
       ],
@@ -127,6 +132,13 @@ class AttachedMessage {
       body: bodyFromMime(mime),
       files: files,
       inlinePictures: pictures,
+      replyTo: replyToBesidesSender([
+        for (final a in mime.decodeHeaderMailAddressValue('reply-to') ??
+            const <em.MailAddress>[])
+          addressFromMime(a),
+      ], sender),
+      messageId: normaliseMessageId(mime.getHeaderValue('message-id')),
+      inReplyTo: normaliseMessageId(mime.getHeaderValue('in-reply-to')),
     );
   }
 
@@ -137,6 +149,34 @@ class AttachedMessage {
   final List<MailAddress> cc;
   final DateTime? date;
   final MailBody body;
+
+  /// Where it asks to be answered, when that is not [from].
+  final List<MailAddress> replyTo;
+
+  /// Its own Message-ID, and the one it answered: what a reply to it names,
+  /// so the reply joins its conversation for everyone who had it.
+  final String? messageId;
+  final String? inReplyTo;
+
+  /// The message as a reply or a forward is written from, as if it were
+  /// in [accountId]'s mailbox. It is in no folder: its id is empty, and
+  /// nothing is marked answered or forwarded once the answer has gone.
+  MailMessage asOriginal(String accountId) => MailMessage(
+        id: '',
+        accountId: accountId,
+        folderId: '',
+        uid: 0,
+        subject: subject,
+        from: from,
+        to: to,
+        cc: cc,
+        replyTo: replyTo,
+        date: date ?? DateTime.now(),
+        preview: body.text,
+        hasAttachments: files.isNotEmpty,
+        messageId: messageId,
+        inReplyTo: inReplyTo,
+      );
 
   /// What is attached to it, pictures in the body among them, marked.
   final List<MailAttachment> files;

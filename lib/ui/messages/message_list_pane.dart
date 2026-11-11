@@ -1,6 +1,9 @@
 import '../common/bottom_message.dart';
+import 'dart:math' as math;
+
 import 'package:flutter/gestures.dart' show kTouchSlop;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderAbstractViewport;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/account.dart';
@@ -110,7 +113,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
   /// far enough to show it; one it has not (End, Page Down: too far from
   /// what is on screen) gets a jump to about where it is, then a second
   /// look once the list has built that far.
-  void _reveal(String id, {bool secondLook = false}) {
+  ///
+  /// [ahead] is the way a key moved the selection, 1 down and -1 up, and
+  /// the rows past it that way come on screen too: see [KeyStep].
+  void _reveal(String id, {bool secondLook = false, int ahead = 0}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
       final row = _rowFor(id);
@@ -123,6 +129,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           row,
           alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtStart,
         );
+        if (ahead != 0) _showPast(row, ahead);
         return;
       }
       if (secondLook) return;
@@ -138,8 +145,38 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           position.maxScrollExtent,
         ),
       );
-      _reveal(id, secondLook: true);
+      _reveal(id, secondLook: true, ahead: ahead);
     });
+  }
+
+  /// [row] with the two rows past it on screen too, the way [direction]
+  /// goes, and the edge of a third to say the list goes on; or as much as
+  /// a third of the list's height holds. Only ever further that way: a row
+  /// already well inside the list stays where it is.
+  void _showPast(BuildContext row, int direction) {
+    final box = row.findRenderObject();
+    if (box is! RenderBox || !box.attached) return;
+    final position = _scroll.position;
+    // This list's own, not some other scrolling thing the row sits in.
+    if (Scrollable.maybeOf(row)?.position != position) return;
+    final viewport = RenderAbstractViewport.maybeOf(box);
+    if (viewport == null) return;
+    // Two and a half rows: two whole ones, with the lines between them.
+    final room = math.min(
+      box.size.height * 2.5,
+      position.viewportDimension / 3,
+    );
+    final double wanted;
+    if (direction > 0) {
+      wanted = viewport.getOffsetToReveal(box, 1).offset + room;
+      if (position.pixels >= wanted) return;
+    } else {
+      wanted = viewport.getOffsetToReveal(box, 0).offset - room;
+      if (position.pixels <= wanted) return;
+    }
+    position.jumpTo(
+      wanted.clamp(position.minScrollExtent, position.maxScrollExtent),
+    );
   }
 
   /// The search hits in the order they are drawn.
@@ -210,7 +247,9 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
       );
     }
     ref.listen<String?>(selectedMessageIdProvider, (_, id) {
-      if (id != null) _reveal(id);
+      // Taken whatever the id, so a key's way is never left for a click.
+      final ahead = ref.read(keyStepProvider.notifier).take();
+      if (id != null) _reveal(id, ahead: ahead);
     });
     // Ticks made on search hits belong to that search: with the box
     // cleared or retyped, the rows they were on are gone, and a delete

@@ -4,6 +4,7 @@ import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/files/attached_message.dart';
 import '../../data/files/file_bridge.dart' show MailtoLink;
 import '../../domain/draft.dart';
 import '../../domain/folder_role.dart';
@@ -37,6 +38,7 @@ Future<void> openCompose(
   List<DraftAttachment> attachments = const [],
   String? subject,
   String? bodyText,
+  AttachedMessage? attached,
 }) async {
   final resolvedAccount = accountId ??
       original?.accountId ??
@@ -50,12 +52,20 @@ Future<void> openCompose(
     return;
   }
 
-  final draftFuture = buildDraft(
-    ref: ref,
-    kind: kind,
-    accountId: resolvedAccount,
-    original: original,
-  );
+  // An email attached to another is answered from what is in its file.
+  final draftFuture = attached != null
+      ? Future.value(draftForAttached(
+          ref: ref,
+          kind: kind,
+          accountId: resolvedAccount,
+          attached: attached,
+        ))
+      : buildDraft(
+          ref: ref,
+          kind: kind,
+          accountId: resolvedAccount,
+          original: original,
+        );
 
   // Only show the spinner if the build is actually slow; a cached body makes
   // it instant and a flashed dialog looks like a glitch.

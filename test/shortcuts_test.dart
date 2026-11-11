@@ -498,6 +498,100 @@ void main() {
       expect(first.top, greaterThanOrEqualTo(list.top));
     });
 
+    group('the rows past the one the keys move to', () {
+      // Scrolled only as far as the selected row, the next one down was
+      // always out of sight, and Shift+Down ticked blind.
+      Rect listRect(WidgetTester tester) => tester.getRect(find
+          .ancestor(
+            of: find.byType(MessageTile).first,
+            matching: find.byType(Scrollable),
+          )
+          .first);
+
+      Rect rowRect(WidgetTester tester, String id) =>
+          tester.getRect(find.byKey(ValueKey('tile:$id')));
+
+      for (final shift in [false, true]) {
+        testWidgets(
+            'come on screen going down${shift ? ', ticking with Shift' : ''}',
+            (tester) async {
+          final c = await pump(tester);
+          final ids = listIds(c);
+
+          for (var i = 0; i < 20; i++) {
+            await press(tester, LogicalKeyboardKey.arrowDown, shift: shift);
+          }
+          expect(selected(c), ids[20]);
+          final list = listRect(tester);
+          for (final next in [21, 22]) {
+            expect(rowRect(tester, ids[next]).bottom,
+                lessThanOrEqualTo(list.bottom + 1),
+                reason: 'row $next, below the selected one, is in sight');
+          }
+        });
+      }
+
+      testWidgets('come on screen going up', (tester) async {
+        final c = await pump(tester);
+        final ids = listIds(c);
+        for (var i = 0; i < 20; i++) {
+          await press(tester, LogicalKeyboardKey.arrowDown);
+        }
+        // The selected row at the very top of the list.
+        final list = listRect(tester);
+        final position = tester
+            .state<ScrollableState>(find
+                .ancestor(
+                  of: find.byType(MessageTile).first,
+                  matching: find.byType(Scrollable),
+                )
+                .first)
+            .position;
+        position.jumpTo(
+          position.pixels + rowRect(tester, ids[20]).top - list.top,
+        );
+        await tester.pumpAndSettle();
+
+        await press(tester, LogicalKeyboardKey.arrowUp);
+
+        expect(selected(c), ids[19]);
+        for (final above in [18, 17]) {
+          expect(rowRect(tester, ids[above]).top,
+              greaterThanOrEqualTo(list.top - 1),
+              reason: 'row $above, above the selected one, is in sight');
+        }
+      });
+
+      testWidgets('not for a click: the list stays put under the pointer',
+          (tester) async {
+        // Moving under a double click would open another message.
+        final c = await pump(tester);
+        final ids = listIds(c);
+        final list = listRect(tester);
+        final position = tester
+            .state<ScrollableState>(find
+                .ancestor(
+                  of: find.byType(MessageTile).first,
+                  matching: find.byType(Scrollable),
+                )
+                .first)
+            .position;
+        // The last row wholly in sight, at the bottom edge.
+        final last = ids.lastWhere((id) {
+          final row = find.byKey(ValueKey('tile:$id'));
+          return row.evaluate().isNotEmpty &&
+              tester.getRect(row).bottom <= list.bottom;
+        });
+        final before = position.pixels;
+
+        await tester.tap(find.byKey(ValueKey('tile:$last')));
+        await tester.pumpAndSettle();
+
+        expect(selected(c), last);
+        expect(position.pixels, before);
+      });
+    });
+
     testWidgets('the arrows walk the rows, not the messages folded away',
         (tester) async {
       final c = await pump(tester);

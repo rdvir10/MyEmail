@@ -307,6 +307,7 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
     final next = ListRows.onScreen(ref, listId)
         .step(ref.read(selectedMessageIdProvider), delta);
     if (next == null) return;
+    ref.read(keyStepProvider.notifier).about(delta);
     ref.read(selectedMessageIdProvider.notifier).select(next);
     ref.read(lastOpenedInFolderProvider.notifier).remember(listId, next);
   }

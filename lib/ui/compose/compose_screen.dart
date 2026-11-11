@@ -525,6 +525,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
           context,
           a.bytes,
           key: 'draft/${identityHashCode(a)}',
+          answerable: false,
         )) {
       return;
     }

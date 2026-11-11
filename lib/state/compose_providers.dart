@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/misc.dart'
     show ProviderListenable, ProviderOrFamily;
 
 import '../data/compose/mime_parts.dart';
+import '../data/files/attached_message.dart';
 import '../data/compose/quote_builder.dart' show sanitiseForEditing;
 import '../data/compose/reply_draft.dart';
 import '../data/ui_state_store.dart';
@@ -135,6 +136,67 @@ Future<Draft> buildDraft({
       lostAttachmentNames: const ["the forwarded message's attachments"],
     );
   }
+}
+
+/// A reply to or forward of [attached], an email that came attached to
+/// another, from [accountId], the account the outer one came to. Written as
+/// one to a message in the mailbox is: the same people, quote, signature and
+/// threading headers, and for a forward its files. Everything it needs is in
+/// the file, so nothing is fetched, and as it is in no folder, nothing is
+/// marked answered or forwarded once it has gone.
+Draft draftForAttached({
+  required WidgetRef ref,
+  required ComposeKind kind,
+  required String accountId,
+  required AttachedMessage attached,
+}) {
+  final accounts = ref.read(accountsProvider).value ?? const [];
+  var draft = draftFor(
+    kind: kind,
+    accountId: accountId,
+    original: attached.asOriginal(accountId),
+    body: attached.body,
+    signature: ref.read(signaturesProvider.notifier).forAccount(accountId),
+    selfEmail: accounts
+            .where((a) => a.id == accountId)
+            .map((a) => a.emailAddress)
+            .firstOrNull ??
+        '',
+    otherAccountEmails: [for (final a in accounts) a.emailAddress],
+    inMailbox: false,
+  );
+  // The pictures the quote names by Content-ID, as data, as buildDraft
+  // puts them in.
+  if (attached.inlinePictures.isNotEmpty) {
+    draft = draft.copyWith(
+      htmlBody: withInlinePictures(draft.htmlBody, attached.inlinePictures),
+    );
+  }
+  if (kind != ComposeKind.forward) return draft;
+
+  // Its files, but not a picture the quote now shows as data: that goes
+  // with the message that way, and as a file it would be there twice.
+  final named = contentIdsNamedIn(attached.body.html ?? '');
+  final stillLinked = contentIdsNamedIn(draft.htmlBody);
+  final files = <DraftAttachment>[];
+  final lost = <String>[];
+  for (final f in attached.files) {
+    final cid = f.contentId?.toLowerCase();
+    final linked = cid != null && stillLinked.contains(cid);
+    if (cid != null && named.contains(cid) && !linked) continue;
+    final bytes = attached.bytesOf(f);
+    if (bytes == null || bytes.isEmpty) {
+      lost.add(f.name);
+      continue;
+    }
+    files.add(DraftAttachment(
+      fileName: f.name,
+      mimeType: f.mimeType,
+      bytes: bytes,
+      contentId: linked ? f.contentId : null,
+    ));
+  }
+  return draft.copyWith(attachments: files, lostAttachmentNames: lost);
 }
 
 /// Save a draft to the Drafts folder and refresh the tree so it shows there.

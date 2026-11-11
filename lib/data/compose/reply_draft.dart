@@ -22,6 +22,9 @@ Draft draftFor({
   String selfEmail = '',
   List<String> otherAccountEmails = const [],
   String typedText = '',
+  // False for a message that is in no mailbox, an email attached to
+  // another: there is nothing to mark answered or forwarded.
+  bool inMailbox = true,
 }) {
   final html = buildComposeHtml(
     kind: kind,
@@ -56,7 +59,7 @@ Draft draftFor({
     references: [
       if (answering && original.inReplyTo != null) original.inReplyTo!,
     ],
-    originalMessageId: original?.id,
+    originalMessageId: inMailbox ? original?.id : null,
   );
 }
 
