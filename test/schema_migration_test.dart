@@ -62,9 +62,35 @@ void main() {
   // and every test here would still have passed, while every device
   // upgrading from 2.35 or earlier failed on every cache read.
 
-  /// What schema 17 added: each account's calendars as last listed.
+  /// What schema 18 added: when a Microsoft message left its folder.
+  Future<void> dropSchema18(MailDatabase db) async {
+    final columns =
+        await db.customSelect('PRAGMA table_info(graph_ids)').get();
+    if (columns.any((c) => c.read<String>('name') == 'gone_at')) {
+      await db.customStatement('ALTER TABLE graph_ids DROP COLUMN gone_at');
+    }
+  }
+
+  /// What schema 17 added: each account's calendars as last listed. And
+  /// everything after it.
   Future<void> dropSchema17(MailDatabase db) async {
+    await dropSchema18(db);
     await db.customStatement('DROP TABLE IF EXISTS calendar_lists');
+  }
+
+  /// A database as it stood at schema 17, the release before this one: a
+  /// Microsoft folder numbered, one message deleted from it, and nothing
+  /// kept of when.
+  Future<void> buildVersion17() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await dropSchema18(db);
+    await db.customStatement(
+      'INSERT INTO graph_ids (account_id, path, uid, remote_id) VALUES '
+      "('acct-2', 'Inbox', 1, 'g-1'), ('acct-2', 'Inbox', 2, '')",
+    );
+    await db.customStatement('PRAGMA user_version = 17');
+    await db.close();
   }
 
   /// What schema 16 added: the calendar as last read. And everything after
@@ -980,6 +1006,24 @@ void main() {
     ];
     await store.keepCalendarList('acct-1', listed);
     expect(await store.keptCalendarList('acct-1'), listed);
+  });
+
+  test('a version 17 database gains when a Microsoft message left, and '
+      'keeps its rows and its numbering', () async {
+    await buildVersion17();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    expect((await store.readMessages('acct-1', 'INBOX')).single.subject,
+        'Cached before the upgrade');
+    final ids = DriftGraphIdMap(db);
+    // The message there keeps its number, and the spent one stays spent.
+    expect(await ids.remoteIdsFor('acct-2', 'Inbox', [1, 2]), {1: 'g-1'});
+    expect((await ids.uidsFor('acct-2', 'Inbox', ['g-3']))['g-3'], 3);
+    // And one deleted from now on is remembered as gone.
+    await ids.forgetMoved('acct-2', 'Inbox', [1]);
+    expect(await ids.uidsFor('acct-2', 'Inbox', ['g-1']), isEmpty);
   });
 
   test('and so does one coming up from before arrival times were kept',

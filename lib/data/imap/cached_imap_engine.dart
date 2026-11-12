@@ -58,7 +58,7 @@ import 'imap_transport.dart';
 /// If the server cannot be reached, the folder list, message lists and
 /// bodies still come from whatever was cached, so the app opens and is
 /// readable offline.
-class CachedImapEngine implements MailEngine {
+class CachedImapEngine implements MailEngine, PagesOlderMail {
   CachedImapEngine({
     required this.accountStore,
     required this.credentialStore,
@@ -896,6 +896,23 @@ class CachedImapEngine implements MailEngine {
       debugPrint('[myemail] sync $path failed, showing what is cached: $e');
     }
     return cachedMessages(folderId, offset: offset, limit: limit);
+  }
+
+  /// Only the page: the rows the device lacks are fetched, and nothing is
+  /// synced. With no connection, whatever is cached is what there is.
+  @override
+  Future<List<MailMessage>> olderMessages(
+    String folderId, {
+    int limit = 50,
+  }) async {
+    final (accountId, path) = splitFolderId(folderId);
+    try {
+      final t = await _transport(accountId);
+      await _sync(accountId, t).ensureCached(path, limit);
+    } on ConnectionFailed catch (e) {
+      debugPrint('[myemail] older mail in $path not fetched: $e');
+    }
+    return cachedMessages(folderId, limit: limit);
   }
 
   @override

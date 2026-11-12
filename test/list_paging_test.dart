@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/folder_role.dart';
@@ -81,6 +82,75 @@ void main() {
 
       expect(c.read(listHasMoreProvider(inbox)), isFalse);
       expect(c.read(listDepthProvider(inbox)).exhausted, isTrue);
+    });
+
+    group('with an engine that fetches a page by itself', () {
+      Future<(ProviderContainer, _PagingEngine, String)> opened() async {
+        final engine = _PagingEngine();
+        final c = ProviderContainer(overrides: [
+          mailEngineProvider.overrideWithValue(engine),
+          uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        ]);
+        addTearDown(c.dispose);
+        final inbox = await inboxOf(c);
+        c.listen(messagesProvider(inbox), (_, _) {});
+        await c.read(messagesProvider(inbox).future);
+        await Future<void>.delayed(Duration.zero);
+        return (c, engine, inbox);
+      }
+
+      test('waits for the page and not for the sync', () async {
+        // The sync stood in front of every page: a dozen requests on a
+        // Microsoft account, and more the further down the list had gone.
+        final (c, engine, inbox) = await opened();
+        final sync = engine.holdSync = Completer<void>();
+
+        await c
+            .read(messagesProvider(inbox).notifier)
+            .loadMore()
+            .timeout(const Duration(seconds: 5));
+
+        expect(engine.pages, 1);
+        expect(c.read(messagesProvider(inbox)).value!.length,
+            greaterThan(Messages.pageSize));
+        expect(c.read(listDepthProvider(inbox)).pages, 2);
+        sync.complete();
+      });
+
+      test('and the sync follows it, behind the list', () async {
+        final (c, engine, inbox) = await opened();
+        final before = engine.syncs;
+
+        await c.read(messagesProvider(inbox).notifier).loadMore();
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(engine.syncs, before + 1);
+      });
+
+      test('a page that brings nothing is asked for the old way before it '
+          'is taken for the end', () async {
+        // The quick page counts on the device knowing the newest mail of
+        // the folder. Where it comes back empty, the sync is the judge.
+        final (c, engine, inbox) = await opened();
+        engine.pageBringsNothing = true;
+
+        await c.read(messagesProvider(inbox).notifier).loadMore();
+
+        expect(c.read(messagesProvider(inbox)).value!.length,
+            greaterThan(Messages.pageSize));
+        expect(c.read(listDepthProvider(inbox)).exhausted, isFalse);
+      });
+
+      test('and the end is the end when that brings nothing either',
+          () async {
+        final (c, _, inbox) = await opened();
+        final notifier = c.read(messagesProvider(inbox).notifier);
+
+        await notifier.loadMore();
+        await notifier.loadMore();
+
+        expect(c.read(listDepthProvider(inbox)).exhausted, isTrue);
+      });
     });
 
     test('comes back as deep as it was after a refresh', () async {
@@ -286,5 +356,43 @@ class _GrowingEngine extends SampleMailEngine {
     await holdDelete?.future;
     server.removeWhere((m) => messageIds.contains(m.id));
     return const [];
+  }
+}
+
+/// The sample engine, able to hand over a page of older mail without the
+/// sync, as the real one is.
+class _PagingEngine extends SampleMailEngine implements PagesOlderMail {
+  /// How often the folder was synced, and how often only a page was asked
+  /// for.
+  int syncs = 0;
+  int pages = 0;
+
+  /// Completed to let a sync answer.
+  Completer<void>? holdSync;
+
+  /// The page comes back with only what the list already has.
+  bool pageBringsNothing = false;
+
+  @override
+  Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    syncs++;
+    await holdSync?.future;
+    return super.loadMessages(folderId, offset: offset, limit: limit);
+  }
+
+  @override
+  Future<List<MailMessage>> olderMessages(
+    String folderId, {
+    int limit = 50,
+  }) {
+    pages++;
+    return super.loadMessages(
+      folderId,
+      limit: pageBringsNothing ? limit - Messages.pageSize : limit,
+    );
   }
 }

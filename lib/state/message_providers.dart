@@ -2,7 +2,8 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../data/mail_engine.dart' show MailEngine, PartialFlagChange;
+import '../data/mail_engine.dart'
+    show MailEngine, PagesOlderMail, PartialFlagChange;
 import '../domain/calendar_invite.dart';
 import '../domain/follow_up.dart' show followUpKey;
 import '../domain/folder_role.dart';
@@ -110,18 +111,32 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     // requests to Microsoft, and waiting for all of them before drawing
     // mail that is already on this device is seconds of blank screen for
     // nothing.
-    final known = _merged(await Future.wait([
+    //
+    // Not what is on its way out. The list is built again while a delete
+    // is still with the server (the app coming back to the front, a button
+    // pressed in the shade carried out), the device still has the message
+    // until the server answers, and it was put back on screen.
+    final known = _withoutLeaving(_merged(await Future.wait([
       for (final id in ids) _stored(engine, id, limit),
-    ]));
+    ])));
     if (known.isEmpty) {
       // A folder opened for the first time, or an empty one: there is
       // nothing to show early, so the server is worth waiting for.
       final (lists, _) = await _loadEach({for (final id in ids) id: limit});
-      return _merged(lists);
+      return _withoutLeaving(_merged(lists));
     }
     _refresh(ids, limit, _changes, () => current);
     return known;
   }
+
+  /// [messages] less the ones being moved or deleted; see [_removing].
+  List<MailMessage> _withoutLeaving(List<MailMessage> messages) =>
+      _removing.isEmpty
+          ? messages
+          : [
+              for (final m in messages)
+                if (!_removing.contains(m.id)) m,
+            ];
 
   /// Ask the server, and correct the list if the answer differs.
   ///
@@ -270,15 +285,22 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
 
   static const _flagged = 'flagged:';
 
-  /// One of the ids behind the list, from the server.
+  /// One of the ids behind the list, from the server. With [older], only
+  /// the page asked for where the engine can do that: see [PagesOlderMail].
   static Future<List<MailMessage>> _load(
     MailEngine engine,
     String id,
-    int limit,
-  ) =>
-      id.startsWith(_flagged)
-          ? engine.flaggedMessages(id.substring(_flagged.length), limit: limit)
-          : engine.loadMessages(id, limit: limit);
+    int limit, {
+    bool older = false,
+  }) {
+    if (id.startsWith(_flagged)) {
+      return engine.flaggedMessages(id.substring(_flagged.length), limit: limit);
+    }
+    if (engine case final PagesOlderMail pager when older) {
+      return pager.olderMessages(id, limit: limit);
+    }
+    return engine.loadMessages(id, limit: limit);
+  }
 
   /// The same, from what is on this device.
   static Future<List<MailMessage>> _stored(
@@ -300,8 +322,9 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
   /// error. Throws only when every folder failed, which for a list of one
   /// folder is that folder's own error, as before.
   Future<(List<List<MailMessage>>, bool)> _loadEach(
-    Map<String, int> limits,
-  ) async {
+    Map<String, int> limits, {
+    bool older = false,
+  }) async {
     final engine = ref.read(mailEngineProvider);
     Object? error;
     StackTrace? trace;
@@ -310,7 +333,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       for (final MapEntry(key: id, value: limit) in limits.entries)
         () async {
           try {
-            return await _load(engine, id, limit);
+            return await _load(engine, id, limit, older: older);
           } catch (e, st) {
             failed++;
             error ??= e;
@@ -377,37 +400,64 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
   /// out, which the server still has. A page with nothing new in it marks
   /// the list exhausted, which is how a stale folder total stops the list
   /// asking for ever.
+  ///
+  /// Only the page is waited for, where the engine can fetch one by itself
+  /// ([PagesOlderMail]). The sync used to come first, every time: new mail,
+  /// flags and deletions as deep as the list had been scrolled, a dozen
+  /// requests on a Microsoft account and more with each page, before the
+  /// fifty rows asked for. It follows the page now, behind the list. A
+  /// page that brings nothing is asked for the old way before it is taken
+  /// for the end, since the quick one counts on the device knowing the
+  /// folder's newest mail.
   Future<void> loadMore() async {
     final depth = ref.read(listDepthProvider(folderId).notifier);
     if (state.value == null || !depth.begin()) return;
     try {
       final shown = state.value!;
-      final (pages, fellBack) = await _loadEach({
+      final limits = {
         for (final id in await _folderIds())
           id: shown.where((m) => m.folderId == id).length + pageSize,
-      });
-      // The list may have been refreshed while the page was on its way.
-      final current = state.value ?? shown;
-      final have = {for (final m in current) m.id, ..._removing};
-      final fresh = [
-        for (final page in pages)
-          for (final m in page)
-            if (have.add(m.id)) m,
-      ];
+      };
+      final quick = ref.read(mailEngineProvider) is PagesOlderMail;
+      var (pages, fellBack) = await _loadEach(limits, older: true);
+      var fresh = _notYetShown(pages, shown);
+      if (fresh.isEmpty && quick && !fellBack) {
+        (pages, fellBack) = await _loadEach(limits);
+        fresh = _notYetShown(pages, shown);
+      }
       if (fresh.isEmpty) {
         // Nothing more is only the end when every account said so.
         depth.end(exhausted: !fellBack);
         return;
       }
+      // The list may have been refreshed while the page was on its way.
       // New mail can be among it, and belongs at the top.
-      final merged = [...current, ...fresh]..sort(newestFirst);
+      final merged = [...state.value ?? shown, ...fresh]..sort(newestFirst);
       _changes++;
       state = AsyncData(merged);
       depth.end(grew: true);
+      // What the page did not wait for: the rows above it brought up to
+      // date, behind the list.
+      if (quick) unawaited(_askAgain(() => ref.mounted));
     } catch (_) {
       depth.end();
       rethrow;
     }
+  }
+
+  /// The messages of [pages] the list does not have, as it stands now:
+  /// not one already shown, nor one on its way out, which the server
+  /// still has.
+  List<MailMessage> _notYetShown(
+    List<List<MailMessage>> pages,
+    List<MailMessage> shown,
+  ) {
+    final have = {for (final m in state.value ?? shown) m.id, ..._removing};
+    return [
+      for (final page in pages)
+        for (final m in page)
+          if (have.add(m.id)) m,
+    ];
   }
 
   /// Whether this list has [messageId] in it right now.

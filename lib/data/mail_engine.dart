@@ -902,3 +902,19 @@ Uint8List rawMessageBytes(String raw) {
   }
   return Uint8List.fromList(latin1.encode(raw));
 }
+
+/// An engine that can hand over a page of older mail by itself.
+///
+/// [MailEngine.loadMessages] brings the whole folder up to date before it
+/// answers: new mail, every flag and every deletion, as deep as the list
+/// reaches. Scrolling down wants none of that, only the next page, and on a
+/// Microsoft account it stood behind a dozen requests that grew with every
+/// page already loaded: seconds of spinner for fifty rows. Not part of
+/// [MailEngine], so an engine without it pages as it always did.
+abstract interface class PagesOlderMail {
+  /// The folder's messages down to [limit], newest first: what the device
+  /// holds, and older ones fetched from the server where it holds fewer.
+  /// What it already holds is not checked against the server; the list's
+  /// own refresh does that.
+  Future<List<MailMessage>> olderMessages(String folderId, {int limit = 50});
+}

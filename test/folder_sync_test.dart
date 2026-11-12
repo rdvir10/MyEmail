@@ -301,6 +301,32 @@ void main() {
       expect(await sync.ensureCached('INBOX', 50), 12);
     });
 
+    test('a page on its way does not put back a message deleted meanwhile',
+        () async {
+      // The page reaches up into the cached rows where the cache has a
+      // gap, and what was cached used to be read after the page arrived:
+      // a row deleted while it was on its way was no longer among them,
+      // and the copy of it in the page went back in.
+      final slow = _SlowPages();
+      final inbox = slow.folder('INBOX');
+      for (var i = 0; i < 12; i++) {
+        inbox.deliver();
+      }
+      final sync = FolderSync(
+        transport: slow,
+        store: store,
+        accountId: 'a',
+        windowSize: 5,
+      );
+      await sync.sync('INBOX');
+      await store.deleteUids('a', 'INBOX', {10});
+      slow.whilePaging = () => store.deleteUids('a', 'INBOX', {8});
+
+      await sync.ensureCached('INBOX', 7);
+
+      expect(await cachedUids(), [12, 11, 9, 7, 6]);
+    });
+
     test('ensureCached is a no-op when enough is cached', () async {
       final inbox = server.folder('INBOX');
       inbox.deliver();
@@ -468,5 +494,22 @@ class _LoadMoreMeanwhile extends MemoryCacheStore {
       page = const [];
     }
     return super.readSyncRows(accountId, path);
+  }
+}
+
+/// A server whose page of older mail is still on its way while something
+/// else happens.
+class _SlowPages extends FakeImapTransport {
+  Future<void> Function()? whilePaging;
+
+  @override
+  Future<List<RemoteHeader>> fetchHeadersBySequence(
+    String path,
+    int start,
+    int end,
+  ) async {
+    final headers = await super.fetchHeadersBySequence(path, start, end);
+    await whilePaging?.call();
+    return headers;
   }
 }

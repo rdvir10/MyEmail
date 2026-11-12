@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection' show Queue;
 import 'dart:convert';
 
 import '../../domain/calendar_invite.dart';
@@ -77,6 +78,52 @@ class GraphMailApi {
   /// asks for minutes, and an app that appears frozen for three of them is
   /// not obviously better than one that says what happened.
   static const maxThrottleWait = Duration(seconds: 30);
+
+  /// How many requests are with Microsoft at once; the rest wait their
+  /// turn here.
+  ///
+  /// Microsoft allows an app four at a time on one mailbox and answers the
+  /// fifth with a 429, which is then waited out for seconds. Opening one
+  /// message could send a dozen together: a request for each picture in
+  /// it, beside the body, the files, the mark as read and whatever sync was
+  /// under way. Some were turned away, and the pictures, or the next
+  /// message opened, came seconds late. Three, which leaves one for the
+  /// background sync: it runs in an isolate of its own and counts against
+  /// the same four.
+  static const maxAtOnce = 3;
+
+  int _atOnce = 0;
+  final Queue<Completer<void>> _waiting = Queue();
+
+  /// [send] when fewer than [maxAtOnce] requests are out, first come first
+  /// served.
+  Future<T> _inTurn<T>(Future<T> Function() send) async {
+    if (_atOnce < maxAtOnce) {
+      _atOnce++;
+    } else {
+      final turn = Completer<void>();
+      _waiting.add(turn);
+      // Handed the place of the request that finished, so the count stays.
+      await turn.future;
+    }
+    try {
+      return await send();
+    } finally {
+      if (_waiting.isEmpty) {
+        _atOnce--;
+      } else {
+        _waiting.removeFirst().complete();
+      }
+    }
+  }
+
+  /// Said in the log, with [what] was asked: waited out in silence, a
+  /// throttle looked like nothing but a slow app.
+  Future<void> _waitOut(Duration wait, String what) {
+    debugPrint('[myemail] Microsoft asked for ${wait.inSeconds}s before '
+        'trying again: $what');
+    return (sleep ?? _realSleep)(wait);
+  }
 
   static const base = 'https://graph.microsoft.com/v1.0';
 
@@ -285,7 +332,7 @@ class GraphMailApi {
           'Try again shortly.',
         );
       }
-      await (sleep ?? _realSleep)(wait);
+      await _waitOut(wait, 'which folders are the Inbox and the rest');
       asking = again;
     }
   }
@@ -1119,7 +1166,7 @@ class GraphMailApi {
           wait > maxThrottleWait) {
         return;
       }
-      await (sleep ?? _realSleep)(wait);
+      await _waitOut(wait, '${again.length} of a batch');
       asking = again;
     }
   }
@@ -1360,10 +1407,10 @@ class GraphMailApi {
         ..headers['Authorization'] = 'Bearer ${await _token(force: forced)}';
       final http.Response response;
       try {
-        response = await _within(
-          _client.send(request),
-          uploading: request.contentLength,
-        );
+        response = await _inTurn(() => _within(
+              _client.send(request),
+              uploading: request.contentLength,
+            ));
       } on Exception catch (e) {
         throw GraphUnavailable('Could not reach Microsoft. ($e)');
       }
@@ -1434,7 +1481,7 @@ class GraphMailApi {
       // know it happened.
       final wait = _retryAfter(response);
       if (wait == null || attempt >= maxThrottleRetries) return response;
-      await (sleep ?? _realSleep)(wait);
+      await _waitOut(wait, '${request.method} ${request.url.path}');
     }
   }
 

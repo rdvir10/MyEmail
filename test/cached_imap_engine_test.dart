@@ -633,4 +633,47 @@ void main() {
       );
     });
   });
+
+  group('a page of older mail', () {
+    // Scrolling down asked for the whole folder to be brought up to date
+    // first, every flag and every deletion as deep as the list reached,
+    // before the fifty rows it wanted.
+    late String inbox;
+
+    setUp(() async {
+      seedGmail();
+      final folder = server.folder('INBOX');
+      for (var i = 0; i < 260; i++) {
+        folder.deliver(subject: 'M$i');
+      }
+      inbox = '${(await addAccount()).id}:INBOX';
+      // The list opens, which fills the newest two hundred.
+      await engine.loadMessages(inbox);
+      server.calls.clear();
+    });
+
+    test('is fetched by itself, with no sync before it', () async {
+      final page = await engine.olderMessages(inbox, limit: 250);
+
+      expect(page, hasLength(250));
+      expect(page.last.subject, 'M10');
+      expect(server.calls, ['SELECT INBOX', 'FETCH INBOX 11:60']);
+    });
+
+    test('costs the server nothing where the device already holds it',
+        () async {
+      final page = await engine.olderMessages(inbox, limit: 100);
+
+      expect(page, hasLength(100));
+      expect(server.calls, isEmpty);
+    });
+
+    test('is what the device holds when there is no connection', () async {
+      server.offline = true;
+
+      final page = await engine.olderMessages(inbox, limit: 250);
+
+      expect(page, hasLength(200));
+    });
+  });
 }

@@ -234,12 +234,17 @@ class FolderSync {
         range.max,
         windowStart: windowStart,
       );
+      // Only the rows still here: one deleted while the headers were on
+      // their way must not be written back.
+      final still = {
+        for (final m in await store.readSyncRows(accountId, path)) m.uid,
+      };
       await store.upsertMessages(
         accountId,
         path,
         [
           for (final h in refreshed)
-            if (h.preview.isNotEmpty) _cached(h),
+            if (h.preview.isNotEmpty && still.contains(h.uid)) _cached(h),
         ],
       );
     }
@@ -281,15 +286,19 @@ class FolderSync {
     final end = status.exists - have;
     final start = max(1, end - (count - have) + 1);
     if (end < 1) return have;
-    final headers = await transport.fetchHeadersBySequence(path, start, end);
     // Everything not already cached. This used to keep only numbers below
     // the window, which is how IMAP UIDs run and not how Graph's do: Graph
     // numbers a message the first time it is seen, so older mail paged in
     // after the newest is numbered above it, every header was dropped, and
     // a Microsoft folder never showed more than its first two hundred.
+    //
+    // Read before the server is asked, not after. A message deleted here
+    // while the page was on its way was no longer cached by the time the
+    // page arrived, and a page that named it put it back.
     final cachedUids = {
       for (final m in await store.readSyncRows(accountId, path)) m.uid,
     };
+    final headers = await transport.fetchHeadersBySequence(path, start, end);
     final added = [
       for (final h in headers)
         if (!cachedUids.contains(h.uid)) h,

@@ -24,9 +24,13 @@ void main() {
   late DriftGraphIdMap ids;
   late DriftCacheStore cache;
 
+  /// The time the numbering goes by, moved on by the tests.
+  late DateTime now;
+
   setUp(() {
     db = MailDatabase(NativeDatabase.memory());
-    ids = DriftGraphIdMap(db);
+    now = DateTime(2026, 11, 12, 9);
+    ids = DriftGraphIdMap(db, clock: () => now);
     cache = DriftCacheStore(db);
   });
 
@@ -76,13 +80,31 @@ void main() {
 
     test('forgetting does not pile up a row per deleted message', () async {
       await ids.uidsFor('a', 'INBOX', [for (var i = 1; i <= 20; i++) 'g-$i']);
-      await ids.forgetMoved('a', 'INBOX', [for (var i = 1; i <= 19; i++) i]);
+      await ids.forgetMoved('a', 'INBOX', [for (var i = 1; i <= 18; i++) i]);
+
+      // Remembered as gone for a while, and swept up by the next to go.
+      now = now.add(GraphIdMap.goneFor + const Duration(seconds: 1));
+      await ids.forgetMoved('a', 'INBOX', [19]);
 
       final rows = await db.select(db.graphIds).get();
 
-      // The live message, and one marker holding the count where it is.
-      expect(rows, hasLength(lessThanOrEqualTo(2)));
+      // The live message, and the one that has only just gone.
+      expect(rows, hasLength(2));
       expect(await ids.highestUid('a', 'INBOX'), 20);
+    });
+
+    test('nor when the newest is among them', () async {
+      await ids.uidsFor('a', 'INBOX', [for (var i = 1; i <= 20; i++) 'g-$i']);
+      await ids.forgetMoved('a', 'INBOX', [for (var i = 2; i <= 20; i++) i]);
+      now = now.add(GraphIdMap.goneFor + const Duration(seconds: 1));
+      await ids.forgetMoved('a', 'INBOX', [1]);
+
+      final rows = await db.select(db.graphIds).get();
+
+      // The one just gone, and one marker holding the count where it is.
+      expect(rows, hasLength(2));
+      expect(await ids.highestUid('a', 'INBOX'), 20);
+      expect((await ids.uidsFor('a', 'INBOX', ['g-21']))['g-21'], 21);
     });
 
     test('each folder counts on its own', () async {
@@ -134,6 +156,77 @@ void main() {
       await ids.forgetMoved('a', 'INBOX', [2, 3]);
 
       expect(await ids.highestUid('a', 'INBOX'), 3);
+    });
+
+    test('a message that has just left is not numbered again', () async {
+      // By a list of the folder read before it left: a sync under way
+      // while a delete lands, in the app or in the background. Numbered
+      // again, it was stored as new mail and came back on screen.
+      await ids.uidsFor('a', 'INBOX', ['g-1', 'g-2']);
+      await ids.forgetMoved('a', 'INBOX', [2]);
+
+      final listed = await ids.uidsFor('a', 'INBOX', ['g-1', 'g-2']);
+
+      expect(listed, {'g-1': 1});
+      expect(await ids.highestUid('a', 'INBOX'), 2);
+    });
+
+    test('nor by a second connection, as the background sync is', () async {
+      await ids.uidsFor('a', 'INBOX', ['g-1', 'g-2']);
+      await ids.forgetMoved('a', 'INBOX', [2]);
+
+      // Another map on the same database, with nothing of its own in hand.
+      final worker = DriftGraphIdMap(db, clock: () => now);
+
+      expect(await worker.uidsFor('a', 'INBOX', ['g-2', 'g-3']), {'g-3': 3});
+    });
+
+    test('unless the server has just said it is there', () async {
+      // Where a move landed. Should Microsoft ever hand an old id back,
+      // the message is in the folder all the same.
+      await ids.uidsFor('a', 'INBOX', ['g-1', 'g-2']);
+      await ids.forgetMoved('a', 'INBOX', [2]);
+
+      final landed = await ids.uidsFor('a', 'INBOX', ['g-2'], here: true);
+
+      expect(landed, {'g-2': 3}, reason: 'a new number; the old one is spent');
+      expect(await ids.remoteIdsFor('a', 'INBOX', [2, 3]), {3: 'g-2'});
+    });
+
+    test('or it is still listed long after', () async {
+      await ids.uidsFor('a', 'INBOX', ['g-1', 'g-2']);
+      await ids.forgetMoved('a', 'INBOX', [2]);
+      now = now.add(GraphIdMap.goneFor + const Duration(seconds: 1));
+
+      expect(await ids.uidsFor('a', 'INBOX', ['g-2']), {'g-2': 3});
+      expect(await ids.remoteIdsFor('a', 'INBOX', [2]), isEmpty);
+    });
+
+    test('a header written after its message left is not kept', () async {
+      // The other half of the same race: the sync had the number in hand
+      // before the delete, and writes the row after it.
+      await ids.uidsFor('a', 'INBOX', ['g-1', 'g-2']);
+      await cache.upsertMessages(
+          'a', 'INBOX', [header(1, 'Stays'), header(2, 'Deleted')]);
+      await ids.forgetMoved('a', 'INBOX', [2]);
+      await cache.deleteUids('a', 'INBOX', {2});
+
+      await cache.upsertMessages(
+          'a', 'INBOX', [header(1, 'Stays'), header(2, 'Deleted')]);
+
+      expect([for (final m in await cache.readMessages('a', 'INBOX')) m.subject],
+          ['Stays']);
+    });
+
+    test('while a Gmail folder, which has no numbering here, keeps its rows',
+        () async {
+      await cache.upsertMessages('g', 'INBOX', [header(1, 'One')]);
+      await cache.deleteUids('g', 'INBOX', {1});
+
+      // The server's own number, the same message: a sync may write it again.
+      await cache.upsertMessages('g', 'INBOX', [header(1, 'One')]);
+
+      expect(await cache.readMessages('g', 'INBOX'), hasLength(1));
     });
 
     test('a rename carries the numbering of an emoji-named folder', () async {

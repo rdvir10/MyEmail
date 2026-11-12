@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -2265,6 +2266,140 @@ void main() {
       expect(result.removed, 0);
       expect(await cache.countMessages('acct-1', 'Inbox'), 3700);
       expect(await subjects('Inbox'), contains('M3699'));
+    });
+
+    group('a message deleted while its folder is being listed', () {
+      // A sync lists the folder three times over, and each answer is a
+      // second or so in coming. A delete that lands in between leaves the
+      // sync holding a list that still names the message, under an id the
+      // delete has just let go of. Numbered as one never seen, it was
+      // stored again as new mail and came back on screen, until the next
+      // sync found it was not there: the app's own sync did it, and the
+      // background one, a minute apart, from an isolate of its own.
+
+      /// How many listings to let through before one is held.
+      late int holdAfter;
+      late Completer<void> held;
+      late Completer<void> release;
+      late FolderSync slowSync;
+
+      setUp(() async {
+        holdAfter = -1;
+        held = Completer<void>();
+        release = Completer<void>();
+        // The same server, numbering and cache, as the app and the worker
+        // share them; its answers to a listing can be kept waiting, read
+        // from the folder as it was when asked.
+        final slow = GraphTransport(
+          accountId: 'acct-1',
+          idMap: ids,
+          api: GraphMailApi(
+            accessToken: ({bool force = false}) async => 'token',
+            httpClient: http_testing.MockClient((request) async {
+              final response = await server.handle(request);
+              if (request.method == 'GET' &&
+                  request.url.path.endsWith('/messages') &&
+                  holdAfter-- == 0) {
+                held.complete();
+                await release.future;
+              }
+              return response;
+            }),
+          ),
+        );
+        slowSync =
+            FolderSync(transport: slow, store: cache, accountId: 'acct-1');
+        server
+          ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+          ..folder(
+              id: 'f-del', name: 'Deleted Items', wellKnown: 'deleteditems');
+        for (var i = 0; i < 5; i++) {
+          server.message('f-inbox',
+              id: 'm$i', subject: 'M$i', minutesAgo: i + 1);
+        }
+        await sync.sync('Inbox');
+      });
+
+      /// What the engine's delete does: the move, then the row.
+      Future<void> delete(String subject) async {
+        final row =
+            (await cached('Inbox')).firstWhere((m) => m.subject == subject);
+        await transport.moveMessages('Inbox', [row.uid], 'Deleted Items');
+        await cache.deleteUids('acct-1', 'Inbox', {row.uid});
+      }
+
+      /// A sync whose listing number [listing] (from 0) is still on its
+      /// way while [subject] is deleted.
+      Future<void> syncWithDeleteDuring(int listing, String subject) async {
+        holdAfter = listing;
+        final syncing = slowSync.sync('Inbox');
+        await held.future;
+        await delete(subject);
+        release.complete();
+        await syncing;
+      }
+
+      test('does not come back as new mail', () async {
+        // The newest, which is what anyone deletes having just read it.
+        await syncWithDeleteDuring(0, 'M0');
+
+        expect(await subjects('Inbox'), {'M1', 'M2', 'M3', 'M4'});
+        expect(await subjects('Deleted Items'), isEmpty,
+            reason: 'nothing synced there in this test');
+      });
+
+      test('nor an older one', () async {
+        await syncWithDeleteDuring(0, 'M3');
+
+        expect(await subjects('Inbox'), {'M0', 'M1', 'M2', 'M4'});
+      });
+
+      test('and is given no number by the later passes of the sync',
+          () async {
+        final highest = await ids.highestUid('acct-1', 'Inbox');
+
+        // The pass that reads the flags, then the one that looks for what
+        // has gone.
+        await syncWithDeleteDuring(1, 'M0');
+
+        expect(await ids.highestUid('acct-1', 'Inbox'), highest);
+        expect(await subjects('Inbox'), {'M1', 'M2', 'M3', 'M4'});
+      });
+
+      test('and the syncs after leave it gone', () async {
+        await syncWithDeleteDuring(0, 'M0');
+
+        await sync.sync('Inbox');
+        await sync.sync('Inbox');
+
+        expect(await subjects('Inbox'), {'M1', 'M2', 'M3', 'M4'});
+      });
+
+      test('while new mail arriving meanwhile still comes in', () async {
+        holdAfter = 0;
+        server.message('f-inbox', id: 'new', subject: 'New', minutesAgo: 0);
+        final syncing = slowSync.sync('Inbox');
+        await held.future;
+        await delete('M0');
+        release.complete();
+        await syncing;
+
+        expect(await subjects('Inbox'), {'New', 'M1', 'M2', 'M3', 'M4'});
+      });
+
+      test('put back, it is in the folder again', () async {
+        // Undo: the move back gives it a new id, which is numbered on the
+        // server's word and found by the next sync.
+        final row = (await cached('Inbox')).firstWhere((m) => m.subject == 'M0');
+        final landed =
+            await transport.moveMessages('Inbox', [row.uid], 'Deleted Items');
+        await cache.deleteUids('acct-1', 'Inbox', {row.uid});
+
+        await transport.moveMessages('Deleted Items', landed!, 'Inbox');
+        await sync.sync('Inbox');
+
+        expect(await subjects('Inbox'), {'M0', 'M1', 'M2', 'M3', 'M4'});
+      });
     });
 
     group('a folder scrolled far back', () {

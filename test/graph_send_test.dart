@@ -40,6 +40,8 @@ void main() {
         accessToken: token ?? ({bool force = false}) async => 'graph-token',
         httpClient: http_testing.MockClient(handler),
         maxMimeBytes: maxMimeBytes ?? GraphSender.defaultMaxMimeBytes,
+        // One look for a send that got no answer, and no waiting for it.
+        lookAfter: const [Duration.zero],
       );
 
   group('a successful send', () {
@@ -263,6 +265,223 @@ void main() {
         sender.send(message()),
         throwsA(isA<SendMayHaveGone>()),
       );
+    });
+  });
+
+  group('a send that got no answer is looked for in Sent Items', () {
+    // "It may or may not have gone. Check Sent Items" left the looking to
+    // the person, with the reply still open in front of them. The app
+    // looks: a message Exchange took is in Sent Items moments later.
+
+    /// Sent Items as Graph lists them.
+    http.Response sentItems(List<Map<String, Object?>> rows) => http.Response(
+          jsonEncode({'value': rows}),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+
+    Map<String, Object?> row({
+      String id = '<other@BN8PR04MB1234.namprd04.prod.outlook.com>',
+      String subject = 'A subject',
+      String to = 'someone@example.com',
+      Duration ago = Duration.zero,
+      String preview = 'Hello',
+    }) =>
+        {
+          'internetMessageId': id,
+          'subject': subject,
+          'sentDateTime':
+              DateTime.now().toUtc().subtract(ago).toIso8601String(),
+          'toRecipients': [
+            {
+              'emailAddress': {'name': 'Someone', 'address': to},
+            },
+          ],
+          'ccRecipients': <Object?>[],
+          'bodyPreview': preview,
+        };
+
+    /// A Microsoft that answers the send with [status] and has [rows] in
+    /// Sent Items, made from the message as it was sent.
+    GraphSender unanswered(
+      List<Map<String, Object?>> Function(String messageId) rows, {
+      int status = 502,
+      List<String>? asked,
+    }) {
+      var messageId = '';
+      return senderWith((request) async {
+        asked?.add('${request.method} ${request.url.path.split('/').last}');
+        if (request.method == 'POST') {
+          final mime = utf8.decode(base64Decode(request.body));
+          messageId = RegExp(r'Message-Id: (<[^>]+>)', caseSensitive: false)
+              .firstMatch(mime)![1]!;
+          return http.Response('', status);
+        }
+        return sentItems(rows(messageId));
+      });
+    }
+
+    test('there under its own Message-ID, it went', () async {
+      final asked = <String>[];
+      final sender = unanswered(
+        (id) => [row(subject: 'Something else'), row(id: id)],
+        asked: asked,
+      );
+
+      await sender.send(message());
+
+      expect(asked, ['POST sendMail', 'GET messages']);
+    });
+
+    test('Sent Items of the mailbox it was sent from are what is read',
+        () async {
+      late Uri looked;
+      final sender = GraphSender(
+        accessToken: ({bool force = false}) async => 'graph-token',
+        mailbox: 'sales@example.com',
+        lookAfter: const [Duration.zero],
+        httpClient: http_testing.MockClient((request) async {
+          if (request.method == 'POST') return http.Response('', 504);
+          looked = request.url;
+          return sentItems([row()]);
+        }),
+      );
+
+      await sender.send(message());
+
+      expect(looked.path,
+          '/v1.0/users/sales%40example.com/mailFolders/sentitems/messages');
+      expect(looked.queryParameters[r'$orderby'], 'sentDateTime desc');
+    });
+
+    test('there under a Message-ID Exchange gave it, it went', () async {
+      // The same subject, to the same people, sent since, beginning with
+      // the same words.
+      final sender = unanswered((_) => [
+            row(to: 'Someone@Example.com', preview: 'Hello\r\n'),
+          ]);
+
+      await sender.send(message());
+    });
+
+    test('a connection lost while sending is answered the same way',
+        () async {
+      var sends = 0;
+      final sender = senderWith((request) async {
+        if (request.method == 'POST') {
+          sends++;
+          throw const SocketLike('ClientException: Connection closed before '
+              'full header was received');
+        }
+        return sentItems([row()]);
+      });
+
+      await sender.send(message());
+
+      expect(sends, 1, reason: 'looked for, never sent again');
+    });
+
+    test('not there, it says so, and is still not sent again', () async {
+      final asked = <String>[];
+      final sender = unanswered((_) => [row(subject: 'Something else')],
+          asked: asked);
+
+      await expectLater(
+        sender.send(message()),
+        throwsA(isA<SendMayHaveGone>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('HTTP 502'),
+            contains('has not shown up in Sent Items'),
+            contains('Check Sent Items before sending it again'),
+            isNot(contains('may or may not')),
+          ),
+        )),
+      );
+      expect(asked.where((a) => a.startsWith('POST')), hasLength(1));
+    });
+
+    test('an earlier message of the same subject is not taken for it',
+        () async {
+      // Sent before this send began: the reply before this one.
+      final sender =
+          unanswered((_) => [row(ago: const Duration(minutes: 10))]);
+
+      await expectLater(
+        sender.send(message()),
+        throwsA(isA<SendMayHaveGone>()),
+      );
+    });
+
+    test('nor one that begins with other words', () async {
+      final sender = unanswered((_) => [row(preview: 'Thanks, received.')]);
+
+      await expectLater(
+        sender.send(message()),
+        throwsA(isA<SendMayHaveGone>()),
+      );
+    });
+
+    test('nor one to other people', () async {
+      final sender = unanswered((_) => [row(to: 'other@example.com')]);
+
+      await expectLater(
+        sender.send(message()),
+        throwsA(isA<SendMayHaveGone>()),
+      );
+    });
+
+    test('nor another message this app sent, kept as it was written',
+        () async {
+      // A Message-ID of the app's own making that is not this one.
+      final sender = unanswered((_) => [row(id: '<abc.123@example.com>')]);
+
+      await expectLater(
+        sender.send(message()),
+        throwsA(isA<SendMayHaveGone>()),
+      );
+    });
+
+    test('Sent Items that cannot be read leave it as unknown as it was',
+        () async {
+      final sender = senderWith((request) async => request.method == 'POST'
+          ? http.Response('', 502)
+          : http.Response('', 503));
+
+      await expectLater(
+        sender.send(message()),
+        throwsA(isA<SendMayHaveGone>().having(
+          (e) => e.message,
+          'message',
+          contains('may or may not have gone'),
+        )),
+      );
+    });
+
+    test('it is looked for more than once before giving up', () async {
+      var looks = 0;
+      final sender = GraphSender(
+        accessToken: ({bool force = false}) async => 'graph-token',
+        lookAfter: const [Duration.zero, Duration.zero, Duration.zero],
+        httpClient: http_testing.MockClient((request) async {
+          if (request.method == 'POST') return http.Response('', 502);
+          // Filed a moment after the first look.
+          return sentItems(++looks < 2 ? [] : [row()]);
+        }),
+      );
+
+      await sender.send(message());
+
+      expect(looks, 2);
+    });
+
+    test('a refusal is not looked for: nothing went', () async {
+      final asked = <String>[];
+      final sender = unanswered((_) => [row()], status: 400, asked: asked);
+
+      await expectLater(sender.send(message()), throwsA(isA<SendFailed>()));
+      expect(asked, ['POST sendMail']);
     });
   });
 
@@ -493,6 +712,64 @@ void main() {
         )),
       );
       expect(calls, isNot(contains('send')));
+    });
+
+    group('sent with no answer', () {
+      /// A Microsoft that takes the draft and its file, answers the send
+      /// with a 502, and says [draft] when asked about the draft after.
+      GraphSender unanswered(http.Response Function() draft) => GraphSender(
+            accessToken: ({bool force = false}) async => 'graph-token',
+            maxMimeBytes: 4000,
+            lookAfter: const [Duration.zero],
+            httpClient: http_testing.MockClient((request) async {
+              final path = request.url.path;
+              if (request.method == 'GET') return draft();
+              if (path.endsWith('/send')) return http.Response('', 502);
+              if (path.endsWith('/attachments')) {
+                return http.Response(jsonEncode({'id': 'att-1'}), 201);
+              }
+              return http.Response(jsonEncode({'id': 'draft-1'}), 201);
+            }),
+          );
+
+      Future<void> send(GraphSender sender) => sender.sendDraft(
+            draft: draftWith([file('drawing.pdf', 3500)]),
+            account: account(),
+          );
+
+      test('and gone from Drafts, it went', () async {
+        // Sent, it is filed in Sent Items under a new id.
+        await send(unanswered(() => http.Response('', 404)));
+      });
+
+      test('and no longer a draft, it went', () async {
+        await send(unanswered(
+            () => http.Response(jsonEncode({'isDraft': false}), 200)));
+      });
+
+      test('and still a draft, it says so', () async {
+        await expectLater(
+          send(unanswered(
+              () => http.Response(jsonEncode({'isDraft': true}), 200))),
+          throwsA(isA<SendMayHaveGone>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('HTTP 502'), contains('still in Drafts')),
+          )),
+        );
+      });
+
+      test('and nothing to be learned of the draft, as unknown as it was',
+          () async {
+        await expectLater(
+          send(unanswered(() => http.Response('', 503))),
+          throwsA(isA<SendMayHaveGone>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('may or may not'), contains('in Drafts')),
+          )),
+        );
+      });
     });
 
     test('a connection lost part way also says the message is in Drafts',

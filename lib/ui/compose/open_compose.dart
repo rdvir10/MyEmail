@@ -246,7 +246,16 @@ Future<T?> _withSpinner<T>(BuildContext context, Future<T> work) async {
   // reported as unhandled before the await below gets to it.
   unawaited(result.then<void>((_) {}, onError: (Object _) {}));
 
-  await Future<void>.delayed(const Duration(milliseconds: 150));
+  // Until the work is done or 150 ms have passed, whichever is first.
+  // It was the 150 ms every time, so a message that was ready at once
+  // still opened that much late.
+  final waited = Completer<void>();
+  final timer = Timer(const Duration(milliseconds: 150), waited.complete);
+  await Future.any<void>([
+    result.then<void>((_) {}, onError: (Object _) {}),
+    waited.future,
+  ]);
+  timer.cancel();
   if (!done && context.mounted) {
     // A route kept hold of, rather than showDialog, so the one taken down
     // afterwards is this one.

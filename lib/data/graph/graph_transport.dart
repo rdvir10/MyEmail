@@ -1107,9 +1107,13 @@ class GraphTransport implements ImapTransport {
     return _numbered(toPath, movedIds);
   }
 
+  /// The numbers of messages the server has just said are in [path]: where
+  /// a move landed, or a message was filed. On its word, so one that had
+  /// left the folder a moment before is numbered all the same.
   Future<List<int>?> _numbered(String path, List<String> remoteIds) async {
     if (remoteIds.isEmpty) return null;
-    final assigned = await idMap.uidsFor(accountId, path, remoteIds);
+    final assigned =
+        await idMap.uidsFor(accountId, path, remoteIds, here: true);
     return [
       for (final id in remoteIds)
         if (assigned.containsKey(id)) assigned[id]!,
@@ -1406,9 +1410,12 @@ class GraphTransport implements ImapTransport {
         continue;
       }
       // Past the bottom of what was asked for, and no earlier page can hold
-      // anything newer, as long as numbers follow dates.
+      // anything newer, as long as numbers follow dates. One with no number
+      // has just left the folder (see GraphIdMap.uidsFor) and says nothing
+      // about how far down the page reaches.
       final lowest = batch
-          .map((m) => assigned[m.id] ?? 0)
+          .map((m) => assigned[m.id])
+          .nonNulls
           .fold<int>(1 << 62, (a, b) => a < b ? a : b);
       if (lowest <= downToUid) break;
     }

@@ -108,6 +108,27 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
   /// Between handing the WebView a document and it finishing that load.
   bool _loading = false;
 
+  /// What is read out of the HTML itself, and the HTML it was read from:
+  /// once for a message. Read at every build and every layout, it was
+  /// several passes over the whole of a long newsletter each time the pane
+  /// was drawn again, which is at every change to the list beside it.
+  String? _readFrom;
+  bool _remoteInHtml = false;
+  bool _ownWidthInHtml = false;
+
+  void _readHtml() {
+    if (_readFrom == widget.html) return;
+    _readFrom = widget.html;
+    _remoteInHtml = htmlHasRemoteContent(widget.html);
+    _ownWidthInHtml = declaredLayoutWidth(widget.html) != null;
+  }
+
+  /// Whether the message has pictures or the like to fetch from elsewhere.
+  bool get _needsRemote {
+    _readHtml();
+    return _remoteInHtml;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -233,7 +254,10 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
 
   /// Whether this message is laid out for a width of its own, which is the
   /// one kind whose page depends on the view's width.
-  bool get _hasOwnWidth => declaredLayoutWidth(widget.html) != null;
+  bool get _hasOwnWidth {
+    _readHtml();
+    return _ownWidthInHtml;
+  }
 
   /// The view's width, from its layout. A message laid out for a width of
   /// its own is loaded again when the view crosses that width, so it is
@@ -244,6 +268,7 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
     if (!width.isFinite || width <= 0 || width == _width) return;
     final before = _width;
     _width = width;
+    if (!_hasOwnWidth) return;
     final declared = declaredLayoutWidth(widget.html);
     if (declared == null) return;
     if (before != null && (declared > before) == (declared > width)) return;
@@ -278,7 +303,7 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final needsRemote = htmlHasRemoteContent(widget.html);
+    final needsRemote = _needsRemote;
     return Column(
       children: [
         if (needsRemote && !_showRemote)

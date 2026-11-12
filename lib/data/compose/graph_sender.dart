@@ -35,7 +35,20 @@ class GraphSender {
     http.Client? httpClient,
     this.maxMimeBytes = defaultMaxMimeBytes,
     this.mailbox,
+    this.lookAfter = defaultLookAfter,
   }) : _http = httpClient;
+
+  /// The waits, each from the one before, ahead of each look for a message
+  /// whose send got no answer: see [_went]. Half a minute in all, by when
+  /// a message Exchange took is in Sent Items. Shortened by tests.
+  static const defaultLookAfter = [
+    Duration(seconds: 3),
+    Duration(seconds: 5),
+    Duration(seconds: 10),
+    Duration(seconds: 12),
+  ];
+
+  final List<Duration> lookAfter;
 
   /// A shared mailbox's address, to send from it: the message goes out
   /// from that mailbox and is kept in its Sent Items. Null for the
@@ -55,6 +68,13 @@ class GraphSender {
 
   Uri get sendMailUri => Uri.parse('$base/$_me/sendMail');
   Uri get messagesUri => Uri.parse('$base/$_me/messages');
+
+  /// The newest of Sent Items, with what tells one message from another.
+  Uri get sentItemsUri => Uri.parse(
+        '$base/$_me/mailFolders/sentitems/messages'
+        r'?$select=subject,internetMessageId,sentDateTime,toRecipients,'
+        r'ccRecipients,bodyPreview&$orderby=sentDateTime%20desc&$top=15',
+      );
 
   /// Graph accepts a request body up to 4 MB, and base64 adds about a third,
   /// so anything posted whole has to stay under roughly 3 MB. Past that the
@@ -94,7 +114,7 @@ class GraphSender {
     }
     final client = _http ?? _defaultClient();
     try {
-      await _postWholeMessage(client, mime);
+      await _postWholeMessage(client, mime, _Outgoing.of(message));
     } finally {
       if (_http == null) client.close();
     }
@@ -121,16 +141,15 @@ class GraphSender {
     required Account account,
     Map<String, String> threadHeaders = const {},
   }) async {
-    final whole = utf8.encode(
-      _withHeaders(
-        buildMimeMessage(draft: draft, account: account),
-        threadHeaders,
-      ).renderMessage(),
+    final message = _withHeaders(
+      buildMimeMessage(draft: draft, account: account),
+      threadHeaders,
     );
+    final whole = utf8.encode(message.renderMessage());
     final client = _http ?? _defaultClient();
     try {
       if (whole.length <= maxMimeBytes) {
-        return await _postWholeMessage(client, whole);
+        return await _postWholeMessage(client, whole, _Outgoing.of(message));
       }
       await _sendInPieces(
         client,
@@ -153,27 +172,113 @@ class GraphSender {
     return message;
   }
 
-  Future<void> _postWholeMessage(http.Client client, List<int> mime) async {
+  Future<void> _postWholeMessage(
+    http.Client client,
+    List<int> mime,
+    _Outgoing sent,
+  ) async {
     final body = base64Encode(mime);
+    SendMayHaveGone unanswered;
+    try {
+      final response = await _authorised(
+        sending: true,
+        uploading: body.length,
+        (token) => client.post(
+          sendMailUri,
+          headers: {
+            'Authorization': 'Bearer $token',
+            // text/plain is what tells Graph the body is base64 MIME rather
+            // than its own JSON. application/json here is rejected as
+            // malformed JSON, which reads as a bug in the message.
+            'Content-Type': 'text/plain',
+          },
+          body: body,
+        ),
+      );
+
+      // 202 means accepted for delivery, not delivered. Graph returns no
+      // body.
+      if (response.statusCode == 202) return;
+      final failure = _sendFailureFor(response);
+      if (failure is! SendMayHaveGone) throw failure;
+      unanswered = failure;
+    } on SendMayHaveGone catch (e) {
+      unanswered = e;
+    }
+
+    // No answer, so the answer is looked for: a message Exchange took is
+    // in Sent Items moments later. It used to be left to the person, who
+    // was told it may or may not have gone and to go and look.
+    switch (await _went(() => _inSentItems(client, sent))) {
+      case true:
+        return;
+      case false:
+        throw SendMayHaveGone(
+          '${_firstSentence(unanswered.message)} It has not shown up in '
+          'Sent Items since, so it has probably not gone. Check Sent Items '
+          'before sending it again.',
+        );
+      case null:
+        throw unanswered;
+    }
+  }
+
+  /// What happened, as [message] begins, without the "so it may or may not
+  /// have gone" and the advice after it, which the caller says afresh.
+  static String _firstSentence(String message) {
+    final end = message.indexOf(RegExp(r'[.,] (so |Check )'));
+    return end < 0 ? message : '${message.substring(0, end)}.';
+  }
+
+  /// Ask [look] after each of [lookAfter] until it says the message went.
+  /// True as soon as one does; false when at least one look was made and
+  /// none found it; null when none could be made at all, with no network
+  /// say, which leaves what happened as unknown as before.
+  Future<bool?> _went(Future<bool> Function() look) async {
+    var looked = false;
+    for (final wait in lookAfter) {
+      await Future<void>.delayed(wait);
+      try {
+        if (await look().timeout(const Duration(seconds: 20))) return true;
+        looked = true;
+      } catch (_) {
+        // Asked again after the next wait.
+      }
+    }
+    return looked ? false : null;
+  }
+
+  /// Whether [sent] is among the newest of Sent Items. Throws where they
+  /// could not be read.
+  Future<bool> _inSentItems(http.Client client, _Outgoing sent) async {
     final response = await _authorised(
-      sending: true,
-      uploading: body.length,
-      (token) => client.post(
-        sendMailUri,
-        headers: {
-          'Authorization': 'Bearer $token',
-          // text/plain is what tells Graph the body is base64 MIME rather
-          // than its own JSON. application/json here is rejected as
-          // malformed JSON, which reads as a bug in the message.
-          'Content-Type': 'text/plain',
-        },
-        body: body,
+      (token) => client.get(
+        sentItemsUri,
+        headers: {'Authorization': 'Bearer $token'},
       ),
     );
+    if (response.statusCode != 200) throw _failureFor(response);
+    final answer = jsonDecode(response.body);
+    final rows = answer is Map ? answer['value'] : null;
+    if (rows is! List) throw const FormatException('No list of messages.');
+    return rows.any((row) => row is Map && sent.isRow(row));
+  }
 
-    // 202 means accepted for delivery, not delivered. Graph returns no body.
-    if (response.statusCode == 202) return;
-    throw _sendFailureFor(response);
+  /// Whether the draft [messageId] has left Drafts, as it does when it is
+  /// sent: it is filed in Sent Items under a new id, and the old one stops
+  /// resolving. Throws where Microsoft could not be asked.
+  Future<bool> _draftHasGone(http.Client client, String messageId) async {
+    final response = await _authorised(
+      (token) => client.get(
+        Uri.parse('$base/$_me/messages/${Uri.encodeComponent(messageId)}'
+            r'?$select=isDraft'),
+        headers: {'Authorization': 'Bearer $token'},
+      ),
+    );
+    if (response.statusCode == 404) return true;
+    if (response.statusCode != 200) throw _failureFor(response);
+    final answer = jsonDecode(response.body);
+    return answer is Map && answer['isDraft'] == false;
   }
 
   /// A refusal of the request that sends, except a gateway giving up on
@@ -253,12 +358,24 @@ class GraphSender {
     try {
       await _sendDraftOnServer(client, messageId);
     } on SendMayHaveGone catch (e) {
-      // Lost with the send asked for and no answer: it may have gone.
-      throw _withNote(
-        e,
-        'If it has not, it is in Drafts; check Sent Items before sending it '
-        'again.',
-      );
+      // Lost with the send asked for and no answer: it may have gone. The
+      // draft says which: sent, it has left Drafts.
+      switch (await _went(() => _draftHasGone(client, messageId))) {
+        case true:
+          return;
+        case false:
+          throw SendMayHaveGone(
+            '${_firstSentence(e.message)} It was still in Drafts half a '
+            'minute later, so it has probably not gone. Check Sent Items '
+            'before sending it again.',
+          );
+        case null:
+          throw _withNote(
+            e,
+            'If it has not, it is in Drafts; check Sent Items before sending '
+            'it again.',
+          );
+      }
     } catch (e) {
       throw _withNote(e, _inDrafts);
     }
@@ -562,4 +679,89 @@ class GraphSender {
 
   static String _mb(int bytes) =>
       '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+}
+
+/// What tells a message just sent from the others in Sent Items.
+///
+/// Its Message-ID, where Exchange kept the one it was written with. Where
+/// it gave the message one of its own, the rest: the same subject, to the
+/// same people, sent since this send began, and beginning with the same
+/// words.
+class _Outgoing {
+  _Outgoing({
+    required this.messageId,
+    required this.subject,
+    required this.recipients,
+    required this.text,
+    required this.began,
+  });
+
+  factory _Outgoing.of(em.MimeMessage message) => _Outgoing(
+        messageId: message.getHeaderValue('message-id')?.trim() ?? '',
+        subject: message.decodeSubject()?.trim() ?? '',
+        recipients: {
+          for (final a in [...?message.to, ...?message.cc])
+            a.email.trim().toLowerCase(),
+        },
+        text: message.decodeTextPlainPart() ?? '',
+        began: DateTime.now(),
+      );
+
+  final String messageId;
+  final String subject;
+  final Set<String> recipients;
+  final String text;
+
+  /// When the send began, by this device's clock.
+  final DateTime began;
+
+  /// How far this device's clock and Microsoft's may differ.
+  static const _skew = Duration(minutes: 2);
+
+  /// How much of the beginning has to be the same.
+  static const _opening = 40;
+
+  /// Whether [row], one of Sent Items as Graph lists them, is this message.
+  bool isRow(Map<dynamic, dynamic> row) {
+    final theirs = '${row['internetMessageId'] ?? ''}'.trim().toLowerCase();
+    if (messageId.isNotEmpty && theirs == messageId.toLowerCase()) return true;
+    // A Message-ID made the way this app makes them, and not this one: a
+    // message of the app's that Exchange kept as written, so another one.
+    if (theirs.isNotEmpty && _host(theirs) == _host(messageId)) return false;
+
+    if ('${row['subject'] ?? ''}'.trim() != subject) return false;
+    final sentAt = DateTime.tryParse('${row['sentDateTime'] ?? ''}');
+    if (sentAt == null || sentAt.isBefore(began.subtract(_skew))) return false;
+    final theirPeople = {
+      for (final field in const ['toRecipients', 'ccRecipients'])
+        if (row[field] case final List<dynamic> people)
+          for (final person in people)
+            if (person case {'emailAddress': {'address': final String address}})
+              address.trim().toLowerCase(),
+    };
+    if (theirPeople.length != recipients.length ||
+        !theirPeople.containsAll(recipients)) {
+      return false;
+    }
+    final ours = _squashed(text);
+    final shown = _squashed('${row['bodyPreview'] ?? ''}');
+    final length = [ours.length, shown.length, _opening]
+        .reduce((a, b) => a < b ? a : b);
+    return length == 0
+        ? ours.isEmpty && shown.isEmpty
+        : ours.substring(0, length) == shown.substring(0, length);
+  }
+
+  /// What follows the @ of a Message-ID, without its closing bracket.
+  static String _host(String messageId) {
+    final at = messageId.lastIndexOf('@');
+    return at < 0
+        ? ''
+        : messageId.substring(at + 1).replaceAll('>', '').toLowerCase();
+  }
+
+  /// [text] with everything that is not a letter or a digit taken out:
+  /// Exchange makes its preview from the HTML and spaces it its own way.
+  static String _squashed(String text) =>
+      text.toLowerCase().replaceAll(RegExp(r'[^\p{L}\p{N}]', unicode: true), '');
 }

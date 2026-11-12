@@ -160,6 +160,42 @@ void main() {
       );
     });
 
+    test('nor when the list is read again while the delete is on its way',
+        () async {
+      // Coming back to the front, or a button pressed in the shade being
+      // carried out, has every list read again. The server had not answered
+      // the delete yet, so the device still had the message, and the list
+      // built from it put the row back.
+      final engine = _SlowDeleteEngine()
+        ..stored[folder] = [message('a'), message('b')]
+        ..fromServer[folder] = [message('a'), message('b')];
+      final c = containerFor(engine);
+      c.listen(messagesProvider(folder), (_, _) {});
+      final gone = (await c.read(messagesProvider(folder).future)).first.id;
+      final deleting =
+          c.read(messagesProvider(folder).notifier).delete([gone]);
+      await Future<void>.delayed(Duration.zero);
+
+      c.invalidate(messagesProvider(folder));
+      final rebuilt = await c.read(messagesProvider(folder).future);
+
+      expect(rebuilt.map((m) => m.id), isNot(contains(gone)));
+      // Nor when the server, which still has it, answers the list.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(
+        c.read(messagesProvider(folder)).value!.map((m) => m.id),
+        isNot(contains(gone)),
+      );
+
+      engine.deleted.complete();
+      await deleting;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(
+        c.read(messagesProvider(folder)).value!.map((m) => m.id),
+        isNot(contains(gone)),
+      );
+    });
+
     test('a sync that fails leaves the stored list alone', () async {
       final engine = _GatedEngine()
         ..stored[folder] = [message('a'), message('b')]
@@ -455,6 +491,21 @@ class _GatedEngine extends SampleMailEngine {
     }
     if (broken.contains(folderId)) throw StateError('Sign in again.');
     return fromServer[folderId] ?? stored[folderId] ?? const [];
+  }
+}
+
+/// A server that takes its time over a delete: until it answers, the
+/// message is still on it and still on the device.
+class _SlowDeleteEngine extends _GatedEngine {
+  final deleted = Completer<void>();
+
+  @override
+  Future<List<MessageMove>> deleteMessages(List<String> messageIds) async {
+    await deleted.future;
+    for (final list in fromServer.values) {
+      list.removeWhere((m) => messageIds.contains(m.id));
+    }
+    return super.deleteMessages(messageIds);
   }
 }
 

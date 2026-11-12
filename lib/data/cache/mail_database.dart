@@ -131,6 +131,13 @@ class GraphIds extends Table {
   IntColumn get uid => integer()();
   TextColumn get remoteId => text()();
 
+  /// When the message left this folder, moved or deleted from here, in
+  /// milliseconds since the epoch; null while it is in it. Its id is kept
+  /// beside it for a while, so a list of the folder read just before it
+  /// left is not taken for the message arriving: see `GraphIdMap`. Added
+  /// in schema 18.
+  IntColumn get goneAt => integer().nullable()();
+
   @override
   Set<Column> get primaryKey => {accountId, path, uid};
 }
@@ -281,7 +288,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 17;
+  int get schemaVersion => 18;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -480,6 +487,11 @@ class MailDatabase extends _$MailDatabase {
       // Each account's calendars beside its main one. Empty until they
       // are next listed, which the calendar does as it reads them.
       await m.createTable(calendarLists);
+    }
+    if (from < 18) {
+      // When a Microsoft message left its folder. Null on every row there
+      // is: the numbers already spent stay blank, as they were.
+      await _addColumnIfMissing(m, graphIds, graphIds.goneAt);
     }
   }
 
@@ -980,6 +992,18 @@ class DriftCacheStore implements CacheStore {
           ),
         );
       }
+      // Not a Microsoft message that has left the folder since its header
+      // was read. A sync numbers what it lists and writes it here seconds
+      // later, and a delete in between, made here or from another isolate,
+      // had its row written back: the message came back on screen. With the
+      // rows, in the one transaction, so nothing reads them in between.
+      // Nothing for a Gmail folder, which has no numbering of its own.
+      b.customStatement(
+        'DELETE FROM messages WHERE account_id = ? AND path = ? AND uid IN ('
+        'SELECT uid FROM graph_ids WHERE account_id = ? AND path = ? '
+        "AND (gone_at IS NOT NULL OR remote_id = ''))",
+        [accountId, path, accountId, path],
+      );
     });
   }
 
