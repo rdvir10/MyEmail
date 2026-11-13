@@ -76,6 +76,11 @@ const _actionsRetryName = 'mailtree.notification-actions.retry';
 const _wakeTaskName = 'mailtree.wake-snoozed';
 const _wakeUniqueName = 'mailtree.wake-snoozed.next';
 
+/// Sending the changes kept for later, made while a server was out of
+/// reach: see [scheduleWaitingChanges].
+const _changesTaskName = 'mailtree.waiting-changes';
+const _changesUniqueName = 'mailtree.waiting-changes.next';
+
 /// The ongoing notification the foreground service is legally required to
 /// show. Its own channel, set to the lowest importance Android allows for a
 /// foreground service, so it sits silently at the bottom of the shade instead
@@ -308,6 +313,70 @@ Future<void> scheduleSnoozeWake(DateTime? at) async {
   );
 }
 
+/// Send the changes kept for later (see `KeepsChangesForLater`) once Android
+/// sees a network, and again after a minute, two, three, for as long as
+/// the server still does not answer: the job fails while any wait, and
+/// WorkManager's backoff brings it back.
+///
+/// The app sends them while it is in front, and every background pass
+/// before it syncs; this is for when neither is running, sync set to
+/// manual or the app put away. `keep`: one job waiting is enough, and one
+/// running looks at the whole table again before it says it is done.
+Future<void> scheduleWaitingChanges() async {
+  if (!_supported) return;
+  await Workmanager().initialize(backgroundCallbackDispatcher);
+  await Workmanager().registerOneOffTask(
+    _changesUniqueName,
+    _changesTaskName,
+    // Past the time the changes are held for their Undo.
+    initialDelay: CachedImapEngine.holdFor + const Duration(seconds: 5),
+    existingWorkPolicy: ExistingWorkPolicy.keep,
+    constraints: Constraints(networkType: NetworkType.connected),
+    backoffPolicy: BackoffPolicy.linear,
+    backoffPolicyDelay: const Duration(minutes: 1),
+  );
+}
+
+/// For an engine made in the background: changes it keeps for later are
+/// sent by [scheduleWaitingChanges]'s job.
+void _askForWaitingChanges() => unawaited(scheduleWaitingChanges()
+    .catchError((Object e) => debugPrint('[myemail] could not schedule the '
+        'changes waiting: $e')));
+
+/// The job [scheduleWaitingChanges] asks for.
+Future<bool> _runWaitingChanges() async {
+  DartPluginRegistrant.ensureInitialized();
+  MailDatabase? database;
+  CachedImapEngine? engine;
+  try {
+    final prefs = await SharedPreferencesWithCache.create(
+      cacheOptions: const SharedPreferencesWithCacheOptions(),
+    );
+    database = MailDatabase.open();
+    engine = CachedImapEngine(
+      accountStore: PrefsAccountStore(prefs),
+      credentialStore: SecureCredentialStore(),
+      cache: DriftCacheStore(database),
+      folderLists: PrefsFolderListStore(prefs),
+      graphIdMap: DriftGraphIdMap(database),
+    );
+    final sent = await engine.sendWaitingChanges();
+    // The app, if it is open, shows what changed.
+    if (sent.sent > 0 || sent.failed > 0) announceBackgroundPassDone();
+    if (sent.waiting > 0) {
+      debugPrint('[myemail] ${sent.waiting} changes still waiting for a '
+          'server');
+    }
+    return sent.waiting == 0;
+  } catch (e, stack) {
+    debugPrint('[myemail] changes waiting not sent: $e\n$stack');
+    return false;
+  } finally {
+    await engine?.close();
+    await database?.close();
+  }
+}
+
 /// The wake job: what is due back, and the job again for the next.
 Future<bool> _runWake() async {
   DartPluginRegistrant.ensureInitialized();
@@ -324,6 +393,7 @@ Future<bool> _runWake() async {
       cache: DriftCacheStore(database),
       folderLists: PrefsFolderListStore(prefs),
       graphIdMap: DriftGraphIdMap(database),
+      onChangesWaiting: _askForWaitingChanges,
     );
     final woken = await engine.wakeSnoozed();
     if (woken > 0) {
@@ -351,6 +421,7 @@ void backgroundCallbackDispatcher() {
         _actionsTaskName =>
           _runPendingActions(retry: inputData?['retry'] == true),
         _wakeTaskName => _runWake(),
+        _changesTaskName => _runWaitingChanges(),
         _ => Future.value(true),
       };
     },
@@ -544,6 +615,7 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
       senderBlocks: () => SenderBlocks.fromJsonString(
         prefs.getString(UiStateKeys.senderBlocks),
       ),
+      onChangesWaiting: _askForWaitingChanges,
     );
     engine = liveEngine;
 
@@ -755,6 +827,7 @@ Future<bool> _runOnePass() async {
       senderBlocks: () => SenderBlocks.fromJsonString(
         prefs.getString(UiStateKeys.senderBlocks),
       ),
+      onChangesWaiting: _askForWaitingChanges,
     );
 
     final notifier = AndroidMailNotifier();

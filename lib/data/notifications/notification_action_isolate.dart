@@ -321,6 +321,10 @@ Future<(NotificationActions, Future<void> Function())> _openActions() async {
     cache: DriftCacheStore(database),
     folderLists: PrefsFolderListStore(prefs),
     graphIdMap: DriftGraphIdMap(database),
+    // A Delete pressed with no signal is kept for later by the engine, and
+    // the press is done: this sends the delete when there is a network.
+    onChangesWaiting: () => unawaited(scheduleWaitingChanges()
+        .catchError((Object _) {})),
   );
   final uiState = PrefsUiStateStore(prefs);
   return (

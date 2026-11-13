@@ -18,6 +18,7 @@ export '../domain/calendar_reads.dart' show KeptCalendar;
 export '../domain/account_calendars.dart' show CalendarInfo;
 export '../domain/calendar_change.dart' show EventChange, EventNotes;
 export 'contacts/account_people.dart' show PeopleSearchAccess, PeopleSearchState;
+import 'auth/microsoft_oauth.dart' show SignInUnreachable;
 import 'auth/oauth_token.dart';
 import 'contacts/account_people.dart' show PeopleSearchAccess;
 import 'mailbox_settings/server_settings.dart';
@@ -37,6 +38,7 @@ import '../domain/recoverable_message.dart';
 import '../domain/free_busy.dart';
 import '../domain/mail_tip.dart';
 import '../domain/opened_headers.dart';
+import '../domain/pending_change.dart';
 import '../domain/password_expiry.dart';
 
 /// Everything the UI is allowed to know about talking to mail.
@@ -758,6 +760,13 @@ class AuthenticationFailed implements Exception, NeedsSignIn, ReadableError {
   String toString() => message;
 }
 
+/// The server would not let this account do that, though its sign-in is
+/// good: no permission (Microsoft's 403). Signing in again does not change
+/// it, so a change it refuses is not kept waiting for one.
+class AccessDenied extends AuthenticationFailed {
+  const AccessDenied(super.message);
+}
+
 /// The server could not be reached at all: no network, wrong host, TLS.
 class ConnectionFailed implements Exception, Retryable, ReadableError {
   const ConnectionFailed(this.message);
@@ -767,6 +776,121 @@ class ConnectionFailed implements Exception, Retryable, ReadableError {
 
   @override
   String toString() => message;
+}
+
+/// The server could not be reached, or did not answer: no network, a
+/// connection lost or never made, a request that timed out, a fault at the
+/// server's end (Microsoft's 502 and 503 among them) or a throttle that
+/// outlasted its retries. Unlike a refusal, it passes.
+///
+/// A move, a delete or a mark that meets it is kept on this device and
+/// sent once the server answers again: see [KeepsChangesForLater].
+class ServerUnreachable extends ConnectionFailed {
+  const ServerUnreachable(super.message);
+}
+
+/// Whether [error] is the server being out of reach for now ([ServerUnreachable],
+/// or a sign-in that could not reach its server to be renewed), rather than
+/// anything the server said, so a change can wait for it instead of failing.
+bool serverOutOfReach(Object error) => switch (error) {
+      ServerUnreachable() || SignInUnreachable() => true,
+      PartialMove(:final cause) || PartialFlagChange(:final cause) =>
+        serverOutOfReach(cause),
+      _ => false,
+    };
+
+/// How long a change kept for later waits before it is sent, at least:
+/// longer than the report of it stays on screen (`kBottomMessage`), so that
+/// its Undo finds it still here, to be taken back rather than fetched back.
+const changesHeldFor = Duration(seconds: 8);
+
+/// An engine that keeps a change it cannot make on the server for now, and
+/// makes it later. Not part of [MailEngine]: the sample engine has no server
+/// to wait for.
+///
+/// [MailEngine.deleteMessages], [MailEngine.moveMessages] within one
+/// account, and the marks (read, flagged, follow up) do this where the
+/// server is out of reach ([serverOutOfReach]): they answer as though done,
+/// the change is kept in the database, every list shows it as made, and it
+/// goes when [sendWaitingChanges] next finds the server answering. A move
+/// kept that way says so ([MessageMove.isWaiting]), and Undo takes it back
+/// before it goes. A change made while others for the same account wait
+/// waits behind them, so the server has them in the order they were made.
+abstract interface class KeepsChangesForLater {
+  /// How many changes are waiting for each account's server, where any are.
+  Future<Map<String, int>> changesWaiting();
+
+  /// Send the changes waiting, oldest first, where they have waited out
+  /// their Undo ([changesHeldFor]), or with [evenJustMade] all of them: for
+  /// Try now, which is asked for by hand. Never throws: what cannot go yet
+  /// waits on, and what never will is handed over by [takeFailedChanges].
+  Future<SentChanges> sendWaitingChanges({bool evenJustMade = false});
+
+  /// The changes given up on since last asked, to be told about. Each is
+  /// handed over once, and is no longer laid over its message, which shows
+  /// as its server has it again.
+  Future<List<FailedChange>> takeFailedChanges();
+}
+
+/// What [KeepsChangesForLater.sendWaitingChanges] did.
+class SentChanges {
+  const SentChanges({
+    this.sent = 0,
+    this.waiting = 0,
+    this.failed = 0,
+    this.folders = const {},
+  });
+
+  /// Changes the server now has.
+  final int sent;
+
+  /// Changes still waiting: the server out of reach, or too new to send.
+  final int waiting;
+
+  /// Changes given up on: the server refused them.
+  final int failed;
+
+  /// The folders whose lists are out of date now: where messages went
+  /// from and to, and where a change was given up on.
+  final Set<String> folders;
+
+  @override
+  String toString() =>
+      'SentChanges(sent $sent, waiting $waiting, failed $failed)';
+}
+
+/// Changes of one action that will never reach their server, and why: see
+/// [KeepsChangesForLater.takeFailedChanges].
+class FailedChange {
+  const FailedChange({
+    required this.accountId,
+    required this.kind,
+    required this.count,
+    required this.fromFolderId,
+    this.toFolderId,
+    required this.reason,
+    this.subject,
+    this.wanted,
+  });
+
+  final String accountId;
+  final PendingKind kind;
+
+  /// What a mark was to be: see [PendingChange.wanted].
+  final bool? wanted;
+
+  /// How many messages it was about.
+  final int count;
+
+  /// Where they were, and are again; where they were going, for a move.
+  final String fromFolderId;
+  final String? toFolderId;
+
+  /// What the server said, written for a person.
+  final String reason;
+
+  /// The message's subject, where it was about one.
+  final String? subject;
 }
 
 /// A read or flagged change on several messages that reached some of them:

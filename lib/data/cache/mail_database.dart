@@ -9,6 +9,7 @@ import '../../domain/address_suggestions.dart';
 import '../../domain/calendar_event.dart';
 import '../../domain/calendar_reads.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/pending_change.dart';
 import 'cache_store.dart';
 
 part 'mail_database.g.dart';
@@ -212,6 +213,41 @@ class CalendarLists extends Table {
   Set<Column> get primaryKey => {accountId};
 }
 
+/// Changes made on this device that their server has not had yet: see
+/// `PendingChange`. Here, beside the cache, for the reason [SnoozedMessages]
+/// is: the background sync sends them as well as the app. Added in schema
+/// 19.
+@DataClassName('PendingChangeRow')
+class PendingChanges extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get accountId => text()();
+  TextColumn get path => text()();
+  IntColumn get uid => integer()();
+  IntColumn get uidValidity => integer().nullable()();
+  TextColumn get messageId => text().nullable()();
+
+  /// `PendingKind`'s name.
+  TextColumn get kind => text()();
+  TextColumn get toPath => text().nullable()();
+  BoolColumn get wanted => boolean().nullable()();
+
+  /// A follow up's day, in milliseconds since the epoch.
+  IntColumn get due => integer().nullable()();
+
+  /// `PendingChange.action`: the changes of one action share it.
+  TextColumn get batch => text()();
+  IntColumn get madeAt => integer()();
+  IntColumn get tries => integer().withDefault(const Constant(0))();
+  TextColumn get error => text().nullable()();
+
+  /// Who is sending it, and since when; nobody where null.
+  TextColumn get claimedBy => text().nullable()();
+  IntColumn get claimedAt => integer().nullable()();
+
+  /// When it was given up on, to be told about; null while it waits.
+  IntColumn get failedAt => integer().nullable()();
+}
+
 @DriftDatabase(tables: [
   FolderStates,
   Messages,
@@ -220,6 +256,7 @@ class CalendarLists extends Table {
   KeptEvents,
   CalendarReads,
   CalendarLists,
+  PendingChanges,
 ])
 class MailDatabase extends _$MailDatabase {
   MailDatabase(super.executor);
@@ -288,7 +325,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 18;
+  int get schemaVersion => 19;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -492,6 +529,11 @@ class MailDatabase extends _$MailDatabase {
       // When a Microsoft message left its folder. Null on every row there
       // is: the numbers already spent stay blank, as they were.
       await _addColumnIfMissing(m, graphIds, graphIds.goneAt);
+    }
+    if (from < 19) {
+      // Changes kept for later. Empty until the server is next out of
+      // reach for one.
+      await m.createTable(pendingChanges);
     }
   }
 
@@ -1200,6 +1242,30 @@ class DriftCacheStore implements CacheStore {
           updates: {db.messages, db.folderStates},
         );
       }
+      // The changes waiting follow the folder, from it and into it.
+      await db.customUpdate(
+        'UPDATE pending_changes SET path = ? || substr(path, ?) '
+        'WHERE account_id = ? AND ${from.sql}',
+        variables: _variables([
+          newPath,
+          sqlLength(oldPath) + 1,
+          accountId,
+          ...from.args,
+        ]),
+        updates: {db.pendingChanges},
+      );
+      await db.customUpdate(
+        'UPDATE pending_changes SET to_path = ? || substr(to_path, ?) '
+        'WHERE account_id = ? AND '
+        '(to_path = ? OR substr(to_path, 1, ?) = ?)',
+        variables: _variables([
+          newPath,
+          sqlLength(oldPath) + 1,
+          accountId,
+          ...from.args,
+        ]),
+        updates: {db.pendingChanges},
+      );
     });
   }
 
@@ -1207,11 +1273,11 @@ class DriftCacheStore implements CacheStore {
   Future<void> deleteFolder(String accountId, String path) async {
     final subtree = folderSubtree(path);
     await db.transaction(() async {
-      for (final table in ['messages', 'folder_states']) {
+      for (final table in ['messages', 'folder_states', 'pending_changes']) {
         await db.customUpdate(
           'DELETE FROM $table WHERE account_id = ? AND ${subtree.sql}',
           variables: _variables([accountId, ...subtree.args]),
-          updates: {db.messages, db.folderStates},
+          updates: {db.messages, db.folderStates, db.pendingChanges},
           updateKind: UpdateKind.delete,
         );
       }
@@ -1249,8 +1315,244 @@ class DriftCacheStore implements CacheStore {
       await (db.delete(db.calendarLists)
             ..where((t) => t.accountId.equals(accountId)))
           .go();
+      await (db.delete(db.pendingChanges)
+            ..where((t) => t.accountId.equals(accountId)))
+          .go();
     });
   }
+
+  // --- changes kept for later ------------------------------------------------
+
+  static PendingChange _pendingFrom(PendingChangeRow r) => PendingChange(
+        id: r.id,
+        accountId: r.accountId,
+        path: r.path,
+        uid: r.uid,
+        uidValidity: r.uidValidity,
+        messageId: r.messageId,
+        kind: PendingKind.values.firstWhere(
+          (k) => k.name == r.kind,
+          // Written by a later version and read by this one: kept, and
+          // sent as nothing worse than a mark.
+          orElse: () => PendingKind.read,
+        ),
+        toPath: r.toPath,
+        wanted: r.wanted,
+        due: r.due == null ? null : DateTime.fromMillisecondsSinceEpoch(r.due!),
+        action: r.batch,
+        madeAt: DateTime.fromMillisecondsSinceEpoch(r.madeAt),
+        tries: r.tries,
+        error: r.error,
+      );
+
+  @override
+  Future<void> addPending(List<PendingChange> changes) async {
+    if (changes.isEmpty) return;
+    await db.batch((b) => b.insertAll(db.pendingChanges, [
+          for (final c in changes)
+            PendingChangesCompanion.insert(
+              accountId: c.accountId,
+              path: c.path,
+              uid: c.uid,
+              uidValidity: Value(c.uidValidity),
+              messageId: Value(c.messageId),
+              kind: c.kind.name,
+              toPath: Value(c.toPath),
+              wanted: Value(c.wanted),
+              due: Value(c.due?.millisecondsSinceEpoch),
+              batch: c.action,
+              madeAt: c.madeAt.millisecondsSinceEpoch,
+            ),
+        ]));
+  }
+
+  @override
+  Future<List<PendingChange>> readPending({String? accountId}) async {
+    final rows = await (db.select(db.pendingChanges)
+          ..where((t) {
+            final waiting = t.failedAt.isNull();
+            return accountId == null
+                ? waiting
+                : waiting & t.accountId.equals(accountId);
+          })
+          ..orderBy([(t) => OrderingTerm.asc(t.id)]))
+        .get();
+    return rows.map(_pendingFrom).toList();
+  }
+
+  @override
+  Future<List<PendingChange>> claimPending({
+    required String by,
+    required DateTime madeBefore,
+    required DateTime staleBefore,
+    required DateTime now,
+  }) =>
+      db.transaction(() async {
+        // In one statement, so two senders, the app's and the background's,
+        // cannot both take the same change.
+        // Not an account whose changes another sender holds, whose later
+        // changes would otherwise go ahead of the ones it has.
+        await db.customUpdate(
+          'UPDATE pending_changes SET claimed_by = ?, claimed_at = ? '
+          'WHERE failed_at IS NULL AND made_at <= ? '
+          'AND (claimed_at IS NULL OR claimed_at < ?) '
+          'AND account_id NOT IN (SELECT account_id FROM pending_changes '
+          'WHERE failed_at IS NULL AND claimed_by IS NOT NULL '
+          'AND claimed_by <> ? AND claimed_at >= ?)',
+          variables: _variables([
+            by,
+            now.millisecondsSinceEpoch,
+            madeBefore.millisecondsSinceEpoch,
+            staleBefore.millisecondsSinceEpoch,
+            by,
+            staleBefore.millisecondsSinceEpoch,
+          ]),
+          updates: {db.pendingChanges},
+        );
+        final rows = await (db.select(db.pendingChanges)
+              ..where((t) => t.claimedBy.equals(by) & t.failedAt.isNull())
+              ..orderBy([(t) => OrderingTerm.asc(t.id)]))
+            .get();
+        return rows.map(_pendingFrom).toList();
+      });
+
+  @override
+  Future<Set<int>> renewPending(String by, DateTime now) =>
+      db.transaction(() async {
+        await db.customUpdate(
+          'UPDATE pending_changes SET claimed_at = ? '
+          'WHERE claimed_by = ? AND failed_at IS NULL',
+          variables: _variables([now.millisecondsSinceEpoch, by]),
+          updates: {db.pendingChanges},
+        );
+        final rows = await (db.select(db.pendingChanges)
+              ..where((t) => t.claimedBy.equals(by) & t.failedAt.isNull()))
+            .get();
+        return {for (final r in rows) r.id};
+      });
+
+  @override
+  Future<void> dropPending(Iterable<int> ids) async {
+    final all = ids.toList();
+    if (all.isEmpty) return;
+    await (db.delete(db.pendingChanges)..where((t) => t.id.isIn(all))).go();
+  }
+
+  @override
+  Future<void> releasePending(
+    Iterable<int> ids, {
+    required String by,
+    required String error,
+    required DateTime now,
+    bool failed = false,
+  }) async {
+    final all = ids.toList();
+    if (all.isEmpty) return;
+    await db.customUpdate(
+      'UPDATE pending_changes SET claimed_by = NULL, claimed_at = NULL, '
+      'tries = tries + 1, error = ?, failed_at = ? '
+      'WHERE claimed_by = ? '
+      'AND id IN (${List.filled(all.length, '?').join(', ')})',
+      variables: [
+        Variable.withString(error),
+        failed
+            ? Variable.withInt(now.millisecondsSinceEpoch)
+            : const Variable<int>(null),
+        Variable.withString(by),
+        for (final id in all) Variable.withInt(id),
+      ],
+      updates: {db.pendingChanges},
+    );
+  }
+
+  @override
+  Future<void> unclaimPending(Iterable<int> ids, {required String by}) async {
+    final all = ids.toList();
+    if (all.isEmpty) return;
+    await db.customUpdate(
+      'UPDATE pending_changes SET claimed_by = NULL, claimed_at = NULL '
+      'WHERE claimed_by = ? '
+      'AND id IN (${List.filled(all.length, '?').join(', ')})',
+      variables: [
+        Variable.withString(by),
+        for (final id in all) Variable.withInt(id),
+      ],
+      updates: {db.pendingChanges},
+    );
+  }
+
+  /// Rows taken out under [token], first marked with it in a write, so the
+  /// transaction starts by writing. Read first, it held a snapshot that
+  /// another connection's commit, the background's say, made too old to
+  /// write from, which SQLite refuses at once as "database is locked"
+  /// whatever the wait allowed: an Undo would have failed for that.
+  Future<List<PendingChangeRow>> _takeMarked(String token) async {
+    final rows = await (db.select(db.pendingChanges)
+          ..where((t) => t.claimedBy.equals(token))
+          ..orderBy([(t) => OrderingTerm.asc(t.id)]))
+        .get();
+    await (db.delete(db.pendingChanges)
+          ..where((t) => t.claimedBy.equals(token)))
+        .go();
+    return rows;
+  }
+
+  static var _tokens = 0;
+
+  static String _token(String what) =>
+      '$what-${DateTime.now().microsecondsSinceEpoch}-${_tokens++}';
+
+  @override
+  Future<({List<PendingChange> taken, int going})> cancelPending(
+    String action, {
+    required DateTime staleBefore,
+  }) =>
+      db.transaction(() async {
+        final token = _token('undo');
+        await db.customUpdate(
+          'UPDATE pending_changes SET claimed_by = ?, claimed_at = 0 '
+          'WHERE batch = ? AND failed_at IS NULL '
+          'AND (claimed_at IS NULL OR claimed_at < ?)',
+          variables: _variables([
+            token,
+            action,
+            staleBefore.millisecondsSinceEpoch,
+          ]),
+          updates: {db.pendingChanges},
+        );
+        final taken = await _takeMarked(token);
+        final going = db.pendingChanges.id.count();
+        final row = await (db.selectOnly(db.pendingChanges)
+              ..addColumns([going])
+              ..where(db.pendingChanges.batch.equals(action) &
+                  db.pendingChanges.failedAt.isNull()))
+            .getSingle();
+        return (
+          taken: taken.map(_pendingFrom).toList(),
+          going: row.read(going) ?? 0,
+        );
+      });
+
+  @override
+  Future<List<PendingChange>> takeFailedPending() => db.transaction(() async {
+        final token = _token('told');
+        await db.customUpdate(
+          'UPDATE pending_changes SET claimed_by = ? '
+          'WHERE failed_at IS NOT NULL',
+          variables: _variables([token]),
+          updates: {db.pendingChanges},
+        );
+        return (await _takeMarked(token)).map(_pendingFrom).toList();
+      });
+
+  @override
+  Future<void> renumberPending(int id, int uid, int? uidValidity) =>
+      (db.update(db.pendingChanges)..where((t) => t.id.equals(id))).write(
+        PendingChangesCompanion(
+          uid: Value(uid),
+          uidValidity: Value(uidValidity),
+        ),
+      );
 
   @override
   Future<void> keepCalendarList(

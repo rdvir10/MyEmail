@@ -327,7 +327,9 @@ class GraphMailApi {
       }
       if (again.isEmpty) return found;
       if (attempt >= maxThrottleRetries || wait > maxThrottleWait) {
-        throw const ConnectionFailed(
+        // Busy, which passes: not a refusal. A change kept for later is
+        // tried again for this, not given up on.
+        throw const GraphUnavailable(
           'Microsoft is busy and would not say which folder is the Inbox. '
           'Try again shortly.',
         );
@@ -1507,7 +1509,9 @@ class GraphMailApi {
     try {
       decoded = jsonDecode(response.body);
     } on FormatException {
-      throw ConnectionFailed(
+      // A page from something in between, a network's sign-in page or a
+      // proxy, more often than Microsoft: one that passes.
+      throw GraphUnavailable(
         'Microsoft answered with something that was not JSON '
         '(HTTP ${response.statusCode}).',
       );
@@ -1571,7 +1575,7 @@ class GraphMailApi {
       );
     }
     if (status == 403) {
-      return const AuthenticationFailed(
+      return const AccessDenied(
         'Microsoft would not let the app do that with this account. If it is '
         'a work or school account, an administrator may need to approve the '
         'app for your organisation.',
@@ -1737,7 +1741,7 @@ class GraphAttachment {
 /// Told apart so that what is only nice to have, a message's invitation,
 /// can do without an answer Microsoft refused, and still not be taken for
 /// absent on the strength of one it never gave.
-class GraphUnavailable extends ConnectionFailed {
+class GraphUnavailable extends ServerUnreachable {
   const GraphUnavailable(super.message);
 }
 

@@ -16,6 +16,7 @@ import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import '../../state/search_providers.dart';
 import '../../state/sync_providers.dart' show backgroundSchedulerProvider;
+import '../../state/waiting_changes.dart';
 import 'move_to_sheet.dart';
 
 /// The messages ticked in [listId]'s list, in its order: the search hits
@@ -598,6 +599,7 @@ class MessageActions {
     }
     container.invalidate(searchHitsProvider);
     container.invalidate(filterHitsProvider);
+    unawaited(container.read(waitingChangesProvider.notifier).changed());
     final index = container.read(folderIndexProvider);
     for (final accountId in {
       ...changed.map((m) => m.accountId),
@@ -634,6 +636,9 @@ class MessageActions {
   /// The link's work is done through the [ProviderContainer], as is
   /// everything else here: a snackbar outlives the widget that raised it,
   /// and so does the action itself. See [container].
+  ///
+  /// A move or delete that went no further than this device, its server
+  /// out of reach, says it will sync later; see [MessageMove.isWaiting].
   void _say(
     _Reporter to,
     String message, {
@@ -644,10 +649,14 @@ class MessageActions {
     final messenger = to.messenger;
     final offer = undo != null && canUndoAll(undo, of);
     final container = offer ? to.container : null;
+    final waiting = undo?.any((m) => m.isWaiting) ?? false;
+    final said = !waiting
+        ? message
+        : '${message.endsWith('.') ? message : '$message.'} $waitingToSync';
     messenger
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(duration: kBottomMessage, persist: false,
-        content: Text(message),
+        content: Text(said),
         action: offer
             ? SnackBarAction(
                 label: 'Undo',
@@ -739,6 +748,8 @@ Future<void> undoMoves(
         container.invalidate(messagesProvider(folderId));
       }
       container.invalidate(searchHitsProvider);
+      // A move taken back before it went is no longer waiting.
+      unawaited(container.read(waitingChangesProvider.notifier).refresh());
       for (final accountId in {
         for (final m in moves) ...[
           ?index[m.fromFolderId]?.accountId,

@@ -115,6 +115,10 @@ Future<void> main() async {
           folderLists: PrefsFolderListStore(prefs),
           // Mail read, filed or deleted here takes its notification with it.
           onMessagesHandled: (handled) => unawaited(notifier.withdraw(handled)),
+          // A change the server could not be reached for, sent when there
+          // is a network even if the app is closed by then.
+          onChangesWaiting: () => unawaited(
+              scheduleWaitingChanges().catchError((Object _) {})),
           // The store the settings write it to, read as each Inbox syncs.
           senderBlocks: () => SenderBlocks.fromJsonString(
             prefs.getString(UiStateKeys.senderBlocks),

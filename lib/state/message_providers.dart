@@ -21,6 +21,7 @@ import 'message_keeping.dart';
 import 'pinned_messages.dart';
 import 'providers.dart';
 import 'search_providers.dart';
+import 'waiting_changes.dart';
 
 /// The messages shown for a folder, newest first, and the flag changes made
 /// to them.
@@ -508,6 +509,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
           .read(mailEngineProvider)
           .setFollowUp(ids, due: due, complete: complete);
     } on PartialFlagChange catch (part) {
+      _mayBeWaiting();
       final failed = part.failed.toSet();
       _putFollowUpsBack([for (final id in failed) ?before[id]]);
       _afterFlags([
@@ -520,6 +522,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       rethrow;
     }
     _afterFlags(before.values);
+    _mayBeWaiting();
   }
 
   void _putFollowUpsBack(Iterable<MailMessage> rows) {
@@ -583,6 +586,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     try {
       moves = await op();
     } on PartialMove catch (part) {
+      _mayBeWaiting();
       // Some went: those stay gone, and only the rest come back.
       final went = part.moved.toSet();
       _putBack([
@@ -603,6 +607,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     } finally {
       _removing.removeAll(removing);
     }
+    if (moves.any((m) => m.isWaiting)) _mayBeWaiting();
     // Where they went too, which for a delete only the engine knows: a
     // Trash list opened earlier otherwise lacked them until pulled, while
     // its count in the tree had already gone up.
@@ -612,6 +617,12 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     );
     return moves;
   }
+
+  /// A change made from here may have been kept for later, the server
+  /// being out of reach: the count of those waiting is read again, and
+  /// they go once their Undo has run out. See [WaitingChanges.changed].
+  void _mayBeWaiting() =>
+      unawaited(ref.read(waitingChangesProvider.notifier).changed());
 
   /// Put [rows] back where they were in [snapshot], into the list as it is
   /// now.
@@ -700,6 +711,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       if (isRead != null) await engine.setMessagesRead(ids, isRead);
       if (isFlagged != null) await engine.setMessagesFlagged(ids, isFlagged);
     } on PartialFlagChange catch (part) {
+      _mayBeWaiting();
       final failed = part.failed.toSet();
       _putFlagsBack([for (final id in failed) ?before[id]]);
       _afterFlags([
@@ -717,6 +729,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       rethrow;
     }
     _afterFlags(before.values, isRead: isRead);
+    _mayBeWaiting();
   }
 
   /// [rows] back as they were, read and flagged, and nothing else: the rest

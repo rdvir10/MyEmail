@@ -5,6 +5,7 @@ import '../../domain/address_suggestions.dart';
 import '../../domain/calendar_event.dart';
 import '../../domain/calendar_reads.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/pending_change.dart';
 
 /// Per-folder bookkeeping the sync needs between runs.
 @immutable
@@ -460,7 +461,72 @@ abstract class CacheStore {
   /// server's full listing. A folder deleted or renamed on another device
   /// otherwise kept its messages and bodies here for good.
   Future<void> pruneFolders(String accountId, Set<String> paths);
+
+  /// Everything of the account's, the changes waiting for its server
+  /// included.
   Future<void> deleteAccount(String accountId);
+
+  // --- changes kept for later ------------------------------------------------
+
+  /// Keep [changes] until their server has them: see [PendingChange]. Each
+  /// is given its id, in the order given, which is the order they are sent.
+  Future<void> addPending(List<PendingChange> changes);
+
+  /// The changes waiting, oldest first: [accountId]'s, or every account's.
+  /// Not those given up on, which [takeFailedPending] hands over.
+  Future<List<PendingChange>> readPending({String? accountId});
+
+  /// The changes waiting that were made by [madeBefore] and that nobody is
+  /// sending, taken for [by] to send, oldest first. A sender that took
+  /// changes before [staleBefore] is taken to have died with them, and
+  /// they are taken from it.
+  ///
+  /// None of an account whose changes another sender holds: the server is
+  /// to have them in the order made, and the later ones would go ahead of
+  /// the earlier.
+  Future<List<PendingChange>> claimPending({
+    required String by,
+    required DateTime madeBefore,
+    required DateTime staleBefore,
+    required DateTime now,
+  });
+
+  /// The ids of the changes [by] still holds, each held afresh from [now]:
+  /// a send that runs long keeps them, and one whose hold lapsed and went
+  /// to another sender learns it has lost them.
+  Future<Set<int>> renewPending(String by, DateTime now);
+
+  /// Sent, or no longer needed: gone.
+  Future<void> dropPending(Iterable<int> ids);
+
+  /// Not sent, because of [error]: let go of by [by] for the next try, or
+  /// with [failed], given up on, to be told about through
+  /// [takeFailedPending]. Not those another sender holds now.
+  Future<void> releasePending(
+    Iterable<int> ids, {
+    required String by,
+    required String error,
+    required DateTime now,
+    bool failed = false,
+  });
+
+  /// Let go of by [by] untried, for the next to send: they wait behind an
+  /// earlier change of their account that could not go.
+  Future<void> unclaimPending(Iterable<int> ids, {required String by});
+
+  /// [action]'s changes taken back before they go: those nobody is sending
+  /// ([staleBefore] as for [claimPending]), and how many somebody is.
+  Future<({List<PendingChange> taken, int going})> cancelPending(
+    String action, {
+    required DateTime staleBefore,
+  });
+
+  /// The changes given up on, taken out to be told about, oldest first.
+  Future<List<PendingChange>> takeFailedPending();
+
+  /// A waiting change's message, found again under [uid] once its folder's
+  /// numbers had been dealt out afresh, as [uidValidity] now says.
+  Future<void> renumberPending(int id, int uid, int? uidValidity);
 }
 
 /// In-memory implementation for tests and the browser preview.
@@ -853,6 +919,24 @@ class MemoryCacheStore implements CacheStore {
       final st = _states.remove(e.key);
       if (st != null) _states[e.value] = st;
     }
+    // The changes waiting follow it, from it and into it.
+    String? moved(String? path) {
+      if (path == null) return null;
+      if (path == oldPath) return newPath;
+      if (path.startsWith('$oldPath/')) {
+        return '$newPath${path.substring(oldPath.length)}';
+      }
+      return null;
+    }
+
+    for (final k in _pending.values) {
+      if (k.change.accountId != accountId) continue;
+      final from = moved(k.change.path);
+      final to = moved(k.change.toPath);
+      if (from != null || to != null) {
+        k.change = k.change.copyWith(path: from, toPath: to);
+      }
+    }
   }
 
   @override
@@ -861,6 +945,9 @@ class MemoryCacheStore implements CacheStore {
     final exact = _k(accountId, path);
     _messages.removeWhere((k, _) => k == exact || k.startsWith(prefix));
     _states.removeWhere((k, _) => k == exact || k.startsWith(prefix));
+    _pending.removeWhere((_, k) =>
+        k.change.accountId == accountId &&
+        (k.change.path == path || k.change.path.startsWith('$path/')));
   }
 
   @override
@@ -878,7 +965,157 @@ class MemoryCacheStore implements CacheStore {
     _messages.removeWhere((k, _) => k.startsWith(prefix));
     _states.removeWhere((k, _) => k.startsWith(prefix));
     _calendars.forget(accountId);
+    _pending.removeWhere((_, k) => k.change.accountId == accountId);
   }
+
+  final Map<int, _KeptChange> _pending = {};
+  var _nextPending = 1;
+
+  List<_KeptChange> get _pendingInOrder =>
+      _pending.values.toList()..sort((a, b) => a.change.id.compareTo(b.change.id));
+
+  @override
+  Future<void> addPending(List<PendingChange> changes) async {
+    for (final c in changes) {
+      final id = _nextPending++;
+      _pending[id] = _KeptChange(c.copyWith(id: id));
+    }
+  }
+
+  @override
+  Future<List<PendingChange>> readPending({String? accountId}) async => [
+        for (final k in _pendingInOrder)
+          if (k.failedAt == null &&
+              (accountId == null || k.change.accountId == accountId))
+            k.change,
+      ];
+
+  bool _heldElsewhere(_KeptChange k, String by, DateTime staleBefore) =>
+      k.failedAt == null &&
+      k.claimedBy != null &&
+      k.claimedBy != by &&
+      !k.claimedAt!.isBefore(staleBefore);
+
+  @override
+  Future<List<PendingChange>> claimPending({
+    required String by,
+    required DateTime madeBefore,
+    required DateTime staleBefore,
+    required DateTime now,
+  }) async {
+    final busy = {
+      for (final k in _pending.values)
+        if (_heldElsewhere(k, by, staleBefore)) k.change.accountId,
+    };
+    final taken = <PendingChange>[];
+    for (final k in _pendingInOrder) {
+      if (k.failedAt != null || k.change.madeAt.isAfter(madeBefore)) continue;
+      if (busy.contains(k.change.accountId)) continue;
+      if (k.claimedAt case final at? when !at.isBefore(staleBefore)) continue;
+      k
+        ..claimedBy = by
+        ..claimedAt = now;
+      taken.add(k.change);
+    }
+    return taken;
+  }
+
+  @override
+  Future<Set<int>> renewPending(String by, DateTime now) async {
+    final mine = <int>{};
+    for (final k in _pending.values) {
+      if (k.claimedBy != by || k.failedAt != null) continue;
+      k.claimedAt = now;
+      mine.add(k.change.id);
+    }
+    return mine;
+  }
+
+  @override
+  Future<void> dropPending(Iterable<int> ids) async {
+    for (final id in ids) {
+      _pending.remove(id);
+    }
+  }
+
+  @override
+  Future<void> releasePending(
+    Iterable<int> ids, {
+    required String by,
+    required String error,
+    required DateTime now,
+    bool failed = false,
+  }) async {
+    for (final id in ids) {
+      final k = _pending[id];
+      if (k == null || k.claimedBy != by) continue;
+      k
+        ..claimedBy = null
+        ..claimedAt = null
+        ..failedAt = failed ? now : null
+        ..change = k.change.copyWith(tries: k.change.tries + 1, error: error);
+    }
+  }
+
+  @override
+  Future<void> unclaimPending(Iterable<int> ids, {required String by}) async {
+    for (final id in ids) {
+      final k = _pending[id];
+      if (k == null || k.claimedBy != by) continue;
+      k
+        ..claimedBy = null
+        ..claimedAt = null;
+    }
+  }
+
+  @override
+  Future<({List<PendingChange> taken, int going})> cancelPending(
+    String action, {
+    required DateTime staleBefore,
+  }) async {
+    final taken = <PendingChange>[];
+    var going = 0;
+    for (final k in _pendingInOrder) {
+      if (k.change.action != action || k.failedAt != null) continue;
+      if (k.claimedAt case final at? when !at.isBefore(staleBefore)) {
+        going++;
+        continue;
+      }
+      _pending.remove(k.change.id);
+      taken.add(k.change);
+    }
+    return (taken: taken, going: going);
+  }
+
+  @override
+  Future<List<PendingChange>> takeFailedPending() async {
+    final failed = [
+      for (final k in _pendingInOrder)
+        if (k.failedAt != null) k.change,
+    ];
+    for (final c in failed) {
+      _pending.remove(c.id);
+    }
+    return failed;
+  }
+
+  @override
+  Future<void> renumberPending(int id, int uid, int? uidValidity) async {
+    final k = _pending[id];
+    if (k != null) {
+      k.change = k.change.copyWith(uid: uid, uidValidity: uidValidity);
+    }
+  }
+}
+
+/// A change kept by [MemoryCacheStore], and who is sending it.
+class _KeptChange {
+  _KeptChange(this.change);
+
+  PendingChange change;
+  String? claimedBy;
+  DateTime? claimedAt;
+  DateTime? failedAt;
 }
 
 /// [CacheStore.keepCalendar] and [CacheStore.keptCalendar] in memory, for

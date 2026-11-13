@@ -24,7 +24,22 @@ class MessageMove {
     required this.movedIds,
     this.messageIds = const [],
     this.originals,
+    this.waiting = const [],
+    this.action,
   });
+
+  /// The messages, by the ids they had, whose move has not reached the
+  /// server yet: it could not be reached, and they wait on this device
+  /// until it can be. Their folder no longer shows them, and the folder
+  /// they are going to does not yet. Undo takes the move back before it
+  /// goes, by [action]; see `KeepsChangesForLater`.
+  final List<String> waiting;
+
+  /// The name the waiting changes were kept under.
+  final String? action;
+
+  /// Whether this went no further than this device.
+  bool get isWaiting => waiting.isNotEmpty;
 
   /// Where the originals went, on a move to another account: into this
   /// account's Trash, or nowhere where they were deleted for good, which
@@ -51,10 +66,14 @@ class MessageMove {
 
   /// Whether this can be put back, by either route. A move to another
   /// account only while the originals can be.
+  ///
+  /// One still waiting always can: until it goes, putting it back is not
+  /// sending it, even for a delete for good.
   bool get canUndo =>
+      isWaiting ||
       (movedIds.isNotEmpty || messageIds.isNotEmpty) &&
-      fromFolderId != toFolderId &&
-      (originals?.canUndo ?? true);
+          fromFolderId != toFolderId &&
+          (originals?.canUndo ?? true);
 
   /// Every folder this put something in, whose list is out of date: where
   /// they went, and on a move into another account, the Trash the originals
@@ -62,11 +81,17 @@ class MessageMove {
   List<String> get landedIn => [toFolderId, ?originals?.toFolderId];
 
   /// How many messages this accounts for.
-  int get count => movedIds.isNotEmpty ? movedIds.length : messageIds.length;
+  int get count => isWaiting
+      ? waiting.length
+      : movedIds.isNotEmpty
+          ? movedIds.length
+          : messageIds.length;
 
   @override
-  String toString() =>
-      'MessageMove(${movedIds.length} from $fromFolderId to $toFolderId)';
+  String toString() => isWaiting
+      ? 'MessageMove(${waiting.length} waiting, from $fromFolderId to '
+          '$toFolderId)'
+      : 'MessageMove(${movedIds.length} from $fromFolderId to $toFolderId)';
 }
 
 /// Whether a whole batch can be put back.

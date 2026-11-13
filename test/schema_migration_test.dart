@@ -10,6 +10,7 @@ import 'package:myemail/data/graph/graph_id_map.dart';
 import 'package:myemail/domain/account_calendars.dart';
 import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/pending_change.dart';
 import 'package:sqlite3/sqlite3.dart' show sqlite3;
 
 import 'fakes/fake_imap_transport.dart';
@@ -62,8 +63,25 @@ void main() {
   // and every test here would still have passed, while every device
   // upgrading from 2.35 or earlier failed on every cache read.
 
-  /// What schema 18 added: when a Microsoft message left its folder.
+  /// What schema 19 added: changes kept for later.
+  Future<void> dropSchema19(MailDatabase db) async {
+    await db.customStatement('DROP TABLE IF EXISTS pending_changes');
+  }
+
+  /// A database as it stood at schema 18, the release before this one:
+  /// nowhere to keep a change the server could not be reached for.
+  Future<void> buildVersion18() async {
+    final db = MailDatabase(NativeDatabase(file));
+    await DriftCacheStore(db).upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await dropSchema19(db);
+    await db.customStatement('PRAGMA user_version = 18');
+    await db.close();
+  }
+
+  /// What schema 18 added: when a Microsoft message left its folder. And
+  /// everything after it.
   Future<void> dropSchema18(MailDatabase db) async {
+    await dropSchema19(db);
     final columns =
         await db.customSelect('PRAGMA table_info(graph_ids)').get();
     if (columns.any((c) => c.read<String>('name') == 'gone_at')) {
@@ -78,7 +96,7 @@ void main() {
     await db.customStatement('DROP TABLE IF EXISTS calendar_lists');
   }
 
-  /// A database as it stood at schema 17, the release before this one: a
+  /// A database as it stood at schema 17: a
   /// Microsoft folder numbered, one message deleted from it, and nothing
   /// kept of when.
   Future<void> buildVersion17() async {
@@ -1024,6 +1042,30 @@ void main() {
     // And one deleted from now on is remembered as gone.
     await ids.forgetMoved('acct-2', 'Inbox', [1]);
     expect(await ids.uidsFor('acct-2', 'Inbox', ['g-1']), isEmpty);
+  });
+
+  test('a version 18 database gains somewhere to keep changes for later, '
+      'and keeps its rows', () async {
+    await buildVersion18();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    expect((await store.readMessages('acct-1', 'INBOX')).single.subject,
+        'Cached before the upgrade');
+    expect(await store.readPending(), isEmpty);
+    await store.addPending([
+      PendingChange(
+        accountId: 'acct-1',
+        path: 'INBOX',
+        uid: 11,
+        kind: PendingKind.delete,
+        toPath: 'Trash',
+        action: 'one',
+        madeAt: DateTime(2026, 11, 12, 9),
+      ),
+    ]);
+    expect((await store.readPending()).single.uid, 11);
   });
 
   test('and so does one coming up from before arrival times were kept',

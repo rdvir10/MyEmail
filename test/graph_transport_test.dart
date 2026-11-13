@@ -2932,8 +2932,12 @@ void main() {
 
     test('flagged, with one refused, says which and keeps the rest',
         () async {
+      // Refused, not unanswered: a server fault is kept for later instead
+      // (see "kept for later on a Microsoft account").
       final shown = await listed(3);
-      server.refusePatchOf.add('m1');
+      server
+        ..refusePatchOf.add('m1')
+        ..patchRefusal = 400;
       final refused = shown.firstWhere((m) => m.subject == 'M1');
 
       await expectLater(
@@ -2965,6 +2969,122 @@ void main() {
         [for (final m in await engine.cachedMessages(refused.folderId)) m.id],
         [refused.id],
       );
+    });
+  });
+
+  // Ron on an aeroplane, 2026-11-12: "Could not delete: Microsoft is having
+  // trouble (HTTP 502)." The change is kept and goes when Microsoft answers.
+  group('kept for later on a Microsoft account', () {
+    late CachedImapEngine engine;
+    late DateTime now;
+
+    setUp(() {
+      now = DateTime(2026, 11, 12, 9);
+      engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => patientTransport,
+        senderFactory: (_, _) => _SendsNothing(),
+        clock: () => now,
+      );
+    });
+
+    Future<List<MailMessage>> inbox() async {
+      server
+        ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+        ..folder(id: 'f-del', name: 'Deleted Items', wellKnown: 'deleteditems');
+      for (var i = 0; i < 3; i++) {
+        server.message('f-inbox', id: 'm$i', subject: 'M$i', minutesAgo: 3 - i);
+      }
+      final account = await engine.addAccount(
+        displayName: 'Hadco',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      await engine.loadFolders(account.id);
+      return engine.loadMessages('${account.id}:Inbox');
+    }
+
+    test('a delete answered 502 waits, and goes when Microsoft answers',
+        () async {
+      final shown = await inbox();
+      final doomed = shown.firstWhere((m) => m.subject == 'M0');
+      server.emptyRefusalOfMove = 502;
+
+      final moves = await engine.deleteMessages([doomed.id]);
+
+      expect(moves.single.isWaiting, isTrue);
+      expect(server.messages['m0']!['_folder'], 'f-inbox');
+      expect(
+        [for (final m in await engine.cachedMessages(doomed.folderId)) m.id],
+        isNot(contains(doomed.id)),
+      );
+
+      server.emptyRefusalOfMove = null;
+      now = now.add(const Duration(seconds: 10));
+      final sent = await engine.sendWaitingChanges();
+
+      expect(sent.sent, 1);
+      expect(
+        [
+          for (final m in server.messages.values)
+            if (m['subject'] == 'M0') m['_folder'],
+        ],
+        ['f-del'],
+      );
+    });
+
+    test('marked read while Microsoft has trouble, shows read, and goes',
+        () async {
+      final shown = await inbox();
+      final first = shown.firstWhere((m) => m.subject == 'M1');
+      server.refusePatchOf.add('m1');
+
+      await engine.setMessagesRead([first.id], true);
+
+      expect(server.messages['m1']!['isRead'], isNot(true));
+      expect(
+        (await engine.cachedMessages(first.folderId))
+            .firstWhere((m) => m.id == first.id)
+            .isRead,
+        isTrue,
+      );
+      server.refusePatchOf.clear();
+      now = now.add(const Duration(seconds: 10));
+      await engine.sendWaitingChanges();
+      expect(server.messages['m1']!['isRead'], isTrue);
+    });
+
+    test('kept, and refused with a 403 when it goes, it is given up on, not '
+        'kept waiting for a sign-in', () async {
+      final shown = await inbox();
+      final first = shown.firstWhere((m) => m.subject == 'M1');
+      server.refusePatchOf.add('m1');
+      await engine.setMessagesRead([first.id], true);
+      server.patchRefusal = 403;
+      now = now.add(const Duration(seconds: 10));
+
+      final sent = await engine.sendWaitingChanges();
+
+      expect((sent.sent, sent.waiting, sent.failed), (0, 0, 1));
+      expect((await engine.takeFailedChanges()).single.reason,
+          contains('would not let the app'));
+    });
+
+    test('a refusal is still said at once', () async {
+      final shown = await inbox();
+      server
+        ..refusePatchOf.add('m1')
+        ..patchRefusal = 403;
+
+      await expectLater(
+        engine.setMessagesRead(
+            [shown.firstWhere((m) => m.subject == 'M1').id], true),
+        throwsA(isA<AuthenticationFailed>()),
+      );
+      expect(await engine.changesWaiting(), isEmpty);
     });
   });
 
@@ -3086,8 +3206,12 @@ class _FakeGraph {
   /// Messages whose delete is answered 404 although they are there.
   final Set<String> refuseDeleteOf = {};
 
-  /// Messages whose PATCH is answered 500.
+  /// Messages whose PATCH is answered with [patchRefusal].
   final Set<String> refusePatchOf = {};
+
+  /// What a refused PATCH is answered with: a server fault, which passes,
+  /// unless a test wants a refusal that does not.
+  int patchRefusal = 500;
 
   /// Every message PATCH answered 500.
   bool refuseAllPatches = false;
@@ -3702,8 +3826,11 @@ class _FakeGraph {
       final message = messages[id];
       if (message == null) return http.Response('{}', 404);
       if (refusePatchOf.contains(id) || refuseAllPatches) {
-        return http.Response('{"error":{"code":"ErrorInternalServerError"}}',
-            500);
+        return http.Response(
+            patchRefusal >= 500
+                ? '{"error":{"code":"ErrorInternalServerError"}}'
+                : '{"error":{"code":"ErrorAccessDenied"}}',
+            patchRefusal);
       }
       patched.add(id);
       final body = jsonDecode(request.body) as Map<String, Object?>;

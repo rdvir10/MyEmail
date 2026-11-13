@@ -773,11 +773,11 @@ class EnoughMailTransport implements ImapTransport {
         );
       } on SocketException catch (e, st) {
         await close();
-        completer.completeError(ConnectionFailed('Connection lost: $e'), st);
+        completer.completeError(ServerUnreachable('Connection lost: $e'), st);
       } on TimeoutException catch (_, st) {
         await close();
         completer.completeError(
-          ConnectionFailed(
+          const ServerUnreachable(
             'The mail server stopped answering, so the connection was '
             'dropped. It is tried again on the next sync.',
           ),
@@ -786,8 +786,18 @@ class EnoughMailTransport implements ImapTransport {
       } on _ConnectionLost catch (_, st) {
         await close();
         completer.completeError(
-          const ConnectionFailed('Connection lost. It is tried again on the '
+          const ServerUnreachable('Connection lost. It is tried again on the '
               'next sync.'),
+          st,
+        );
+      } on em.ImapException catch (e, st) {
+        // The server for now (RFC 5530's UNAVAILABLE and INUSE), which a
+        // change kept for later waits out, rather than a refusal.
+        final said = e.message ?? '';
+        completer.completeError(
+          said.contains('[UNAVAILABLE]') || said.contains('[INUSE]')
+              ? ServerUnreachable('The mail server is busy for now: $said')
+              : e,
           st,
         );
       } catch (e, st) {
@@ -849,7 +859,8 @@ class EnoughMailTransport implements ImapTransport {
     try {
       await client.connectToServer(host, port, isSecure: useTls);
     } on Exception catch (e) {
-      throw ConnectionFailed('Could not reach $host. Check the connection. ($e)');
+      throw ServerUnreachable(
+          'Could not reach $host. Check the connection. ($e)');
     }
     try {
       switch (credentials) {

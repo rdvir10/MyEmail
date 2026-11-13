@@ -40,6 +40,7 @@ import '../../state/pane_widths.dart';
 import '../../state/providers.dart';
 import '../../state/put_away_providers.dart';
 import '../../state/search_providers.dart';
+import '../../state/waiting_changes.dart';
 import '../../domain/draft.dart';
 import '../accounts/add_account_screen.dart';
 import '../compose/open_compose.dart';
@@ -170,6 +171,12 @@ class _AppShellState extends ConsumerState<AppShell>
     ref.listenManual(workWeekProvider, (_, _) => keepUpNow());
     _listenForPressesDone();
     _listenForPassesDone();
+    // A change kept for later and given up on, by the app or the
+    // background: said, once. After the moment it arrives in, since saying
+    // it takes it.
+    ref.listenManual(failedChangesProvider, (_, next) {
+      if (next.isNotEmpty) scheduleMicrotask(_sayGivenUp);
+    });
     _keepAsking();
     _putAways = ref.read(appPutAwayProvider).listen((_) => _backToTheMail());
   }
@@ -253,7 +260,36 @@ class _AppShellState extends ConsumerState<AppShell>
       if (!mounted || _away) return;
       ref.invalidate(messagesProvider);
       ref.invalidate(foldersProvider);
+      // A press with no signal is kept for later by the engine.
+      unawaited(ref.read(waitingChangesProvider.notifier).changed());
     });
+  }
+
+  /// What was given up on of the changes kept for later, with what the
+  /// server said: see [failedChangeSaid]. Ten seconds, not the usual few:
+  /// a message is back in its folder, and the person should see why.
+  void _sayGivenUp() {
+    if (!mounted) return;
+    final failed = ref.read(failedChangesProvider.notifier).take();
+    if (failed.isEmpty) return;
+    final index = ref.read(folderIndexProvider);
+    String name(String? folderId) =>
+        index[folderId]?.displayName ?? 'its folder';
+    final said = [
+      for (final f in failed)
+        failedChangeSaid(
+          f,
+          from: name(f.fromFolderId),
+          to: f.toFolderId == null ? null : name(f.toFolderId),
+        ),
+    ].join('\n');
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        duration: const Duration(seconds: 10),
+        showCloseIcon: true,
+        content: Text(said),
+      ));
   }
 
   /// The app has come back to the front.
@@ -300,6 +336,9 @@ class _AppShellState extends ConsumerState<AppShell>
     _keepAsking();
     ref.invalidate(messagesProvider);
     ref.invalidate(foldersProvider);
+    // Changes kept for later, sent now the app is looked at again, and
+    // what the background gave up on said.
+    unawaited(ref.read(waitingChangesProvider.notifier).sendIfWaiting());
     _restartStalledSync();
     unawaited(_wakeSnoozed());
     unawaited(_syncPhoneCalendars());
@@ -337,6 +376,9 @@ class _AppShellState extends ConsumerState<AppShell>
   void _askAgain() {
     if (!mounted) return;
     ref.read(listRefreshProvider.notifier).ping();
+    // Changes kept while the server was out of reach, once a minute while
+    // the app is in front, and after each background pass.
+    unawaited(ref.read(waitingChangesProvider.notifier).sendIfWaiting());
     unawaited(_wakeSnoozed());
     unawaited(_syncPhoneCalendars());
     unawaited(_sendToDuet());

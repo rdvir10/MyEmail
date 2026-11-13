@@ -4,6 +4,7 @@ import '../domain/account.dart';
 import '../domain/error_report.dart';
 import 'message_providers.dart';
 import 'providers.dart';
+import 'waiting_changes.dart';
 
 /// Check now, rather than waiting for the next background pass.
 ///
@@ -21,6 +22,9 @@ import 'providers.dart';
 /// account that failed, and what the list threw; each caller says so in
 /// its own way.
 Future<void> syncNow(WidgetRef ref, String? listId) async {
+  // Changes kept while a server was out of reach go first, so the lists
+  // read after are the mail as it was left. Never throws.
+  await ref.read(waitingChangesProvider.notifier).sendIfWaiting();
   final accounts = ref.read(accountsProvider).value ?? const <Account>[];
   final failed = <(Account, Object)>[];
   await Future.wait([

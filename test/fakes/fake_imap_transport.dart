@@ -34,10 +34,13 @@ class FakeImapTransport implements ImapTransport {
   /// Folders the server will not move mail out of.
   final Set<String> refuseMovesFrom = {};
 
+  /// Thrown by every flag store while set: marks failing while moves go.
+  Object? storesFailWith;
+
   void _online() {
     final failure = failWith;
     if (failure != null) throw failure;
-    if (offline) throw const ConnectionFailed('fake server is offline');
+    if (offline) throw const ServerUnreachable('fake server is offline');
   }
 
   FakeFolder folder(
@@ -417,6 +420,8 @@ class FakeImapTransport implements ImapTransport {
     required MessageFlag flag,
     required bool set,
   }) async {
+    _online();
+    if (storesFailWith case final failure?) throw failure;
     calls.add('UID STORE $path ${uids.join(',')} ${set ? '+' : '-'}$flag');
     final f = _require(path);
     for (final uid in uids) {
@@ -430,6 +435,7 @@ class FakeImapTransport implements ImapTransport {
     required MessageFlag flag,
     required bool set,
   }) async {
+    _online();
     calls.add('STORE $path 1:* ${set ? '+' : '-'}$flag');
     final f = _require(path);
     for (final m in f.messages.values) {
@@ -729,6 +735,8 @@ class FakeFolder {
         date: m.date,
         isRead: m.isRead,
         body: m.body,
+        // A message's Message-ID is its own, whatever number it is given.
+        messageId: m.messageId,
       );
     }
   }

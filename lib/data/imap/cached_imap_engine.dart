@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' show Random;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -21,7 +22,8 @@ import '../../domain/sender_blocks.dart';
 import '../../domain/meeting.dart';
 import '../../domain/message_move.dart';
 import '../../domain/draft.dart';
-import '../../domain/error_report.dart' show ReadableError;
+import '../../domain/error_report.dart' show NeedsSignIn, ReadableError;
+import '../../domain/pending_change.dart';
 import '../account_store.dart';
 import '../auth/google_oauth.dart';
 import '../auth/google_oauth_config.dart';
@@ -58,7 +60,8 @@ import 'imap_transport.dart';
 /// If the server cannot be reached, the folder list, message lists and
 /// bodies still come from whatever was cached, so the app opens and is
 /// readable offline.
-class CachedImapEngine implements MailEngine, PagesOlderMail {
+class CachedImapEngine
+    implements MailEngine, PagesOlderMail, KeepsChangesForLater {
   CachedImapEngine({
     required this.accountStore,
     required this.credentialStore,
@@ -72,9 +75,12 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
     this.graphSenderFactory,
     this.onMessagesHandled,
     this.senderBlocks,
+    this.onChangesWaiting,
+    DateTime Function()? clock,
   })  : folderLists = folderLists ?? MemoryFolderListStore(),
         _injectedOAuthTokens = oauthTokens,
-        _injectedTransportFactory = transportFactory;
+        _injectedTransportFactory = transportFactory,
+        _clock = clock ?? DateTime.now;
 
   final AccountStore accountStore;
   final CredentialStore credentialStore;
@@ -729,28 +735,50 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
       if (cached == null) rethrow;
       remote = cached;
     }
-    return _foldersFrom(accountId, remote);
+    return _foldersFrom(accountId, remote, await _waitingCounts(accountId));
   }
 
   @override
   Future<List<MailFolder>> cachedFolders(String accountId) async {
     final stored = folderLists.read(accountId);
     if (stored == null) return const [];
-    return _foldersFrom(accountId, stored);
+    return _foldersFrom(accountId, stored, await _waitingCounts(accountId));
   }
 
-  List<MailFolder> _foldersFrom(String accountId, List<RemoteFolder> remote) {
+  /// The folders, with [waiting] taken off their counts: see
+  /// [_waitingCounts].
+  List<MailFolder> _foldersFrom(
+    String accountId,
+    List<RemoteFolder> remote, [
+    Map<String, ({int unread, int total})> waiting = const {},
+  ]) {
     final paths = {for (final r in remote) r.path};
     return [
       for (final (i, r) in remote.indexed)
-        folderFromRemote(
-          accountId: accountId,
-          provider: _providerFor(accountId),
-          remote: r,
-          allPaths: paths,
-          sortIndex: i,
+        _withWaiting(
+          folderFromRemote(
+            accountId: accountId,
+            provider: _providerFor(accountId),
+            remote: r,
+            allPaths: paths,
+            sortIndex: i,
+          ),
+          waiting[r.path],
         ),
     ];
+  }
+
+  static MailFolder _withWaiting(
+    MailFolder folder,
+    ({int unread, int total})? change,
+  ) {
+    if (change == null) return folder;
+    final unread = folder.unreadCount + change.unread;
+    final total = folder.totalCount + change.total;
+    return folder.copyWith(
+      unreadCount: unread < 0 ? 0 : unread,
+      totalCount: total < 0 ? 0 : total,
+    );
   }
 
   @override
@@ -856,6 +884,9 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
     final (accountId, path) = splitFolderId(folderId);
     final t = await _transport(accountId);
     await t.storeFlagOnAll(path, flag: MessageFlag.seen, set: true);
+    // Done after them: a read or unread waiting for this folder would,
+    // when it went, undo it for its message.
+    await _dropWaiting(accountId, path, (c) => c.kind == PendingKind.read);
     // The flag sweep on the next sync brings the cache in line: all of it,
     // not only the newest rows a sync otherwise keeps up to date.
     await _sync(accountId, t).sync(
@@ -872,7 +903,27 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
     await t.storeFlagOnAll(path, flag: MessageFlag.deleted, set: true);
     await t.expunge(path);
     await cache.clearFolder(accountId, path);
+    // Every message the changes waiting here were about is gone.
+    await _dropWaiting(accountId, path, (_) => true);
     _handled(_inFolder(folderId));
+  }
+
+  /// The changes waiting for [path] that [which] picks, dropped: something
+  /// done since has made them pointless. Best-effort; one left goes, and
+  /// finds nothing to do.
+  Future<void> _dropWaiting(
+    String accountId,
+    String path,
+    bool Function(PendingChange c) which,
+  ) async {
+    try {
+      await cache.dropPending([
+        for (final c in await cache.readPending(accountId: accountId))
+          if (c.path == path && which(c)) c.id,
+      ]);
+    } catch (e) {
+      debugPrint('[myemail] changes waiting for $path not dropped: $e');
+    }
   }
 
   // --- messages --------------------------------------------------------------
@@ -915,6 +966,9 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
     return cachedMessages(folderId, limit: limit);
   }
 
+  /// As the cache has the folder, with the changes waiting for its server
+  /// laid over it: no message on its way out, and each marked as asked.
+  /// See [KeepsChangesForLater].
   @override
   Future<List<MailMessage>> cachedMessages(
     String folderId, {
@@ -922,14 +976,24 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
     int limit = 50,
   }) async {
     final (accountId, path) = splitFolderId(folderId);
-    final rows = await cache.readMessages(
-      accountId,
-      path,
-      offset: offset,
-      limit: limit,
-    );
+    final waiting = await _overlay(accountId);
+    final hidden = waiting.hiddenIn(path);
+    // Read past the messages on their way out, which can be anywhere in the
+    // folder, so the page is still the page asked for.
+    final rows = hidden == 0
+        ? await cache.readMessages(accountId, path, offset: offset, limit: limit)
+        : [
+            for (final r in await cache.readMessages(
+              accountId,
+              path,
+              limit: offset + limit + hidden,
+            ))
+              if (!waiting.hides(path, r.uid, r.messageId)) r,
+          ].skip(offset).take(limit);
     return [
-      for (final r in rows) r.toMailMessage(accountId: accountId, folderId: folderId),
+      for (final r in rows)
+        _laidOver(waiting, path, r)
+            .toMailMessage(accountId: accountId, folderId: folderId),
     ];
   }
 
@@ -938,7 +1002,9 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
     final (folderId, uid) = splitMessageId(messageId);
     final (accountId, path) = splitFolderId(folderId);
     final row = await cache.readMessage(accountId, path, uid);
-    return row?.toMailMessage(accountId: accountId, folderId: folderId);
+    if (row == null) return null;
+    return _laidOver(await _overlay(accountId), path, row)
+        .toMailMessage(accountId: accountId, folderId: folderId);
   }
 
   @override
@@ -1606,10 +1672,22 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
     DateTime? due,
     bool complete = false,
   }) =>
+      _followUp(messageIds, due: due, complete: complete, keep: true);
+
+  /// [setFollowUp]; see [_setFlagOn] for [keep].
+  Future<void> _followUp(
+    List<String> messageIds, {
+    DateTime? due,
+    bool complete = false,
+    required bool keep,
+  }) =>
       _setFlagOn(
         messageIds,
         MessageFlag.flagged,
         !complete,
+        keep: keep,
+        kind: PendingKind.followUp,
+        due: due,
         store: (t, path, uids) => t is GraphTransport
             ? t.storeFollowUp(path, uids: uids, due: due, complete: complete)
             : t.storeFlag(path,
@@ -1620,7 +1698,17 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
   Future<List<MessageMove>> moveMessages(
     List<String> messageIds,
     String toFolderId,
-  ) async {
+  ) =>
+      _moveMessages(messageIds, toFolderId, keep: true);
+
+  /// [moveMessages]. With [keep], what the server cannot be reached for is
+  /// kept for later rather than failing: see [_moveOrKeep]. A move into
+  /// another account never is, needing both servers at once.
+  Future<List<MessageMove>> _moveMessages(
+    List<String> messageIds,
+    String toFolderId, {
+    required bool keep,
+  }) async {
     if (messageIds.isEmpty) return const [];
     final (toAccount, toPath) = splitFolderId(toFolderId);
     final moves = <MessageMove>[];
@@ -1633,30 +1721,83 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
         continue;
       }
       if (fromPath == toPath) continue;
-      final (:landed, :moved, :stopped) = await _moveGroup(
+      await _moveOrKeep(
+        PendingKind.move,
         accountId,
         fromPath,
         group.value,
         toPath,
+        keep: keep,
         done: moves,
         went: went,
       );
-      moves.add(MessageMove(
-        fromFolderId: group.key,
-        toFolderId: toFolderId,
-        movedIds: [
-          for (final uid in landed ?? const <int>[])
-            MailMessage.idFor(toFolderId, uid),
-        ],
-        messageIds: moved.headers,
-      ));
-      went.addAll([for (final uid in moved.uids) MailMessage.idFor(group.key, uid)]);
-      if (stopped != null) {
-        throw PartialMove(done: moves, moved: went, cause: stopped);
-      }
     }
     return moves;
   }
+
+  /// One folder's part of a move, or of a delete into Trash, within one
+  /// account. Adds what went to [done], and the ids it went from to [went].
+  ///
+  /// With [keep], what the server cannot be reached for is kept for later
+  /// instead ([serverOutOfReach]; see [KeepsChangesForLater]): all of it,
+  /// or the part that had not gone, which [done] and [went] then hold as
+  /// waiting. So is all of it, unsent, where changes for the account are
+  /// waiting already, to reach the server after them.
+  ///
+  /// Otherwise a failure is thrown as it is when nothing in the batch has
+  /// gone ([done] empty), and as a [PartialMove] naming what has.
+  Future<void> _moveOrKeep(
+    PendingKind kind,
+    String accountId,
+    String fromPath,
+    List<int> uids,
+    String toPath, {
+    required bool keep,
+    required List<MessageMove> done,
+    required List<String> went,
+  }) async {
+    final folderId = MailFolder.idFor(accountId, fromPath);
+    final toFolderId = MailFolder.idFor(accountId, toPath);
+    Future<void> keepThem(List<int> some) async {
+      done.add(
+          await _keepMoves(kind, accountId, fromPath, some, toPath: toPath));
+      went.addAll(_idsIn(folderId, some));
+    }
+
+    if (keep && await _isWaiting(accountId)) return keepThem(uids);
+    _Moved result;
+    try {
+      result = await _moveGroup(accountId, fromPath, uids, toPath);
+    } catch (e) {
+      if (keep && serverOutOfReach(e)) return keepThem(uids);
+      if (done.isEmpty) rethrow;
+      throw PartialMove(done: done, moved: went, cause: e);
+    }
+    final (:landed, :moved, :stopped) = result;
+    done.add(MessageMove(
+      fromFolderId: folderId,
+      toFolderId: toFolderId,
+      movedIds: [
+        for (final uid in landed ?? const <int>[])
+          MailMessage.idFor(toFolderId, uid),
+      ],
+      messageIds: moved.headers,
+    ));
+    went.addAll(_idsIn(folderId, moved.uids));
+    if (stopped == null) return;
+    final gone = moved.uids.toSet();
+    final left = [
+      for (final uid in uids)
+        if (!gone.contains(uid)) uid,
+    ];
+    if (keep && serverOutOfReach(stopped) && left.isNotEmpty) {
+      return keepThem(left);
+    }
+    throw PartialMove(done: done, moved: went, cause: stopped);
+  }
+
+  static List<String> _idsIn(String folderId, Iterable<int> uids) =>
+      [for (final uid in uids) MailMessage.idFor(folderId, uid)];
 
   /// One folder's part of a move into another account, which no server
   /// does: each message is copied across as it is, read or not, flagged or
@@ -1720,7 +1861,7 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
     MessageMove? binned;
     List<String> removed;
     try {
-      binned = (await deleteMessages(originals)).firstOrNull;
+      binned = (await _deleteMessages(originals, keep: true)).firstOrNull;
       removed = originals;
     } catch (e) {
       binned = e is PartialMove ? e.done.firstOrNull : null;
@@ -1753,23 +1894,15 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
 
   /// One folder's part of a batch move, into [toPath] in the same account.
   ///
-  /// A failure before anything went is thrown as it is if nothing in the
-  /// batch has gone yet ([done] empty), and as a [PartialMove] naming what
-  /// has otherwise. A failure part way through this folder comes back as
-  /// [stopped], with what did go.
-  Future<
-      ({
-        List<int>? landed,
-        ({List<int> uids, List<String> headers}) moved,
-        Object? stopped,
-      })> _moveGroup(
+  /// A failure before anything went is thrown as it is; one part way
+  /// through comes back as [stopped], with what did go. See [_moveOrKeep],
+  /// which says what either means for the batch.
+  Future<_Moved> _moveGroup(
     String accountId,
     String fromPath,
     List<int> uids,
-    String toPath, {
-    required List<MessageMove> done,
-    required List<String> went,
-  }) async {
+    String toPath,
+  ) async {
     final t = await _transport(accountId);
     // Out of Gmail's All Mail only ever by a copy: see _isAllMail.
     final copyOnly = await _isAllMail(accountId, t, fromPath);
@@ -1784,9 +1917,6 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
       landed = part.landed;
       moved = part.moved;
       stopped = part.cause;
-    } catch (e) {
-      if (done.isEmpty) rethrow;
-      throw PartialMove(done: done, moved: went, cause: e);
     }
     // Read before the cache forgets them, which is the last place they
     // can be read from here.
@@ -1815,7 +1945,14 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
   }
 
   @override
-  Future<List<MessageMove>> deleteMessages(List<String> messageIds) async {
+  Future<List<MessageMove>> deleteMessages(List<String> messageIds) =>
+      _deleteMessages(messageIds, keep: true);
+
+  /// [deleteMessages]; see [_moveMessages] for [keep].
+  Future<List<MessageMove>> _deleteMessages(
+    List<String> messageIds, {
+    required bool keep,
+  }) async {
     if (messageIds.isEmpty) return const [];
     final moves = <MessageMove>[];
     final went = <String>[];
@@ -1823,73 +1960,89 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
       final (accountId, fromPath) = splitFolderId(group.key);
       final t = await _transport(accountId);
       final trash = await _trashPath(accountId, t);
-
       if (trash == null || fromPath == trash) {
         // Already in Trash, or the account has none: delete for good. There
         // is nothing to put back, and the empty entry is how the caller
         // knows not to offer.
-        try {
-          await t.storeFlag(fromPath,
-              uids: group.value, flag: MessageFlag.deleted, set: true);
-          await t.expunge(fromPath);
-        } on FlaggedInPart catch (part) {
-          // Microsoft deletes one message at a time, and some went: those
-          // are gone here too, and only the rest come back on screen.
-          await cache.deleteUids(accountId, fromPath, part.stored.toSet());
-          _handled(_uidsIn(group.key, part.stored));
-          moves.add(MessageMove(
-            fromFolderId: group.key,
-            toFolderId: group.key,
-            movedIds: const [],
-          ));
-          went.addAll(
-              [for (final uid in part.stored) MailMessage.idFor(group.key, uid)]);
-          throw PartialMove(done: moves, moved: went, cause: part.cause);
-        } catch (e) {
-          if (moves.isEmpty) rethrow;
-          throw PartialMove(done: moves, moved: went, cause: e);
-        }
-        await cache.deleteUids(accountId, fromPath, group.value.toSet());
-        _handled(_uidsIn(group.key, group.value));
-        moves.add(MessageMove(
-          fromFolderId: group.key,
-          toFolderId: group.key,
-          movedIds: const [],
-        ));
-        went.addAll(
-            [for (final uid in group.value) MailMessage.idFor(group.key, uid)]);
+        await _deleteForGood(accountId, fromPath, group.value,
+            keep: keep, done: moves, went: went);
         continue;
       }
-
-      final (:landed, :moved, :stopped) = await _moveGroup(
+      await _moveOrKeep(
+        PendingKind.delete,
         accountId,
         fromPath,
         group.value,
         trash,
+        keep: keep,
         done: moves,
         went: went,
       );
-      final trashId = '$accountId:$trash';
-      moves.add(MessageMove(
-        fromFolderId: group.key,
-        toFolderId: trashId,
-        movedIds: [
-          for (final uid in landed ?? const <int>[])
-            MailMessage.idFor(trashId, uid),
-        ],
-        messageIds: moved.headers,
-      ));
-      went.addAll([for (final uid in moved.uids) MailMessage.idFor(group.key, uid)]);
-      if (stopped != null) {
-        throw PartialMove(done: moves, moved: went, cause: stopped);
-      }
     }
     return moves;
+  }
+
+  /// One folder's part of a delete for good, for a folder with nowhere to
+  /// put its mail: as [_moveOrKeep] in all else.
+  Future<void> _deleteForGood(
+    String accountId,
+    String path,
+    List<int> uids, {
+    required bool keep,
+    required List<MessageMove> done,
+    required List<String> went,
+  }) async {
+    final folderId = MailFolder.idFor(accountId, path);
+    Future<void> keepThem(List<int> some) async {
+      done.add(await _keepMoves(PendingKind.delete, accountId, path, some,
+          toPath: path));
+      went.addAll(_idsIn(folderId, some));
+    }
+
+    if (keep && await _isWaiting(accountId)) return keepThem(uids);
+    var stored = uids;
+    Object? stopped;
+    try {
+      final t = await _transport(accountId);
+      await t.storeFlag(path, uids: uids, flag: MessageFlag.deleted, set: true);
+      await t.expunge(path);
+    } on FlaggedInPart catch (part) {
+      // Microsoft deletes one message at a time, and some went: those are
+      // gone here too, and only the rest come back on screen, or wait.
+      stored = part.stored;
+      stopped = part.cause;
+    } catch (e) {
+      if (keep && serverOutOfReach(e)) return keepThem(uids);
+      if (done.isEmpty) rethrow;
+      throw PartialMove(done: done, moved: went, cause: e);
+    }
+    await cache.deleteUids(accountId, path, stored.toSet());
+    _handled(_uidsIn(folderId, stored));
+    done.add(MessageMove(
+      fromFolderId: folderId,
+      toFolderId: folderId,
+      movedIds: const [],
+    ));
+    went.addAll(_idsIn(folderId, stored));
+    if (stopped == null) return;
+    final gone = stored.toSet();
+    final left = [
+      for (final uid in uids)
+        if (!gone.contains(uid)) uid,
+    ];
+    if (keep && serverOutOfReach(stopped) && left.isNotEmpty) {
+      return keepThem(left);
+    }
+    throw PartialMove(done: done, moved: went, cause: stopped);
   }
 
   @override
   Future<void> undoMoves(List<MessageMove> moves) async {
     for (final move in moves) {
+      if (move.isWaiting) {
+        await _takeBack(move);
+        continue;
+      }
       var ids = move.movedIds;
       if (ids.isEmpty) ids = await _locate(move.toFolderId, move.messageIds);
       if (ids.isEmpty) {
@@ -1899,7 +2052,9 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
       }
       final originals = move.originals;
       if (originals == null) {
-        await moveMessages(ids, move.fromFolderId);
+        // Not kept for later where the server is out of reach: the message
+        // would stay out of sight until it went, and Undo is for now.
+        await _moveMessages(ids, move.fromFolderId, keep: false);
         continue;
       }
       // From another account: the originals come back out of Trash, and
@@ -2108,8 +2263,21 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
       debugPrint('[myemail] could not read snoozed mail: $e');
       return 0;
     }
+    // A snooze whose move has not reached the server yet. Not found in
+    // Snoozed, it was let go as taken out by hand, and the move, when it
+    // went, left the message there for good.
+    Set<(String, String)> moving;
+    try {
+      moving = {
+        for (final c in await cache.readPending())
+          if (c.messageId case final id?) (c.accountId, id),
+      };
+    } catch (_) {
+      moving = const {};
+    }
     var woken = 0;
     for (final e in due) {
+      if (moving.contains((e.accountId, e.messageId))) continue;
       try {
         if (accountStore.read().every((a) => a.id != e.accountId)) {
           await cache.removeSnoozed(e.accountId, e.messageId);
@@ -2132,10 +2300,14 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
                     ?.path ??
                 'INBOX';
         final target = MailFolder.idFor(e.accountId, back);
-        final moves = await moveMessages(ids, target);
+        // Tried again next time where the server is out of reach, rather
+        // than kept: the snooze stays written down until it is back.
+        final moves = await _moveMessages(ids, target, keep: false);
         var landed = [for (final m in moves) ...m.movedIds];
         if (landed.isEmpty) landed = await _locate(target, [e.messageId]);
-        if (landed.isNotEmpty) await setMessagesRead(landed, false);
+        if (landed.isNotEmpty) {
+          await _setFlagOn(landed, MessageFlag.seen, false, keep: false);
+        }
         await cache.removeSnoozed(e.accountId, e.messageId);
         woken++;
       } catch (error) {
@@ -2164,12 +2336,13 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
       for (final f in remote)
         if (f.role == FolderRole.deleted || f.role == FolderRole.junk) f.path,
     };
+    final List<MailMessage> rows;
     if (t is GraphTransport) {
       final found = [
         for (final h in await t.flaggedHits(limit: limit))
           if (!leftOut.contains(h.path)) h,
       ];
-      final rows = <MailMessage>[];
+      rows = <MailMessage>[];
       for (final path in {for (final h in found) h.path}) {
         final mine = [
           for (final h in found)
@@ -2181,19 +2354,37 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
           rows.add(m.copyWith(flagDue: due[m.uid]));
         }
       }
-      return rows..sort((a, b) => b.date.compareTo(a.date));
+    } else {
+      // Gmail: All Mail holds every label's mail, so the flag is asked of it
+      // once. A star is the message's, whichever label it is seen under.
+      final all = remote.where((f) => f.role == FolderRole.archive).firstOrNull;
+      final path = all?.path ?? 'INBOX';
+      final hits = await t.filterHits(
+        path,
+        MessageFilter.flagged,
+        ownAddress: account.emailAddress,
+        limit: limit,
+      );
+      rows = await _rowsFor(accountId, path, t, hits);
     }
-    // Gmail: All Mail holds every label's mail, so the flag is asked of it
-    // once. A star is the message's, whichever label it is seen under.
-    final all = remote.where((f) => f.role == FolderRole.archive).firstOrNull;
-    final path = all?.path ?? 'INBOX';
-    final hits = await t.filterHits(
-      path,
-      MessageFilter.flagged,
-      ownAddress: account.emailAddress,
-      limit: limit,
-    );
-    return _rowsFor(accountId, path, t, hits);
+    // Flagged here while the server was out of reach, which it does not
+    // know of yet; and not what is on its way to Trash, which a Gmail
+    // message in All Mail is from its Inbox.
+    final waiting = await _overlay(accountId);
+    rows.removeWhere((m) => waiting.deletes(m.messageId));
+    final shown = {for (final m in rows) m.messageId ?? m.id};
+    for (final (:path, :message)
+        in await _flaggedHere(accountId, waiting: waiting)) {
+      if (leftOut.contains(path)) continue;
+      final row = message.toMailMessage(
+        accountId: accountId,
+        folderId: MailFolder.idFor(accountId, path),
+      );
+      if (shown.add(row.messageId ?? row.id)) rows.add(row);
+    }
+    return rows
+      ..removeWhere((m) => !m.isFlagged)
+      ..sort((a, b) => b.date.compareTo(a.date));
   }
 
   @override
@@ -2203,7 +2394,15 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
   }) async {
     final remote = folderLists.read(accountId) ?? const <RemoteFolder>[];
     final roles = {for (final f in remote) f.path: f.role};
-    final found = await cache.readFlagged(accountId, limit: limit * 2);
+    final waiting = await _overlay(accountId);
+    final found = [
+      for (final f in await cache.readFlagged(accountId, limit: limit * 2))
+        if (!waiting.hides(f.path, f.message.uid, f.message.messageId) &&
+            !waiting.deletes(f.message.messageId))
+          (path: f.path, message: _laidOver(waiting, f.path, f.message)),
+      // Flagged here while the server was out of reach.
+      ...await _flaggedHere(accountId, waiting: waiting),
+    ];
     final seen = <String>{};
     final rows = <MailMessage>[];
     // All Mail's copy first where a Gmail message is in more than one
@@ -2217,6 +2416,7 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
     for (final (:path, :message) in ordered) {
       final role = roles[path];
       if (role == FolderRole.deleted || role == FolderRole.junk) continue;
+      if (!message.isFlagged) continue;
       final key = message.messageId ?? '$path#${message.uid}';
       if (!seen.add(key)) continue;
       final folderId = MailFolder.idFor(accountId, path);
@@ -2364,7 +2564,15 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
     if (missing.isNotEmpty) {
       rows.addAll((await t.fetchHeadersByUids(path, missing)).map(row));
     }
-    return rows;
+    // As the server has them, but not as the person left them where a change
+    // is waiting for the server: see [KeepsChangesForLater].
+    final waiting = await _overlay(accountId);
+    if (waiting.isEmpty) return rows;
+    return [
+      for (final r in rows)
+        if (!waiting.hides(path, r.uid, r.messageId))
+          _rowLaidOver(waiting, path, r),
+    ];
   }
 
   /// The (account, folder path) pairs a scope covers.
@@ -2477,7 +2685,8 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
         }
       }
       if (blocked.isEmpty) return;
-      await moveMessages(blocked, MailFolder.idFor(accountId, junk));
+      await _moveMessages(blocked, MailFolder.idFor(accountId, junk),
+          keep: false);
       debugPrint('[myemail] ${blocked.length} from blocked senders to Junk');
     } catch (e) {
       debugPrint('[myemail] could not move blocked mail to Junk: $e');
@@ -2522,18 +2731,37 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
   /// [flag] set or cleared on [messageIds], one call to the server per
   /// folder, and the cache told of each that changed. See
   /// [MailEngine.setMessagesRead] for what a failure throws.
+  ///
+  /// With [keep], what the server cannot be reached for is kept for later
+  /// as [kind] (read or flagged by [flag] unless said), with [due] for a
+  /// follow up, and counts as changed: it shows as asked from now on. So
+  /// is all of it, unsent, where changes for the account are waiting
+  /// already. See [KeepsChangesForLater].
   Future<void> _setFlagOn(
     List<String> messageIds,
     MessageFlag flag,
     bool set, {
     Future<void> Function(ImapTransport t, String path, List<int> uids)? store,
+    bool keep = true,
+    PendingKind? kind,
+    DateTime? due,
   }) async {
+    final keptAs = kind ??
+        (flag == MessageFlag.seen ? PendingKind.read : PendingKind.flag);
     final changed = <String>[];
     final failed = <String>[];
     (Object, StackTrace)? first;
     for (final group in _groupByFolder(messageIds).entries) {
       final (accountId, path) = splitFolderId(group.key);
+      if (keep && await _isWaiting(accountId)) {
+        await _keepMarks(keptAs, accountId, path, group.value,
+            wanted: set, due: due);
+        changed.addAll(_idsIn(group.key, group.value));
+        continue;
+      }
       var stored = group.value;
+      Object? failure;
+      StackTrace? trace;
       try {
         final t = await _transport(accountId);
         if (store != null) {
@@ -2543,15 +2771,28 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
         }
       } on FlaggedInPart catch (part, stack) {
         stored = part.stored;
-        first ??= (part.cause, stack);
+        failure = part.cause;
+        trace = stack;
       } catch (e, stack) {
         stored = const [];
-        first ??= (e, stack);
+        failure = e;
+        trace = stack;
       }
       final went = stored.toSet();
-      for (final uid in group.value) {
-        (went.contains(uid) ? changed : failed)
-            .add(MailMessage.idFor(group.key, uid));
+      final left = [
+        for (final uid in group.value)
+          if (!went.contains(uid)) uid,
+      ];
+      changed.addAll(_idsIn(group.key, went));
+      if (failure != null && left.isNotEmpty) {
+        if (keep && serverOutOfReach(failure)) {
+          await _keepMarks(keptAs, accountId, path, left,
+              wanted: set, due: due);
+          changed.addAll(_idsIn(group.key, left));
+        } else {
+          first ??= (failure, trace!);
+          failed.addAll(_idsIn(group.key, left));
+        }
       }
 
       final flags = <int, CachedFlags>{};
@@ -2838,6 +3079,615 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
     }
   }
 
+  // --- changes kept for later ---------------------------------------------
+
+  /// Told when a change could not reach its server and was kept for later
+  /// (see [KeepsChangesForLater]), so that something sends it even when
+  /// neither the app nor a background pass is running: both send what is
+  /// waiting as they go.
+  final void Function()? onChangesWaiting;
+
+  /// The time, for when a change was made and how long it has waited.
+  /// Set by tests.
+  final DateTime Function() _clock;
+
+  static final _random = Random();
+
+  /// How long a change kept for later waits before it is sent, at least:
+  /// see [changesHeldFor].
+  static const holdFor = changesHeldFor;
+
+  /// How long a sender may hold changes before another takes them over: a
+  /// send cut off with the process that ran it.
+  static const claimLapses = Duration(minutes: 5);
+
+  /// How long a change may wait for its server before it is given up on.
+  static const waitAtMost = Duration(days: 3);
+
+  /// How often, and how far apart, Undo looks for changes a sender holds
+  /// to be let go: see [_takeBack].
+  static const _takeBackLooks = 40;
+  static const _takeBackPause = Duration(milliseconds: 500);
+
+  /// What the changes waiting for [accountId]'s server make of its mail,
+  /// to lay over the cache wherever it is read.
+  Future<WaitingOverlay> _overlay(String accountId) async {
+    try {
+      return WaitingOverlay(await cache.readPending(accountId: accountId));
+    } catch (e) {
+      debugPrint('[myemail] changes waiting not read: $e');
+      return WaitingOverlay.none;
+    }
+  }
+
+  /// [m] marked as the changes waiting for it say.
+  static CachedMessage _laidOver(
+    WaitingOverlay waiting,
+    String path,
+    CachedMessage m,
+  ) {
+    if (waiting.isEmpty) return m;
+    final read = waiting.readOf(path, m.uid, m.messageId);
+    final flagged = waiting.flaggedOf(path, m.uid, m.messageId);
+    if (read == null && flagged == null) return m;
+    return m.copyWith(isRead: read, isFlagged: flagged);
+  }
+
+  static MailMessage _rowLaidOver(
+    WaitingOverlay waiting,
+    String path,
+    MailMessage m,
+  ) {
+    if (waiting.isEmpty) return m;
+    final read = waiting.readOf(path, m.uid, m.messageId);
+    final flagged = waiting.flaggedOf(path, m.uid, m.messageId);
+    if (read == null && flagged == null) return m;
+    return m.copyWith(isRead: read, isFlagged: flagged);
+  }
+
+  /// The messages of [accountId] flagged here while their server was out
+  /// of reach, which the cache, as the server last said, has as not
+  /// flagged, and nothing else reads as flagged.
+  Future<List<({String path, CachedMessage message})>> _flaggedHere(
+    String accountId, {
+    WaitingOverlay? waiting,
+  }) async {
+    final changes = waiting ?? await _overlay(accountId);
+    return [
+      for (final path in changes.touched.keys)
+        for (final c in await cache.readHeaders(
+          accountId,
+          path,
+          [...changes.flaggedIn(path)],
+        ))
+          if (!c.isFlagged)
+            (path: path, message: _laidOver(changes, path, c)),
+    ];
+  }
+
+  /// What the changes waiting for [accountId]'s server do to each folder's
+  /// counts meanwhile, by path: the server counts the folder as it was.
+  Future<Map<String, ({int unread, int total})>> _waitingCounts(
+    String accountId,
+  ) async {
+    final waiting = await _overlay(accountId);
+    if (waiting.isEmpty) return const {};
+    final counts = <String, ({int unread, int total})>{};
+    try {
+      for (final MapEntry(key: path, value: uids) in waiting.touched.entries) {
+        var unread = 0;
+        var total = 0;
+        for (final c in await cache.readHeaders(accountId, path, [...uids])) {
+          final change =
+              waiting.countChange(path, c.uid, c.isRead, c.messageId);
+          unread += change.unread;
+          total += change.total;
+        }
+        if (unread != 0 || total != 0) {
+          counts[path] = (unread: unread, total: total);
+        }
+      }
+    } catch (e) {
+      debugPrint('[myemail] counts of changes waiting not read: $e');
+    }
+    return counts;
+  }
+
+  /// Whether changes for [accountId] are waiting for its server, in which
+  /// case a new one waits behind them rather than going first: the server
+  /// has them in the order they were made.
+  Future<bool> _isWaiting(String accountId) async {
+    try {
+      return (await cache.readPending(accountId: accountId)).isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<Map<int, String>> _messageIdsOf(
+    String accountId,
+    String path,
+    List<int> uids,
+  ) async =>
+      {
+        for (final c in await cache.readHeaders(accountId, path, uids))
+          if (c.messageId case final id? when id.isNotEmpty) c.uid: id,
+      };
+
+  /// [uids] of [path] kept for later as [kind], into [toPath], and the
+  /// move the caller is told of: one that went no further than here.
+  Future<MessageMove> _keepMoves(
+    PendingKind kind,
+    String accountId,
+    String path,
+    List<int> uids, {
+    required String toPath,
+  }) async {
+    final folderId = MailFolder.idFor(accountId, path);
+    final headers = await _messageIdsOf(accountId, path, uids);
+    final action =
+        await _keep(kind, accountId, path, uids, headers, toPath: toPath);
+    // Dealt with, as far as anyone looking can tell.
+    _handled(_uidsIn(folderId, uids));
+    return MessageMove(
+      fromFolderId: folderId,
+      toFolderId: MailFolder.idFor(accountId, toPath),
+      movedIds: const [],
+      messageIds: [for (final uid in uids) ?headers[uid]],
+      waiting: _idsIn(folderId, uids),
+      action: action,
+    );
+  }
+
+  Future<void> _keepMarks(
+    PendingKind kind,
+    String accountId,
+    String path,
+    List<int> uids, {
+    required bool wanted,
+    DateTime? due,
+  }) async {
+    await _keep(
+      kind,
+      accountId,
+      path,
+      uids,
+      await _messageIdsOf(accountId, path, uids),
+      wanted: wanted,
+      due: due,
+    );
+  }
+
+  /// Keep a change for each of [uids], under one action's name, which is
+  /// answered, and say that something is waiting.
+  Future<String> _keep(
+    PendingKind kind,
+    String accountId,
+    String path,
+    List<int> uids,
+    Map<int, String> headers, {
+    String? toPath,
+    bool? wanted,
+    DateTime? due,
+  }) async {
+    final madeAt = _clock();
+    final action = '${madeAt.microsecondsSinceEpoch.toRadixString(36)}-'
+        '${_random.nextInt(1 << 30).toRadixString(36)}';
+    final validity = (await cache.readFolderState(accountId, path))?.uidValidity;
+    await cache.addPending([
+      for (final uid in uids)
+        PendingChange(
+          accountId: accountId,
+          path: path,
+          uid: uid,
+          uidValidity: validity,
+          messageId: headers[uid],
+          kind: kind,
+          toPath: toPath,
+          wanted: wanted,
+          due: due,
+          action: action,
+          madeAt: madeAt,
+        ),
+    ]);
+    debugPrint('[myemail] ${uids.length} ${kind.name} in $path kept for '
+        'later: the server is out of reach');
+    try {
+      onChangesWaiting?.call();
+    } catch (e) {
+      debugPrint('[myemail] could not ask for the changes to be sent: $e');
+    }
+    return action;
+  }
+
+  /// A move kept for later, taken back. What has not gone is simply not
+  /// sent, and is in its folder again. What a sender holds is waited for,
+  /// and what went meanwhile is moved back from where it went.
+  Future<void> _takeBack(MessageMove move) async {
+    final action = move.action;
+    if (action == null) return;
+    var taken = 0;
+    for (var looks = 0;; looks++) {
+      final now = _clock();
+      final (taken: back, :going) = await cache.cancelPending(
+        action,
+        staleBefore: now.subtract(claimLapses),
+      );
+      taken += back.length;
+      if (going == 0) break;
+      if (looks >= _takeBackLooks) {
+        throw const ConnectionFailed(
+          'Those messages are on their way to the server right now. Try '
+          'again in a moment.',
+        );
+      }
+      await Future<void>.delayed(_takeBackPause);
+    }
+    if (taken >= move.waiting.length) return;
+    // Sent before the Undo: put back as any move is. The ones taken back
+    // are where they were, not where the move went, so looking there by
+    // Message-ID finds only the ones that went.
+    if (move.fromFolderId == move.toFolderId) {
+      throw const ConnectionFailed(
+        'It had been deleted for good by then, so it cannot be put back.',
+      );
+    }
+    final ids = await _locate(move.toFolderId, move.messageIds);
+    if (ids.isEmpty) {
+      throw const ConnectionFailed(
+        'Those messages could not be found to put back.',
+      );
+    }
+    await _moveMessages(ids, move.fromFolderId, keep: false);
+  }
+
+  @override
+  Future<Map<String, int>> changesWaiting() async {
+    final counts = <String, int>{};
+    try {
+      for (final c in await cache.readPending()) {
+        counts[c.accountId] = (counts[c.accountId] ?? 0) + 1;
+      }
+    } catch (e) {
+      debugPrint('[myemail] changes waiting not read: $e');
+    }
+    return counts;
+  }
+
+  @override
+  Future<SentChanges> sendWaitingChanges({bool evenJustMade = false}) async {
+    final now = _clock();
+    final by = 'send-${now.microsecondsSinceEpoch}-${_random.nextInt(1 << 30)}';
+    List<PendingChange> taken;
+    try {
+      taken = await cache.claimPending(
+        by: by,
+        madeBefore: evenJustMade ? now : now.subtract(holdFor),
+        staleBefore: now.subtract(claimLapses),
+        now: now,
+      );
+    } catch (e) {
+      debugPrint('[myemail] changes waiting not read: $e');
+      return const SentChanges();
+    }
+    var sent = 0;
+    var failed = 0;
+    final folders = <String>{};
+    // Accounts with a change that could not go this time: their later
+    // changes are let go of untried, to wait behind it, so that the server
+    // has them in the order they were made. A mark sent after the move made
+    // later would land on nothing, and two marks of one message, sent out
+    // of order, would leave it as the earlier one asked.
+    final stuck = <String>{};
+    for (final run in _runsOf(taken)) {
+      final account = run.first.accountId;
+      final ids = [for (final c in run) c.id];
+      try {
+        if (stuck.contains(account)) {
+          await cache.unclaimPending(ids, by: by);
+          continue;
+        }
+        // Still this sender's: a send that ran long past the time a hold
+        // lapses has lost what another sender took over meanwhile.
+        final mine = await cache.renewPending(by, _clock());
+        if (!ids.every(mine.contains)) {
+          stuck.add(account);
+          await cache.unclaimPending(ids, by: by);
+          continue;
+        }
+        final done = await _sendRun(run, now, folders, by);
+        sent += done.sent;
+        failed += done.failed;
+        if (done.waiting > 0) stuck.add(account);
+      } catch (e) {
+        // The database, most likely. Nothing is given up for that, and the
+        // account's later changes wait behind these.
+        debugPrint('[myemail] changes waiting not sent: $e');
+        stuck.add(account);
+        try {
+          await cache.unclaimPending(ids, by: by);
+        } catch (_) {
+          // Its hold lapses, and another sender takes it then.
+        }
+      }
+    }
+    var waiting = 0;
+    try {
+      waiting = (await cache.readPending()).length;
+    } catch (_) {
+      // Not known; nothing is said to be waiting.
+    }
+    if (taken.isNotEmpty) {
+      debugPrint('[myemail] changes kept for later: $sent sent, $failed '
+          'given up, $waiting waiting');
+    }
+    return SentChanges(
+      sent: sent,
+      waiting: waiting,
+      failed: failed,
+      folders: folders,
+    );
+  }
+
+  /// [changes] in runs that go to the server together: one after another,
+  /// of one folder, doing the same. No more than that, so that nothing is
+  /// sent ahead of a change made before it.
+  static List<List<PendingChange>> _runsOf(List<PendingChange> changes) {
+    final runs = <List<PendingChange>>[];
+    for (final c in changes) {
+      if (runs.isNotEmpty && runs.last.first.sentWith == c.sentWith) {
+        runs.last.add(c);
+      } else {
+        runs.add([c]);
+      }
+    }
+    return runs;
+  }
+
+  /// One run to the server, and each change of it settled: dropped where it
+  /// went, waiting on where the server is still out of reach, given up on
+  /// where it refused (see [_settle]). The folders whose lists are out of
+  /// date now go in [folders]. Throws only what the database throws.
+  Future<({int sent, int failed, int waiting})> _sendRun(
+    List<PendingChange> run,
+    DateTime now,
+    Set<String> folders,
+    String by,
+  ) async {
+    final first = run.first;
+    final folderId = MailFolder.idFor(first.accountId, first.path);
+    final List<PendingChange> ready;
+    var failed = 0;
+    var waiting = 0;
+    try {
+      final found = await _stillThere(run);
+      ready = found.ready;
+      if (found.lost.isNotEmpty) {
+        final settled = await _settle(
+          found.lost,
+          const ConnectionFailed(
+            'That message could not be found again: its folder was '
+            'renumbered on the server.',
+          ),
+          now,
+          folders,
+          by,
+        );
+        failed += settled.failed;
+      }
+    } catch (e) {
+      // Its folder could not be asked: out of reach, which waits, or gone
+      // from the server, which is given up on.
+      final settled = await _settle(run, e, now, folders, by);
+      return (sent: 0, failed: settled.failed, waiting: settled.waiting);
+    }
+    if (ready.isEmpty) return (sent: 0, failed: failed, waiting: 0);
+
+    var left = ready;
+    Object? error;
+    try {
+      await _carryOut(first, _idsIn(folderId, [for (final c in ready) c.uid]));
+      left = const [];
+    } on PartialMove catch (part) {
+      final went = part.moved.toSet();
+      left = [
+        for (final c in ready)
+          if (!went.contains(MailMessage.idFor(folderId, c.uid))) c,
+      ];
+      error = part.cause;
+    } on PartialFlagChange catch (part) {
+      final refused = part.failed.toSet();
+      left = [
+        for (final c in ready)
+          if (refused.contains(MailMessage.idFor(folderId, c.uid))) c,
+      ];
+      error = part.cause;
+    } catch (e) {
+      error = e;
+    }
+    final kept = left.toSet();
+    final gone = [
+      for (final c in ready)
+        if (!kept.contains(c)) c,
+    ];
+    await cache.dropPending([for (final c in gone) c.id]);
+    if (gone.isNotEmpty) {
+      folders.add(folderId);
+      if (first.toPath case final to?) {
+        folders.add(MailFolder.idFor(first.accountId, to));
+      }
+    }
+    if (left.isNotEmpty) {
+      final settled =
+          await _settle(left, error ?? 'Not sent.', now, folders, by);
+      failed += settled.failed;
+      waiting += settled.waiting;
+    }
+    return (sent: gone.length, failed: failed, waiting: waiting);
+  }
+
+  /// What [change] asks of its server, for [ids] of its folder, done as it
+  /// would have been had the server answered when it was made.
+  Future<void> _carryOut(PendingChange change, List<String> ids) =>
+      switch (change.kind) {
+        PendingKind.delete => _deleteMessages(ids, keep: false),
+        PendingKind.move => _moveMessages(
+            ids,
+            MailFolder.idFor(change.accountId, change.toPath ?? change.path),
+            keep: false,
+          ),
+        PendingKind.read =>
+          _setFlagOn(ids, MessageFlag.seen, change.wanted ?? true, keep: false),
+        PendingKind.flag => _setFlagOn(
+            ids, MessageFlag.flagged, change.wanted ?? true,
+            keep: false),
+        PendingKind.followUp => _followUp(
+            ids,
+            due: change.due,
+            complete: change.wanted == false,
+            keep: false,
+          ),
+      };
+
+  /// Whether a change that [error] stopped can wait for another try: the
+  /// server out of reach, or a sign-in that wants renewing, which signing
+  /// in again mends. Not a refusal, nor an account without the right to do
+  /// it ([AccessDenied]), which no amount of waiting changes.
+  static bool _canWaitFor(Object error) =>
+      serverOutOfReach(error) || (error is NeedsSignIn && error is! AccessDenied);
+
+  /// [changes] not sent because of [error]: waiting on where it can wait
+  /// ([_canWaitFor]), and given up on where the server refused, or once
+  /// they have waited [waitAtMost]. Given up on, a change is no longer laid
+  /// over its message, which shows as the server has it again.
+  Future<({int failed, int waiting})> _settle(
+    List<PendingChange> changes,
+    Object error,
+    DateTime now,
+    Set<String> folders,
+    String by,
+  ) async {
+    final said = error is ReadableError ? error.message : '$error';
+    final canWait = _canWaitFor(error);
+    final tooOld = now.subtract(waitAtMost);
+    final waitOn = [
+      for (final c in changes)
+        if (canWait && !c.madeAt.isBefore(tooOld)) c,
+    ];
+    final giveUp = [
+      for (final c in changes)
+        if (!waitOn.contains(c)) c,
+    ];
+    await cache.releasePending([for (final c in waitOn) c.id],
+        by: by, error: said, now: now);
+    if (giveUp.isNotEmpty) {
+      await cache.releasePending(
+        [for (final c in giveUp) c.id],
+        by: by,
+        error: canWait
+            ? 'It waited ${waitAtMost.inDays} days for the server, which '
+                'last said: $said'
+            : said,
+        now: now,
+        failed: true,
+      );
+      for (final c in giveUp) {
+        folders.add(MailFolder.idFor(c.accountId, c.path));
+      }
+    }
+    return (failed: giveUp.length, waiting: waitOn.length);
+  }
+
+  /// The changes of [run] whose numbers still mean their messages, as the
+  /// server says now (its UIDVALIDITY, asked of it, not of the cache, which
+  /// a sync may not have brought up to date); where the folder's numbers
+  /// have been dealt out afresh since one was made, the cache brought up to
+  /// them and the message found again by its Message-ID; and those that
+  /// cannot be found, which are not sent: their number is another
+  /// message's now. Throws where the folder cannot be asked.
+  Future<({List<PendingChange> ready, List<PendingChange> lost})> _stillThere(
+    List<PendingChange> run,
+  ) async {
+    final first = run.first;
+    final t = await _transport(first.accountId);
+    final current = (await t.selectFolder(first.path)).uidValidity;
+    final ready = <PendingChange>[];
+    final again = <PendingChange>[];
+    for (final c in run) {
+      if (c.uidValidity == null || c.uidValidity == current) {
+        ready.add(c);
+      } else {
+        again.add(c);
+      }
+    }
+    if (again.isEmpty) return (ready: ready, lost: const <PendingChange>[]);
+    final cached =
+        (await cache.readFolderState(first.accountId, first.path))?.uidValidity;
+    if (cached != current) await _sync(first.accountId, t).sync(first.path);
+    final known = {
+      for (final c in again) ?c.messageId,
+    };
+    final found = {
+      for (final h in await cache.readHeaders(
+        first.accountId,
+        first.path,
+        await cache.uidsForMessageIds(first.accountId, first.path, known),
+      ))
+        ?h.messageId: h.uid,
+    };
+    final lost = <PendingChange>[];
+    for (final c in again) {
+      final uid = c.messageId == null ? null : found[c.messageId];
+      if (uid == null) {
+        lost.add(c);
+        continue;
+      }
+      await cache.renumberPending(c.id, uid, current);
+      ready.add(c.copyWith(uid: uid));
+    }
+    return (ready: ready, lost: lost);
+  }
+
+  @override
+  Future<List<FailedChange>> takeFailedChanges() async {
+    final List<PendingChange> failed;
+    try {
+      failed = await cache.takeFailedPending();
+    } catch (e) {
+      debugPrint('[myemail] changes given up on not read: $e');
+      return const [];
+    }
+    final byAction = <String, List<PendingChange>>{};
+    for (final c in failed) {
+      (byAction[c.action] ??= []).add(c);
+    }
+    Future<String?> subjectOf(PendingChange c) async {
+      try {
+        return (await cache.readMessage(c.accountId, c.path, c.uid))?.subject;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    return [
+      for (final changes in byAction.values)
+        FailedChange(
+          accountId: changes.first.accountId,
+          kind: changes.first.kind,
+          count: changes.length,
+          fromFolderId:
+              MailFolder.idFor(changes.first.accountId, changes.first.path),
+          toFolderId: switch (changes.first.toPath) {
+            final to? => MailFolder.idFor(changes.first.accountId, to),
+            null => null,
+          },
+          reason: changes.last.error ?? 'The server would not take it.',
+          wanted: changes.first.wanted,
+          subject: changes.length == 1 ? await subjectOf(changes.first) : null,
+        ),
+    ];
+  }
+
   // --- plumbing --------------------------------------------------------------
 
   /// The account's connection, made once however many ask at the same time.
@@ -2924,6 +3774,14 @@ class CachedImapEngine implements MailEngine, PagesOlderMail {
         () => FolderSync(transport: transport, store: cache, accountId: accountId),
       );
 }
+
+/// What one folder's part of a move did: where it landed, what went, and
+/// what stopped the rest; see [CachedImapEngine._moveGroup].
+typedef _Moved = ({
+  List<int>? landed,
+  ({List<int> uids, List<String> headers}) moved,
+  Object? stopped,
+});
 
 /// One folder a search looks in, and whether only the mail no other folder
 /// holds is wanted of it (see [ImapTransport.searchUids]).

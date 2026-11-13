@@ -328,17 +328,24 @@ void main() {
       expect(server.folder('[Gmail]/Trash').messages, hasLength(1));
     });
 
-    test('offline, the message stays and the press waits, quietly', () async {
+    test('offline, the delete is kept for later and the press is done, '
+        'quietly', () async {
+      // The engine keeps a change the server cannot be reached for and
+      // sends it when it can (KeepsChangesForLater), so the press is done
+      // and its notification goes, as a delete in the app does. The press
+      // itself used to wait in the shade's own queue.
       final (account, message) = await arrival();
       server.offline = true;
 
       final outcome = await actionsFor(account)
           .perform(NotificationActions.deleteId, message.id, null);
 
-      expect(outcome, ActionOutcome.offline);
-      expect(outcome.worthRetrying, isTrue);
-      expect(server.folder('INBOX').messages, hasLength(1));
+      expect(outcome, ActionOutcome.deleted);
+      expect(outcome.worthRetrying, isFalse);
       expect(outcome.message, isNull, reason: 'it will be done later');
+      expect(server.folder('INBOX').messages, hasLength(1),
+          reason: 'not on the server yet');
+      expect(await engine.changesWaiting(), {account.id: 1});
     });
 
     test('a failure leaves the message where it was and says so', () async {

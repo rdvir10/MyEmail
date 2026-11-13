@@ -71,6 +71,12 @@ class BackgroundSync {
   }) async {
     final prefs = await state.readPrefs();
     if (!prefs.syncs) return const BackgroundSyncReport();
+    // Changes made while a server was out of reach, sent before the sync,
+    // so that what it reads is the mail as the person left it. Never
+    // throws; see KeepsChangesForLater.
+    if (engine case final KeepsChangesForLater keeps) {
+      await keeps.sendWaitingChanges();
+    }
     // Snoozed mail whose time has come, back in its folder first. Never
     // throws; see MailEngine.wakeSnoozed.
     await engine.wakeSnoozed();
