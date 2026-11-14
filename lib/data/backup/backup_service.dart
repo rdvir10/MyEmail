@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../../domain/account.dart';
 import '../../domain/calendar_prefs.dart';
 import '../../domain/display_settings.dart';
+import '../../domain/internet_calendar.dart';
 import '../../domain/quick_step.dart';
 import '../../domain/settings_backup.dart';
 import '../../domain/signature.dart';
@@ -80,9 +81,28 @@ class BackupService {
   /// With [passphrase], the accounts' stored secrets are encrypted into the
   /// file so a restore needs no sign-in. Without one, no secret is read at
   /// all.
+  ///
+  /// Calendars from links go with the secrets, sealed, or not at all: a
+  /// private one's link is a key to it, and the file without a passphrase
+  /// is the one the screen calls safe to keep anywhere. Only the public
+  /// holidays, the same link for everyone, go in the clear.
   Future<SettingsBackup> export({String? passphrase}) async {
     final entries = <String, Object?>{};
+    final calendars = InternetCalendar.listFrom(
+        uiState.readString(UiStateKeys.internetCalendars));
+    final open = [
+      for (final c in calendars)
+        if (isPublicHolidayFeed(c.url)) c,
+    ];
+    final private = [
+      for (final c in calendars)
+        if (!isPublicHolidayFeed(c.url)) c,
+    ];
     for (final MapEntry(key: key, value: shape) in exported.entries) {
+      if (key == UiStateKeys.internetCalendars) {
+        if (open.isNotEmpty) entries[key] = InternetCalendar.listToText(open);
+        continue;
+      }
       switch (shape) {
         case _Shape.ids:
           final ids = uiState.readIds(key);
@@ -111,6 +131,11 @@ class BackupService {
         // was signed out. Writing an empty value would restore a broken
         // sign-in that looks like a working one.
         if (secret != null && secret.isNotEmpty) secrets[account.id] = secret;
+      }
+      // Under the setting's own key, which no account id can be.
+      if (private.isNotEmpty) {
+        secrets[UiStateKeys.internetCalendars] =
+            InternetCalendar.listToText(private);
       }
       sealed = await vault.seal(secrets: secrets, passphrase: passphrase);
     }
@@ -239,8 +264,36 @@ class BackupService {
       }
     }
 
+    // Calendars from links: the file's, those that came sealed (see
+    // [export]) with the public holidays that came in the clear (a file
+    // from an older build has them all in the clear), then this device's
+    // own from links that the file does not have. A file without sign-in
+    // details carries no private ones, and restoring it, from the phone
+    // onto the tablet say, took the tablet's away with the list it
+    // replaced, and their links may be kept nowhere else.
+    var entries = backup.entries;
+    final clear = entries[UiStateKeys.internetCalendars];
+    final sealedCalendars = secrets[UiStateKeys.internetCalendars];
+    if (clear is String || sealedCalendars != null) {
+      final fromFile = [
+        ...InternetCalendar.listFrom(clear is String ? clear : null),
+        ...InternetCalendar.listFrom(sealedCalendars),
+      ];
+      final links = {for (final c in fromFile) c.url};
+      final here = InternetCalendar.listFrom(
+          uiState.readString(UiStateKeys.internetCalendars));
+      entries = {
+        ...entries,
+        UiStateKeys.internetCalendars: InternetCalendar.listToText([
+          ...fromFile,
+          for (final c in here)
+            if (!isPublicHolidayFeed(c.url) && !links.contains(c.url)) c,
+        ]),
+      };
+    }
+
     var restored = 0;
-    for (final MapEntry(key: key, value: value) in backup.entries.entries) {
+    for (final MapEntry(key: key, value: value) in entries.entries) {
       final shape = exported[key];
       // A key this build does not know about is from a newer version. Writing
       // it blind could put a value of the wrong shape where a notifier expects

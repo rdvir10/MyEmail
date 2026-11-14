@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:html/parser.dart' as html_parser;
 
+import 'html_safety.dart';
 import 'mail_attachment.dart';
 import 'mail_message.dart';
 
@@ -222,7 +223,156 @@ Uri? unwrapLink(String url) {
     if (next == null || !next.hasScheme) break;
     uri = next;
   }
-  return uri;
+  return uri == null ? null : _lookedUpHost(uri);
+}
+
+/// [uri] with its host as a browser looks it up: a name in another
+/// alphabet's letters in its xn-- form. Dart keeps such a host
+/// percent-escaped, %d0%b0pple.com for an аpple.com with a Cyrillic а,
+/// which the lookalike-letters rule never saw, which read as no domain
+/// at all, and which Google's lists do not hold. One that will not decode,
+/// or is too long to be a name, is left escaped; [checkLinks] still reads
+/// its % as letters that are not plain.
+Uri _lookedUpHost(Uri uri) {
+  final host = uri.host;
+  if (!host.contains('%') || host.length > 1000) return uri;
+  String name;
+  try {
+    name = Uri.decodeComponent(host);
+  } on FormatException {
+    return uri;
+  }
+  // Read as a browser reads it first (see [_asBrowserReads]), then cut at
+  // the full stops, those other scripts write too.
+  final read = StringBuffer();
+  for (final c in name.runes) {
+    read.write(_asBrowserReads(c));
+  }
+  final labels = read
+      .toString()
+      .replaceAll(RegExp('[\u3002\uff0e\uff61]'), '.')
+      .split('.');
+  if (labels.any((l) => l.length > 63)) return uri;
+  // Plain only if plain before lower-casing: Dart lower-cases a capital
+  // dotted I to a plain i, and www.mİcrosoft.com read as Microsoft's own
+  // address, where a browser goes to www.xn--microsoft-6jf.com. Read this
+  // way, a letter that lower-cases to a plain one in some later Unicode is
+  // still told.
+  final ascii = [
+    for (final l in labels)
+      l.runes.every((c) => c < 0x80)
+          ? l.toLowerCase()
+          : 'xn--${_punycode(l.toLowerCase())}',
+  ].join('.');
+  try {
+    return uri.replace(host: ascii);
+  } on FormatException {
+    return uri;
+  }
+}
+
+/// [c] in a name as a browser reads it (UTS46), for what it takes as a
+/// plain letter, digit or hyphen: the full-width forms, the mathematical,
+/// circled, squared and outlined alphabets, the long s and the Kelvin
+/// sign, all of which a lookalike name can be spelled in; nothing for the
+/// marks it leaves out (a soft hyphen, the zero-width space, variation
+/// selectors); an i with a dot above for İ. Anything else as it is:
+/// another letter a browser makes plain (ligatures, Roman numerals and the
+/// like) is then left in other letters, so warned of rather than missed.
+String _asBrowserReads(int c) {
+  String letter(int i) => String.fromCharCode(0x61 + i);
+  String digit(int i) => String.fromCharCode(0x30 + i);
+  return switch (c) {
+    0x0130 => 'i\u0307',
+    0x017F => 's',
+    0x212A => 'k',
+    0xFE63 || 0xFF0D => '-',
+    >= 0xFF10 && <= 0xFF19 => digit(c - 0xFF10),
+    >= 0xFF21 && <= 0xFF3A => letter(c - 0xFF21),
+    >= 0xFF41 && <= 0xFF5A => letter(c - 0xFF41),
+    >= 0x2460 && <= 0x2468 => digit(c - 0x2460 + 1),
+    >= 0x24B6 && <= 0x24CF => letter(c - 0x24B6),
+    >= 0x24D0 && <= 0x24E9 => letter(c - 0x24D0),
+    0x24EA => '0',
+    >= 0x1CCD6 && <= 0x1CCEF => letter(c - 0x1CCD6),
+    >= 0x1CCF0 && <= 0x1CCF9 => digit(c - 0x1CCF0),
+    // Capitals and small letters in turn, 26 each; the gaps among them
+    // are no characters at all.
+    >= 0x1D400 && <= 0x1D6A3 => letter((c - 0x1D400) % 26),
+    >= 0x1D7CE && <= 0x1D7FF => digit((c - 0x1D7CE) % 10),
+    >= 0x1F130 && <= 0x1F149 => letter(c - 0x1F130),
+    >= 0x1FBF0 && <= 0x1FBF9 => digit(c - 0x1FBF0),
+    0xAD ||
+    0x34F ||
+    0x200B ||
+    0x3164 ||
+    0xFEFF ||
+    0xFFA0 ||
+    (>= 0x115F && <= 0x1160) ||
+    (>= 0x17B4 && <= 0x17B5) ||
+    (>= 0x180B && <= 0x180F) ||
+    (>= 0x2060 && <= 0x2064) ||
+    (>= 0x206A && <= 0x206F) ||
+    (>= 0xFE00 && <= 0xFE0F) ||
+    (>= 0x1BCA0 && <= 0x1BCA3) ||
+    (>= 0x1D173 && <= 0x1D17A) ||
+    (>= 0xE0100 && <= 0xE01EF) =>
+      '',
+    _ => String.fromCharCode(c),
+  };
+}
+
+/// [label] in Punycode (RFC 3492): how a domain name's label in other
+/// letters is written in plain ones, after the xn--.
+String _punycode(String label) {
+  const base = 36, tMin = 1, tMax = 26, skew = 38, damp = 700;
+  final input = label.runes.toList();
+  final out = StringBuffer();
+  for (final c in input) {
+    if (c < 0x80) out.writeCharCode(c);
+  }
+  final basic = out.length;
+  if (basic > 0) out.write('-');
+  // 0 to 25 are a to z, 26 to 35 are 0 to 9.
+  void digit(int d) => out.writeCharCode(d < 26 ? 0x61 + d : 0x16 + d);
+  int adapt(int delta, int points, bool first) {
+    delta = first ? delta ~/ damp : delta ~/ 2;
+    delta += delta ~/ points;
+    var k = 0;
+    while (delta > ((base - tMin) * tMax) ~/ 2) {
+      delta ~/= base - tMin;
+      k += base;
+    }
+    return k + (base - tMin + 1) * delta ~/ (delta + skew);
+  }
+
+  var n = 0x80, delta = 0, bias = 72, handled = basic;
+  while (handled < input.length) {
+    var m = 0x10FFFF;
+    for (final c in input) {
+      if (c >= n && c < m) m = c;
+    }
+    delta += (m - n) * (handled + 1);
+    n = m;
+    for (final c in input) {
+      if (c < n) delta++;
+      if (c != n) continue;
+      var q = delta;
+      for (var k = base;; k += base) {
+        final t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias);
+        if (q < t) break;
+        digit(t + (q - t) % (base - t));
+        q = (q - t) ~/ (base - t);
+      }
+      digit(q);
+      bias = adapt(delta, handled + 1, handled == basic);
+      delta = 0;
+      handled++;
+    }
+    delta++;
+    n++;
+  }
+  return out.toString();
 }
 
 /// Link shorteners, which hide where a link goes.
@@ -302,14 +452,30 @@ bool _isIp(String host) =>
     RegExp(r'^\d{1,3}(\.\d{1,3}){3}$').hasMatch(host) || host.contains(':');
 
 /// A web address or domain the words of a link show, or null for words
-/// like "Click here".
+/// like "Click here", or a file's name: a share from OneDrive or Google
+/// Drive links the file's name, and Quote-2026.pdf going to sharepoint.com
+/// read as an address going somewhere else.
 String? _domainShown(String text) {
   final m = RegExp(
     r'^(?:https?://)?(?:www\.)?((?:[a-z0-9-]+\.)+[a-z]{2,})(?:[/:?#]\S*)?$',
     caseSensitive: false,
   ).firstMatch(text.trim());
-  return m?[1]?.toLowerCase();
+  final shown = m?[1]?.toLowerCase();
+  if (shown == null || _fileEndings.contains(shown.split('.').last)) {
+    return null;
+  }
+  return shown;
 }
+
+/// Kinds of file people share that no domain ends in. Not .zip or .mov,
+/// which are endings as well; nor the ones that run, whose name on a link
+/// is worth the warning either way.
+const _fileEndings = {
+  'pdf', 'doc', 'docx', 'docm', 'xls', 'xlsx', 'xlsm', 'xlsb', 'ppt', 'pptx',
+  'pptm', 'txt', 'csv', 'rtf', 'odt', 'ods', 'odp', 'jpg', 'jpeg', 'png',
+  'gif', 'bmp', 'tif', 'tiff', 'heic', 'webp', 'eml', 'msg', 'ics', 'vcf',
+  'json', 'xml',
+};
 
 /// What each link gives away: words showing one address over a link to
 /// another, a hidden address, a bare internet address, lookalike letters,
@@ -347,7 +513,8 @@ List<ThreatFinding> checkLinks(
       add(ThreatLevel.caution, 'A link goes to a bare internet address',
           host);
     }
-    if (host.split('.').any((p) => p.startsWith('xn--'))) {
+    if (host.contains('%') ||
+        host.split('.').any((p) => p.startsWith('xn--'))) {
       add(ThreatLevel.caution, "A link's address uses lookalike letters",
           host);
     }
@@ -426,14 +593,46 @@ bool isRiskyAttachment(MailAttachment a) {
   return _runs.contains(ext) || _macros.contains(ext) || _pages.contains(ext);
 }
 
+/// The attachments [html] shows as pictures, by id: each marked inline, of
+/// a picture's type, that the body names by its Content-ID or, where that
+/// is not known, by the one Outlook builds from its name, as
+/// attachmentsShownInBody finds them. A signature's logo is part of the
+/// letter, not a file to fingerprint.
+///
+/// Nothing else marked inline: the mark is the sender's own, Apple Mail
+/// puts it on ordinary documents, and such a part is a chip under the
+/// message that opens like any file, so an .exe or a fake sign-in page sent
+/// that way passed as safe. Nor a picture whose name says it runs, carries
+/// macros or is a page.
+Set<String> picturesShownIn(String? html, List<MailAttachment> attachments) {
+  if (html == null || !namesInlinePictures(html)) return const {};
+  final named = contentIdsNamedIn(html);
+  bool shown(MailAttachment a) => switch (a.contentId?.toLowerCase()) {
+        final own? => named.contains(own),
+        null =>
+          named.any((id) => id.split('@').first == a.name.toLowerCase()),
+      };
+  bool picture(MailAttachment a) {
+    final declared = a.mimeType.toLowerCase().split(';').first.trim();
+    return (declared.startsWith('image/') ? declared : a.openAs)
+        .startsWith('image/');
+  }
+
+  return {
+    for (final a in attachments)
+      if (a.isInline && picture(a) && !isRiskyAttachment(a) && shown(a)) a.id,
+  };
+}
+
 /// What each attachment gives away by its kind: a program or script, a
 /// disk image, a name that hides its kind, macros, a web page, an archive.
+/// Inline or not, by its name: a picture's gives none of them away (see
+/// [picturesShownIn]).
 List<ThreatFinding> checkAttachments(List<MailAttachment> attachments) {
   final found = <ThreatFinding>[];
   void add(ThreatLevel level, String title, [String detail = '']) => found
       .add(ThreatFinding(level, ThreatArea.attachments, title, detail: detail));
   for (final a in attachments) {
-    if (a.isInline) continue;
     final name = a.name.trim();
     final ext = _extensionOf(name);
     final parts = name.toLowerCase().split('.');

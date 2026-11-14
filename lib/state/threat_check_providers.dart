@@ -94,9 +94,11 @@ final threatCheckProvider = StreamProvider.autoDispose
   final links = linksIn(html: body.html, text: body.text);
   final sbKey = (await secrets.readSecret(safeBrowsingKeyName))?.trim() ?? '';
   final vtKey = (await secrets.readSecret(virusTotalKeyName))?.trim() ?? '';
+  // Every file under the message, inline or not; not the logo in the body.
+  final pictures = picturesShownIn(body.html, attachments);
   final files = [
     for (final a in attachments)
-      if (!a.isInline && a.sizeBytes <= virusTotalLargest) a,
+      if (!pictures.contains(a.id) && a.sizeBytes <= virusTotalLargest) a,
   ]..sort((a, b) =>
       (isRiskyAttachment(b) ? 1 : 0).compareTo(isRiskyAttachment(a) ? 1 : 0));
   final local = ThreatReport(

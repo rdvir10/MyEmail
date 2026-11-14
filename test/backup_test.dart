@@ -9,6 +9,7 @@ import 'package:myemail/data/backup/secret_vault.dart';
 import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/internet_calendar.dart';
 import 'package:myemail/domain/meeting.dart';
 import 'package:myemail/domain/settings_backup.dart';
 import 'package:myemail/state/backup_providers.dart';
@@ -167,6 +168,29 @@ void main() {
 
     test('empty settings are omitted rather than written as blanks', () async {
       expect((await service.export()).entries, isEmpty);
+    });
+
+    test('a calendar added from a link is not in a file without sign-in '
+        "details; Google's public holidays are", () async {
+      // A private link (Google's secret address, a published Outlook
+      // calendar) is a key to that calendar, and this file is the one the
+      // screen calls safe to keep anywhere.
+      await uiState.writeString(
+        UiStateKeys.internetCalendars,
+        InternetCalendar.listToText([_familyCalendar, _holidays]),
+      );
+
+      final file = (await service.export()).toJsonString();
+
+      expect(file, isNot(contains(_familyToken)));
+      final fresh = MemoryUiStateStore();
+      await BackupService(accountStore: MemoryAccountStore(), uiState: fresh)
+          .import(SettingsBackup.parse(file));
+      expect(
+        InternetCalendar.listFrom(
+            fresh.readString(UiStateKeys.internetCalendars)),
+        [_holidays],
+      );
     });
   });
 
@@ -419,6 +443,60 @@ void main() {
 
       expect(report.settingsRestored, 0);
       expect(uiState.readIds(UiStateKeys.favorites), isEmpty);
+    });
+
+    test('a file without sign-in details leaves the calendars from links '
+        'already on this device', () async {
+      // Copying settings from the phone to the tablet: the file carries
+      // the phone's public holidays and nothing private, and the tablet's
+      // own calendars from links went with the list the file replaced.
+      await uiState.writeString(
+        UiStateKeys.internetCalendars,
+        InternetCalendar.listToText([_familyCalendar, _holidays]),
+      );
+      final file = (await service.export()).toJsonString();
+      final tablet = MemoryUiStateStore();
+      await tablet.writeString(
+        UiStateKeys.internetCalendars,
+        InternetCalendar.listToText([_teamCalendar, _usHolidays]),
+      );
+
+      await BackupService(accountStore: MemoryAccountStore(), uiState: tablet)
+          .import(SettingsBackup.parse(file));
+
+      // The file's holidays in place of the tablet's, and its own team.
+      expect(
+        InternetCalendar.listFrom(
+            tablet.readString(UiStateKeys.internetCalendars)),
+        [_holidays, _teamCalendar],
+      );
+    });
+
+    test("a file from an older build brings back its whole list, beside "
+        "this device's own", () async {
+      // Every calendar in the clear, as 3.14.0 saved them.
+      final older = SettingsBackup(
+        accounts: const [],
+        entries: {
+          UiStateKeys.internetCalendars:
+              InternetCalendar.listToText([_familyCalendar, _holidays]),
+        },
+      );
+      await uiState.writeString(
+        UiStateKeys.internetCalendars,
+        InternetCalendar.listToText(
+            [_teamCalendar, _familyCalendar.copyWith(colour: 0xFF616161)]),
+      );
+
+      final report = await service.import(older);
+
+      expect(report.settingsRestored, 1);
+      // The file's Family, not a second one beside this device's.
+      expect(
+        InternetCalendar.listFrom(
+            uiState.readString(UiStateKeys.internetCalendars)),
+        [_familyCalendar, _holidays, _teamCalendar],
+      );
     });
   });
 
@@ -864,6 +942,34 @@ void main() {
       expect(await toCreds.readSecret('acct-bbb'), '{"refresh_token":"r-1"}');
     });
 
+    test('calendars from links travel sealed, and come back with the '
+        'passphrase', () async {
+      await uiState.writeString(
+        UiStateKeys.internetCalendars,
+        InternetCalendar.listToText([_familyCalendar, _holidays]),
+      );
+      final file = (await serviceWith(
+        store: accounts,
+        creds: MemoryCredentialStore(),
+        ui: uiState,
+      ).export(passphrase: passphrase))
+          .toJsonString();
+
+      expect(file, isNot(contains(_familyToken)));
+      final toUi = MemoryUiStateStore();
+      final report = await serviceWith(
+        store: MemoryAccountStore(),
+        creds: MemoryCredentialStore(),
+        ui: toUi,
+      ).import(SettingsBackup.parse(file), passphrase: passphrase);
+      expect(
+        InternetCalendar.listFrom(
+            toUi.readString(UiStateKeys.internetCalendars)),
+        unorderedEquals([_familyCalendar, _holidays]),
+      );
+      expect(report.settingsRestored, 1);
+    });
+
     test('a file saved without a passphrase carries no secrets', () async {
       final creds = MemoryCredentialStore();
       await creds.writeSecret('acct-aaa', 'abcdabcdabcdabcd');
@@ -1097,6 +1203,41 @@ void main() {
     });
   });
 }
+
+/// A family calendar's secret address in iCal format, as Google gives it.
+const _familyToken = 'private-0123456789abcdef0123456789abcdef';
+const _familyCalendar = InternetCalendar(
+  id: 'cal-family',
+  name: 'Family',
+  url: 'https://calendar.google.com/calendar/ical/family%40gmail.com/'
+      '$_familyToken/basic.ics',
+  colour: 0xFF8E24AA,
+);
+
+/// A colleague's published Outlook calendar, added on one device only.
+const _teamCalendar = InternetCalendar(
+  id: 'cal-team',
+  name: 'Team',
+  url: 'https://outlook.office365.com/owa/calendar/'
+      '1f0e2d3c4b5a69788796a5b4c3d2e1f0@hadco.com/'
+      '9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d1234567890/calendar.ics',
+  colour: 0xFFD50000,
+);
+
+/// Google's public holidays, the same link for everyone.
+final _holidays = InternetCalendar(
+  id: 'cal-holidays',
+  name: 'Holidays in Israel',
+  url: holidayFeedUrl('en.jewish'),
+  colour: 0xFF0B8043,
+);
+
+final _usHolidays = InternetCalendar(
+  id: 'cal-us',
+  name: 'Holidays in United States',
+  url: holidayFeedUrl('en.usa'),
+  colour: 0xFF039BE5,
+);
 
 /// Stands in for the document picker, which a widget test cannot answer.
 

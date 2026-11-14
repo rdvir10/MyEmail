@@ -157,6 +157,87 @@ void main() {
           'Everything before the @ is decoration; it goes to evil.example.');
     });
 
+    test('an address written in lookalike letters rather than as xn--, in '
+        'HTML and in plain text', () {
+      // The first letter is a Cyrillic а, not an a.
+      final inHtml = linksIn(
+          html: '<a href="https://\u0430pple.com/signin">Sign in to your '
+              'account</a>');
+      final inText =
+          linksIn(text: 'Sign in at https://\u0430pple.com/signin today.');
+      for (final links in [inHtml, inText]) {
+        // As a browser looks it up, and as Google's lists have it.
+        expect(links.single.host, 'xn--pple-43d.com');
+        expect(links.single.target.toString(),
+            'https://xn--pple-43d.com/signin');
+        final found = checkLinks(links, known: {'hadco.com'});
+        expect(titles(found), ["A link's address uses lookalike letters"]);
+        expect(found.single.detail, 'xn--pple-43d.com');
+      }
+
+      expect(unwrapLink('https://B\u00dcCHER.de/')?.host, 'xn--bcher-kva.de');
+      expect(unwrapLink('https://\u0430\u0440\u0440\u04cf\u0435.com/')?.host,
+          'xn--80ak6aa92e.com');
+      // The full stop other scripts write is a dot to a browser.
+      expect(unwrapLink('https://paypal\u3002com/')?.host, 'paypal.com');
+      // An escape that is no letter at all is still not a plain address.
+      expect(
+          titles(checkLinks(linksIn(html: '<a href="https://%ff.com/">x</a>'))),
+          ["A link's address uses lookalike letters"]);
+    });
+
+    test('an address is read as a browser reads it before it is called '
+        'plain', () {
+      // A capital dotted I. Dart lower-cases it to a plain i, which read
+      // as Microsoft's own address; a browser makes it i with a dot above.
+      expect(unwrapLink('https://www.m\u0130crosoft.com/login')?.host,
+          'www.xn--microsoft-6jf.com');
+      expect(
+        titles(checkLinks(linksIn(
+            html: '<a href="https://www.m\u0130crosoft.com/login">'
+                'www.microsoft.com</a>'))),
+        [
+          'A link reads microsoft.com but goes to www.xn--microsoft-6jf.com',
+          "A link's address uses lookalike letters",
+        ],
+      );
+      // Letters a browser takes for plain ones go where it goes, with no
+      // warning and the same address for Google: full-width, the long s,
+      // the Kelvin sign, mathematical bold, circled, and marks it ignores.
+      for (final (written, host) in [
+        ('\uff41\uff50\uff50\uff4c\uff45.com', 'apple.com'),
+        ('\uFF21PPLE.com', 'apple.com'),
+        ('\u017fecure.example', 'secure.example'),
+        ('\u212aing.example', 'king.example'),
+        ('pay\u00adpal.com', 'paypal.com'),
+        ('pay\u200bpal.com', 'paypal.com'),
+        ('\u{1d429}\u{1d41a}\u{1d432}\u{1d429}\u{1d41a}\u{1d425}.com',
+            'paypal.com'),
+        ('\u24df\u24d0\u24e8\u24df\u24d0\u24db.com', 'paypal.com'),
+        ('hadco\uff11.com', 'hadco1.com'),
+      ]) {
+        final links = linksIn(html: '<a href="https://$written/">x</a>');
+        expect(links.single.host, host, reason: written);
+        expect(checkLinks(links), isEmpty, reason: written);
+      }
+      // A label still in other letters once read so is not plain.
+      expect(unwrapLink('https://\u0130stanbul.tr/')?.host,
+          'xn--istanbul-o0e.tr');
+    });
+
+    test("a file's name on a link to where it is shared is no address", () {
+      final found = checkLinks(linksIn(html: '''
+<a href="https://hadco-my.sharepoint.com/:b:/g/personal/ron/EaBc?e=1x">Quote-2026.pdf</a>
+<a href="https://drive.google.com/file/d/1aB/view?usp=sharing">Scan0001.pdf</a>
+<a href="https://hadco-my.sharepoint.com/:x:/g/personal/ron/EdEf">Budget.xlsx</a>
+<a href="https://drive.google.com/file/d/2cD/view">IMG-2041.JPG</a>
+<a href="https://evil.example/get">photos.zip</a>
+'''));
+      // .zip is a real ending as well as a kind of file.
+      expect(titles(found),
+          ['A link reads photos.zip but goes to evil.example']);
+    });
+
     test('lookalike domains', () {
       expect(lookalikeOf('rnicrosoft.com', {'microsoft.com'}), 'microsoft.com');
       expect(lookalikeOf('paypai.com', {'paypal.com'}), 'paypal.com');
@@ -253,6 +334,8 @@ void main() {
       file('Sign in.html'),
       file('Photos.zip'),
       file('Report.pdf'),
+      file('logo.png', inline: true),
+      // Marked inline by its sender, and still a file under the message.
       file('logo.exe', inline: true),
     ]);
     expect([for (final f in found) (f.title, f.level)], [
@@ -261,6 +344,7 @@ void main() {
       ('Budget.xlsm carries macros', ThreatLevel.caution),
       ('Sign in.html is a web page', ThreatLevel.caution),
       ('Photos.zip is an archive', ThreatLevel.safe),
+      ('logo.exe runs when opened', ThreatLevel.danger),
     ]);
     expect(found.first.detail,
         'It reads as a pdf but is a .exe, which runs when opened.');
@@ -283,13 +367,20 @@ void main() {
       preview: '',
       hasAttachments: true,
     );
-    MailAttachment file(String name, {int size = 1000, bool inline = false}) =>
+    MailAttachment file(
+      String name, {
+      int size = 1000,
+      bool inline = false,
+      String? cid,
+      String mime = 'application/octet-stream',
+    }) =>
         MailAttachment(
           id: name,
           name: name,
-          mimeType: 'application/octet-stream',
+          mimeType: mime,
           sizeBytes: size,
           isInline: inline,
+          contentId: cid,
         );
     String fingerprint(String id) =>
         sha256.convert(utf8.encode('file $id')).toString();
@@ -421,11 +512,12 @@ void main() {
 
     test('none listed, and only four files a check', () async {
       final engine = _ThreatEngine(
-        html: '<a href="https://example.com/help">Help</a>',
+        html: '<a href="https://example.com/help">Help</a>'
+            '<img src="cid:logo@sig">',
         files: [
           for (final n in ['a', 'b', 'c', 'd', 'e']) file('$n.pdf'),
           file('f.exe'),
-          file('logo.png', inline: true),
+          file('logo.png', inline: true, cid: 'logo@sig'),
           file('video.mp4', size: 40 * 1024 * 1024),
         ],
       );
@@ -450,6 +542,48 @@ void main() {
       expect(online.first, 'Google Safe Browsing lists none of its links');
       expect(online.last, 'Only 4 of 6 files were checked');
       expect(online, contains('a.pdf: no antivirus engine flags it'));
+    });
+
+    test('a file marked inline is judged and fingerprinted like any other; '
+        'a picture the body shows is not', () async {
+      final engine = _ThreatEngine(
+        html: '<p>Thanks</p><img src="cid:logo@sig">'
+            '<img src="cid:image001.png@01DD2F3B.8B2E4F60">'
+            '<img src="cid:banner@sig">',
+        files: [
+          file('logo.png', inline: true, cid: 'logo@sig'),
+          // Its Content-ID not known: shown by the name Outlook builds it
+          // from.
+          file('image001.png', inline: true),
+          file('setup.exe', inline: true),
+          file('Invoice.html', inline: true, mime: 'text/html'),
+          // Inline, but the body does not show it: a chip like any file.
+          file('photo.jpg', inline: true, cid: 'photo@x'),
+          // Shown as a picture, but its name says it runs.
+          file('banner.exe', inline: true, cid: 'banner@sig',
+              mime: 'image/png'),
+        ],
+      );
+      final virusTotal = _FakeVirusTotal();
+      final c = await container(engine,
+          virusTotalKey: 'vt-key', virusTotal: virusTotal);
+
+      final report = (await check(c)).last;
+
+      expect(
+        titles(report.findings.where((f) => f.area == ThreatArea.attachments)),
+        [
+          'setup.exe runs when opened',
+          'Invoice.html is a web page',
+          'banner.exe runs when opened',
+        ],
+      );
+      expect(virusTotal.asked, unorderedEquals([
+        fingerprint('setup.exe'),
+        fingerprint('Invoice.html'),
+        fingerprint('banner.exe'),
+        fingerprint('photo.jpg'),
+      ]));
     });
 
     test('a key VirusTotal refuses stops it asking', () async {

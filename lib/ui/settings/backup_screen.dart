@@ -247,7 +247,9 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
                     'them, and then they are encrypted with a passphrase you '
                     'choose. With them, a restore needs nothing else. Without '
                     'them, the file is safe to keep anywhere and each account '
-                    'is signed in once afterwards.',
+                    'is signed in once afterwards. Calendars added from a '
+                    'link go in only with them, since a private link lets '
+                    'anyone read its calendar.',
                     style: theme.textTheme.bodySmall,
                   ),
                 ),

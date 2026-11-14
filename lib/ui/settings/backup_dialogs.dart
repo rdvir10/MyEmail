@@ -80,10 +80,14 @@ class _ExportDialogState extends State<_ExportDialog> {
                   // and the only thing between the two is the passphrase.
                   ? 'The file will be worth as much as the passphrase. Anyone '
                       'who has both can read your mail. Lose the passphrase '
-                      'and the sign-in details in the file are gone.'
+                      'and the sign-in details in the file are gone, with the '
+                      'calendars added from a link.'
+                  // A private calendar's link is a key to it too.
                   : 'No passwords or tokens go in the file, so it is safe to '
                       'keep anywhere. Each account needs signing in once after '
-                      'a restore.',
+                      'a restore. Calendars added from a link stay out too '
+                      '(public holidays go in), since a private link lets '
+                      'anyone read its calendar.',
               style: theme.textTheme.bodySmall
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),

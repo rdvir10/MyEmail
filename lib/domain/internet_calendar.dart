@@ -4,8 +4,9 @@ import 'package:flutter/foundation.dart';
 
 /// A calendar from a link, Outlook's Add calendar, From internet: an .ics
 /// feed MyEmail reads itself every few hours and shows read only, in its
-/// own colour, beside the accounts' calendars. Kept on this device and in
-/// the backup.
+/// own colour, beside the accounts' calendars. Kept on this device, and in
+/// a backup with sign-in details; in one without, only the public holidays
+/// (see [isPublicHolidayFeed]).
 @immutable
 class InternetCalendar {
   const InternetCalendar({
@@ -169,3 +170,9 @@ String holidayFeedUrl(String id) =>
     'https://calendar.google.com/calendar/ical/'
     '${Uri.encodeComponent('$id#holiday@group.v.calendar.google.com')}'
     '/public/basic.ics';
+
+/// Whether [url] is one of [holidayCalendars]' feeds: the same link for
+/// everyone. Any other may be private, Google's secret address or a
+/// published Outlook calendar, and such a link is a key to its calendar.
+bool isPublicHolidayFeed(String url) =>
+    holidayCalendars.any((h) => holidayFeedUrl(h.id) == url);
