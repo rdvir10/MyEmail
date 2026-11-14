@@ -21,6 +21,7 @@ import '../cache/mail_database.dart';
 import '../graph/graph_id_map.dart';
 import '../folder_list_store.dart';
 import '../imap/cached_imap_engine.dart';
+import '../mail_engine.dart';
 import '../notifications/android_mail_notifier.dart';
 import '../secure_credential_store.dart';
 import 'pass_signal.dart';
@@ -290,10 +291,11 @@ Future<void> scheduleNotificationActionsRetry() async {
   );
 }
 
-/// A job at [at] that brings snoozed mail back, in place of any waiting;
-/// null takes it away. WorkManager keeps to the time as Android lets it,
-/// which in deep sleep can be some minutes late; the regular passes, and
-/// the app coming to the front, bring it back too.
+/// A job at [at] that brings snoozed mail back, in place of any waiting
+/// unless [at] has gone by (see [snoozeWakePolicy]); null takes it away.
+/// WorkManager keeps to the time as Android lets it, which in deep sleep
+/// can be some minutes late; the regular passes, and the app coming to the
+/// front, bring it back too.
 Future<void> scheduleSnoozeWake(DateTime? at) async {
   if (!_supported) return;
   await Workmanager().initialize(backgroundCallbackDispatcher);
@@ -301,17 +303,30 @@ Future<void> scheduleSnoozeWake(DateTime? at) async {
     await Workmanager().cancelByUniqueName(_wakeUniqueName);
     return;
   }
-  final wait = at.difference(DateTime.now());
+  final now = DateTime.now();
+  final wait = at.difference(now);
   await Workmanager().registerOneOffTask(
     _wakeUniqueName,
     _wakeTaskName,
     initialDelay: wait.isNegative ? Duration.zero : wait,
-    existingWorkPolicy: ExistingWorkPolicy.replace,
+    existingWorkPolicy: snoozeWakePolicy(at, now: now),
     constraints: Constraints(networkType: NetworkType.connected),
     backoffPolicy: BackoffPolicy.linear,
     backoffPolicyDelay: const Duration(minutes: 5),
   );
 }
+
+/// How [scheduleSnoozeWake] enqueues the job for [at] where one may be
+/// there already.
+///
+/// A time ahead is the next due, in place of any job waiting. A time gone
+/// by is a snooze not brought back yet, and the job for it may be waiting
+/// out its backoff (see [wakeAndAskAgain]): kept, as the app asks for the
+/// job every minute while it is in front, and replaced, the job ran again
+/// at once.
+@visibleForTesting
+ExistingWorkPolicy snoozeWakePolicy(DateTime at, {required DateTime now}) =>
+    at.isAfter(now) ? ExistingWorkPolicy.replace : ExistingWorkPolicy.keep;
 
 /// Send the changes kept for later (see `KeepsChangesForLater`) once Android
 /// sees a network, and again after a minute, two, three, for as long as
@@ -387,7 +402,7 @@ Future<bool> _runWake() async {
       cacheOptions: const SharedPreferencesWithCacheOptions(),
     );
     database = MailDatabase.open();
-    engine = CachedImapEngine(
+    final woke = engine = CachedImapEngine(
       accountStore: PrefsAccountStore(prefs),
       credentialStore: SecureCredentialStore(),
       cache: DriftCacheStore(database),
@@ -395,13 +410,16 @@ Future<bool> _runWake() async {
       graphIdMap: DriftGraphIdMap(database),
       onChangesWaiting: _askForWaitingChanges,
     );
-    final woken = await engine.wakeSnoozed();
-    if (woken > 0) {
-      debugPrint('[myemail] $woken snoozed back');
-      announceBackgroundPassDone();
-    }
-    await scheduleSnoozeWake(await engine.nextSnoozeWake());
-    return true;
+    return await wakeAndAskAgain(
+      woke,
+      schedule: scheduleSnoozeWake,
+      // Said here, at the snooze's time: see BackgroundSync.announceWoken.
+      announce: (woken) => BackgroundSync(
+        engine: woke,
+        notifier: AndroidMailNotifier(),
+        state: PrefsSyncStateStore(),
+      ).announceWoken(woken),
+    );
   } catch (e, stack) {
     debugPrint('[myemail] snoozed mail not woken: $e\n$stack');
     return false;
@@ -409,6 +427,38 @@ Future<bool> _runWake() async {
     await engine?.close();
     await database?.close();
   }
+}
+
+/// The wake job's work once it has an engine: what is due brought back,
+/// handed to [announce], and [schedule] asked for the next due. True when
+/// it is done; false has WorkManager bring the job back after its backoff.
+///
+/// One still due once it has been tried could not be brought back: the
+/// sign-in has lapsed, Snoozed has gone, the server refused the move, or
+/// the snooze's own move is still waiting to be sent. Asked for again at a
+/// time gone by, the job ran again at once and failed the same way, for as
+/// long as the phone had a network. Failed, it comes back in five minutes,
+/// then ten, and so on; the background passes and the app look meanwhile.
+@visibleForTesting
+Future<bool> wakeAndAskAgain(
+  MailEngine engine, {
+  required Future<void> Function(DateTime? at) schedule,
+  Future<void> Function(List<String> woken)? announce,
+  DateTime Function()? now,
+}) async {
+  final woken = await wakeSnoozedMail(engine);
+  if (woken.isNotEmpty) {
+    debugPrint('[myemail] ${woken.length} snoozed back');
+    await announce?.call(woken);
+    announceBackgroundPassDone();
+  }
+  final next = await engine.nextSnoozeWake();
+  if (next != null && !next.isAfter((now ?? DateTime.now)())) {
+    debugPrint('[myemail] snoozed mail still due: the job comes back later');
+    return false;
+  }
+  await schedule(next);
+  return true;
 }
 
 @pragma('vm:entry-point')

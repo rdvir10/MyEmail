@@ -228,8 +228,11 @@ String _encodedWords(String value) {
 /// saw a broken logo in every signature. A part beside the HTML is what
 /// every client shows, Graph's MIME send included.
 ///
-/// For sending only. A saved draft keeps its pictures as data, which the
-/// editor can show when it is reopened and a cid: link it cannot.
+/// For sending, and for saving a draft only where its pictures as data
+/// make it more than Microsoft takes in one piece (see saveDraft). A saved
+/// draft otherwise keeps its pictures as data, which the editor can show
+/// when it is reopened and a cid: link it cannot; one saved with them as
+/// parts has them put back as data when it is reopened (draftFromMessage).
 Draft withPicturesAsParts(Draft draft) {
   final pattern = RegExp(
     r'''(<img\b[^>]*?\bsrc\s*=\s*)(["'])data:(image/[\w.+-]+);base64,([^"']*)\2''',
@@ -251,7 +254,7 @@ Draft withPicturesAsParts(Draft draft) {
       } on FormatException {
         return m[0]!;
       }
-      id = '${em.MessageBuilder.createRandomId()}@myemail';
+      id = '${em.MessageBuilder.createRandomId()}$madePictureIdEnd';
       idFor['$type,$data'] = id;
       pictures.add(DraftAttachment(
         fileName: 'picture${pictures.length + 1}.${_extensionFor(type)}',
@@ -268,6 +271,11 @@ Draft withPicturesAsParts(Draft draft) {
     attachments: [...draft.attachments, ...pictures],
   );
 }
+
+/// How the Content-ID of each picture [withPicturesAsParts] makes ends, so
+/// a draft saved that way can be told from one another mail app wrote: see
+/// draftFromMessage.
+const madePictureIdEnd = '@myemail';
 
 /// A file extension for an image type, which is what buildMimeMessage reads
 /// the part's type from.

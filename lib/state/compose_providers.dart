@@ -10,6 +10,7 @@ import '../data/files/attached_message.dart';
 import '../data/mail_engine.dart' show FindsByMessageId, MailEngine;
 import '../data/compose/quote_builder.dart' show sanitiseForEditing;
 import '../data/compose/reply_draft.dart';
+import '../data/compose/smtp_sender.dart' show madePictureIdEnd;
 import '../data/ui_state_store.dart';
 import '../domain/address_suggestions.dart'
     show formatRecipient, splitRecipients;
@@ -23,7 +24,8 @@ import 'contact_providers.dart' show sentThisSessionProvider;
 import 'folder_tree.dart' show kUnifiedInboxId;
 import 'message_providers.dart';
 import 'providers.dart';
-import 'attachment_providers.dart' show inlinePicturesProvider;
+import 'attachment_providers.dart'
+    show inlinePicturesProvider, maxInlinePictureBytes;
 
 /// Per-account signatures, persisted with the rest of the UI state.
 class Signatures extends Notifier<Map<String, Signature>> {
@@ -308,6 +310,8 @@ Future<Draft> draftFromMessage({
   try {
     final raw = await engine.rawMessage(message.id);
     final headers = savedDraftHeaders(raw);
+    final (:html, :files) =
+        _picturesAsData(draft.htmlBody, attachmentsInMime(raw));
     // A reply or forward put away to Drafts stays one, to its original
     // wherever that is filed now: in its conversation, and marking the
     // original once it has gone. Not found, it is a new message, as a
@@ -315,12 +319,13 @@ Future<Draft> draftFromMessage({
     final original =
         await _messageWithId(engine, headers.original, message.accountId);
     return draft.copyWith(
+      htmlBody: html,
       kind: original == null ? null : headers.kind,
       originalMessageId: original,
       bcc: headers.bcc,
       inReplyTo: headers.inReplyTo,
       references: headers.references,
-      attachments: attachmentsInMime(raw),
+      attachments: files,
       savedAs: message.id,
       importance: headers.importance,
       requestReadReceipt: headers.requestReadReceipt,
@@ -336,6 +341,48 @@ Future<Draft> draftFromMessage({
       storedCopyUnread: true,
     );
   }
+}
+
+/// [html] with the pictures it names by Content-ID that are among [files],
+/// and that this app made parts of ([madePictureIdEnd]), put back in as
+/// data, as [buildDraft] does for a quote, and [files] without them; up to
+/// [maxInlinePictureBytes] between them, past which the rest stay files.
+///
+/// A draft too large for Microsoft to take in one piece is saved with its
+/// pictures as parts of their own (see CachedImapEngine.saveDraft), and the
+/// editor has nothing to show a cid: link with: reopened, they were broken
+/// boxes, with each picture a file under the message as well.
+///
+/// Not another mail app's pictures. A draft written in Outlook keeps its
+/// logo as a part, and put in as data it was saved that way, which Outlook
+/// for Windows shows as a broken box.
+({String html, List<DraftAttachment> files}) _picturesAsData(
+  String html,
+  List<DraftAttachment> files,
+) {
+  final named = contentIdsNamedIn(html);
+  if (named.isEmpty) return (html: html, files: files);
+  final pictures = <String, String>{};
+  final kept = <DraftAttachment>[];
+  var room = maxInlinePictureBytes;
+  for (final f in files) {
+    final id = f.contentId?.toLowerCase();
+    final type = f.mimeType.toLowerCase().split(';').first.trim();
+    if (id == null ||
+        !id.endsWith(madePictureIdEnd) ||
+        !named.contains(id) ||
+        !type.startsWith('image/')) {
+      kept.add(f);
+    } else if (pictures.containsKey(id)) {
+      // The same picture twice: it is in already.
+    } else if (f.bytes.length <= room) {
+      room -= f.bytes.length;
+      pictures[id] = 'data:$type;base64,${base64Encode(f.bytes)}';
+    } else {
+      kept.add(f);
+    }
+  }
+  return (html: withInlinePictures(html, pictures), files: kept);
 }
 
 /// The message carrying [messageId] that [engine] holds, preferring

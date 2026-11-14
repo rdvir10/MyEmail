@@ -30,6 +30,11 @@ abstract class SyncStateStore {
 
   Future<void> writeWatermark(String folderId, int uid);
 
+  /// Snoozed mail announced as it came back, by message id, with when:
+  /// the scan for new mail leaves it out (see `BackgroundSync.announceWoken`).
+  Future<Map<String, DateTime>> readToldBack();
+  Future<void> writeToldBack(Map<String, DateTime> told);
+
   /// When the push or five-minute worker last finished a pass. How the app
   /// can tell that Android has stopped it.
   Future<DateTime?> readLastLivePass();
@@ -45,6 +50,7 @@ abstract class SyncStateStore {
 abstract final class SyncStateKeys {
   static const prefs = 'notify.prefs.v1';
   static const watermarkPrefix = 'notify.mark.';
+  static const toldBack = 'notify.woken.v1';
   static const lastLivePass = 'sync.live.last';
   static const liveRefused = 'sync.live.refused';
 
@@ -83,6 +89,30 @@ class PrefsSyncStateStore implements SyncStateStore {
   @override
   Future<void> writeWatermark(String folderId, int uid) =>
       _prefs.setInt(SyncStateKeys.watermark(folderId), uid);
+
+  @override
+  Future<Map<String, DateTime>> readToldBack() async {
+    final raw = await _prefs.getString(SyncStateKeys.toldBack);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      return {
+        for (final MapEntry(:key, :value)
+            in (jsonDecode(raw) as Map<String, dynamic>).entries)
+          if (value is int) key: DateTime.fromMillisecondsSinceEpoch(value),
+      };
+    } on FormatException {
+      return {};
+    } on TypeError {
+      return {};
+    }
+  }
+
+  @override
+  Future<void> writeToldBack(Map<String, DateTime> told) =>
+      _prefs.setString(SyncStateKeys.toldBack, jsonEncode({
+        for (final MapEntry(:key, :value) in told.entries)
+          key: value.millisecondsSinceEpoch,
+      }));
 
   @override
   Future<DateTime?> readLastLivePass() async {
@@ -134,6 +164,15 @@ class MemorySyncStateStore implements SyncStateStore {
   @override
   Future<void> writeWatermark(String folderId, int uid) async =>
       _watermarks[folderId] = uid;
+
+  Map<String, DateTime> toldBack = {};
+
+  @override
+  Future<Map<String, DateTime>> readToldBack() async => {...toldBack};
+
+  @override
+  Future<void> writeToldBack(Map<String, DateTime> told) async =>
+      toldBack = {...told};
 
   DateTime? lastLivePass;
 

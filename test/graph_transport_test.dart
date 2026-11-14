@@ -2816,6 +2816,130 @@ void main() {
         reason: 'the cached row brought up to date with it',
       );
     });
+    test('across the account, asks the whole mailbox once', () async {
+      // One search a folder: forty requests for forty folders, three at a
+      // time, at every pause in the typing, and again after each move made
+      // from the results.
+      server
+        ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+        ..folder(id: 'f-work', name: 'Work')
+        ..folder(id: 'f-old', name: 'Old')
+        ..folder(id: 'f-junk', name: 'Junk Email', wellKnown: 'junkemail')
+        ..folder(id: 'f-del', name: 'Deleted Items', wellKnown: 'deleteditems');
+      final asked = <Uri>[];
+      final searching = GraphTransport(
+        accountId: 'acct-1',
+        idMap: ids,
+        api: GraphMailApi(
+          accessToken: ({bool force = false}) async => 'token',
+          httpClient: http_testing.MockClient((request) {
+            asked.add(request.url);
+            return server.handle(request);
+          }),
+        ),
+      );
+      final engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => searching,
+      );
+      final account = await engine.addAccount(
+        displayName: 'Hadco',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      await engine.loadFolders(account.id);
+      server
+        ..message('f-inbox', id: 'm1', subject: 'Acme quote', minutesAgo: 30)
+        ..message('f-work', id: 'm2', subject: 'Acme order', minutesAgo: 20)
+        ..message('f-old', id: 'm3', subject: 'Lunch', minutesAgo: 10)
+        ..message('f-junk', id: 'm4', subject: 'Acme prize', minutesAgo: 5)
+        ..message('f-del', id: 'm5', subject: 'Acme again', minutesAgo: 4);
+      asked.clear();
+
+      final hits = await engine.searchMessages(
+        'acme',
+        SearchScope.account(account.id),
+      );
+
+      expect([for (final u in asked) u.path], ['/v1.0/me/messages']);
+      expect(
+        [for (final m in hits) (m.subject, m.folderId)],
+        [
+          ('Acme order', '${account.id}:Work'),
+          ('Acme quote', '${account.id}:Inbox'),
+        ],
+        reason: 'not what is in Junk or Deleted Items',
+      );
+      // Numbered in its own folder, as a search of that folder numbers it,
+      // so a row opened or moved from the results is that message.
+      expect(
+        hits.last.uid,
+        (await searching.searchUids('Inbox', 'acme')).single,
+      );
+    });
+  });
+
+  group('searching a Microsoft account past Deleted Items', () {
+    test('reads on, a page at a time, until it has enough hits to show',
+        () async {
+      // Exchange puts accepted invitations and answers to meetings in
+      // Deleted Items, with the mail read and deleted. One page of hits,
+      // mostly from there and thrown away, left a search with little or
+      // nothing from the Inbox, Sent or Archive.
+      server
+        ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+        ..folder(id: 'f-del', name: 'Deleted Items', wellKnown: 'deleteditems');
+      final asked = <Uri>[];
+      final searching = GraphTransport(
+        accountId: 'acct-1',
+        idMap: ids,
+        api: GraphMailApi(
+          accessToken: ({bool force = false}) async => 'token',
+          httpClient: http_testing.MockClient((request) {
+            asked.add(request.url);
+            return server.handle(request);
+          }),
+        ),
+      );
+      final engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => searching,
+      );
+      final account = await engine.addAccount(
+        displayName: 'Hadco',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      await engine.loadFolders(account.id);
+      for (var i = 0; i < 30; i++) {
+        server.message('f-del',
+            id: 'd$i', subject: 'Accepted: Weekly', minutesAgo: i);
+      }
+      for (var i = 0; i < 3; i++) {
+        server.message('f-inbox',
+            id: 'm$i', subject: 'Weekly agenda $i', minutesAgo: 100 + i);
+      }
+      asked.clear();
+
+      final hits = await engine.searchMessages(
+        'weekly',
+        SearchScope.account(account.id),
+        limit: 10,
+      );
+
+      expect([for (final m in hits) m.subject],
+          ['Weekly agenda 0', 'Weekly agenda 1', 'Weekly agenda 2']);
+      expect(asked, hasLength(4),
+          reason: 'three pages of Deleted Items, and the Inbox on the last');
+      expect(await ids.highestUid('acct-1', 'Deleted Items'), 0,
+          reason: 'nothing numbered in a folder the search leaves out');
+    });
   });
 
   // Saving through the engine, which is where a save that did not happen
@@ -2914,6 +3038,105 @@ void main() {
       final attached = server.attached[id]!.single;
       expect(attached['name'], 'drawings.pdf');
       expect(base64Decode(attached['contentBytes'] as String), file);
+    });
+
+    test('a reply whose quote holds more pictures than one piece takes is '
+        'saved, its pictures as parts', () async {
+      // The quote's pictures go into the HTML as data, which the editor can
+      // show. Text cannot be split off the way a file can, so the reply
+      // could not be saved at all, by hand or as a safety copy.
+      final small = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => GraphTransport(
+          accountId: 'acct-1',
+          idMap: ids,
+          api: GraphMailApi(
+            accessToken: ({bool force = false}) async => 'token',
+            httpClient: http_testing.MockClient(server.handle),
+          ),
+          maxMimeBytes: 8 * 1024,
+        ),
+        senderFactory: (_, _) => _SendsNothing(),
+      );
+      server.folder(id: 'f-drafts', name: 'Drafts', wellKnown: 'drafts');
+      final account = await small.addAccount(
+        displayName: 'Work',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      final picture =
+          Uint8List.fromList(List.generate(20000, (i) => i % 251));
+
+      await small.saveDraft(Draft(
+        accountId: account.id,
+        kind: ComposeKind.reply,
+        subject: 'Re: Screenshots',
+        htmlBody: '<p>Thanks.</p><blockquote><img src="data:image/png;'
+            'base64,${base64Encode(picture)}"></blockquote>',
+      ));
+
+      final (id, made) =
+          server.messages.entries.map((e) => (e.key, e.value)).single;
+      final html = em.MimeMessage.parseFromText(made['_mime'] as String)
+          .decodeTextHtmlPart()!;
+      expect(html, contains('Thanks.'));
+      expect(html, isNot(contains('data:')));
+      final cid = RegExp(r'cid:([^"]+)"').firstMatch(html)![1]!;
+      final attached = server.attached[id]!.single;
+      expect(attached['contentId'], cid);
+      expect(base64Decode(attached['contentBytes'] as String), picture);
+    });
+
+    test('and says what it is a reply to, so it opens again as one',
+        () async {
+      // The headers a reopened draft is known by were put on the first
+      // build of the message only, and the one with its pictures as parts
+      // went without them: a large reply came back as a new message.
+      final small = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => GraphTransport(
+          accountId: 'acct-1',
+          idMap: ids,
+          api: GraphMailApi(
+            accessToken: ({bool force = false}) async => 'token',
+            httpClient: http_testing.MockClient(server.handle),
+          ),
+          maxMimeBytes: 8 * 1024,
+        ),
+        senderFactory: (_, _) => _SendsNothing(),
+      );
+      server.folder(id: 'f-drafts', name: 'Drafts', wellKnown: 'drafts');
+      final account = await small.addAccount(
+        displayName: 'Work',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      final picture =
+          Uint8List.fromList(List.generate(20000, (i) => i % 251));
+
+      await small.saveDraft(Draft(
+        accountId: account.id,
+        kind: ComposeKind.reply,
+        subject: 'Re: Screenshots',
+        htmlBody: '<p>Thanks.</p><blockquote><img src="data:image/png;'
+            'base64,${base64Encode(picture)}"></blockquote>',
+        inReplyTo: 'shots@hadco.example',
+        originalMessageId: '${account.id}:Inbox#7',
+      ));
+
+      final made = em.MimeMessage.parseFromText(
+          server.messages.values.single['_mime'] as String);
+      expect(made.decodeTextHtmlPart(), isNot(contains('data:')),
+          reason: 'its pictures as parts');
+      expect(made.getHeaderValue('X-MyEmail-Kind'), 'reply');
+      expect(made.getHeaderValue('X-MyEmail-Original'),
+          '<shots@hadco.example>');
     });
   });
 
@@ -3180,6 +3403,62 @@ void main() {
         unorderedEquals(['Old receipt', 'Rescued']),
       );
       expect((await engine.changesWaiting()).values, [1]);
+    });
+  });
+
+  // Snooze (#32) on a Microsoft account, where a sync finds mail moved in
+  // only as far back as the rows already cached: a message keeps the date
+  // it came with when it moves.
+  group('snoozed on a Microsoft account', () {
+    test('an older message snoozed after a newer one comes back at its time',
+        () async {
+      // Snoozed held this morning's message, cached, when last week's went
+      // in after it. Neither sync reached back to last week, the wake took
+      // it for moved out by hand, and it stayed in Snoozed for good.
+      server
+        ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+        ..folder(id: 'f-del', name: 'Deleted Items', wellKnown: 'deleteditems')
+        ..folder(id: 'f-snoozed', name: 'Snoozed')
+        ..message('f-inbox',
+            id: 'new', subject: 'This morning', minutesAgo: 60)
+        ..message('f-inbox',
+            id: 'old', subject: 'Last week', minutesAgo: 7 * 24 * 60,
+            isRead: true);
+      server.messages['new']!['internetMessageId'] = '<new@hadco.example>';
+      server.messages['old']!['internetMessageId'] = "<o'ld@hadco.example>";
+      final engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => transport,
+      );
+      final account = await engine.addAccount(
+        displayName: 'Hadco',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      await engine.loadFolders(account.id);
+      final listed = await engine.loadMessages('${account.id}:Inbox');
+      String named(String subject) =>
+          listed.firstWhere((m) => m.subject == subject).id;
+
+      // Monday: this morning's until Friday, and Snoozed looked at, so it
+      // has a row cached and is kept up to date from now on.
+      final friday = DateTime(2026, 9, 25, 8);
+      await engine.snooze([named('This morning')], friday);
+      await engine.loadMessages('${account.id}:Snoozed');
+      // Tuesday: last week's until Wednesday.
+      await engine.snooze([named('Last week')], DateTime(2026, 9, 23, 8));
+
+      expect(await engine.wakeSnoozed(now: DateTime(2026, 9, 23, 8, 1)), 1);
+
+      final back = server.messages.values
+          .singleWhere((m) => m['subject'] == 'Last week');
+      expect(back['_folder'], 'f-inbox');
+      expect(back['isRead'], isFalse);
+      expect(await engine.nextSnoozeWake(), friday,
+          reason: "this morning's still waiting");
     });
   });
 
@@ -3687,21 +3966,34 @@ class _FakeGraph {
       });
     }
 
-    // Flagged mail anywhere in the mailbox, each with its folder.
+    // Flagged mail anywhere in the mailbox, or what a search finds there,
+    // each with its folder. A search here looks at the subject alone.
     if (request.method == 'GET' && path.endsWith('/me/messages')) {
       final flaggedOnly =
           (query[r'$filter'] ?? '').contains("flag/flagStatus eq 'flagged'");
+      final words =
+          (query[r'$search'] ?? '').replaceAll('"', '').toLowerCase();
       final found = messages.values
           .where((m) =>
               !flaggedOnly || (m['flag'] as Map?)?['flagStatus'] == 'flagged')
+          .where((m) => '${m['subject']}'.toLowerCase().contains(words))
           .toList()
         ..sort((a, b) => '${b['receivedDateTime']}'
             .compareTo('${a['receivedDateTime']}'));
+      // A page of $top, and a link to the next where there is more, as
+      // Graph pages.
+      final skip = int.tryParse(query[r'$skip'] ?? '0') ?? 0;
+      final top = int.tryParse(query[r'$top'] ?? '10') ?? 10;
       return json({
         'value': [
-          for (final m in found)
+          for (final m in found.skip(skip).take(top))
             {..._row(m, query), 'parentFolderId': m['_folder']},
         ],
+        if (skip + top < found.length)
+          '@odata.nextLink': request.url.replace(queryParameters: {
+            ...query,
+            r'$skip': '${skip + top}',
+          }).toString(),
       });
     }
 
@@ -3713,6 +4005,11 @@ class _FakeGraph {
       // property the filter does not name, Graph refuses the request.
       final filter = query[r'$filter'] ?? '';
       final unreadOnly = filter == 'isRead eq false';
+      // One message, by the Message-ID it carries.
+      final byHeader = RegExp(r"^internetMessageId eq '(.*)'$")
+          .firstMatch(filter)
+          ?.group(1)
+          ?.replaceAll("''", "'");
       if (unreadOnly && query.containsKey(r'$orderby')) {
         return http.Response(
           jsonEncode({
@@ -3729,6 +4026,7 @@ class _FakeGraph {
       final inFolder = messages.values
           .where((m) => m['_folder'] == folderId)
           .where((m) => !unreadOnly || m['isRead'] != true)
+          .where((m) => byHeader == null || m['internetMessageId'] == byHeader)
           .toList()
         ..sort((a, b) => '${b['receivedDateTime']}'
             .compareTo('${a['receivedDateTime']}'));

@@ -1,9 +1,12 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/compose/smtp_sender.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
+import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/mail_attachment.dart';
 import 'package:myemail/domain/mail_folder.dart';
@@ -98,6 +101,82 @@ void main() {
       expect(opened.savedAs, 'acct-personal:[Gmail]/Drafts#7');
       expect(opened.attachments, isNotEmpty);
       expect(opened.storedCopyUnread, isFalse);
+    });
+
+    testWidgets('shows the pictures it was saved with as parts',
+        (tester) async {
+      // A draft too large for Microsoft to take in one piece is saved with
+      // its pictures as parts of their own, which the editor cannot show:
+      // they are put back in as data, and are not files under it.
+      final picture = Uint8List.fromList([137, 80, 78, 71, 13, 10, 26, 10]);
+      final saved = withPicturesAsParts(Draft(
+        accountId: 'acct-personal',
+        kind: ComposeKind.reply,
+        subject: 'Re: Screenshots',
+        htmlBody: '<p>Thanks.</p><img src="data:image/png;base64,'
+            '${base64Encode(picture)}">',
+      ));
+      final raw = buildMimeMessage(draft: saved, account: _account)
+          .renderMessage();
+      final c = over(_Engine()
+        ..raw = raw
+        ..body = MailBody(text: 'Thanks.', html: saved.htmlBody));
+      final ref = await refOver(tester, c);
+
+      final opened = (await tester.runAsync(() => draftFromMessage(
+            ref: ref,
+            message: _message(
+              id: 'acct-personal:Drafts#7',
+              to: const [MailAddress(email: 'dana@example.com')],
+            ),
+          )))!;
+
+      expect(opened.htmlBody, isNot(contains('cid:')));
+      expect(opened.htmlBody,
+          contains('data:image/png;base64,${base64Encode(picture)}'));
+      expect(opened.attachments, isEmpty);
+    });
+
+    testWidgets("keeps another mail app's pictures as parts", (tester) async {
+      // A draft written in Outlook, its logo a part named by Content-ID.
+      // Put in as data, it was saved that way, and Outlook for Windows
+      // shows a data: picture as a broken box.
+      const logoId = 'image001.png@01DD2F3B.8B2E4F60';
+      final logo = Uint8List.fromList([137, 80, 78, 71, 13, 10, 26, 10]);
+      const html = '<p>Regards,</p><img src="cid:$logoId">';
+      final raw = buildMimeMessage(
+        draft: Draft(
+          accountId: 'acct-personal',
+          kind: ComposeKind.newMessage,
+          subject: 'Quote',
+          htmlBody: html,
+          attachments: [
+            DraftAttachment(
+              fileName: 'image001.png',
+              mimeType: 'image/png',
+              bytes: logo,
+              contentId: logoId,
+            ),
+          ],
+        ),
+        account: _account,
+      ).renderMessage();
+      final c = over(_Engine()
+        ..raw = raw
+        ..body = const MailBody(text: 'Regards,', html: html));
+      final ref = await refOver(tester, c);
+
+      final opened = (await tester.runAsync(() => draftFromMessage(
+            ref: ref,
+            message: _message(
+              id: 'acct-personal:Drafts#8',
+              to: const [MailAddress(email: 'dana@example.com')],
+            ),
+          )))!;
+
+      expect(opened.htmlBody, contains('cid:$logoId'));
+      expect(opened.htmlBody, isNot(contains('data:')));
+      expect([for (final a in opened.attachments) a.contentId], [logoId]);
     });
 
     testWidgets('whose stored copy could not be fetched leaves that copy alone',
@@ -306,6 +385,15 @@ const _forwardedMime = 'MIME-Version: 1.0\r\n'
     '\r\n'
     'JVBERi0=\r\n'
     '--mix--\r\n';
+
+const _account = Account(
+  id: 'acct-personal',
+  displayName: 'Ron',
+  emailAddress: 'ron@example.com',
+  provider: MailProvider.outlook,
+  authMethod: AuthMethod.oauth,
+  colorValue: 0xFF1565C0,
+);
 
 /// [_forwardedMime] with a scan sent in place, under a Content-ID the
 /// text never names, as a phone or a scanner sends one.

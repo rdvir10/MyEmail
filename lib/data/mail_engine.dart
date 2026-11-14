@@ -832,6 +832,15 @@ abstract interface class KeepsChangesForLater {
   Future<List<FailedChange>> takeFailedChanges();
 }
 
+/// An engine that says which snoozed messages it brought back, so the
+/// background can announce them: see `BackgroundSync.announceWoken`. Not
+/// part of [MailEngine]: the sample engine has nothing in the background.
+abstract interface class SaysWhatWoke {
+  /// [MailEngine.wakeSnoozed], answering the id of each message brought
+  /// back, in the folder it is back in, rather than how many came back.
+  Future<List<String>> wakeSnoozedMail({DateTime? now});
+}
+
 /// What [KeepsChangesForLater.sendWaitingChanges] did.
 class SentChanges {
   const SentChanges({

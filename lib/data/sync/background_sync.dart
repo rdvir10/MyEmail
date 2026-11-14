@@ -77,9 +77,13 @@ class BackgroundSync {
     if (engine case final KeepsChangesForLater keeps) {
       await keeps.sendWaitingChanges();
     }
-    // Snoozed mail whose time has come, back in its folder first. Never
-    // throws; see MailEngine.wakeSnoozed.
-    await engine.wakeSnoozed();
+    // Snoozed mail whose time has come, back in its folder first, and
+    // announced: see [announceWoken]. Neither throws; see
+    // MailEngine.wakeSnoozed.
+    final announced = await announceWoken(
+      await wakeSnoozedMail(engine),
+      prefs: prefs,
+    );
 
     final List<Account> accounts;
     try {
@@ -88,10 +92,13 @@ class BackgroundSync {
           if (only == null || only(a)) a,
       ];
     } catch (e) {
-      return BackgroundSyncReport(failures: ['accounts: $e']);
+      return BackgroundSyncReport(
+        posted: announced,
+        failures: ['accounts: $e'],
+      );
     }
 
-    var posted = 0;
+    var posted = announced;
     var scanned = 0;
     var unreachable = 0;
     final failures = <String>[];
@@ -129,6 +136,80 @@ class BackgroundSync {
       unreachable: unreachable,
       synced: synced,
     );
+  }
+
+  /// [woken], snoozed mail just brought back ([wakeSnoozedMail]),
+  /// announced: being told again is what a snooze is for. Answers how many
+  /// were posted. Never throws.
+  ///
+  /// Under each account's own settings, notifications on, not muted, not
+  /// in its quiet hours, the sender one it announces, but not the rules of
+  /// the scan for new mail. A message comes back keeping its date, and the
+  /// scan leaves anything over two days old, or outside the newest thirty,
+  /// unsaid: one snoozed from Monday to Thursday came back without a word.
+  /// Wherever it came back to, not only an Inbox: the snooze asked for it.
+  ///
+  /// Once, said or not, as new mail is: each is written down first, for
+  /// the scan to leave out ([toldBackFor]). It comes back with a number
+  /// above its folder's mark, and for Later today or Tomorrow it is dated
+  /// within the scan's reach, so a pass after the wake job took it for new
+  /// and announced it again once it had been swiped away. The mark is not
+  /// moved past it: new mail numbered below it, not yet scanned, would be
+  /// passed over.
+  Future<int> announceWoken(List<String> woken, {SyncPrefs? prefs}) async {
+    if (woken.isEmpty) return 0;
+    var posted = 0;
+    try {
+      final rules = prefs ?? await state.readPrefs();
+      final now = _clock();
+      final accounts = {
+        for (final a in await engine.loadAccounts()) a.id: a,
+      };
+      final byFolder = <String, List<MailMessage>>{};
+      for (final id in woken) {
+        final message = await engine.cachedMessage(id);
+        if (message == null || message.isRead) continue;
+        (byFolder[message.folderId] ??= []).add(message);
+      }
+      final told = await _toldBack();
+      await state.writeToldBack({
+        ...told,
+        for (final messages in byFolder.values)
+          for (final m in messages) m.id: now,
+      });
+      for (final MapEntry(key: folderId, value: messages)
+          in byFolder.entries) {
+        final account = accounts[messages.first.accountId];
+        if (account == null ||
+            !rules.notifiesFor(account.id) ||
+            rules.quietFor(account.id, now)) {
+          continue;
+        }
+        final folder = [
+          for (final f in await engine.cachedFolders(account.id))
+            if (f.id == folderId) f,
+        ].firstOrNull;
+        final said = [
+          for (final m in messages)
+            if (rules.announcesFrom(account.id, m.from.email)) m,
+        ];
+        if (folder == null || said.isEmpty) continue;
+        final batch = [
+          for (final m in said.take(maxPerFolder))
+            MailNotification.forMessage(m, invitation: await _isInvitation(m)),
+        ];
+        await _makeRoom(account, batch);
+        await notifier.showNewMail(
+          account: account,
+          folder: folder,
+          notifications: batch,
+        );
+        posted += batch.length;
+      }
+    } catch (e) {
+      debugPrint('[myemail] snoozed mail back, not announced: $e');
+    }
+    return posted;
   }
 
   Future<({int posted, int scanned})> _runAccount(
@@ -180,6 +261,12 @@ class BackgroundSync {
       ))
         if (keep == null || keep(m)) m,
     ];
+    // Not snoozed mail announced as it came back (see announceWoken): one
+    // dated within reach is new here too.
+    if (fresh.isNotEmpty) {
+      final told = await _toldBack();
+      fresh.removeWhere((m) => told.containsKey(m.id));
+    }
 
     // The mark moves whether or not anything was announced, and before the
     // notifier is touched. A notifier that throws must not leave the folder
@@ -215,6 +302,27 @@ class BackgroundSync {
       notifications: batch,
     );
     return batch.length;
+  }
+
+  /// How long snoozed mail announced as it came back is kept from the scan
+  /// for new mail: the two days it announces mail for ([defaultMaxAge]),
+  /// and one more for a sender's clock.
+  static const toldBackFor = Duration(days: 3);
+
+  /// The snoozed mail announced as it came back within [toldBackFor], or
+  /// none where that cannot be read.
+  Future<Map<String, DateTime>> _toldBack() async {
+    final since = _clock().subtract(toldBackFor);
+    try {
+      return {
+        for (final MapEntry(:key, :value)
+            in (await state.readToldBack()).entries)
+          if (value.isAfter(since)) key: value,
+      };
+    } catch (e) {
+      debugPrint('[myemail] could not read the snoozed mail announced: $e');
+      return {};
+    }
   }
 
   /// How long a pass waits for an invitation's body before announcing it
@@ -299,6 +407,14 @@ class BackgroundSync {
       debugPrint('[myemail] could not tidy notifications: $e');
     }
   }
+}
+
+/// [MailEngine.wakeSnoozed], answering the ids of the messages brought
+/// back where the engine can say them ([SaysWhatWoke]). Never throws.
+Future<List<String>> wakeSnoozedMail(MailEngine engine) async {
+  if (engine case final SaysWhatWoke says) return says.wakeSnoozedMail();
+  await engine.wakeSnoozed();
+  return const [];
 }
 
 /// What one pass did, for the logs and for the tests.

@@ -940,6 +940,54 @@ class GraphMailApi {
     return _messagesFrom(json);
   }
 
+  /// [search] across the whole mailbox at once, each hit with the folder
+  /// it is in: a page of [top], and the link to the page after it where
+  /// there are more, which [next] then asks for.
+  Future<({List<GraphMessage> messages, Uri? next})> searchEverywhere(
+    String query, {
+    int top = 100,
+    SearchField field = SearchField.all,
+    Uri? next,
+  }) async {
+    final json = await _get(
+      next ??
+          Uri.parse('$base/$_me/messages').replace(
+            queryParameters: {
+              '\$search': '"${searchString(query, field)}"',
+              '\$select': '$headerFields,parentFolderId',
+              '\$expand': lastVerbExpand,
+              '\$top': '$top',
+            },
+          ),
+    );
+    // Graph pages with an opaque link rather than a skip count.
+    final link = json['@odata.nextLink'];
+    return (
+      messages: _messagesFrom(json),
+      next: link is String ? Uri.parse(link) : null,
+    );
+  }
+
+  /// The messages in a folder that carry [messageId] as their Message-ID,
+  /// which is one as a rule: for mail a sync does not reach, which looks
+  /// back by date (see GraphTransport.headersWithMessageIds).
+  Future<List<GraphMessage>> withMessageId(
+    String folderId,
+    String messageId,
+  ) async {
+    final json = await _get(
+      Uri.parse('$base/$_me/mailFolders/${_id(folderId)}/messages').replace(
+        queryParameters: {
+          '\$filter':
+              "internetMessageId eq '${messageId.replaceAll("'", "''")}'",
+          '\$select': headerFields,
+          '\$expand': lastVerbExpand,
+        },
+      ),
+    );
+    return _messagesFrom(json);
+  }
+
   /// The newest [top] messages in a folder that [filter] keeps, newest
   /// first.
   ///

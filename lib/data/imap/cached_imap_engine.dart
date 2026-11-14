@@ -66,6 +66,7 @@ class CachedImapEngine
         MailEngine,
         PagesOlderMail,
         KeepsChangesForLater,
+        SaysWhatWoke,
         FindsByMessageId {
   CachedImapEngine({
     required this.accountStore,
@@ -2135,6 +2136,12 @@ class CachedImapEngine
   /// The folder is synced first: this is the path taken when the server
   /// moved the mail without saying where, so the destination may never have
   /// been opened and have nothing cached at all.
+  ///
+  /// Not found in the cache is not always not in the folder. On Microsoft
+  /// a sync looks back only as far as the rows cached, and mail moved in
+  /// keeps the date it came with, so one older than all of them was taken
+  /// for gone: last week's message snoozed after this morning's never came
+  /// back. What the cache lacks is asked for by its Message-ID there.
   Future<List<String>> _locate(
     String folderId,
     List<String> messageIds,
@@ -2143,11 +2150,20 @@ class CachedImapEngine
     final (accountId, path) = splitFolderId(folderId);
     final t = await _transport(accountId);
     await _sync(accountId, t).sync(path);
-    final uids = await cache.uidsForMessageIds(
-      accountId,
-      path,
-      messageIds.toSet(),
-    );
+    final wanted = messageIds.toSet();
+    final uids = [
+      ...await cache.uidsForMessageIds(accountId, path, wanted),
+    ];
+    if (t is GraphTransport) {
+      final rest = wanted.difference(
+        (await cache.messageIdsFor(accountId, path, uids)).toSet(),
+      );
+      if (rest.isNotEmpty) {
+        for (final h in await t.headersWithMessageIds(path, rest)) {
+          if (!uids.contains(h.uid)) uids.add(h.uid);
+        }
+      }
+    }
     return [for (final uid in uids) MailMessage.idFor(folderId, uid)];
   }
 
@@ -2169,19 +2185,34 @@ class CachedImapEngine
     // searched is it an error, a lost connection as much as any: an empty
     // list then said "No messages found" of mail never looked for. A
     // failed folder is null here, which an empty one is not.
-    final results = await Future.wait([
-      for (final t in targets)
-        wide
-            ? _searchOneFolder(t, query, limit, field)
-                .then<List<MailMessage>?>(
-                (found) => found,
-                onError: (Object e, StackTrace s) {
-                  failures.add((e, s));
-                  return null;
-                },
-              )
-            : _searchOneFolder(t, query, limit, field),
-    ]);
+    final List<List<MailMessage>?> results;
+    if (wide) {
+      final byAccount = <String, List<int>>{};
+      for (final (i, t) in targets.indexed) {
+        (byAccount[t.accountId] ??= []).add(i);
+      }
+      final found = List<List<MailMessage>?>.filled(targets.length, null);
+      await Future.wait([
+        for (final MapEntry(key: accountId, value: at) in byAccount.entries)
+          _searchAccount(
+            accountId,
+            [for (final i in at) targets[i]],
+            query,
+            limit,
+            field,
+            failures,
+          ).then((answers) {
+            for (final (j, i) in at.indexed) {
+              found[i] = answers[j];
+            }
+          }),
+      ]);
+      results = found;
+    } else {
+      results = await Future.wait([
+        for (final t in targets) _searchOneFolder(t, query, limit, field),
+      ]);
+    }
     if (failures.isNotEmpty && results.every((r) => r == null)) {
       final (error, stack) = failures.first;
       Error.throwWithStackTrace(error, stack);
@@ -2295,7 +2326,18 @@ class CachedImapEngine
   }
 
   @override
-  Future<int> wakeSnoozed({DateTime? now}) async {
+  Future<int> wakeSnoozed({DateTime? now}) async =>
+      (await _wakeSnoozed(now: now)).woken;
+
+  @override
+  Future<List<String>> wakeSnoozedMail({DateTime? now}) async =>
+      (await _wakeSnoozed(now: now)).back;
+
+  /// [wakeSnoozed]: how many came back, and the ids of those found again
+  /// where they came back to.
+  Future<({int woken, List<String> back})> _wakeSnoozed({
+    DateTime? now,
+  }) async {
     final at = now ?? DateTime.now();
     List<SnoozedEntry> due;
     try {
@@ -2305,12 +2347,14 @@ class CachedImapEngine
       ];
     } catch (e) {
       debugPrint('[myemail] could not read snoozed mail: $e');
-      return 0;
+      return (woken: 0, back: const <String>[]);
     }
     // No accounts at all is the stored settings not read at this moment,
     // not every account removed: each snooze due would be let go below as
     // one whose account is gone, and its message left in Snoozed for good.
-    if (due.isNotEmpty && accountStore.read().isEmpty) return 0;
+    if (due.isNotEmpty && accountStore.read().isEmpty) {
+      return (woken: 0, back: const <String>[]);
+    }
     // A snooze whose move has not reached the server yet. Not found in
     // Snoozed, it was let go as taken out by hand, and the move, when it
     // went, left the message there for good.
@@ -2324,6 +2368,7 @@ class CachedImapEngine
       moving = const {};
     }
     var woken = 0;
+    final brought = <String>[];
     for (final e in due) {
       if (moving.contains((e.accountId, e.messageId))) continue;
       try {
@@ -2358,11 +2403,12 @@ class CachedImapEngine
         }
         await cache.removeSnoozed(e.accountId, e.messageId);
         woken++;
+        brought.addAll(landed);
       } catch (error) {
         debugPrint('[myemail] snoozed mail not back yet: $error');
       }
     }
-    return woken;
+    return (woken: woken, back: brought);
   }
 
   @override
@@ -2491,6 +2537,57 @@ class CachedImapEngine
       limit: limit,
     );
     return _rowsFor(accountId, path, t, hits);
+  }
+
+  /// One account's part of a search of more than one folder: each of
+  /// [targets], its folders, answered in the same order, null where its
+  /// search failed and the failure in [failures].
+  ///
+  /// A Microsoft mailbox is searched whole, a page at a time, and the hits
+  /// sorted into the folders asked about; those in any other folder, Junk
+  /// and Deleted Items, are left out. One search a folder was forty
+  /// requests for forty folders, three at a time, and every search for
+  /// half-typed words, and every move made from the results, ran them all
+  /// again. Gmail's labels are asked one by one: see [_searchTargets].
+  Future<List<List<MailMessage>?>> _searchAccount(
+    String accountId,
+    List<_SearchTarget> targets,
+    String query,
+    int limit,
+    SearchField field,
+    List<(Object, StackTrace)> failures,
+  ) async {
+    List<MailMessage>? failed(Object e, StackTrace s) {
+      failures.add((e, s));
+      return null;
+    }
+
+    try {
+      final t = await _transport(accountId);
+      if (t is GraphTransport) {
+        final hits = await t.searchHitsEverywhere(
+          query,
+          paths: {for (final target in targets) target.path},
+          limit: limit,
+          field: field,
+        );
+        return [
+          for (final target in targets)
+            await _rowsFor(accountId, target.path, t, [
+              for (final h in hits)
+                if (h.path == target.path) h.hit,
+            ]),
+        ];
+      }
+    } catch (e, s) {
+      failed(e, s);
+      return List.filled(targets.length, null);
+    }
+    return Future.wait([
+      for (final target in targets)
+        _searchOneFolder(target, query, limit, field)
+            .then<List<MailMessage>?>((found) => found, onError: failed),
+    ]);
   }
 
   Future<List<MailMessage>> _searchOneFolder(
@@ -2881,20 +2978,36 @@ class CachedImapEngine
       );
     }
 
-    final message = buildMimeMessage(draft: draft, account: account);
     // Which reply or forward this is and the Message-ID of what it was
     // written from, to find that by when it is opened again. Here and not
-    // in buildMimeMessage, so that what is sent never carries them.
+    // in buildMimeMessage, so that what is sent never carries them. On
+    // every build of the draft, the one with its pictures as parts below
+    // too: without them a large reply was opened again as a new message.
     final own = draftOnlyHeaders(draft.kind, await _messageIdOfOriginal(draft));
-    for (final MapEntry(:key, :value) in own.entries) {
-      message.setHeader(key, value);
+    String render(Draft d) {
+      final message = buildMimeMessage(draft: d, account: account);
+      for (final MapEntry(:key, :value) in own.entries) {
+        message.setHeader(key, value);
+      }
+      return message.renderMessage();
     }
+
+    var mime = render(draft);
     final t = await _transport(account.id);
+    // The pictures stay in the HTML as data, which the editor can show,
+    // unless that is more than Microsoft takes in one piece. Past that the
+    // files go up one by one after the text, and a picture in the HTML is
+    // text: a reply quoting a few screenshots could not be saved at all, by
+    // hand or as a safety copy. Then they go as parts, as a send has them,
+    // and are put back as data when the draft is reopened.
+    if (t is GraphTransport && !t.takesWhole(mime)) {
+      mime = render(withPicturesAsParts(draft));
+    }
 
     // Append before deleting the old copy. The other order loses the draft
     // outright if the append then fails, and a duplicate is a far better
     // failure than a message that no longer exists anywhere.
-    await t.appendMessage(draftsPath, message.renderMessage(), draft: true);
+    await t.appendMessage(draftsPath, mime, draft: true);
     await _dropPreviousDraft(draft.savedAs);
 
     // Resync so the new copy is in the cache, then find it: APPEND does not

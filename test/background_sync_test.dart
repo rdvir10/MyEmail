@@ -392,6 +392,67 @@ void main() {
       expect(notifier.withdrawn.map(uidOf), unorderedEquals([1, 2, 3, 4]));
     });
 
+    // Snooze (#32): being told again is what it is for. A message comes
+    // back to its old place, keeping its date, and the scan for new mail
+    // leaves anything over two days old, or outside the newest thirty,
+    // unsaid: one snoozed from Monday to Thursday came back without a word.
+    test('snoozed mail brought back is announced whatever its date, once',
+        () async {
+      final account = await addAccount();
+      server.folder('INBOX').deliver(
+            subject: 'Last week',
+            date: _now.subtract(const Duration(days: 7)),
+          );
+      deliver(subject: 'This morning');
+      await sync().run();
+      final inbox = await engine.loadMessages('${account.id}:INBOX');
+      await engine.snooze([for (final m in inbox) m.id], DateTime(2000));
+
+      final report = await sync().run();
+      await sync().run();
+
+      expect(
+        [for (final n in notifier.posted) n.body.split('\n').first],
+        unorderedEquals(['Last week', 'This morning']),
+        reason: 'each once, and not again by the scan for new mail',
+      );
+      expect(report.posted, 2);
+    });
+
+    test('what the wake job announced, the pass after does not', () async {
+      final account = await addAccount();
+      await sync().run();
+      deliver(subject: 'Later today');
+      final message =
+          (await engine.loadMessages('${account.id}:INBOX')).single;
+      await engine.snooze([message.id], DateTime(2000));
+
+      // The wake job, at the snooze's time.
+      final woken = await engine.wakeSnoozedMail();
+      expect(await sync().announceWoken(woken), 1);
+      await sync().run();
+
+      expect(notifier.posted, hasLength(1));
+    });
+
+    test('nor once it has been swiped away', () async {
+      // Back with a number above the Inbox's mark, and for Later today or
+      // Tomorrow dated within two days: the scan took it for new mail, and
+      // only its notification still showing kept it from saying so again.
+      final account = await addAccount();
+      await sync().run();
+      deliver(subject: 'Later today');
+      final message =
+          (await engine.loadMessages('${account.id}:INBOX')).single;
+      await engine.snooze([message.id], DateTime(2000));
+      await sync().announceWoken(await engine.wakeSnoozedMail());
+
+      await notifier.withdraw((_) => true);
+      await sync().run();
+
+      expect(notifier.posted, hasLength(1));
+    });
+
     test('a message read before the pass ran is not announced', () async {
       await addAccount();
       await sync().run();

@@ -712,6 +712,77 @@ class GraphTransport implements ImapTransport {
     return _headers(path, messages);
   }
 
+  /// The most pages of [limit] hits [searchHitsEverywhere] reads.
+  static const searchPages = 5;
+
+  /// A search of the whole mailbox, each hit with the folder it is in, as
+  /// [searchHits] answers for one folder: see
+  /// [GraphMailApi.searchEverywhere]. Only the hits in [paths], up to
+  /// [limit] of them, read a page at a time until there are that many or
+  /// the hits run out, [searchPages] at most. Hits elsewhere count towards
+  /// what Microsoft sends: Deleted Items, where Exchange puts accepted
+  /// invitations and answers to meetings, could fill a page, and a search
+  /// that stopped there showed little or nothing from the Inbox. They are
+  /// not numbered, as no list shows them. Not part of [ImapTransport]: over
+  /// IMAP each folder is asked on its own.
+  Future<List<({String path, SearchHit hit})>> searchHitsEverywhere(
+    String query, {
+    required Set<String> paths,
+    int limit = 100,
+    SearchField field = SearchField.all,
+  }) async {
+    if (_folderIds.isEmpty) await listFolders();
+    final pathOf = {
+      for (final MapEntry(:key, :value) in _folderIds.entries) value: key,
+    };
+    final byPath = <String, List<GraphMessage>>{};
+    var kept = 0;
+    Uri? next;
+    for (var page = 0; page < searchPages && kept < limit; page++) {
+      final found = await api.searchEverywhere(query,
+          top: limit, field: field, next: next);
+      for (final m in found.messages) {
+        final path = pathOf[m.parentFolderId];
+        if (path == null || !paths.contains(path) || kept >= limit) continue;
+        (byPath[path] ??= []).add(m);
+        kept++;
+      }
+      next = found.next;
+      if (next == null) break;
+    }
+    final hits = <({String path, SearchHit hit})>[];
+    for (final MapEntry(key: path, value: messages) in byPath.entries) {
+      // Numbered oldest first, as a search of the folder numbers them, and
+      // handed back newest first.
+      final headers = await _headers(path, messages.reversed.toList());
+      for (final h in headers.reversed) {
+        hits.add((path: path, hit: (uid: h.uid, header: h)));
+      }
+    }
+    return hits;
+  }
+
+  /// The messages in [path] that carry one of [messageIds], numbered as a
+  /// sync numbers them, each asked for by its Message-ID.
+  ///
+  /// For mail moved in, which keeps the date it came with: a sync looks
+  /// back only as far as the rows already cached (see
+  /// [fetchHeadersFromUid]), and one older than all of them is not found
+  /// until a list is scrolled down to its date. Not part of
+  /// [ImapTransport]: an IMAP sync finds all mail moved in, whatever its
+  /// date.
+  Future<List<RemoteHeader>> headersWithMessageIds(
+    String path,
+    Iterable<String> messageIds,
+  ) async {
+    final folderId = await _folderId(path);
+    final found = <GraphMessage>[];
+    for (final id in messageIds) {
+      found.addAll(await api.withMessageId(folderId, id));
+    }
+    return _headers(path, found);
+  }
+
   /// Every flagged message in the mailbox as search hits, by the folder
   /// each is in, with the day its flag is due: see
   /// [GraphMailApi.flaggedEverywhere]. Not part of [ImapTransport]: over
@@ -1128,7 +1199,7 @@ class GraphTransport implements ImapTransport {
     bool draft = false,
   }) async {
     final folderId = await _folderId(path);
-    final id = utf8.encode(mimeText).length <= maxMimeBytes
+    final id = takesWhole(mimeText)
         ? await api.createMessage(folderId, mimeText)
         : await _createInPieces(folderId, mimeText);
     // A message created from MIME arrives unread. Everything the app appends
@@ -1143,6 +1214,12 @@ class GraphTransport implements ImapTransport {
       }
     }
   }
+
+  /// Whether [mimeText] is posted whole by [appendMessage]. Past
+  /// [maxMimeBytes] its files go up one by one after the rest of it, and
+  /// the rest must be under that on its own: see [_createInPieces].
+  bool takesWhole(String mimeText) =>
+      utf8.encode(mimeText).length <= maxMimeBytes;
 
   /// A message too large to post whole, made the way GraphSender sends
   /// one: the message without its files first, then each file put on it,

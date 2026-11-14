@@ -7,6 +7,7 @@ import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/imap/cached_imap_engine.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/notifications/mail_notifier.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/sync/background_sync.dart';
 import 'package:myemail/data/sync/background_worker.dart';
 import 'package:myemail/data/sync/live_sync.dart';
@@ -428,4 +429,73 @@ void main() {
       expect(slept, isEmpty, reason: 'a service that went is gone');
     });
   });
+
+  group('the snooze wake job', () {
+    final now = DateTime(2026, 11, 14, 8, 5);
+
+    test('one still due after it tried is left to the backoff', () async {
+      // Asked for again at a time gone by, the job ran again at once and
+      // failed the same way: an engine, a database and a sign-in every few
+      // seconds, for as long as the phone had a network.
+      final asked = <DateTime?>[];
+
+      final done = await wakeAndAskAgain(
+        _NotBack(DateTime(2026, 11, 14, 8)),
+        schedule: (at) async => asked.add(at),
+        now: () => now,
+      );
+
+      expect(done, isFalse, reason: "WorkManager's backoff brings it back");
+      expect(asked, isEmpty);
+    });
+
+    test('what came back is handed over to be announced', () async {
+      final announced = <String>[];
+
+      await wakeAndAskAgain(
+        _Woke(['a:INBOX#7']),
+        schedule: (_) async {},
+        announce: (woken) async => announced.addAll(woken),
+        now: () => now,
+      );
+
+      expect(announced, ['a:INBOX#7']);
+    });
+
+    test('a time gone by leaves a job waiting out its backoff alone', () {
+      // The app asks for the job every minute while it is in front, and
+      // replaced, the job ran at once again.
+      expect(snoozeWakePolicy(DateTime(2026, 11, 14, 8), now: now),
+          ExistingWorkPolicy.keep);
+      expect(snoozeWakePolicy(DateTime(2026, 11, 20, 8), now: now),
+          ExistingWorkPolicy.replace,
+          reason: 'a time ahead is the next due, in place of any');
+    });
+  });
+}
+
+/// Snoozed mail that comes back, and says which.
+class _Woke extends SampleMailEngine implements SaysWhatWoke {
+  _Woke(this.back);
+
+  final List<String> back;
+
+  @override
+  Future<List<String>> wakeSnoozedMail({DateTime? now}) async => back;
+
+  @override
+  Future<DateTime?> nextSnoozeWake() async => null;
+}
+
+/// Snoozed mail that does not come back: signed out, or Snoozed gone.
+class _NotBack extends SampleMailEngine {
+  _NotBack(this.due);
+
+  final DateTime due;
+
+  @override
+  Future<int> wakeSnoozed({DateTime? now}) async => 0;
+
+  @override
+  Future<DateTime?> nextSnoozeWake() async => due;
 }
