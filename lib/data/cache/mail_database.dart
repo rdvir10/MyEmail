@@ -1386,6 +1386,7 @@ class DriftCacheStore implements CacheStore {
     required DateTime madeBefore,
     required DateTime staleBefore,
     required DateTime now,
+    String? accountId,
   }) =>
       db.transaction(() async {
         // In one statement, so two senders, the app's and the background's,
@@ -1395,6 +1396,7 @@ class DriftCacheStore implements CacheStore {
         await db.customUpdate(
           'UPDATE pending_changes SET claimed_by = ?, claimed_at = ? '
           'WHERE failed_at IS NULL AND made_at <= ? '
+          '${accountId == null ? '' : 'AND account_id = ? '}'
           'AND (claimed_at IS NULL OR claimed_at < ?) '
           'AND account_id NOT IN (SELECT account_id FROM pending_changes '
           'WHERE failed_at IS NULL AND claimed_by IS NOT NULL '
@@ -1403,6 +1405,7 @@ class DriftCacheStore implements CacheStore {
             by,
             now.millisecondsSinceEpoch,
             madeBefore.millisecondsSinceEpoch,
+            ?accountId,
             staleBefore.millisecondsSinceEpoch,
             by,
             staleBefore.millisecondsSinceEpoch,

@@ -135,6 +135,22 @@ void main() {
         expect([for (final c in taken) c.uid], [3]);
       });
 
+      test('are taken for one account, where it is named', () async {
+        await store.addPending([change(1), change(2, account: 'other')]);
+
+        final taken = await store.claimPending(
+          by: 'app',
+          madeBefore: at.add(const Duration(seconds: 10)),
+          staleBefore: at,
+          now: at.add(const Duration(seconds: 10)),
+          accountId: 'other',
+        );
+
+        expect([for (final c in taken) c.uid], [2]);
+        expect([for (final c in await claim('background')) c.uid], [1],
+            reason: 'the rest are left for another sender');
+      });
+
       test('are held afresh while their sender works, and one that lost '
           'them hears so', () async {
         await store.addPending([change(1)]);

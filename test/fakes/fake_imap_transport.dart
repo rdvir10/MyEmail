@@ -37,6 +37,9 @@ class FakeImapTransport implements ImapTransport {
   /// Thrown by every flag store while set: marks failing while moves go.
   Object? storesFailWith;
 
+  /// Thrown by every move while set: moves failing while the rest goes.
+  Object? movesFailWith;
+
   void _online() {
     final failure = failWith;
     if (failure != null) throw failure;
@@ -517,6 +520,7 @@ class FakeImapTransport implements ImapTransport {
     String toPath,
   ) async {
     _online();
+    if (movesFailWith case final failure?) throw failure;
     if (refuseMovesFrom.contains(fromPath)) {
       throw StateError('the server would not move mail out of $fromPath');
     }

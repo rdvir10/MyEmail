@@ -245,6 +245,24 @@ void main() {
       expect(find.text('Travel'), findsOneWidget);
     });
 
+    testWidgets('a refusal written for a person is shown as it is',
+        (tester) async {
+      await tester.pumpWidget(ProviderScope(
+        overrides: [mailEngineProvider.overrideWithValue(_RefusesToEmpty())],
+        child: const MaterialApp(home: Scaffold(body: FolderTreePanel())),
+      ));
+      await tester.pumpAndSettle();
+
+      await _openMenuFor(tester, find.text('Deleted').first);
+      await tester.tap(find.text('Empty folder'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Empty'));
+      await tester.pumpAndSettle();
+
+      expect(find.text(_RefusesToEmpty.why), findsOneWidget);
+      expect(find.textContaining('Something went wrong'), findsNothing);
+    });
+
     testWidgets('favourite adds the folder to a Favourites section',
         (tester) async {
       await _pumpTree(tester);
@@ -444,6 +462,17 @@ class _MicrosoftSample extends SampleMailEngine {
     renamedTo.add(newName);
     return super.renameFolder(folderId, newName);
   }
+}
+
+/// Will not empty a folder, as the engine will not while mail moved out of
+/// it has still to reach the server.
+class _RefusesToEmpty extends SampleMailEngine {
+  static const why = 'Mail moved out of this folder has not synced yet, so '
+      'nothing was deleted. Try again in a moment.';
+
+  @override
+  Future<void> emptyFolder(String folderId) async =>
+      throw const ConnectionFailed(why);
 }
 
 /// Marks the messages read and empties the folder, as a server does: the

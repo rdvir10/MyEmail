@@ -477,9 +477,9 @@ abstract class CacheStore {
   Future<List<PendingChange>> readPending({String? accountId});
 
   /// The changes waiting that were made by [madeBefore] and that nobody is
-  /// sending, taken for [by] to send, oldest first. A sender that took
-  /// changes before [staleBefore] is taken to have died with them, and
-  /// they are taken from it.
+  /// sending, taken for [by] to send, oldest first: [accountId]'s, or every
+  /// account's. A sender that took changes before [staleBefore] is taken to
+  /// have died with them, and they are taken from it.
   ///
   /// None of an account whose changes another sender holds: the server is
   /// to have them in the order made, and the later ones would go ahead of
@@ -489,6 +489,7 @@ abstract class CacheStore {
     required DateTime madeBefore,
     required DateTime staleBefore,
     required DateTime now,
+    String? accountId,
   });
 
   /// The ids of the changes [by] still holds, each held afresh from [now]:
@@ -1002,6 +1003,7 @@ class MemoryCacheStore implements CacheStore {
     required DateTime madeBefore,
     required DateTime staleBefore,
     required DateTime now,
+    String? accountId,
   }) async {
     final busy = {
       for (final k in _pending.values)
@@ -1010,6 +1012,7 @@ class MemoryCacheStore implements CacheStore {
     final taken = <PendingChange>[];
     for (final k in _pendingInOrder) {
       if (k.failedAt != null || k.change.madeAt.isAfter(madeBefore)) continue;
+      if (accountId != null && k.change.accountId != accountId) continue;
       if (busy.contains(k.change.accountId)) continue;
       if (k.claimedAt case final at? when !at.isBefore(staleBefore)) continue;
       k

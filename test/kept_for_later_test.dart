@@ -429,6 +429,132 @@ void main() {
     });
   });
 
+  // Not junk with the server out of reach, then Empty Junk: the server
+  // still had the message there, and it went for good with the rest, while
+  // the move that would have saved it was dropped.
+  group('a folder emptied or deleted while mail moved out of it waits', () {
+    final notSyncedYet = isA<ConnectionFailed>().having(
+        (e) => e.message, 'message', contains('has not synced yet'));
+    late String trash;
+
+    /// Two in Trash, listed, and one of them moved back to the Inbox with
+    /// the server out of reach, which is answering again now.
+    Future<void> rescueOneFromTrash() async {
+      server.folder('[Gmail]/Trash')
+        ..deliver(subject: 'Old receipt')
+        ..deliver(subject: 'Rescued');
+      trash = '$accountId:[Gmail]/Trash';
+      final binned = await engine.loadMessages(trash);
+      server.offline = true;
+      final moves = await engine.moveMessages(
+          [binned.firstWhere((m) => m.subject == 'Rescued').id], inbox);
+      expect(moves.single.isWaiting, isTrue);
+      server.offline = false;
+    }
+
+    test('Empty sends the move first, even one still held for its Undo, '
+        'and the message is where it was moved to', () async {
+      await rescueOneFromTrash();
+
+      await engine.emptyFolder(trash);
+
+      expect(onServer('[Gmail]/Trash'), isEmpty);
+      expect(onServer('INBOX'), contains('Rescued'));
+      expect(await engine.changesWaiting(), isEmpty);
+    });
+
+    test('Empty sends that account\'s changes alone: another\'s stays held '
+        'for its Undo', () async {
+      final other = (await engine.addAccount(
+        displayName: 'Other',
+        emailAddress: 'other@example.com',
+        provider: MailProvider.gmail,
+        secret: 'efghefghefghefgh',
+      ))
+          .id;
+      await engine.loadFolders(other);
+      final lunch = (await engine.loadMessages('$other:INBOX'))
+          .firstWhere((m) => m.subject == 'Lunch');
+      await rescueOneFromTrash();
+      server.offline = true;
+      await engine.deleteMessages([lunch.id]);
+      server.offline = false;
+
+      await engine.emptyFolder(trash);
+
+      expect(onServer('INBOX'), contains('Rescued'));
+      expect(await engine.changesWaiting(), {other: 1});
+    });
+
+    test('Empty with the move still not going is refused, and nothing is '
+        'deleted or dropped', () async {
+      await rescueOneFromTrash();
+      server.movesFailWith = const ServerUnreachable('Timed out.');
+
+      await expectLater(engine.emptyFolder(trash), throwsA(notSyncedYet));
+
+      expect(onServer('[Gmail]/Trash'), ['Old receipt', 'Rescued']);
+      expect(await shown(trash), ['Old receipt']);
+      expect((await cache.readPending()).single.kind, PendingKind.move);
+    });
+
+    test('Empty while another sender has the move in hand is refused, and '
+        'the move is not sent twice', () async {
+      await rescueOneFromTrash();
+      later();
+      // The background's, part way through sending it.
+      await cache.claimPending(
+        by: 'background',
+        madeBefore: now,
+        staleBefore: now.subtract(CachedImapEngine.claimLapses),
+        now: now,
+      );
+      server.calls.clear();
+
+      await expectLater(engine.emptyFolder(trash), throwsA(notSyncedYet));
+
+      expect(server.calls.where((c) => c.startsWith('UID MOVE')), isEmpty);
+      expect(onServer('[Gmail]/Trash'), ['Old receipt', 'Rescued']);
+      expect(await engine.changesWaiting(), {accountId: 1});
+    });
+
+    test('Delete folder sends a move out of it first', () async {
+      server.folder('Work')
+        ..deliver(subject: 'Plans')
+        ..deliver(subject: 'Rescued');
+      final work = await engine.loadMessages('$accountId:Work');
+      server.offline = true;
+      await engine.moveMessages(
+          [work.firstWhere((m) => m.subject == 'Rescued').id], inbox);
+      server.offline = false;
+
+      await engine.deleteFolder('$accountId:Work');
+
+      expect(server.folders.keys, isNot(contains('Work')));
+      expect(onServer('INBOX'), contains('Rescued'));
+      expect(await engine.changesWaiting(), isEmpty);
+    });
+
+    test('Delete folder with a move out of a folder in it still not going '
+        'is refused, and nothing is deleted or dropped', () async {
+      server.folder('Work/2025').deliver(subject: 'Rescued');
+      final old = await engine.loadMessages('$accountId:Work/2025');
+      server.offline = true;
+      await engine.moveMessages([old.single.id], inbox);
+      server.offline = false;
+      server.movesFailWith = const ServerUnreachable('Timed out.');
+
+      await expectLater(
+        engine.deleteFolder('$accountId:Work'),
+        throwsA(notSyncedYet),
+      );
+
+      expect(server.folders.keys, containsAll(['Work', 'Work/2025']));
+      expect(onServer('Work/2025'), ['Rescued']);
+      expect((await cache.readPending()).single.kind, PendingKind.move);
+    });
+  });
+
   group('a change the server refuses', () {
     test('is said at once when the server is there to refuse it', () async {
       server.refuseMovesFrom.add('INBOX');

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/imap/imap_mapping.dart' show nameFromPathSegment;
 import '../../data/mail_engine.dart';
 import '../../domain/account.dart';
+import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../state/display_providers.dart';
@@ -260,6 +261,10 @@ Future<void> _guarded(
     await operation();
   } on FolderOperationNotSupported catch (e) {
     if (context.mounted) _snack(context, 'That is not allowed here (${e.operation}).');
+  } on ReadableError catch (e) {
+    // Already a sentence for a person, such as Empty refused while mail
+    // moved out of the folder has still to reach the server.
+    if (context.mounted) _snack(context, e.message);
   } catch (e) {
     if (context.mounted) _snack(context, 'Something went wrong: $e');
   }

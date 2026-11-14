@@ -836,6 +836,7 @@ class CachedImapEngine
   @override
   Future<void> deleteFolder(String folderId) async {
     final (accountId, path) = splitFolderId(folderId);
+    await _sendWhatLeaves(accountId, path, andUnder: true);
     final t = await _transport(accountId);
     if (!t.deleteTakesSubfolders) {
       // IMAP's DELETE leaves every folder under the one it names, while the
@@ -899,6 +900,7 @@ class CachedImapEngine
   @override
   Future<void> emptyFolder(String folderId) async {
     final (accountId, path) = splitFolderId(folderId);
+    await _sendWhatLeaves(accountId, path);
     final t = await _transport(accountId);
     await t.storeFlagOnAll(path, flag: MessageFlag.deleted, set: true);
     await t.expunge(path);
@@ -906,6 +908,34 @@ class CachedImapEngine
     // Every message the changes waiting here were about is gone.
     await _dropWaiting(accountId, path, (_) => true);
     _handled(_inFolder(folderId));
+  }
+
+  /// Before [path] is emptied, or deleted with every folder in it
+  /// ([andUnder]): what is waiting for the account sent, held for its Undo
+  /// or not. Mail moved out of it that has not gone yet is still in it on
+  /// the server, and went for good with the rest, while the list showed it
+  /// moved and the move that would have saved it was dropped. Where any of
+  /// it is still waiting after the send, or what is waiting cannot be
+  /// read, this throws, and nothing is deleted or dropped. Mail on its way
+  /// in goes first, as it would have with the server answering at once.
+  ///
+  /// A sender already part way through the account's changes keeps them:
+  /// none is sent twice, and what it holds is still waiting here.
+  Future<void> _sendWhatLeaves(
+    String accountId,
+    String path, {
+    bool andUnder = false,
+  }) async {
+    bool inside(String p) => p == path || (andUnder && p.startsWith('$path/'));
+    await _sendWaiting(evenJustMade: true, accountId: accountId);
+    for (final c in await cache.readPending(accountId: accountId)) {
+      if (c.kind.removes && inside(c.path) && !inside(c.toPath ?? c.path)) {
+        throw const ConnectionFailed(
+          'Mail moved out of this folder has not synced yet, so nothing was '
+          'deleted. Try again in a moment.',
+        );
+      }
+    }
   }
 
   /// The changes waiting for [path] that [which] picks, dropped: something
@@ -3355,7 +3385,14 @@ class CachedImapEngine
   }
 
   @override
-  Future<SentChanges> sendWaitingChanges({bool evenJustMade = false}) async {
+  Future<SentChanges> sendWaitingChanges({bool evenJustMade = false}) =>
+      _sendWaiting(evenJustMade: evenJustMade);
+
+  /// [sendWaitingChanges]; with [accountId], that account's alone.
+  Future<SentChanges> _sendWaiting({
+    required bool evenJustMade,
+    String? accountId,
+  }) async {
     final now = _clock();
     final by = 'send-${now.microsecondsSinceEpoch}-${_random.nextInt(1 << 30)}';
     List<PendingChange> taken;
@@ -3365,6 +3402,7 @@ class CachedImapEngine
         madeBefore: evenJustMade ? now : now.subtract(holdFor),
         staleBefore: now.subtract(claimLapses),
         now: now,
+        accountId: accountId,
       );
     } catch (e) {
       debugPrint('[myemail] changes waiting not read: $e');
@@ -3413,7 +3451,7 @@ class CachedImapEngine
     }
     var waiting = 0;
     try {
-      waiting = (await cache.readPending()).length;
+      waiting = (await cache.readPending(accountId: accountId)).length;
     } catch (_) {
       // Not known; nothing is said to be waiting.
     }

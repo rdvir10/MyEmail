@@ -3086,6 +3086,64 @@ void main() {
       );
       expect(await engine.changesWaiting(), isEmpty);
     });
+
+    /// Two in Deleted Items, listed, and one of them moved back to the
+    /// Inbox while Microsoft answers 502: kept for later. Deleted Items'
+    /// id.
+    Future<String> rescueOneFromDeletedItems() async {
+      final inboxId = (await inbox()).first.folderId;
+      final deleted =
+          inboxId.replaceFirst(RegExp(r':Inbox$'), ':Deleted Items');
+      server
+        ..message('f-del', id: 'd0', subject: 'Old receipt', minutesAgo: 9)
+        ..message('f-del', id: 'd1', subject: 'Rescued', minutesAgo: 8);
+      final binned = await engine.loadMessages(deleted);
+      server.emptyRefusalOfMove = 502;
+      final moves = await engine.moveMessages(
+          [binned.firstWhere((m) => m.subject == 'Rescued').id], inboxId);
+      expect(moves.single.isWaiting, isTrue);
+      return deleted;
+    }
+
+    test('Empty sends a move out of Deleted Items first, and the message '
+        'is where it was moved to', () async {
+      // Emptied, Microsoft deleted every message the folder listed, the
+      // one on its way out included, and the move was dropped.
+      final deleted = await rescueOneFromDeletedItems();
+      server.emptyRefusalOfMove = null;
+
+      await engine.emptyFolder(deleted);
+
+      expect(
+        {for (final m in server.messages.values) m['subject']: m['_folder']},
+        {
+          'M0': 'f-inbox',
+          'M1': 'f-inbox',
+          'M2': 'f-inbox',
+          'Rescued': 'f-inbox',
+        },
+      );
+      expect(await engine.changesWaiting(), isEmpty);
+    });
+
+    test('with Microsoft still not taking the move, Empty is refused and '
+        'deletes nothing', () async {
+      final deleted = await rescueOneFromDeletedItems();
+
+      await expectLater(
+        engine.emptyFolder(deleted),
+        throwsA(isA<ConnectionFailed>().having(
+            (e) => e.message, 'message', contains('has not synced yet'))),
+      );
+      expect(
+        [
+          for (final m in server.messages.values)
+            if (m['_folder'] == 'f-del') m['subject'],
+        ],
+        unorderedEquals(['Old receipt', 'Rescued']),
+      );
+      expect((await engine.changesWaiting()).values, [1]);
+    });
   });
 
   // Outlook's Follow Up and Flagged email (#29, #30).
