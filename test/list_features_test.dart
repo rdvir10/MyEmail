@@ -149,48 +149,94 @@ void main() {
     expect(rows(tester).any((m) => m.id == engine.sentReply!.id), isTrue);
   });
 
+  // Your reply from Sent is drawn inside the thread it answers with no
+  // checkbox: nothing done to the thread reaches it. Ctrl+A and Space
+  // ticked it all the same, unseen. Such a tick came to nothing until
+  // 3.13.1 looked ticks up in everything drawn, and from then Delete took
+  // the reply out of Sent with the rest.
+
+  /// The Inbox with its first thread open and a reply of yours from Sent
+  /// drawn inside it: the message answered, and the reply.
+  Future<(MailMessage, MailMessage)> pumpWithReply(WidgetTester tester) async {
+    await pump(tester);
+    final answered = rows(tester).first;
+    final reply = engine.sentReply = MailMessage(
+      id: '$sent#9001',
+      accountId: 'acct-personal',
+      folderId: sent,
+      uid: 9001,
+      subject: 'Re: ${answered.subject}',
+      preview: 'My answer',
+      from: const MailAddress(email: 'me@example.com', name: 'Me'),
+      to: [answered.from],
+      date: answered.date.add(const Duration(minutes: 5)),
+      isRead: true,
+    );
+    c.read(displayProvider.notifier).setConversations(true);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(answered.subject).first);
+    await tester.pumpAndSettle();
+    expect(rows(tester).any((m) => m.id == reply.id), isTrue);
+    return (answered, reply);
+  }
+
+  Future<void> press(
+    WidgetTester tester,
+    LogicalKeyboardKey key, {
+    bool control = false,
+  }) async {
+    if (control) await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(key);
+    if (control) await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('Ctrl+A does not tick your reply from Sent, and Delete leaves '
+      'it there', (tester) async {
+    final (answered, reply) = await pumpWithReply(tester);
+    c.read(selectedMessageIdProvider.notifier).select(answered.id);
+    await tester.pumpAndSettle();
+
+    await press(tester, LogicalKeyboardKey.keyA, control: true);
+    final ticked = c.read(selectedMessageIdsProvider);
+    expect(ticked, contains(answered.id));
+    expect(ticked, isNot(contains(reply.id)));
+
+    await press(tester, LogicalKeyboardKey.delete);
+    expect(engine.deleted, contains(answered.id));
+    expect(engine.deleted, isNot(contains(reply.id)));
+  });
+
+  testWidgets('Space on your reply from Sent ticks nothing', (tester) async {
+    final (_, reply) = await pumpWithReply(tester);
+    c.read(selectedMessageIdProvider.notifier).select(reply.id);
+    await tester.pumpAndSettle();
+
+    await press(tester, LogicalKeyboardKey.space);
+
+    expect(c.read(selectedMessageIdsProvider), isEmpty);
+  });
+
   for (final control in [false, true]) {
     final how = control ? 'Ctrl+D' : 'Delete';
-    testWidgets('your reply from Sent, ticked inside its thread, is what '
-        '$how takes', (tester) async {
-      // Ticked by Ctrl+A with the rest of the screen, and drawn, but not
-      // one of the list's own. Looked for there alone, the tick came to
-      // nothing: Ctrl+D took the message open instead, and Delete took
-      // nothing and let the tick go.
-      await pump(tester);
-      final answered = rows(tester).first;
-      final reply = engine.sentReply = MailMessage(
-        id: '$sent#9001',
-        accountId: 'acct-personal',
-        folderId: sent,
-        uid: 9001,
-        subject: 'Re: ${answered.subject}',
-        preview: 'My answer',
-        from: const MailAddress(email: 'me@example.com', name: 'Me'),
-        to: [answered.from],
-        date: answered.date.add(const Duration(minutes: 5)),
-        isRead: true,
-      );
-      c.read(displayProvider.notifier).setConversations(true);
-      await tester.pumpAndSettle();
-      await tester.tap(find.text(answered.subject).first);
-      await tester.pumpAndSettle();
-      expect(rows(tester).any((m) => m.id == reply.id), isTrue);
+    testWidgets('a tick on your reply from Sent and nothing else: $how '
+        'takes neither it nor the message open', (tester) async {
+      final (answered, reply) = await pumpWithReply(tester);
       c.read(selectedMessageIdProvider.notifier).select(answered.id);
       c.read(selectedMessageIdsProvider.notifier).addAll([reply.id]);
       await tester.pumpAndSettle();
 
-      if (control) {
-        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-      }
-      await tester.sendKeyEvent(
-          control ? LogicalKeyboardKey.keyD : LogicalKeyboardKey.delete);
-      if (control) {
-        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-      }
-      await tester.pumpAndSettle();
+      await press(
+        tester,
+        control ? LogicalKeyboardKey.keyD : LogicalKeyboardKey.delete,
+        control: control,
+      );
 
-      expect(engine.deleted, [reply.id]);
+      expect(engine.deleted, isEmpty);
+      expect(
+        find.text('None of the ticked messages is in the list now.'),
+        findsOneWidget,
+      );
     });
   }
 

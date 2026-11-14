@@ -19,6 +19,11 @@ import 'message_tile.dart';
 /// An open conversation speaks for nothing: its messages have rows of their
 /// own further down, and some of them may be off screen. A closed one stands
 /// for everything inside it, because that is what is on screen.
+///
+/// Only rows that can be ticked, since ticking is what this is for. Your
+/// reply from Sent, drawn inside the thread it answers, has no tick to
+/// show and nothing done to the thread reaches it. Counted, Ctrl+A ticked
+/// it unseen, and Delete took it out of Sent with the rest.
 List<String> messagesOnScreen(GlobalKey listKey) {
   final context = listKey.currentContext;
   if (context == null) return const [];
@@ -31,7 +36,7 @@ List<String> messagesOnScreen(GlobalKey listKey) {
     final widget = element.widget;
     List<String>? row;
     if (widget is MessageTile) {
-      row = [widget.message.id];
+      row = widget.onTicked == null ? const [] : [widget.message.id];
     } else if (widget is ConversationTile) {
       row = widget.isExpanded
           ? const []

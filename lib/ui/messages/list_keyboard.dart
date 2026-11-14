@@ -154,8 +154,16 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
     _move(delta);
     final to = _selected;
     final ticks = ref.read(selectedMessageIdsProvider.notifier);
-    ticks.addAll([?from, ?to]);
+    ticks.addAll([
+      for (final id in [?from, ?to])
+        if (_tickable(id)) id,
+    ]);
   }
+
+  /// Whether [id] is one of the list's own rows, which a tick can go on.
+  /// Your reply from Sent inside an open thread is not: it has no tick to
+  /// show, and nothing done to the thread reaches it.
+  bool _tickable(String id) => _all.any((m) => m.id == id);
 
   /// Open or close the conversation the current message is in. Nothing
   /// happens on a message that is not in a thread, or with conversations
@@ -255,8 +263,10 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
         final message = _current;
         if (message == null) return KeyEventResult.ignored;
         // Ticks rather than opens, which is what space does in every list
-        // that has checkboxes.
-        ref.read(selectedMessageIdsProvider.notifier).toggle(message.id);
+        // that has checkboxes. A row with none is left as it is.
+        if (_tickable(message.id)) {
+          ref.read(selectedMessageIdsProvider.notifier).toggle(message.id);
+        }
         return KeyEventResult.handled;
       // Delete deletes; Backspace archives, as in Outlook on the PC.
       case LogicalKeyboardKey.delete:
@@ -272,14 +282,19 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
         // message under the cursor, ticked or not, and left the ticks.
         if (ref.read(selectedMessageIdsProvider).isNotEmpty) {
           if (event is KeyDownEvent) {
-            // Looked up as the ribbon and the bar look them up, your
-            // replies from Sent inside an open thread among them.
+            // Looked up as the ribbon and the bar look them up. With none
+            // of them in the list now there is nothing to take: said, and
+            // the ticks left for the person to see and clear.
             final chosen = tickedMessages(ref, widget.listId);
-            final actions = MessageActions(ref, widget.listId);
-            archive
-                ? actions.archive(context, chosen)
-                : actions.delete(context, chosen);
-            ref.read(selectedMessageIdsProvider.notifier).clear();
+            if (chosen.isEmpty) {
+              sayTicksGone(context);
+            } else {
+              final actions = MessageActions(ref, widget.listId);
+              archive
+                  ? actions.archive(context, chosen)
+                  : actions.delete(context, chosen);
+              ref.read(selectedMessageIdsProvider.notifier).clear();
+            }
           }
           _holdStopped = true;
           return KeyEventResult.handled;

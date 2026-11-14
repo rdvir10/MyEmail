@@ -10,8 +10,6 @@ import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/message_move.dart';
-import '../../state/conversation_extras.dart';
-import '../../state/display_providers.dart';
 import '../../state/folder_tree.dart';
 import '../../state/follow_ups.dart';
 import '../../state/list_filter.dart';
@@ -22,12 +20,16 @@ import '../../state/sync_providers.dart' show backgroundSchedulerProvider;
 import '../../state/waiting_changes.dart';
 import 'move_to_sheet.dart';
 
-/// Every message in [listId]'s list, which is where a tick is looked up,
-/// a tick being only an id: the search hits while a search is showing;
-/// or else the folder's messages as the list draws them, older mail a
-/// filter found on the server among them, with your replies from Sent
-/// shown inside the threads they answer. [watch] for a widget built from
-/// it, so it is built again when any of that changes.
+/// Every message of [listId]'s list that can be ticked, which is where a
+/// tick is looked up, a tick being only an id: the search hits while a
+/// search is showing; or else the folder's messages as the list draws
+/// them, older mail a filter found on the server among them. [watch] for a
+/// widget built from it, so it is built again when any of that changes.
+///
+/// Not your replies from Sent drawn inside the threads they answer. They
+/// have no tick to show, and nothing done to the thread reaches them.
+/// Looked up here in 3.13.1, a tick Ctrl+A had put on one unseen took it
+/// out of Sent on Delete.
 List<MailMessage> listedMessages(
   WidgetRef ref,
   String listId, {
@@ -38,27 +40,16 @@ List<MailMessage> listedMessages(
   if (get(searchQueryProvider).trim().isNotEmpty) {
     return get(searchResultsProvider).value ?? const [];
   }
-  final rows = get(sortedMessagesProvider(listId));
-  final others = get(displayProvider).conversations
-      ? get(conversationExtrasProvider(listId)).value ?? const <MailMessage>[]
-      : const <MailMessage>[];
-  if (others.isEmpty) return rows;
-  final own = {for (final m in rows) m.id};
-  return [
-    ...rows,
-    for (final m in others)
-      if (!own.contains(m.id)) m,
-  ];
+  return get(sortedMessagesProvider(listId));
 }
 
 /// The messages ticked in [listId]'s list, in its order. Empty when
 /// nothing is ticked, or when nothing ticked is in the list now.
 ///
-/// Looked up in everything the list has (see [listedMessages]), for the
-/// ribbon, the keys, the selection bar and the list's own Delete alike.
-/// Looked up in the folder's own messages, a ticked row of older mail a
-/// filter had found on the server was passed over, and so was your reply
-/// from Sent ticked inside a thread.
+/// Looked up in everything the list has to tick (see [listedMessages]),
+/// for the ribbon, the keys, the selection bar and the list's own Delete
+/// alike. Looked up in the folder's own messages, a ticked row of older
+/// mail a filter had found on the server was passed over.
 List<MailMessage> tickedMessages(WidgetRef ref, String listId) {
   final ticked = ref.read(selectedMessageIdsProvider);
   if (ticked.isEmpty) return const [];
