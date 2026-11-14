@@ -36,6 +36,7 @@ import '../cache/folder_sync.dart';
 import '../calendar/account_calendar.dart';
 import '../contacts/account_people.dart';
 import '../compose/graph_sender.dart';
+import '../compose/mime_parts.dart' show draftOnlyHeaders;
 import '../compose/smtp_sender.dart';
 import '../compose/thread_index.dart';
 import '../compose/reply_draft.dart' show escapeHtml;
@@ -61,7 +62,11 @@ import 'imap_transport.dart';
 /// bodies still come from whatever was cached, so the app opens and is
 /// readable offline.
 class CachedImapEngine
-    implements MailEngine, PagesOlderMail, KeepsChangesForLater {
+    implements
+        MailEngine,
+        PagesOlderMail,
+        KeepsChangesForLater,
+        FindsByMessageId {
   CachedImapEngine({
     required this.accountStore,
     required this.credentialStore,
@@ -2868,6 +2873,13 @@ class CachedImapEngine
     }
 
     final message = buildMimeMessage(draft: draft, account: account);
+    // Which reply or forward this is and the Message-ID of what it was
+    // written from, to find that by when it is opened again. Here and not
+    // in buildMimeMessage, so that what is sent never carries them.
+    final own = draftOnlyHeaders(draft.kind, await _messageIdOfOriginal(draft));
+    for (final MapEntry(:key, :value) in own.entries) {
+      message.setHeader(key, value);
+    }
     final t = await _transport(account.id);
 
     // Append before deleting the old copy. The other order loses the draft
@@ -2894,6 +2906,58 @@ class CachedImapEngine
       debugPrint('[myemail] draft saved, but not found again: $e');
       return null;
     }
+  }
+
+  /// The `Message-ID` of the message [draft] answers or forwards, as the
+  /// device holds it, or for a reply, the one it answers by, without its
+  /// angle brackets. Null for a new message, and for a forward of a message
+  /// the device no longer holds where the draft says it is.
+  Future<String?> _messageIdOfOriginal(Draft draft) async {
+    final original = draft.originalMessageId;
+    if (original == null || draft.kind == ComposeKind.newMessage) return null;
+    try {
+      final (folderId, uid) = splitMessageId(original);
+      final (accountId, path) = splitFolderId(folderId);
+      final held = await cache.messageIdsFor(accountId, path, [uid]);
+      if (held.isNotEmpty) return normaliseMessageId(held.first);
+    } catch (e) {
+      debugPrint('[myemail] the original of a draft was not found: $e');
+    }
+    return draft.kind == ComposeKind.forward
+        ? null
+        : normaliseMessageId(draft.inReplyTo);
+  }
+
+  @override
+  Future<String?> messageWithId(
+    String messageId, {
+    required String accountId,
+  }) async {
+    final accounts = [
+      accountId,
+      for (final a in accountStore.read())
+        if (a.id != accountId) a.id,
+    ];
+    for (final account in accounts) {
+      final folders = [
+        for (final f in folderLists.read(account) ?? const <RemoteFolder>[])
+          if (f.role != FolderRole.drafts && f.role != FolderRole.deleted) f,
+      ];
+      for (final f in [
+        ...folders.where((f) => f.role == FolderRole.inbox),
+        ...folders.where((f) => f.role != FolderRole.inbox),
+      ]) {
+        // Held as the server gave it: bare from IMAP, and in its angle
+        // brackets from Graph.
+        final uids = await cache.uidsForMessageIds(account, f.path, {
+          messageId,
+          '<$messageId>',
+        });
+        if (uids.isEmpty) continue;
+        return MailMessage.idFor(MailFolder.idFor(account, f.path), uids.first);
+      }
+    }
+    return null;
   }
 
   @override

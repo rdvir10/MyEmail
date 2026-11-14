@@ -1042,3 +1042,15 @@ abstract interface class PagesOlderMail {
   /// own refresh does that.
   Future<List<MailMessage>> olderMessages(String folderId, {int limit = 50});
 }
+
+/// An engine that can find a message by its `Message-ID` among the mail the
+/// device holds. A Message-ID goes wherever the message is moved, so it
+/// finds a message filed somewhere else since. Not part of [MailEngine]:
+/// the sample engine has no use for it.
+abstract interface class FindsByMessageId {
+  /// A message carrying [messageId] (without its angle brackets), as
+  /// `<folderId>#<uid>`: in [accountId] if it is there, its Inbox first,
+  /// or else in another account. Not one in Drafts or Deleted. Null where
+  /// the device holds none.
+  Future<String?> messageWithId(String messageId, {required String accountId});
+}

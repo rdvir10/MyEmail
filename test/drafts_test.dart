@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert' show latin1;
 import 'dart:io' show SocketException;
 import 'dart:typed_data';
 
@@ -11,12 +12,17 @@ import 'package:myemail/data/cache/cache_store.dart';
 import 'package:enough_mail/enough_mail.dart' as em;
 import 'package:myemail/data/compose/smtp_sender.dart';
 import 'package:myemail/data/credential_store.dart';
+import 'package:myemail/data/files/message_files.dart';
 import 'package:myemail/data/imap/cached_imap_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/state/compose_providers.dart' show draftFromMessage;
+import 'package:myemail/state/message_transfer.dart'
+    show emlFor, messageFilesProvider;
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/put_away_providers.dart';
 import 'package:myemail/ui/shell/put_away.dart';
@@ -26,6 +32,7 @@ import 'package:myemail/ui/common/problem_view.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
 import 'package:myemail/ui/compose/header_fields.dart';
 import 'package:myemail/ui/compose/open_compose.dart';
+import 'package:myemail/ui/messages/forward_as_attachment.dart';
 
 import 'helpers/send_at_once.dart';
 import 'fakes/fake_imap_transport.dart';
@@ -227,6 +234,181 @@ void main() {
         )),
       );
       expect(server.appended, isEmpty);
+    });
+
+    // Reopened as a new message, a reply went without Thread-Index, so it
+    // began a conversation of its own in Outlook, and the original was
+    // never marked answered. Putting the app away saves a reply to Drafts
+    // and closes it, so that is the ordinary way back to one.
+    group('a reply put away and reopened', () {
+      // Long and not in English, as Ron's folders are, and his own
+      // business: whose mail he files where.
+      const folder = 'INBOX/לקוחות/הדקו הצעות מחיר והזמנות רכש לשנת 2026';
+      // As long as Exchange makes them, so the header that names it is
+      // folded.
+      const id = 'DM6PR11MB45930A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F'
+          '@DM6PR11MB4593.namprd11.prod.outlook.com';
+      late List<em.MimeMessage> sent;
+      late CachedImapEngine keeping;
+      late Account account;
+      late FakeMessage original;
+      late String savedAs;
+
+      Future<void> sync(WidgetTester tester, String path) => tester.runAsync(
+            () => keeping.loadMessages(MailFolder.idFor(account.id, path)),
+          );
+
+      /// The account, the message answered as the device holds it, and
+      /// the reply to it saved to Drafts.
+      Future<void> putAway(WidgetTester tester) async {
+        server
+          ..folder(folder)
+          ..folder('Archive', role: FolderRole.archive);
+        sent = [];
+        keeping = CachedImapEngine(
+          accountStore: MemoryAccountStore(),
+          credentialStore: MemoryCredentialStore(),
+          cache: cache,
+          transportFactory: (_, _) => server,
+          senderFactory: (_, _) => _KeepingSender(sent),
+        );
+        account = (await tester.runAsync(() => keeping.addAccount(
+              displayName: 'Hadco',
+              emailAddress: 'me@example.com',
+              provider: MailProvider.gmail,
+              secret: 'abcdabcdabcdabcd',
+            )))!;
+        original = server
+            .folder(folder)
+            .deliver(subject: 'Numbers', messageId: '<$id>');
+        await sync(tester, folder);
+        savedAs = (await tester.runAsync<String?>(() => keeping.saveDraft(Draft(
+              accountId: account.id,
+              kind: ComposeKind.replyAll,
+              to: const [MailAddress(email: 'dana@example.com')],
+              subject: 'Re: Numbers',
+              htmlBody: '<p>Thanks.</p>',
+              inReplyTo: id,
+              originalMessageId: MailMessage.idFor(
+                MailFolder.idFor(account.id, folder),
+                original.uid,
+              ),
+            ))))!;
+      }
+
+      /// A WidgetRef over [keeping], which is what the app works through.
+      Future<WidgetRef> refOver(WidgetTester tester) async {
+        final c = ProviderContainer(overrides: [
+          mailEngineProvider.overrideWithValue(keeping),
+        ]);
+        addTearDown(c.dispose);
+        late WidgetRef ref;
+        await tester.pumpWidget(UncontrolledProviderScope(
+          container: c,
+          child: Consumer(builder: (_, r, _) {
+            ref = r;
+            return const SizedBox();
+          }),
+        ));
+        return ref;
+      }
+
+      /// The saved reply as Drafts lists it.
+      MailMessage savedCopy() {
+        final at = savedAs.lastIndexOf('#');
+        return MailMessage(
+          id: savedAs,
+          accountId: account.id,
+          folderId: savedAs.substring(0, at),
+          uid: int.parse(savedAs.substring(at + 1)),
+          subject: 'Re: Numbers',
+          from: const MailAddress(email: 'me@example.com'),
+          to: const [MailAddress(email: 'dana@example.com')],
+          date: DateTime(2026, 11, 14),
+          preview: 'Thanks.',
+        );
+      }
+
+      /// The saved reply, opened from Drafts.
+      Future<Draft> reopen(WidgetTester tester) async {
+        final ref = await refOver(tester);
+        return (await tester.runAsync(
+          () => draftFromMessage(ref: ref, message: savedCopy()),
+        ))!;
+      }
+
+      testWidgets('is still that reply, and what it sends does not say so',
+          (tester) async {
+        await putAway(tester);
+
+        final reopened = await reopen(tester);
+
+        expect(reopened.kind, ComposeKind.replyAll);
+        expect(reopened.originalMessageId,
+            '${account.id}:$folder#${original.uid}');
+        await tester.runAsync(() => keeping.sendDraft(reopened));
+        expect(original.isAnswered, isTrue);
+        expect(sent.single.renderMessage().toLowerCase(),
+            isNot(contains('x-myemail')),
+            reason: "what it answers is the app's own business");
+      });
+
+      testWidgets('leaves no folder named in the saved copy', (tester) async {
+        // Forward as attachment sends a saved draft whole, and one finished
+        // in Outlook would very likely keep what it carries. It named the
+        // folder the customer's message was filed in.
+        await putAway(tester);
+
+        final stored =
+            server.appended.single.replaceAll(RegExp(r'\r?\n[ \t]+'), '');
+        expect(stored, isNot(contains(Uri.encodeComponent(folder))));
+        expect(stored, isNot(contains(folder)));
+        expect(stored, isNot(contains(account.id)));
+      });
+
+      testWidgets('sent on as a file, carries none of what is for the app',
+          (tester) async {
+        // Forward as attachment, or a copy for another app: the saved copy
+        // goes whole, and what the app keeps on it is its own.
+        await putAway(tester);
+        final ref = await refOver(tester);
+
+        final forwarded = (await tester.runAsync(
+          () => emlAttachments(ref, [savedCopy()]),
+        ))!;
+        await tester.runAsync(() => emlFor(ref, savedCopy()));
+
+        final files = ref.read(messageFilesProvider) as FakeMessageFiles;
+        for (final eml in [
+          latin1.decode(forwarded.single.bytes),
+          files.written.values.single,
+        ]) {
+          expect(eml.toLowerCase(), isNot(contains('x-myemail')));
+          expect(eml.replaceAll(RegExp(r'\r?\n[ \t]+'), ''),
+              contains('In-Reply-To: <$id>'),
+              reason: 'the rest as it was');
+          expect(eml, contains('Re: Numbers'));
+        }
+      });
+
+      testWidgets('finds its original where it has been moved since',
+          (tester) async {
+        await putAway(tester);
+        server.folder(folder).delete(original.uid);
+        final moved = server
+            .folder('Archive')
+            .deliver(subject: 'Numbers', messageId: '<$id>');
+        await sync(tester, folder);
+        await sync(tester, 'Archive');
+
+        final reopened = await reopen(tester);
+
+        expect(reopened.kind, ComposeKind.replyAll);
+        expect(reopened.originalMessageId,
+            '${account.id}:Archive#${moved.uid}');
+        await tester.runAsync(() => keeping.sendDraft(reopened));
+        expect(moved.isAnswered, isTrue);
+      });
     });
 
     test('sending a saved draft clears it out of Drafts', () async {
@@ -1287,6 +1469,21 @@ class _SilentSender extends SmtpSender {
 
   @override
   Future<void> send(em.MimeMessage message) async {}
+}
+
+/// Sends nothing, and keeps what it was given to send.
+class _KeepingSender extends SmtpSender {
+  _KeepingSender(this.sent)
+      : super(
+          host: 'smtp.example',
+          user: '',
+          credentials: const PasswordCredentials(''),
+        );
+
+  final List<em.MimeMessage> sent;
+
+  @override
+  Future<void> send(em.MimeMessage message) async => sent.add(message);
 }
 
 /// Drafts cannot be saved: offline, say.

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/compose/mime_parts.dart' show withoutDraftOnlyHeaders;
 import '../data/files/file_bridge.dart';
 import '../data/files/message_files.dart';
 import '../domain/mail_message.dart';
@@ -39,9 +40,12 @@ class MultiWindowMode extends Notifier<bool> {
 final multiWindowModeProvider =
     NotifierProvider<MultiWindowMode, bool>(MultiWindowMode.new);
 
-/// The message as a file: fetched as it arrived, written once.
+/// The message as a file: fetched as it arrived, written once. A saved
+/// draft goes without what the app keeps on it for itself.
 Future<File> emlFor(WidgetRef ref, MailMessage message) async {
-  final raw = await ref.read(mailEngineProvider).rawMessage(message.id);
+  final raw = withoutDraftOnlyHeaders(
+    await ref.read(mailEngineProvider).rawMessage(message.id),
+  );
   return ref
       .read(messageFilesProvider)
       .writeEml(emlFileName(message), raw, messageId: message.id);

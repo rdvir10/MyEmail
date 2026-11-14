@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/gestures.dart' show kSecondaryButton;
@@ -77,6 +78,29 @@ void main() {
       expect(request.draft.subject, 'Moving house');
       expect(find.byType(ComposeScreen), findsNothing,
           reason: 'moved, not lost: this copy closes without asking');
+    });
+
+    testWidgets(
+        'a second tap while the window opens moves it once, and leaves the '
+        'mail under it', (tester) async {
+      // The second tap read the message again and opened a second window,
+      // and its close took the mail away, leaving a blank screen.
+      final slow = _SlowOpener();
+      windows = slow;
+      await pump(tester);
+      await ctrlN(tester);
+
+      await tester.tap(find.byTooltip('Open in new window'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Open in new window'),
+          warnIfMissed: false);
+      await tester.pump();
+      slow.answer.complete();
+      await tester.pumpAndSettle();
+
+      expect(windows.opened, hasLength(1));
+      expect(find.byType(ComposeScreen), findsNothing);
+      expect(find.byType(AppShell), findsOneWidget);
     });
 
     testWidgets('with the setting on, writing starts in one', (tester) async {
@@ -286,4 +310,16 @@ void main() {
       expect(window, contains('android:autoRemoveFromRecents="true"'));
     });
   });
+}
+
+/// A system slow to say the window has opened.
+class _SlowOpener extends FakeWindowOpener {
+  final answer = Completer<void>();
+
+  @override
+  Future<bool> open(WindowRequest request) async {
+    opened.add(request);
+    await answer.future;
+    return opens;
+  }
 }

@@ -1,5 +1,7 @@
 import 'package:html/parser.dart' as html_parser;
 
+import 'draft.dart' show ComposeKind;
+
 /// What the person wrote in a message, without what the window put there
 /// itself: the quote of what it answers, and the signature. What the checks
 /// before Send read, so a forwarded "see attached" is not taken for this
@@ -13,6 +15,20 @@ String ownTextOf(String html) {
   }
   return (body.text ?? '').replaceAll(' ', ' ');
 }
+
+/// What of a message's [subject] the person wrote: all of a new message's,
+/// and of a reply's or forward's, what is there besides the subject it
+/// opened with ([given]), which came with the message it answers, as the
+/// quote did. Read whole, a customer's "Quote attached" stopped every
+/// answer in the thread at the Attachment reminder.
+String ownSubjectOf(
+  String subject, {
+  required String given,
+  required ComposeKind kind,
+}) =>
+    kind == ComposeKind.newMessage || given.isEmpty
+        ? subject
+        : subject.replaceFirst(given, '');
 
 /// Whether [text] says a file is attached, in English or Hebrew: Outlook's
 /// Attachment Reminder, which looks for the same words.

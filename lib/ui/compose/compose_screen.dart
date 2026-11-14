@@ -147,6 +147,18 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   );
 
   bool _sending = false;
+
+  /// Send, the question on leaving, or a move to a window of its own, from
+  /// the tap or key until the screen has gone or is back to writing. Each
+  /// reads what was typed from the editor before it closes the screen,
+  /// which for a long message takes long enough to tap again, and nothing
+  /// on screen changed meanwhile: a second tap started a second one, so the
+  /// message was held or sent twice, and the second close took away the
+  /// screen under this one. Send and Open in new window are greyed out
+  /// meanwhile, and it stays set once the screen has gone, as it slides
+  /// out.
+  bool _leaving = false;
+
   /// Something the person can correct by typing — a missing recipient, an
   /// address with a typo. Not a failure, and nothing to report.
   String? _invalid;
@@ -787,7 +799,20 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     stop.requestFocus();
   }
 
-  Future<void> _send() async {
+  /// Runs [leave], unless a way out of the screen is under way already.
+  Future<void> _leaveOnce(Future<void> Function() leave) async {
+    if (_sending || _leaving) return;
+    setState(() => _leaving = true);
+    try {
+      await leave();
+    } finally {
+      if (mounted && !_ended) setState(() => _leaving = false);
+    }
+  }
+
+  Future<void> _send() => _leaveOnce(_sendNow);
+
+  Future<void> _sendNow() async {
     final to = parseAddresses(_to.text);
     final cc = parseAddresses(_cc.text);
     final bcc = parseAddresses(_bcc.text);
@@ -898,7 +923,12 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
         html = '';
       }
       if (!mounted) return false;
-      if (mentionsAttachment('${_subject.text}\n${ownTextOf(html)}')) {
+      final subject = ownSubjectOf(
+        _subject.text,
+        given: widget.draft.subject,
+        kind: widget.draft.kind,
+      );
+      if (mentionsAttachment('$subject\n${ownTextOf(html)}')) {
         final choice = await showDialog<String>(
           context: context,
           builder: (dialog) => AlertDialog(
@@ -1137,7 +1167,9 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// Carry on writing in a window of its own. What has been typed goes
   /// across as it stands, and this copy closes without asking: the
   /// message has not been lost, it has moved.
-  Future<void> _moveToWindow() async {
+  Future<void> _moveToWindow() => _leaveOnce(_moveNow);
+
+  Future<void> _moveNow() async {
     if (!await _readyToLeave()) return;
     final Draft draft;
     try {
@@ -1214,16 +1246,18 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
         // send failed, nothing said so and the message was gone. Save draft
         // kept a draft of a message that then went.
         if (_sending) return;
-        switch (await _askOnLeave()) {
-          case _LeaveChoice.keepWriting:
-            return;
-          case _LeaveChoice.save:
-            await _saveAndLeave();
-          case _LeaveChoice.discard:
-            if (!await _readyToLeave() || !context.mounted) return;
-            _dropBackgroundCopy();
-            Navigator.of(context).pop(false);
-        }
+        await _leaveOnce(() async {
+          switch (await _askOnLeave()) {
+            case _LeaveChoice.keepWriting:
+              return;
+            case _LeaveChoice.save:
+              await _saveAndLeave();
+            case _LeaveChoice.discard:
+              if (!await _readyToLeave() || !context.mounted) return;
+              _dropBackgroundCopy();
+              Navigator.of(context).pop(false);
+          }
+        });
       },
       child: Focus(
         // Keys reach this only from a focused descendant, and a reply has
@@ -1247,7 +1281,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
               IconButton(
                 tooltip: 'Open in new window',
                 icon: const Icon(Icons.open_in_new),
-                onPressed: _sending ? null : _moveToWindow,
+                onPressed: _sending || _leaving ? null : _moveToWindow,
               ),
             IconButton(
               tooltip: 'Attach',
@@ -1268,7 +1302,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.send),
-              onPressed: _sending ? null : _send,
+              onPressed: _sending || _leaving ? null : _send,
             ),
             // Outlook's Tags and Options for one message.
             PopupMenuButton<String>(

@@ -156,10 +156,14 @@ void main() {
   group("the quote's pictures", () {
     const html = '<p>Figures</p><img src="cid:logo@x" alt="Hadco Logo">';
 
-    Future<Draft> build(WidgetTester tester, ComposeKind kind) async {
+    Future<Draft> build(
+      WidgetTester tester,
+      ComposeKind kind, {
+      String raw = _forwardedMime,
+    }) async {
       final engine = _Engine()
         ..body = const MailBody(text: 'Figures', html: html)
-        ..raw = _forwardedMime;
+        ..raw = raw;
       final c = over(engine);
       final ref = await refOver(tester, c);
       await tester.runAsync(() => c.read(accountsProvider.future));
@@ -188,6 +192,25 @@ void main() {
       expect(forward.htmlBody, contains('src="data:image/png;base64,'));
       expect(forward.attachments.map((a) => a.fileName), ['report.pdf'],
           reason: 'the logo is in the body; a chip for it was a second copy');
+    });
+
+    testWidgets(
+        'but a file sent in place that the text never shows goes with a '
+        'forward, as a file', (tester) async {
+      // iPhone Mail, scanners and phone gateways send a file "inline", with
+      // a Content-ID nothing in the text points at. The reading pane shows
+      // it as a file, and Forward left it behind without a word.
+      final forward =
+          await build(tester, ComposeKind.forward, raw: _withScanInPlace);
+
+      expect(forward.attachments.map((a) => a.fileName),
+          unorderedEquals(['scan.pdf', 'report.pdf']));
+      expect(
+        forward.attachments.firstWhere((a) => a.fileName == 'scan.pdf')
+            .contentId,
+        isNull,
+        reason: 'attached, as it was shown, not hidden in the text',
+      );
     });
   });
 
@@ -276,6 +299,42 @@ const _forwardedMime = 'MIME-Version: 1.0\r\n'
     '\r\n'
     'iVBORw==\r\n'
     '--rel--\r\n'
+    '--mix\r\n'
+    'Content-Type: application/pdf; name="report.pdf"\r\n'
+    'Content-Transfer-Encoding: base64\r\n'
+    'Content-Disposition: attachment; filename="report.pdf"\r\n'
+    '\r\n'
+    'JVBERi0=\r\n'
+    '--mix--\r\n';
+
+/// [_forwardedMime] with a scan sent in place, under a Content-ID the
+/// text never names, as a phone or a scanner sends one.
+const _withScanInPlace = 'MIME-Version: 1.0\r\n'
+    'Subject: Numbers\r\n'
+    'Content-Type: multipart/mixed; boundary="mix"\r\n'
+    '\r\n'
+    '--mix\r\n'
+    'Content-Type: multipart/related; boundary="rel"\r\n'
+    '\r\n'
+    '--rel\r\n'
+    'Content-Type: text/html; charset=utf-8\r\n'
+    '\r\n'
+    '<p>Figures</p><img src="cid:logo@x">\r\n'
+    '--rel\r\n'
+    'Content-Type: image/png; name="logo.png"\r\n'
+    'Content-Transfer-Encoding: base64\r\n'
+    'Content-ID: <logo@x>\r\n'
+    'Content-Disposition: inline; filename="logo.png"\r\n'
+    '\r\n'
+    'iVBORw==\r\n'
+    '--rel--\r\n'
+    '--mix\r\n'
+    'Content-Type: application/pdf; name="scan.pdf"\r\n'
+    'Content-Transfer-Encoding: base64\r\n'
+    'Content-ID: <scan-0001@scanner>\r\n'
+    'Content-Disposition: inline; filename="scan.pdf"\r\n'
+    '\r\n'
+    'JVBERi0=\r\n'
     '--mix\r\n'
     'Content-Type: application/pdf; name="report.pdf"\r\n'
     'Content-Transfer-Encoding: base64\r\n'

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -189,6 +190,54 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(engine.sent.single.htmlBody, '<p>Sent from the keyboard.</p>');
+    });
+
+    // Nothing on screen changed while the page handed a long message over,
+    // so a second tap went in, and started a second send: the message went
+    // twice, and the second close took the screen under the window with it.
+    group('a second tap while the page hands it over', () {
+      /// Taps [what] twice, the page slow to answer until both are in.
+      Future<void> twice(WidgetTester tester, Finder what) async {
+        final slow = Completer<void>();
+        page.slowAnswers = slow.future;
+        await tester.tap(what);
+        await tester.pump();
+        await tester.tap(what, warnIfMissed: false);
+        await tester.pump();
+        page.slowAnswers = null;
+        slow.complete();
+        await tester.pumpAndSettle();
+      }
+
+      testWidgets('on Send sends it once, and closes only the window',
+          (tester) async {
+        page.answer = (script) => script.contains('mailtreeGetHtml')
+            ? jsonEncode('<p>A long thread.</p>')
+            : '';
+        final engine = _Engine();
+        await open(tester, draft(to: [dana]), engine);
+
+        await twice(tester, find.byTooltip('Send'));
+
+        expect(engine.sent, hasLength(1));
+        expect(find.byType(ComposeScreen), findsNothing);
+        expect(find.text('open compose'), findsOneWidget,
+            reason: 'what was under the window is still there');
+      });
+
+      testWidgets('on Back closes only the window', (tester) async {
+        page.answer = (script) => script.contains('mailtreeGetHtml')
+            ? jsonEncode('<p>As it opened.</p>')
+            : '';
+        await open(tester, draft(to: [dana]), _Engine());
+
+        await twice(tester, find.byType(BackButton));
+
+        expect(find.byType(ComposeScreen), findsNothing,
+            reason: 'untouched, so it closes without asking');
+        expect(find.text('open compose'), findsOneWidget,
+            reason: 'what was under the window is still there');
+      });
     });
 
     testWidgets('an unreadable page still lets the window be left',

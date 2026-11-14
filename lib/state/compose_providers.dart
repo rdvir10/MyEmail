@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/misc.dart'
 
 import '../data/compose/mime_parts.dart';
 import '../data/files/attached_message.dart';
+import '../data/mail_engine.dart' show FindsByMessageId, MailEngine;
 import '../data/compose/quote_builder.dart' show sanitiseForEditing;
 import '../data/compose/reply_draft.dart';
 import '../data/ui_state_store.dart';
@@ -120,15 +121,19 @@ Future<Draft> buildDraft({
   if (kind != ComposeKind.forward || !carriesFiles) return draft;
   try {
     final raw = await ref.read(mailEngineProvider).rawMessage(original.id);
-    // Not a picture the quote now shows as data: it goes with the message
-    // that way, and as a file of its own it was there twice, as a chip for
-    // every logo in the signature.
+    final named = contentIdsNamedIn(quoted);
     final stillLinked = contentIdsNamedIn(draft.htmlBody);
     return draft.copyWith(attachments: [
       for (final a in attachmentsInMime(raw))
-        if (a.contentId == null ||
-            stillLinked.contains(a.contentId!.toLowerCase()))
-          a,
+        if (_forwarded(a.contentId, named: named, stillLinked: stillLinked)
+            case (goes: true, :final contentId))
+          DraftAttachment(
+            fileName: a.fileName,
+            mimeType: a.mimeType,
+            bytes: a.bytes,
+            contentId: contentId,
+            forwardedMessageId: a.forwardedMessageId,
+          ),
     ]);
   } catch (_) {
     // Offline, or the message has gone: say so rather than send without.
@@ -174,16 +179,15 @@ Draft draftForAttached({
   }
   if (kind != ComposeKind.forward) return draft;
 
-  // Its files, but not a picture the quote now shows as data: that goes
-  // with the message that way, and as a file it would be there twice.
+  // Its files, as buildDraft forwards them.
   final named = contentIdsNamedIn(attached.body.html ?? '');
   final stillLinked = contentIdsNamedIn(draft.htmlBody);
   final files = <DraftAttachment>[];
   final lost = <String>[];
   for (final f in attached.files) {
-    final cid = f.contentId?.toLowerCase();
-    final linked = cid != null && stillLinked.contains(cid);
-    if (cid != null && named.contains(cid) && !linked) continue;
+    final (:goes, :contentId) =
+        _forwarded(f.contentId, named: named, stillLinked: stillLinked);
+    if (!goes) continue;
     final bytes = attached.bytesOf(f);
     if (bytes == null || bytes.isEmpty) {
       lost.add(f.name);
@@ -193,10 +197,34 @@ Draft draftForAttached({
       fileName: f.name,
       mimeType: f.mimeType,
       bytes: bytes,
-      contentId: linked ? f.contentId : null,
+      contentId: contentId,
     ));
   }
   return draft.copyWith(attachments: files, lostAttachmentNames: lost);
+}
+
+/// Whether a file of the message being forwarded goes with the forward,
+/// and the Content-ID it goes under, by the one it had ([contentId]).
+///
+/// Not a picture the original's text showed in place ([named]) and the
+/// quote now shows as data: it goes with the message that way, and as a
+/// file of its own it was there twice, as a chip for every logo in the
+/// signature. Every other file goes, under its Content-ID only while the
+/// quote still links to it ([stillLinked]), and otherwise as a file
+/// attached, the way the reading pane showed it. A file sent "inline"
+/// under a Content-ID the text never names, as phones and scanners send
+/// one, was left out of the forward without a word.
+({bool goes, String? contentId}) _forwarded(
+  String? contentId, {
+  required Set<String> named,
+  required Set<String> stillLinked,
+}) {
+  final cid = contentId?.toLowerCase();
+  final linked = cid != null && stillLinked.contains(cid);
+  return (
+    goes: cid == null || linked || !named.contains(cid),
+    contentId: linked ? contentId : null,
+  );
 }
 
 /// Save a draft to the Drafts folder and refresh the tree so it shows there.
@@ -280,7 +308,15 @@ Future<Draft> draftFromMessage({
   try {
     final raw = await engine.rawMessage(message.id);
     final headers = savedDraftHeaders(raw);
+    // A reply or forward put away to Drafts stays one, to its original
+    // wherever that is filed now: in its conversation, and marking the
+    // original once it has gone. Not found, it is a new message, as a
+    // reopened draft always was.
+    final original =
+        await _messageWithId(engine, headers.original, message.accountId);
     return draft.copyWith(
+      kind: original == null ? null : headers.kind,
+      originalMessageId: original,
       bcc: headers.bcc,
       inReplyTo: headers.inReplyTo,
       references: headers.references,
@@ -299,6 +335,24 @@ Future<Draft> draftFromMessage({
           message.hasAttachments ? const ['the original attachment'] : const [],
       storedCopyUnread: true,
     );
+  }
+}
+
+/// The message carrying [messageId] that [engine] holds, preferring
+/// [accountId]'s, or null where there is none, or no way to look. Never
+/// throws: a draft opens whether or not its original is found.
+Future<String?> _messageWithId(
+  MailEngine engine,
+  String? messageId,
+  String accountId,
+) async {
+  if (messageId == null || engine is! FindsByMessageId) return null;
+  try {
+    return await (engine as FindsByMessageId)
+        .messageWithId(messageId, accountId: accountId);
+  } catch (e) {
+    debugPrint('[myemail] the original of a draft was not looked for: $e');
+    return null;
   }
 }
 

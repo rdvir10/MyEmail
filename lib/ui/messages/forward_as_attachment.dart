@@ -3,6 +3,7 @@ import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/compose/mime_parts.dart' show withoutDraftOnlyHeaders;
 import '../../data/files/message_files.dart';
 import '../../data/mail_engine.dart' show rawMessageBytes;
 import '../../domain/draft.dart';
@@ -12,6 +13,7 @@ import '../compose/open_compose.dart';
 
 /// Messages as `.eml` attachments, each as it arrived, and each naming the
 /// message it is so that it can be marked forwarded once the draft is away.
+/// A saved draft goes without what the app keeps on it for itself.
 Future<List<DraftAttachment>> emlAttachments(
   WidgetRef ref,
   List<MailMessage> messages,
@@ -22,7 +24,9 @@ Future<List<DraftAttachment>> emlAttachments(
       DraftAttachment(
         fileName: emlFileName(m),
         mimeType: emlMimeType,
-        bytes: rawMessageBytes(await engine.rawMessage(m.id)),
+        bytes: rawMessageBytes(
+          withoutDraftOnlyHeaders(await engine.rawMessage(m.id)),
+        ),
         forwardedMessageId: m.id,
       ),
   ];

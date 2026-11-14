@@ -180,6 +180,8 @@ class Draft {
       attachments.fold(0, (sum, a) => sum + a.size);
 
   Draft copyWith({
+    ComposeKind? kind,
+    String? originalMessageId,
     List<MailAddress>? to,
     List<MailAddress>? cc,
     List<MailAddress>? bcc,
@@ -198,7 +200,7 @@ class Draft {
   }) {
     return Draft(
       accountId: accountId ?? this.accountId,
-      kind: kind,
+      kind: kind ?? this.kind,
       to: to ?? this.to,
       cc: cc ?? this.cc,
       bcc: bcc ?? this.bcc,
@@ -207,7 +209,7 @@ class Draft {
       attachments: attachments ?? this.attachments,
       inReplyTo: inReplyTo ?? this.inReplyTo,
       references: references ?? this.references,
-      originalMessageId: originalMessageId,
+      originalMessageId: originalMessageId ?? this.originalMessageId,
       savedAs: savedAs ?? this.savedAs,
       calendarReply: calendarReply ?? this.calendarReply,
       lostAttachmentNames: lostAttachmentNames ?? this.lostAttachmentNames,

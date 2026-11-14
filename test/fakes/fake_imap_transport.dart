@@ -320,8 +320,9 @@ class FakeImapTransport implements ImapTransport {
     calls.add('UID FETCH $path $uid RAW');
     final m = _require(path).messages[uid];
     if (m == null) throw StateError('No message $uid in $path');
-    return 'Subject: ${m.subject}\r\nMessage-ID: ${m.messageId}\r\n'
-        '\r\n${m.body}';
+    return m.raw ??
+        'Subject: ${m.subject}\r\nMessage-ID: ${m.messageId}\r\n'
+            '\r\n${m.body}';
   }
 
   /// Files on a message, keyed by uid. Empty unless a test puts some there.
@@ -558,7 +559,7 @@ class FakeImapTransport implements ImapTransport {
     _online();
     calls.add('APPEND $path${draft ? r' \Draft' : ''}');
     appended.add(mimeText);
-    folder(path).deliver(subject: 'appended', isRead: seen);
+    folder(path).deliver(subject: 'appended', isRead: seen).raw = mimeText;
   }
 
   /// What [fileMessage] was given, as it was given: messages moved in from
@@ -793,6 +794,10 @@ class FakeMessage {
   final String body;
   final String? html;
   int modSeq;
+
+  /// The message as it was appended, where it was: what
+  /// [FakeImapTransport.fetchRaw] hands back for it.
+  String? raw;
 
   void _apply(MessageFlag flag, bool set, int newModSeq) {
     switch (flag) {

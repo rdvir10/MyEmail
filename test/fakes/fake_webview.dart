@@ -52,6 +52,11 @@ class FakeWebViewPlatform extends WebViewPlatform {
   /// script answers the empty string.
   Object? Function(String script)? answer;
 
+  /// While set, a script with an answer waits for this before it gives it:
+  /// a page slow to hand over a long message, for a test of what can be
+  /// done meanwhile.
+  Future<void>? slowAnswers;
+
   /// The newest page's channels to Dart, by name.
   final Map<String, JavaScriptChannelParams> channels = {};
 
@@ -140,6 +145,8 @@ class _FakeController extends PlatformWebViewController {
   @override
   Future<Object> runJavaScriptReturningResult(String javaScript) async {
     _platform.ranJavaScript.add(javaScript);
+    final slow = _platform.slowAnswers;
+    if (slow != null) await slow;
     return _platform.answer?.call(javaScript) ?? '';
   }
 }

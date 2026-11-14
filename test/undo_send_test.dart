@@ -447,6 +447,42 @@ void main() {
       await tester.pumpAndSettle();
       expect(engine.sent, hasLength(1));
     });
+
+    testWidgets(
+        'the subject a reply came with does not count, what is added to it '
+        'does', (tester) async {
+      // A customer's "Quote attached" made every answer in the thread stop
+      // at the reminder, though nothing in it spoke of a file.
+      final engine = _Engine();
+      await open(
+        tester,
+        engine,
+        const Draft(
+          accountId: 'acct-personal',
+          kind: ComposeKind.reply,
+          to: [dana],
+          subject: 'Re: Quote attached',
+          htmlBody: '<p>Thanks, got it.</p>',
+        ),
+        undo: UndoSend.off,
+      );
+      final subject = find.widgetWithText(TextField, 'Re: Quote attached');
+
+      await tester.enterText(subject, 'Re: Quote attached, drawing attached');
+      await send(tester);
+      expect(find.text('Attachment reminder'), findsOneWidget,
+          reason: 'what was added is his own');
+      await tester.tap(find.text('Keep writing'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Re: Quote attached, drawing attached'),
+        'Re: Quote attached',
+      );
+      await send(tester);
+      expect(find.text('Attachment reminder'), findsNothing);
+      expect(engine.sent.single.subject, 'Re: Quote attached');
+    });
   });
 
   testWidgets('the ⋮ menu: high importance and a read receipt, said under '
