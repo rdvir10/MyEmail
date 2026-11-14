@@ -51,8 +51,22 @@ class PreparedMeetingLedger {
 
   /// Each kept meeting, when it was made, and by which process (0 where
   /// that was not kept).
-  List<({PreparedMeeting meeting, DateTime at, int process})> read() {
-    final raw = store.readString(key);
+  List<({PreparedMeeting meeting, DateTime at, int process})> read() =>
+      _parse(store.readString(key));
+
+  /// [read] from what the device has now: another window may have kept a
+  /// meeting, or let one go, since this one last looked.
+  ///
+  /// By this one key. Reading every setting again for it emptied the copy
+  /// the account list is read from until the device answered, and the
+  /// start of the app does this: whoever asked for an account meanwhile
+  /// was told there was none.
+  Future<List<({PreparedMeeting meeting, DateTime at, int process})>>
+      _readNow() async => _parse(await store.readFresh(key));
+
+  static List<({PreparedMeeting meeting, DateTime at, int process})> _parse(
+    String? raw,
+  ) {
     if (raw == null || raw.isEmpty) return const [];
     try {
       final list = jsonDecode(raw);
@@ -100,17 +114,16 @@ class PreparedMeetingLedger {
   /// an old copy would lose it.
   Future<void> record(PreparedMeeting meeting) async {
     if (meeting.eventId == null) return;
-    await store.reload();
+    final kept = await _readNow();
     await _write([
-      ...read().where((e) => !_same(e.meeting, meeting)),
+      ...kept.where((e) => !_same(e.meeting, meeting)),
       (meeting: meeting, at: _now(), process: _process),
     ]);
   }
 
   /// Sent or undone: nothing more to do about it.
   Future<void> forget(PreparedMeeting meeting) async {
-    await store.reload();
-    final all = read();
+    final all = await _readNow();
     final rest = all.where((e) => !_same(e.meeting, meeting)).toList();
     if (rest.length != all.length) await _write(rest);
   }
@@ -125,9 +138,8 @@ class PreparedMeetingLedger {
     MailEngine engine, {
     Duration giveUpAfter = const Duration(days: 7),
   }) async {
-    await store.reload();
     final now = _now();
-    for (final e in read()) {
+    for (final e in await _readNow()) {
       if (e.process == _process) continue;
       var done = false;
       try {

@@ -19,9 +19,16 @@ abstract class UiStateStore {
   String? readString(String key);
   Future<void> writeString(String key, String? value);
 
-  /// Read again what another window of the app may have written since:
-  /// each keeps its own copy, read once at its start.
-  Future<void> reload();
+  /// [key]'s text as the device has it now, whatever this copy holds:
+  /// another window of the app may have written it since this one last
+  /// looked. Each keeps its own copy, read once at its start.
+  ///
+  /// Asked for by key, never by reading everything again. That emptied the
+  /// one copy the account list and every setting are read from until the
+  /// device had answered, and whoever asked for an account meanwhile was
+  /// told there was none: "Unknown account" on every account in the folder
+  /// list, on some starts of the app.
+  Future<String?> readFresh(String key);
 }
 
 /// Keys, in one place so the notifiers and the tests agree.
@@ -164,7 +171,16 @@ class PrefsUiStateStore implements UiStateStore {
   }
 
   @override
-  Future<void> reload() => _prefs.reloadCache();
+  Future<String?> readFresh(String key) async {
+    try {
+      // The same store this copy was read from and writes to, asked
+      // directly.
+      return await SharedPreferencesAsync().getString(key);
+    } on TypeError {
+      // Kept as something other than text: nothing of ours.
+      return null;
+    }
+  }
 
   @override
   Set<String> readIds(String key) =>
@@ -205,7 +221,7 @@ class MemoryUiStateStore implements UiStateStore {
   final Map<String, String> _strings = {};
 
   @override
-  Future<void> reload() async {}
+  Future<String?> readFresh(String key) async => readString(key);
 
   @override
   Set<String> readIds(String key) => Set.of(_ids[key] ?? const {});

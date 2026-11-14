@@ -3,12 +3,18 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myemail/data/account_store.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/meeting.dart';
 import 'package:myemail/state/meeting_providers.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
+import 'package:shared_preferences_platform_interface/types.dart';
 
 /// A calendar that cannot be reached for [failing]: its undo says it could
 /// not be done, or with [throws], throws, though the real engines promise
@@ -45,12 +51,33 @@ class _SlowEngine extends SampleMailEngine {
   }
 }
 
-/// A store that says how often it was asked to read again.
+/// A store that says how often it was asked for what the device has now,
+/// as against its own copy of it.
 class _CountingStore extends MemoryUiStateStore {
-  var reloads = 0;
+  var freshReads = 0;
 
   @override
-  Future<void> reload() async => reloads++;
+  Future<String?> readFresh(String key) {
+    freshReads++;
+    return super.readFresh(key);
+  }
+}
+
+/// The device's store, which answers "everything you have" only when let
+/// go: Android takes a moment over it, longest as the app starts.
+base class _SlowToListAll extends InMemorySharedPreferencesAsync {
+  _SlowToListAll() : super.empty();
+
+  Completer<void>? held;
+
+  @override
+  Future<Map<String, Object>> getPreferences(
+    GetPreferencesParameters parameters,
+    SharedPreferencesOptions options,
+  ) async {
+    await held?.future;
+    return super.getPreferences(parameters, options);
+  }
 }
 
 /// Online meetings made ahead of Send: what is kept of one on the device,
@@ -477,16 +504,85 @@ void main() {
       test('a meeting another window kept since this one last looked is not '
           'written away', () async {
         // Each window holds its own copy of what is stored, read at its
-        // start; the ledger reads again before it writes.
-        final reloads = _CountingStore();
-        final mine = PreparedMeetingLedger(reloads, now: () => now);
+        // start; the ledger asks the device before it writes.
+        final counting = _CountingStore();
+        final mine = PreparedMeetingLedger(counting, now: () => now);
 
         await mine.record(teams('evt-1'));
         await mine.forget(teams('evt-1'));
         await mine.dropLeftovers(SampleMailEngine());
 
-        expect(reloads.reloads, 3);
+        expect(counting.freshReads, 3);
       });
+    });
+  });
+
+  group('on the device\'s own store', () {
+    // The account list, the folder lists and every setting are one copy in
+    // memory. The ledger read all of it again to see what another window
+    // had kept, which emptied it until Android answered. The start of the
+    // app does that, and the folder list asking for its accounts meanwhile
+    // was told there were none: "Bad state: Unknown account" under every
+    // account, some starts and not others.
+    late _SlowToListAll device;
+
+    Future<SharedPreferencesWithCache> window() =>
+        SharedPreferencesWithCache.create(
+          cacheOptions: const SharedPreferencesWithCacheOptions(),
+        );
+
+    setUp(() {
+      device = _SlowToListAll();
+      SharedPreferencesAsyncPlatform.instance = device;
+    });
+
+    const account = Account(
+      id: 'acct-ms',
+      displayName: 'Hadco',
+      emailAddress: 'ron@example.com',
+      provider: MailProvider.outlook,
+      authMethod: AuthMethod.oauth,
+      colorValue: 0xFF1565C0,
+    );
+
+    test('the start\'s look for meetings left made leaves the account list '
+        'readable while the device answers', () async {
+      final prefs = await window();
+      final accounts = PrefsAccountStore(prefs);
+      await accounts.write([account]);
+      final mine = PreparedMeetingLedger(PrefsUiStateStore(prefs));
+
+      device.held = Completer<void>();
+      final looking = mine.dropLeftovers(SampleMailEngine());
+      await Future<void>.delayed(Duration.zero);
+
+      expect(accounts.read().map((a) => a.id), [account.id]);
+
+      device.held!.complete();
+      await looking;
+      expect(accounts.read().map((a) => a.id), [account.id]);
+    });
+
+    test('a meeting another window kept since this one last looked is read '
+        'from the device', () async {
+      final first = PreparedMeetingLedger(
+        PrefsUiStateStore(await window()),
+        processId: 1,
+      );
+      // Open before the first one keeps anything: its copy has nothing.
+      final second = PreparedMeetingLedger(
+        PrefsUiStateStore(await window()),
+        processId: 1,
+      );
+
+      await first.record(teams('evt-1'));
+      await second.record(teams('evt-2'));
+
+      final after = PreparedMeetingLedger(PrefsUiStateStore(await window()));
+      expect(
+        [for (final e in after.read()) e.meeting.eventId],
+        unorderedEquals(['evt-1', 'evt-2']),
+      );
     });
   });
 

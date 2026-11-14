@@ -2293,6 +2293,10 @@ class CachedImapEngine
       debugPrint('[myemail] could not read snoozed mail: $e');
       return 0;
     }
+    // No accounts at all is the stored settings not read at this moment,
+    // not every account removed: each snooze due would be let go below as
+    // one whose account is gone, and its message left in Snoozed for good.
+    if (due.isNotEmpty && accountStore.read().isEmpty) return 0;
     // A snooze whose move has not reached the server yet. Not found in
     // Snoozed, it was let go as taken out by hand, and the move, when it
     // went, left the message there for good.

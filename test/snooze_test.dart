@@ -23,6 +23,15 @@ import 'package:myemail/ui/shell/app_shell.dart';
 import 'fakes/fake_imap_transport.dart';
 import 'fakes/fake_webview.dart';
 
+/// An account list that reads as empty when told to, as the stored settings
+/// did for a moment while they were being read again.
+class _BlankAtTimes extends MemoryAccountStore {
+  var blank = false;
+
+  @override
+  List<Account> read() => blank ? const [] : super.read();
+}
+
 /// Snooze (#32): out of the list until a time chosen, waiting in a Snoozed
 /// folder on the server, and back in its folder, unread, at that time.
 void main() {
@@ -150,6 +159,41 @@ void main() {
 
       expect(await engine.wakeSnoozed(now: DateTime(2026, 10, 28)), 1);
       expect((await engine.loadMessages(inbox())).single.subject, 'Filed');
+    });
+
+    test('one due while the account list cannot be read waits for the next '
+        'look', () async {
+      // No accounts at all is the stored settings being read again, not
+      // every account removed. Taken for that, each snooze due was let go
+      // as one "whose account is gone", and its message stayed in Snoozed
+      // for good.
+      final accounts = _BlankAtTimes();
+      final engine = CachedImapEngine(
+        accountStore: accounts,
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => server,
+      );
+      final account = await engine.addAccount(
+        displayName: 'P',
+        emailAddress: 'p@example.com',
+        provider: MailProvider.gmail,
+        secret: 'abcdabcdabcdabcd',
+      );
+      await engine.loadFolders(account.id);
+      server.folder('INBOX').deliver(subject: 'Later');
+      final inbox = '${account.id}:INBOX';
+      final message = (await engine.loadMessages(inbox)).single;
+      final until = DateTime(2026, 10, 27, 8);
+      await engine.snooze([message.id], until);
+
+      accounts.blank = true;
+      expect(await engine.wakeSnoozed(now: DateTime(2026, 10, 28)), 0);
+      accounts.blank = false;
+
+      expect(await engine.nextSnoozeWake(), until, reason: 'still waiting');
+      expect(await engine.wakeSnoozed(now: DateTime(2026, 10, 28)), 1);
+      expect((await engine.loadMessages(inbox)).single.subject, 'Later');
     });
   });
 
