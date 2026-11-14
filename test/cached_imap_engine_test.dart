@@ -657,7 +657,36 @@ void main() {
 
       expect(page, hasLength(250));
       expect(page.last.subject, 'M10');
-      expect(server.calls, ['SELECT INBOX', 'FETCH INBOX 11:60']);
+      // The one search says which cached rows are still there to count.
+      expect(server.calls,
+          ['SELECT INBOX', 'UID SEARCH INBOX 61:260', 'FETCH INBOX 11:60']);
+    });
+
+    test('skips nothing when cached mail has gone from the server since',
+        () async {
+      // Five archived on the phone, before this device's next sync. Counted
+      // as still there, they put the page five messages too far down, and
+      // the five above it were never fetched by anything after.
+      final folder = server.folder('INBOX');
+      for (final m in [...folder.ordered]) {
+        if (const {'M100', 'M101', 'M102', 'M103', 'M104'}
+            .contains(m.subject)) {
+          folder.delete(m.uid);
+        }
+      }
+
+      final page = await engine.olderMessages(inbox, limit: 250);
+
+      expect(page.map((m) => m.subject),
+          containsAll(['M55', 'M56', 'M57', 'M58', 'M59']));
+      expect(server.calls,
+          ['SELECT INBOX', 'UID SEARCH INBOX 61:260', 'FETCH INBOX 6:60']);
+      // And the sync behind the list leaves no gap either.
+      final shown = await engine.loadMessages(inbox, limit: 250);
+      expect(shown.map((m) => m.subject), [
+        for (var i = 259; i >= 5; i--)
+          if (i < 100 || i > 104) 'M$i',
+      ]);
     });
 
     test('costs the server nothing where the device already holds it',

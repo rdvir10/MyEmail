@@ -343,6 +343,36 @@ abstract class ImapTransport {
   Future<void> close();
 }
 
+/// A transport that can answer a sync's three questions of a folder, its
+/// new mail, its flags and what of it is still there, from one look.
+///
+/// Graph pages back by date for each, and for the rows a sync keeps up to
+/// date the three were the same requests a moment apart: three times the
+/// pages, every minute while push is on. One look, its answer passed down,
+/// sees the folder as it is now as much as three did; a look held between
+/// syncs would not. IMAP asks each in a command of its own, one request
+/// already, and has no use for it.
+abstract interface class LooksOnce {
+  /// [ImapTransport.fetchHeadersFromUid] from [newFrom], and
+  /// [ImapTransport.fetchFlags] and [ImapTransport.existingUids] for
+  /// [fromUid] to [toUid], each as asked alone, back to [windowStart].
+  Future<FolderLook> lookOnce(
+    String path, {
+    required int newFrom,
+    required int fromUid,
+    required int toUid,
+    DateTime? windowStart,
+  });
+}
+
+/// What [LooksOnce.lookOnce] saw: the answers the three calls it stands
+/// for would have given.
+typedef FolderLook = ({
+  List<RemoteHeader> fresh,
+  List<RemoteFlags> flags,
+  Set<int>? existing,
+});
+
 /// What [ImapTransport.storeFlag] sets or clears. [forwarded] is the
 /// `$Forwarded` keyword, which is how IMAP marks a forward: a keyword rather
 /// than one of its own backslashed flags.

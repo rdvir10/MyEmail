@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,10 +8,12 @@ import 'package:myemail/data/account_store.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/imap/cached_imap_engine.dart';
+import 'package:myemail/data/imap/imap_transport.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/state/folder_drag.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
@@ -243,6 +247,284 @@ void main() {
       expect(await cache.countMessages(account.id, 'INBOX'), 0);
     });
 
+    test('a delete answers before Trash is synced, and a run of them shares '
+        'one sync', () async {
+      // Undo showed only once a whole sync of Trash had run, about ten
+      // requests on a Microsoft account, and a run of deletes queued one
+      // such sync each.
+      final slow = _HeldSelect();
+      final inbox = slow.folder('INBOX', role: FolderRole.inbox);
+      for (var i = 0; i < 3; i++) {
+        inbox.deliver(subject: 'Bin $i');
+      }
+      slow.folder('[Gmail]/Trash', role: FolderRole.deleted);
+      final engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: cache,
+        transportFactory: (_, _) => slow,
+      );
+      final account = await engine.addAccount(
+        displayName: 'P',
+        emailAddress: 'p@example.com',
+        provider: MailProvider.gmail,
+        secret: 'abcdabcdabcdabcd',
+      );
+      final rows = await engine.loadMessages('${account.id}:INBOX');
+      // Trash has been opened before, so the move is followed by a sync.
+      await engine.loadMessages('${account.id}:[Gmail]/Trash');
+      slow.held = '[Gmail]/Trash';
+      slow.calls.clear();
+
+      var answered = 0;
+      for (final m in rows) {
+        unawaited(engine.deleteMessages([m.id]).then((_) => answered++));
+        await pumpEventQueue();
+      }
+
+      expect(answered, 3, reason: 'none waits for the sync of Trash');
+      slow.release.complete();
+      await pumpEventQueue();
+      expect(
+        slow.calls.where((c) => c == 'SELECT [Gmail]/Trash'),
+        hasLength(2),
+        reason: 'the one under way, and one more after it for the rest',
+      );
+      expect(await cache.countMessages(account.id, '[Gmail]/Trash'), 3);
+    });
+
+    test('closing waits for the sync behind a move, so it does not run on '
+        'into a connection closed', () async {
+      // A background job closes the engine as soon as its delete answers.
+      // The sync behind it carried on after, and over IMAP its next command
+      // connected again, from an isolate about to go.
+      final slow = _HeldSelect();
+      slow.folder('INBOX', role: FolderRole.inbox).deliver(subject: 'Bin');
+      slow.folder('[Gmail]/Trash', role: FolderRole.deleted);
+      final engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: cache,
+        transportFactory: (_, _) => slow,
+      );
+      final account = await engine.addAccount(
+        displayName: 'P',
+        emailAddress: 'p@example.com',
+        provider: MailProvider.gmail,
+        secret: 'abcdabcdabcdabcd',
+      );
+      final rows = await engine.loadMessages('${account.id}:INBOX');
+      await engine.loadMessages('${account.id}:[Gmail]/Trash');
+      slow.held = '[Gmail]/Trash';
+      await engine.deleteMessages([rows.single.id]);
+      slow.calls.clear();
+
+      Timer(const Duration(milliseconds: 20), slow.release.complete);
+      await engine.close();
+
+      expect(slow.calls.last, 'LOGOUT');
+      expect(slow.calls, contains('SELECT [Gmail]/Trash'));
+    });
+
+    group('with the sync of Trash behind a delete still running', () {
+      late _HeldSelect slow;
+      late CachedImapEngine engine;
+      late Account account;
+      late String trash;
+
+      setUp(() async {
+        slow = _HeldSelect();
+        slow.folder('INBOX', role: FolderRole.inbox).deliver(subject: 'Bin');
+        slow.folder('[Gmail]/Trash', role: FolderRole.deleted);
+        engine = CachedImapEngine(
+          accountStore: MemoryAccountStore(),
+          credentialStore: MemoryCredentialStore(),
+          cache: cache,
+          transportFactory: (_, _) => slow,
+        );
+        account = await engine.addAccount(
+          displayName: 'P',
+          emailAddress: 'p@example.com',
+          provider: MailProvider.gmail,
+          secret: 'abcdabcdabcdabcd',
+        );
+        trash = '${account.id}:[Gmail]/Trash';
+        await engine.loadMessages(trash);
+        final rows = await engine.loadMessages('${account.id}:INBOX');
+        slow
+          ..held = '[Gmail]/Trash'
+          ..holdOnce = true;
+        await engine.deleteMessages([rows.single.id]);
+      });
+
+      test('removing the account leaves nothing of it behind', () async {
+        // The sync carried on after the account's cache was deleted, and
+        // wrote rows and a folder state for an account that was gone, which
+        // nothing ever cleans up.
+        Timer(const Duration(milliseconds: 20), slow.release.complete);
+
+        await engine.removeAccount(account.id);
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+
+        expect(await cache.readFolderState(account.id, '[Gmail]/Trash'),
+            isNull);
+        expect(await cache.countMessages(account.id, '[Gmail]/Trash'), 0);
+      });
+
+      test('opening Trash waits for it, rather than syncing beside it',
+          () async {
+        // Two syncs of the folder at once: on a Microsoft account both
+        // looked back across its cache, twice the pages.
+        List<MailMessage>? loaded;
+        unawaited(engine.loadMessages(trash).then((rows) => loaded = rows));
+        await pumpEventQueue();
+
+        expect(loaded, isNull, reason: 'its own sync not begun beside it');
+        slow.release.complete();
+        await pumpEventQueue();
+        expect(loaded?.map((m) => m.subject), ['Bin']);
+      });
+    });
+
+    group('mail taken out of a folder while the sync behind a move into it '
+        'runs', () {
+      // That sync has read the folder by then, and wrote its row for the
+      // message after the message had gone: back in the list until the
+      // folder next synced. Each of these waits for it first.
+      late _HeldSelect slow;
+      late CachedImapEngine engine;
+      late Account account;
+      late MailMessage bin;
+
+      setUp(() async {
+        slow = _HeldSelect();
+        slow.folder('INBOX', role: FolderRole.inbox).deliver(subject: 'Bin');
+        slow.folder('[Gmail]/Trash', role: FolderRole.deleted);
+        slow.folder('Work');
+        slow.folder('Archive');
+        engine = CachedImapEngine(
+          accountStore: MemoryAccountStore(),
+          credentialStore: MemoryCredentialStore(),
+          cache: cache,
+          transportFactory: (_, _) => slow,
+        );
+        account = await engine.addAccount(
+          displayName: 'P',
+          emailAddress: 'p@example.com',
+          provider: MailProvider.gmail,
+          secret: 'abcdabcdabcdabcd',
+        );
+        await engine.loadMessages('${account.id}:[Gmail]/Trash');
+        await engine.loadMessages('${account.id}:Work');
+        bin = (await engine.loadMessages('${account.id}:INBOX')).single;
+      });
+
+      Future<int> rows(String path) => cache.countMessages(account.id, path);
+
+      test('moved on again', () async {
+        // Filed, and filed again from the search results.
+        slow.fetchHeld = 'Work';
+        final moves = await engine.moveMessages([bin.id], '${account.id}:Work');
+        await pumpEventQueue();
+        Timer(const Duration(milliseconds: 20), slow.release.complete);
+
+        await engine.moveMessages(
+            moves.single.movedIds, '${account.id}:Archive');
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+
+        expect(slow.folder('Work').messages, isEmpty);
+        expect(await rows('Work'), 0);
+      });
+
+      test('deleted for good from Trash', () async {
+        slow.fetchHeld = '[Gmail]/Trash';
+        final moves = await engine.deleteMessages([bin.id]);
+        await pumpEventQueue();
+        Timer(const Duration(milliseconds: 20), slow.release.complete);
+
+        await engine.deleteMessages(moves.single.movedIds);
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+
+        expect(slow.folder('[Gmail]/Trash').messages, isEmpty);
+        expect(await rows('[Gmail]/Trash'), 0);
+      });
+
+      test('Trash emptied, with a delete kept for later sent first', () async {
+        // Empty sends what is waiting before it empties, and that delete,
+        // sent, starts a sync of the very folder about to be emptied.
+        slow.offline = true;
+        final moves = await engine.deleteMessages([bin.id]);
+        expect(moves.single.isWaiting, isTrue);
+        slow.offline = false;
+        slow.fetchHeld = '[Gmail]/Trash';
+        Timer(const Duration(milliseconds: 20), slow.release.complete);
+
+        await engine.emptyFolder('${account.id}:[Gmail]/Trash');
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+
+        expect(slow.folder('[Gmail]/Trash').messages, isEmpty);
+        expect(await rows('[Gmail]/Trash'), 0);
+      });
+    });
+
+    group('Undo, with the sync behind a move not waited for', () {
+      late _HeldSelect slow;
+      late CachedImapEngine engine;
+      late Account account;
+      late MailMessage oops;
+
+      setUp(() async {
+        slow = _HeldSelect();
+        slow.folder('INBOX', role: FolderRole.inbox).deliver(subject: 'Oops');
+        slow.folder('[Gmail]/Trash', role: FolderRole.deleted);
+        engine = CachedImapEngine(
+          accountStore: MemoryAccountStore(),
+          credentialStore: MemoryCredentialStore(),
+          cache: cache,
+          transportFactory: (_, _) => slow,
+        );
+        account = await engine.addAccount(
+          displayName: 'P',
+          emailAddress: 'p@example.com',
+          provider: MailProvider.gmail,
+          secret: 'abcdabcdabcdabcd',
+        );
+        await engine.loadMessages('${account.id}:[Gmail]/Trash');
+        oops = (await engine.loadMessages('${account.id}:INBOX')).single;
+      });
+
+      test('has the message back in its folder on the device when it is done',
+          () async {
+        // The lists are asked again once Undo is done, and draw what the
+        // device has first: the Inbox, synced behind the move back, did not
+        // have it yet, and the message showed only after a sync.
+        final moves = await engine.deleteMessages([oops.id]);
+        await pumpEventQueue();
+        slow.held = 'INBOX';
+        Timer(const Duration(milliseconds: 20), slow.release.complete);
+
+        await engine.undoMoves(moves);
+
+        final inbox = await engine.cachedMessages('${account.id}:INBOX');
+        expect(inbox.map((m) => m.subject), ['Oops']);
+      });
+
+      test('leaves no row in Trash for the sync behind the delete to write',
+          () async {
+        // That sync had read Trash before the Undo, and wrote its row for
+        // the message after the Undo had taken it out.
+        slow.fetchHeld = '[Gmail]/Trash';
+        final moves = await engine.deleteMessages([oops.id]);
+        await pumpEventQueue();
+        Timer(const Duration(milliseconds: 20), slow.release.complete);
+
+        await engine.undoMoves(moves);
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+
+        expect(await cache.countMessages(account.id, '[Gmail]/Trash'), 0);
+        expect(slow.folder('[Gmail]/Trash').messages, isEmpty);
+      });
+    });
   });
 
   group('cached engine move into another account', () {
@@ -625,6 +907,51 @@ class _OfflineAfterMove extends FakeImapTransport {
     final landed = await super.moveMessages(fromPath, uids, toPath);
     offline = true;
     return landed;
+  }
+}
+
+/// A server that holds every SELECT of [held] until [release] completes,
+/// or only the first with [holdOnce], and every page of headers from
+/// [fetchHeld], read, until then too.
+class _HeldSelect extends FakeImapTransport {
+  String? held;
+  bool holdOnce = false;
+  String? fetchHeld;
+  final release = Completer<void>();
+
+  @override
+  Future<FolderStatus> selectFolder(String path) async {
+    if (path == held) {
+      if (holdOnce) held = null;
+      await release.future;
+    }
+    return super.selectFolder(path);
+  }
+
+  @override
+  Future<List<RemoteHeader>> fetchHeadersBySequence(
+    String path,
+    int start,
+    int end,
+  ) async {
+    final headers = await super.fetchHeadersBySequence(path, start, end);
+    if (path == fetchHeld) await release.future;
+    return headers;
+  }
+
+  @override
+  Future<List<RemoteHeader>> fetchHeadersFromUid(
+    String path,
+    int fromUid, {
+    DateTime? windowStart,
+  }) async {
+    final headers = await super.fetchHeadersFromUid(
+      path,
+      fromUid,
+      windowStart: windowStart,
+    );
+    if (path == fetchHeld) await release.future;
+    return headers;
   }
 }
 

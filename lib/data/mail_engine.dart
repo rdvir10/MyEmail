@@ -1047,8 +1047,8 @@ Uint8List rawMessageBytes(String raw) {
 abstract interface class PagesOlderMail {
   /// The folder's messages down to [limit], newest first: what the device
   /// holds, and older ones fetched from the server where it holds fewer.
-  /// What it already holds is not checked against the server; the list's
-  /// own refresh does that.
+  /// What it already holds is not brought up to date; the list's own
+  /// refresh does that.
   Future<List<MailMessage>> olderMessages(String folderId, {int limit = 50});
 }
 

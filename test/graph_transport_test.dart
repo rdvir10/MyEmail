@@ -2221,6 +2221,105 @@ void main() {
       expect(await subjects('Inbox'), contains('M249'));
     });
 
+    test('a sync lists the newest pages once, not once for each question',
+        () async {
+      // New mail, the flags and what has gone each paged back over the
+      // same newest rows, the same requests a moment apart: nine pages for
+      // the newest two hundred, every minute while push is on.
+      server.folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox');
+      for (var i = 0; i < 300; i++) {
+        server.message('f-inbox', id: 'm$i', subject: 'M$i', minutesAgo: i);
+      }
+      await sync.sync('Inbox');
+      server.messages['m3']!['isRead'] = true;
+      server.remove('m5');
+      server.message('f-inbox', id: 'new', subject: 'New', minutesAgo: 0);
+      final before = server.listings;
+
+      final result = await sync.sync('Inbox');
+
+      expect(server.listings - before, 3);
+      expect((result.added, result.updated, result.removed), (1, 199, 1));
+      final rows = await cached('Inbox');
+      expect(rows.firstWhere((m) => m.subject == 'M3').isRead, isTrue);
+      expect(await subjects('Inbox'), contains('New'));
+      expect(await subjects('Inbox'), isNot(contains('M5')));
+    });
+
+    group('the sync behind a delete, which looks back', () {
+      // A delete numbers the message where it lands, so the next sync of
+      // Deleted Items looks back across its whole cache for it: the sync
+      // behind every delete on Hadco. Its flags and deletions were two more
+      // scans of the newest pages after that one.
+      Future<int> listingsOfTheSyncBehind(int cachedThere) async {
+        server
+          ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+          ..folder(
+              id: 'f-del', name: 'Deleted Items', wellKnown: 'deleteditems')
+          ..message('f-inbox', id: 'bin', subject: 'Bin', minutesAgo: 1);
+        for (var i = 0; i < 300; i++) {
+          server.message('f-del',
+              id: 'd$i', subject: 'D$i', minutesAgo: 60 + i);
+        }
+        await sync.sync('Inbox');
+        await sync.sync('Deleted Items');
+        await sync.ensureCached('Deleted Items', cachedThere);
+        server.messages['d3']!['isRead'] = true;
+        server.remove('d5');
+        final row = (await cached('Inbox')).single;
+        await transport.moveMessages('Inbox', [row.uid], 'Deleted Items');
+        await cache.deleteUids('acct-1', 'Inbox', {row.uid});
+        final before = server.listings;
+
+        final result = await sync.sync('Deleted Items');
+
+        expect((result.added, result.removed), (1, 1));
+        expect(await subjects('Deleted Items'),
+            allOf(contains('Bin'), isNot(contains('D5'))));
+        final rows = await cached('Deleted Items');
+        expect(rows.firstWhere((m) => m.subject == 'D3').isRead, isTrue);
+        return server.listings - before;
+      }
+
+      test('reads the newest pages once where nothing older is cached',
+          () async {
+        // The two hundred kept up to date are all there is: the look back
+        // and the look at them are the same three pages.
+        expect(await listingsOfTheSyncBehind(200), 3);
+      });
+
+      test('and the pages back to the oldest row once where more is',
+          () async {
+        // Three hundred cached: four pages back to the oldest, and the
+        // flags and deletions from those same pages.
+        expect(await listingsOfTheSyncBehind(300), 4);
+      });
+
+      test('a look back that runs out of pages still finds what has gone',
+          () async {
+        // Past forty pages the look back cannot say what has gone, and the
+        // newest rows are looked at again for it.
+        server.folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox');
+        for (var i = 0; i < 3700; i++) {
+          server.message('f-inbox', id: 'm$i', subject: 'M$i', minutesAgo: i);
+        }
+        await sync.sync('Inbox');
+        await sync.ensureCached('Inbox', 3700);
+        await sync.sync('Inbox', reach: 3700);
+        // A number handed out with no row, as a move here hands one out.
+        server.message('f-inbox', id: 'in', subject: 'In', minutesAgo: 9000);
+        await ids.uidsFor('acct-1', 'Inbox', ['in']);
+        server.remove('m7');
+        final before = server.listings;
+
+        final result = await sync.sync('Inbox');
+
+        expect(result.removed, 1);
+        expect(await subjects('Inbox'), isNot(contains('M7')));
+        expect(server.listings - before, 43);
+      });
+    });
+
     test('opening an HTML message keeps the second line under it', () async {
       // Graph's body has no text form beside the HTML, and the empty text
       // went into the cache as the preview: every work message opened lost
@@ -2393,10 +2492,22 @@ void main() {
 
       test('and is given no number by the later passes of the sync',
           () async {
+        // A sync asks once for new mail, flags and what has gone. The pass
+        // after it is the one that reads the previews of rows cached without
+        // them, once for each folder.
+        final state = (await cache.readFolderState('acct-1', 'Inbox'))!;
+        await cache.writeFolderState(
+          'acct-1',
+          'Inbox',
+          FolderSyncState(
+            uidValidity: state.uidValidity,
+            lastSync: state.lastSync,
+            uidNext: state.uidNext,
+          ),
+        );
         final highest = await ids.highestUid('acct-1', 'Inbox');
 
-        // The pass that reads the flags, then the one that looks for what
-        // has gone.
+        // The pass that reads the previews again.
         await syncWithDeleteDuring(1, 'M0');
 
         expect(await ids.highestUid('acct-1', 'Inbox'), highest);
@@ -2717,6 +2828,67 @@ void main() {
       final cached = await engine.cachedMessages(inbox, limit: 300);
       expect(cached, hasLength(300));
       expect(cached.where((m) => !m.isRead), isEmpty);
+    });
+  });
+
+  group('Undo of a delete on a Microsoft account', () {
+    test('does not wait for the sync of Deleted Items behind the delete',
+        () async {
+      // The delete numbers the message where it lands, so that sync looks
+      // back to the oldest row Deleted Items ever cached: up to forty pages,
+      // and Undo sat behind the rest of it with nothing on screen. It need
+      // not: Graph marks the number gone as the message moves back, and that
+      // sync's rows for it are left out.
+      server
+        ..folder(id: 'f-inbox', name: 'Inbox', wellKnown: 'inbox')
+        ..folder(id: 'f-del', name: 'Deleted Items', wellKnown: 'deleteditems')
+        ..message('f-inbox', id: 'm1', subject: 'Oops', minutesAgo: 5);
+      var holding = false;
+      final release = Completer<void>();
+      final held = GraphTransport(
+        accountId: 'acct-1',
+        idMap: ids,
+        api: GraphMailApi(
+          accessToken: ({bool force = false}) async => 'token',
+          httpClient: http_testing.MockClient((request) async {
+            final response = await server.handle(request);
+            if (holding &&
+                request.method == 'GET' &&
+                request.url.path.endsWith('/f-del/messages')) {
+              await release.future;
+            }
+            return response;
+          }),
+        ),
+      );
+      final engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => held,
+      );
+      final account = await engine.addAccount(
+        displayName: 'Hadco',
+        emailAddress: 'ron@contoso.example',
+        provider: MailProvider.outlook,
+        secret: 'unused',
+      );
+      await engine.loadFolders(account.id);
+      final binId = '${account.id}:Deleted Items';
+      await engine.loadMessages(binId);
+      final oops = (await engine.loadMessages('${account.id}:Inbox')).single;
+      holding = true;
+      final moves = await engine.deleteMessages([oops.id]);
+
+      await engine.undoMoves(moves).timeout(const Duration(seconds: 2));
+
+      expect(server.messages.values.single['_folder'], 'f-inbox');
+      final inbox = await engine.cachedMessages('${account.id}:Inbox');
+      expect(inbox.map((m) => m.subject), ['Oops']);
+      release.complete();
+      await engine.close();
+      expect(await engine.cachedMessages(binId), isEmpty,
+          reason: 'the sync held, let go, wrote no row back');
     });
   });
 

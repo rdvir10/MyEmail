@@ -186,6 +186,31 @@ void main() {
         reason: 'what the device has, shown before the server answers');
   });
 
+  test('a Gmail account with nothing starred answers an empty list',
+      () async {
+    final server = FakeImapTransport()
+      ..folder('INBOX', role: FolderRole.inbox)
+      ..folder('[Gmail]/All Mail', role: FolderRole.archive);
+    final engine = CachedImapEngine(
+      accountStore: MemoryAccountStore(),
+      credentialStore: MemoryCredentialStore(),
+      cache: MemoryCacheStore(),
+      transportFactory: (_, _) => server,
+    );
+    final account = await engine.addAccount(
+      displayName: 'P',
+      emailAddress: 'p@example.com',
+      provider: MailProvider.gmail,
+      secret: 'abcdabcdabcdabcd',
+    );
+    await engine.loadFolders(account.id);
+    server.folder('[Gmail]/All Mail').deliver(subject: 'Plain');
+
+    // Not an error: on one the list fell back to the cached flags, where the
+    // Inbox's copy of a message unflagged in Flagged was still flagged.
+    expect(await engine.flaggedMessages(account.id), isEmpty);
+  });
+
   group('on screen', () {
     late FakeMailNotifier notifier;
 

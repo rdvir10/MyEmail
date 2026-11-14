@@ -435,6 +435,26 @@ void main() {
       expect(notifier.posted, hasLength(1));
     });
 
+    test('snoozed mail is announced though its Inbox is slow to sync',
+        () async {
+      // The move back is followed by a sync of the Inbox, which a move no
+      // longer waits for. The wake does: the message is read from there to
+      // be announced, and was not there yet.
+      final slow = _SlowSelect()..folder('INBOX', role: FolderRole.inbox);
+      server = slow;
+      final account = await addAccount();
+      await sync().run();
+      deliver(subject: 'Later today');
+      final message =
+          (await engine.loadMessages('${account.id}:INBOX')).single;
+      await engine.snooze([message.id], DateTime(2000));
+      slow.slowly = 'INBOX';
+
+      final woken = await engine.wakeSnoozedMail();
+
+      expect(await sync().announceWoken(woken), 1);
+    });
+
     test('nor once it has been swiped away', () async {
       // Back with a number above the Inbox's mark, and for Later today or
       // Tomorrow dated within two days: the scan took it for new mail, and
@@ -633,5 +653,18 @@ class _BrokenTransport extends FakeImapTransport {
   Future<List<RemoteFolder>> listFolders() async {
     if (failing) throw const AuthenticationFailed('app password revoked');
     return super.listFolders();
+  }
+}
+
+/// Answers a SELECT of [slowly] a moment late, as a real server does.
+class _SlowSelect extends FakeImapTransport {
+  String? slowly;
+
+  @override
+  Future<FolderStatus> selectFolder(String path) async {
+    if (path == slowly) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    return super.selectFolder(path);
   }
 }

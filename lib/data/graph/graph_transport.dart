@@ -42,7 +42,7 @@ import 'graph_mail_api.dart';
 /// Graph has no IDLE. [awaitChanges] therefore waits out its timeout and
 /// reports nothing happened, which the caller already treats as "time to sync
 /// again" — so a Microsoft account polls where a Gmail one is pushed.
-class GraphTransport implements ImapTransport {
+class GraphTransport implements ImapTransport, LooksOnce {
   GraphTransport({
     required this.accountId,
     required this.api,
@@ -259,27 +259,60 @@ class GraphTransport implements ImapTransport {
     int fromUid, {
     DateTime? windowStart,
   }) async {
-    // Everything numbered at or above fromUid: mail that arrived since the
-    // last sync, and mail moved in, which keeps its old date but gets a new
-    // number. The scan reaches back to windowStart to find the second kind,
-    // which can sit anywhere in date order.
-    final fresh = await _scanBack(
+    final scan = await _scanBack(
       path,
       downToUid: fromUid,
       downToDate: windowStart,
     );
-    return _headers(
+    return _freshIn(path, scan, fromUid, windowStart);
+  }
+
+  /// [fetchHeadersFromUid]'s answer, from [scan].
+  ///
+  /// Everything numbered at or above fromUid: mail that arrived since the
+  /// last sync, and mail moved in, which keeps its old date but gets a new
+  /// number. The scan reaches back to windowStart to find the second kind,
+  /// which can sit anywhere in date order.
+  Future<List<RemoteHeader>> _freshIn(
+    String path,
+    _Scan scan,
+    int fromUid,
+    DateTime? windowStart,
+  ) =>
+      _headers(
+        path,
+        [
+          for (final m in scan.reversed)
+            if ((scan.uids[m.id] ?? 0) >= fromUid &&
+                // The last page of the scan reaches past the window, and
+                // mail down there, numbered on the way past, is older mail
+                // for paging to bring in, not new mail. Returned here it
+                // would stretch the window by a page on every sync.
+                (windowStart == null || !m.received.isBefore(windowStart)))
+              m,
+        ],
+      );
+
+  /// One scan for the three a sync asks one after another: see
+  /// [LooksOnce]. Back as far as the deeper of the two numbers, where no
+  /// date is given to stop at.
+  @override
+  Future<FolderLook> lookOnce(
+    String path, {
+    required int newFrom,
+    required int fromUid,
+    required int toUid,
+    DateTime? windowStart,
+  }) async {
+    final scan = await _scanBack(
       path,
-      [
-        for (final m in fresh.reversed)
-          if ((fresh.uids[m.id] ?? 0) >= fromUid &&
-              // The last page of the scan reaches past the window, and mail
-              // down there, numbered on the way past, is older mail for
-              // paging to bring in, not new mail. Returned here it would
-              // stretch the window by a page on every sync.
-              (windowStart == null || !m.received.isBefore(windowStart)))
-            m,
-      ],
+      downToUid: newFrom < fromUid ? newFrom : fromUid,
+      downToDate: windowStart,
+    );
+    return (
+      fresh: await _freshIn(path, scan, newFrom, windowStart),
+      flags: _flagsIn(path, scan, fromUid, toUid),
+      existing: _stillIn(scan, fromUid, toUid),
     );
   }
 
@@ -298,6 +331,11 @@ class GraphTransport implements ImapTransport {
       downToUid: fromUid,
       downToDate: windowStart,
     );
+    return _flagsIn(path, scan, fromUid, toUid);
+  }
+
+  /// [fetchFlags]'s answer, from [scan].
+  List<RemoteFlags> _flagsIn(String path, _Scan scan, int fromUid, int toUid) {
     // The rows with a last verb or an icon, as Graph sent them, for the
     // log: an arrow that fails to appear is either not on the server or not
     // read, and this tells the two apart.
@@ -374,6 +412,11 @@ class GraphTransport implements ImapTransport {
       downToUid: fromUid,
       downToDate: windowStart,
     );
+    return _stillIn(scan, fromUid, toUid);
+  }
+
+  /// [existingUids]'s answer, from [scan].
+  static Set<int>? _stillIn(_Scan scan, int fromUid, int toUid) {
     // Out of pages before the bottom of the window: the messages below the
     // last page were never seen, and nothing here tells them apart from
     // mail that has gone. Listing only what was seen had the sync drop
@@ -1394,13 +1437,14 @@ class GraphTransport implements ImapTransport {
   /// was never found, and paged-in mail was taken for deleted on the next
   /// sync.
   ///
-  /// One sync does this three or four times over — new mail, flags,
-  /// deletions, previews — each a page of a hundred messages per request to
-  /// Microsoft. Holding one answer and sharing it between them was tried and
-  /// taken out again: a held scan cannot see mail that arrived since, and a
-  /// transport that reports a folder as it was a moment ago is a bug waiting
-  /// for the moment it matters. Sharing has to come from asking once and
-  /// passing the answer down, not from a cache with a timer on it.
+  /// A sync asks three things of it, new mail, flags and deletions, each a
+  /// page of a hundred messages per request to Microsoft. Holding one answer
+  /// and sharing it between them was tried and taken out again: a held scan
+  /// cannot see mail that arrived since, and a transport that reports a
+  /// folder as it was a moment ago is a bug waiting for the moment it
+  /// matters. Sharing comes from asking once and passing the answer down,
+  /// not from a cache with a timer on it: [lookOnce] answers all three from
+  /// one scan, when they reach back to the same date.
   ///
   /// Pages overlap by [_overlap], and each has to hold one of the last
   /// messages of the page before. Pages are asked for by offset, one request

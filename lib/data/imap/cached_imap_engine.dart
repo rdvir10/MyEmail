@@ -179,6 +179,11 @@ class CachedImapEngine
   final Map<String, Future<ImapTransport>> _opening = {};
   final Map<String, FolderSync> _syncs = {};
 
+  /// The folders being synced behind a move into them, by folder id, and
+  /// those a move has landed in again since: see [_syncBehind].
+  final Map<String, Future<void>> _landing = {};
+  final Set<String> _landedAgain = {};
+
   late final GraphIdMap _graphIds = graphIdMap ?? MemoryGraphIdMap();
 
   /// Which wire to use for an account.
@@ -580,6 +585,7 @@ class CachedImapEngine
     // transport closes over the secret it was built with, so keeping it would
     // mean the account carried on failing with the old password until the app
     // was restarted, which looks exactly like the fix not having worked.
+    await _landedFor(accountId);
     await _transports.remove(accountId)?.close();
     _syncs.remove(accountId);
   }
@@ -600,6 +606,7 @@ class CachedImapEngine
     final current = {for (final a in accountStore.read()) a.id};
     for (final id in {..._transports.keys, ..._syncs.keys}) {
       if (current.contains(id)) continue;
+      await _landedFor(id);
       await _transports.remove(id)?.close();
       _syncs.remove(id);
       oauthTokens.forget(id);
@@ -616,6 +623,7 @@ class CachedImapEngine
     ]) {
       await removeAccount(shared.id);
     }
+    await _landedFor(accountId);
     await _transports.remove(accountId)?.close();
     _syncs.remove(accountId);
     oauthTokens.forget(accountId);
@@ -708,6 +716,10 @@ class CachedImapEngine
   /// pass does — it runs in an isolate Android tears down afterwards, and a
   /// socket left open there is a wakelock nobody asked for.
   Future<void> close() async {
+    // The syncs behind moves first: a background job closes the engine as
+    // soon as its delete answers, and one carrying on after would open the
+    // connection again from an isolate about to go. See [_syncBehind].
+    await Future.wait([..._landing.values]);
     final open = _transports.values.toList();
     _transports.clear();
     _syncs.clear();
@@ -843,6 +855,8 @@ class CachedImapEngine
   Future<void> deleteFolder(String folderId) async {
     final (accountId, path) = splitFolderId(folderId);
     await _sendWhatLeaves(accountId, path, andUnder: true);
+    // As [emptyFolder] does, for each folder that goes.
+    await _landedUnder(folderId);
     final t = await _transport(accountId);
     if (!t.deleteTakesSubfolders) {
       // IMAP's DELETE leaves every folder under the one it names, while the
@@ -907,6 +921,10 @@ class CachedImapEngine
   Future<void> emptyFolder(String folderId) async {
     final (accountId, path) = splitFolderId(folderId);
     await _sendWhatLeaves(accountId, path);
+    // A delete just sent there starts a sync of this very folder, which
+    // would write its rows back after the cache is cleared. See
+    // [_beforeMovingOut].
+    await _landed(folderId);
     final t = await _transport(accountId);
     await t.storeFlagOnAll(path, flag: MessageFlag.deleted, set: true);
     await t.expunge(path);
@@ -971,13 +989,17 @@ class CachedImapEngine
     int limit = 50,
   }) async {
     final (accountId, path) = splitFolderId(folderId);
+    // A sync behind a move into this folder first, rather than a second
+    // sync beside it: on Graph both looked back across the whole cache.
+    // After it, this one finds the landed mail cached and need not.
+    await _landed(folderId);
     try {
       final t = await _transport(accountId);
       final sync = _sync(accountId, t);
       // As deep as the list asks for, so that what it shows is up to date.
       final result = await sync.sync(path, reach: offset + limit);
       await _junkBlocked(accountId, t, path, result.arrived);
-      await sync.ensureCached(path, offset + limit);
+      await sync.ensureCached(path, offset + limit, synced: true);
     } on ConnectionFailed catch (e) {
       // Offline: whatever is cached is what there is.
       debugPrint('[myemail] sync $path failed, showing what is cached: $e');
@@ -1894,11 +1916,7 @@ class CachedImapEngine
       if (done.isEmpty) throw stopped!;
       throw PartialMove(done: done, moved: went, cause: stopped!);
     }
-    try {
-      await _syncIfCached(toAccount, to, toPath);
-    } catch (_) {
-      // The destination catches up on its next sync.
-    }
+    _syncBehind(toAccount, to, toPath);
 
     final originals = [
       for (final uid in copies.keys) MailMessage.idFor(fromFolderId, uid),
@@ -1949,6 +1967,7 @@ class CachedImapEngine
     String toPath,
   ) async {
     final t = await _transport(accountId);
+    await _beforeMovingOut(accountId, t, fromPath);
     // Out of Gmail's All Mail only ever by a copy: see _isAllMail.
     final copyOnly = await _isAllMail(accountId, t, fromPath);
     List<int>? landed;
@@ -1972,16 +1991,13 @@ class CachedImapEngine
       _handled(_uidsIn('$accountId:$fromPath', moved));
     }
     // The destination picks the new messages up on its next sync; it may
-    // not be cached at all yet, and guessing UIDs would be worse.
+    // not be cached at all yet, and guessing UIDs would be worse. That sync
+    // is begun now, behind the move, and not waited for: see [_syncBehind].
     //
     // Best-effort. The move has happened by now, and on a weak connection
     // this is what failed: the app then said the message was where it was
     // and put its row back, although it was already in Trash.
-    try {
-      await _syncIfCached(accountId, t, toPath);
-    } catch (_) {
-      // The destination catches up on its next sync.
-    }
+    _syncBehind(accountId, t, toPath);
     return (
       landed: landed,
       moved: (uids: moved, headers: headers),
@@ -2045,6 +2061,9 @@ class CachedImapEngine
     }
 
     if (keep && await _isWaiting(accountId)) return keepThem(uids);
+    // On every server: a delete for good marks no number gone, on Graph
+    // either. See [_beforeMovingOut].
+    await _landed(folderId);
     var stored = uids;
     Object? stopped;
     try {
@@ -2088,6 +2107,9 @@ class CachedImapEngine
         await _takeBack(move);
         continue;
       }
+      // The move back waits for the sync behind the move, over IMAP only:
+      // see [_beforeMovingOut]. On Graph that wait was the rest of a scan
+      // back through Deleted Items, with nothing on screen.
       var ids = move.movedIds;
       if (ids.isEmpty) ids = await _locate(move.toFolderId, move.messageIds);
       if (ids.isEmpty) {
@@ -2100,6 +2122,9 @@ class CachedImapEngine
         // Not kept for later where the server is out of reach: the message
         // would stay out of sight until it went, and Undo is for now.
         await _moveMessages(ids, move.fromFolderId, keep: false);
+        // And the one behind the move back: the lists, asked again once
+        // this is done, draw what the device has first.
+        await _landed(move.fromFolderId);
         continue;
       }
       // From another account: the originals come back out of Trash, and
@@ -2123,6 +2148,9 @@ class CachedImapEngine
     for (final group in _groupByFolder(messageIds).entries) {
       final (accountId, path) = splitFolderId(group.key);
       final t = await _transport(accountId);
+      // The sync behind the copy's arrival done first: see
+      // [_beforeMovingOut].
+      await _landed(group.key);
       await t.storeFlag(path,
           uids: group.value, flag: MessageFlag.deleted, set: true);
       await t.expunge(path);
@@ -2149,6 +2177,10 @@ class CachedImapEngine
     if (messageIds.isEmpty) return const [];
     final (accountId, path) = splitFolderId(folderId);
     final t = await _transport(accountId);
+    // One behind a move into it first, so the two do not run side by side
+    // and the mail found here is not then written back by that one after
+    // it is moved out. See [_syncBehind].
+    await _landed(folderId);
     await _sync(accountId, t).sync(path);
     final wanted = messageIds.toSet();
     final uids = [
@@ -2396,6 +2428,9 @@ class CachedImapEngine
         // Tried again next time where the server is out of reach, rather
         // than kept: the snooze stays written down until it is back.
         final moves = await _moveMessages(ids, target, keep: false);
+        // Its row where it landed, before it is marked unread there: the
+        // background announces it from that row. See [_syncBehind].
+        await _landed(target);
         var landed = [for (final m in moves) ...m.movedIds];
         if (landed.isEmpty) landed = await _locate(target, [e.messageId]);
         if (landed.isNotEmpty) {
@@ -2617,7 +2652,9 @@ class CachedImapEngine
     ImapTransport t,
     List<SearchHit> hits,
   ) async {
-    if (hits.isEmpty) return const [];
+    // Growable, as the answer with hits is: [flaggedMessages] adds to and
+    // takes from it, and a const list throws on either.
+    if (hits.isEmpty) return <MailMessage>[];
     final folderId = MailFolder.idFor(accountId, path);
 
     MailMessage row(
@@ -2871,6 +2908,85 @@ class CachedImapEngine
   ) async {
     if (await cache.readFolderState(accountId, path) == null) return;
     await _sync(accountId, t).sync(path);
+  }
+
+  /// [_syncIfCached] for the folder a move went to, begun now and not
+  /// waited for.
+  ///
+  /// A move's answer has no need of it. Undo goes by the ids the server
+  /// gave the mail where it landed, or finds it there by its Message-ID
+  /// after a sync of its own, and a list of that folder, if one is open, is
+  /// asked again anyway. Waited for, it held every delete's Undo back
+  /// behind a whole sync of Trash, some ten requests on a Microsoft account.
+  ///
+  /// One at a time for each folder: a move that lands while one is under
+  /// way has one more run after it, for all that landed meanwhile, rather
+  /// than one each, which a run of deletes sent in a burst that Microsoft
+  /// throttles. What does want it done waits with [_landed]: snoozed mail
+  /// woken, which the background announces from its row; Undo, after it
+  /// puts mail back; whatever takes mail out of that folder (see
+  /// [_beforeMovingOut]); a sync of the folder by [_locate] or
+  /// [loadMessages]; and [close] and whatever lets go of an account
+  /// ([_landedFor]).
+  void _syncBehind(String accountId, ImapTransport t, String path) {
+    final folderId = MailFolder.idFor(accountId, path);
+    if (_landing.containsKey(folderId)) {
+      _landedAgain.add(folderId);
+      return;
+    }
+    Future<void> run() async {
+      do {
+        _landedAgain.remove(folderId);
+        try {
+          await _syncIfCached(accountId, t, path);
+        } catch (e) {
+          // The destination catches up on its next sync.
+          debugPrint('[myemail] $path not synced after a move: $e');
+        }
+      } while (_landedAgain.contains(folderId));
+      _landing.remove(folderId);
+    }
+
+    _landing[folderId] = run();
+  }
+
+  /// Done when [folderId] has been synced since every move into it so far:
+  /// see [_syncBehind]. Never throws.
+  Future<void> _landed(String folderId) =>
+      _landing[folderId] ?? Future<void>.value();
+
+  /// [_landed] for every folder of [accountId], before its connection and
+  /// sync are let go: one carrying on after would write rows into a cache
+  /// already deleted, or connect again with the sign-in being replaced.
+  Future<void> _landedFor(String accountId) => Future.wait([
+        for (final MapEntry(:key, :value) in _landing.entries)
+          if (splitFolderId(key).$1 == accountId) value,
+      ]);
+
+  /// [_landed] for [folderId] and every folder under it.
+  Future<void> _landedUnder(String folderId) => Future.wait([
+        for (final MapEntry(:key, :value) in _landing.entries)
+          if (key == folderId || key.startsWith('$folderId/')) value,
+      ]);
+
+  /// Before mail is moved out of [path]: the sync behind a move into it
+  /// done first, where it could write back a row for mail no longer there.
+  ///
+  /// That sync read the folder before the mail left, and wrote its row
+  /// after the move had taken the cached one out: the message was back in
+  /// the list, Trash say, until the folder next synced. Over IMAP only.
+  /// Graph marks a number gone as its message moves away, and a sync's
+  /// rows for it are left out (see GraphIdMap.forgetMoved), so a move there
+  /// need not wait; a delete for good or an emptied folder marks nothing
+  /// gone, and waits for [_landed] on every server. It costs nothing unless
+  /// a sync behind a move into the folder is running.
+  Future<void> _beforeMovingOut(
+    String accountId,
+    ImapTransport t,
+    String path,
+  ) async {
+    if (t is GraphTransport) return;
+    await _landed(MailFolder.idFor(accountId, path));
   }
 
   /// [flag] set or cleared on [messageIds], one call to the server per
@@ -3559,6 +3675,8 @@ class CachedImapEngine
       );
     }
     await _moveMessages(ids, move.fromFolderId, keep: false);
+    // As [undoMoves] does: the lists draw what the device has first.
+    await _landed(move.fromFolderId);
   }
 
   @override
