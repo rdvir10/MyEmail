@@ -50,9 +50,22 @@ class ComposeScreen extends ConsumerStatefulWidget {
     this.disposable = true,
     this.inWindow = false,
     this.offerSmallerPictures = false,
+    this.sendFailure,
+    this.backgroundCopy,
   });
 
   final Draft draft;
+
+  /// Why the held send this was opened again from did not go: shown as a
+  /// send that fails with the window open shows it.
+  final Object? sendFailure;
+
+  /// Where the window this was opened again from, after Undo or a held
+  /// send that failed, put its copy in Drafts against the app being ended,
+  /// once any save of it still going up has landed. This window's own from
+  /// the start, so it is saved over, sent or thrown away with the message,
+  /// not left beside it.
+  final Future<String?>? backgroundCopy;
 
   /// The draft's files have just come in, shared, dropped or forwarded:
   /// big pictures among them are offered smaller as the window opens. Not
@@ -204,6 +217,22 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     final drops = ref.read(dropTargetProvider);
     _drops = drops;
     drops.claim(_takeIncoming);
+    // It may still be going up, so it stands where a background save under
+    // way would: whatever reads where the copy is waits for it first.
+    final copy = widget.backgroundCopy;
+    if (copy != null) {
+      _backgroundSaving = copy
+          .then((savedAs) => _backgroundCopy = savedAs)
+          .whenComplete(() => _backgroundSaving = null);
+    }
+    final failure = widget.sendFailure;
+    if (failure != null) {
+      _problem = ProblemReport(
+        doing: 'Sending a message',
+        error: failure,
+        account: _accountOrNull(),
+      );
+    }
     if (widget.offerSmallerPictures && _attachments.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _offerSmaller(List.of(_attachments));
@@ -492,6 +521,15 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
       _backgroundCopyOf = null;
       await engine.discardDraft(copy).catchError((_) {});
     }());
+  }
+
+  /// Where the background copy is once any save of it still under way has
+  /// landed. Asked as the window closes on a held send, and read after:
+  /// the copy goes once the message has gone, or a window opened again
+  /// takes it on.
+  Future<String?> _copyLanded() async {
+    await _backgroundSaving;
+    return _backgroundCopy;
   }
 
   /// Files dropped on the app or pasted from the clipboard.
@@ -893,7 +931,15 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
 
   /// Undo Send: the window closes at once and the message waits [hold],
   /// with Undo on the bar, before it goes (see [HeldSends]). Undo opens it
-  /// again as it was; a send that fails says so, with the way back to it.
+  /// again as it was. A send that fails opens it again by itself, with the
+  /// problem, as a send that fails with the window open leaves it. Said
+  /// only on a bar with Open, the message went when the bar did.
+  ///
+  /// The background copy stays in Drafts until the message has gone, as it
+  /// does when Send does not hold it: should the send fail and the app then
+  /// be ended, it is what is left. Taken out as the window closed, a failed
+  /// send left the message nowhere at all. Opened again, the window takes
+  /// it on.
   Future<void> _sendHeld(Duration hold) async {
     final Draft draft;
     try {
@@ -910,56 +956,97 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     }
     if (!mounted) return;
     final navigator = Navigator.of(context);
+    final root = Navigator.of(context, rootNavigator: true);
     final messenger = ScaffoldMessenger.of(context);
-    void reopen() => navigator.push(
+    final engine = ref.read(mailEngineProvider);
+    // The window has ended: no background copy is started from here on,
+    // and the one there is waits on the send.
+    _ended = true;
+    final copy = _copyLanded();
+    void reopen(NavigatorState into, {Object? failure}) => into.push(
           MaterialPageRoute<bool>(
             // What was typed exists nowhere else now: closing it asks.
-            builder: (_) => ComposeScreen(draft: draft, disposable: false),
+            builder: (_) => ComposeScreen(
+              draft: draft,
+              disposable: false,
+              sendFailure: failure,
+              backgroundCopy: copy,
+            ),
           ),
         );
-    final held = ref.read(heldSendsProvider.notifier).hold(
+    var sendingShown = false;
+    late final HeldSend held;
+    held = ref.read(heldSendsProvider.notifier).hold(
       draft,
       hold,
-      onSent: () => messenger
-        ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(
-          duration: kBottomMessage,
-          content: Text('Message sent'),
-        )),
-      onFailed: (e) => messenger
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
-          duration: const Duration(seconds: 10),
-          persist: false,
-          content: Text(
-            'The message was not sent. '
-            '${e is ReadableError ? e.message : '$e'}',
-          ),
-          action: SnackBarAction(label: 'Open', onPressed: reopen),
-        )),
+      onSent: () {
+        // Gone, so the copy against the app being ended has done its job,
+        // as it has when Send does not hold the message.
+        unawaited(copy.then((savedAs) async {
+          if (savedAs != null) {
+            await engine.discardDraft(savedAs).catchError((_) {});
+          }
+        }));
+        if (!messenger.mounted) return;
+        messenger
+          ..hideCurrentSnackBar()
+          ..showSnackBar(const SnackBar(
+            duration: kBottomMessage,
+            content: Text('Message sent'),
+          ));
+      },
+      onFailed: (e) {
+        // Its Undo would say it was too late, of a message opening again.
+        if (sendingShown && messenger.mounted) messenger.hideCurrentSnackBar();
+        _onceInFront(() {
+          if (navigator.mounted) {
+            reopen(navigator, failure: e);
+            held.opened();
+            return;
+          }
+          // The navigator it was written in has gone. It stays in
+          // HeldSends, and a bar that does not time out offers it, to
+          // open over the app.
+          if (!messenger.mounted) return;
+          messenger
+            ..hideCurrentSnackBar()
+            ..showSnackBar(SnackBar(
+              persist: true,
+              content: Text(_notSent(e)),
+              action: SnackBarAction(
+                label: 'Open',
+                onPressed: () {
+                  if (!root.mounted) return;
+                  reopen(root, failure: e);
+                  held.opened();
+                },
+              ),
+            ));
+        });
+      },
     );
-    _dropBackgroundCopy();
     navigator.pop(true);
-    messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-        duration: hold,
-        persist: false,
-        content: const Text('Sending…'),
-        action: SnackBarAction(
-          label: 'Undo',
-          onPressed: () {
-            if (held.undo()) {
-              reopen();
-            } else {
-              messenger.showSnackBar(const SnackBar(
-                duration: kBottomMessage,
-                content: Text('Too late: it has gone.'),
-              ));
-            }
-          },
-        ),
-      ));
+    messenger.hideCurrentSnackBar();
+    final sending = messenger.showSnackBar(SnackBar(
+      duration: hold,
+      persist: false,
+      content: const Text('Sending…'),
+      action: SnackBarAction(
+        label: 'Undo',
+        onPressed: () {
+          if (held.undo()) {
+            reopen(navigator);
+          } else if (held.failure == null) {
+            messenger.showSnackBar(const SnackBar(
+              duration: kBottomMessage,
+              content: Text('Too late: it has gone.'),
+            ));
+          }
+        },
+      ),
+    ));
+    sendingShown = true;
+    unawaited(sending.closed.then((_) => sendingShown = false));
   }
 
   /// Backing out of a half-written message: keep writing, save it, or throw
@@ -1417,6 +1504,30 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     );
   }
 }
+
+/// [then] now if the app is in front, or once it is back. A screen pushed
+/// while the app is out of sight is not built until it is back, so it has
+/// no guard yet (see [GuardsPutAway]), and a put-away closing what is open
+/// meanwhile takes it away unasked.
+void _onceInFront(void Function() then) {
+  // Where nothing has said, as under test, it is taken to be in front.
+  if (isInFront() || WidgetsBinding.instance.lifecycleState == null) {
+    then();
+    return;
+  }
+  late final AppLifecycleListener back;
+  back = AppLifecycleListener(onResume: () {
+    back.dispose();
+    then();
+  });
+}
+
+/// What a bar says of a held send that failed. One that may have gone says
+/// so itself, and to look in Sent Items before sending it again: "was not
+/// sent" in front of that invited sending it twice.
+String _notSent(Object e) => e is SendMayHaveGone
+    ? e.message
+    : 'The message was not sent. ${e is ReadableError ? e.message : '$e'}';
 
 /// What to do with a half-written message when the screen is backed out of.
 enum _LeaveChoice { keepWriting, save, discard }
