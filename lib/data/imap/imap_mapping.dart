@@ -11,7 +11,8 @@ import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
-import '../compose/mime_parts.dart' show bareContentId;
+import '../compose/mime_parts.dart' show bareContentId, partBytes;
+import 'hebrew_charsets.dart';
 import 'imap_transport.dart';
 
 /// `<accountId>:<path>`; account ids never contain a colon.
@@ -72,10 +73,11 @@ RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
     throw ArgumentError('Message has no UID; fetch with UID in the criteria');
   }
   final arrived = parseInternalDate(m.internalDate);
-  final subject = m.decodeSubject()?.trim();
+  final subject = decodeHebrewWords(m.decodeSubject())?.trim();
   final from = m.from?.firstOrNull ?? m.sender;
   final sender =
       from == null ? const MailAddress(email: '') : addressFromMime(from);
+  final attachmentNames = attachmentNamesOf(m);
   return RemoteHeader(
     uid: uid,
     subject: (subject == null || subject.isEmpty) ? '(No subject)' : subject,
@@ -92,8 +94,11 @@ RemoteHeader remoteHeaderFromMime(em.MimeMessage m, {DateTime? fallbackDate}) {
     isFlagged: m.isFlagged,
     isAnswered: m.isAnswered,
     isForwarded: markedForwarded(m),
-    hasAttachments: m.hasAttachments(),
-    attachmentNames: attachmentNamesOf(m),
+    // From the same list as the names, so the paperclip, the names under
+    // the row and the message's own list of files agree. enough_mail's
+    // hasAttachments counts only what is marked attachment.
+    hasAttachments: attachmentNames.isNotEmpty,
+    attachmentNames: attachmentNames,
     sizeBytes: m.size ?? 0,
     isMeeting: carriesInvitation(m),
     messageId: normaliseMessageId(
@@ -238,16 +243,29 @@ List<em.Mailbox> selectableMailboxes(Iterable<em.Mailbox> boxes) =>
     [for (final b in boxes) if (!b.isNotSelectable) b];
 
 MailAddress addressFromMime(em.MailAddress a) =>
-    MailAddress(email: a.email, name: a.personalName);
+    MailAddress(email: a.email, name: decodeHebrewWords(a.personalName));
 
 /// The readable body: the plain-text part if the sender supplied one, else a
 /// text rendering of the HTML so the browser preview and any text-only view
 /// still show something. The HTML travels alongside for the WebView.
 MailBody bodyFromMime(em.MimeMessage m) => _body(
-      text: m.decodeTextPlainPart(),
-      html: m.decodeTextHtmlPart(),
+      text: _hebrewTextOf(m, em.MediaSubtype.textPlain) ??
+          m.decodeTextPlainPart(),
+      html: _hebrewTextOf(m, em.MediaSubtype.textHtml) ??
+          m.decodeTextHtmlPart(),
       calendar: calendarPartOf(m),
     );
+
+/// The first part of [subtype] in [m], the part enough_mail would read,
+/// when it is in a Hebrew charset enough_mail cannot read: decoded here
+/// from its bytes (see [decodeCharset]). Null for any other.
+String? _hebrewTextOf(em.MimeMessage m, em.MediaSubtype subtype) {
+  final part = m.getPartWithMediaSubtype(subtype);
+  final charset = part?.getHeaderContentType()?.charset;
+  if (part == null || !isHebrewCharset(charset)) return null;
+  final bytes = partBytes(part, inMultipart: !identical(part, m));
+  return bytes == null ? null : decodeCharset(bytes, charset);
+}
 
 MailBody _body({String? text, String? html, String? calendar}) => MailBody(
       text: (text != null && text.trim().isNotEmpty)
@@ -334,11 +352,10 @@ MailBody bodyFromParts(BodyParts parts, Map<String, List<int>> fetched) {
     if (part == null) return null;
     final raw = fetched[_partId(part)];
     if (raw == null) return null;
-    // 8bit, as what is left once the transfer encoding is undone: the
-    // bytes of the text in its charset.
-    return em.MailCodec.decodeAsText(
+    // The bytes of the text in its charset, once the transfer encoding is
+    // undone.
+    return decodeCharset(
       decodePart(raw, part.encoding),
-      '8bit',
       part.contentType?.charset,
     );
   }
@@ -414,7 +431,12 @@ String? _calendarFileIn(em.MimeMessage m) {
 /// point: a list that says which rows are meetings is a list you can read
 /// without opening anything.
 bool carriesInvitation(em.MimeMessage message) {
-  if (message.getPartWithMediaSubtype(em.MediaSubtype.textCalendar) != null) {
+  // A message fetched with its headers has its structure and none of its
+  // parts, and asking the message finds only parts. A calendar part in the
+  // structure with no disposition, as Exchange sends every meeting
+  // request, is found there, as opening the message finds it (bodyPartsOf).
+  if (message.body?.findFirst(em.MediaSubtype.textCalendar) != null ||
+      message.getPartWithMediaSubtype(em.MediaSubtype.textCalendar) != null) {
     return true;
   }
   for (final disposition in [
@@ -437,6 +459,12 @@ bool carriesInvitation(em.MimeMessage message) {
 /// deciding which is which by guessing at the name is worse than showing
 /// both and saying which is which.
 ///
+/// Marked so only where a body could show it, a picture. Anything else a
+/// sender's mail program marks inline, as Apple's Mail does a PDF, is a
+/// file: listed, named on the row, given the paperclip and checked for
+/// threats as one. Text marked inline with no name is the body itself,
+/// and not listed.
+///
 /// Parts with no file name get one made from their type, because "open the
 /// attachment" needs something to call it and "" is not something.
 List<MailAttachment> attachmentsOf(em.MimeMessage message) {
@@ -448,20 +476,28 @@ List<MailAttachment> attachmentsOf(em.MimeMessage message) {
     for (final info in message.findContentInfo(disposition: disposition)) {
       final mime = info.contentType?.mediaType.toString() ??
           'application/octet-stream';
+      final named = decodeHebrewWords(info.fileName);
       // The text of the message itself is a part like any other. It is the
       // body, not an attachment, and listing it as one is how "1 attachment"
-      // appears on a plain note.
+      // appears on a plain note. A piece of the body has no name, Apple's
+      // Mail's split HTML included; a text file marked inline, a web page or
+      // a contact card, has one, and is a file like any other.
       if (disposition == em.ContentDisposition.inline &&
-          mime.startsWith('text/')) {
+          mime.startsWith('text/') &&
+          (named?.trim() ?? '').isEmpty) {
         continue;
       }
+      // A part holding parts is no file either, however it is marked.
+      final top = info.mediaType?.top;
+      final shown = top == em.MediaToptype.image ||
+          top == em.MediaToptype.multipart;
       found.add(
         MailAttachment(
           id: info.fetchId,
-          name: safeFileName(info.fileName ?? _nameFromType(mime, info.fetchId)),
+          name: safeFileName(named ?? _nameFromType(mime, info.fetchId)),
           mimeType: mime,
           sizeBytes: info.size ?? 0,
-          isInline: disposition == em.ContentDisposition.inline,
+          isInline: disposition == em.ContentDisposition.inline && shown,
           contentId: bareContentId(info.cid),
         ),
       );
@@ -485,7 +521,8 @@ List<MailAttachment> attachmentsOf(em.MimeMessage message) {
         MailAttachment(
           id: id,
           name: safeFileName(
-            part.contentType?.parameters['name'] ?? _nameFromType(mime, id),
+            decodeHebrewWords(part.contentType?.parameters['name']) ??
+                _nameFromType(mime, id),
           ),
           mimeType: mime,
           sizeBytes: part.size ?? 0,

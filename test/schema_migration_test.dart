@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:drift/drift.dart' show driftRuntimeOptions;
@@ -62,6 +63,52 @@ void main() {
   // schema 6's columns, so its step never ran: it could have been deleted
   // and every test here would still have passed, while every device
   // upgrading from 2.35 or earlier failed on every cache read.
+
+  /// A stray � or two, as a message that read well but for a bad byte
+  /// has them.
+  const stray = 'Total 12\u{FFFD} and 3\u{FFFD}\u{FFFD} more';
+
+  /// A database as it stood at schema 19, the release before this one: a
+  /// Gmail message in windows-1255, cached and opened before it could be
+  /// read, beside one that reads well and one with a stray �, and a
+  /// Microsoft message whose text has a � of its own.
+  Future<void> buildVersion19() async {
+    final db = MailDatabase(NativeDatabase(file));
+    final store = DriftCacheStore(db);
+    final shalom = base64.encode([0xF9, 0xEC, 0xE5, 0xED]);
+    await store.upsertMessages('acct-1', 'INBOX', [
+      CachedMessage(
+        uid: 11,
+        subject: '=?windows-1255?B?$shalom?=',
+        from: const MailAddress(
+          email: 'dana@example.com',
+          name: '=?iso-8859-8-i?Q?=E3=F0=E4?=',
+        ),
+        to: const [MailAddress(email: 'me@example.com')],
+        date: DateTime.utc(2026, 9, 1),
+        isRead: false,
+        isFlagged: false,
+        hasAttachments: false,
+      ),
+      message(12),
+      message(13),
+    ]);
+    await store.writeBody('acct-1', 'INBOX', 13,
+        text: stray, html: '<p>$stray</p>', preview: stray);
+    await store.writeBody('acct-1', 'INBOX', 11,
+        text: '\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD} 12',
+        html: '<p>\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD} 12</p>',
+        preview: '\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD} 12');
+    await store.upsertMessages('acct-2', 'Inbox', [message(1)]);
+    await store.writeBody('acct-2', 'Inbox', 1,
+        text: 'Sent broken \u{FFFD}', preview: 'Sent broken \u{FFFD}');
+    await db.customStatement(
+      'INSERT INTO graph_ids (account_id, path, uid, remote_id) VALUES '
+      "('acct-2', 'Inbox', 1, 'g-1')",
+    );
+    await db.customStatement('PRAGMA user_version = 19');
+    await db.close();
+  }
 
   /// What schema 19 added: changes kept for later.
   Future<void> dropSchema19(MailDatabase db) async {
@@ -1066,6 +1113,50 @@ void main() {
       ),
     ]);
     expect((await store.readPending()).single.uid, 11);
+  });
+
+  test('a version 19 database reads again the Gmail mail it could not read '
+      'in Hebrew, and keeps the rest', () async {
+    // windows-1255 and iso-8859-8-i were read as UTF-8 until now, and a
+    // cached body is never fetched again: it would have stayed a row of �
+    // for good. The subject and the name it can put right where it is.
+    await buildVersion19();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+    final row = await store.readMessage('acct-1', 'INBOX', 11);
+
+    expect(row!.subject, 'שלום');
+    expect(row.from.name, 'דנה');
+    expect(await store.readBody('acct-1', 'INBOX', 11), isNull,
+        reason: 'fetched afresh when it is next opened');
+    expect(row.preview, isEmpty, reason: 'it was made from that body');
+    expect((await store.readBody('acct-1', 'INBOX', 12))?.html,
+        '<p>A body worth keeping</p>');
+    expect((await store.readMessage('acct-1', 'INBOX', 12))!.subject,
+        'Cached before the upgrade');
+    expect((await store.readBody('acct-2', 'Inbox', 1))?.text,
+        'Sent broken \u{FFFD}',
+        reason: 'Exchange sends Unicode: fetched again, it would read the '
+            'same');
+  });
+
+  test('a Gmail message with a stray � keeps its body over the upgrade',
+      () async {
+    // Hebrew read as UTF-8 is a � for every letter, a run of them. One or
+    // two is a bad byte in mail that read well: dropped, the message would
+    // not open offline until it was fetched again.
+    await buildVersion19();
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+
+    final body = await store.readBody('acct-1', 'INBOX', 13);
+    expect(body?.text, stray);
+    expect(body?.html, '<p>$stray</p>');
+    expect((await store.readMessage('acct-1', 'INBOX', 13))!.preview, stray);
   });
 
   test('and so does one coming up from before arrival times were kept',

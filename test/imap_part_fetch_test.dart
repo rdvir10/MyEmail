@@ -107,6 +107,38 @@ void main() {
       }
     });
 
+    test('Hebrew in the Windows and in the ISO charset reads as Hebrew',
+        () async {
+      // windows-1255, as Outlook, banks and town halls often write Hebrew,
+      // and iso-8859-8-i, the name ISO Hebrew is sent under. enough_mail
+      // knows neither and read their letters as UTF-8, every one a �.
+      server.parts = [
+        _Part(
+          '1.1',
+          '("TEXT" "PLAIN" ("CHARSET" "windows-1255") NIL NIL '
+              r'"QUOTED-PRINTABLE" $size 1 NIL NIL NIL NIL)',
+          'Content-Type: text/plain; charset=windows-1255\r\n'
+              'Content-Transfer-Encoding: quoted-printable\r\n',
+          // The dash and the shekel sign are where windows-1255 is not ISO.
+          '=F9=EC=E5=ED =96 =A412\r\n',
+        ),
+        _Part(
+          '1.2',
+          '("TEXT" "HTML" ("CHARSET" "iso-8859-8-i") NIL NIL "8BIT" '
+              r'$size 1 NIL NIL NIL NIL)',
+          'Content-Type: text/html; charset=iso-8859-8-i\r\n'
+              'Content-Transfer-Encoding: 8bit\r\n',
+          '<p dir="rtl">ùìåí</p>',
+        ),
+        ..._parts.skip(2),
+      ];
+
+      final body = await transport().fetchBody('INBOX', 7);
+
+      expect(body.text.trim(), 'שלום – ₪12');
+      expect(body.html, '<p dir="rtl">שלום</p>');
+    });
+
     test('a message of one part is fetched whole, which is all it is',
         () async {
       server.onePart = true;
@@ -213,8 +245,11 @@ class _PartServer {
   /// Every FETCH command, as sent.
   final fetches = <String>[];
 
-  /// The message is HTML alone, in a single part, rather than [_parts].
+  /// The message is HTML alone, in a single part, rather than [parts].
   bool onePart = false;
+
+  /// The parts of the message, [_parts] unless a test gives others.
+  List<_Part> parts = _parts;
 
   int get port => _socket.port;
 
@@ -230,8 +265,8 @@ class _PartServer {
     return server;
   }
 
-  static _Part? _part(String id) {
-    for (final p in _parts) {
+  _Part? _part(String id) {
+    for (final p in parts) {
       if (p.id == id) return p;
     }
     return null;
@@ -269,7 +304,7 @@ class _PartServer {
           'Content-Type: multipart/mixed; boundary="mix"\r\n\r\n'
           '--mix\r\n'
           'Content-Type: multipart/alternative; boundary="alt"\r\n\r\n'));
-    for (final p in _parts) {
+    for (final p in parts) {
       final boundary = p.id.startsWith('1.') ? 'alt' : 'mix';
       out
         ..add(ascii.encode('--$boundary\r\n${p.headers}\r\n'))

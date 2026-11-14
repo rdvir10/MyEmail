@@ -41,6 +41,40 @@ void main() {
       await t.close();
     });
 
+    test('a label with brackets in its name is listed as it is named, and '
+        'opens', () async {
+      // Gmail sends a label's name in quotes, brackets and all. Read as an
+      // extended LIST, the brackets were taken for extended data:
+      // "Receipts (2024)" came back as "Receipt", which would not open,
+      // "Taxes (2023)/Forms" and its parent both as "Taxe", and a lone ")"
+      // threw in the middle of reading the list.
+      server.others.addAll([
+        '"1) Urgent"',
+        '"Receipts (2024)"',
+        '"Taxes (2023)"',
+        '"Taxes (2023)/Forms"',
+      ]);
+      final t = transport();
+      addTearDown(t.close);
+
+      final folders = await t.listFolders();
+
+      expect(folders.map((f) => f.path), [
+        'INBOX',
+        '1) Urgent',
+        'Receipts (2024)',
+        'Taxes (2023)',
+        'Taxes (2023)/Forms',
+      ]);
+      expect(
+        [for (final f in folders.skip(1)) f.total],
+        [1, 2, 3, 4],
+        reason: 'each folder keeps its own count',
+      );
+      await t.selectFolder('Receipts (2024)');
+      expect(server.commands.last, startsWith('SELECT "RECEIPTS (2024)"'));
+    });
+
     test('a connection dropped mid-command fails it, and the next call '
         'reconnects', () async {
       // A limit far longer than the test waits: only noticing the loss
@@ -194,7 +228,8 @@ class _FakeImapServer {
   int connections = 0;
   _Reply onList = _Reply.answer;
 
-  /// What LIST names besides INBOX.
+  /// What LIST names besides INBOX, as the server writes them: in quotes
+  /// where Gmail would quote them.
   final List<String> others = [];
 
   /// Folders LIST names and SELECT refuses, as Gmail does a label deleted
@@ -237,9 +272,11 @@ class _FakeImapServer {
           case _Reply.answer:
             client.write('* LIST (\\HasNoChildren) "/" INBOX\r\n'
                 '* STATUS INBOX (MESSAGES 3 UNSEEN 1)\r\n');
-            for (final name in others) {
+            // Each with a count of its own, its place in the list, so a
+            // count given to the wrong folder shows.
+            for (final (i, name) in others.indexed) {
               client.write('* LIST (\\HasNoChildren) "/" $name\r\n'
-                  '* STATUS $name (MESSAGES 0 UNSEEN 0)\r\n');
+                  '* STATUS $name (MESSAGES ${i + 1} UNSEEN 0)\r\n');
             }
             client.write('$tag OK LIST done\r\n');
           case _Reply.drop:

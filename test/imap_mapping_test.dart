@@ -256,6 +256,20 @@ void main() {
       expect(parseInternalDate('17-Foo-1996 02:44:25 -0700'), isNull);
     });
 
+    test('a subject in windows-1255 is read, and the word after it', () {
+      // enough_mail has no table for windows-1255. It gave up at the first
+      // word in it and left the rest of the subject as it came, a word in
+      // UTF-8 after it included.
+      final shalom = base64.encode([0xF9, 0xEC, 0xE5, 0xED]);
+      final mime = build()
+        ..setHeader(
+          'subject',
+          '=?windows-1255?B?$shalom?= =?UTF-8?Q?caf=C3=A9?= (2)',
+        );
+
+      expect(remoteHeaderFromMime(mime).subject, 'שלוםcafé (2)');
+    });
+
     test('a missing subject is labelled', () {
       final mime = build()..setHeader('subject', '');
       expect(remoteHeaderFromMime(mime).subject, '(No subject)');
@@ -283,6 +297,73 @@ void main() {
         ..addTextHtml('<div>Only <i>html</i> here.<br>Line two</div>');
       final body = bodyFromMime(builder.buildMimeMessage());
       expect(body.text, 'Only html here.\nLine two');
+    });
+
+    test('Hebrew in windows-1255 or iso-8859-8-i reads as Hebrew', () {
+      // As a message comes whole from the server, and an attached email
+      // from its file. enough_mail knows neither charset and read the
+      // letters as UTF-8, every one a �.
+      Uint8List message(String head, List<int> body) => Uint8List.fromList([
+            ...ascii.encode('From: Dana <dana@example.com>\r\n'
+                'Subject: Hi\r\n'
+                'MIME-Version: 1.0\r\n'
+                '$head\r\n\r\n'),
+            ...body,
+          ]);
+
+      // Every letter, the final forms with them, and the shekel sign,
+      // which ISO Hebrew does not have.
+      final windows = bodyFromMime(em.MimeMessage.parseFromData(message(
+        'Content-Type: text/plain; charset=windows-1255\r\n'
+            'Content-Transfer-Encoding: 8bit',
+        [for (var b = 0xE0; b <= 0xFA; b++) b, 0x20, 0xA4],
+      )));
+      expect(
+        windows.text,
+        '${String.fromCharCodes([for (var c = 0x5D0; c <= 0x5EA; c++) c])} ₪',
+      );
+
+      // In a part of its own, as most mail is.
+      final iso = bodyFromMime(em.MimeMessage.parseFromData(message(
+        'Content-Type: multipart/alternative; boundary="b"',
+        [
+          ...ascii.encode('--b\r\n'
+              'Content-Type: text/plain; charset="iso-8859-8-i"\r\n'
+              'Content-Transfer-Encoding: quoted-printable\r\n\r\n'
+              '=F9=EC=E5=ED\r\n'
+              '--b\r\n'
+              'Content-Type: text/html; charset=ISO-8859-8-I\r\n'
+              'Content-Transfer-Encoding: 8bit\r\n\r\n'
+              '<p>'),
+          0xF9, 0xEC, 0xE5, 0xED,
+          ...ascii.encode('</p>\r\n--b--\r\n'),
+        ],
+      )));
+      expect(iso.text, 'שלום');
+      expect(iso.html, '<p>שלום</p>');
+    });
+
+    test("ISO Hebrew's direction marks are direction marks", () {
+      // enough_convert's table for iso-8859-8 has U+8206 and U+8207, two
+      // Chinese characters, where the marks are (decimal 8206 and 8207 are
+      // 0x200E and 0x200F), and ? for a byte with no character.
+      for (final charset in ['iso-8859-8-i', 'iso-8859-8']) {
+        final body = bodyFromMime(em.MimeMessage.parseFromData(
+          Uint8List.fromList([
+            ...ascii.encode('From: Dana <dana@example.com>\r\n'
+                'MIME-Version: 1.0\r\n'
+                'Content-Type: text/plain; charset=$charset\r\n'
+                'Content-Transfer-Encoding: 8bit\r\n\r\n'),
+            0xFE, 0xF9, 0xEC, 0xE5, 0xED, 0xFD, 0x31, 0x32, 0xAA, 0xDF, 0xA1,
+          ]),
+        ));
+        expect(
+          body.text.codeUnits,
+          [0x200F, 0x5E9, 0x5DC, 0x5D5, 0x5DD, 0x200E, 0x31, 0x32, 0xD7,
+            0x2017, 0xFFFD],
+          reason: charset,
+        );
+      }
     });
   });
 
@@ -410,6 +491,107 @@ void main() {
       // finds its file: the slash is not let through into a file name.
       expect(attachmentNamesOf(message), ['Quote 2026_10.pdf']);
       expect(message.hasAttachments(), isTrue);
+    });
+
+    test('a file marked inline, as Apple Mail marks a PDF, is a file', () {
+      // Only a picture is something a body shows. A PDF marked inline had
+      // no paperclip on its row and no name under it, and the threat check
+      // passed over it.
+      final root = em.BodyPart()
+        ..contentType = em.ContentTypeHeader('multipart/mixed');
+      root
+        ..addPart(
+          em.BodyPart()..contentType = em.ContentTypeHeader('text/plain'),
+        )
+        ..addPart(
+          em.BodyPart()
+            ..contentType =
+                em.ContentTypeHeader('application/pdf; name="Quote.pdf"')
+            ..contentDisposition =
+                em.ContentDispositionHeader('inline; filename="Quote.pdf"'),
+        )
+        ..addPart(
+          em.BodyPart()
+            ..contentType = em.ContentTypeHeader('image/jpeg')
+            ..contentDisposition =
+                em.ContentDispositionHeader('inline; filename="IMG_1.jpg"'),
+        );
+      final message = em.MimeMessage()
+        ..body = root
+        ..uid = 7;
+
+      expect(
+        {for (final a in attachmentsOf(message)) a.name: a.isInline},
+        {'Quote.pdf': false, 'IMG_1.jpg': true},
+      );
+      expect(attachmentNamesOf(message), ['Quote.pdf']);
+      expect(remoteHeaderFromMime(message).hasAttachments, isTrue);
+    });
+
+    test('so is a text file marked inline; text with no name is the body',
+        () {
+      // A web page, a contact card, a table marked inline was left out
+      // altogether: no paperclip, not under the message to open, and not
+      // checked for threats, a fake sign-in page among them. A piece of
+      // the body, as Apple's Mail splits its HTML, has no name.
+      final root = em.BodyPart()
+        ..contentType = em.ContentTypeHeader('multipart/mixed');
+      root
+        ..addPart(
+          em.BodyPart()
+            ..contentType = em.ContentTypeHeader('text/plain')
+            ..contentDisposition = em.ContentDispositionHeader('inline'),
+        )
+        ..addPart(
+          em.BodyPart()
+            ..contentType = em.ContentTypeHeader('text/html')
+            ..contentDisposition =
+                em.ContentDispositionHeader('inline; filename="Invoice.html"'),
+        )
+        ..addPart(
+          em.BodyPart()
+            ..contentType = em.ContentTypeHeader('text/x-vcard; name=Dana.vcf')
+            ..contentDisposition = em.ContentDispositionHeader('inline'),
+        )
+        ..addPart(
+          em.BodyPart()
+            ..contentType = em.ContentTypeHeader('text/html')
+            ..contentDisposition = em.ContentDispositionHeader('inline'),
+        );
+      final message = em.MimeMessage()
+        ..body = root
+        ..uid = 7;
+
+      expect(
+        {for (final a in attachmentsOf(message)) a.name: a.isInline},
+        {'Invoice.html': false, 'Dana.vcf': false},
+      );
+      expect(attachmentNamesOf(message), ['Invoice.html', 'Dana.vcf']);
+      expect(remoteHeaderFromMime(message).hasAttachments, isTrue);
+    });
+
+    test('a file named in Hebrew in windows-1255 is named in Hebrew', () {
+      // Left by enough_mail as the encoded word it came as.
+      final name =
+          base64.encode([0xF9, 0xEC, 0xE5, 0xED, ...ascii.encode('.pdf')]);
+      final root = em.BodyPart()
+        ..contentType = em.ContentTypeHeader('multipart/mixed');
+      root
+        ..addPart(
+          em.BodyPart()..contentType = em.ContentTypeHeader('text/plain'),
+        )
+        ..addPart(
+          em.BodyPart()
+            ..contentType = em.ContentTypeHeader('application/pdf')
+            ..contentDisposition = em.ContentDispositionHeader(
+              'attachment; filename="=?windows-1255?B?$name?="',
+            ),
+        );
+
+      expect(
+        attachmentNamesOf(em.MimeMessage()..body = root),
+        ['שלום.pdf'],
+      );
     });
   });
 

@@ -69,6 +69,44 @@ void main() {
     expect(h.date.toUtc(), DateTime.utc(2019, 10, 25, 14, 35, 31));
   });
 
+  test('a subject and a name in Hebrew charsets are read, not left encoded',
+      () async {
+    // windows-1255 and iso-8859-8-i, which enough_mail has no table for:
+    // it left the encoded words as they came, and the row showed
+    // "=?windows-1255?B?...?=" for a subject.
+    final payment = [0xFA, 0xF9, 0xEC, 0xE5, 0xED, 0x20, 0xA4, 0x31, 0x32];
+    server
+      ..subject = '=?windows-1255?B?${base64.encode(payment)}?='
+      ..fromName = '=?iso-8859-8-i?Q?=E3=F0=E4_=EB=E4=EF?=';
+
+    final h = (await transport().fetchHeadersBySequence('INBOX', 1, 1)).single;
+
+    expect(h.subject, 'תשלום ₪12');
+    expect(h.from.name, 'דנה כהן');
+    expect(h.from.email, 'dana@example.com');
+  });
+
+  test('a meeting request from Outlook is a meeting by its structure',
+      () async {
+    // How Exchange sends every meeting request: text, HTML and the
+    // invitation side by side, none of them marked attachment or inline.
+    // The header fetch brings the structure and none of the parts, and
+    // only a calendar part with a disposition was looked for: no meeting
+    // mark on the row, no Accept and Decline on the notification.
+    server.structure = '(("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL '
+        '"QUOTED-PRINTABLE" 120 4 NIL NIL NIL NIL)'
+        '("TEXT" "HTML" ("CHARSET" "utf-8") NIL NIL '
+        '"QUOTED-PRINTABLE" 900 20 NIL NIL NIL NIL)'
+        '("TEXT" "CALENDAR" ("CHARSET" "utf-8" "METHOD" "REQUEST") NIL NIL '
+        '"BASE64" 1500 20 NIL NIL NIL NIL) '
+        '"ALTERNATIVE" ("BOUNDARY" "_000_") NIL NIL NIL)';
+
+    final h = (await transport().fetchHeadersBySequence('INBOX', 1, 1)).single;
+
+    expect(h.isMeeting, isTrue);
+    expect(h.hasAttachments, isFalse, reason: 'the invitation is no file');
+  });
+
   test('a reply and a forward made elsewhere come with the header', () async {
     // \Answered is IMAP's own flag, and $Forwarded the keyword every mail
     // app that marks a forward uses: another app, or this one on another
@@ -142,6 +180,13 @@ class _HeaderServer {
 
   String flags = '';
 
+  /// The subject and the sender's name, as the ENVELOPE carries them.
+  String subject = 'Hello';
+  String fromName = 'Dana';
+
+  /// The message's BODYSTRUCTURE: plain text alone, unless a test says.
+  String structure = '("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" 5 1)';
+
   int get port => _socket.port;
 
   static Future<_HeaderServer> start() async {
@@ -184,10 +229,10 @@ class _HeaderServer {
         client.write('* 1 FETCH (UID 7 FLAGS ($flags) '
             '${sendSize ? 'RFC822.SIZE 48213 ' : ''}'
             'INTERNALDATE "25-Oct-2019 16:35:31 +0200" '
-            'ENVELOPE (NIL "Hello" (("Dana" NIL "dana" "example.com")) '
+            'ENVELOPE (NIL "$subject" '
+            '(("$fromName" NIL "dana" "example.com")) '
             'NIL NIL NIL NIL NIL NIL "<m-1@example.com>") '
-            'BODYSTRUCTURE ("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL '
-            '"7BIT" 5 1))\r\n'
+            'BODYSTRUCTURE $structure)\r\n'
             '$tag OK FETCH done\r\n');
       } else if (verb.startsWith('STORE') || verb.startsWith('UID STORE')) {
         stores.add(command);

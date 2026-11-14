@@ -7,6 +7,7 @@ import '../../domain/html_safety.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import '../compose/mime_parts.dart' show bareContentId, partBytes;
+import '../imap/hebrew_charsets.dart' show decodeHebrewWords;
 import '../imap/imap_mapping.dart';
 
 /// An email that came attached to another, read from its own bytes: an
@@ -37,7 +38,7 @@ class AttachedMessage {
       return null;
     }
     final from = mime.from?.firstOrNull ?? mime.sender;
-    final subject = mime.decodeSubject()?.trim();
+    final subject = decodeHebrewWords(mime.decodeSubject())?.trim();
     // Nothing a message has: some other file called .eml.
     if (from == null && subject == null && mime.decodeDate() == null) {
       return null;
@@ -67,7 +68,8 @@ class AttachedMessage {
         final data = part == null ? null : _bytesOf(part);
         if (data == null) continue;
         final isMessage = type.toLowerCase() == 'message/rfc822';
-        final named = info.fileName ?? part?.decodeFileName();
+        final named =
+            decodeHebrewWords(info.fileName ?? part?.decodeFileName());
         files.add(
           MailAttachment(
             id: info.fetchId,

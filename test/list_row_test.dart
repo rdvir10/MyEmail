@@ -362,6 +362,21 @@ void main() {
       expect(carriesInvitation(withCalendarPart()), isTrue);
     });
 
+    test('so does one in the structure alone, with no disposition', () {
+      // A header fetch brings the BODYSTRUCTURE and no parts, and Exchange
+      // marks none of a meeting request's three parts. Only one with a
+      // disposition was found: a meeting from Outlook was ordinary mail.
+      final alternative = em.BodyPart()
+        ..contentType = em.ContentTypeHeader('multipart/alternative');
+      for (final type in ['text/plain', 'text/html', 'text/calendar']) {
+        alternative.addPart(
+          em.BodyPart()..contentType = em.ContentTypeHeader(type),
+        );
+      }
+
+      expect(carriesInvitation(em.MimeMessage()..body = alternative), isTrue);
+    });
+
     test('so does an .ics the sender labelled as bytes', () {
       final builder = em.MessageBuilder()
         ..addTextHtml('<p>See you then.</p>')

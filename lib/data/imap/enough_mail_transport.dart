@@ -14,6 +14,9 @@ import 'package:enough_mail/src/private/imap/command.dart';
 import 'package:enough_mail/src/private/imap/generic_parser.dart';
 // ignore: implementation_imports
 import 'package:enough_mail/src/private/imap/imap_response.dart';
+// For a folder list read as the plain LIST it is: see _listMailboxes.
+// ignore: implementation_imports
+import 'package:enough_mail/src/private/imap/list_parser.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../../domain/mail_attachment.dart';
@@ -906,11 +909,17 @@ class EnoughMailTransport implements ImapTransport {
     List<em.Mailbox> boxes;
     try {
       // LIST-STATUS gives counts in one round trip. Gmail supports it.
-      boxes = await c.listMailboxes(
-        recursive: true,
-        returnOptions: [
-          em.ReturnOption.status(['MESSAGES', 'UNSEEN']),
-        ],
+      //
+      // Sent here rather than by listMailboxes, which, asked for counts,
+      // reads each line as an extended LIST and takes the first "(" to the
+      // last ")" after the flags for extended data: "Receipts (2024)" came
+      // back as "Receipt", which would not open, and a lone ")" threw
+      // halfway through the list. Nothing asked for here comes back as
+      // extended data, and the counts come on STATUS lines of their own,
+      // so the line is read as the plain LIST it is.
+      boxes = await c.sendCommand<List<em.Mailbox>>(
+        Command('LIST "" "*" RETURN (STATUS (MESSAGES UNSEEN))'),
+        ListParser(c.serverInfo, hasReturnOptions: true),
       );
     } on em.ImapException {
       boxes = await c.listMailboxes(recursive: true);

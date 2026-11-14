@@ -10,6 +10,7 @@ import '../../domain/calendar_event.dart';
 import '../../domain/calendar_reads.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/pending_change.dart';
+import '../imap/hebrew_charsets.dart' show decodeHebrewWords;
 import 'cache_store.dart';
 
 part 'mail_database.g.dart';
@@ -325,7 +326,7 @@ class MailDatabase extends _$MailDatabase {
       );
 
   @override
-  int get schemaVersion => 19;
+  int get schemaVersion => 20;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -534,6 +535,69 @@ class MailDatabase extends _$MailDatabase {
       // Changes kept for later. Empty until the server is next out of
       // reach for one.
       await m.createTable(pendingChanges);
+    }
+    if (from < 20) await _rereadHebrew();
+  }
+
+  /// Gmail mail in windows-1255 or iso-8859-8-i, read as UTF-8 until
+  /// schema 20 (see hebrew_charsets.dart), put right once.
+  ///
+  /// A cached body is never fetched again, so a body that came out as rows
+  /// of � is dropped, with the preview made from it, and comes back the
+  /// next time the message is opened; headers, flags and the rest stay.
+  /// Hebrew read as UTF-8 is a � for every letter, so three in a row is
+  /// the sign; one or two is a bad byte in mail that read well, which
+  /// keeps its body and so still opens offline. Only where Graph does not
+  /// number the folder: Exchange sends Unicode, and a � on a Microsoft
+  /// message would come back the same.
+  ///
+  /// The preview is asked first, so that only a message whose preview
+  /// shows the rows has its body read: it is a line in the row, where the
+  /// bodies take the most of the file, and reading every one held the
+  /// first start after the update for seconds, a phone longer. A message
+  /// whose Hebrew starts past its preview's first line keeps its body.
+  ///
+  /// The subject and the sender's name were kept as the encoded words they
+  /// came as, and are decoded where they lie: a header is not read again
+  /// for a message already cached. Nothing here may throw, which would
+  /// leave the cache unopenable: a row that cannot be decoded is passed by.
+  Future<void> _rereadHebrew() async {
+    const rows = 'char(65533, 65533, 65533)';
+    await customStatement(
+      'UPDATE messages SET body_text = NULL, body_html = NULL, '
+      "calendar = NULL, preview = '' "
+      'WHERE instr(preview, $rows) > 0 '
+      'AND (instr(body_text, $rows) > 0 OR instr(body_html, $rows) > 0) '
+      'AND NOT EXISTS (SELECT 1 FROM graph_ids g WHERE g.account_id = '
+      'messages.account_id AND g.path = messages.path)',
+    );
+    final encoded = await customSelect(
+      'SELECT account_id, path, uid, subject, from_name FROM messages '
+      "WHERE subject LIKE '%=?%' OR from_name LIKE '%=?%'",
+    ).get();
+    for (final row in encoded) {
+      final subject = row.read<String>('subject');
+      final name = row.read<String?>('from_name');
+      final String readSubject;
+      final String? readName;
+      try {
+        readSubject = decodeHebrewWords(subject)!.trim();
+        readName = decodeHebrewWords(name);
+      } catch (_) {
+        continue;
+      }
+      if (readSubject == subject && readName == name) continue;
+      await customStatement(
+        'UPDATE messages SET subject = ?, from_name = ? '
+        'WHERE account_id = ? AND path = ? AND uid = ?',
+        [
+          if (readSubject.isEmpty) subject else readSubject,
+          readName,
+          row.read<String>('account_id'),
+          row.read<String>('path'),
+          row.read<int>('uid'),
+        ],
+      );
     }
   }
 
