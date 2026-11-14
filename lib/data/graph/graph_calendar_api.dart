@@ -539,7 +539,15 @@ class GraphCalendarApi {
     EventChange change, {
     required CalendarEvent before,
   }) async {
-    final fields = changeJson(change, before: before);
+    // Graph puts a new list of attendees in place of the whole one the
+    // event has, so the event's own is read first: see [changeJson].
+    Object? had;
+    if (change.attendees != null) {
+      final event = await _event(eventId, select: 'attendees');
+      if (event == null) throw const EventGone();
+      had = event['attendees'];
+    }
+    final fields = changeJson(change, before: before, had: had);
     if (fields.isEmpty) return;
     final body = jsonEncode(fields);
     final response = await _exchange(() => _patch(eventId, body));
@@ -547,10 +555,16 @@ class GraphCalendarApi {
     if (response.statusCode >= 400) throw _failureFor(response);
   }
 
-  /// [change] as Graph's patch takes it: only what changes.
+  /// [change] as Graph's patch takes it: only what changes. A change of
+  /// the people goes with what [had], the event's attendees as Graph now
+  /// has them, holds beside them: its rooms, which the calendar does not
+  /// show as people and whose taking off would free them, and anyone on it
+  /// that [before] did not have, added elsewhere since, whom nobody here
+  /// could have meant to take off.
   static Map<String, Object?> changeJson(
     EventChange change, {
     required CalendarEvent before,
+    Object? had,
   }) {
     final zone = change.timeZone;
     Map<String, Object?> at(DateTime t, {required bool allDay}) => allDay
@@ -595,8 +609,42 @@ class GraphCalendarApi {
                   ? 'optional'
                   : 'required',
             },
+          ..._untouched(had, people, before),
         ],
     };
+  }
+
+  /// The entries of [had] a change to [people] leaves as they are: see
+  /// [changeJson].
+  static List<Map<String, Object?>> _untouched(
+    Object? had,
+    List<MailAddress> people,
+    CalendarEvent before,
+  ) {
+    String key(Object? email) => '${email ?? ''}'.trim().toLowerCase();
+    final known = {
+      for (final a in before.attendees) key(a.address.email),
+      for (final a in people) key(a.email),
+    };
+    return [
+      for (final a in had is List ? had.whereType<Map>() : const <Map>[])
+        if (a['emailAddress'] case final Map address)
+          if (key(address['address']) case final email when email.isNotEmpty)
+            if (a['type'] == 'resource' || !known.contains(email))
+              {
+                'emailAddress': {
+                  'address': '${address['address']}'.trim(),
+                  if ('${address['name'] ?? ''}'.trim() case final name
+                      when name.isNotEmpty)
+                    'name': name,
+                },
+                'type': switch (a['type']) {
+                  'resource' => 'resource',
+                  'optional' => 'optional',
+                  _ => 'required',
+                },
+              },
+    ];
   }
 
   /// Cancel [eventId], which this account organised: Exchange sends
@@ -917,14 +965,16 @@ class GraphCalendarApi {
         ..headers['Content-Type'] = 'application/json'
         ..body = body;
 
-  /// The event as it stands, or null where it is gone.
-  Future<Map<String, Object?>?> _event(String id) async {
+  /// The event as it stands, or null where it is gone: [select], its
+  /// fields wanted.
+  Future<Map<String, Object?>?> _event(
+    String id, {
+    String select = 'id,body,isOnlineMeeting,onlineMeeting,attendees',
+  }) async {
     final response = await _exchange(
       () => http.Request(
         'GET',
-        _eventUri(id).replace(queryParameters: {
-          r'$select': 'id,body,isOnlineMeeting,onlineMeeting,attendees',
-        }),
+        _eventUri(id).replace(queryParameters: {r'$select': select}),
       ),
     );
     if (response.statusCode == 404) return null;

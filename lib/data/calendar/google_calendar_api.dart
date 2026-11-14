@@ -821,7 +821,8 @@ class GoogleCalendarApi {
       if (event == null || event['status'] == 'cancelled') {
         throw const EventGone();
       }
-      fields['attendees'] = mergedAttendees(event['attendees'], people);
+      fields['attendees'] =
+          mergedAttendees(event['attendees'], people, before: before);
     }
     if (fields.isEmpty) return;
     await _patchEvent(eventId, fields, calendarId: calendarId);
@@ -860,18 +861,25 @@ class GoogleCalendarApi {
   /// [now], everyone who should be on the event after a change, as Google
   /// takes them: the entries the event has for those who stay, answers and
   /// all, the organiser's own among them, and a new one for each person
-  /// added.
+  /// added. Its rooms stay too, which the calendar does not show as
+  /// people, and anyone on it that [before] did not have, added elsewhere
+  /// since, whom nobody here could have meant to take off.
   static List<Map<String, Object?>> mergedAttendees(
     Object? had,
-    List<MailAddress> now,
-  ) {
+    List<MailAddress> now, {
+    required CalendarEvent before,
+  }) {
     String key(Object? email) => '${email ?? ''}'.trim().toLowerCase();
     final wanted = {for (final a in now) key(a.email)};
+    final shown = {for (final a in before.attendees) key(a.address.email)};
     final kept = <String, Map<String, Object?>>{};
     for (final a in had is List ? had.whereType<Map>() : const <Map>[]) {
       final entry = a.cast<String, Object?>();
       final email = key(entry['email']);
-      if (entry['organizer'] == true || wanted.contains(email)) {
+      if (entry['organizer'] == true ||
+          entry['resource'] == true ||
+          wanted.contains(email) ||
+          !shown.contains(email)) {
         kept[email] = entry;
       }
     }

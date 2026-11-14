@@ -89,11 +89,14 @@ Future<void> settleCalendar(
 
 /// Ask whether a change to [event], one meeting of a series, is for it or
 /// for every meeting of the series. False for this one, true for all, null
-/// if backed out of; false at once for a meeting on its own.
+/// if backed out of; false at once for a meeting on its own. [allToo] is
+/// said under the second, where it takes more than it seems to: a series
+/// cancelled or deleted goes whole, its past meetings with it.
 Future<bool?> askWholeSeries(
   BuildContext context,
   CalendarEvent event, {
   required String doing,
+  String? allToo,
 }) async {
   if (event.seriesId == null) return false;
   return showDialog<bool>(
@@ -109,12 +112,23 @@ Future<bool?> askWholeSeries(
         SimpleDialogOption(
           key: const ValueKey('series-all'),
           onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Every meeting in the series'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Every meeting in the series'),
+              if (allToo != null)
+                Text(allToo, style: Theme.of(context).textTheme.bodySmall),
+            ],
+          ),
         ),
       ],
     ),
   );
 }
+
+/// Under "Every meeting in the series" when the series would go: Outlook's
+/// "this and following" is not here, so the past meetings go as well.
+const _pastOnesToo = 'The whole series goes, past ones too.';
 
 // --- answering ----------------------------------------------------------------
 
@@ -301,7 +315,8 @@ Future<void> cancelOrDeleteEvent(
   final pending = ref.read(calendarPendingProvider.notifier);
   final messenger = ScaffoldMessenger.of(context);
   if (own && !others) {
-    final series = await askWholeSeries(context, event, doing: 'Delete');
+    final series = await askWholeSeries(context, event,
+        doing: 'Delete', allToo: _pastOnesToo);
     if (series == null || !context.mounted) return;
     await _deleteWithUndo(context, ref, event, wholeSeries: series);
     return;
@@ -310,6 +325,7 @@ Future<void> cancelOrDeleteEvent(
     context,
     event,
     doing: own ? 'Cancel' : 'Decline and remove',
+    allToo: _pastOnesToo,
   );
   if (series == null || !context.mounted) return;
   final words = await showDialog<String>(
@@ -318,6 +334,7 @@ Future<void> cancelOrDeleteEvent(
       event: event,
       own: own,
       withNote: own && account.provider == MailProvider.outlook,
+      wholeSeries: series,
     ),
   );
   if (words == null || !context.mounted) return;
@@ -564,11 +581,15 @@ class _CancelDialog extends StatefulWidget {
     required this.event,
     required this.own,
     required this.withNote,
+    this.wholeSeries = false,
   });
 
   final CalendarEvent event;
   final bool own;
   final bool withNote;
+
+  /// For every meeting of the series, which goes whole, the past ones too.
+  final bool wholeSeries;
 
   @override
   State<_CancelDialog> createState() => _CancelDialogState();
@@ -594,9 +615,17 @@ class _CancelDialogState extends State<_CancelDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.own
-                ? 'Everyone on ${e.title} is sent the cancellation.'
-                : '$who is told you declined, and it comes off your calendar.'),
+            Text(switch ((widget.own, widget.wholeSeries)) {
+              (true, false) =>
+                'Everyone on ${e.title} is sent the cancellation.',
+              (true, true) => 'Everyone on ${e.title} is sent the '
+                  'cancellation, and every meeting in the series goes from '
+                  "your calendar and from everyone's calendar, past ones too.",
+              (false, false) =>
+                '$who is told you declined, and it comes off your calendar.',
+              (false, true) => '$who is told you declined, and every meeting '
+                  'in the series comes off your calendar, past ones too.',
+            }),
             if (widget.withNote) ...[
               const SizedBox(height: 12),
               TextField(

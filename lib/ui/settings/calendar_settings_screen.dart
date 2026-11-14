@@ -501,6 +501,7 @@ class _PhoneCalendarRowState extends ConsumerState<_PhoneCalendarRow> {
     final problems = await PhoneCalendarSync(
       engine: ref.read(mailEngineProvider),
       phone: ref.read(phoneCalendarProvider),
+      uiState: ref.read(uiStateStoreProvider),
     ).run(ref.read(accountsProvider).value ?? const [], on);
     final problem = problems[account.id];
     if (!mounted) return problem == null;

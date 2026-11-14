@@ -211,8 +211,10 @@ void main() {
       ]);
       await api().update('e1', const EventChange(attendees: [yossi, dana]),
           before: before);
-      final body = bodyOf(sent.single);
-      expect(sent.single.method, 'PATCH');
+      expect(sent.first.method, 'GET',
+          reason: 'what the event has is read first');
+      final body = bodyOf(sent.last);
+      expect(sent.last.method, 'PATCH');
       expect(body.keys, ['attendees'],
           reason: 'so Exchange writes to those added and nobody else');
       expect(body['attendees'], [
@@ -225,6 +227,50 @@ void main() {
           'type': 'required',
         },
       ]);
+    });
+
+    test('a change of the people keeps the room, and anyone added since the '
+        'calendar was read; only those taken off go', () async {
+      Map<String, Object?> on(String email, String type) => {
+            'type': type,
+            'status': {'response': 'accepted'},
+            'emailAddress': {'address': email, 'name': email.split('@').first},
+          };
+      final graph = api((r) => r.method == 'GET'
+          ? json({
+              'id': 'e1',
+              'attendees': [
+                on('yossi@hadco.example', 'required'),
+                on('dana@hadco.example', 'required'),
+                on('room2@hadco.example', 'resource'),
+                on('ori@hadco.example', 'optional'),
+              ],
+            })
+          : http.Response('', 200));
+      final before = meeting(attendees: const [
+        EventAttendee(yossi, response: EventResponse.accepted),
+        EventAttendee(dana, response: EventResponse.accepted),
+      ]);
+      await graph.update('e1', const EventChange(attendees: [yossi]),
+          before: before);
+      final patch = sent.last;
+      expect(patch.method, 'PATCH');
+      expect(bodyOf(patch).keys, ['attendees'],
+          reason: 'still the people alone');
+      expect(bodyOf(patch)['attendees'], [
+        {
+          'emailAddress': {'address': 'yossi@hadco.example', 'name': 'Yossi'},
+          'type': 'required',
+        },
+        {
+          'emailAddress': {'address': 'room2@hadco.example', 'name': 'room2'},
+          'type': 'resource',
+        },
+        {
+          'emailAddress': {'address': 'ori@hadco.example', 'name': 'ori'},
+          'type': 'optional',
+        },
+      ], reason: 'Dana was taken off; the room and Ori were never shown');
     });
 
     test('a move goes in the device zone, a whole day as midnights', () async {
@@ -392,7 +438,12 @@ void main() {
           MailAddress(email: 'Yossi@example.com'),
           MailAddress(email: 'new@example.com', name: 'New One'),
         ]),
-        before: meeting(),
+        before: meeting(attendees: const [
+          EventAttendee(MailAddress(email: 'me@gmail.example'),
+              response: EventResponse.organizer),
+          EventAttendee(MailAddress(email: 'yossi@example.com')),
+          EventAttendee(MailAddress(email: 'gone@example.com')),
+        ]),
       );
       expect(bodyOf(sent.last)['attendees'], [
         {'email': 'me@gmail.example', 'organizer': true, 'self': true, 'responseStatus': 'accepted'},
@@ -400,6 +451,41 @@ void main() {
         {'email': 'new@example.com', 'displayName': 'New One'},
       ]);
       expect(sent.last.url.queryParameters['sendUpdates'], 'all');
+    });
+
+    test('a change of the people keeps the room, and anyone added since the '
+        'calendar was read', () async {
+      final own = {
+        'id': 'g1',
+        'attendees': [
+          {'email': 'me@gmail.example', 'organizer': true, 'self': true, 'responseStatus': 'accepted'},
+          {'email': 'yossi@hadco.example', 'responseStatus': 'accepted'},
+          {
+            'email': 'c_room2@resource.calendar.google.com',
+            'displayName': 'Room 2',
+            'resource': true,
+            'responseStatus': 'accepted',
+          },
+          {'email': 'ori@example.com', 'responseStatus': 'needsAction'},
+        ],
+      };
+      // The screen showed Yossi alone; he is swapped for Dana.
+      await api(own).update(
+        'g1',
+        const EventChange(attendees: [dana]),
+        before: meeting(),
+      );
+      expect(bodyOf(sent.last)['attendees'], [
+        {'email': 'me@gmail.example', 'organizer': true, 'self': true, 'responseStatus': 'accepted'},
+        {
+          'email': 'c_room2@resource.calendar.google.com',
+          'displayName': 'Room 2',
+          'resource': true,
+          'responseStatus': 'accepted',
+        },
+        {'email': 'ori@example.com', 'responseStatus': 'needsAction'},
+        {'email': 'dana@hadco.example', 'displayName': 'Dana Levi'},
+      ]);
     });
 
     test('a move to whole days empties the time, on the calendar it is on',

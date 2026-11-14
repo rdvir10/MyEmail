@@ -221,6 +221,10 @@ void main() {
         isNot(phoneEventOf(timed)['digest']),
       );
       expect(digestOf('a'), 'af63dc4c8601ec8c', reason: "FNV-1a's own value");
+      expect(digestOf(''), 'cbf29ce484222325');
+      expect(digestOf('foobar'), '85944171f73967e8');
+      expect(digestOf('Réunion – 9:00'), '97e9d7e645d295a6',
+          reason: 'by its UTF-8 bytes, as before');
       expect(goesToPhone(timed), isTrue);
       expect(
         goesToPhone(event('x', DateTime(2026), DateTime(2026), cancelled: true)),
@@ -263,10 +267,16 @@ void main() {
       accounts = await engine.loadAccounts();
     });
 
+    PhoneCalendarSync syncWith(DateTime Function() clock) => PhoneCalendarSync(
+          engine: engine,
+          phone: phone,
+          uiState: MemoryUiStateStore(),
+          clock: clock,
+        );
+
     test("a Microsoft account's events go in, and only what changed is "
         'written again', () async {
-      final sync =
-          PhoneCalendarSync(engine: engine, phone: phone, clock: () => now);
+      final sync = syncWith(() => now);
       expect(await sync.run(accounts, {hadco.id}), isEmpty);
       expect(phone.made[hadco.id]!.account, 'ron@hadco.example');
       expect(phone.eventsOf[hadco.id]!.keys, unorderedEquals(['m1', 'm2']),
@@ -282,10 +292,93 @@ void main() {
           DateTime(2026, 10, 26, 11).millisecondsSinceEpoch);
     });
 
+    group('read again', () {
+      // A morning, so no pass below crosses midnight, which reads it all.
+      // The sample engine keeps its reads as made by the same clock.
+      final at = DateTime(2026, 11, 16, 9);
+      final today = DateTime(at.year, at.month, at.day);
+      var clock = at;
+      CalendarEvent on(String id, int day, {String title = 'Review'}) => event(
+            id,
+            DateTime(today.year, today.month, today.day + day, 9),
+            DateTime(today.year, today.month, today.day + day, 10),
+            title: title,
+            accountId: hadco.id,
+          );
+      String titleOf(String id) =>
+          phone.eventsOf[hadco.id]![id]!['title'] as String;
+
+      setUp(() {
+        clock = at;
+        engine.calendarClock = () => clock;
+      });
+
+      test('the next four weeks every pass, the months after them every six '
+          'hours', () async {
+        final sync = syncWith(() => clock);
+        engine.events[hadco.id] = [on('soon', 2), on('later', 100)];
+        await sync.run(accounts, {hadco.id});
+        expect(phone.eventsOf[hadco.id]!.keys,
+            unorderedEquals(['soon', 'later']));
+
+        engine.events[hadco.id] = [
+          on('soon', 2, title: 'Soon, renamed'),
+          on('later', 100, title: 'Later, renamed'),
+        ];
+        clock = at.add(const Duration(minutes: 30));
+        await sync.run(accounts, {hadco.id});
+        expect(titleOf('soon'), 'Soon, renamed');
+        expect(titleOf('later'), 'Review',
+            reason: 'as kept from the last read, and not taken out');
+
+        clock = at.add(const Duration(hours: 6, minutes: 1));
+        await sync.run(accounts, {hadco.id});
+        expect(titleOf('later'), 'Later, renamed');
+      });
+
+      test('a meeting moved past the next four weeks is read where it went',
+          () async {
+        final sync = syncWith(() => clock);
+        engine.events[hadco.id] = [on('soon', 2), on('later', 100)];
+        await sync.run(accounts, {hadco.id});
+
+        engine.events[hadco.id] = [on('soon', 60), on('later', 100)];
+        clock = at.add(const Duration(minutes: 30));
+        await sync.run(accounts, {hadco.id});
+        expect(phone.eventsOf[hadco.id]!['soon']?['start'],
+            on('soon', 60).start.millisecondsSinceEpoch,
+            reason: 'gone from the next weeks, so the rest is read too');
+      });
+
+      test('a meeting moved after another read of its days is still not '
+          'lost', () async {
+        final sync = syncWith(() => clock);
+        engine.events[hadco.id] = [on('soon', 1), on('later', 100)];
+        await sync.run(accounts, {hadco.id});
+
+        // Both moved further out; the reminders read the next three days,
+        // and the calendar screen the month 'later' was in, before the
+        // phone's next pass. Neither read sees where they went.
+        engine.events[hadco.id] = [on('soon', 42), on('later', 200)];
+        clock = at.add(const Duration(minutes: 10));
+        await engine.calendarEvents(
+            hadco.id, today, DateTime(today.year, today.month, today.day + 3));
+        await engine.calendarEvents(
+            hadco.id,
+            DateTime(today.year, today.month, today.day + 90),
+            DateTime(today.year, today.month, today.day + 120));
+        clock = at.add(const Duration(minutes: 30));
+        await sync.run(accounts, {hadco.id});
+        int? startOf(String id) =>
+            phone.eventsOf[hadco.id]![id]?['start'] as int?;
+        expect(startOf('soon'), on('soon', 42).start.millisecondsSinceEpoch);
+        expect(startOf('later'), on('later', 200).start.millisecondsSinceEpoch);
+      });
+    });
+
     test('switched off, its calendar is taken out; a Gmail one never goes in',
         () async {
-      final sync =
-          PhoneCalendarSync(engine: engine, phone: phone, clock: () => now);
+      final sync = syncWith(() => now);
       await sync.run(accounts, {hadco.id, 'acct-personal'});
       expect(phone.made.keys, [hadco.id]);
       await sync.run(accounts, {});
@@ -294,8 +387,7 @@ void main() {
 
     test('without the permission, or the calendar, it says so', () async {
       phone.allowed = false;
-      final sync =
-          PhoneCalendarSync(engine: engine, phone: phone, clock: () => now);
+      final sync = syncWith(() => now);
       expect((await sync.run(accounts, {hadco.id}))[hadco.id],
           isA<PhoneCalendarNotAllowed>());
 
@@ -775,11 +867,13 @@ void main() {
       bool own = false,
       bool alone = false,
       List<EventAttendee>? people,
+      String? seriesId,
     }) {
       final t = today();
       return CalendarEvent(
         id: id,
         accountId: hadco.id,
+        seriesId: seriesId,
         title: own ? (alone ? 'Dentist' : 'Planning') : 'Budget',
         start: DateTime(t.year, t.month, t.day + 1, 10),
         end: DateTime(t.year, t.month, t.day + 1, 11),
@@ -924,6 +1018,45 @@ void main() {
       await tester.pumpAndSettle();
       expect(engine.calendarActions.last, 'remove a1');
       expect(find.text('Dentist'), findsNothing);
+    });
+
+    testWidgets('cancelling every meeting of a series says the past ones go '
+        'too', (tester) async {
+      final engine = SampleMailEngine();
+      await pump(tester, const CalendarScreen(), using: engine,
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          tomorrowAt10(hadco, own: true, seriesId: 'weekly'),
+        ];
+      });
+      await openSheet(tester, 'm');
+      await tester.tap(find.byKey(const ValueKey('event-more')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('event-remove')));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('series-all')),
+          matching: find.textContaining('past ones too'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('series-one')),
+          matching: find.textContaining('past'),
+        ),
+        findsNothing,
+      );
+      await tester.tap(find.byKey(const ValueKey('series-all')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining("from everyone's calendar, past ones too"),
+          findsOneWidget,
+          reason: 'said again just before it goes');
+      await tester.tap(find.byKey(const ValueKey('cancel-go')));
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions.single, startsWith('cancel m'));
+      expect(engine.calendarActions.single, contains('series'));
     });
 
     testWidgets('someone else\'s meeting is declined and taken off (#14)',

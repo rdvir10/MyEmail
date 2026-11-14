@@ -907,6 +907,10 @@ class SampleMailEngine implements MailEngine {
   /// What [calendarEvents] throws instead, by account, for a test.
   final Map<String, Exception> calendarRefusals = {};
 
+  /// When [calendarEvents] says each read was made, for a test whose own
+  /// clock is not the device's.
+  DateTime Function() calendarClock = DateTime.now;
+
   @override
   Future<List<CalendarEvent>> calendarEvents(
     String accountId,
@@ -925,7 +929,7 @@ class SampleMailEngine implements MailEngine {
     // Kept calendar by calendar, as the real engine keeps them.
     final calendars = _listed(accountId);
     _keptCalendars.keepList(accountId, calendars);
-    final readAt = DateTime.now();
+    final readAt = calendarClock();
     for (final c in calendars) {
       _keptCalendars.keep(
         accountId,

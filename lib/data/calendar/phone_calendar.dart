@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 
 import '../../domain/calendar_event.dart';
@@ -86,8 +87,25 @@ Map<String, Object?> phoneEventOf(CalendarEvent e) {
 }
 
 /// FNV-1a, 64 bits, as hex: the same on every run, which String.hashCode
-/// is not promised to be.
+/// is not promised to be. On the phone an int is 64 bits and wraps as
+/// FNV-1a wants, so each byte is two steps of plain arithmetic: a pass
+/// hashes every event of the months it writes, on the screen's thread.
+/// The web's ints are not, so it keeps BigInt, which makes four objects a
+/// byte.
 String digestOf(String text) {
+  if (kIsWeb) return _digestWithBigInt(text);
+  // The basis in two halves: a literal past 2^63 does not build for the
+  // web.
+  var hash = (0xcbf29ce4 << 32) | 0x84222325;
+  const prime = 0x100000001b3;
+  for (final unit in utf8.encode(text)) {
+    hash = (hash ^ unit) * prime;
+  }
+  return (hash >>> 32).toRadixString(16).padLeft(8, '0') +
+      (hash & 0xffffffff).toRadixString(16).padLeft(8, '0');
+}
+
+String _digestWithBigInt(String text) {
   var hash = BigInt.parse('cbf29ce484222325', radix: 16);
   final prime = BigInt.parse('100000001b3', radix: 16);
   final mask = (BigInt.one << 64) - BigInt.one;

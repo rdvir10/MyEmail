@@ -100,6 +100,11 @@ abstract final class UiStateKeys {
   static const phoneCalendars = 'calendar.phone.v1';
   static const phoneCalendarsSynced = 'calendar.phone-synced.v1';
 
+  /// What the last of those passes gave the phone, by account: a digest of
+  /// each event's id, so the next can tell when one it gave would go
+  /// missing. Written by both too, and read the same way.
+  static const phoneCalendarsGiven = 'calendar.phone-given.v1';
+
   /// The calendar view: Agenda, Day, Week or Month, and the accounts it
   /// leaves out.
   static const calendarView = 'calendar.view.v1';
