@@ -12,6 +12,7 @@ import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
 import '../../domain/text_direction.dart';
+import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
 import '../imap/imap_mapping.dart' show htmlToText;
 import '../mail_engine.dart';
@@ -30,8 +31,9 @@ import '../mail_engine.dart';
 /// `MicrosoftOAuth.calendarScopes`); keeping the two apart keeps a mailbox
 /// that was approved for mail alone reading its mail. The plumbing is
 /// GraphMailApi's, in the small: a token refreshed once when Microsoft turns
-/// it away, a throttle waited out, and Graph's error envelope read into the
-/// failures the rest of the app shows.
+/// it away, a throttle waited out, the same limit on how long an answer may
+/// take, and Graph's error envelope read into the failures the rest of the
+/// app shows.
 class GraphCalendarApi {
   GraphCalendarApi({
     required this.accessToken,
@@ -1301,6 +1303,12 @@ class GraphCalendarApi {
   /// be. A refresh that could not reach Microsoft reads as what it is, no
   /// connection, rather than as a refusal. A refresh Microsoft refused for
   /// want of consent is not caught: that is the screen's to answer.
+  ///
+  /// An answer is waited for as long as the mail calls wait and no longer
+  /// (see [answeredInTime]), and one not had by then is no connection too.
+  /// The background pass reads this calendar after the mail, and a request
+  /// on a network that had gone quiet held that pass, and every one after
+  /// it, for good: no mail was checked again until the app was opened.
   Future<http.Response> _authorised(http.Request Function() build) async {
     for (var forced = false;; forced = true) {
       final String token;
@@ -1312,7 +1320,10 @@ class GraphCalendarApi {
       final request = build()..headers['Authorization'] = 'Bearer $token';
       final http.Response response;
       try {
-        response = await http.Response.fromStream(await _client.send(request));
+        response = await answeredInTime(
+          _client.send(request),
+          uploading: request.contentLength,
+        );
       } on Exception catch (e) {
         throw ConnectionFailed('Could not reach Microsoft. ($e)');
       }

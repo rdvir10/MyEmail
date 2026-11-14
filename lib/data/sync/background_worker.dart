@@ -585,6 +585,29 @@ Future<bool> _runPendingActions({required bool retry}) async {
   }
 }
 
+/// How long one of the steps a background pass takes after the mail may
+/// hold it: the phone's calendar, the meeting reminders and Duet.
+///
+/// When the calendar calls had no limit of their own, one never answered
+/// held the live worker's pass for good, and with it every pass after: no
+/// mail was checked again until the app was opened. They have one now.
+/// This is for whatever else may yet hang in a step, so that nothing after
+/// the mail can hold the loop.
+@visibleForTesting
+const stepAfterMailWithin = Duration(minutes: 3);
+
+/// [step], one of those, waited for no longer than [stepAfterMailWithin].
+/// Past it the pass goes on without it. The step is not stopped: it ends,
+/// or fails, by itself, and as each notes when it ran before it starts,
+/// the passes soon after do not run a second one alongside it.
+@visibleForTesting
+Future<void> stepAfterMail(String what, Future<void> step) =>
+    step.timeout(stepAfterMailWithin, onTimeout: () {
+      debugPrint('[myemail] $what not done after '
+          '${stepAfterMailWithin.inMinutes} minutes: the pass goes on '
+          'without it');
+    });
+
 /// The foreground modes: one worker that stays alive and loops, for as long
 /// as Android keeps its foreground service going.
 ///
@@ -667,22 +690,33 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
           fromCache: !full,
           synced: report.synced,
         );
-        // At most every half hour, whatever the pass's own pace.
-        await syncPhoneCalendarsIfDue(liveEngine, PrefsUiStateStore(prefs));
+        // At most every half hour, whatever the pass's own pace. This and
+        // the two after it hold the pass for a few minutes at most: see
+        // stepAfterMail.
+        await stepAfterMail(
+          'phone calendar',
+          syncPhoneCalendarsIfDue(liveEngine, PrefsUiStateStore(prefs)),
+        );
         // Meeting reminders, the morning's agenda and the calendar widget,
         // every quarter hour at most.
-        await keepCalendarUpIfDue(
-          liveEngine,
-          PrefsUiStateStore(prefs),
-          notifier,
-          homeScreenSurface(),
-          links: FileInternetCalendars(),
+        await stepAfterMail(
+          'meeting reminders',
+          keepCalendarUpIfDue(
+            liveEngine,
+            PrefsUiStateStore(prefs),
+            notifier,
+            homeScreenSurface(),
+            links: FileInternetCalendars(),
+          ),
         );
         // The Inboxes for Duet, at most every five minutes.
-        await sendToDuetIfDue(
-          liveEngine,
-          PrefsUiStateStore(prefs),
-          SecureCredentialStore(),
+        await stepAfterMail(
+          'duet upload',
+          sendToDuetIfDue(
+            liveEngine,
+            PrefsUiStateStore(prefs),
+            SecureCredentialStore(),
+          ),
         );
         await state.writeLastLivePass(DateTime.now());
         return report;
@@ -845,19 +879,34 @@ Future<bool> _runOnePass() async {
       surface: homeScreenSurface(),
       store: PrefsWidgetStateStore(),
     ).refresh(engine, synced: report.synced);
-    // Never throws, and does nothing where no calendar is shown there.
-    await syncPhoneCalendarsIfDue(engine, PrefsUiStateStore(prefs));
+    // Never throws, and does nothing where no calendar is shown there. As
+    // in the live worker, this and the two after it hold the pass for a
+    // few minutes at most: see stepAfterMail.
+    await stepAfterMail(
+      'phone calendar',
+      syncPhoneCalendarsIfDue(engine, PrefsUiStateStore(prefs)),
+    );
     // Meeting reminders, the morning's agenda and the calendar widget.
     // Never throws either.
-    await keepCalendarUpIfDue(
-      engine,
-      PrefsUiStateStore(prefs),
-      notifier,
-      homeScreenSurface(),
-      links: FileInternetCalendars(),
+    await stepAfterMail(
+      'meeting reminders',
+      keepCalendarUpIfDue(
+        engine,
+        PrefsUiStateStore(prefs),
+        notifier,
+        homeScreenSurface(),
+        links: FileInternetCalendars(),
+      ),
     );
     // Nor this, where nothing is sent to Duet.
-    await sendToDuetIfDue(engine, PrefsUiStateStore(prefs), SecureCredentialStore());
+    await stepAfterMail(
+      'duet upload',
+      sendToDuetIfDue(
+        engine,
+        PrefsUiStateStore(prefs),
+        SecureCredentialStore(),
+      ),
+    );
 
     debugPrint('[myemail] background pass: $report');
     for (final failure in report.failures) {

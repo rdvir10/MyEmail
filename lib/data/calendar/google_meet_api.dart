@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart'
     show SignInNeedsConsent, SignInUnreachable;
 import '../mail_engine.dart';
@@ -64,7 +65,10 @@ class GoogleMeetApi {
   /// With the account's token, and once more with a freshly refreshed one
   /// if Google turns the first away, as the calendar calls do. [build] is
   /// called per try because a request cannot be sent twice. A refresh that
-  /// could not reach Google reads as what it is, no connection.
+  /// could not reach Google reads as what it is, no connection, and so does
+  /// an answer not had in the time the calendar calls wait for one (see
+  /// [answeredInTime]): with no limit, a new meeting waited on its link for
+  /// ever.
   Future<http.Response> _authorised(http.Request Function() build) async {
     for (var forced = false;; forced = true) {
       final String token;
@@ -76,7 +80,10 @@ class GoogleMeetApi {
       final request = build()..headers['Authorization'] = 'Bearer $token';
       final http.Response response;
       try {
-        response = await http.Response.fromStream(await _client.send(request));
+        response = await answeredInTime(
+          _client.send(request),
+          uploading: request.contentLength,
+        );
       } on Exception catch (e) {
         throw ConnectionFailed('Could not reach Google. ($e)');
       }

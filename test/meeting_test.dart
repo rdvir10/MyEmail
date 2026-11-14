@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -5,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart' as http_testing;
 import 'package:myemail/data/account_store.dart';
+import 'package:myemail/data/answer_limit.dart';
 import 'package:myemail/data/auth/google_oauth.dart';
 import 'package:myemail/data/auth/microsoft_oauth.dart';
 import 'package:myemail/data/cache/cache_store.dart';
@@ -737,6 +739,51 @@ void main() {
         ).createEvent(meeting()),
         throwsA(isA<ConnectionFailed>()),
       );
+    });
+
+    testWidgets('a request never answered is given up on in the mail calls\' '
+        'time, as no connection', (tester) async {
+      // The signal lost mid-request, with the connection left open: the
+      // background pass, which reads the calendar after the mail, waited
+      // for ever, and no mail was checked again until the app was opened.
+      Object? failed;
+      unawaited(api((_) => Completer<http.Response>().future)
+          .events(DateTime(2026, 10, 1), DateTime(2026, 10, 4),
+              accountId: 'acct-ms')
+          .then<void>((_) {}, onError: (Object e) => failed = e));
+
+      await tester.pump(answerWithin - const Duration(seconds: 1));
+      expect(failed, isNull, reason: 'a slow answer is still waited for');
+      await tester.pump(const Duration(seconds: 2));
+      expect(
+        failed,
+        isA<ConnectionFailed>().having(
+            (e) => e.message, 'message', contains('Could not reach Microsoft')),
+      );
+    });
+
+    testWidgets('and so is an answer that goes quiet part way',
+        (tester) async {
+      // Let go of with a future, as a connection is. One let go of with
+      // none hands the limit's error over in a microtask that fake time
+      // never runs, and it would never arrive here.
+      final quiet = StreamController<List<int>>(onCancel: () async {})
+        ..add(utf8.encode('{"value":['));
+      Object? failed;
+      unawaited(GraphCalendarApi(
+        accessToken: ({bool force = false}) async => 'token',
+        httpClient: http_testing.MockClient.streaming(
+          (_, _) async => http.StreamedResponse(quiet.stream, 200),
+        ),
+      )
+          .events(DateTime(2026, 10, 1), DateTime(2026, 10, 4),
+              accountId: 'acct-ms')
+          .then<void>((_) {}, onError: (Object e) => failed = e));
+
+      await tester.pump(answerWithin - const Duration(seconds: 1));
+      expect(failed, isNull, reason: 'a shorter pause is waited out');
+      await tester.pump(const Duration(seconds: 2));
+      expect(failed, isA<ConnectionFailed>());
     });
 
     group('a Teams meeting made ahead of Send', () {
@@ -1681,6 +1728,25 @@ void main() {
       );
     });
 
+    testWidgets('a request never answered is given up on in the mail calls\' '
+        'time, as no connection', (tester) async {
+      // As the Microsoft calendar's: read by the background pass too.
+      Object? failed;
+      unawaited(api((_) => Completer<http.Response>().future)
+          .events(DateTime(2026, 10, 1), DateTime(2026, 10, 4),
+              accountId: 'acct-g')
+          .then<void>((_) {}, onError: (Object e) => failed = e));
+
+      await tester.pump(answerWithin - const Duration(seconds: 1));
+      expect(failed, isNull, reason: 'a slow answer is still waited for');
+      await tester.pump(const Duration(seconds: 2));
+      expect(
+        failed,
+        isA<ConnectionFailed>().having(
+            (e) => e.message, 'message', contains('Could not reach Google')),
+      );
+    });
+
     const events =
         'https://www.googleapis.com/calendar/v3/calendars/primary/events';
 
@@ -2266,6 +2332,24 @@ void main() {
             }, 400)).createSpace(),
         throwsA(isA<ConnectionFailed>().having(
             (e) => e.message, 'message', contains('invalid argument'))),
+      );
+    });
+
+    testWidgets('a request never answered is given up on in the mail calls\' '
+        'time, as no connection', (tester) async {
+      // The new meeting's screen waited on its link for ever.
+      Object? failed;
+      unawaited(api((_) => Completer<http.Response>().future)
+          .createSpace()
+          .then<void>((_) {}, onError: (Object e) => failed = e));
+
+      await tester.pump(answerWithin - const Duration(seconds: 1));
+      expect(failed, isNull, reason: 'a slow answer is still waited for');
+      await tester.pump(const Duration(seconds: 2));
+      expect(
+        failed,
+        isA<ConnectionFailed>().having(
+            (e) => e.message, 'message', contains('Could not reach Google')),
       );
     });
   });

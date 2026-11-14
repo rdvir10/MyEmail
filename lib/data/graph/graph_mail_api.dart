@@ -11,6 +11,7 @@ import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 
 import 'package:http/http.dart' as http;
 
+import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
 import '../compose/mime_parts.dart' show bareContentId;
 import '../imap/imap_mapping.dart' show htmlToText;
@@ -1308,7 +1309,10 @@ class GraphMailApi {
         ..bodyBytes = bytes.sublist(start, end);
       final http.Response response;
       try {
-        response = await _within(_client.send(request), uploading: end - start);
+        response = await answeredInTime(
+          _client.send(request),
+          uploading: end - start,
+        );
       } on Exception catch (e) {
         throw GraphUnavailable('Could not reach Microsoft. ($e)');
       }
@@ -1409,7 +1413,7 @@ class GraphMailApi {
         ..headers['Authorization'] = 'Bearer ${await _token(force: forced)}';
       final http.Response response;
       try {
-        response = await _inTurn(() => _within(
+        response = await _inTurn(() => answeredInTime(
               _client.send(request),
               uploading: request.contentLength,
             ));
@@ -1418,53 +1422,6 @@ class GraphMailApi {
       }
       if (response.statusCode != 401 || forced) return response;
     }
-  }
-
-  /// How long Microsoft may take to start answering, and how long it may
-  /// then go quiet part way through. Without a limit a request on a network
-  /// that had gone away waited for ever: a pass of the live worker, or a
-  /// Delete pressed in the shade, held up with it.
-  static const answerWithin = Duration(seconds: 90);
-
-  /// The slowest upload allowed before a request is given up on: a weak
-  /// signal, not a dead one. A draft with a photo can be 4 MB of base64.
-  static const slowestUploadBytesPerSecond = 8 * 1024;
-
-  /// The response to [sent], within [answerWithin] for the headers, plus
-  /// the time [uploading] bytes take at the slowest upload allowed, and
-  /// [answerWithin] for every gap in the body after them. A gap, not the
-  /// whole body: a large attachment on a slow line may take longer than any
-  /// fixed limit.
-  static Future<http.Response> _within(
-    Future<http.StreamedResponse> sent, {
-    int uploading = 0,
-  }) async {
-    final http.StreamedResponse streamed;
-    try {
-      streamed = await sent.timeout(
-        answerWithin +
-            Duration(seconds: uploading ~/ slowestUploadBytesPerSecond),
-      );
-    } on TimeoutException {
-      // Should the answer come after all, its connection is let go of
-      // rather than held open for good.
-      unawaited(sent.then(
-        (late) => late.stream.listen(null).cancel(),
-        onError: (Object _) {},
-      ));
-      rethrow;
-    }
-    final body =
-        await http.ByteStream(streamed.stream.timeout(answerWithin)).toBytes();
-    return http.Response.bytes(
-      body,
-      streamed.statusCode,
-      request: streamed.request,
-      headers: streamed.headers,
-      isRedirect: streamed.isRedirect,
-      persistentConnection: streamed.persistentConnection,
-      reasonPhrase: streamed.reasonPhrase,
-    );
   }
 
   /// Send [request], waiting out any throttling Graph asks for.

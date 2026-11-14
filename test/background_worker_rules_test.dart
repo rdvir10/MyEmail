@@ -367,6 +367,24 @@ void main() {
     });
   });
 
+  group('the steps a pass takes after the mail', () {
+    testWidgets('one that never ends holds the pass no longer than its limit',
+        (tester) async {
+      // The phone's calendar, the meeting reminders and Duet come after
+      // the mail. A calendar request never answered held the live worker's
+      // pass for good, and no mail was checked again until the app was
+      // opened.
+      var done = false;
+      unawaited(stepAfterMail('calendar', Completer<void>().future)
+          .then((_) => done = true));
+
+      await tester.pump(stepAfterMailWithin - const Duration(seconds: 1));
+      expect(done, isFalse, reason: 'a slow step is still waited for');
+      await tester.pump(const Duration(seconds: 2));
+      expect(done, isTrue);
+    });
+  });
+
   group('whether the worker really has its foreground service', () {
     test('the first question waits for the service to come up', () async {
       // WorkManager asks for it as the worker starts; Android brings it up

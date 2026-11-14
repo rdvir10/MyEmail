@@ -11,6 +11,7 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
+import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
 import '../imap/imap_mapping.dart' show htmlToText;
 import '../mail_engine.dart';
@@ -1161,6 +1162,11 @@ class GoogleCalendarApi {
   /// look good here and not be. [build] is called per try because a request
   /// cannot be sent twice. A refresh that could not reach Google reads as
   /// what it is, no connection, rather than as a refusal.
+  ///
+  /// An answer is waited for as long as the mail calls wait and no longer
+  /// (see [answeredInTime]), and one not had by then is no connection too:
+  /// the background pass reads this calendar after the mail, as it does
+  /// Microsoft's, and a request that never came back held it for good.
   Future<http.Response> _authorised(http.Request Function() build) async {
     for (var forced = false;; forced = true) {
       final String token;
@@ -1172,7 +1178,10 @@ class GoogleCalendarApi {
       final request = build()..headers['Authorization'] = 'Bearer $token';
       final http.Response response;
       try {
-        response = await http.Response.fromStream(await _client.send(request));
+        response = await answeredInTime(
+          _client.send(request),
+          uploading: request.contentLength,
+        );
       } on Exception catch (e) {
         throw ConnectionFailed('Could not reach Google. ($e)');
       }
