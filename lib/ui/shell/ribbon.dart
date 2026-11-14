@@ -89,7 +89,8 @@ class _RibbonState extends ConsumerState<Ribbon> {
   /// Delete, Archive, Move and Read on [commandTargets]: the ticked
   /// messages where any are ticked, the open one otherwise. The ticks go
   /// once it is done, as the selection bar's buttons let them go; a Move
-  /// whose picker was closed keeps them for another try.
+  /// whose picker was closed keeps them for another try. With none of the
+  /// ticks in the list now there is nothing to act on, and it says so.
   Future<void> _onTargets(
     String listId,
     MailMessage? message,
@@ -98,7 +99,10 @@ class _RibbonState extends ConsumerState<Ribbon> {
   ) async {
     final ticking = ref.read(selectedMessageIdsProvider).isNotEmpty;
     final chosen = commandTargets(ref, listId, message);
-    if (chosen.isEmpty) return;
+    if (chosen.isEmpty) {
+      if (ticking) sayTicksGone(context);
+      return;
+    }
     final result = await act(MessageActions(ref, listId), chosen);
     if (ticking && result != false && mounted) {
       ref.read(selectedMessageIdsProvider.notifier).clear();

@@ -270,13 +270,11 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
         // What is ticked, when anything is, as the selection bar's Delete:
         // the cursor is only where the person is looking. It took the
         // message under the cursor, ticked or not, and left the ticks.
-        final ticked = ref.read(selectedMessageIdsProvider);
-        if (ticked.isNotEmpty) {
+        if (ref.read(selectedMessageIdsProvider).isNotEmpty) {
           if (event is KeyDownEvent) {
-            final chosen = [
-              for (final m in _all)
-                if (ticked.contains(m.id)) m,
-            ];
+            // Looked up as the ribbon and the bar look them up, your
+            // replies from Sent inside an open thread among them.
+            final chosen = tickedMessages(ref, widget.listId);
             final actions = MessageActions(ref, widget.listId);
             archive
                 ? actions.archive(context, chosen)

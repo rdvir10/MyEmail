@@ -3,12 +3,15 @@ import 'dart:async';
 import '../common/bottom_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show ProviderListenable;
 
 import '../../data/mail_engine.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/message_move.dart';
+import '../../state/conversation_extras.dart';
+import '../../state/display_providers.dart';
 import '../../state/folder_tree.dart';
 import '../../state/follow_ups.dart';
 import '../../state/list_filter.dart';
@@ -19,16 +22,48 @@ import '../../state/sync_providers.dart' show backgroundSchedulerProvider;
 import '../../state/waiting_changes.dart';
 import 'move_to_sheet.dart';
 
-/// The messages ticked in [listId]'s list, in its order: the search hits
-/// while a search is showing. Empty when nothing is ticked.
+/// Every message in [listId]'s list, which is where a tick is looked up,
+/// a tick being only an id: the search hits while a search is showing;
+/// or else the folder's messages as the list draws them, older mail a
+/// filter found on the server among them, with your replies from Sent
+/// shown inside the threads they answer. [watch] for a widget built from
+/// it, so it is built again when any of that changes.
+List<MailMessage> listedMessages(
+  WidgetRef ref,
+  String listId, {
+  bool watch = false,
+}) {
+  T get<T>(ProviderListenable<T> provider) =>
+      watch ? ref.watch(provider) : ref.read(provider);
+  if (get(searchQueryProvider).trim().isNotEmpty) {
+    return get(searchResultsProvider).value ?? const [];
+  }
+  final rows = get(sortedMessagesProvider(listId));
+  final others = get(displayProvider).conversations
+      ? get(conversationExtrasProvider(listId)).value ?? const <MailMessage>[]
+      : const <MailMessage>[];
+  if (others.isEmpty) return rows;
+  final own = {for (final m in rows) m.id};
+  return [
+    ...rows,
+    for (final m in others)
+      if (!own.contains(m.id)) m,
+  ];
+}
+
+/// The messages ticked in [listId]'s list, in its order. Empty when
+/// nothing is ticked, or when nothing ticked is in the list now.
+///
+/// Looked up in everything the list has (see [listedMessages]), for the
+/// ribbon, the keys, the selection bar and the list's own Delete alike.
+/// Looked up in the folder's own messages, a ticked row of older mail a
+/// filter had found on the server was passed over, and so was your reply
+/// from Sent ticked inside a thread.
 List<MailMessage> tickedMessages(WidgetRef ref, String listId) {
   final ticked = ref.read(selectedMessageIdsProvider);
   if (ticked.isEmpty) return const [];
-  final listed = ref.read(searchQueryProvider).trim().isNotEmpty
-      ? ref.read(searchResultsProvider).value
-      : ref.read(messagesProvider(listId)).value;
   return [
-    for (final m in listed ?? const <MailMessage>[])
+    for (final m in listedMessages(ref, listId))
       if (ticked.contains(m.id)) m,
   ];
 }
@@ -38,14 +73,32 @@ List<MailMessage> tickedMessages(WidgetRef ref, String listId) {
 /// list's Delete do, or else [open], the message being read. The open
 /// message alone took a selection made with Shift and the arrows to be
 /// the last row it reached, and Move moved that one only.
+///
+/// Never [open] while anything is ticked: where none of the ticks is in
+/// the list now, nothing, and the caller says so with [sayTicksGone].
+/// Ticks on older mail a filter had found once came to nothing that way,
+/// and Delete took the message being read, which nobody had ticked.
 List<MailMessage> commandTargets(
   WidgetRef ref,
   String listId,
   MailMessage? open,
 ) {
-  final ticked = tickedMessages(ref, listId);
-  if (ticked.isNotEmpty) return ticked;
+  if (ref.read(selectedMessageIdsProvider).isNotEmpty) {
+    return tickedMessages(ref, listId);
+  }
   return [?open];
+}
+
+/// Why a command did nothing while messages are ticked: none of them is
+/// in the list now. A ticked one read on the phone while Unread is on
+/// leaves the list, and its tick stays behind.
+void sayTicksGone(BuildContext context) {
+  ScaffoldMessenger.maybeOf(context)
+    ?..hideCurrentSnackBar()
+    ..showSnackBar(const SnackBar(
+      duration: kBottomMessage,
+      content: Text('None of the ticked messages is in the list now.'),
+    ));
 }
 
 /// Move and delete, shared by the swipe gestures, the message menu and the

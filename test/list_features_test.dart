@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/mail_engine.dart';
@@ -6,6 +7,7 @@ import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/display_settings.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/domain/row_format.dart';
 import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/state/message_providers.dart';
@@ -147,6 +149,51 @@ void main() {
     expect(rows(tester).any((m) => m.id == engine.sentReply!.id), isTrue);
   });
 
+  for (final control in [false, true]) {
+    final how = control ? 'Ctrl+D' : 'Delete';
+    testWidgets('your reply from Sent, ticked inside its thread, is what '
+        '$how takes', (tester) async {
+      // Ticked by Ctrl+A with the rest of the screen, and drawn, but not
+      // one of the list's own. Looked for there alone, the tick came to
+      // nothing: Ctrl+D took the message open instead, and Delete took
+      // nothing and let the tick go.
+      await pump(tester);
+      final answered = rows(tester).first;
+      final reply = engine.sentReply = MailMessage(
+        id: '$sent#9001',
+        accountId: 'acct-personal',
+        folderId: sent,
+        uid: 9001,
+        subject: 'Re: ${answered.subject}',
+        preview: 'My answer',
+        from: const MailAddress(email: 'me@example.com', name: 'Me'),
+        to: [answered.from],
+        date: answered.date.add(const Duration(minutes: 5)),
+        isRead: true,
+      );
+      c.read(displayProvider.notifier).setConversations(true);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(answered.subject).first);
+      await tester.pumpAndSettle();
+      expect(rows(tester).any((m) => m.id == reply.id), isTrue);
+      c.read(selectedMessageIdProvider.notifier).select(answered.id);
+      c.read(selectedMessageIdsProvider.notifier).addAll([reply.id]);
+      await tester.pumpAndSettle();
+
+      if (control) {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      }
+      await tester.sendKeyEvent(
+          control ? LogicalKeyboardKey.keyD : LogicalKeyboardKey.delete);
+      if (control) {
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      }
+      await tester.pumpAndSettle();
+
+      expect(engine.deleted, [reply.id]);
+    });
+  }
+
   testWidgets('After 5 seconds: opened and left before then, it stays unread',
       (tester) async {
     await pump(tester);
@@ -167,10 +214,17 @@ void main() {
 
 /// The sample engine, with one message only the server's filter finds, a
 /// reply of yours in Sent when a test puts one there, and a record of what
-/// was marked read.
+/// was marked read and what was deleted.
 class _Engine extends SampleMailEngine {
   MailMessage? sentReply;
   final readMarked = <String>[];
+  final deleted = <String>[];
+
+  @override
+  Future<List<MessageMove>> deleteMessages(List<String> messageIds) {
+    deleted.addAll(messageIds);
+    return super.deleteMessages(messageIds);
+  }
 
   @override
   Future<List<MailMessage>> filterMessages(

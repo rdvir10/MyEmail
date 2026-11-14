@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/mail_engine.dart';
@@ -10,12 +11,14 @@ import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/conversations.dart';
 import 'package:myemail/state/display_providers.dart';
+import 'package:myemail/state/list_filter.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/messages/conversation_tile.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/messages/selection_bar.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
+import 'package:myemail/ui/shell/ribbon.dart';
 
 import 'helpers/open_search.dart';
 
@@ -661,6 +664,173 @@ void main() {
         .value!
         .firstWhere((m) => m.id == unread.id);
     expect(after.isRead, isFalse);
+  });
+
+  group('with a filter on', () {
+    // Ron, on the tablet (3.13.0): Unread on, reading one message, and two
+    // unread rows from last month ticked, further down than the list had
+    // paged in, there because the server found them for the filter. The
+    // ribbon's Delete sent the message he was reading to Trash and left
+    // the ticked ones; with newer rows ticked too, it took those alone.
+    // The ticks were looked for in the folder's own list, which does not
+    // hold what the server found.
+    const folder = 'acct-personal:Newsletters';
+    late ProviderContainer c;
+
+    /// The message open, which nobody ticked.
+    late MailMessage open;
+
+    /// Rows the list holds, the open one apart; and rows drawn from what
+    /// the server found for the filter, which the list does not hold.
+    late List<MailMessage> held, older;
+
+    /// Newsletters under Unread, with one of its messages open. Its sample
+    /// mail is all unread, and more than a page of it.
+    Future<void> filtered(WidgetTester tester) async {
+      c = await pump(tester);
+      c.read(selectedFolderIdProvider.notifier).select(folder);
+      await tester.pumpAndSettle();
+      c.read(listFiltersProvider.notifier).set(folder, MessageFilter.unread);
+      await tester.pumpAndSettle();
+      final listed = {
+        for (final m in c.read(messagesProvider(folder)).value!) m.id,
+      };
+      final drawn = c.read(sortedMessagesProvider(folder));
+      older = [
+        for (final m in drawn)
+          if (!listed.contains(m.id)) m,
+      ];
+      expect(older, hasLength(greaterThan(1)),
+          reason: 'unread mail past the first page, found by the server');
+      open = drawn.firstWhere((m) => listed.contains(m.id));
+      c.read(selectedMessageIdProvider.notifier).select(open.id);
+      await tester.pumpAndSettle();
+      held = [
+        for (final m in drawn)
+          if (listed.contains(m.id) && m.id != open.id) m,
+      ];
+    }
+
+    Future<void> tick(WidgetTester tester, List<MailMessage> messages) async {
+      c
+          .read(selectedMessageIdsProvider.notifier)
+          .addAll(messages.map((m) => m.id));
+      await tester.pumpAndSettle();
+    }
+
+    /// Whether [m] is still in its folder, as the engine has it.
+    Future<bool> kept(MailMessage m) async =>
+        await c.read(mailEngineProvider).cachedMessage(m.id) != null;
+
+    Finder inRibbon(String label) =>
+        find.descendant(of: find.byType(Ribbon), matching: find.text(label));
+
+    Future<void> deleteBy(WidgetTester tester, {required bool keys}) async {
+      if (keys) {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyD);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      } else {
+        await tester.tap(inRibbon('Delete'));
+      }
+      await tester.pumpAndSettle();
+    }
+
+    for (final keys in [false, true]) {
+      final how = keys ? 'Ctrl+D' : "the ribbon's Delete";
+      testWidgets('$how takes a ticked row the server found, not the one '
+          'open', (tester) async {
+        await filtered(tester);
+        await tick(tester, [older.first]);
+
+        await deleteBy(tester, keys: keys);
+
+        expect(await kept(older.first), isFalse);
+        expect(await kept(open), isTrue);
+        expect(c.read(selectedMessageIdsProvider), isEmpty);
+      });
+    }
+
+    testWidgets("the ribbon's Archive takes every ticked row, the list's "
+        "and the server's", (tester) async {
+      await filtered(tester);
+      final ticked = [held.first, older.first];
+      await tick(tester, ticked);
+
+      await tester.tap(inRibbon('Archive'));
+      await tester.pumpAndSettle();
+
+      for (final m in ticked) {
+        expect(await kept(m), isFalse, reason: m.subject);
+      }
+      expect(await kept(open), isTrue);
+      expect(find.text('2 messages archived'), findsOneWidget);
+    });
+
+    testWidgets("the selection bar's Delete takes every ticked row",
+        (tester) async {
+      await filtered(tester);
+      final ticked = [held.first, ...older.take(2)];
+      await tick(tester, ticked);
+
+      await tester.tap(find.descendant(
+        of: find.byType(SelectionBar),
+        matching: find.byTooltip('Delete'),
+      ));
+      await tester.pumpAndSettle();
+
+      for (final m in ticked) {
+        expect(await kept(m), isFalse, reason: m.subject);
+      }
+      expect(await kept(open), isTrue);
+      expect(find.text('3 messages deleted'), findsOneWidget);
+    });
+
+    testWidgets('the menu on a ticked row counts every ticked row, and '
+        'takes them all', (tester) async {
+      await filtered(tester);
+      final ticked = [held.first, ...older.take(2)];
+      await tick(tester, ticked);
+
+      await tester.tap(find.byKey(ValueKey('tile:${held.first.id}')),
+          buttons: kSecondaryButton);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Delete 3'));
+      await tester.pumpAndSettle();
+
+      for (final m in ticked) {
+        expect(await kept(m), isFalse, reason: m.subject);
+      }
+      expect(await kept(open), isTrue);
+    });
+
+    for (final keys in [false, true]) {
+      final how = keys ? 'Ctrl+D' : "the ribbon's Delete";
+      testWidgets('with no tick on a row the list still draws, $how leaves '
+          'the one open, and says why', (tester) async {
+        await filtered(tester);
+        // Ticked, then read on the phone: no longer what Unread finds, so
+        // its row has gone and the tick has nothing under it.
+        final gone = older.first;
+        await tick(tester, [gone]);
+        final read =
+            c.read(mailEngineProvider).setMessagesRead([gone.id], true);
+        await tester.pump(const Duration(seconds: 1));
+        await read;
+        c.invalidate(filterHitsProvider);
+        await tester.pumpAndSettle();
+        expect(c.read(sortedMessagesProvider(folder)).map((m) => m.id),
+            isNot(contains(gone.id)));
+
+        await deleteBy(tester, keys: keys);
+
+        expect(await kept(open), isTrue);
+        expect(await kept(gone), isTrue);
+        expect(find.text('None of the ticked messages is in the list now.'),
+            findsOneWidget);
+        expect(c.read(selectedMessageIdsProvider), {gone.id});
+      });
+    }
   });
 }
 

@@ -314,10 +314,10 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
               listId: folderId,
               onScreen: () => messagesOnScreen(_listKey),
               // The rows on offer are the hits while searching, and hits can
-              // live in any folder.
-              messages: searching
-                  ? ref.watch(searchResultsProvider).value ?? const []
-                  : ref.watch(messagesProvider(folderId)).value ?? const [],
+              // live in any folder. Otherwise what the list draws, and not
+              // the folder's own messages alone: those leave out older mail
+              // a filter found on the server, and the bar passed over it.
+              messages: listedMessages(ref, folderId, watch: true),
               selectAllIsEverything: searching,
             ),
             const Divider(height: 1),
@@ -1381,14 +1381,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     MessageActions actions,
     Offset at,
   ) async {
-    final ticked = ref.read(selectedMessageIdsProvider);
-    final listed = ref.read(searchQueryProvider).trim().isNotEmpty
-        ? ref.read(searchResultsProvider).value
-        : ref.read(messagesProvider(actions.listId)).value;
-    final chosen = [
-      for (final m in listed ?? const <MailMessage>[])
-        if (ticked.contains(m.id)) m,
-    ];
+    final chosen = tickedMessages(ref, actions.listId);
     if (chosen.isEmpty) return;
     final n = chosen.length;
     final mostlyUnread = chosen.where((m) => !m.isRead).length > n / 2;

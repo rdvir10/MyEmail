@@ -29,8 +29,9 @@ class SelectionBar extends ConsumerWidget {
 
   final String listId;
 
-  /// The rows on offer: the folder's list, or the search's hits. What is
-  /// ticked is looked up here, because a tick is only an id.
+  /// The rows on offer: everything in the list, or the search's hits (see
+  /// [listedMessages]). What is ticked is looked up here, because a tick
+  /// is only an id.
   final List<MailMessage> messages;
 
   /// Search: the hits are a bounded set that was asked for, so "select

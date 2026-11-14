@@ -153,11 +153,14 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
 
   /// The ticked messages, in the shell, where any are ticked; null on a
   /// message's own screen, which acts on its message, or with none ticked.
-  /// See [commandTargets].
+  /// Empty, and said so, where none of the ticks is in the list now: not
+  /// the open message in their place. See [commandTargets].
   List<MailMessage>? _ticked(String listId) {
     if (widget.message != null) return null;
+    if (ref.read(selectedMessageIdsProvider).isEmpty) return null;
     final ticked = tickedMessages(ref, listId);
-    return ticked.isEmpty ? null : ticked;
+    if (ticked.isEmpty) sayTicksGone(context);
+    return ticked;
   }
 
   void _clearTicks() {
@@ -214,6 +217,7 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
       case AppCommand.delete:
         if (listId == null) return;
         if (_ticked(listId) case final ticked?) {
+          if (ticked.isEmpty) return;
           await MessageActions(ref, listId).delete(context, ticked);
           _clearTicks();
         } else if (message != null) {
@@ -235,6 +239,7 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
       case AppCommand.flag:
         if (listId == null) return;
         if (_ticked(listId) case final ticked?) {
+          if (ticked.isEmpty) return;
           final mostlyUnflagged =
               ticked.where((m) => !m.isFlagged).length > ticked.length / 2;
           await MessageActions(ref, listId)
