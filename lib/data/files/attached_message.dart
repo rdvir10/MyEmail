@@ -6,7 +6,7 @@ import 'package:enough_mail/enough_mail.dart' as em;
 import '../../domain/html_safety.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
-import '../compose/mime_parts.dart' show bareContentId;
+import '../compose/mime_parts.dart' show bareContentId, partBytes;
 import '../imap/imap_mapping.dart';
 
 /// An email that came attached to another, read from its own bytes: an
@@ -219,7 +219,7 @@ class AttachedMessage {
     final encoding =
         part.getHeaderValue('content-transfer-encoding')?.trim().toLowerCase();
     if (encoding == 'base64' || encoding == 'quoted-printable') {
-      return part.decodeContentBinary();
+      return partBytes(part);
     }
     final text = part.decodeContentText();
     return text == null ? null : utf8.encode(text);

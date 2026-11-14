@@ -1,8 +1,11 @@
+import 'dart:typed_data';
+
 import 'package:enough_mail/enough_mail.dart' as em;
 
 import '../../domain/draft.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
+import '../imap/imap_mapping.dart' show decodePart;
 import '../mail_engine.dart' show rawMessageBytes;
 
 /// Reading a message's own MIME back into the pieces a draft needs.
@@ -39,7 +42,9 @@ List<DraftAttachment> attachmentsInMime(String raw) {
     final attached = part.getHeaderContentDisposition()?.disposition ==
         em.ContentDisposition.attachment;
 
-    final bytes = part.decodeContentBinary();
+    // The message itself, where it is nothing but a file, ends where the
+    // message does, not at a boundary.
+    final bytes = partBytes(part, inMultipart: !identical(part, message));
     if (bytes == null || bytes.isEmpty) return;
 
     final isMessage = type.text.toLowerCase() == 'message/rfc822';
@@ -55,6 +60,38 @@ List<DraftAttachment> attachmentsInMime(String raw) {
 
   visit(message);
   return found;
+}
+
+/// What [part] holds, as the file it is: its body as the message has it,
+/// with the transfer encoding it names undone by [decodePart]. [part] is
+/// read from bytes, as [em.MimeMessage.parseFromData] reads them.
+///
+/// Not enough_mail's decodeContentBinary, which leaves quoted-printable as
+/// it came, =3D and all, and takes every line break out of a part that
+/// names no encoding, as an email attached to another is sent: a forward
+/// carried it as one run-on line with no subject.
+///
+/// The line break before the boundary that ends a part is the boundary's
+/// (RFC 2046), not the file's. Where [inMultipart] is false, [part] is the
+/// message itself, which no boundary ends.
+Uint8List? partBytes(em.MimePart part, {bool inMultipart = true}) {
+  // Asked for as 7bit, enough_mail hands the body back as it found it.
+  var body = part.mimeData?.decodeBinary('7bit');
+  if (body == null) return null;
+  final encoding = part.getHeaderValue('content-transfer-encoding');
+  final n = body.length;
+  if (inMultipart && n >= 2 && body[n - 2] == 0x0D && body[n - 1] == 0x0A) {
+    body = Uint8List.sublistView(body, 0, n - 2);
+    // In quoted-printable an = ending a line joins it to the next. Ending
+    // the last one, it stood before the boundary's line break, and with
+    // that gone it joins nothing.
+    if (encoding?.trim().toLowerCase() == 'quoted-printable' &&
+        body.isNotEmpty &&
+        body.last == 0x3D) {
+      body = Uint8List.sublistView(body, 0, body.length - 1);
+    }
+  }
+  return decodePart(body, encoding);
 }
 
 /// The message as it would be without the files [attachmentsInMime] finds

@@ -1466,6 +1466,43 @@ void main() {
         expect(server.attached[id]?.single['contentType'], 'application/pdf');
       });
 
+      test('an email attached to it goes up line for line', () async {
+        // Sent as it is, with no encoding named, as an attached email is.
+        // It was filed as one run-on line with no subject, and by then the
+        // original had been moved out of Gmail.
+        const older = 'From: Avi Cohen <avi@example.com>\r\n'
+            'Subject: Quote\r\n'
+            '\r\n'
+            'Line one\r\n'
+            'Line two\r\n';
+        await transport.listFolders();
+
+        await transport.fileMessage(
+          'Receipts',
+          'From: Dana Levi <dana@example.com>\r\n'
+              'Subject: Fwd: Quote\r\n'
+              'MIME-Version: 1.0\r\n'
+              'Content-Type: multipart/mixed; boundary="b"\r\n'
+              '\r\n'
+              '--b\r\n'
+              'Content-Type: text/plain\r\n'
+              '\r\n'
+              'Below.\r\n'
+              '--b\r\n'
+              'Content-Type: message/rfc822\r\n'
+              'Content-Disposition: attachment; filename="Quote.eml"\r\n'
+              '\r\n'
+              '$older\r\n'
+              '--b--\r\n',
+          seen: true,
+        );
+
+        final file = server.attached[server.messages.keys.single]!.single;
+        expect(file['name'], 'Quote.eml');
+        expect(base64Decode(file['contentBytes'] as String),
+            ascii.encode(older));
+      });
+
       test('unread stays unread', () async {
         await transport.listFolders();
 

@@ -106,6 +106,34 @@ void main() {
       expect(pdf.sizeBytes, 8);
     });
 
+    test('a file in it in quoted-printable opens as itself', () {
+      // Not as it was written for the wire, =C3=A9 and =3D all through it.
+      final noted = AttachedMessage.parse(Uint8List.fromList(utf8.encode([
+        'From: a@example.com',
+        'Subject: Notes',
+        'MIME-Version: 1.0',
+        'Content-Type: multipart/mixed; boundary="b"',
+        '',
+        '--b',
+        'Content-Type: text/plain',
+        '',
+        'The notes.',
+        '--b',
+        'Content-Type: text/plain; charset=utf-8; name="notes.txt"',
+        'Content-Disposition: attachment; filename="notes.txt"',
+        'Content-Transfer-Encoding: quoted-printable',
+        '',
+        'Caf=C3=A9 at=',
+        ' noon, 2+2=3D4',
+        '--b--',
+        '',
+      ].join('\r\n'))))!;
+
+      final notes = noted.listed.single;
+      expect(notes.name, 'notes.txt');
+      expect(utf8.decode(noted.bytesOf(notes)!), 'Café at noon, 2+2=4');
+    });
+
     test("an email in it is its own, with its own files", () {
       expect(m.listed.map((f) => f.name), isNot(contains('inside.jpg')),
           reason: 'the older email keeps its files to itself');
