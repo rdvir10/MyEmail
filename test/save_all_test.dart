@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -78,6 +80,43 @@ void main() {
     expect(find.text('Saved 1 of 2. Not saved: Plan.pdf.'), findsOneWidget);
   });
 
+  testWidgets('the message left while the picker is open: still saved',
+      (tester) async {
+    // A message moved away by another app takes its pane, and this bar,
+    // with it while Android's folder picker is up.
+    final bridge = _SlowPicker();
+    final open = ValueNotifier(true);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+          mailEngineProvider.overrideWithValue(_Files(_two)),
+          fileBridgeProvider.overrideWithValue(bridge),
+        ],
+        child: MaterialApp(
+          home: Scaffold(
+            body: ValueListenableBuilder<bool>(
+              valueListenable: open,
+              builder: (_, isOpen, _) => isOpen
+                  ? const AttachmentBar(messageId: 'a:INBOX#1')
+                  : const SizedBox(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('save-all-attachments')));
+    await tester.pump();
+    open.value = false;
+    await tester.pumpAndSettle();
+
+    bridge.picked.complete('content://tree/Downloads');
+    await tester.pumpAndSettle();
+    expect(bridge.savedIntoFolder.map((s) => s.name), ['Plan.pdf', 'Site.jpg']);
+    expect(find.text('Saved all 2 files.'), findsOneWidget);
+  });
+
   testWidgets('one file has its own Save as, and no Save all', (tester) async {
     await pump(tester, files: [_two.first]);
     expect(find.byKey(const ValueKey('save-all-attachments')), findsNothing);
@@ -98,6 +137,14 @@ const _two = [
     sizeBytes: 2000,
   ),
 ];
+
+/// A folder picker that answers when the test says.
+class _SlowPicker extends FakeFileBridge {
+  final picked = Completer<String?>();
+
+  @override
+  Future<String?> pickFolder() => picked.future;
+}
 
 class _Files extends SampleMailEngine {
   _Files(this.files);

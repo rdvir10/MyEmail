@@ -24,7 +24,10 @@ Future<void> saveAllAttachments(
     ?..hideCurrentSnackBar()
     ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text(text)));
 
+  // Both read now: the bar, and its ref, may be gone by the time the
+  // picker answers, if the message is moved away meanwhile.
   final bridge = ref.read(fileBridgeProvider);
+  final downloads = ref.read(attachmentDownloadsProvider.notifier);
   final String? folder;
   try {
     folder = await bridge.pickFolder();
@@ -34,7 +37,6 @@ Future<void> saveAllAttachments(
   }
   if (folder == null) return;
 
-  final downloads = ref.read(attachmentDownloadsProvider.notifier);
   final missed = <String>[];
   for (final attachment in files) {
     final file = await downloads.file(messageId, attachment);

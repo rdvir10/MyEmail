@@ -105,6 +105,11 @@ List<int> recipientSeparators(String text) {
   return at;
 }
 
+/// Whether [text] is one bare address and nothing else: no name, no
+/// brackets, no second address after a comma.
+bool isOneBareAddress(String text) =>
+    RegExp(r'^[^\s@<>()\[\],;:"]+@[^\s@<>()\[\],;:"]+$').hasMatch(text);
+
 /// A recipients field cut into one piece per recipient, untrimmed.
 List<String> splitRecipients(String text) {
   final pieces = <String>[];

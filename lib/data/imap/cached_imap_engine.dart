@@ -1634,13 +1634,22 @@ class CachedImapEngine
       uid,
       const ['Disposition-Notification-To', 'Message-ID', 'Subject', 'Date', 'From', 'To'],
     );
-    final to = asked['disposition-notification-to'];
-    if (to == null || !to.contains('@')) {
+    final request = OpenedHeaders.fromHeaders(asked);
+    if (request.receiptTo == null) {
       throw const SendFailed('The message no longer asks for a read receipt.');
+    }
+    // To the one address the bar showed, never a list: enough_mail sends to
+    // every address the header names, and the sender chose them all.
+    final to = request.receiptAddress;
+    if (to == null) {
+      throw const SendFailed('It asks for one to go to several addresses.');
     }
     final original = em.MimeMessage();
     for (final MapEntry(:key, :value) in asked.entries) {
-      original.addHeader(key, value);
+      original.addHeader(
+        key,
+        key == 'disposition-notification-to' ? '<$to>' : value,
+      );
     }
     final receipt = em.MessageBuilder.buildReadReceipt(
       original,

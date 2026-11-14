@@ -7,6 +7,7 @@ import '../../domain/mail_message.dart';
 import '../../state/display_providers.dart';
 import '../../state/list_filter.dart' show ownAddressesProvider;
 import '../../state/providers.dart';
+import '../../state/read_marker.dart';
 import '../../state/read_receipts.dart';
 import '../../state/unsubscribe.dart' show openedHeadersProvider;
 import '../common/bottom_message.dart';
@@ -14,6 +15,11 @@ import '../common/bottom_message.dart';
 /// A read receipt asked for, as Outlook asks: "The sender of this message
 /// has requested a read receipt", with Send receipt and Don't send. Or, as
 /// Settings, View has it, sent without asking, or never offered.
+///
+/// The request names where the receipt goes, and the sender writes it. So
+/// one that names several addresses is not offered at all, one that names
+/// someone other than the sender says who, and only a receipt to the sender
+/// goes without asking (RFC 8098 says as much).
 ///
 /// On a Gmail account only for now: see `MailEngine.answersReadReceipts`.
 class ReadReceiptBar extends ConsumerStatefulWidget {
@@ -31,6 +37,30 @@ class _ReadReceiptBarState extends ConsumerState<ReadReceiptBar> {
   /// Sent without asking already, or tried: once a message, so a receipt
   /// that fails is not tried again on every rebuild.
   bool _sentUnasked = false;
+
+  /// Read once, while the ref may still be used: it is let go of as the
+  /// bar goes.
+  late final ReadMarker _marker;
+
+  @override
+  void initState() {
+    super.initState();
+    _marker = ref.read(readMarkerProvider);
+    _marker.open.addListener(_onOpened);
+  }
+
+  @override
+  void dispose() {
+    _marker.open.removeListener(_onOpened);
+    super.dispose();
+  }
+
+  /// A message opened: this one, perhaps, which a receipt set to go without
+  /// asking was waiting for. Nothing for a message left, which is told as
+  /// the panes are taken down, when a rebuild may not be asked for.
+  void _onOpened() {
+    if (mounted && _marker.open.value == widget.message.id) setState(() {});
+  }
 
   Future<void> _answer({required bool send}) async {
     final message = widget.message;
@@ -76,11 +106,18 @@ class _ReadReceiptBarState extends ConsumerState<ReadReceiptBar> {
     if (ref.watch(answeredReceiptsProvider).contains(receiptKey(message))) {
       return const SizedBox.shrink();
     }
-    final asked = ref.watch(openedHeadersProvider(message.id)).value?.receiptTo;
-    if (asked == null) return const SizedBox.shrink();
+    final to =
+        ref.watch(openedHeadersProvider(message.id)).value?.receiptAddress;
+    if (to == null) return const SizedBox.shrink();
+    final toSender =
+        to.toLowerCase() == message.from.email.trim().toLowerCase();
 
-    if (answer == ReceiptAnswer.always) {
-      // Sent as it opens, once: the set of answered requests says it went.
+    if (answer == ReceiptAnswer.always && toSender) {
+      // Sent once it is opened, as being marked read is: not as the app
+      // lands on it by itself, opening a folder or after a delete, which
+      // is Ron walking past. Once: the set of answered requests says it
+      // went.
+      if (_marker.open.value != message.id) return const SizedBox.shrink();
       if (!_sentUnasked) {
         _sentUnasked = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -105,7 +142,10 @@ class _ReadReceiptBarState extends ConsumerState<ReadReceiptBar> {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                '${message.from.display} asked to be told you read this.',
+                toSender
+                    ? '${message.from.display} asked to be told you read this.'
+                    : '${message.from.display} asked for a receipt to be '
+                          'sent to $to.',
                 style: theme.textTheme.bodySmall,
               ),
             ),

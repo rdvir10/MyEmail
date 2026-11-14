@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -43,6 +45,16 @@ void main() {
       )!;
       expect(options.oneClick, isNull);
       expect(options.way, UnsubscribeWay.email);
+    });
+
+    test('an email to more than one address is no way to leave', () {
+      expect(
+        UnsubscribeOptions.parse(
+          '<mailto:leave@list.example.com,boss@hadco.example>',
+          null,
+        ),
+        isNull,
+      );
     });
 
     test('nothing to act on is no button', () {
@@ -139,6 +151,28 @@ void main() {
       expect(draft.kind, ComposeKind.newMessage);
     });
 
+    test("the email goes to the link's own address alone, a line long",
+        () async {
+      // The list writes the link, and Ron's account sends what it says.
+      final greedy = UnsubscribeOptions.parse(
+        '<mailto:leave@shop.example.com?to=boss@hadco.example'
+            '&to=x@y.example&cc=c@z.example&bcc=d@z.example'
+            '&subject=Remove%20me%0D%0ABuy%20now'
+            '&body=unsubscribe%2042%0D%0A${'Buy%20now%20' * 40}>',
+        null,
+      )!;
+      expect(
+        await unsubscribe(c.read, message, greedy),
+        UnsubscribeOutcome.sent,
+      );
+      final draft = engine.sent.single;
+      expect([for (final a in draft.to) a.email], ['leave@shop.example.com']);
+      expect(draft.cc, isEmpty);
+      expect(draft.bcc, isEmpty);
+      expect(draft.subject, 'Remove me');
+      expect(draft.htmlBody, '<p>unsubscribe 42</p>');
+    });
+
     test('only a page: it opens, to be finished there', () async {
       final page = UnsubscribeOptions.parse('<https://shop.example.com/p>', null)!;
       expect(await unsubscribe(c.read, message, page), UnsubscribeOutcome.opened);
@@ -192,12 +226,282 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Unsubscribed'), findsOneWidget);
   });
+
+  group('leaving the message as soon as the dialog closes', () {
+    // Delete, Back or the next message takes the link away, its ref with
+    // it, while the list is still being told.
+    final m = MailMessage(
+      id: 'acct-personal:INBOX#1',
+      accountId: 'acct-personal',
+      folderId: 'acct-personal:INBOX',
+      uid: 1,
+      subject: 'News',
+      from: const MailAddress(email: 'news@shop.example.com', name: 'Shop'),
+      to: const [],
+      date: DateTime(2026, 10, 1),
+      preview: '',
+    );
+    late _Engine engine;
+    late Completer<int> answer;
+    late ProviderContainer container;
+    late ValueNotifier<bool> open;
+
+    ScaffoldMessengerState messenger(WidgetTester tester) =>
+        ScaffoldMessenger.of(tester.element(find.byType(Scaffold)));
+
+    /// A bar of someone else's, a delete's with its Undo, as it puts one
+    /// up: over whatever is showing.
+    Future<void> deleted(WidgetTester tester) async {
+      messenger(tester)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(
+          duration: Duration(seconds: 5),
+          content: Text('Deleted'),
+        ));
+      await tester.pumpAndSettle();
+    }
+
+    Future<UnsubscribeOptions> confirm(
+      WidgetTester tester,
+      String header, {
+      String? post,
+      bool barUp = false,
+    }) async {
+      engine = _Engine()..gate = Completer<void>();
+      answer = Completer<int>();
+      container = ProviderContainer(
+        overrides: [
+          uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+          mailEngineProvider.overrideWithValue(engine),
+          oneClickUnsubscribeProvider.overrideWithValue((_) => answer.future),
+          openInBrowserProvider.overrideWithValue((_) async => true),
+        ],
+      );
+      addTearDown(container.dispose);
+      final options = UnsubscribeOptions.parse(header, post)!;
+      engine.unsubscribe[m.id] = options;
+      open = ValueNotifier(true);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: Scaffold(
+              body: ValueListenableBuilder<bool>(
+                valueListenable: open,
+                builder: (_, isOpen, _) => isOpen
+                    ? Center(child: UnsubscribeLink(message: m))
+                    : const SizedBox(),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      if (barUp) await deleted(tester);
+      await tester.tap(find.byKey(const ValueKey('unsubscribe')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Unsubscribe'));
+      await tester.pumpAndSettle();
+      return options;
+    }
+
+    testWidgets("Delete straight after: the delete's bar stays its time, "
+        'and how it went comes after it', (tester) async {
+      await confirm(tester, '<mailto:leave@shop.example.com>');
+      expect(find.text('Unsubscribing from Shop…'), findsOneWidget);
+      await deleted(tester);
+
+      engine.gate!.complete();
+      await tester.pumpAndSettle();
+      expect(find.text('Deleted'), findsOneWidget);
+      const sent = 'Unsubscribe email sent to Shop. It can take them a few '
+          'days.';
+      expect(find.text(sent), findsNothing);
+
+      await tester.pump(const Duration(seconds: 6));
+      await tester.pumpAndSettle();
+      expect(find.text('Deleted'), findsNothing);
+      expect(find.text(sent), findsOneWidget);
+    });
+
+    testWidgets('a bar already up is not cut short either', (tester) async {
+      await confirm(tester, '<mailto:leave@shop.example.com>', barUp: true);
+      expect(find.text('Deleted'), findsOneWidget);
+
+      engine.gate!.complete();
+      await tester.pumpAndSettle();
+      expect(find.text('Deleted'), findsOneWidget);
+
+      await tester.pump(const Duration(seconds: 6));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Unsubscribe email sent to Shop. It can take them a few '
+            'days.'),
+        findsOneWidget,
+      );
+      expect(find.text('Unsubscribing from Shop…'), findsNothing);
+    });
+
+    testWidgets('says it is under way, and is not offered again meanwhile',
+        (tester) async {
+      await confirm(tester, '<mailto:leave@shop.example.com>');
+      expect(find.text('Unsubscribing from Shop…'), findsOneWidget);
+      expect(find.text('Unsubscribing…'), findsOneWidget);
+      expect(find.byKey(const ValueKey('unsubscribe')), findsNothing);
+
+      engine.gate!.complete();
+      await tester.pumpAndSettle();
+      expect(find.text('Unsubscribed'), findsOneWidget);
+    });
+
+    testWidgets('by email: the email went, and the bar says so',
+        (tester) async {
+      final options = await confirm(
+        tester,
+        '<mailto:leave@shop.example.com?subject=Remove%20me>',
+      );
+      open.value = false;
+      await tester.pumpAndSettle();
+
+      engine.gate!.complete();
+      await tester.pumpAndSettle();
+      expect(engine.sent, hasLength(1));
+      expect(
+        find.text('Unsubscribe email sent to Shop. It can take them a few '
+            'days.'),
+        findsOneWidget,
+      );
+      expect(container.read(unsubscribedProvider),
+          contains(unsubscribeKey(options)));
+    });
+
+    testWidgets('one click: the list took it, and it is remembered as left',
+        (tester) async {
+      final options = await confirm(
+        tester,
+        '<https://shop.example.com/u>',
+        post: 'List-Unsubscribe=One-Click',
+      );
+      open.value = false;
+      await tester.pumpAndSettle();
+
+      answer.complete(200);
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Unsubscribed from Shop. It can take them a few days.'),
+        findsOneWidget,
+      );
+      expect(container.read(unsubscribedProvider),
+          contains(unsubscribeKey(options)));
+    });
+  });
+
+  testWidgets('by email, the dialog says to whom and what it says',
+      (tester) async {
+    final engine = _Engine();
+    final container = ProviderContainer(
+      overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        mailEngineProvider.overrideWithValue(engine),
+      ],
+    );
+    addTearDown(container.dispose);
+    final m = MailMessage(
+      id: 'acct-personal:INBOX#1',
+      accountId: 'acct-personal',
+      folderId: 'acct-personal:INBOX',
+      uid: 1,
+      subject: 'News',
+      from: const MailAddress(email: 'news@shop.example.com', name: 'Shop'),
+      to: const [],
+      date: DateTime(2026, 10, 1),
+      preview: '',
+    );
+    engine.unsubscribe[m.id] = UnsubscribeOptions.parse(
+      '<mailto:leave@shop.example.com?to=boss@hadco.example'
+          '&subject=Remove%20me>',
+      null,
+    )!;
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          home: Scaffold(body: Center(child: UnsubscribeLink(message: m))),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('unsubscribe')));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('to leave@shop.example.com, from '),
+      findsOneWidget,
+    );
+    expect(find.textContaining('the subject "Remove me"'), findsOneWidget);
+    expect(find.textContaining('boss@'), findsNothing);
+  });
+
+  testWidgets('one click with an email behind it: the dialog names the '
+      'email too', (tester) async {
+    // A one-click address that fails falls to the email, which goes from
+    // Ron's account: it is shown before he says yes, not after.
+    final engine = _Engine();
+    final container = ProviderContainer(
+      overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        mailEngineProvider.overrideWithValue(engine),
+      ],
+    );
+    addTearDown(container.dispose);
+    final m = MailMessage(
+      id: 'acct-personal:INBOX#1',
+      accountId: 'acct-personal',
+      folderId: 'acct-personal:INBOX',
+      uid: 1,
+      subject: 'News',
+      from: const MailAddress(email: 'news@shop.example.com', name: 'Shop'),
+      to: const [],
+      date: DateTime(2026, 10, 1),
+      preview: '',
+    );
+    engine.unsubscribe[m.id] = UnsubscribeOptions.parse(
+      '<mailto:leave@shop.example.com?subject=Remove%20me>, '
+          '<https://shop.example.com/u>',
+      'List-Unsubscribe=One-Click',
+    )!;
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          home: Scaffold(body: Center(child: UnsubscribeLink(message: m))),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('unsubscribe')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('MyEmail tells them now'), findsOneWidget);
+    expect(
+      find.textContaining('to leave@shop.example.com, from '),
+      findsOneWidget,
+    );
+    expect(find.textContaining('the subject "Remove me"'), findsOneWidget);
+  });
 }
 
-/// The sample engine, keeping what it was asked to send.
+/// The sample engine, keeping what it was asked to send, after [gate]
+/// where a test holds the send back.
 class _Engine extends SampleMailEngine {
   final sent = <Draft>[];
+  Completer<void>? gate;
 
   @override
-  Future<void> sendDraft(Draft draft) async => sent.add(draft);
+  Future<void> sendDraft(Draft draft) async {
+    await gate?.future;
+    sent.add(draft);
+  }
 }

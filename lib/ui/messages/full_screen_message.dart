@@ -6,13 +6,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/mail_message.dart';
-import '../../domain/trusted_senders.dart';
 import '../../state/attachment_providers.dart';
-import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/trusted_senders.dart';
 import '../compose/open_compose.dart';
 import 'html_body_view.dart';
+import 'junk_actions.dart' show isInJunk;
 import 'load_failure.dart';
 
 /// One message, and nothing else: the body edge to edge, with Android's
@@ -144,8 +143,7 @@ class _FullScreenMessageState extends ConsumerState<FullScreenMessage> {
     final theme = Theme.of(context);
     final message = widget.message;
     final body = ref.watch(messageBodyProvider(message.id));
-    final showImages = ref.watch(displayProvider).alwaysShowImages ||
-        isSenderTrusted(ref.watch(trustedSendersProvider), message.from.email);
+    final showImages = picturesShownFor(ref.watch, message);
 
     return Scaffold(
       backgroundColor: theme.colorScheme.surface,
@@ -219,8 +217,11 @@ class _FullScreenMessageState extends ConsumerState<FullScreenMessage> {
         senderEmail: widget.message.from.email,
         onMailto: (link) => openMailto(context, ref, link,
             accountId: widget.message.accountId),
-        onTrust: (entry) =>
-            ref.read(trustedSendersProvider.notifier).trust(entry),
+        // Not from Junk, as in the reading pane.
+        onTrust: isInJunk(ref, widget.message)
+            ? null
+            : (entry) =>
+                ref.read(trustedSendersProvider.notifier).trust(entry),
       );
     }
     return SafeArea(

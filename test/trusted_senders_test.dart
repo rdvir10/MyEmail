@@ -1,8 +1,14 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/print/message_printer.dart';
 import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/domain/folder_capabilities.dart';
+import 'package:myemail/domain/folder_role.dart';
+import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/trusted_senders.dart';
 import 'package:myemail/state/display_providers.dart';
@@ -10,6 +16,8 @@ import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/print_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/trusted_senders.dart';
+import 'package:myemail/ui/messages/attached_message_screen.dart';
+import 'package:myemail/ui/messages/full_screen_message.dart';
 import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:myemail/ui/settings/trusted_senders_screen.dart';
 
@@ -103,6 +111,20 @@ void main() {
       isRead: true,
     );
 
+    // The same, in Junk.
+    final junk = MailMessage(
+      id: 'a:Junk#1',
+      accountId: 'a',
+      folderId: 'a:Junk',
+      uid: 1,
+      subject: 'Sale',
+      from: const MailAddress(email: 'offers@shop.example', name: 'The Shop'),
+      to: const [MailAddress(email: 'me@example.com')],
+      date: DateTime(2026, 9, 20),
+      preview: '',
+      isRead: true,
+    );
+
     // The blocked page keeps the address, renamed, so finding the address
     // alone could not tell a loaded picture from a blocked one.
     void expectLoaded(String page) {
@@ -120,6 +142,7 @@ void main() {
       WidgetTester tester, {
       Widget? home,
       FakeMessagePrinter? printer,
+      Map<String, MailFolder>? folders,
     }) async {
       tester.view.physicalSize = const Size(1000, 1200);
       tester.view.devicePixelRatio = 1.0;
@@ -128,14 +151,17 @@ void main() {
       final c = ProviderContainer(overrides: [
         uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
         if (printer != null) messagePrinterProvider.overrideWithValue(printer),
-        messageBodyProvider(message.id).overrideWith(
-          (ref) async => const MailBody(
-            text: 'Sale',
-            html: '<p>Sale</p><img src="https://shop.example/banner.png">',
+        for (final m in [message, junk])
+          messageBodyProvider(m.id).overrideWith(
+            (ref) async => const MailBody(
+              text: 'Sale',
+              html: '<p>Sale</p><img src="https://shop.example/banner.png">',
+            ),
           ),
-        ),
+        folderIndexProvider.overrideWith((ref) => ref.watch(_folders)),
       ]);
       addTearDown(c.dispose);
+      if (folders != null) c.read(_folders.notifier).set(folders);
       await tester.pumpWidget(UncontrolledProviderScope(
         container: c,
         child: MaterialApp(home: home ?? Scaffold(body: ReadingPane(message: message))),
@@ -208,6 +234,108 @@ void main() {
       expectLoaded(printer.printed.last.html);
     });
 
+    testWidgets('in Junk, neither the setting nor trust loads them, and '
+        'nobody is trusted from there', (tester) async {
+      // The From a trust entry matches is the sender's to write, and a
+      // picture loaded tells spam the address is read, and when.
+      final c = await pump(
+        tester,
+        home: Scaffold(body: ReadingPane(message: junk)),
+      );
+      c.read(trustedSendersProvider.notifier).trust('@shop.example');
+      c.read(displayProvider.notifier).setAlwaysShowImages(true);
+      await tester.pumpAndSettle();
+      expectBlocked(platform.loadedHtml.last);
+
+      // Opened again, as landing on it in Junk would.
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: MaterialApp(home: Scaffold(body: ReadingPane(message: junk))),
+      ));
+      await tester.pumpAndSettle();
+      expectBlocked(platform.loadedHtml.last);
+      expect(find.text('Images are blocked'), findsOneWidget);
+      expect(find.byTooltip('Always show pictures from…'), findsNothing);
+
+      // A look, this once, is still Ron's to take.
+      await tester.tap(find.text('Show images'));
+      await tester.pumpAndSettle();
+      expectLoaded(platform.loadedHtml.last);
+    });
+
+    testWidgets("until the message's folder is known, pictures wait",
+        (tester) async {
+      // A message's own window can have the message before its folder
+      // list: Junk or not is not known yet, so nothing loads unasked.
+      final c = await pump(tester, folders: const {});
+      c.read(trustedSendersProvider.notifier).trust('offers@shop.example');
+      await tester.pumpAndSettle();
+      expectBlocked(platform.loadedHtml.last);
+
+      c.read(_folders.notifier).set(_folderList);
+      await tester.pumpAndSettle();
+      expectLoaded(platform.loadedHtml.last);
+    });
+
+    testWidgets('in Junk, full screen and printing leave them out too',
+        (tester) async {
+      final printer = FakeMessagePrinter();
+      final c = await pump(
+        tester,
+        printer: printer,
+        home: Scaffold(body: ReadingPane(message: junk)),
+      );
+      c.read(trustedSendersProvider.notifier).trust('offers@shop.example');
+      c.read(displayProvider.notifier).setAlwaysShowImages(true);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Print or save as PDF…'));
+      await tester.pumpAndSettle();
+      expectBlocked(printer.printed.last.html);
+
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: MaterialApp(home: FullScreenMessage(message: junk)),
+      ));
+      await tester.pumpAndSettle();
+      expectBlocked(platform.loadedHtml.last);
+    });
+
+    testWidgets('an email attached to one in Junk keeps them out too',
+        (tester) async {
+      final eml = Uint8List.fromList(utf8.encode([
+        'From: The Shop <offers@shop.example>',
+        'To: me@example.com',
+        'Subject: Sale',
+        'MIME-Version: 1.0',
+        'Content-Type: text/html; charset=utf-8',
+        '',
+        '<p>Sale</p><img src="https://shop.example/banner.png">',
+      ].join('\r\n')));
+      final c = await pump(
+        tester,
+        home: Builder(
+          builder: (context) => ElevatedButton(
+            onPressed: () => openAttachedMessage(
+              context,
+              eml,
+              key: 'a:Junk#1/2',
+              inJunk: true,
+            ),
+            child: const Text('open'),
+          ),
+        ),
+      );
+      c.read(displayProvider.notifier).setAlwaysShowImages(true);
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      expectBlocked(platform.loadedHtml.last);
+    });
+
     testWidgets('a trusted sender is never asked about again', (tester) async {
       final c = await pump(tester);
       c.read(trustedSendersProvider.notifier).trust('offers@shop.example');
@@ -262,3 +390,28 @@ void main() {
     });
   });
 }
+
+/// The folders the reading pane's messages are in, an Inbox and a Junk.
+final _folderList = {
+  for (final (path, role) in [
+    ('INBOX', FolderRole.inbox),
+    ('Junk', FolderRole.junk),
+  ])
+    'a:$path': MailFolder.at(
+      accountId: 'a',
+      path: path,
+      role: role,
+      capabilities: const FolderCapabilities.systemFolder(),
+    ),
+};
+
+/// The folder index as a test has it, known or not yet.
+class _Folders extends Notifier<Map<String, MailFolder>> {
+  @override
+  Map<String, MailFolder> build() => _folderList;
+
+  void set(Map<String, MailFolder> folders) => state = folders;
+}
+
+final _folders =
+    NotifierProvider<_Folders, Map<String, MailFolder>>(_Folders.new);

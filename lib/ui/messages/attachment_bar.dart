@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/files/file_bridge.dart' show DefaultApp;
 import '../../data/files/message_files.dart' show emlMimeType;
+import '../../domain/folder_role.dart';
 import '../../domain/mail_attachment.dart';
 import '../../state/attachment_providers.dart';
 import '../../state/providers.dart' show folderIndexProvider;
@@ -345,18 +346,19 @@ class AttachmentActions {
     if (attachment.openAs == emlMimeType) {
       final bytes = await file.readAsBytes();
       if (!context.mounted) return;
-      // Answered from the account the outer message came to.
+      // Answered from the account the outer message came to, and kept
+      // from loading pictures where that is in Junk, or may be: a folder
+      // the folder list does not have yet.
       final hash = messageId.lastIndexOf('#');
-      final accountId = hash < 0
+      final folder = hash < 0
           ? null
-          : ref
-              .read(folderIndexProvider)[messageId.substring(0, hash)]
-              ?.accountId;
+          : ref.read(folderIndexProvider)[messageId.substring(0, hash)];
       if (await openAttachedMessage(
         context,
         bytes,
         key: AttachmentDownloads.keyFor(messageId, attachment),
-        accountId: accountId,
+        accountId: folder?.accountId,
+        inJunk: folder == null || folder.role == FolderRole.junk,
       )) {
         return;
       }

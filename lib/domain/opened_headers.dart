@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'address_suggestions.dart' show isOneBareAddress, splitRecipients;
 import 'unsubscribe.dart';
 
 /// What a message's headers say that its list row does not carry, read
@@ -16,6 +17,20 @@ class OpenedHeaders {
   /// `Disposition-Notification-To` header names it (RFC 8098). Null where
   /// none was asked for.
   final String? receiptTo;
+
+  /// The one address [receiptTo] names, bare, as it is written. Null where
+  /// it names none or more than one: a receipt goes only to an address Ron
+  /// can be shown, and the header is the sender's to fill with anyone's.
+  String? get receiptAddress {
+    final pieces = [
+      for (final piece in splitRecipients(receiptTo ?? ''))
+        if (piece.trim().isNotEmpty) piece.trim(),
+    ];
+    if (pieces.length != 1) return null;
+    final angled = RegExp(r'<([^<>]*)>$').firstMatch(pieces.single);
+    final address = (angled?.group(1) ?? pieces.single).trim();
+    return isOneBareAddress(address) ? address : null;
+  }
 
   static const none = OpenedHeaders();
 

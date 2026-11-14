@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/files/file_bridge.dart' show MailtoLink;
 import '../../domain/mail_message.dart';
 import '../../domain/unsubscribe.dart';
 import '../../state/list_filter.dart' show ownAddressesProvider;
@@ -29,11 +28,12 @@ class UnsubscribeLink extends ConsumerWidget {
         ref.watch(openedHeadersProvider(message.id)).value?.unsubscribe;
     if (options == null) return const SizedBox.shrink();
     final theme = Theme.of(context);
-    final done =
-        ref.watch(unsubscribedProvider).contains(unsubscribeKey(options));
-    if (done) {
+    final key = unsubscribeKey(options);
+    final done = ref.watch(unsubscribedProvider).contains(key);
+    final going = ref.watch(unsubscribingProvider).contains(key);
+    if (done || going) {
       return Text(
-        'Unsubscribed',
+        done ? 'Unsubscribed' : 'Unsubscribing…',
         style: theme.textTheme.labelSmall
             ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
       );
@@ -60,6 +60,12 @@ class UnsubscribeLink extends ConsumerWidget {
 
 /// Says what Unsubscribe will do, the way it will be done, and does it if
 /// asked to; then says how it went.
+///
+/// Carried on through the app's container, not [ref]: the dialog closed,
+/// Ron may leave the message at once (Delete, Back, the next one), which
+/// takes this link and its ref away, and a ref read after that throws. An
+/// email that went was then reported as not sent, and a one-click list
+/// left said nothing and was not remembered as left.
 Future<void> confirmUnsubscribe(
   BuildContext context,
   WidgetRef ref,
@@ -72,13 +78,25 @@ Future<void> confirmUnsubscribe(
       .value
       ?.where((a) => a.id == message.accountId)
       .firstOrNull;
-  final to = MailtoLink.parse('${options.mailto}')?.to.firstOrNull;
+  // What the email says is the list's to write, so it is shown, and shown
+  // too where it is only the way should one click fail: it goes from Ron's
+  // account all the same.
+  final email = unsubscribeEmail(options);
+  final says = email == null
+      ? ''
+      : email.words.toLowerCase() == email.subject.toLowerCase()
+          ? ', with the subject "${email.subject}"'
+          : ', with the subject "${email.subject}" and the words '
+              '"${email.words}"';
+  final sends = 'the email they ask for'
+      '${email == null ? '' : ' to ${email.to}'}'
+      '${account == null ? '' : ', from ${account.emailAddress}'}'
+      '$says';
   final how = switch (options.way) {
     UnsubscribeWay.oneClick =>
-      'MyEmail tells them now, and they take you off their list.',
-    UnsubscribeWay.email => 'MyEmail sends the email they ask for'
-        '${to == null ? '' : ' to $to'}'
-        '${account == null ? '' : ', from ${account.emailAddress}'}.',
+      'MyEmail tells them now, and they take you off their list.'
+          '${email == null ? '' : ' Should that not work, it sends $sends.'}',
+    UnsubscribeWay.email => 'MyEmail sends $sends.',
     UnsubscribeWay.page =>
       'They ask you to finish on their own page, which opens in your browser.',
   };
@@ -102,8 +120,23 @@ Future<void> confirmUnsubscribe(
     ),
   );
   if (go != true || !context.mounted) return;
+  final read = ProviderScope.containerOf(context, listen: false).read;
   final messenger = ScaffoldMessenger.maybeOf(context);
-  final outcome = await unsubscribe(ref.read, message, options);
+  final going = read(unsubscribingProvider.notifier);
+  if (!going.start(options)) return;
+  // Seconds, perhaps, and nothing else shows it: a page opens at once.
+  // Its own bar, and only its own is ever taken down: it waits behind one
+  // already up, and Delete pressed straight after puts the delete's bar,
+  // with its Undo, over it.
+  final progress = messenger == null || options.way == UnsubscribeWay.page
+      ? null
+      : _Progress(messenger, 'Unsubscribing from $sender…');
+  final UnsubscribeOutcome outcome;
+  try {
+    outcome = await unsubscribe(read, message, options);
+  } finally {
+    going.end(options);
+  }
   final said = switch (outcome) {
     UnsubscribeOutcome.done =>
       'Unsubscribed from $sender. It can take them a few days.',
@@ -113,8 +146,72 @@ Future<void> confirmUnsubscribe(
     UnsubscribeOutcome.failed =>
       'Could not unsubscribe from $sender. Try again later.',
   };
+  if (progress != null && progress.waiting) {
+    // Not up yet, behind another bar: it says how it went when it is.
+    progress.words.value = said ?? 'Their page is open in your browser.';
+    return;
+  }
+  progress?.closeIfUp();
   if (said == null) return;
   messenger?.showSnackBar(
     SnackBar(duration: kBottomMessage, content: Text(said)),
   );
+}
+
+/// Unsubscribe's bar while it works, which knows whether it is up, gone,
+/// or still waiting behind another bar. Flutter closes a bar only while
+/// it is the one on screen; hiding the current bar instead took down
+/// whatever was there.
+class _Progress {
+  _Progress(ScaffoldMessengerState messenger, String saying)
+      : words = ValueNotifier(saying) {
+    _bar = messenger.showSnackBar(SnackBar(
+      duration: kBottomMessage,
+      content: _ProgressWords(this),
+    ));
+    _bar.closed.then((_) => _gone = true);
+  }
+
+  final ValueNotifier<String> words;
+  late final ScaffoldFeatureController<SnackBar, SnackBarClosedReason> _bar;
+  bool _gone = false;
+
+  /// Places it is drawn now: only ever the bar on screen is.
+  int _drawn = 0;
+
+  /// Neither up nor gone: queued behind another bar.
+  bool get waiting => !_gone && _drawn == 0;
+
+  void closeIfUp() {
+    if (!_gone && _drawn > 0) _bar.close();
+  }
+}
+
+class _ProgressWords extends StatefulWidget {
+  const _ProgressWords(this.progress);
+
+  final _Progress progress;
+
+  @override
+  State<_ProgressWords> createState() => _ProgressWordsState();
+}
+
+class _ProgressWordsState extends State<_ProgressWords> {
+  @override
+  void initState() {
+    super.initState();
+    widget.progress._drawn++;
+  }
+
+  @override
+  void dispose() {
+    widget.progress._drawn--;
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<String>(
+        valueListenable: widget.progress.words,
+        builder: (_, words, _) => Text(words),
+      );
 }

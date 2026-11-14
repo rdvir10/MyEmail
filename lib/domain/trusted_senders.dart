@@ -31,6 +31,21 @@ bool isSenderTrusted(Set<String> trusted, String? email) {
   return domain != null && trusted.contains(domain);
 }
 
+/// Whether a message's pictures from the web load without being asked
+/// about: [always], the setting, or its sender ([email]) trusted. Never for
+/// mail that is or may be in Junk ([mayBeJunk]): a picture loaded tells
+/// whoever sent it that the address is read, and when, as a receipt or an
+/// Unsubscribe would, and the From a trust entry is matched against is the
+/// sender's to write. Show images still loads them there, for the one
+/// message, once.
+bool picturesLoadUnasked({
+  required bool always,
+  required Set<String> trusted,
+  required String? email,
+  required bool mayBeJunk,
+}) =>
+    !mayBeJunk && (always || isSenderTrusted(trusted, email));
+
 /// How an entry reads in a list: a domain says so, an address is itself.
 String describeTrustEntry(String entry) =>
     entry.startsWith('@') ? 'Everyone at ${entry.substring(1)}' : entry;

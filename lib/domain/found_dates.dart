@@ -1,3 +1,5 @@
+import 'dart:isolate';
+
 import 'package:flutter/foundation.dart';
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html_parser;
@@ -199,12 +201,37 @@ List<FoundDate> datesWorthLinking(List<FoundDate> dates, {DateTime? now}) {
   ];
 }
 
+/// The longest message [withDateLinks] reads, in characters. A message
+/// is parsed whole to find its text; past this, it is left without links.
+const dateLinksUpTo = 300000;
+
+/// How many tags a message may open for [withDateLinks] to read it; see
+/// [tagsOpened]. A long thread from Outlook, a few to a line, is inside
+/// it; a newsletter that big goes without links.
+const dateLinksTagsUpTo = 5000;
+
+/// How long [withDateLinksAway] lets its isolate work: past this the
+/// isolate is stopped, and the message is shown without date links.
+const dateLinksWithin = Duration(seconds: 5);
+
 /// [html] with each of [dates]' words in its text made a link the reading
 /// pane catches ([dateLinkOf]), dotted under as Outlook marks them. Only
 /// text: never inside a link already, a script, a style or the head. Words
 /// split across tags ("<b>Tuesday</b> at 3pm") are left as they are.
+///
+/// Left as it is past [dateLinksUpTo], or opening more than
+/// [dateLinksTagsUpTo] tags. The parser walks every element still open at
+/// many a tag, so thousands nested cost it the square of that: 20,000
+/// `<div>`s took most of a minute on a desktop, and the walk below then
+/// ran out of stack. How deep they nest cannot be told from the tags
+/// without parsing (a `<div/>` stays open; a stray `</span>` closes
+/// nothing), but whatever is open was opened by a tag, or copied from one.
 String withDateLinks(String html, List<FoundDate> dates) {
-  if (dates.isEmpty) return html;
+  if (dates.isEmpty ||
+      html.length > dateLinksUpTo ||
+      tagsOpened(html) > dateLinksTagsUpTo) {
+    return html;
+  }
   final targets = <String, FoundDate>{};
   for (final d in dates) {
     targets.putIfAbsent(d.text, () => d);
@@ -250,3 +277,47 @@ String withDateLinks(String html, List<FoundDate> dates) {
   walk(doc.body ?? doc.documentElement ?? doc);
   return changed ? doc.outerHtml : html;
 }
+
+/// [withDateLinks] on an isolate of its own, where a long message's parse
+/// keeps off the screen's thread, and stopped past [within]. As it was,
+/// should that fail or be stopped.
+Future<String> withDateLinksAway(
+  String html,
+  List<FoundDate> dates, {
+  Duration within = dateLinksWithin,
+}) async {
+  // Not even copied to an isolate where it would only come back.
+  if (dates.isEmpty || html.length > dateLinksUpTo) return html;
+  final answer = ReceivePort();
+  Isolate? isolate;
+  try {
+    isolate = await Isolate.spawn(
+      _linkDatesFor,
+      (reply: answer.sendPort, html: html, dates: dates),
+      onError: answer.sendPort,
+      onExit: answer.sendPort,
+      debugName: 'date links',
+    );
+    // The links, or else the error it met or its exit, as null.
+    final reply = await answer.first.timeout(within);
+    return reply is String ? reply : html;
+  } catch (e) {
+    debugPrint('[myemail] dates not linked: $e');
+    return html;
+  } finally {
+    isolate?.kill(priority: Isolate.immediate);
+    answer.close();
+  }
+}
+
+void _linkDatesFor(
+  ({SendPort reply, String html, List<FoundDate> dates}) job,
+) =>
+    job.reply.send(withDateLinks(job.html, job.dates));
+
+/// How many tags [html] could open: every `<` before a letter, which is
+/// where the parser starts one, counted wherever it is (in a comment, a
+/// style, a quoted value) as more than the parser opens, never fewer.
+int tagsOpened(String html) => _tagStart.allMatches(html).length;
+
+final _tagStart = RegExp('<[a-zA-Z]');

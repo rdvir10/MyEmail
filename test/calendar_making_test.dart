@@ -396,6 +396,60 @@ void main() {
       expect(withDateLinks('<p>Nothing here</p>', [soon]), '<p>Nothing here</p>');
     });
 
+    test('a message nested thousands deep, or a very big one, is left as '
+        'it is', () {
+      // The parser walks every element still open at each <div>: 20,000
+      // nested took it most of a minute on a desktop, and the walk over
+      // what it made ran out of stack.
+      final tuesday = FoundDate(
+        start: 0,
+        end: 14,
+        text: 'Tuesday at 3pm',
+        at: DateTime(2026, 10, 27, 15),
+        grain: DateGrain.hour,
+      );
+      final deep = '${'<div>' * 20000}Tuesday at 3pm${'</div>' * 20000}';
+      expect(withDateLinks(deep, [tuesday]), deep);
+      final big = '<p>Tuesday at 3pm</p>${'<p>Nothing to see.</p>' * 20000}';
+      expect(withDateLinks(big, [tuesday]), big);
+      // Nor one that hides its nesting from a count of tags opened and
+      // closed: the parser keeps a <div/> open, and passes a stray </span>.
+      for (final hidden in ['<div/>' * 20000, '<div></span>' * 20000]) {
+        final html = '${hidden}Tuesday at 3pm';
+        expect(withDateLinks(html, [tuesday]), html);
+      }
+      // Tables, quotes and divs as deep as real mail has them still are.
+      final nested = '${'<div><table><tr><td>' * 25}Tuesday at 3pm'
+          '${'</td></tr></table></div>' * 25}';
+      expect(withDateLinks(nested, [tuesday]), contains('myemail-date:'));
+    });
+
+    test('linking that runs long is stopped, and the message is shown as '
+        'it came', () async {
+      final tuesday = FoundDate(
+        start: 0,
+        end: 14,
+        text: 'Tuesday at 3pm',
+        at: DateTime(2026, 10, 27, 15),
+        grain: DateGrain.hour,
+      );
+      expect(
+        await withDateLinksAway('<p>Tuesday at 3pm</p>', [tuesday]),
+        contains('myemail-date:'),
+      );
+
+      // Inside every limit, and still about a second's parse on a desktop.
+      final slow = '${'<div/>' * 4900}Tuesday at 3pm';
+      final watch = Stopwatch()..start();
+      final linked = await withDateLinksAway(
+        slow,
+        [tuesday],
+        within: const Duration(milliseconds: 200),
+      );
+      expect(linked, slow);
+      expect(watch.elapsed, lessThan(const Duration(milliseconds: 900)));
+    });
+
     testWidgets("a plain message's date, tapped, says when", (tester) async {
       DateTime? tapped;
       await tester.pumpWidget(MaterialApp(

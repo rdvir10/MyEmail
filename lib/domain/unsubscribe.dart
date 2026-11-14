@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'address_suggestions.dart' show isOneBareAddress;
+
 /// How a mailing list says to leave it, from the headers it puts on every
 /// message: `List-Unsubscribe` (RFC 2369) names the ways, an email address
 /// to write to and a web address, and `List-Unsubscribe-Post` (RFC 8058)
@@ -14,8 +16,15 @@ class UnsubscribeOptions {
   final Uri? oneClick;
 
   /// An address to write to, as a mailto: link, with the subject and words
-  /// the list wants, where it gave any.
+  /// the list wants, where it gave any. Only a link to one address: see
+  /// [mailtoAddress].
   final Uri? mailto;
+
+  /// The one address the email goes to: [mailto]'s own, before its `?`.
+  /// Never the link's to=, cc= or bcc= fields, nor a second address after
+  /// a comma. The list writes the link, Ron's account sends the email, and
+  /// the dialog names one address.
+  String? get mailtoAddress => mailto == null ? null : _oneAddress(mailto!);
 
   /// The list's own page for leaving it, to be opened in the browser.
   final Uri? web;
@@ -40,7 +49,7 @@ class UnsubscribeOptions {
     Uri? web;
     for (final uri in unsubscribeUris(listUnsubscribe)) {
       switch (uri.scheme) {
-        case 'mailto' when uri.path.contains('@'):
+        case 'mailto' when _oneAddress(uri) != null:
           mailto ??= uri;
         case 'https' || 'http' when uri.host.isNotEmpty:
           // https before http: a list giving both means the first, but a
@@ -79,6 +88,21 @@ class UnsubscribeOptions {
 }
 
 enum UnsubscribeWay { oneClick, email, page }
+
+/// The address a mailto: link names before its `?`, decoded, where it is
+/// one address; null where it is none or several.
+String? _oneAddress(Uri mailto) {
+  var path = mailto.path;
+  try {
+    path = Uri.decodeComponent(path);
+  } on ArgumentError {
+    // As it came: a stray `%`.
+  } on FormatException {
+    // As it came: bytes that are not UTF-8.
+  }
+  path = path.trim();
+  return isOneBareAddress(path) ? path : null;
+}
 
 /// The addresses in a `List-Unsubscribe` value, in order: each in angle
 /// brackets, commas between, and the folding a long header gets (a line

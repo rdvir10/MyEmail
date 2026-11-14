@@ -14,7 +14,6 @@ import '../../domain/trusted_senders.dart';
 import 'invite_card.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/recipient_summary.dart';
-import '../../state/display_providers.dart';
 import '../../state/message_providers.dart';
 import '../../state/pinned_messages.dart';
 import '../../state/providers.dart';
@@ -540,13 +539,9 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
   }
 
   /// Whether this message's pictures load without being asked about: the
-  /// setting for every message, or this sender being trusted.
-  bool get _showsImages =>
-      ref.watch(displayProvider).alwaysShowImages ||
-      isSenderTrusted(
-        ref.watch(trustedSendersProvider),
-        widget.message.from.email,
-      );
+  /// setting for every message, or this sender being trusted; never in
+  /// Junk. See [picturesLoadUnasked].
+  bool get _showsImages => picturesShownFor(ref.watch, widget.message);
 
   /// A meeting at [at], made from this message: a date in it tapped.
   void _meetingAt(MailBody b, DateTime at, bool allDay) =>
@@ -570,7 +565,9 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
         onDate: (at, allDay) => _meetingAt(b, at, allDay),
         onMailto: (link) => openMailto(context, ref, link,
             accountId: widget.message.accountId),
-        onTrust: (entry) {
+        // Not from Junk: trust there would do nothing for this message, and
+        // its From is a spammer's to write, a bank's or Ron's own company.
+        onTrust: isInJunk(ref, widget.message) ? null : (entry) {
           ref.read(trustedSendersProvider.notifier).trust(entry);
           ScaffoldMessenger.maybeOf(context)
             ?..hideCurrentSnackBar()

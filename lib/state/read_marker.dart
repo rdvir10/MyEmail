@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../domain/display_settings.dart';
@@ -17,8 +18,12 @@ class ReadMarker {
 
   final Ref _ref;
 
-  /// The message open now, as far as this knows.
-  String? _open;
+  /// The message open now, as far as this knows: one the person opened, not
+  /// one the app landed on for them (see `SelectedMessageId`). Listened to
+  /// by what else waits on a message being opened, as a read receipt set to
+  /// go without asking does.
+  ValueListenable<String?> get open => _open;
+  final _open = ValueNotifier<String?>(null);
 
   /// Waiting out [MarkReadWhen.delay] for [_open].
   Timer? _timer;
@@ -30,9 +35,9 @@ class ReadMarker {
   /// null for a message already read: opening it still counts as moving on
   /// from the one before.
   void opened(String messageId, {Future<void> Function()? mark}) {
-    if (messageId == _open) return;
+    if (messageId == _open.value) return;
     _leaveCurrent();
-    _open = messageId;
+    _open.value = messageId;
     if (mark == null) return;
     switch (_ref.read(displayProvider).markRead) {
       case MarkReadWhen.opened:
@@ -52,9 +57,9 @@ class ReadMarker {
   /// [messageId] is no longer open: its screen or pane has gone. Left
   /// before its seconds were up, it stays unread, as in Outlook.
   void left(String messageId) {
-    if (messageId != _open) return;
+    if (messageId != _open.value) return;
     _leaveCurrent();
-    _open = null;
+    _open.value = null;
   }
 
   void _leaveCurrent() {
@@ -68,6 +73,7 @@ class ReadMarker {
   void dispose() {
     _timer?.cancel();
     _timer = null;
+    _open.dispose();
   }
 }
 

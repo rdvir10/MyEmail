@@ -116,6 +116,49 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
   bool _remoteInHtml = false;
   bool _ownWidthInHtml = false;
 
+  /// [HtmlBodyView.html] with its dates made links ([withDateLinks]), and
+  /// the html and dates that is for or is being made for. Made once, on an
+  /// isolate, from the message as it came, before its pictures are blocked
+  /// or put in place; every load after, for the theme, the width or the
+  /// pictures, takes it as it is. Made at each load, the whole message was
+  /// parsed on the screen's thread every time, pasted pictures and all.
+  /// Null until it is made, and where there is nothing to link.
+  String? _linked;
+  ({String html, List<FoundDate> dates})? _linking;
+
+  /// Counts the linkings started, so only the latest one's answer is used.
+  int _linkRun = 0;
+
+  /// Have the dates linked for the html and dates the widget has now,
+  /// unless that is done or under way. Loads again once they are. True
+  /// where links shown now went, so the page is to load again without.
+  bool _linkDates() {
+    final html = widget.html;
+    final dates = widget.onDate == null ? const <FoundDate>[] : widget.dates;
+    final was = _linking;
+    if (was != null && was.html == html && listEquals(was.dates, dates)) {
+      return false;
+    }
+    final dropped = _linked != null;
+    _linked = null;
+    if (dates.isEmpty) {
+      _linking = null;
+      _linkRun++;
+      return dropped;
+    }
+    _linking = (html: html, dates: dates);
+    final run = ++_linkRun;
+    withDateLinksAway(html, dates).then((linked) {
+      // Back from the isolate a copy, so compared, not identical.
+      if (!mounted || run != _linkRun || linked == html) return;
+      _linked = linked;
+      // One waiting for its width loads with the links when that comes.
+      if (_hasOwnWidth && _width == null) return;
+      _load();
+    });
+    return dropped;
+  }
+
   void _readHtml() {
     if (_readFrom == widget.html) return;
     _readFrom = widget.html;
@@ -198,6 +241,7 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
       }
     }
 
+    _linkDates();
     // A message laid out for a width of its own waits for the view's width,
     // which its page depends on; everything else loads at once.
     if (!_hasOwnWidth) _load();
@@ -227,6 +271,9 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
   @override
   void didUpdateWidget(HtmlBodyView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // Dates found after the message was shown are underlined once linked.
+    // The same html and dates are not linked again.
+    final linksWent = _linkDates();
     if (oldWidget.html != widget.html) {
       _showRemote = widget.showImages;
       _load();
@@ -235,11 +282,8 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
       // The setting was turned on while a message was open.
       _showRemote = true;
       _load();
-    } else if (!mapEquals(oldWidget.inlinePictures, widget.inlinePictures)) {
-      _load();
-    } else if (!listEquals(oldWidget.dates, widget.dates) &&
-        widget.onDate != null) {
-      // Found after the message was shown: underlined now.
+    } else if (linksWent ||
+        !mapEquals(oldWidget.inlinePictures, widget.inlinePictures)) {
       _load();
     }
   }
@@ -278,13 +322,11 @@ class HtmlBodyViewState extends State<HtmlBodyView> {
   }
 
   void _load() {
-    var source = withInlinePictures(
-      _showRemote ? widget.html : stripRemoteContent(widget.html),
+    final html = _linked ?? widget.html;
+    final source = withInlinePictures(
+      _showRemote ? html : stripRemoteContent(html),
       widget.inlinePictures,
     );
-    if (widget.onDate != null && widget.dates.isNotEmpty) {
-      source = withDateLinks(source, widget.dates);
-    }
     // The WebView's own background shows during the load and behind a short
     // body. Matching it to the document avoids a white flash on a dark screen.
     _loading = true;

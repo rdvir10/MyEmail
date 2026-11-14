@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:myemail/data/ai/date_finder.dart';
 import 'package:myemail/data/ui_state_store.dart';
-import 'package:myemail/domain/found_dates.dart' show DateGrain;
+import 'package:myemail/domain/found_dates.dart' show DateGrain, FoundDate;
 import 'package:myemail/state/date_providers.dart';
 import 'package:myemail/ui/meetings/new_meeting_screen.dart';
 import 'package:myemail/ui/messages/date_format.dart' show formatDay;
@@ -633,7 +633,7 @@ void main() {
           home: Scaffold(body: ReadingPane(message: message, onPopOut: () {})),
         ),
       ));
-      await tester.pumpAndSettle();
+      await waitForDateLinks(tester, web);
       expect(web.loadedHtml.last, contains('myemail-date:'));
 
       final link = RegExp(r'href="(myemail-date:[^"]+)"')
@@ -648,6 +648,42 @@ void main() {
       expect(find.byType(NewMeetingScreen), findsOneWidget);
       expect(find.text('Site visit'), findsWidgets, reason: 'its subject');
       expect(find.text(formatDay(when)), findsNWidgets(2));
+    });
+
+    testWidgets('is linked in the message as it came, before its pictures '
+        'are blocked or put in place', (tester) async {
+      // Linked after, a picture written with entities came out of the
+      // parser as a plain address the blocking had never seen, and every
+      // pasted picture was parsed again at every load.
+      final web = FakeWebViewPlatform.install();
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: HtmlBodyView(
+            html: '<p>Friday at 3pm</p>'
+                '<img src="&#104;ttps://shop.example/p.png">'
+                '<img src="cid:a@b">',
+            inlinePictures: const {
+              'a@b': 'data:image/png;base64,iVBORw0KGgo=',
+            },
+            dates: [
+              FoundDate(
+                start: 0,
+                end: 13,
+                text: 'Friday at 3pm',
+                at: when,
+                grain: DateGrain.hour,
+              ),
+            ],
+            onDate: (_, _) {},
+          ),
+        ),
+      ));
+      await waitForDateLinks(tester, web);
+      final page = web.loadedHtml.last;
+      expect(page, contains('myemail-date:'));
+      expect(page, isNot(contains(' src="https://shop.example')));
+      expect(page, contains('data-blocked-src="https://shop.example/p.png"'));
+      expect(page, contains('src="data:image/png;base64,iVBORw0KGgo="'));
     });
 
     testWidgets('is left alone where Settings, Calendar says not to look',
@@ -683,4 +719,21 @@ void main() {
       expect(finder.asked, isEmpty, reason: 'not even read');
     });
   });
+}
+
+/// Waits for a message's date links, which are made away from the screen,
+/// on an isolate of their own: real time, which a widget test's clock is
+/// not.
+Future<void> waitForDateLinks(
+  WidgetTester tester,
+  FakeWebViewPlatform web,
+) async {
+  await tester.pumpAndSettle();
+  for (var i = 0; i < 200; i++) {
+    if (web.loadedHtml.lastOrNull?.contains('myemail-date:') ?? false) return;
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump();
+  }
 }

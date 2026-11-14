@@ -27,12 +27,15 @@ import 'html_body_view.dart';
 /// from every other message's. [accountId] is the account the outer
 /// message came to, which a reply goes from; [answerable] is false for a
 /// file on a message still being written, which is only looked at.
+/// [inJunk] says the outer message is in Junk; see
+/// [AttachedMessageScreen.inJunk].
 Future<bool> openAttachedMessage(
   BuildContext context,
   Uint8List bytes, {
   required String key,
   String? accountId,
   bool answerable = true,
+  bool inJunk = false,
 }) async {
   final message = AttachedMessage.parse(bytes);
   if (message == null || !context.mounted) return false;
@@ -43,6 +46,7 @@ Future<bool> openAttachedMessage(
         storeKey: key,
         accountId: accountId,
         answerable: answerable,
+        inJunk: inJunk,
       ),
     ),
   );
@@ -63,6 +67,7 @@ class AttachedMessageScreen extends ConsumerWidget {
     required this.storeKey,
     this.accountId,
     this.answerable = true,
+    this.inJunk = false,
   });
 
   final AttachedMessage message;
@@ -76,6 +81,10 @@ class AttachedMessageScreen extends ConsumerWidget {
 
   /// Whether Reply, Reply all and Forward are offered.
   final bool answerable;
+
+  /// Whether the message it came attached to is in Junk, or may be, where
+  /// pictures from the web never load unasked: see `picturesLoadUnasked`.
+  final bool inJunk;
 
   Future<void> _answer(
     BuildContext context,
@@ -207,7 +216,9 @@ class AttachedMessageScreen extends ConsumerWidget {
                 ? HtmlBodyView(
                     html: html,
                     inlinePictures: m.inlinePictures,
-                    showImages: ref.watch(displayProvider).alwaysShowImages,
+                    // The setting alone: its From is not one Ron trusted.
+                    showImages: !inJunk &&
+                        ref.watch(displayProvider).alwaysShowImages,
                     onMailto: (link) => openMailto(context, ref, link),
                   )
                 : SingleChildScrollView(
@@ -325,6 +336,7 @@ class _FileActions {
           key: '${screen.storeKey}/${file.id}',
           accountId: screen.accountId,
           answerable: screen.answerable,
+          inJunk: screen.inJunk,
         )) {
       return;
     }

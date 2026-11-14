@@ -53,6 +53,28 @@ class Unsubscribed extends Notifier<Set<String>> {
 final unsubscribedProvider =
     NotifierProvider<Unsubscribed, Set<String>>(Unsubscribed.new);
 
+/// The lists being left now, by [unsubscribeKey]: a one-click request or
+/// an email can take seconds, and Unsubscribe is not offered again
+/// meanwhile, which would leave twice.
+class Unsubscribing extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => const {};
+
+  /// False where [options]' list is being left already.
+  bool start(UnsubscribeOptions options) {
+    final key = unsubscribeKey(options);
+    if (state.contains(key)) return false;
+    state = {...state, key};
+    return true;
+  }
+
+  void end(UnsubscribeOptions options) =>
+      state = {...state}..remove(unsubscribeKey(options));
+}
+
+final unsubscribingProvider =
+    NotifierProvider<Unsubscribing, Set<String>>(Unsubscribing.new);
+
 /// One list's identity: the way out it gives, which every message from it
 /// carries alike.
 String unsubscribeKey(UnsubscribeOptions options) =>
@@ -79,6 +101,39 @@ final oneClickUnsubscribeProvider = Provider<Future<int> Function(Uri)>(
   },
 );
 
+/// The email an Unsubscribe sends, where the list leaves by email: to the
+/// one address its mailto: link names (see
+/// [UnsubscribeOptions.mailtoAddress]), with the subject and words the
+/// link gives cut to a short line each. Null where there is no such
+/// address.
+///
+/// The list writes the link, and it goes from Ron's account. A request to
+/// leave needs a word or a code ("unsubscribe", "leave 42"), and that is
+/// all it takes along; the dialog shows it.
+({String to, String subject, String words})? unsubscribeEmail(
+  UnsubscribeOptions options,
+) {
+  final to = options.mailtoAddress;
+  if (to == null) return null;
+  final link = MailtoLink.parse('${options.mailto}');
+  return (
+    to: to,
+    subject: _shortLine(link?.subject) ?? 'Unsubscribe',
+    words: _shortLine(link?.body) ?? 'Unsubscribe',
+  );
+}
+
+/// The first line of [text] with anything on it, cut to 100 characters.
+String? _shortLine(String? text) {
+  final line = text
+      ?.split(RegExp(r'[\r\n]'))
+      .map((l) => l.trim())
+      .where((l) => l.isNotEmpty)
+      .firstOrNull;
+  if (line == null) return null;
+  return line.length <= 100 ? line : line.substring(0, 100).trim();
+}
+
 /// What came of an Unsubscribe.
 enum UnsubscribeOutcome {
   /// The list took the one-click request.
@@ -96,7 +151,8 @@ enum UnsubscribeOutcome {
 
 /// Leave the list [message] came from, the best way [options] gives: one
 /// click, else the email, else its page. A way that fails falls to the
-/// next, so a one-click address that is down still leaves by email.
+/// next, so a one-click address that is down still leaves by email. The
+/// dialog before it names every email this may send (`confirmUnsubscribe`).
 ///
 /// [read] is a ref's read, a widget's or a container's.
 Future<UnsubscribeOutcome> unsubscribe(
@@ -118,30 +174,21 @@ Future<UnsubscribeOutcome> unsubscribe(
       debugPrint('[myemail] one-click unsubscribe failed: $e');
     }
   }
-  if (options.mailto case final uri?) {
-    final link = MailtoLink.parse('$uri');
-    final to = link?.to.where((a) => a.contains('@')).toList() ?? const [];
-    if (to.isNotEmpty) {
-      try {
-        final words = link?.body?.trim();
-        await read(mailEngineProvider).sendDraft(
-              Draft(
-                accountId: message.accountId,
-                kind: ComposeKind.newMessage,
-                to: [for (final a in to) MailAddress(email: a)],
-                subject: (link?.subject?.trim().isNotEmpty ?? false)
-                    ? link!.subject!.trim()
-                    : 'Unsubscribe',
-                htmlBody: '<p>${escapeHtml(
-                  words == null || words.isEmpty ? 'Unsubscribe' : words,
-                )}</p>',
-              ),
-            );
-        read(unsubscribedProvider.notifier).add(options);
-        return UnsubscribeOutcome.sent;
-      } catch (e) {
-        debugPrint('[myemail] unsubscribe email not sent: $e');
-      }
+  if (unsubscribeEmail(options) case final email?) {
+    try {
+      await read(mailEngineProvider).sendDraft(
+            Draft(
+              accountId: message.accountId,
+              kind: ComposeKind.newMessage,
+              to: [MailAddress(email: email.to)],
+              subject: email.subject,
+              htmlBody: '<p>${escapeHtml(email.words)}</p>',
+            ),
+          );
+      read(unsubscribedProvider.notifier).add(options);
+      return UnsubscribeOutcome.sent;
+    } catch (e) {
+      debugPrint('[myemail] unsubscribe email not sent: $e');
     }
   }
   if (options.web case final uri?) {
