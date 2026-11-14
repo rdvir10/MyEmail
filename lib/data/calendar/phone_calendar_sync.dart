@@ -103,8 +103,11 @@ Future<void> syncPhoneCalendarsIfDue(
     final on = uiState.readIds(UiStateKeys.phoneCalendars);
     if (on.isEmpty) return;
     final now = clock();
+    // As the device has it: the worker's copy of the settings and the
+    // app's are each their own, and both bring the phone's calendar up to
+    // date.
     final last = DateTime.tryParse(
-      uiState.readString(UiStateKeys.phoneCalendarsSynced) ?? '',
+      await uiState.readFresh(UiStateKeys.phoneCalendarsSynced) ?? '',
     );
     if (last != null && now.difference(last) < every && !now.isBefore(last)) {
       return;

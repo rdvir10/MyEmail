@@ -93,8 +93,10 @@ abstract final class UiStateKeys {
 
   /// The accounts whose calendars are in the phone's own calendar, and
   /// when that was last brought up to date; see `PhoneCalendarSync`. Read
-  /// by the background worker too. Not in the backup: the calendars are
-  /// this phone's.
+  /// by the background worker too. The time is written by both, each
+  /// through its own copy of these settings, so it is read with
+  /// [UiStateStore.readFresh]. Not in the backup: the calendars are this
+  /// phone's.
   static const phoneCalendars = 'calendar.phone.v1';
   static const phoneCalendarsSynced = 'calendar.phone-synced.v1';
 
@@ -119,8 +121,10 @@ abstract final class UiStateKeys {
   static const internetCalendars = 'calendar.internet.v1';
 
   /// The meeting reminders and the morning agenda set with Android, and
-  /// when they were last brought up to date; see `CalendarUpkeep`. Read by
-  /// the background worker too. Not in the backup: they are this phone's.
+  /// when they were last brought up to date; see `CalendarUpkeep`. Written
+  /// by the background worker and the app, each through its own copy of
+  /// these settings, so read with [UiStateStore.readFresh]. Not in the
+  /// backup: they are this phone's.
   static const meetingReminders = 'calendar.reminders-set.v1';
   static const agendaSet = 'calendar.agenda-set.v1';
   static const calendarKeptUp = 'calendar.kept-up.v1';
@@ -135,8 +139,11 @@ abstract final class UiStateKeys {
   static const meetingBarDismissed = 'calendar.bar-dismissed.v1';
 
   /// Settings, Claude (Duet), and what the uploader has sent and when; see
-  /// `DuetUploader`. Read by the background worker too. Not in the backup:
-  /// the key that goes with them is a secret of this phone's.
+  /// `DuetUploader`. Read by the background worker too. What was sent, when
+  /// and how it went are written by the worker and the app, each through
+  /// its own copy of these settings, so read with [UiStateStore.readFresh].
+  /// Not in the backup: the key that goes with them is a secret of this
+  /// phone's.
   static const duet = 'duet.settings.v1';
   static const duetSent = 'duet.sent.v1';
   static const duetLastRun = 'duet.last-run.v1';

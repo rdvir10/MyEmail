@@ -35,6 +35,14 @@ class _DuetScreenState extends ConsumerState<DuetScreen> {
   void initState() {
     super.initState();
     _status = _readStatus();
+    // The worker's last pass too, which this copy of the settings did not
+    // see: it writes through its own.
+    ref
+        .read(uiStateStoreProvider)
+        .readFresh(UiStateKeys.duetStatus)
+        .then((text) {
+      if (mounted && !_sending) setState(() => _status = _statusFrom(text));
+    });
     ref
         .read(credentialStoreProvider)
         .readSecret(DuetUploader.keyName)
@@ -50,8 +58,10 @@ class _DuetScreenState extends ConsumerState<DuetScreen> {
     super.dispose();
   }
 
-  ({String line, DateTime? at, bool ok})? _readStatus() {
-    final text = ref.read(uiStateStoreProvider).readString(UiStateKeys.duetStatus);
+  ({String line, DateTime? at, bool ok})? _readStatus() => _statusFrom(
+      ref.read(uiStateStoreProvider).readString(UiStateKeys.duetStatus));
+
+  static ({String line, DateTime? at, bool ok})? _statusFrom(String? text) {
     if (text == null) return null;
     try {
       final j = jsonDecode(text) as Map;

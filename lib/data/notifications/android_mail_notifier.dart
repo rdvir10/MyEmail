@@ -33,10 +33,15 @@ class AndroidMailNotifier implements MailNotifier {
     Future<void> Function(PendingAction action)? queueAction,
     Future<Uint8List?> Function(int colorValue)? drawBadge,
     Future<Directory?> Function()? postingMarks,
+    DateTime Function()? clock,
   })  : _plugin = plugin ?? FlutterLocalNotificationsPlugin(),
         _queue = queueAction ?? queueNotificationAction,
         _draw = drawBadge ?? drawAccountBadge,
-        _marks = postingMarks ?? _defaultMarks;
+        _marks = postingMarks ?? _defaultMarks,
+        _clock = clock ?? DateTime.now;
+
+  /// The time, for [_scheduleAt]: a test's own.
+  final DateTime Function() _clock;
 
   /// Where [showNewMail] notes that it is posting under an account's group,
   /// so [dropEmptySummaries] in another isolate leaves that group alone:
@@ -284,6 +289,7 @@ class AndroidMailNotifier implements MailNotifier {
   }
 
   /// A notification set with Android for [at], on time where it is let be.
+  /// One whose time has come, or comes in the next second, goes off now.
   Future<void> _scheduleAt(
     int id,
     DateTime at,
@@ -292,8 +298,15 @@ class AndroidMailNotifier implements MailNotifier {
     required String body,
     required String payload,
   }) async {
+    // The plugin throws at a time that has passed. A reminder set for a
+    // moment on, a meeting made inside its own reminder time, could have
+    // passed by now: its calendars were read first, which takes seconds.
+    final now = _clock();
+    final due = at.isBefore(now.add(const Duration(seconds: 1)))
+        ? now.add(const Duration(seconds: 2))
+        : at;
     // An instant, so UTC will do: nothing repeats by the clock.
-    final when = tz.TZDateTime.from(at.toUtc(), tz.UTC);
+    final when = tz.TZDateTime.from(due.toUtc(), tz.UTC);
     Future<void> schedule(AndroidScheduleMode mode) => _plugin.zonedSchedule(
           id: id,
           scheduledDate: when,
@@ -622,11 +635,12 @@ class AndroidMailNotifier implements MailNotifier {
 
   static String _firstLine(String body) => body.split('\n').first;
 
+  /// New mail's rows and their summaries, and only those. The plugin's own
+  /// cancelAll also took back every reminder still to go off, and Follow
+  /// Up's are set only as they are asked for, so they never came back; and
+  /// it took down a reply that could not be sent, with what was typed.
   @override
-  Future<void> cancelAll() async {
-    await ensureReady();
-    await _plugin.cancelAll();
-  }
+  Future<void> cancelAll() => withdraw((_) => true);
 
   static const _groupPrefix = 'mailtree.account.';
 

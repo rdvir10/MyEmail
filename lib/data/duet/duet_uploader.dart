@@ -68,14 +68,18 @@ class DuetUploader {
       return (ran: false, sent: 0, line: '');
     }
     final now = _clock();
-    final last = DateTime.tryParse(ui.readString(UiStateKeys.duetLastRun) ?? '');
+    // What was sent and when, as the device has it. The worker sends too,
+    // through its own copy of the settings, and the app's copy, kept for
+    // hours by push, did not have it: the app sent the same mail again.
+    final last =
+        DateTime.tryParse(await _readNow(UiStateKeys.duetLastRun) ?? '');
     if (!force && last != null && now.difference(last) < every && !now.isBefore(last)) {
       return (ran: false, sent: 0, line: '');
     }
     await ui.writeString(UiStateKeys.duetLastRun, now.toIso8601String());
 
     final client = _given ?? http.Client();
-    final sentIds = _readSent();
+    final sentIds = await _readSent();
     var sent = 0;
     final problems = <String>[];
     try {
@@ -161,9 +165,9 @@ class DuetUploader {
   /// connector that lost its store, or a fresh start.
   Future<void> forgetSent() => ui.writeString(UiStateKeys.duetSent, null);
 
-  Map<String, List<String>> _readSent() {
+  Future<Map<String, List<String>>> _readSent() async {
     try {
-      final j = jsonDecode(ui.readString(UiStateKeys.duetSent) ?? '{}');
+      final j = jsonDecode(await _readNow(UiStateKeys.duetSent) ?? '{}');
       if (j is! Map) return {};
       return {
         for (final MapEntry(:key, :value) in j.entries)
@@ -171,6 +175,17 @@ class DuetUploader {
       };
     } on FormatException {
       return {};
+    }
+  }
+
+  /// [key] as the device has it now, or as this copy has it where the
+  /// device will not say: [run] never throws.
+  Future<String?> _readNow(String key) async {
+    try {
+      return await ui.readFresh(key);
+    } catch (e) {
+      debugPrint('[myemail] duet: $key read from the copy: $e');
+      return ui.readString(key);
     }
   }
 

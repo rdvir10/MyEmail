@@ -223,6 +223,8 @@ void main() {
     late List<PendingAction> queued;
     late AndroidMailNotifier notifier;
     final start = DateTime(2026, 10, 26, 10);
+    // The phone's clock, the notifier's and the plugin's alike.
+    final now = DateTime(2026, 10, 26, 9);
     final meeting = MeetingRef(
       accountId: 'hadco',
       eventId: 'm1',
@@ -234,13 +236,14 @@ void main() {
     );
 
     setUp(() {
-      plugin = _Plugin();
+      plugin = _Plugin()..now = () => now;
       queued = [];
       notifier = AndroidMailNotifier(
         plugin: plugin,
         queueAction: (action) async => queued.add(action),
         drawBadge: (_) async => null,
         postingMarks: () async => null,
+        clock: () => now,
       );
     });
 
@@ -314,6 +317,21 @@ void main() {
       expect(android.chronometerCountDown, isTrue);
       expect(android.icon, '@drawable/ic_stat_event',
           reason: "the calendar's own icon, not new mail's envelope");
+    });
+
+    test('a reminder whose time has just passed goes off now, not refused',
+        () async {
+      // A meeting made inside its own reminder time is set for a moment
+      // on, and that moment has passed when reading the calendars first
+      // took longer. The plugin throws at a time gone by.
+      await notifier.scheduleMeetingReminder(MeetingReminder(
+        id: 7,
+        at: now.subtract(const Duration(seconds: 3)),
+        meeting: meeting,
+      ));
+      final at = plugin.scheduled.single.at;
+      expect(at.isAfter(now), isTrue);
+      expect(at.difference(now), lessThanOrEqualTo(const Duration(seconds: 2)));
     });
 
     test('Snooze pressed in the app sets it again', () async {
@@ -712,6 +730,9 @@ class _Plugin implements FlutterLocalNotificationsPlugin {
   }) async =>
       shown.add((id: id, details: notificationDetails!));
 
+  /// The phone's clock, as the plugin reads it.
+  DateTime Function() now = DateTime.now;
+
   @override
   Future<void> zonedSchedule({
     required int id,
@@ -722,13 +743,19 @@ class _Plugin implements FlutterLocalNotificationsPlugin {
     String? body,
     String? payload,
     DateTimeComponents? matchDateTimeComponents,
-  }) async =>
-      scheduled.add((
-        id: id,
-        at: scheduledDate,
-        title: title,
-        details: notificationDetails,
-      ));
+  }) async {
+    // As the plugin's validateDateIsInTheFuture.
+    if (scheduledDate.isBefore(now())) {
+      throw ArgumentError.value(
+          scheduledDate, 'scheduledDate', 'Must be a date in the future');
+    }
+    scheduled.add((
+      id: id,
+      at: scheduledDate,
+      title: title,
+      details: notificationDetails,
+    ));
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

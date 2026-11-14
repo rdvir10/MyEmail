@@ -16,6 +16,18 @@ import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/state/duet_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/settings/duet_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
+
+/// A copy of the device's settings, read once as the app and the worker
+/// each read theirs. Set up [SharedPreferencesAsyncPlatform.instance]
+/// first.
+Future<UiStateStore> _copy() async => PrefsUiStateStore(
+      await SharedPreferencesWithCache.create(
+        cacheOptions: const SharedPreferencesWithCacheOptions(),
+      ),
+    );
 
 /// MyEmail's half of the connector for Claude (#2): what it sends to the
 /// connector, and Settings, Claude (Duet).
@@ -41,9 +53,9 @@ void main() {
     late int status;
     late DateTime now;
 
-    DuetUploader uploader() => DuetUploader(
+    DuetUploader uploader([UiStateStore? over]) => DuetUploader(
           engine: engine,
-          ui: ui,
+          ui: over ?? ui,
           secrets: secrets,
           clock: () => now,
           client: MockClient((request) async {
@@ -158,6 +170,49 @@ void main() {
       expect((clear['account'] as Map)['key'], 'acct-personal');
     });
 
+    group('the app and the worker, each with its own copy of the settings',
+        () {
+      // The worker reads its copy again each pass; the app, kept alive for
+      // hours by push, does not, and its copy had none of what the worker
+      // sent.
+      late UiStateStore app;
+      late UiStateStore worker;
+
+      setUp(() async {
+        SharedPreferencesAsyncPlatform.instance =
+            InMemorySharedPreferencesAsync.empty();
+        app = await _copy();
+        await app.writeString(
+          UiStateKeys.duet,
+          const DuetSettings(enabled: true, accounts: {'acct-personal'})
+              .toJson(),
+        );
+        worker = await _copy();
+        await secrets.writeSecret(
+            DuetUploader.keyName, 'KEY1-KEY2-KEY3-KEY4-KEY5-KEY6');
+      });
+
+      Set<Object?> idsIn(int i) =>
+          {for (final m in (body(i)['messages'] as List).cast<Map>()) m['id']};
+
+      test('what the worker sent is not sent again by the app', () async {
+        await uploader(worker).run();
+        expect(idsIn(0), hasLength(DuetUploader.perPass));
+
+        now = now.add(const Duration(minutes: 6));
+        await uploader(app).run();
+        expect(idsIn(1).intersection(idsIn(0)), isEmpty);
+      });
+
+      test('sent by the worker a moment ago, the app waits its five minutes',
+          () async {
+        await uploader(worker).run();
+        now = now.add(const Duration(minutes: 2));
+        expect((await uploader(app).run()).ran, isFalse);
+        expect(requests, hasLength(1));
+      });
+    });
+
     test('a refused key or no connection is said, and nothing counted sent',
         () async {
       await switchOn(const DuetSettings(enabled: true, accounts: {'acct-personal'}));
@@ -255,6 +310,38 @@ void main() {
       expect(find.textContaining('Sent'), findsOneWidget);
       expect(DuetSettings.fromJson(ui.readString(UiStateKeys.duet)).enabled, isTrue,
           reason: 'kept where the background reads it');
+    });
+
+    testWidgets("the worker's last pass is the one it says", (tester) async {
+      tester.view.physicalSize = const Size(1000, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      SharedPreferencesAsyncPlatform.instance =
+          InMemorySharedPreferencesAsync.empty();
+      final app = await _copy();
+      final worker = await _copy();
+      await worker.writeString(
+        UiStateKeys.duetStatus,
+        jsonEncode({
+          'at': DateTime(2026, 11, 14, 9, 5).toIso8601String(),
+          'line': 'Sent 3 messages',
+          'ok': true,
+        }),
+      );
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(app),
+        credentialStoreProvider.overrideWithValue(MemoryCredentialStore()),
+        mailEngineProvider.overrideWithValue(SampleMailEngine()),
+      ]);
+      addTearDown(c.dispose);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: const MaterialApp(home: DuetScreen()),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Sent 3 messages'), findsOneWidget);
     });
   });
 }

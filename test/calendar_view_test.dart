@@ -26,6 +26,9 @@ import 'package:myemail/state/calendar_view_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/calendar/calendar_screen.dart';
 import 'package:myemail/ui/settings/calendar_settings_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 
 /// The calendar in the app (#50), and Microsoft calendars in the phone's
 /// calendar (#51).
@@ -319,6 +322,30 @@ void main() {
       at = now.add(const Duration(minutes: 31));
       await pass();
       expect(phone.eventsOf[hadco.id], hasLength(2));
+    });
+
+    test('brought up to date by the worker, not again by the app at once',
+        () async {
+      // Each keeps its own copy of the settings, and the app's, kept alive
+      // by push, did not have the time the worker wrote.
+      SharedPreferencesAsyncPlatform.instance =
+          InMemorySharedPreferencesAsync.empty();
+      Future<UiStateStore> copy() async => PrefsUiStateStore(
+            await SharedPreferencesWithCache.create(
+              cacheOptions: const SharedPreferencesWithCacheOptions(),
+            ),
+          );
+      final app = await copy();
+      await app.writeIds(UiStateKeys.phoneCalendars, {hadco.id});
+      final worker = await copy();
+      await syncPhoneCalendarsIfDue(engine, worker,
+          phone: phone, clock: () => now);
+      expect(phone.eventsOf[hadco.id], hasLength(2));
+      phone.eventsOf.clear();
+
+      await syncPhoneCalendarsIfDue(engine, app,
+          phone: phone, clock: () => now.add(const Duration(minutes: 10)));
+      expect(phone.eventsOf, isEmpty, reason: 'too soon');
     });
   });
 

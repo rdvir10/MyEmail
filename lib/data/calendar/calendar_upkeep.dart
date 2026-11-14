@@ -93,7 +93,6 @@ class CalendarUpkeep {
         use24h: use24h,
         ownEmails: {for (final a in accounts) a.id: a.emailAddress},
       ),
-      now,
     );
 
     final fromLinks = <CalendarEvent>[];
@@ -193,9 +192,13 @@ class CalendarUpkeep {
   /// longer (declined, moved, taken off, its account switched off) taken
   /// back while it is still to come. One whose time has come goes off
   /// now, once: [UiStateKeys.meetingReminders] keeps what was set, by id,
-  /// with its time, for [remembered] after.
-  Future<void> _remind(List<MeetingReminder> wanted, DateTime now) async {
-    final set = _readSet();
+  /// with its time, for [remembered] after. One Android will not take is
+  /// tried again next time, and the rest go on.
+  Future<void> _remind(List<MeetingReminder> wanted) async {
+    // Now, not as the run began: the calendars were read since, which
+    // takes seconds, and "now" by the run's clock had passed.
+    final now = _clock();
+    final set = await _readSet();
     final keep = <int, DateTime>{};
     final ids = {for (final r in wanted) r.id};
     for (final MapEntry(key: id, value: at) in set.entries) {
@@ -208,20 +211,28 @@ class CalendarUpkeep {
     }
     for (final r in wanted) {
       final was = set[r.id];
-      if (r.at.isAfter(now)) {
-        // Set again each time: its title or its place may have changed.
-        await notifier.scheduleMeetingReminder(r);
-      } else if (was == null || was.isAfter(now)) {
-        // Its time came with nothing set for it: a meeting made, or its
-        // reminder lengthened, inside the reminder's own time.
-        await notifier.scheduleMeetingReminder(MeetingReminder(
-          id: r.id,
-          at: now.add(const Duration(seconds: 2)),
-          meeting: r.meeting,
-        ));
-      } else {
-        // Gone off already, or snoozed: left as it is.
-        keep[r.id] = was;
+      try {
+        if (r.at.isAfter(now)) {
+          // Set again each time: its title or its place may have changed.
+          await notifier.scheduleMeetingReminder(r);
+        } else if (was == null || was.isAfter(now)) {
+          // Its time came with nothing set for it: a meeting made, or its
+          // reminder lengthened, inside the reminder's own time.
+          await notifier.scheduleMeetingReminder(MeetingReminder(
+            id: r.id,
+            at: now.add(const Duration(seconds: 2)),
+            meeting: r.meeting,
+          ));
+        } else {
+          // Gone off already, or snoozed: left as it is.
+          keep[r.id] = was;
+          continue;
+        }
+      } catch (e) {
+        // Kept as it was, so it is tried again: the other reminders, the
+        // agenda and the widget are not held up by it.
+        debugPrint('[myemail] meeting reminder ${r.id} not set: $e');
+        if (was != null) keep[r.id] = was;
         continue;
       }
       keep[r.id] = r.at;
@@ -235,10 +246,13 @@ class CalendarUpkeep {
     );
   }
 
-  Map<int, DateTime> _readSet() {
+  /// What was set, as the device has it now. The worker sets reminders
+  /// too, through its own copy of the settings, and the app's copy did not
+  /// have them: one the worker set, gone off, the app set again for now.
+  Future<Map<int, DateTime>> _readSet() async {
     try {
-      final json =
-          jsonDecode(uiState.readString(UiStateKeys.meetingReminders) ?? '{}');
+      final json = jsonDecode(
+          await uiState.readFresh(UiStateKeys.meetingReminders) ?? '{}');
       if (json is! Map) return const {};
       return {
         for (final MapEntry(:key, :value) in json.entries)
@@ -253,7 +267,7 @@ class CalendarUpkeep {
   /// The morning's [agenda] set for its time, in place of one set for
   /// another morning and not gone off yet; with none, that one taken back.
   Future<void> _agenda(MorningAgenda? agenda, DateTime now) async {
-    final was = _readAgenda();
+    final was = await _readAgenda();
     final id = agenda == null ? null : agendaIdFor(agenda.day);
     if (was != null && was.at.isAfter(now) && was.id != id) {
       await notifier.cancelReminder(was.id);
@@ -278,9 +292,11 @@ class CalendarUpkeep {
     );
   }
 
-  ({int id, DateTime at})? _readAgenda() {
+  /// As the device has it now, as [_readSet] for the same reason.
+  Future<({int id, DateTime at})?> _readAgenda() async {
     try {
-      final json = jsonDecode(uiState.readString(UiStateKeys.agendaSet) ?? '');
+      final json =
+          jsonDecode(await uiState.readFresh(UiStateKeys.agendaSet) ?? '');
       if (json case {'id': final int id, 'at': final int at}) {
         return (id: id, at: DateTime.fromMillisecondsSinceEpoch(at));
       }
@@ -377,8 +393,9 @@ Future<void> keepCalendarUpIfDue(
 }) async {
   try {
     final now = clock();
-    final last =
-        DateTime.tryParse(uiState.readString(UiStateKeys.calendarKeptUp) ?? '');
+    // As the device has it: a run in the worker counts as much as one here.
+    final last = DateTime.tryParse(
+        await uiState.readFresh(UiStateKeys.calendarKeptUp) ?? '');
     if (!force &&
         last != null &&
         now.difference(last) < every &&

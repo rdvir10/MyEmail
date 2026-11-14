@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/auth/microsoft_oauth.dart' show SignInNeedsConsent;
 import 'package:myemail/data/calendar/calendar_upkeep.dart';
@@ -14,12 +15,16 @@ import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/domain/calendar_prefs.dart';
 import 'package:myemail/domain/internet_calendar.dart';
 import 'package:myemail/domain/mail_message.dart' show MailAddress;
+import 'package:myemail/domain/meeting_alerts.dart' show MeetingReminder;
 import 'package:myemail/data/auth/oauth_token.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 
 /// The meeting reminders (#31), the morning agenda (#33) and the calendar
 /// widget's meetings (#11), kept up to date from the calendars.
 void main() {
-  late SampleMailEngine engine;
+  late _ReadingEngine engine;
   late FakeMailNotifier notifier;
   late FakeHomeScreenSurface surface;
   late MemoryUiStateStore ui;
@@ -33,7 +38,7 @@ void main() {
   );
 
   setUp(() async {
-    engine = SampleMailEngine();
+    engine = _ReadingEngine();
     notifier = FakeMailNotifier();
     surface = FakeHomeScreenSurface();
     ui = MemoryUiStateStore();
@@ -146,6 +151,63 @@ void main() {
     expect(notifier.meetingReminders, isEmpty);
   });
 
+  test('a meeting made inside its reminder time goes off, however long the '
+      'calendars take to read', () async {
+    // Made at 10:50 for 11:00, with a quarter of an hour's reminder: set
+    // for now. Each calendar is read over the network first, which takes
+    // seconds on a phone, and Android refuses a time that has passed.
+    now = DateTime(2026, 10, 26, 10, 50);
+    engine.events[hadco.id] = [meeting('a', DateTime(2026, 10, 26, 11))];
+    engine.onRead = () => now = now.add(const Duration(seconds: 5));
+    final android = _AndroidNotifier(() => now);
+    await CalendarUpkeep(
+      engine: engine,
+      notifier: android,
+      uiState: ui,
+      surface: surface,
+      clock: () => now,
+    ).run();
+    final set = android.meetingReminders.values.single;
+    expect(set.meeting.eventId, 'a');
+    expect(set.at.isAfter(now), isTrue);
+    expect(set.at.difference(now).inSeconds, lessThan(5));
+    expect(surface.calendarRedraws, 1, reason: 'the widget drawn too');
+  });
+
+  test('a reminder Android will not take leaves the rest, the agenda and '
+      'the widget, and is tried again', () async {
+    now = DateTime(2026, 10, 26, 9, 50);
+    engine.events[hadco.id] = [
+      meeting('a', DateTime(2026, 10, 26, 10)),
+      meeting('b', DateTime(2026, 10, 26, 14)),
+      meeting('c', DateTime(2026, 10, 27, 9, 30)),
+    ];
+    final android = _AndroidNotifier(() => now)..refused.add('a');
+    Future<void> pass() => CalendarUpkeep(
+          engine: engine,
+          notifier: android,
+          uiState: ui,
+          surface: surface,
+          clock: () => now,
+        ).run();
+    await pass();
+    expect(
+      [for (final r in android.meetingReminders.values) r.meeting.eventId],
+      unorderedEquals(['b', 'c']),
+    );
+    expect(android.agendas, hasLength(1), reason: "tomorrow's agenda");
+    expect(surface.calendarRedraws, 1);
+
+    // It never went off: set once Android takes it.
+    android.refused.clear();
+    now = DateTime(2026, 10, 26, 9, 55);
+    await pass();
+    expect(
+      [for (final r in android.meetingReminders.values) r.meeting.eventId],
+      contains('a'),
+    );
+  });
+
   test('switched off, the reminders still to come are taken back', () async {
     engine.events[hadco.id] = [meeting('a', DateTime(2026, 10, 26, 10))];
     await run();
@@ -246,6 +308,79 @@ void main() {
     expect(surface.calendarRedraws, 3);
   });
 
+  group('the app and the worker, each with its own copy of the settings',
+      () {
+    // Each reads the device's settings once and keeps a copy. The worker
+    // reads its copy again each pass; the app, kept alive for days by
+    // push, does not. What the worker set was not in the app's copy.
+    late UiStateStore app;
+    late UiStateStore worker;
+
+    setUp(() async {
+      SharedPreferencesAsyncPlatform.instance =
+          InMemorySharedPreferencesAsync.empty();
+      Future<UiStateStore> copy() async => PrefsUiStateStore(
+            await SharedPreferencesWithCache.create(
+              cacheOptions: const SharedPreferencesWithCacheOptions(),
+            ),
+          );
+      app = await copy();
+      worker = await copy();
+    });
+
+    Future<void> runIn(UiStateStore store) => CalendarUpkeep(
+          engine: engine,
+          notifier: notifier,
+          uiState: store,
+          surface: surface,
+          clock: () => now,
+        ).run();
+
+    test('a reminder the worker set and that went off is not set again by '
+        'the app', () async {
+      now = DateTime(2026, 10, 26, 9);
+      engine.events[hadco.id] = [meeting('a', DateTime(2026, 10, 26, 10))];
+      await runIn(worker);
+      expect(notifier.meetingReminders.values.single.at,
+          DateTime(2026, 10, 26, 9, 45));
+
+      // Gone off at 9:45, and swiped away; the app opened at 9:47.
+      notifier.meetingReminders.clear();
+      now = DateTime(2026, 10, 26, 9, 47);
+      await runIn(app);
+      expect(notifier.meetingReminders, isEmpty);
+    });
+
+    test('an agenda the worker set is taken back by the app once the day '
+        'is empty', () async {
+      engine.events[hadco.id] = [meeting('a', DateTime(2026, 10, 26, 10))];
+      await runIn(worker);
+      expect(notifier.agendas, hasLength(1));
+
+      engine.events[hadco.id] = const [];
+      now = now.add(const Duration(hours: 1));
+      await runIn(app);
+      expect(notifier.agendas, isEmpty, reason: 'nothing on Monday now');
+    });
+
+    test('kept up by the worker a moment ago, the app waits its quarter of '
+        'an hour', () async {
+      engine.events[hadco.id] = [meeting('a', DateTime(2026, 10, 26, 10))];
+      Future<void> pass(UiStateStore store) => keepCalendarUpIfDue(
+            engine,
+            store,
+            notifier,
+            surface,
+            clock: () => now,
+          );
+      await pass(worker);
+      expect(surface.calendarRedraws, 1);
+      now = now.add(const Duration(minutes: 5));
+      await pass(app);
+      expect(surface.calendarRedraws, 1, reason: 'too soon');
+    });
+  });
+
   test('a calendar switched off has no reminders, and is not on the widget',
       () async {
     now = DateTime(2026, 10, 26, 9);
@@ -306,4 +441,68 @@ void main() {
     expect(holiday['c'], 0xFF0B8043.toSigned(32));
     expect(links.asked, [link.url], reason: 'read, never having been');
   });
+}
+
+/// Calendars read over the network, which takes time: [onRead] moves a
+/// test's clock on as each is read.
+class _ReadingEngine extends SampleMailEngine {
+  void Function()? onRead;
+
+  @override
+  Future<List<CalendarEvent>> calendarEvents(
+    String accountId,
+    DateTime start,
+    DateTime end,
+  ) {
+    onRead?.call();
+    return super.calendarEvents(accountId, start, end);
+  }
+}
+
+/// Android's side, as the notifications plugin has it: a time that has
+/// passed is refused by throwing, and so is the reminder of a meeting in
+/// [refused].
+class _AndroidNotifier extends FakeMailNotifier {
+  _AndroidNotifier(this.clock);
+
+  final DateTime Function() clock;
+
+  /// The meetings whose reminders Android will not take, by event id.
+  final Set<String> refused = {};
+
+  void _inTheFuture(DateTime at) {
+    if (at.isBefore(clock())) {
+      throw ArgumentError.value(
+          at, 'scheduledDate', 'Must be a date in the future');
+    }
+  }
+
+  @override
+  Future<bool> scheduleMeetingReminder(MeetingReminder reminder) {
+    if (refused.contains(reminder.meeting.eventId)) {
+      throw PlatformException(code: 'refused');
+    }
+    _inTheFuture(reminder.at);
+    return super.scheduleMeetingReminder(reminder);
+  }
+
+  @override
+  Future<bool> scheduleAgenda({
+    required int id,
+    required DateTime at,
+    required String title,
+    required String body,
+    required List<String> lines,
+    required String payload,
+  }) {
+    _inTheFuture(at);
+    return super.scheduleAgenda(
+      id: id,
+      at: at,
+      title: title,
+      body: body,
+      lines: lines,
+      payload: payload,
+    );
+  }
 }

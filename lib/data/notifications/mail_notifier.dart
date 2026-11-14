@@ -95,6 +95,12 @@ abstract class MailNotifier {
     required List<MailNotification> notifications,
   });
 
+  /// Take down every new-mail notification, and the account summaries
+  /// over them: notifications, or sync, switched off. A reminder still to
+  /// go off (Follow Up's, a meeting's, the agenda, a password's) and any
+  /// other notice are left as they are.
+  ///
+  /// Never throws.
   Future<void> cancelAll();
 
   /// The messages that have a new-mail notification showing, by message id.
@@ -215,7 +221,8 @@ class FakeMailNotifier implements MailNotifier {
   Future<void> dropEmptySummaries({Set<String> gone = const {}}) async =>
       summaryDrops.add(gone);
 
-  /// How many times everything showing was taken down.
+  /// How many times all the new mail showing was taken down. The reminders
+  /// stay, as they do on Android.
   int cancelAllCalls = 0;
 
   @override

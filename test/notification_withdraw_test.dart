@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:timezone/timezone.dart' as tz;
 import 'package:myemail/data/account_store.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/credential_store.dart';
@@ -273,6 +274,44 @@ void main() {
       expect(plugin.showing.keys.where((k) => k.$1 == null), hasLength(1));
     });
 
+    test('switched off, new mail goes and what waits for its time stays',
+        () async {
+      // Notifications off, or sync to Only when I open MyEmail, took back
+      // every reminder with the shade. Follow Up's is set only when asked
+      // for, so it never came back.
+      await notifier.showNewMail(
+        account: account,
+        folder: inbox,
+        notifications: [one('a:INBOX#1'), one('a:INBOX#2')],
+      );
+      await notifier.scheduleReminder(
+        id: 5,
+        at: DateTime.now().add(const Duration(days: 2)),
+        title: 'Quote for Dana',
+        body: 'Dana Levi',
+        payload: 'a:INBOX#9',
+      );
+      // A reply that could not be sent, holding what was typed.
+      await plugin.show(
+        id: 77,
+        title: 'MyEmail',
+        body: 'Your reply was not sent.',
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            AndroidMailNotifier.channelId,
+            AndroidMailNotifier.channelName,
+          ),
+        ),
+      );
+
+      await notifier.cancelAll();
+
+      expect(await notifier.shownMessageIds(), isEmpty);
+      expect(plugin.showing.keys, [(null, 77)],
+          reason: 'the summary gone with its mail, the notice left');
+      expect(plugin.scheduled, [5], reason: 'the reminder still set');
+    });
+
     test('a list Android will not give is nothing to take down', () async {
       plugin.listFails = true;
 
@@ -381,6 +420,29 @@ class _Plugin implements FlutterLocalNotificationsPlugin {
   @override
   Future<void> cancel({required int id, String? tag}) async =>
       showing.remove((tag, id));
+
+  /// The ids set for later.
+  final List<int> scheduled = [];
+
+  @override
+  Future<void> zonedSchedule({
+    required int id,
+    required tz.TZDateTime scheduledDate,
+    required NotificationDetails notificationDetails,
+    required AndroidScheduleMode androidScheduleMode,
+    String? title,
+    String? body,
+    String? payload,
+    DateTimeComponents? matchDateTimeComponents,
+  }) async =>
+      scheduled.add(id);
+
+  /// As Android does it: everything showing, and everything set for later.
+  @override
+  Future<void> cancelAll() async {
+    showing.clear();
+    scheduled.clear();
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
