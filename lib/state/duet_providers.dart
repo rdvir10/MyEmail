@@ -41,6 +41,21 @@ class DuetSettingsNotifier extends Notifier<DuetSettings> {
             ? {...state.readOnce, accountId}
             : ({...state.readOnce}..remove(accountId)),
       );
+
+  /// [accountIds] removed from the app: no longer sent, so the next pass
+  /// clears them from the connector. Left ticked, Settings went on counting
+  /// them, and the Duet screen, which lists only the accounts there now,
+  /// could not untick them.
+  void forget(Set<String> accountIds) {
+    if (!accountIds.any(state.accounts.contains) &&
+        !accountIds.any(state.readOnce.contains)) {
+      return;
+    }
+    state = state.copyWith(
+      accounts: state.accounts.difference(accountIds),
+      readOnce: state.readOnce.difference(accountIds),
+    );
+  }
 }
 
 final duetSettingsProvider =

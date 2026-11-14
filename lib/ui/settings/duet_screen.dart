@@ -235,6 +235,11 @@ class _DuetScreenState extends ConsumerState<DuetScreen> {
               "After each mail check, the newest messages in each ticked "
               "account's Inbox go to your connector on Vercel, as text, with "
               'no attachments; what leaves the Inbox leaves the connector too. '
+              'An account unticked or removed is cleared from the connector '
+              'at the next check. Switched off, everything sent is cleared at '
+              'the next check, or at once with Send now, and this then says '
+              'Cleared from your connector. Clearing needs the upload key, so '
+              'empty it only after that. '
               'An account set to the last day only (Hadco) sends that day, '
               'and each message is removed once Duet has read it, or after a '
               'day. Claude reads them only with the connector key, set in '

@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.core.content.FileProvider
+import es.antonborri.home_widget.HomeWidgetLaunchIntent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -71,6 +72,16 @@ open class MainActivity : FlutterActivity() {
         // Before super, which is where configureFlutterEngine runs.
         restarted = savedInstanceState != null ||
             (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
+        // A widget's tap that started the app comes back the same way, and
+        // the plugin tells Dart the app was opened by a widget whenever this
+        // intent is the widget's: the folder of that old tap was opened
+        // again, or an old meeting's sheet. A tap made now comes through
+        // onNewIntent, which sets the intent it brings.
+        if (restarted &&
+            intent.action == HomeWidgetLaunchIntent.HOME_WIDGET_LAUNCH_ACTION
+        ) {
+            intent = Intent(intent).setAction(Intent.ACTION_MAIN).setData(null)
+        }
         super.onCreate(savedInstanceState)
     }
 

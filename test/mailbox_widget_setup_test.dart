@@ -480,6 +480,43 @@ void main() {
       expect(store.seen[inbox], clock.toUtc());
     });
 
+    testWidgets('the Inbox the app goes back to as it is put away is not '
+        'looked at', (tester) async {
+      // Put away from a folder that is not an Inbox, the list goes back to
+      // its account's Inbox. That move was taken for the Inbox chosen: its
+      // widget went to no new mail as Ron left, and again as he came back.
+      store.openedAt = DateTime.utc(2000);
+      await pumpKeeper(tester);
+      final family = c
+          .read(folderIndexProvider)
+          .values
+          .firstWhere(
+            (f) => f.accountId == 'acct-personal' && f.path == 'Family',
+          )
+          .id;
+      c.read(selectedFolderIdProvider.notifier).select(family);
+      await settle(tester);
+      clock = clock.add(const Duration(minutes: 5));
+
+      go(tester, away);
+      // What the shell does once the app is put away.
+      c.read(selectedFolderIdProvider.notifier).select(inbox);
+      await settle(tester);
+
+      expect(store.seen[family], clock.toUtc(), reason: 'it was read');
+      expect(store.seen.containsKey(inbox), isFalse);
+      expect(surface.values['count.$inbox.new'], greaterThan(0));
+
+      // Back by another widget's tap, a moment after the app is in front.
+      clock = clock.add(const Duration(hours: 1));
+      go(tester, back);
+      c.read(selectedFolderIdProvider.notifier).select(family);
+      await settle(tester);
+
+      expect(store.seen.containsKey(inbox), isFalse);
+      expect(store.seen[family], clock.toUtc());
+    });
+
     testWidgets('neither leaving nor coming back syncs anything',
         (tester) async {
       // Each resume synced every widget's folder over the network, alongside

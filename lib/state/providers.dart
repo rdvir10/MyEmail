@@ -22,6 +22,7 @@ import '../domain/error_report.dart';
 import '../domain/folder_role.dart';
 import '../domain/mail_folder.dart';
 import 'display_providers.dart';
+import 'duet_providers.dart' show duetSettingsProvider;
 import 'folder_tree.dart';
 import 'quick_steps.dart';
 import 'widget_providers.dart';
@@ -229,11 +230,19 @@ class Accounts extends AsyncNotifier<List<Account>> {
 
   /// Remove an account, and the shared mailboxes reached through it.
   Future<void> remove(String accountId) async {
+    final gone = {
+      accountId,
+      for (final a in state.value ?? const <Account>[])
+        if (a.sharedVia == accountId) a.id,
+    };
     await ref.read(mailEngineProvider).removeAccount(accountId);
     state = AsyncData([
       for (final a in state.value ?? const <Account>[])
         if (a.id != accountId && a.sharedVia != accountId) a,
     ]);
+    // Its Inbox no longer sent to Claude (Duet), and cleared from the
+    // connector at the next pass.
+    ref.read(duetSettingsProvider.notifier).forget(gone);
   }
 
   /// Put the accounts in [ids]' order, which is what a drag of an account

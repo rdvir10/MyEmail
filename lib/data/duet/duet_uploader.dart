@@ -20,7 +20,9 @@ typedef DuetResult = ({bool ran, int sent, String line});
 /// leaves the connector too. A read-once account (Hadco) sends only the last
 /// day's mail, which the connector deletes once Duet has read it.
 ///
-/// Each message is sent once: the ids sent are kept on the phone.
+/// Each message is sent once: the ids sent are kept on the phone, by
+/// account, which is also the record of the accounts on the connector. One
+/// unticked, removed, or every one with the switch off, is cleared from it.
 class DuetUploader {
   DuetUploader({
     required this.engine,
@@ -64,13 +66,19 @@ class DuetUploader {
   }) async {
     final settings = DuetSettings.fromJson(ui.readString(UiStateKeys.duet));
     final key = (await secrets.readSecret(keyName))?.trim() ?? '';
-    if (!settings.enabled || key.isEmpty) {
-      return (ran: false, sent: 0, line: '');
-    }
-    final now = _clock();
+    // With no key nothing is sent, nor cleared: the Duet screen says to
+    // empty it only once what was sent is cleared.
+    if (key.isEmpty) return (ran: false, sent: 0, line: '');
     // What was sent and when, as the device has it. The worker sends too,
     // through its own copy of the settings, and the app's copy, kept for
     // hours by push, did not have it: the app sent the same mail again.
+    final sentIds = await _readSent();
+    // Switched off, a pass only clears what was sent. It used to do nothing
+    // at all, and the mail stayed on the connector for Duet to read.
+    if (!settings.enabled && sentIds.isEmpty) {
+      return (ran: false, sent: 0, line: '');
+    }
+    final now = _clock();
     final last =
         DateTime.tryParse(await _readNow(UiStateKeys.duetLastRun) ?? '');
     if (!force && last != null && now.difference(last) < every && !now.isBefore(last)) {
@@ -79,22 +87,34 @@ class DuetUploader {
     await ui.writeString(UiStateKeys.duetLastRun, now.toIso8601String());
 
     final client = _given ?? http.Client();
-    final sentIds = await _readSent();
     var sent = 0;
     final problems = <String>[];
     try {
       final accounts = await engine.loadAccounts();
-      // An account no longer ticked comes off the connector.
+      // On the connector, while switched on: the accounts ticked that are
+      // still here. Any other sent comes off it, whether unticked, removed
+      // (its id stayed ticked, out of sight), or switched off. No accounts
+      // at all is the list not read yet, not every one removed.
+      final here = {for (final a in accounts) a.id};
+      final onIt = {
+        if (settings.enabled)
+          for (final id in settings.accounts)
+            if (here.isEmpty || here.contains(id)) id,
+      };
       for (final id in sentIds.keys.toList()) {
-        if (settings.accounts.contains(id)) continue;
+        if (onIt.contains(id)) continue;
         final cleared = await _post(client, settings, key, {
           'account': {'key': id},
           'clear': true,
         });
-        if (cleared == null) sentIds.remove(id);
+        if (cleared == null) {
+          sentIds.remove(id);
+        } else {
+          problems.add(cleared);
+        }
       }
       for (final account in accounts) {
-        if (!settings.accounts.contains(account.id)) continue;
+        if (!onIt.contains(account.id)) continue;
         final readOnce = settings.readOnce.contains(account.id);
         final folders = await engine.cachedFolders(account.id);
         final inbox =
@@ -147,13 +167,13 @@ class DuetUploader {
       if (_given == null) client.close();
     }
     await ui.writeString(UiStateKeys.duetSent, jsonEncode(sentIds));
-    final line = problems.isNotEmpty
-        ? problems.first
-        : switch (sent) {
-            0 => 'Up to date',
-            1 => 'Sent 1 message',
-            _ => 'Sent $sent messages',
-          };
+    final line = switch (sent) {
+      _ when problems.isNotEmpty => problems.first,
+      _ when !settings.enabled => 'Cleared from your connector',
+      0 => 'Up to date',
+      1 => 'Sent 1 message',
+      _ => 'Sent $sent messages',
+    };
     await ui.writeString(
       UiStateKeys.duetStatus,
       jsonEncode({'at': now.toIso8601String(), 'line': line, 'ok': problems.isEmpty}),
@@ -162,8 +182,16 @@ class DuetUploader {
   }
 
   /// Forget what was sent, so the next pass sends the newest again: for a
-  /// connector that lost its store, or a fresh start.
-  Future<void> forgetSent() => ui.writeString(UiStateKeys.duetSent, null);
+  /// connector that lost its store, or a fresh start. Which accounts were
+  /// sent is kept: it is the only record of what is on the connector, and
+  /// one unticked just before would otherwise never be cleared from it.
+  Future<void> forgetSent() async {
+    final sent = await _readSent();
+    await ui.writeString(
+      UiStateKeys.duetSent,
+      jsonEncode({for (final id in sent.keys) id: const <String>[]}),
+    );
+  }
 
   Future<Map<String, List<String>>> _readSent() async {
     try {

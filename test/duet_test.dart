@@ -170,6 +170,95 @@ void main() {
       expect((clear['account'] as Map)['key'], 'acct-personal');
     });
 
+    /// The accounts the requests from the [from]th on took off the
+    /// connector, and those they sent to it.
+    ({List<String> cleared, List<String> sent}) since(int from) {
+      final bodies = [
+        for (var i = from; i < requests.length; i++) body(i),
+      ];
+      String keyOf(Map<String, Object?> b) => '${(b['account'] as Map)['key']}';
+      return (
+        cleared: [for (final b in bodies) if (b['clear'] == true) keyOf(b)],
+        sent: [for (final b in bodies) if (b['clear'] != true) keyOf(b)],
+      );
+    }
+
+    test('a removed account is taken off the connector', () async {
+      // Ticked when it was removed: nothing ever cleared it, and Duet went
+      // on reading that Inbox.
+      await switchOn(const DuetSettings(
+        enabled: true,
+        accounts: {'acct-personal', 'acct-side'},
+      ));
+      await uploader().run();
+      expect(since(0).sent, unorderedEquals(['acct-personal', 'acct-side']));
+      await engine.removeAccount('acct-side');
+
+      final from = requests.length;
+      await uploader().run(force: true);
+      expect(since(from).cleared, ['acct-side']);
+      expect(since(from).sent, ['acct-personal']);
+      final after = requests.length;
+      await uploader().run(force: true);
+      expect(since(after).cleared, isEmpty, reason: 'cleared once');
+    });
+
+    test('switched off, what was sent is taken off the connector', () async {
+      await switchOn(const DuetSettings(
+        enabled: true,
+        accounts: {'acct-personal', 'acct-side'},
+      ));
+      await uploader().run();
+      await ui.writeString(
+        UiStateKeys.duet,
+        const DuetSettings(
+          enabled: false,
+          accounts: {'acct-personal', 'acct-side'},
+        ).toJson(),
+      );
+
+      // At the next pass, with no Send now.
+      now = now.add(const Duration(minutes: 6));
+      final from = requests.length;
+      final off = await uploader().run();
+      expect(
+        since(from).cleared,
+        unorderedEquals(['acct-personal', 'acct-side']),
+      );
+      expect(since(from).sent, isEmpty);
+      expect(off.line, 'Cleared from your connector');
+
+      final after = requests.length;
+      expect((await uploader().run(force: true)).ran, isFalse,
+          reason: 'nothing left on the connector');
+      expect(requests, hasLength(after));
+    });
+
+    test('Send everything again still clears an account unticked', () async {
+      // It forgot every account sent, so one unticked just before stayed
+      // on the connector for good.
+      await switchOn(const DuetSettings(
+        enabled: true,
+        accounts: {'acct-personal', 'acct-side'},
+      ));
+      await uploader().run();
+      await ui.writeString(
+        UiStateKeys.duet,
+        const DuetSettings(enabled: true, accounts: {'acct-personal'}).toJson(),
+      );
+
+      await uploader().forgetSent();
+      final from = requests.length;
+      await uploader().run(force: true);
+      expect(since(from).cleared, ['acct-side']);
+      expect(since(from).sent, ['acct-personal']);
+      expect(
+        (body(requests.length - 1)['messages'] as List),
+        hasLength(DuetUploader.perPass),
+        reason: 'the newest go again',
+      );
+    });
+
     group('the app and the worker, each with its own copy of the settings',
         () {
       // The worker reads its copy again each pass; the app, kept alive for
@@ -238,6 +327,41 @@ void main() {
   });
 
   group('Settings, Claude (Duet)', () {
+    test('an account removed is unticked, with its shared mailboxes',
+        () async {
+      // Left ticked, the Settings row went on counting it, and nothing on
+      // the screen could untick it: only accounts there now are listed.
+      final engine = SampleMailEngine();
+      final shared = await engine.addSharedMailbox(
+        viaAccountId: 'acct-side',
+        emailAddress: 'orders@example.com',
+        displayName: 'Orders',
+      );
+      final ui = MemoryUiStateStore();
+      await ui.writeString(
+        UiStateKeys.duet,
+        DuetSettings(
+          enabled: true,
+          accounts: {'acct-personal', 'acct-side', shared.id},
+          readOnce: {'acct-side'},
+        ).toJson(),
+      );
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(ui),
+        mailEngineProvider.overrideWithValue(engine),
+      ]);
+      addTearDown(c.dispose);
+      await c.read(accountsProvider.future);
+      expect(c.read(duetSettingsProvider).accounts, hasLength(3));
+
+      await c.read(accountsProvider.notifier).remove('acct-side');
+
+      const left = DuetSettings(enabled: true, accounts: {'acct-personal'});
+      expect(c.read(duetSettingsProvider), left);
+      expect(DuetSettings.fromJson(ui.readString(UiStateKeys.duet)), left,
+          reason: 'kept where the background reads it');
+    });
+
     testWidgets('switched on with a key and an account, Send now sends',
         (tester) async {
       tester.view.physicalSize = const Size(1000, 1600);

@@ -116,10 +116,15 @@ class _MailboxWidgetKeeperState extends ConsumerState<MailboxWidgetKeeper>
 
   /// A different mailbox on screen. From one to another is a choice; from
   /// none to one is the app arriving on it as the folders load.
+  ///
+  /// Not while the app is away: put away from another folder, the list goes
+  /// back to its account's Inbox, and nobody chose it. It is the one the
+  /// app opens on when it comes back. A widget tapped meanwhile has already
+  /// said what is on screen, before its selection gets here.
   void _shown(String? previous, String? next) {
     if (next == previous || next == _viewing) return;
     final now = MailboxWidgetKeeper.now();
-    final chose = previous != null && next != null;
+    final chose = previous != null && next != null && !_away;
     final left = _leave(now);
     if (next == null) {
       unawaited(left.then(_redrawIf));
