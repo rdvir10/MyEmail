@@ -130,7 +130,7 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
           row,
           alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtStart,
         );
-        if (ahead != 0) _showPast(row, ahead);
+        if (ahead != 0) _showPast(row, id, ahead);
         return;
       }
       if (secondLook) return;
@@ -150,11 +150,12 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     });
   }
 
-  /// [row] with the two rows past it on screen too, the way [direction]
-  /// goes, and the edge of a third to say the list goes on; or as much as
-  /// a third of the list's height holds. Only ever further that way: a row
-  /// already well inside the list stays where it is.
-  void _showPast(BuildContext row, int direction) {
+  /// [row], [id]'s, with the two rows past it on screen too, the way
+  /// [direction] goes, and the edge of a third to say the list goes on; or
+  /// as much as a third of the list's height holds. Measured to the second
+  /// row itself, so a day bar between them is counted. Only ever further
+  /// that way: a row already well inside the list stays where it is.
+  void _showPast(BuildContext row, String id, int direction) {
     final box = row.findRenderObject();
     if (box is! RenderBox || !box.attached) return;
     final position = _scroll.position;
@@ -162,22 +163,54 @@ class _MessageListPaneState extends ConsumerState<MessageListPane> {
     if (Scrollable.maybeOf(row)?.position != position) return;
     final viewport = RenderAbstractViewport.maybeOf(box);
     if (viewport == null) return;
-    // Two and a half rows: two whole ones, with the lines between them.
-    final room = math.min(
-      box.size.height * 2.5,
-      position.viewportDimension / 3,
-    );
+    final most = position.viewportDimension / 3;
+    final edge = box.size.height / 2;
+    final far = _rowPast(id, row, direction)?.findRenderObject();
+    final farBox = far is RenderBox && far.attached ? far : null;
     final double wanted;
     if (direction > 0) {
-      wanted = viewport.getOffsetToReveal(box, 1).offset + room;
+      final own = viewport.getOffsetToReveal(box, 1).offset;
+      // Not built that far: two and a half rows, the lines between them
+      // with them.
+      final reach = farBox == null
+          ? own + box.size.height * 2.5
+          : viewport.getOffsetToReveal(farBox, 1).offset + edge;
+      wanted = math.min(reach, own + most);
       if (position.pixels >= wanted) return;
     } else {
-      wanted = viewport.getOffsetToReveal(box, 0).offset - room;
+      final own = viewport.getOffsetToReveal(box, 0).offset;
+      final reach = farBox == null
+          ? own - box.size.height * 2.5
+          : viewport.getOffsetToReveal(farBox, 0).offset - edge;
+      wanted = math.max(reach, own - most);
       if (position.pixels <= wanted) return;
     }
     position.jumpTo(
       wanted.clamp(position.minScrollExtent, position.maxScrollExtent),
     );
+  }
+
+  /// The second built row past [row], [id]'s, the way [direction] goes, or
+  /// the one before it where the list ends there; null where none is
+  /// built. A closed thread is one row, however many messages it holds.
+  BuildContext? _rowPast(String id, BuildContext row, int direction) {
+    final folderId = ref.read(effectiveSelectedFolderIdProvider);
+    if (folderId == null) return null;
+    final rows = ListRows.onScreen(ref, folderId).shown;
+    final at = rows.indexWhere((m) => m.id == id);
+    if (at < 0) return null;
+    BuildContext? last;
+    var seen = 0;
+    for (var i = at + direction;
+        i >= 0 && i < rows.length && seen < 2;
+        i += direction) {
+      final next = _rowFor(rows[i].id);
+      if (next == null) return null;
+      if (next == row || next == last) continue;
+      last = next;
+      seen++;
+    }
+    return last;
   }
 
   /// The search hits in the order they are drawn.

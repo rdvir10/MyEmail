@@ -43,7 +43,8 @@ class Recurrence {
   final int interval;
 
   /// The days of the week, as `DateTime.weekday` numbers: [RepeatKind.weekly]'s
-  /// days, and [RepeatKind.workDays]' working days.
+  /// days, and [RepeatKind.workDays]' working days. A week's first meeting's
+  /// own day need not be among them: [daysFrom] adds it, wherever it moves.
   final Set<int> days;
 
   /// The last day a meeting may fall on, a date at midnight; or [count]

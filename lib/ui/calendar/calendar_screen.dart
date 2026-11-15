@@ -980,7 +980,7 @@ class _CalendarPageView extends ConsumerWidget {
 /// Days with something on, from [from] on and back before it: the month
 /// ahead first, more as the end comes near, and the month before above,
 /// more as the top does.
-class _Agenda extends StatefulWidget {
+class _Agenda extends ConsumerStatefulWidget {
   const _Agenda({
     super.key,
     required this.from,
@@ -993,10 +993,10 @@ class _Agenda extends StatefulWidget {
   final void Function(CalendarEvent) onTap;
 
   @override
-  State<_Agenda> createState() => _AgendaState();
+  ConsumerState<_Agenda> createState() => _AgendaState();
 }
 
-class _AgendaState extends State<_Agenda> {
+class _AgendaState extends ConsumerState<_Agenda> {
   /// Days read at a time, and how many lots at most either way.
   static const chunk = 30;
   static const most = 24;
@@ -1020,20 +1020,31 @@ class _AgendaState extends State<_Agenda> {
 
   /// More days read as the end being scrolled towards comes near: only
   /// that end, so a short month behind is not read away at the first
-  /// scroll down.
+  /// scroll down. And only once the last lot at that end has been read:
+  /// until then it draws little or nothing, the end stays near, and each
+  /// step of the scroll would ask every calendar for another month.
   void _nearEdge() {
     if (!_scroll.hasClients) return;
     final p = _scroll.position;
     switch (p.userScrollDirection) {
       case ScrollDirection.reverse
-          when p.pixels > p.maxScrollExtent - 600 && _ahead < most:
+          when p.pixels > p.maxScrollExtent - 600 &&
+              _ahead < most &&
+              _read(_ahead - 1):
         setState(() => _ahead++);
       case ScrollDirection.forward
-          when p.pixels < p.minScrollExtent + 600 && _behind < most:
+          when p.pixels < p.minScrollExtent + 600 &&
+              _behind < most &&
+              _read(-_behind):
         setState(() => _behind++);
       default:
     }
   }
+
+  /// Whether lot [k] has been read: what was kept, and the calendars
+  /// asked again where that was not just read.
+  bool _read(int k) =>
+      ref.read(calendarEventsProvider(_lot(k))).value?.reading == false;
 
   CalendarRange _lot(int k) => (
         start: _plus(widget.from, chunk * k),
@@ -1929,23 +1940,36 @@ class _TimelineState extends ConsumerState<_Timeline> {
     widget.onPinching(true);
   }
 
-  /// To the quarter hour, as Outlook moves a meeting.
+  /// To the quarter hour, as Outlook moves a meeting. By the clock, as the
+  /// hours are drawn, so a drag across the hour the clocks change lands
+  /// where it was dropped.
   void _dragTo(Offset global) {
     final d = _drag;
     final at = _pointAt(global);
     if (d == null || at == null) return;
     final minutes = ((at.$2 - d.fromMinute) / 15).round() * 15;
+    final days = at.$1 - d.fromDay;
     setState(() {
+      // Not moved at all: as it was, to the second, so a wobble under a
+      // quarter hour is not a change to send.
+      if (minutes == 0 && (d.resize || days == 0)) {
+        d.start = d.event.start;
+        d.end = d.event.end;
+        return;
+      }
+      // The clock read on this phone's time, whatever zone the calendar
+      // handed the time over in.
       if (d.resize) {
-        final end = d.event.end.add(Duration(minutes: minutes));
+        final e = d.event.end.toLocal();
+        final end =
+            DateTime(e.year, e.month, e.day, e.hour, e.minute + minutes);
         final shortest = d.event.start.add(const Duration(minutes: 15));
         d.end = end.isAfter(shortest) ? end : shortest;
         return;
       }
-      final s = d.event.start;
-      final days = at.$1 - d.fromDay;
-      final start = DateTime(s.year, s.month, s.day + days, s.hour, s.minute)
-          .add(Duration(minutes: minutes));
+      final s = d.event.start.toLocal();
+      final start = DateTime(
+          s.year, s.month, s.day + days, s.hour, s.minute + minutes);
       d.start = start;
       d.end = start.add(d.event.end.difference(d.event.start));
     });
@@ -2251,9 +2275,14 @@ class _DayColumn extends StatelessWidget {
     final theme = Theme.of(context);
     final dayEnd = _plus(day, 1);
     final now = DateTime.now();
+    // By the clock, as the hours down the side are: on the days the clocks
+    // change, the time since midnight is an hour more or less than that.
+    // This phone's clock: a calendar from a link hands over times in UTC.
     double y(DateTime t) {
-      final clipped = t.isBefore(day) ? day : (t.isAfter(dayEnd) ? dayEnd : t);
-      return clipped.difference(day).inMinutes / 60 * hourHeight;
+      if (!t.isAfter(day)) return 0;
+      if (!t.isBefore(dayEnd)) return 24 * hourHeight;
+      final here = t.toLocal();
+      return (here.hour * 60 + here.minute) / 60 * hourHeight;
     }
 
     final offHours = theme.colorScheme.surfaceContainerHighest.withAlpha(110);
@@ -2263,10 +2292,10 @@ class _DayColumn extends StatelessWidget {
         return GestureDetector(
           behavior: HitTestBehavior.translucent,
           onTapUp: (details) {
-            // To the half hour it falls in.
+            // To the half hour it falls in, by the clock.
             final minutes =
                 (details.localPosition.dy / hourHeight * 60 ~/ 30) * 30;
-            onSlot(day.add(Duration(minutes: minutes)));
+            onSlot(DateTime(day.year, day.month, day.day, 0, minutes));
           },
           child: Stack(
             children: [

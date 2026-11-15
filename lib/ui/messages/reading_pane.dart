@@ -550,8 +550,11 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
 
   Widget _bodyView(ThemeData theme, MailBody b) {
     final html = b.html;
-    final dates =
-        ref.watch(messageDatesProvider(widget.message.id)).value ?? const [];
+    final dates = ref
+            .watch(messageDatesProvider(
+                (id: widget.message.id, written: widget.message.date)))
+            .value ??
+        const [];
     // The WebView is a platform view: Android has it, the browser preview
     // does not. Text is the universal fallback.
     if (html != null && html.trim().isNotEmpty && !kIsWeb) {

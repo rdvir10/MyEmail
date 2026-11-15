@@ -61,12 +61,17 @@ class FakeDateFinder implements DateFinder {
 
   final List<String> asked = [];
 
+  /// When each of [asked] was to be read as written: null where no time
+  /// was given, and the clock's was taken.
+  final List<DateTime?> askedNow = [];
+
   @override
   Future<bool> prepare() async => true;
 
   @override
   Future<List<FoundDate>> find(String text, {DateTime? now}) async {
     asked.add(text);
+    askedNow.add(now);
     return [
       for (final MapEntry(key: words, value: d) in dates.entries)
         if (text.indexOf(words) case final at when at >= 0)

@@ -13,7 +13,8 @@ import 'package:myemail/data/auth/microsoft_oauth.dart';
 import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/ai/date_finder.dart';
 import 'package:myemail/data/calendar/device_calendar.dart';
-import 'package:myemail/domain/calendar_event.dart' show EventShowAs;
+import 'package:myemail/domain/calendar_change.dart';
+import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/domain/found_dates.dart' show DateGrain;
 import 'package:myemail/domain/recurrence.dart';
 import 'package:myemail/state/date_providers.dart';
@@ -93,6 +94,7 @@ void main() {
     GoogleOAuth? google,
     Future<bool> Function(Uri)? openInBrowser,
     DateFinder? finder,
+    EventEdit? editing,
   }) async {
     final c = container(
       oauth: oauth,
@@ -112,6 +114,7 @@ void main() {
                     accountId: accountId,
                     title: title,
                     start: DateTime(2026, 10, 1, 9),
+                    editing: editing,
                   ),
                 ),
               ),
@@ -426,6 +429,258 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(NewMeetingScreen), findsNothing);
       expect(engine.meetings, isEmpty);
+    });
+
+    // A Send cannot be called back once the calendar has it. Back then
+    // says so, never that nothing has been sent, and what happens is said
+    // whether the screen is still there or not. Not pumpAndSettle while
+    // it is sending: its spinner never settles.
+    group('Back while it is sending', () {
+      Future<_SlowSend> sendSlowly(WidgetTester tester) async {
+        final slow = _SlowSend();
+        engine = slow;
+        await pumpScreen(tester, accountId: 'acct-ms');
+        await type(tester, 'meeting-title', 'Q3 review');
+        await type(tester, 'meeting-attendees', 'dana@example.com');
+        await tester.tap(find.byTooltip('Send'));
+        await tester.pump();
+        return slow;
+      }
+
+      Future<void> back(WidgetTester tester) async {
+        await tester.pageBack();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+
+      testWidgets('says it cannot be stopped, and the screen closes as it '
+          'goes, the question with it (#133)', (tester) async {
+        final slow = await sendSlowly(tester);
+        await back(tester);
+        expect(find.text('Still sending'), findsOneWidget);
+        expect(find.text('Nothing has been sent.'), findsNothing);
+        expect(find.text('Discard'), findsNothing);
+        await tester.tap(find.text('Stay'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.text('Still sending'), findsNothing);
+        expect(find.byType(NewMeetingScreen), findsOneWidget);
+
+        // It goes while the question is up again: the screen closes, not
+        // only the question.
+        await back(tester);
+        expect(find.text('Still sending'), findsOneWidget);
+        slow.gate.complete();
+        await tester.pumpAndSettle();
+        expect(find.text('Still sending'), findsNothing);
+        expect(find.byType(NewMeetingScreen), findsNothing);
+        expect(find.text('open'), findsOneWidget);
+        expect(find.text('Invitation sent'), findsOneWidget);
+        expect(slow.meetings, hasLength(1));
+      });
+
+      testWidgets('Leave closes it, and says so when the invitation has '
+          'gone (#133)', (tester) async {
+        final slow = await sendSlowly(tester);
+        await back(tester);
+        await tester.tap(find.text('Leave'));
+        await tester.pumpAndSettle();
+        expect(find.byType(NewMeetingScreen), findsNothing);
+        expect(find.text('Invitation sent'), findsNothing, reason: 'not yet');
+
+        slow.gate.complete();
+        await tester.pumpAndSettle();
+        expect(slow.meetings, hasLength(1));
+        expect(find.text('Invitation sent'), findsOneWidget);
+      });
+
+      testWidgets('one that goes as the screen slides away after Leave closes '
+          'nothing else, and is said (#133)', (tester) async {
+        final slow = await sendSlowly(tester);
+        await back(tester);
+        await tester.tap(find.text('Leave'));
+        // One frame into the slide: the screen is still there.
+        await tester.pump();
+        expect(find.byType(NewMeetingScreen), findsOneWidget);
+
+        slow.gate.complete();
+        // Past Who is free's wait after the typing, which otherwise can ask
+        // its calendars just as the screen goes.
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pumpAndSettle();
+        expect(find.byType(NewMeetingScreen), findsNothing);
+        expect(find.text('open'), findsOneWidget, reason: 'the page under it');
+        expect(slow.meetings, hasLength(1));
+        expect(find.text('Invitation sent'), findsOneWidget);
+      });
+
+      testWidgets('one that goes with another page put over it closes only '
+          'itself (#133)', (tester) async {
+        final slow = await sendSlowly(tester);
+        // A message opened from a notification, say.
+        unawaited(tester.state<NavigatorState>(find.byType(Navigator)).push(
+          MaterialPageRoute<void>(
+            builder: (_) => const Scaffold(body: Text('Over it')),
+          ),
+        ));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+
+        slow.gate.complete();
+        await tester.pumpAndSettle();
+        expect(find.text('Over it'), findsOneWidget);
+        expect(find.byType(NewMeetingScreen, skipOffstage: false),
+            findsNothing);
+        expect(find.text('Invitation sent'), findsOneWidget);
+
+        tester.state<NavigatorState>(find.byType(Navigator)).pop();
+        await tester.pumpAndSettle();
+        expect(find.text('open'), findsOneWidget, reason: 'the page under it');
+      });
+
+      testWidgets('one that fails while it asks takes the question down, '
+          'and the screen says what went wrong (#133)', (tester) async {
+        final slow = _SlowSendFails();
+        engine = slow;
+        await pumpScreen(tester, accountId: 'acct-ms');
+        await type(tester, 'meeting-title', 'Q3 review');
+        await type(tester, 'meeting-attendees', 'dana@example.com');
+        await tester.tap(find.byTooltip('Send'));
+        await tester.pump();
+        await back(tester);
+        expect(find.text('Still sending'), findsOneWidget);
+
+        slow.gate.complete();
+        await tester.pumpAndSettle();
+        expect(find.text('Still sending'), findsNothing);
+        expect(find.byType(NewMeetingScreen), findsOneWidget);
+        expect(find.textContaining('could not be reached'), findsOneWidget);
+      });
+
+      testWidgets('an edit is still saving, and says Saved once it has '
+          'gone, the screen left meanwhile (#133)', (tester) async {
+        final slow = _SlowSave();
+        engine = slow;
+        final meeting = CalendarEvent(
+          id: 'm1',
+          accountId: 'acct-ms',
+          title: 'Q3 review',
+          start: DateTime(2026, 10, 1, 9),
+          end: DateTime(2026, 10, 1, 10),
+          isOrganizer: true,
+          response: EventResponse.organizer,
+          attendees: const [
+            EventAttendee(MailAddress(email: 'dana@example.com')),
+          ],
+        );
+        await pumpScreen(tester,
+            accountId: 'acct-ms',
+            editing: EventEdit(
+                event: meeting, notes: const EventNotes(text: '')));
+        await type(tester, 'meeting-title', 'Q4 review');
+        await tester.tap(find.byTooltip('Save'));
+        await tester.pump();
+        await back(tester);
+        expect(find.text('Still saving'), findsOneWidget);
+        expect(find.text('The meeting stays as it was.'), findsNothing);
+        await tester.tap(find.text('Leave'));
+        await tester.pumpAndSettle();
+        expect(find.byType(NewMeetingScreen), findsNothing);
+
+        slow.gate.complete();
+        await tester.pumpAndSettle();
+        expect(slow.calendarActions.single, contains('title=Q4 review'));
+        expect(find.text('Saved. Everyone on it is sent the change.'),
+            findsOneWidget);
+      });
+
+      testWidgets('one that fails after Leave opens again as it was written, '
+          'says why, and goes again as the same meeting (#133)',
+          (tester) async {
+        final slow = _SlowSendFailsOnce();
+        engine = slow;
+        await pumpScreen(tester, accountId: 'acct-ms');
+        await type(tester, 'meeting-title', 'Q3 review');
+        await type(tester, 'meeting-attendees', 'dana@example.com');
+        await type(tester, 'meeting-location', 'Room 4');
+        await tester.tap(find.byTooltip('Send'));
+        await tester.pump();
+        await back(tester);
+        await tester.tap(find.text('Leave'));
+        await tester.pumpAndSettle();
+        expect(find.byType(NewMeetingScreen), findsNothing);
+
+        slow.gate.complete();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pumpAndSettle();
+        expect(find.byType(NewMeetingScreen), findsOneWidget);
+        expect(find.textContaining('could not be reached'), findsOneWidget);
+        expect(find.text('Q3 review'), findsOneWidget);
+        expect(find.text('Room 4'), findsOneWidget);
+        // What was written is nowhere else: leaving asks.
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+        expect(find.text('Discard this meeting?'), findsOneWidget);
+        await tester.tap(find.text('Keep writing'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byTooltip('Send'));
+        await tester.pumpAndSettle();
+        expect(slow.tried.map((m) => m.transactionId).toSet(), hasLength(1),
+            reason: 'the calendar may have made it the first time');
+        expect(slow.tried.last.changedSinceFailedSend, isFalse);
+        expect(slow.tried.last.location, 'Room 4');
+        expect(slow.meetings, hasLength(1));
+        expect(find.byType(NewMeetingScreen), findsNothing);
+        expect(find.text('Invitation sent'), findsOneWidget);
+      });
+
+      testWidgets('an edit that fails after Leave opens again with the change '
+          'and why (#133)', (tester) async {
+        final slow = _SlowSaveFailsOnce();
+        engine = slow;
+        final meeting = CalendarEvent(
+          id: 'm1',
+          accountId: 'acct-ms',
+          title: 'Q3 review',
+          start: DateTime(2026, 10, 1, 9),
+          end: DateTime(2026, 10, 1, 10),
+          isOrganizer: true,
+          response: EventResponse.organizer,
+        );
+        await pumpScreen(tester,
+            accountId: 'acct-ms',
+            editing: EventEdit(
+                event: meeting, notes: const EventNotes(text: '')));
+        await type(tester, 'meeting-title', 'Q4 review');
+        await tester.tap(find.byTooltip('Save'));
+        await tester.pump();
+        await back(tester);
+        await tester.tap(find.text('Leave'));
+        await tester.pumpAndSettle();
+        expect(find.byType(NewMeetingScreen), findsNothing);
+
+        slow.gate.complete();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pumpAndSettle();
+        expect(find.text('Edit meeting'), findsOneWidget);
+        expect(find.text('Q4 review'), findsOneWidget);
+        expect(find.textContaining('could not be reached'), findsOneWidget);
+
+        await tester.tap(find.byTooltip('Save'));
+        await tester.pumpAndSettle();
+        expect(slow.calendarActions.single, contains('title=Q4 review'));
+        expect(find.text('Saved.'), findsOneWidget);
+      });
+
+      testWidgets('Who is free cannot be opened meanwhile (#133)',
+          (tester) async {
+        final slow = await sendSlowly(tester);
+        final button = find.byKey(const ValueKey('who-is-free'));
+        expect(tester.widget<ButtonStyleButton>(button).onPressed, isNull);
+        slow.gate.complete();
+        await tester.pumpAndSettle();
+      });
     });
   });
 
@@ -866,6 +1121,97 @@ void main() {
         expect(find.text('Invitation sent, with a Teams link'), findsOneWidget);
       });
 
+      // Back while Send waits for the link asks whether to discard, and
+      // says nothing has been sent: so it stays until the answer.
+      for (final discard in [true, false]) {
+        testWidgets('still being made when Back is pressed, nothing goes '
+            'while it asks, and '
+            '${discard ? 'Discard sends nothing' : 'Keep writing sends it'} '
+            '(#133)', (tester) async {
+          final slow = _SlowLink();
+          engine = slow;
+          await pumpScreen(tester, accountId: 'acct-ms');
+          await type(tester, 'meeting-title', 'Q3 review');
+          await type(tester, 'meeting-attendees', 'dana@example.com');
+          await tester.tap(online);
+          await tester.pump();
+          await tester.tap(find.byTooltip('Send'));
+          await tester.pump(const Duration(milliseconds: 100));
+          await tester.pageBack();
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 300));
+          expect(find.text('Nothing has been sent.'), findsOneWidget);
+
+          // The link comes while it asks.
+          slow.gate.complete();
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 300));
+          expect(slow.meetings, isEmpty);
+          expect(find.text('Nothing has been sent.'), findsOneWidget);
+
+          await tester.tap(find.text(discard ? 'Discard' : 'Keep writing'));
+          await tester.pumpAndSettle();
+          expect(find.byType(NewMeetingScreen), findsNothing);
+          if (discard) {
+            expect(slow.meetings, isEmpty);
+            expect(slow.discardedMeetings, hasLength(1),
+                reason: 'its link undone with it');
+          } else {
+            expect(slow.meetings.single.prepared,
+                same(slow.preparedMeetings.single));
+            expect(find.text('Invitation sent, with a Teams link'),
+                findsOneWidget);
+          }
+        });
+      }
+
+      testWidgets('that comes as the screen slides away after Discard sends '
+          'nothing (#133)', (tester) async {
+        final slow = _SlowLink();
+        engine = slow;
+        await pumpScreen(tester, accountId: 'acct-ms');
+        await type(tester, 'meeting-title', 'Q3 review');
+        await type(tester, 'meeting-attendees', 'dana@example.com');
+        await tester.tap(online);
+        await tester.pump();
+        await tester.tap(find.byTooltip('Send'));
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.pageBack();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(find.text('Discard'));
+        // One frame into the slide: the screen is still there.
+        await tester.pump();
+        expect(find.byType(NewMeetingScreen), findsOneWidget);
+
+        slow.gate.complete();
+        await tester.pumpAndSettle();
+        expect(find.byType(NewMeetingScreen), findsNothing);
+        expect(slow.meetings, isEmpty);
+        expect(slow.discardedMeetings, hasLength(1),
+            reason: 'its link undone with it');
+      });
+
+      testWidgets('still being made, Back asks before leaving an untouched '
+          'screen whose Send is waiting (#133)', (tester) async {
+        final slow = _SlowLink();
+        engine = slow;
+        // Everything filled in as it opened, as from a message.
+        await pumpScreen(tester, accountId: 'acct-ms', title: 'Q3 review');
+        await tester.tap(online);
+        await tester.pump();
+        await tester.tap(find.byTooltip('Send'));
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.pageBack();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.text('Nothing has been sent.'), findsOneWidget);
+        await tester.tap(find.text('Keep writing'));
+        slow.gate.complete();
+        await tester.pumpAndSettle();
+        expect(slow.meetings, hasLength(1));
+      });
+
       testWidgets('that comes after the switch went off is undone as it comes',
           (tester) async {
         final slow = _SlowLink();
@@ -1177,7 +1523,7 @@ void main() {
           await tester.pageBack();
           await tester.pump();
           await tester.pump(const Duration(milliseconds: 300));
-          await tester.tap(find.text('Discard'));
+          await tester.tap(find.text('Leave'));
           // Gone before the calendar answers.
           await tester.pumpAndSettle();
           expect(find.byType(NewMeetingScreen), findsNothing);
@@ -1213,7 +1559,7 @@ void main() {
               await tester.pageBack();
               await tester.pump();
               await tester.pump(const Duration(milliseconds: 300));
-              await tester.tap(find.text('Discard'));
+              await tester.tap(find.text('Leave'));
               // Gone before the calendar answers.
               await tester.pumpAndSettle();
               expect(find.byType(NewMeetingScreen), findsNothing);
@@ -1233,10 +1579,9 @@ void main() {
             expect(kept(c), isEmpty);
             expect(slow.discardedMeetings, isEmpty);
             expect(find.byType(NewMeetingScreen), findsNothing);
-            if (!leave) {
-              expect(find.text('Invitation sent, with a Teams link'),
-                  findsOneWidget);
-            }
+            expect(find.text('Invitation sent, with a Teams link'),
+                findsOneWidget,
+                reason: 'said whether the screen is there or not');
           });
         }
       });
@@ -1913,6 +2258,55 @@ void main() {
       expect(m.isPrivate, isTrue);
     });
 
+    testWidgets('a weekly repeat goes with the date when it is moved after '
+        'Every week was chosen (#132)', (tester) async {
+      tester.view.physicalSize = const Size(1000, 2000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await pumpScreen(tester);
+      await type(tester, 'meeting-title', 'Stand-up');
+      await openMore(tester);
+      // 1 October 2026 is a Thursday.
+      await choose(tester, 'meeting-repeat', 'Every week');
+      await tester.tapAt(const Offset(500, 20));
+      await tester.pumpAndSettle();
+      // Tuesday 6 October.
+      await pickDay(tester, 'start-date', '6');
+      expect(find.textContaining('Every week on Tuesday'), findsOneWidget);
+      expect(find.textContaining('Thursday'), findsNothing);
+
+      await send(tester);
+      final m = engine.meetings.single;
+      expect(m.start, DateTime(2026, 10, 6, 9));
+      expect(m.recurrence?.daysFrom(m.start), {DateTime.tuesday});
+    });
+
+    testWidgets('Every week after Every working day is the one day, and the '
+        'days picked stay for Every 2 weeks (#132)', (tester) async {
+      tester.view.physicalSize = const Size(1000, 2000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await pumpScreen(tester);
+      await type(tester, 'meeting-title', 'Stand-up');
+      await openMore(tester);
+      await choose(tester, 'meeting-repeat', 'Every working day');
+      await choose(tester, 'meeting-repeat', 'Every week');
+      bool picked(int day) => tester
+          .widget<FilterChip>(find.byKey(ValueKey('meeting-repeat-day:$day')))
+          .selected;
+      expect([for (var d = 1; d <= 7; d++) if (picked(d)) d], [4],
+          reason: 'Thursday, the first meeting\'s day, alone');
+      await tester.tap(find.byKey(const ValueKey('meeting-repeat-day:1')));
+      await tester.pumpAndSettle();
+      await choose(tester, 'meeting-repeat', 'Every 2 weeks');
+      await tester.tapAt(const Offset(500, 20));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Every 2 weeks on Monday and Thursday'),
+          findsOneWidget);
+    });
+
     testWidgets('a meeting set in another zone keeps that clock, and says '
         'what it is here', (tester) async {
       tester.view.physicalSize = const Size(1000, 2000);
@@ -2088,6 +2482,66 @@ class _SlowSend extends _EachKind {
   Future<CreatedMeeting> createMeeting(MeetingDraft meeting) async {
     await gate.future;
     return super.createMeeting(meeting);
+  }
+}
+
+/// An engine with an account of each kind whose Send fails, once [gate] is
+/// let go.
+class _SlowSendFails extends _EachKind {
+  final gate = Completer<void>();
+
+  @override
+  Future<CreatedMeeting> createMeeting(MeetingDraft meeting) async {
+    await gate.future;
+    throw const ConnectionFailed('The calendar could not be reached.');
+  }
+}
+
+/// An engine with an account of each kind whose first Send fails once
+/// [gate] is let go, and whose next goes through at once.
+class _SlowSendFailsOnce extends _SendFailsOnce {
+  final gate = Completer<void>();
+
+  @override
+  Future<CreatedMeeting> createMeeting(MeetingDraft meeting) async {
+    if (tried.isEmpty) await gate.future;
+    return super.createMeeting(meeting);
+  }
+}
+
+/// An engine with an account of each kind whose first change to a meeting
+/// fails once [gate] is let go, and whose next goes through at once.
+class _SlowSaveFailsOnce extends _EachKind {
+  final gate = Completer<void>();
+  var _tries = 0;
+
+  @override
+  Future<void> updateEvent(
+    CalendarEvent event,
+    EventChange change, {
+    bool wholeSeries = false,
+  }) async {
+    if (_tries++ == 0) {
+      await gate.future;
+      throw const ConnectionFailed('The calendar could not be reached.');
+    }
+    return super.updateEvent(event, change, wholeSeries: wholeSeries);
+  }
+}
+
+/// An engine with an account of each kind whose calendar takes a change to
+/// a meeting only once [gate] is let go.
+class _SlowSave extends _EachKind {
+  final gate = Completer<void>();
+
+  @override
+  Future<void> updateEvent(
+    CalendarEvent event,
+    EventChange change, {
+    bool wholeSeries = false,
+  }) async {
+    await gate.future;
+    return super.updateEvent(event, change, wholeSeries: wholeSeries);
   }
 }
 

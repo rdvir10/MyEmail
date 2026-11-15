@@ -562,6 +562,78 @@ void main() {
         }
       });
 
+      // The sample mail is dated from now, so where its day bars fall
+      // moved with the hour; this puts one between the rows on purpose.
+      for (final down in [false, true]) {
+        testWidgets('come on screen with a day bar between them, going '
+            '${down ? 'down' : 'up'}', (tester) async {
+          tester.view.physicalSize = const Size(1400, 900);
+          tester.view.devicePixelRatio = 1.0;
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
+          // The unified Inbox, two accounts' Inboxes a row each in turn:
+          // nine of each today puts the bar between rows 17 and 18.
+          final c = ProviderContainer(overrides: [
+            uiStateStoreProvider.overrideWithValue(sendAtOnce()),
+            mailEngineProvider.overrideWithValue(_DatedEngine(today: 9)),
+          ]);
+          addTearDown(c.dispose);
+          await tester.pumpWidget(UncontrolledProviderScope(
+            container: c,
+            child: const MaterialApp(home: AppShell()),
+          ));
+          await tester.pumpAndSettle();
+          final rows = c
+              .read(messagesProvider(c.read(effectiveSelectedFolderIdProvider)!))
+              .value!;
+          final ids = [for (final m in rows) m.id];
+          expect(rows[17].date.day, isNot(rows[18].date.day));
+
+          final list = listRect(tester);
+          final position = tester
+              .state<ScrollableState>(find
+                  .ancestor(
+                    of: find.byType(MessageTile).first,
+                    matching: find.byType(Scrollable),
+                  )
+                  .first)
+              .position;
+          if (down) {
+            for (var i = 0; i < 16; i++) {
+              await press(tester, LogicalKeyboardKey.arrowDown);
+            }
+            // Row 16 at the very bottom of the list.
+            position.jumpTo(position.pixels +
+                rowRect(tester, ids[16]).bottom -
+                list.bottom);
+            await tester.pumpAndSettle();
+            await press(tester, LogicalKeyboardKey.arrowDown);
+            expect(selected(c), ids[17]);
+            for (final next in [18, 19]) {
+              expect(rowRect(tester, ids[next]).bottom,
+                  lessThanOrEqualTo(list.bottom + 1),
+                  reason: 'row $next, below the selected one, is in sight');
+            }
+            return;
+          }
+          for (var i = 0; i < 20; i++) {
+            await press(tester, LogicalKeyboardKey.arrowDown);
+          }
+          // Row 20 at the very top of the list.
+          position.jumpTo(
+            position.pixels + rowRect(tester, ids[20]).top - list.top,
+          );
+          await tester.pumpAndSettle();
+          await press(tester, LogicalKeyboardKey.arrowUp);
+          expect(selected(c), ids[19]);
+          for (final above in [18, 17]) {
+            expect(rowRect(tester, ids[above]).top,
+                greaterThanOrEqualTo(list.top - 1),
+                reason: 'row $above, above the selected one, is in sight');
+          }
+        });
+      }
+
       testWidgets('not for a click: the list stays put under the pointer',
           (tester) async {
         // Moving under a double click would open another message.
@@ -1480,5 +1552,51 @@ class _HeldMoves extends SampleMailEngine {
   ) async {
     await _gate.future;
     return super.moveMessages(messageIds, toFolderId);
+  }
+}
+
+/// The sample engine with each folder's mail dated by its place in the
+/// list, a minute apart: the first [today] at noon today, the rest at noon
+/// yesterday. A day bar then falls between rows today - 1 and today, at
+/// whatever hour the test runs.
+class _DatedEngine extends SampleMailEngine {
+  _DatedEngine({required this.today});
+
+  final int today;
+
+  @override
+  Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    final page =
+        await super.loadMessages(folderId, offset: offset, limit: limit);
+    final now = DateTime.now();
+    return [
+      for (var i = 0; i < page.length; i++)
+        _dated(page[i], offset + i, now),
+    ];
+  }
+
+  MailMessage _dated(MailMessage m, int place, DateTime now) {
+    final noon = DateTime(
+        now.year, now.month, now.day - (place < today ? 0 : 1), 12);
+    return MailMessage(
+      id: m.id,
+      accountId: m.accountId,
+      folderId: m.folderId,
+      uid: m.uid,
+      subject: m.subject,
+      from: m.from,
+      to: m.to,
+      date: noon.subtract(Duration(minutes: place)),
+      preview: m.preview,
+      isRead: m.isRead,
+      isFlagged: m.isFlagged,
+      hasAttachments: m.hasAttachments,
+      isAnswered: m.isAnswered,
+      isForwarded: m.isForwarded,
+    );
   }
 }

@@ -178,6 +178,8 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
     this.length,
     this.allDay = false,
     this.editing,
+    this.asWritten,
+    this.failure,
   });
 
   final String accountId;
@@ -199,8 +201,62 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
   /// the change in place of Send. Its link, if it has one, stays as it is.
   final EventEdit? editing;
 
+  /// The screen as it stood at a Send or Save that failed after it was
+  /// left, opened again with everything as it was, and [failure] said.
+  final MeetingAsWritten? asWritten;
+  final Object? failure;
+
   @override
   ConsumerState<NewMeetingScreen> createState() => _NewMeetingScreenState();
+}
+
+/// What a meeting screen held at Send or Save: kept so that one that fails
+/// after the screen was left opens again as it was written, with the same
+/// key for the calendar and the Sends that failed, so trying again is the
+/// same meeting (see [MeetingDraft.transactionId]), not a second set of
+/// invitations.
+@immutable
+class MeetingAsWritten {
+  const MeetingAsWritten({
+    required this.accountId,
+    required this.calendarId,
+    required this.title,
+    required this.attendees,
+    required this.location,
+    required this.notes,
+    required this.start,
+    required this.end,
+    required this.allDay,
+    required this.options,
+    required this.online,
+    required this.onlineKind,
+    required this.prepared,
+    required this.transactionId,
+    required this.failedSends,
+  });
+
+  final String accountId;
+  final String calendarId;
+  final String title;
+
+  /// As the Attendees field had them.
+  final String attendees;
+  final String location;
+  final String notes;
+
+  /// The instants the screen keeps; see `_shown`.
+  final DateTime start;
+  final DateTime end;
+  final bool allDay;
+  final MeetingOptions options;
+  final bool online;
+  final OnlineMeetingKind? onlineKind;
+
+  /// The link made ahead, which the screen opened again holds now: still
+  /// on the ledger, as one a screen holds is.
+  final PreparedMeeting? prepared;
+  final String transactionId;
+  final List<MeetingDraft> failedSends;
 }
 
 class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
@@ -214,11 +270,18 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// for, and can be changed from the header: Ron asked to choose the
   /// account before anything else about an invitation, and the calendar
   /// it lands on follows from it.
-  late String _accountId = widget.editing?.event.accountId ?? widget.accountId;
+  late String _accountId = widget.asWritten?.accountId ??
+      widget.editing?.event.accountId ??
+      widget.accountId;
 
   /// Which of the account's calendars it goes on: its main one unless
   /// another is chosen. A meeting being changed stays where it is.
-  String _calendarId = CalendarEvent.mainCalendar;
+  late String _calendarId =
+      widget.asWritten?.calendarId ?? CalendarEvent.mainCalendar;
+
+  /// What the screen opened with again, after a Send or Save that failed
+  /// once it was left.
+  MeetingAsWritten? get _written => widget.asWritten;
 
   EventEdit? get _editing => widget.editing;
 
@@ -227,9 +290,10 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   late final String _locationToBegin =
       _editing?.event.location ?? widget.location;
 
-  late final _title = TextEditingController(text: _titleToBegin);
+  late final _title =
+      TextEditingController(text: _written?.title ?? _titleToBegin);
   late final _attendees =
-      TextEditingController(text: _attendeesToBegin);
+      TextEditingController(text: _written?.attendees ?? _attendeesToBegin);
 
   /// The attendees as the field starts, a bubble each. A meeting being
   /// changed has its own, less its organiser and the account itself.
@@ -259,8 +323,10 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     ];
   }
 
-  late final _location = TextEditingController(text: _locationToBegin);
-  late final _notes = TextEditingController(text: _notesToBegin);
+  late final _location =
+      TextEditingController(text: _written?.location ?? _locationToBegin);
+  late final _notes =
+      TextEditingController(text: _written?.notes ?? _notesToBegin);
 
   /// The times as the screen opened, kept to tell a time picked from one
   /// left alone. A whole day ends on its last day here, where a calendar
@@ -276,9 +342,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   };
   late final bool _allDayToBegin = _editing?.event.allDay ?? widget.allDay;
 
-  late DateTime _start = _startToBegin;
-  late DateTime _end = _endToBegin;
-  late bool _allDay = _allDayToBegin;
+  late DateTime _start = _written?.start ?? _startToBegin;
+  late DateTime _end = _written?.end ?? _endToBegin;
+  late bool _allDay = _written?.allDay ?? _allDayToBegin;
   bool _sending = false;
 
   /// More's choices: the repeat, reminder, show as, privacy and zone. A
@@ -288,7 +354,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     final e? => MeetingOptions(showAs: e.showAs, isPrivate: e.isPrivate),
     null => const MeetingOptions(),
   };
-  late MeetingOptions _options = _optionsToBegin;
+  late MeetingOptions _options = _written?.options ?? _optionsToBegin;
 
   /// The line a meeting is typed in, "Lunch with Dana Thursday 1pm", and
   /// whether it is being read.
@@ -318,13 +384,13 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// Teams and, through the Gmail account, Google Meet. The first unless
   /// one was chosen, and the choice kept through a change of From where
   /// the account now can hold it too.
-  OnlineMeetingKind? _onlineKind;
+  late OnlineMeetingKind? _onlineKind = _written?.onlineKind;
 
   /// Whether a link was asked for. Honoured only where the account's
   /// calendar holds meetings online: the switch keeps its setting through
   /// a change of From, and a meeting from an account with nowhere to hold
   /// one goes without.
-  bool _online = false;
+  late bool _online = _written?.online ?? false;
 
   /// Which ask is the current one. From can change while an answer is on
   /// its way, and the answer for the account before must not label the
@@ -361,7 +427,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
 
   /// The online meeting made for the switch, whose text is under the
   /// notes. Null while there is none, or while it is on its way.
-  PreparedMeeting? _prepared;
+  late PreparedMeeting? _prepared = _written?.prepared;
 
   /// Its making, while it is on its way: Send waits for it, so that the
   /// invitation carries what the screen showed.
@@ -383,15 +449,41 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// and leaving must not undo it.
   bool _sent = false;
 
-  /// Set while the calendar is sending it. Leaving then must not undo what
-  /// is being sent either: Send puts it back on the ledger if it did not
-  /// go, and the next start deletes it then.
+  /// Set while the calendar is sending it, or Save the change. Leaving then
+  /// must not undo what is being sent either: Send puts it back on the
+  /// ledger if it did not go, and the next start deletes it then. Nor can
+  /// it be called back, so Back no longer offers to discard it.
   bool _sendingMeeting = false;
+
+  /// The question on leaving, while it is up: Send waits for its answer
+  /// before the calendar is asked, since it says nothing has been sent.
+  Future<bool>? _askingToLeave;
+
+  /// Either question on leaving, while it is up, so that how the meeting
+  /// went takes down that and nothing else.
+  Route<bool>? _question;
+
+  /// Set once the screen is being left, by Back or by Send's own close. It
+  /// stays mounted while it slides away, and nothing may be sent, nor any
+  /// page closed, for it then.
+  bool _left = false;
+
+  bool get _gone => _left || !mounted;
+
+  /// Where a Send or Save says how it went, taken as it starts: it is said
+  /// even if the screen was left while it was on its way.
+  ScaffoldMessengerState? _messenger;
+
+  /// Where the screen was, and what it held, at Send or Save: a failure
+  /// after the screen was left opens it there again, as it was written.
+  NavigatorState? _navigator;
+  MeetingAsWritten? _atSend;
 
   /// This meeting's key for the calendar, the same through every Send: a
   /// Send that failed after the calendar had made the meeting after all,
   /// tapped again, is the same meeting, not a second set of invitations.
-  final String _transactionId = MeetingDraft.newTransactionId();
+  late final String _transactionId =
+      _written?.transactionId ?? MeetingDraft.newTransactionId();
 
   /// The meeting of each Send that failed, as it stood. The calendar may
   /// have made any one of them after all, so a Send of a meeting unlike
@@ -399,7 +491,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// date; see [MeetingDraft.changedSinceFailedSend]. Each, not only the
   /// first: a second Send that failed may have made its meeting in place
   /// of the first's.
-  final List<MeetingDraft> _failedSends = [];
+  late final List<MeetingDraft> _failedSends = [...?_written?.failedSends];
 
   /// The app's container, taken while the screen is there: a meeting made
   /// ahead is undone as the screen goes, when its own ref no longer reads.
@@ -414,6 +506,13 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     _container = ProviderScope.containerOf(context, listen: false);
     // A meeting being changed keeps the link it has: there is no switch.
     if (_editing == null) _askOnline();
+    // Opened again after a Send or Save that failed once it was left: why,
+    // as it would have been said had the screen stayed.
+    if (widget.failure case final failure?) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _sayFailed(failure);
+      });
+    }
   }
 
   /// Ask how a meeting from this account can be held online, and show the
@@ -464,7 +563,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
           debugPrint('[myemail] could not keep the meeting made ahead: $e');
         }
       }
-      if (!mounted || ask != _prepareAsk) {
+      if (_gone || ask != _prepareAsk) {
         // Switched off, From changed, or the screen left, while it was
         // being made.
         if (made != null) unawaited(_discard(made));
@@ -487,7 +586,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
         }
         e = e.cause;
       }
-      if (!mounted || ask != _prepareAsk) return;
+      if (_gone || ask != _prepareAsk) return;
       // A sign-in that has not allowed it yet is offered here, as at Send.
       // Anything else leaves the link to Send, which makes it as it always
       // did and says what went wrong if it goes wrong again.
@@ -561,7 +660,10 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// can be all that was done before a look at the calendar app. The
   /// Online switch alone does not: its link is undone with the screen, and
   /// made again as easily.
+  ///
+  /// Opened again after a Send that failed, what it holds is nowhere else.
   bool get _untouched =>
+      _written == null &&
       _accountId == (_editing?.event.accountId ?? widget.accountId) &&
       _start == _startToBegin &&
       _end == _endToBegin &&
@@ -652,16 +754,18 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       setState(() => _invalid = 'One of the addresses does not look right.');
       return;
     }
+    _messenger = ScaffoldMessenger.maybeOf(context);
+    _navigator = Navigator.of(context);
     // A link still being made is waited for, so that the invitation goes
     // with the one whose text is on the screen.
     final making = _preparing;
     if (making != null) {
       setState(() => _sending = true);
       await making;
-      if (!mounted) return;
+      if (_gone) return;
     }
     final meeting = await _draft(attendees);
-    if (!mounted) return;
+    if (_gone) return;
     final problem = meeting.problem;
     if (problem != null) {
       setState(() {
@@ -679,6 +783,8 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       _offerMeet = null;
       _problem = null;
     });
+    if (await _leavingAsked()) return;
+    _atSend = _asWritten(prepared: meeting.preparedHere);
     // Where it is held, for the message that says what went out.
     final held = meeting.online;
     final ledger = _container.read(preparedMeetingLedgerProvider);
@@ -703,7 +809,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             .then((_) => _discard(prepared))
             .catchError((_) {}));
       }
-      if (!mounted) return;
+      // Said whether the screen is still there or was left meanwhile.
       final link = held == null
           ? ''
           : remade
@@ -714,6 +820,10 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
           ? 'Invitation sent$link'
           : 'Added to your calendar$link');
     } on CalendarUnavailable catch (e) {
+      // Handed to the calendar app only while the screen is there to
+      // hand it from.
+      if (_gone) return _reopen(e);
+      _closeQuestion();
       await _handToDevice(meeting, e);
     } catch (e) {
       // Any Send may have made its meeting with only the answer lost, but
@@ -721,16 +831,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       if (e is! SignInNeedsConsent && e is! MeetLinkNeedsConsent) {
         _failedSends.add(meeting);
       }
-      if (!mounted) return;
-      // Every failure the calendars throw on purpose already carries a
-      // sentence written for a person; the rest is kept whole for a report.
-      if (!_askForConsent(e, toPrepare: false)) {
-        setState(() => _problem = ProblemReport(
-              doing: 'Creating a meeting',
-              error: e,
-              account: _account,
-            ));
-      }
+      if (_gone) return _reopen(e);
+      _closeQuestion();
+      _sayFailed(e);
     } finally {
       _sendingMeeting = false;
       // Not sent: still made, and still the ledger's to clear up.
@@ -760,6 +863,8 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
           : 'The meeting has to end after it starts.');
       return;
     }
+    _messenger = ScaffoldMessenger.maybeOf(context);
+    _navigator = Navigator.of(context);
     setState(() {
       _sending = true;
       _invalid = null;
@@ -773,6 +878,8 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     } catch (_) {
       // Then the times go as UTC, which every calendar reads.
     }
+    if (await _leavingAsked()) return;
+    _atSend = _asWritten();
     final change = EventChange.between(
       edit.event,
       notesBefore: edit.notes,
@@ -788,6 +895,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       showAs: _options.showAs,
       isPrivate: _options.isPrivate,
     );
+    _sendingMeeting = true;
     try {
       if (!change.isEmpty) {
         await _container
@@ -795,7 +903,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             .updateEvent(edit.event, change, wholeSeries: edit.wholeSeries);
         _container.read(calendarRefreshProvider.notifier).now();
       }
-      if (!mounted) return;
+      // Said whether the screen is still there or was left meanwhile.
       final told = attendees.isNotEmpty || edit.event.attendees.isNotEmpty;
       _leave(change.isEmpty
           ? 'Nothing was changed.'
@@ -803,15 +911,11 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
               ? 'Saved. Everyone on it is sent the change.'
               : 'Saved.');
     } catch (e) {
-      if (!mounted) return;
-      if (!_askForConsent(e, toPrepare: false)) {
-        setState(() => _problem = ProblemReport(
-              doing: 'Changing a meeting',
-              error: e,
-              account: _account,
-            ));
-      }
+      if (_gone) return _reopen(e);
+      _closeQuestion();
+      _sayFailed(e);
     } finally {
+      _sendingMeeting = false;
       if (mounted) setState(() => _sending = false);
     }
   }
@@ -923,15 +1027,15 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
           free: meeting.showAs == EventShowAs.free,
           private: meeting.isPrivate,
         );
-    if (!mounted) return;
     if (ok) {
       _leave("Handed to your calendar app: this account's calendar cannot be "
           'reached from here.');
-    } else {
-      setState(() => _notice =
-          '${why.message} There is no calendar app on this phone to hand it '
-          'to either.');
+      return;
     }
+    final notice = '${why.message} There is no calendar app on this phone to '
+        'hand it to either.';
+    if (_gone) return _reopen(why);
+    setState(() => _notice = notice);
   }
 
   /// A sign-in that asks Microsoft for the calendar beside the mail, then
@@ -1001,7 +1105,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       });
       return;
     }
-    if (!mounted) return;
+    if (_gone) return;
     if (_consentToPrepare) {
       setState(() => _sending = false);
       await _prepare();
@@ -1010,40 +1114,191 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     }
   }
 
+  /// Close this screen, with whatever of its own is over it (the question
+  /// on leaving, a sheet), and say [message] along the bottom. Only said,
+  /// where the screen was left while it was sending.
   void _leave(String message) {
-    Navigator.of(context).pop();
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
+    if (!_gone) {
+      _left = true;
+      _closeQuestion();
+      _closeScreen();
+    }
+    _tell(message);
+  }
+
+  /// Take down the question on leaving, if it is up: it says the meeting is
+  /// on its way, or that nothing has been sent, and neither holds once it
+  /// has gone or failed. Only that: a page something else put over this
+  /// screen is not this screen's to close.
+  void _closeQuestion() {
+    final question = _question;
+    if (question != null && question.isActive) {
+      question.navigator?.removeRoute(question, false);
+    }
+  }
+
+  /// Take this screen away, and only it: popped where it is on top, taken
+  /// out from under a page put over it otherwise, and left alone once it
+  /// is going already.
+  void _closeScreen() {
+    final route = ModalRoute.of(context);
+    if (route == null || !route.isActive) return;
+    final navigator = Navigator.of(context);
+    if (route.isCurrent) {
+      navigator.pop();
+    } else {
+      navigator.removeRoute(route);
+    }
+  }
+
+  /// [message] along the bottom, through the messenger taken at Send.
+  void _tell(String message) {
+    final messenger =
+        _messenger ?? (mounted ? ScaffoldMessenger.maybeOf(context) : null);
+    messenger
+      ?..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text(message)));
+  }
+
+  /// A Send or Save that failed, said on the screen: a sign-in to make
+  /// where one is wanted, otherwise the problem, kept whole for a report.
+  /// Every failure the calendars throw on purpose already carries a
+  /// sentence written for a person.
+  void _sayFailed(Object e) {
+    if (_askForConsent(e, toPrepare: false)) return;
+    setState(() => _problem = ProblemReport(
+          doing: _editing == null ? 'Creating a meeting' : 'Changing a meeting',
+          error: e,
+          account: _account,
+        ));
+  }
+
+  /// The screen as it stands, for [MeetingAsWritten]: [prepared] is the
+  /// link a Send hands the calendar. The Sends that failed are the list
+  /// itself, so one that fails after this is among them.
+  MeetingAsWritten _asWritten({PreparedMeeting? prepared}) =>
+      MeetingAsWritten(
+        accountId: _accountId,
+        calendarId: _calendarId,
+        title: _title.text,
+        attendees: _attendees.text,
+        location: _location.text,
+        notes: _notes.text,
+        start: _start,
+        end: _end,
+        allDay: _allDay,
+        options: _options,
+        online: _online,
+        onlineKind: _onlineKind,
+        prepared: prepared,
+        transactionId: _transactionId,
+        failedSends: _failedSends,
+      );
+
+  /// A Send or Save that failed once the screen was left: the screen again,
+  /// where it was, as it was written, and why. What was written is nowhere
+  /// else, and the calendar may have made the meeting with only its answer
+  /// lost, so it is not left to be typed again as a new one. As a held
+  /// message that fails opens again (see ComposeScreen).
+  void _reopen(Object failure) {
+    final written = _atSend;
+    final navigator = _navigator;
+    // The link made ahead is the new screen's to hold, or to undo.
+    _prepared = null;
+    if (written == null || navigator == null) return;
+    _whenInFront(() {
+      if (!navigator.mounted) {
+        final why = failure is ReadableError ? ' ${failure.message}' : '';
+        return _tell(_editing == null
+            ? 'Could not send the meeting.$why'
+            : 'Could not change the meeting.$why');
+      }
+      navigator.push(MaterialPageRoute<void>(
+        builder: (_) => NewMeetingScreen(
+          accountId: written.accountId,
+          editing: widget.editing,
+          asWritten: written,
+          failure: failure,
+        ),
+      ));
+    });
+  }
+
+  /// Whether the screen is being left: the question on leaving, if it is
+  /// up, answered Discard, or the screen going. Asked just before the
+  /// calendar is, since the question says nothing has been sent.
+  Future<bool> _leavingAsked() async {
+    final asking = _askingToLeave;
+    if (asking != null && await asking) return true;
+    return _gone;
   }
 
   /// Backing out of a half-written meeting. There is no draft to keep it
   /// in, so the question is only whether to lose it; an untouched screen
-  /// asks nothing.
+  /// asks nothing, unless Send is waiting, which the question holds back.
+  /// Once the calendar has it, it cannot be called back: the question then
+  /// is whether to wait here for how it went. True to leave, and from then
+  /// on the screen counts as gone.
   Future<bool> _mayLeave() async {
-    if (_untouched) return true;
-    final discard = await showDialog<bool>(
+    final leave = _sendingMeeting
+        ? await _ask(
+            title: _editing == null ? 'Still sending' : 'Still saving',
+            words: '${_editing == null ? 'The meeting' : 'The change'} is on '
+                'its way and cannot be stopped now. Leave, and you are told '
+                'how it went.',
+            stay: 'Stay',
+            leave: 'Leave',
+          )
+        : (!_sending && _untouched) ||
+            await _ask(
+              title: _editing == null
+                  ? 'Discard this meeting?'
+                  : 'Discard these changes?',
+              words: _editing == null
+                  ? 'Nothing has been sent.'
+                  : 'The meeting stays as it was.',
+              stay: 'Keep writing',
+              leave: 'Discard',
+              heldFor: true,
+            );
+    if (leave) _left = true;
+    return leave;
+  }
+
+  /// A question on leaving, kept in [_question] while it is up; with
+  /// [heldFor], one Send waits for (see [_askingToLeave]).
+  Future<bool> _ask({
+    required String title,
+    required String words,
+    required String stay,
+    required String leave,
+    bool heldFor = false,
+  }) {
+    final asking = showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(_editing == null
-            ? 'Discard this meeting?'
-            : 'Discard these changes?'),
-        content: Text(_editing == null
-            ? 'Nothing has been sent.'
-            : 'The meeting stays as it was.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Keep writing'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Discard'),
-          ),
-        ],
-      ),
-    );
-    return discard ?? false;
+      builder: (context) {
+        _question = ModalRoute.of<bool>(context);
+        return AlertDialog(
+          title: Text(title),
+          content: Text(words),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: Text(stay),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: Text(leave),
+            ),
+          ],
+        );
+      },
+    ).then((answer) => answer ?? false).whenComplete(() {
+      _question = null;
+      _askingToLeave = null;
+    });
+    if (heldFor) _askingToLeave = asking;
+    return asking;
   }
 
   @override
@@ -1058,9 +1313,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
-        if (await _mayLeave() && context.mounted) {
-          Navigator.of(context).pop();
-        }
+        if (await _mayLeave() && context.mounted) _closeScreen();
       },
       child: Scaffold(
         appBar: AppBar(
@@ -1280,6 +1533,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                           start: _start,
                           end: _end,
                           onPick: _sending ? (_) {} : _setStart,
+                          enabled: !_sending,
                         ),
                       ),
                     ),
@@ -1834,4 +2088,21 @@ class _CalendarChoice extends ConsumerWidget {
       ),
     );
   }
+}
+
+/// [then] now if the app is in front, or once it is back: a screen pushed
+/// while the app is out of sight is not built until then, so it has no
+/// guard yet (see [GuardsPutAway]), and a put-away closing what is open
+/// meanwhile would take it away unasked. ComposeScreen waits the same way.
+void _whenInFront(void Function() then) {
+  // Where nothing has said, as under test, it is taken to be in front.
+  if (isInFront() || WidgetsBinding.instance.lifecycleState == null) {
+    then();
+    return;
+  }
+  late final AppLifecycleListener back;
+  back = AppLifecycleListener(onResume: () {
+    back.dispose();
+    then();
+  });
 }

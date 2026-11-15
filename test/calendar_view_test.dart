@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,6 +16,8 @@ import 'package:myemail/domain/draft.dart';
 import 'package:myemail/state/calendar_providers.dart'
     show deviceCalendarProvider;
 import 'package:myemail/ui/compose/compose_screen.dart' show ComposeScreen;
+import 'package:myemail/ui/meetings/new_meeting_screen.dart'
+    show NewMeetingScreen;
 
 import 'fakes/fake_webview.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
@@ -811,6 +815,51 @@ void main() {
       expect(find.text('Earlier meeting'), findsOneWidget);
     });
 
+    testWidgets('scrolling near the end of the agenda asks for the next 30 '
+        'days, and no more until they have come (#141)', (tester) async {
+      final t = today();
+      final engine = _HeldCalendarEngine();
+      await pump(tester, const CalendarScreen(), using: engine,
+          prepare: (_, hadco) {
+        engine.shown.addAll([
+          for (var i = 0; i < 20; i++)
+            at(hadco, 'm$i', 'Meeting $i',
+                DateTime(t.year, t.month, t.day + i, 10)),
+        ]);
+      });
+      final next = DateTime(t.year, t.month, t.day + 30);
+      expect(engine.asked, isNot(contains(next)));
+
+      // The next 30 days answer only when let go, as on a slow connection,
+      // and have nothing on meanwhile, so the end stays near.
+      engine.hold = true;
+      final list = find.byType(CustomScrollView);
+      Future<void> scroll(List<double> steps) async {
+        final drag = await tester.startGesture(tester.getCenter(list));
+        for (final dy in steps) {
+          await drag.moveBy(Offset(0, dy));
+          await tester.pump();
+        }
+        await drag.up();
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+
+      Set<DateTime> asked() => {
+            for (final d in engine.asked)
+              if (d.isAfter(t)) d,
+          };
+      await scroll(List.filled(15, -40));
+      expect(asked(), {next});
+
+      // Once they have come, the 30 days after, as the end is still near.
+      for (final answer in engine.held) {
+        answer.complete();
+      }
+      await tester.pump();
+      await scroll([...List.filled(3, 40.0), ...List.filled(3, -40.0)]);
+      expect(asked(), {next, DateTime(t.year, t.month, t.day + 60)});
+    });
+
     testWidgets('a pinch makes the hours taller, and the height is kept (#8)',
         (tester) async {
       final (c, _) = await pump(tester, const CalendarScreen());
@@ -1223,7 +1272,198 @@ void main() {
       expect(find.text('Tokyo'), findsOneWidget);
       expect(find.byKey(const ValueKey('second-zone-hour:9')), findsOneWidget);
     });
+
+    testWidgets('a meeting written in UTC, as a calendar from a link writes '
+        'it, is drawn at its hour here (#131)', (tester) async {
+      final day = DateTime(2026, 11, 16);
+      DateTime at(int h, [int m = 0]) =>
+          DateTime(day.year, day.month, day.day, h, m);
+      final (c, _) = await pump(tester, CalendarScreen(day: day),
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          CalendarEvent(
+            id: 'first',
+            accountId: hadco.id,
+            title: 'first',
+            start: at(0),
+            end: at(0, 30),
+          ),
+          // A Google calendar's link writes a single event's times in UTC,
+          // and the feed keeps them so.
+          CalendarEvent(
+            id: 'match',
+            accountId: hadco.id,
+            title: 'Match',
+            start: at(10).toUtc(),
+            end: at(11).toUtc(),
+          ),
+        ];
+      });
+      await tester.tap(find.byKey(const ValueKey('calendar-view-day')));
+      await tester.pumpAndSettle();
+      double top(String id) =>
+          tester.getTopLeft(find.byKey(ValueKey('calendar-event:$id'))).dy;
+      expect(top('match') - top('first'),
+          10 * c.read(calendarHourHeightProvider),
+          reason: 'on the line marked 10:00');
+    });
+
+    testWidgets('a meeting held and let go where it was is not moved, '
+        'seconds and all (#131)', (tester) async {
+      final day = DateTime(2026, 11, 16);
+      final engine = SampleMailEngine();
+      final (c, _) = await pump(tester, CalendarScreen(day: day),
+          using: engine, prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          CalendarEvent(
+            id: 'a1',
+            accountId: hadco.id,
+            title: 'Dentist',
+            start: DateTime(day.year, day.month, day.day, 9, 0, 30),
+            end: DateTime(day.year, day.month, day.day, 10, 0, 30),
+            isOrganizer: true,
+            response: EventResponse.organizer,
+          ),
+        ];
+      });
+      await tester.tap(find.byKey(const ValueKey('calendar-view-day')));
+      await tester.pumpAndSettle();
+      final block = find.byKey(const ValueKey('calendar-event:a1'));
+      for (final grip in [0.15, 0.9]) {
+        final hour = c.read(calendarHourHeightProvider);
+        final drag = await tester
+            .startGesture(tester.getTopLeft(block) + Offset(10, grip * hour));
+        await tester.pump(const Duration(milliseconds: 700));
+        await drag.moveBy(const Offset(0, 3));
+        await tester.pump();
+        await drag.up();
+        await tester.pumpAndSettle();
+      }
+      expect(engine.calendarActions, isEmpty,
+          reason: 'neither a move nor a stretch of less than a quarter hour');
+    });
+
+    // The next days the clocks change where the tests run. A zone without
+    // summer time has none, and these are skipped there.
+    for (final (name, change) in [
+      ('go forward', _clockChange(shorter: true)),
+      ('go back', _clockChange(shorter: false)),
+    ]) {
+      DateTime at(int h, [int m = 0]) =>
+          DateTime(change!.year, change.month, change.day, h, m);
+
+      testWidgets('on the day the clocks $name, Day draws a meeting at its '
+          'hour, and a tap on an hour starts a meeting there (#131)',
+          skip: change == null, (tester) async {
+        final (c, _) = await pump(tester, CalendarScreen(day: change),
+            prepare: (engine, hadco) {
+          engine.events[hadco.id] = [
+            for (final (id, from, to) in [
+              ('first', at(0), at(0, 30)),
+              ('late', at(22), at(23)),
+            ])
+              CalendarEvent(
+                id: id,
+                accountId: hadco.id,
+                title: id,
+                start: from,
+                end: to,
+              ),
+          ];
+        });
+        await tester.tap(find.byKey(const ValueKey('calendar-view-day')));
+        await tester.pumpAndSettle();
+        final hour = c.read(calendarHourHeightProvider);
+        final first = find.byKey(const ValueKey('calendar-event:first'));
+        final midnight = tester.getTopLeft(first).dy;
+        expect(
+          tester.getTopLeft(find.byKey(const ValueKey('calendar-event:late')))
+                  .dy -
+              midnight,
+          22 * hour,
+          reason: 'on the line marked 22:00, not an hour off it',
+        );
+
+        await tester.tapAt(
+            Offset(tester.getCenter(first).dx, midnight + 14 * hour + 5));
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<NewMeetingScreen>(find.byType(NewMeetingScreen)).start,
+          at(14),
+        );
+      });
+
+      /// What a meeting of Ron's from midnight to one, held at [grip] of an
+      /// hour's height from its top, and moved down [hours], is sent as.
+      Future<List<String>> dragged(
+        WidgetTester tester, {
+        required double grip,
+        required int hours,
+      }) async {
+        final engine = SampleMailEngine();
+        final (c, _) = await pump(tester, CalendarScreen(day: change),
+            using: engine, prepare: (engine, hadco) {
+          engine.events[hadco.id] = [
+            CalendarEvent(
+              id: 'a1',
+              accountId: hadco.id,
+              title: 'Dentist',
+              start: at(0),
+              end: at(1),
+              isOrganizer: true,
+              response: EventResponse.organizer,
+            ),
+          ];
+        });
+        await tester.tap(find.byKey(const ValueKey('calendar-view-day')));
+        await tester.pumpAndSettle();
+        // Up to midnight, where the meeting is.
+        await tester.drag(
+            find.byType(SingleChildScrollView), const Offset(0, 600));
+        await tester.pumpAndSettle();
+        final block = find.byKey(const ValueKey('calendar-event:a1'));
+        final hour = c.read(calendarHourHeightProvider);
+        final drag = await tester
+            .startGesture(tester.getTopLeft(block) + Offset(10, grip * hour));
+        await tester.pump(const Duration(milliseconds: 700));
+        for (var i = 0; i < hours; i++) {
+          await drag.moveBy(Offset(0, hour));
+          await tester.pump();
+        }
+        await drag.up();
+        await tester.pumpAndSettle();
+        return engine.calendarActions;
+      }
+
+      testWidgets('on the day the clocks $name, a meeting dragged past 2 a.m. '
+          'lands on the hour it was dropped on (#131)', skip: change == null,
+          (tester) async {
+        expect(await dragged(tester, grip: 0.15, hours: 4),
+            ['update a1 start=04:00 end=05:00']);
+      });
+
+      testWidgets('on the day the clocks $name, a meeting stretched past 2 '
+          'a.m. ends on the hour it was let go on (#131)',
+          skip: change == null, (tester) async {
+        expect(await dragged(tester, grip: 0.9, hours: 3),
+            ['update a1 start=00:00 end=04:00'],
+            reason: 'held by its foot');
+      });
+    }
   });
+}
+
+/// The next day, within a year and a bit, whose clocks go forward (a
+/// 23-hour day) or back (25), or null where the clocks never change.
+DateTime? _clockChange({required bool shorter}) {
+  final now = DateTime.now();
+  for (var i = 1; i < 400; i++) {
+    final day = DateTime(now.year, now.month, now.day + i);
+    final hours =
+        DateTime(day.year, day.month, day.day + 1).difference(day).inHours;
+    if (hours == (shorter ? 23 : 25)) return day;
+  }
+  return null;
 }
 
 /// The sample engine, keeping what it was asked to send.
@@ -1232,4 +1472,35 @@ class _SendingEngine extends SampleMailEngine {
 
   @override
   Future<void> sendDraft(Draft draft) async => drafts.add(draft);
+}
+
+/// The sample engine with calendars holding only [shown], keeping the
+/// first day of each stretch asked for, and while [hold], answering only
+/// once what is [held] is let go.
+class _HeldCalendarEngine extends SampleMailEngine {
+  final List<CalendarEvent> shown = [];
+  final List<DateTime> asked = [];
+  final List<Completer<void>> held = [];
+  bool hold = false;
+
+  @override
+  Future<List<CalendarEvent>> calendarEvents(
+    String accountId,
+    DateTime start,
+    DateTime end,
+  ) async {
+    asked.add(start);
+    if (hold) {
+      final answer = Completer<void>();
+      held.add(answer);
+      await answer.future;
+    }
+    return [
+      for (final e in shown)
+        if (e.accountId == accountId &&
+            e.start.isBefore(end) &&
+            e.end.isAfter(start))
+          e,
+    ];
+  }
 }

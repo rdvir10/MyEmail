@@ -1,10 +1,16 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/display_settings.dart';
+import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/display_providers.dart';
+import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/read_marker.dart';
+import 'package:myemail/ui/messages/reading_pane.dart';
+
+import 'fakes/fake_webview.dart';
 
 /// When an opened message counts as read: Outlook's Reading Pane options,
 /// under Settings, View.
@@ -83,5 +89,54 @@ void main() {
     expect(DisplaySettings.fromJson(chosen.toJson()).markRead,
         MarkReadWhen.leaving);
     expect(DisplaySettings.fromJson(const {}).markRead, MarkReadWhen.opened);
+  });
+
+  test('told after it has gone, it does nothing', () {
+    final m = marker(MarkReadWhen.leaving);
+    m.opened('a', mark: mark('a'));
+    c.dispose();
+    m.left('a');
+    m.opened('b', mark: mark('b'));
+    expect(marked, isEmpty, reason: 'nothing marked with the app gone');
+    c = ProviderContainer();
+  });
+
+  // The providers can go before the panes: a test that failed leaves its
+  // widgets up and its container is disposed first, and a window closing
+  // its copy of the app, or Android ending the activity, takes things
+  // down in that order too. The pane telling the marker it was left then
+  // threw, and in a test every test after it failed with it.
+  testWidgets('a reading pane taken down after the providers have gone '
+      'goes quietly', (tester) async {
+    FakeWebViewPlatform.install();
+    final message = MailMessage(
+      id: 'acct-personal:INBOX#2',
+      accountId: 'acct-personal',
+      folderId: 'acct-personal:INBOX',
+      uid: 2,
+      subject: 'Site visit',
+      preview: '',
+      from: const MailAddress(email: 'dana@example.com', name: 'Dana Levi'),
+      to: const [MailAddress(email: 'personal@example.com')],
+      date: DateTime.now(),
+      isRead: true,
+    );
+    final app = ProviderContainer(overrides: [
+      uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+      messageBodyProvider(message.id).overrideWith(
+          (ref) async => const MailBody(text: 'Shall we meet?')),
+    ]);
+    await tester.pumpWidget(UncontrolledProviderScope(
+      container: app,
+      child: MaterialApp(
+        home: Scaffold(body: ReadingPane(message: message, onPopOut: () {})),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    app.read(readMarkerProvider).opened(message.id);
+
+    app.dispose();
+    await tester.pumpWidget(const SizedBox());
+    expect(tester.takeException(), isNull);
   });
 }

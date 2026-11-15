@@ -26,10 +26,15 @@ class WhoIsFree extends ConsumerStatefulWidget {
     required this.start,
     required this.end,
     required this.onPick,
+    this.enabled = true,
   });
 
   final String accountId;
   final String ownEmail;
+
+  /// False while the meeting is being sent: the sheet would only be in the
+  /// way of the screen closing as it goes.
+  final bool enabled;
 
   /// The Attendees field, as typed.
   final TextEditingController attendees;
@@ -177,7 +182,7 @@ class _WhoIsFreeState extends ConsumerState<WhoIsFree> {
       style: status.busy
           ? TextButton.styleFrom(foregroundColor: scheme.error)
           : null,
-      onPressed: _open,
+      onPressed: widget.enabled ? _open : null,
       icon: Icon(status.icon, size: 18),
       label: Text(status.label, overflow: TextOverflow.ellipsis),
     );

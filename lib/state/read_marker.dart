@@ -35,7 +35,7 @@ class ReadMarker {
   /// null for a message already read: opening it still counts as moving on
   /// from the one before.
   void opened(String messageId, {Future<void> Function()? mark}) {
-    if (messageId == _open.value) return;
+    if (_gone || messageId == _open.value) return;
     _leaveCurrent();
     _open.value = messageId;
     if (mark == null) return;
@@ -56,8 +56,12 @@ class ReadMarker {
 
   /// [messageId] is no longer open: its screen or pane has gone. Left
   /// before its seconds were up, it stays unread, as in Outlook.
+  ///
+  /// Nothing once this has gone itself: the providers can go before the
+  /// panes (a window closing its copy of the app, Android ending the
+  /// activity, a test that failed), and a pane tells this as it goes.
   void left(String messageId) {
-    if (messageId != _open.value) return;
+    if (_gone || messageId != _open.value) return;
     _leaveCurrent();
     _open.value = null;
   }
@@ -70,9 +74,14 @@ class ReadMarker {
     if (onLeave != null) unawaited(onLeave());
   }
 
+  /// Set as the providers go; see [left].
+  bool _gone = false;
+
   void dispose() {
+    _gone = true;
     _timer?.cancel();
     _timer = null;
+    _onLeave = null;
     _open.dispose();
   }
 }

@@ -206,7 +206,12 @@ class _MeetingOptionsPanelState extends State<MeetingOptionsPanel> {
   }
 
   void _setRepeat(_Repeat r) {
-    final days = o.repeat?.days ?? {widget.start.weekday};
+    // A week's other days, as picked: the first meeting's own goes with
+    // its date (daysFrom adds it), so a date moved after Every week does
+    // not leave the old day behind. Working days are not picked days.
+    final days = o.repeat?.kind == RepeatKind.weekly
+        ? o.repeat!.days
+        : const <int>{};
     final until = o.repeat?.until;
     final count = o.repeat?.count;
     final next = switch (r) {

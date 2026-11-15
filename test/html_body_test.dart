@@ -718,6 +718,50 @@ void main() {
       expect(web.loadedHtml.last, isNot(contains('myemail-date:')));
       expect(finder.asked, isEmpty, reason: 'not even read');
     });
+
+    testWidgets("is read as from when the message was written, so last "
+        "week's 'tomorrow' is not taken for tomorrow (#130)", (tester) async {
+      FakeWebViewPlatform.install();
+      tester.view.physicalSize = const Size(1200, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final written = DateTime.now().subtract(const Duration(days: 5));
+      final old = MailMessage(
+        id: message.id,
+        accountId: message.accountId,
+        folderId: message.folderId,
+        uid: message.uid,
+        subject: message.subject,
+        preview: '',
+        from: message.from,
+        to: message.to,
+        date: written,
+        isRead: true,
+      );
+      final finder = FakeDateFinder({
+        'tomorrow at 3pm': (at: when, grain: DateGrain.hour),
+      });
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        messageBodyProvider(message.id).overrideWith((ref) async =>
+            const MailBody(
+              text: 'Can we talk tomorrow at 3pm?',
+              html: '<p>Can we talk tomorrow at 3pm?</p>',
+            )),
+        dateFinderProvider.overrideWithValue(finder),
+      ]);
+      addTearDown(c.dispose);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: MaterialApp(
+          home: Scaffold(body: ReadingPane(message: old, onPopOut: () {})),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      expect(finder.asked, ['Can we talk tomorrow at 3pm?']);
+      expect(finder.askedNow, [written]);
+    });
   });
 }
 
