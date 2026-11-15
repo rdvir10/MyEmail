@@ -82,6 +82,18 @@ open class MainActivity : FlutterActivity() {
         ) {
             intent = Intent(intent).setAction(Intent.ACTION_MAIN).setData(null)
         }
+        // So does a notification's press, and the notification plugin tells
+        // Dart the app was started by one whenever this intent is the
+        // press's: the message of that old press opened again, or Join
+        // opened the meeting's link again, or Accept asked again how to
+        // answer. A press made now comes through onNewIntent, which the
+        // plugin takes it from, as it does while the app is running.
+        val action = intent.action
+        if (restarted &&
+            (action == SELECT_NOTIFICATION || action == SELECT_FOREGROUND_NOTIFICATION)
+        ) {
+            intent = Intent(intent).setAction(Intent.ACTION_MAIN)
+        }
         super.onCreate(savedInstanceState)
     }
 
@@ -387,5 +399,13 @@ open class MainActivity : FlutterActivity() {
     companion object {
         /** Google's reverse-client-ID schemes all begin this way. */
         const val OAUTH_SCHEME_PREFIX = "com.googleusercontent.apps."
+
+        /**
+         * The notification plugin's actions for a press that opens the app:
+         * the notification itself, and a button that brings the app forward
+         * (Join, Accept, Decline). Its own constants are private.
+         */
+        const val SELECT_NOTIFICATION = "SELECT_NOTIFICATION"
+        const val SELECT_FOREGROUND_NOTIFICATION = "SELECT_FOREGROUND_NOTIFICATION"
     }
 }

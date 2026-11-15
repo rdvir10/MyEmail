@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../common/bottom_message.dart';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -103,8 +105,12 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
   /// Read once for the same reason: reading aloud stops with the pane.
   late final ReadAloud _readAloud;
 
+  /// Waiting for the folder [_opened] found unknown; see there.
+  ProviderSubscription<String?>? _folderWait;
+
   @override
   void dispose() {
+    _folderWait?.close();
     _marker.left(widget.message.id);
     _readAloud.stopFor(widget.message.id);
     _textScroll.dispose();
@@ -196,14 +202,42 @@ class _ReadingPaneState extends ConsumerState<ReadingPane> {
   /// Read button is, so a search hit from another folder, or from further
   /// back than the list has loaded, goes to the engine, and the search
   /// shows it read.
+  ///
+  /// The folder may not be known yet: a window of its own starts knowing
+  /// none of its folders, and its message, shown before they came, was
+  /// never counted as opened at all, under any setting. It counts once the
+  /// folder is known, if it is still the message on show. Anywhere the
+  /// folder is known already, nothing waits.
   void _opened() {
+    if (!mounted) return;
     final listId = _listId;
-    if (!mounted || listId == null) return;
+    if (listId == null) {
+      _openedOnceFolderKnown();
+      return;
+    }
     final message = widget.message;
     final actions = MessageActions(ref, listId);
     _marker.opened(
       message.id,
       mark: message.isRead ? null : () => actions.markOpened(message),
+    );
+  }
+
+  void _openedOnceFolderKnown() {
+    if (_folderWait != null) return;
+    final id = widget.message.id;
+    _folderWait = ref.listenManual<String?>(
+      effectiveSelectedFolderIdProvider,
+      (_, folderId) {
+        if (folderId == null) return;
+        _folderWait?.close();
+        _folderWait = null;
+        // Once the change has gone round, as the first try came after a
+        // frame: counting it opened can mark it read, a change of its own.
+        scheduleMicrotask(() {
+          if (mounted && widget.message.id == id) _opened();
+        });
+      },
     );
   }
 

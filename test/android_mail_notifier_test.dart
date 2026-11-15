@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/notifications/android_mail_notifier.dart';
@@ -79,6 +81,51 @@ void main() {
 
     expect(await notifier.takeLaunchPayload(), 'a:INBOX#3');
     expect(await notifier.takeLaunchPayload(), isNull);
+  });
+
+  // Android brings the app back with the intent it was first started with,
+  // after stopping it in the background or from Recents, and the plugin
+  // answers the launch details above from that intent. A press that had
+  // started the app was taken again: its message opened again, Join opened
+  // the meeting's link again, Accept asked again how to answer. The
+  // Android half, which no Dart test runs, read where it is written.
+  test('a press that started the app is not taken again when Android '
+      'brings the app back', () {
+    String read(String path) => File(path).readAsStringSync();
+    final plugin = read('third_party/flutter_local_notifications/android/src/'
+        'main/java/com/dexterous/flutterlocalnotifications/'
+        'FlutterLocalNotificationsPlugin.java');
+    // What the plugin calls a press that opens the app, and the intent it
+    // reads the launch details from.
+    final actions = [
+      for (final name in [
+        'SELECT_NOTIFICATION',
+        'SELECT_FOREGROUND_NOTIFICATION_ACTION',
+      ])
+        RegExp('String $name =\\s*"(\\w+)";').firstMatch(plugin)!.group(1)!,
+    ];
+    expect(plugin, contains('Intent launchIntent = mainActivity.getIntent();'));
+
+    final activity =
+        read('android/app/src/main/kotlin/com/rdvir/mailtree/MainActivity.kt');
+    final onCreate = RegExp(r'override fun onCreate\([\s\S]*?\n    }')
+        .firstMatch(activity)!
+        .group(0)!;
+    final plain = RegExp(
+      r'if \(restarted &&\s*\(action == SELECT_NOTIFICATION \|\| '
+      r'action == SELECT_FOREGROUND_NOTIFICATION\)\s*\) \{\s*'
+      r'intent = Intent\(intent\)\.setAction\(Intent\.ACTION_MAIN\)',
+    ).firstMatch(onCreate);
+    expect(plain, isNotNull,
+        reason: 'on a restart, a press is made a plain start');
+    expect(onCreate, contains('val action = intent.action'));
+    expect(plain!.start, lessThan(onCreate.indexOf('super.onCreate')),
+        reason: 'the plugin reads the intent once Flutter has started');
+    expect(onCreate.indexOf('restarted ='), lessThan(plain.start));
+    expect(activity,
+        contains('const val SELECT_NOTIFICATION = "${actions[0]}"'));
+    expect(activity,
+        contains('const val SELECT_FOREGROUND_NOTIFICATION = "${actions[1]}"'));
   });
 }
 

@@ -12,6 +12,7 @@ import '../../state/message_providers.dart';
 import '../../state/providers.dart';
 import '../../state/quick_steps.dart';
 import '../../state/search_providers.dart';
+import '../../state/window_providers.dart';
 import '../common/bottom_message.dart';
 import '../compose/open_compose.dart';
 import '../meetings/new_meeting_screen.dart';
@@ -72,7 +73,7 @@ Future<List<MailMessage>> applyQuickStepTo(
   Object? failure;
   for (final message in messages) {
     try {
-      await runQuickStep(
+      final run = runQuickStep(
         step: step,
         notifier: container.read(messagesProvider(listId).notifier),
         message: message,
@@ -87,6 +88,12 @@ Future<List<MailMessage>> applyQuickStepTo(
           container.invalidate(messagesProvider(kFlaggedId));
         },
       );
+      // Noted as on its way to a server, as MessageActions notes its own,
+      // so a window of its own waits for it before it ends. A step leaves
+      // the message's screen up, and Back pressed while it was still going
+      // ended the window with it. See WorkInFlight.
+      container.read(workInFlightProvider).add(run);
+      await run;
       went.add(message);
     } catch (e) {
       failure = e;

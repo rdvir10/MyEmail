@@ -74,6 +74,8 @@ class ComposeScreen extends ConsumerStatefulWidget {
 
   /// In a window of its own, where Undo Send does not hold the message:
   /// the window closes as it goes, and there is no bar left to undo on.
+  /// One opened on top of a message's window is held no more than this
+  /// is (see InAWindow).
   final bool inWindow;
 
   /// Whether closing the window as it opened loses nothing, because what it
@@ -830,7 +832,11 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     if (!await _passesChecks()) return;
     if (!await _readyToLeave()) return;
     final hold = ref.read(displayProvider).undoSend.hold;
-    if (hold > Duration.zero && !widget.inWindow) {
+    // Not in a window, its own or a message's (see InAWindow): there it
+    // goes now, and the screen waits for it, the error shown here if it
+    // fails.
+    final inAWindow = widget.inWindow || ref.read(inAWindowProvider);
+    if (hold > Duration.zero && !inAWindow) {
       await _sendHeld(hold);
       return;
     }

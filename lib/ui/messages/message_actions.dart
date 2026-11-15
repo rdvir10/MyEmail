@@ -18,6 +18,7 @@ import '../../state/providers.dart';
 import '../../state/search_providers.dart';
 import '../../state/sync_providers.dart' show backgroundSchedulerProvider;
 import '../../state/waiting_changes.dart';
+import '../../state/window_providers.dart';
 import 'move_to_sheet.dart';
 
 /// Every message of [listId]'s list that can be ticked, which is where a
@@ -125,6 +126,13 @@ class MessageActions {
   /// inbox. Not necessarily the folder the message lives in.
   final String listId;
 
+  /// [work], a change on its way to a server, noted until it is done: a
+  /// window of its own waits for it before it ends. See [WorkInFlight].
+  Future<T> _noted<T>(Future<T> work) {
+    container.read(workInFlightProvider).add(work);
+    return work;
+  }
+
   /// True when anything moved. The sheet closed without a choice, or a
   /// move that failed outright, is false, so a selection can stay ticked
   /// for another try rather than be lost with nothing done to it.
@@ -147,6 +155,13 @@ class MessageActions {
 
   /// True when anything moved, as for [moveWithPrompt].
   Future<bool> moveTo(
+    BuildContext context,
+    List<MailMessage> messages,
+    String toFolderId,
+  ) =>
+      _noted(_moveTo(context, messages, toFolderId));
+
+  Future<bool> _moveTo(
     BuildContext context,
     List<MailMessage> messages,
     String toFolderId,
@@ -193,10 +208,10 @@ class MessageActions {
       }
       final n = done.fold(0, (sum, m) => sum + m.count);
       _say(to, 'Moved $n of ${messages.length}. ${part.message}',
-          undo: done, of: n);
+          undo: done, of: n, notDone: true);
       return true;
     } catch (e) {
-      _say(to, 'Could not move: $e');
+      _say(to, 'Could not move: $e', notDone: true);
       return moves.isNotEmpty;
     }
   }
@@ -210,7 +225,7 @@ class MessageActions {
     BuildContext context,
     List<MailMessage> messages,
   ) =>
-      _toEach(
+      _noted(_toEach(
         context,
         messages,
         targetFor: archiveTargetFor,
@@ -219,12 +234,20 @@ class MessageActions {
         failed: 'Could not archive',
         nowhere: 'This account has no Archive folder.',
         already: 'Already in the archive.',
-      );
+      ));
 
   /// Snooze [messages] until [until]: off the list now, back in its folder,
   /// unread, then; see [MailEngine.snooze]. [said] is the report, with an
   /// Undo that puts them back at once. True when anything went.
   Future<bool> snooze(
+    BuildContext context,
+    List<MailMessage> messages,
+    DateTime until, {
+    required String said,
+  }) =>
+      _noted(_snooze(context, messages, until, said: said));
+
+  Future<bool> _snooze(
     BuildContext context,
     List<MailMessage> messages,
     DateTime until, {
@@ -250,7 +273,7 @@ class MessageActions {
         ]);
       }
     } catch (e) {
-      _say(to, 'Could not snooze: $e');
+      _say(to, 'Could not snooze: $e', notDone: true);
       return moves.isNotEmpty;
     }
     // The background brings it back at its time, as the app does in front.
@@ -263,8 +286,11 @@ class MessageActions {
     }
     final went = moves.fold(0, (int n, m) => n + m.count);
     if (went == 0) {
-      _say(to, 'That has no Message-ID to find it by again, so it cannot be '
-          'snoozed.');
+      _say(
+          to,
+          'That has no Message-ID to find it by again, so it cannot be '
+          'snoozed.',
+          notDone: true);
       return false;
     }
     _say(to, said, undo: moves, of: went);
@@ -279,7 +305,7 @@ class MessageActions {
     String? said,
     VoidCallback? alsoUndo,
   }) =>
-      _toEach(
+      _noted(_toEach(
         context,
         messages,
         targetFor: (folders, accountId) =>
@@ -291,7 +317,7 @@ class MessageActions {
         nowhere: 'This account has no Junk folder.',
         already: 'Already in Junk.',
         alsoUndo: alsoUndo,
-      );
+      ));
 
   /// Out of Junk into each account's Inbox: Not Junk's first half. As
   /// [junk] for [said] and [alsoUndo].
@@ -301,7 +327,7 @@ class MessageActions {
     String? said,
     VoidCallback? alsoUndo,
   }) =>
-      _toEach(
+      _noted(_toEach(
         context,
         messages,
         targetFor: (folders, accountId) =>
@@ -312,7 +338,7 @@ class MessageActions {
         nowhere: 'This account has no Inbox.',
         already: 'Already in the Inbox.',
         alsoUndo: alsoUndo,
-      );
+      ));
 
   /// [messages] into the folder [targetFor] names for each one's account,
   /// with one report and one Undo for them all. True when anything went.
@@ -344,7 +370,7 @@ class MessageActions {
       }
     }
     if (groups.isEmpty) {
-      _say(to, none ? nowhere : already);
+      _say(to, none ? nowhere : already, notDone: true);
       return false;
     }
     final moves = <MessageMove>[];
@@ -360,10 +386,10 @@ class MessageActions {
       final went = [...moves, ...part.done];
       final n = went.fold(0, (sum, m) => sum + m.count);
       _say(to, '$partly $n of ${messages.length}. ${part.message}',
-          undo: went, of: n, alsoUndo: alsoUndo);
+          undo: went, of: n, alsoUndo: alsoUndo, notDone: true);
       return true;
     } catch (e) {
-      _say(to, '$failed: $e');
+      _say(to, '$failed: $e', notDone: true);
       return moves.isNotEmpty;
     }
   }
@@ -415,6 +441,13 @@ class MessageActions {
     BuildContext context,
     List<MailMessage> messages, {
     String? saying,
+  }) =>
+      _noted(_delete(context, messages, saying: saying));
+
+  Future<void> _delete(
+    BuildContext context,
+    List<MailMessage> messages, {
+    String? saying,
   }) async {
     if (messages.isEmpty) return;
     final to = _reporterFor(context);
@@ -448,9 +481,9 @@ class MessageActions {
       final n = part.moved.length +
           moves.fold<int>(0, (sum, m) => sum + m.count);
       _say(to, 'Deleted $n of ${messages.length}. ${part.message}',
-          undo: done, of: n);
+          undo: done, of: n, notDone: true);
     } catch (e) {
-      _say(to, 'Could not delete: $e');
+      _say(to, 'Could not delete: $e', notDone: true);
     }
   }
 
@@ -460,13 +493,13 @@ class MessageActions {
     List<MailMessage> messages,
     bool isRead,
   ) =>
-      _setEach(
+      _noted(_setEach(
         context,
         messages,
         held: (n, ids) => n.setMessagesRead(ids, isRead),
         engine: (e, ids) => e.setMessagesRead(ids, isRead),
         what: isRead ? 'mark read' : 'mark unread',
-      );
+      ));
 
   Future<void> setFlagged(
     BuildContext context,
@@ -475,13 +508,13 @@ class MessageActions {
   ) {
     // The flag off takes its day and its reminder with it.
     if (!isFlagged) container.read(followUpsProvider.notifier).forget(messages);
-    return _setEach(
+    return _noted(_setEach(
       context,
       messages,
       held: (n, ids) => n.setMessagesFlagged(ids, isFlagged),
       engine: (e, ids) => e.setMessagesFlagged(ids, isFlagged),
       what: isFlagged ? 'flag' : 'unflag',
-    );
+    ));
   }
 
   /// Outlook's Follow Up: flagged for [due] (no date where it is null), or
@@ -502,13 +535,13 @@ class MessageActions {
         store.setDue(m, due);
       }
     }
-    return _setEach(
+    return _noted(_setEach(
       context,
       messages,
       held: (n, ids) => n.setFollowUp(ids, due: due, complete: complete),
       engine: (e, ids) => e.setFollowUp(ids, due: due, complete: complete),
       what: complete ? 'mark complete' : 'flag',
-    );
+    ));
   }
 
   /// Read, because it was opened, as Outlook does: [setRead] without a word
@@ -519,7 +552,9 @@ class MessageActions {
   /// the pane offering "Mark as read". It also used the pane's ref after
   /// the server answered, by when the pane may have gone to the next
   /// message, so the folder the hit lives in was not read again either.
-  Future<void> markOpened(MailMessage message) async {
+  Future<void> markOpened(MailMessage message) => _noted(_markOpened(message));
+
+  Future<void> _markOpened(MailMessage message) async {
     final (held, elsewhere) = _split([message]);
     try {
       if (held.isNotEmpty) {
@@ -595,9 +630,12 @@ class MessageActions {
       _refreshSearch();
     }
     if (failed > 0) {
-      _say(to, messages.length == 1
-          ? 'Could not $what it: $why'
-          : 'Could not $what $failed of ${messages.length}: $why');
+      _say(
+          to,
+          messages.length == 1
+              ? 'Could not $what it: $why'
+              : 'Could not $what $failed of ${messages.length}: $why',
+          notDone: true);
     }
   }
 
@@ -693,12 +731,19 @@ class MessageActions {
   ///
   /// A move or delete that went no further than this device, its server
   /// out of reach, says it will sync later; see [MessageMove.isWaiting].
+  ///
+  /// [notDone] for a bar saying that some or all of what was asked was not
+  /// done: a window of its own stays up until it closes, rather than
+  /// closing as though it had all gone with the message still where it
+  /// was (see [WorkInFlight.addSaying]). A bar for what went lets a window
+  /// close at once, as before.
   void _say(
     _Reporter to,
     String message, {
     List<MessageMove>? undo,
     int of = 0,
     VoidCallback? alsoUndo,
+    bool notDone = false,
   }) {
     final messenger = to.messenger;
     final offer = undo != null && canUndoAll(undo, of);
@@ -707,20 +752,29 @@ class MessageActions {
     final said = !waiting
         ? message
         : '${message.endsWith('.') ? message : '$message.'} $waitingToSync';
-    messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(duration: kBottomMessage, persist: false,
-        content: Text(said),
-        action: offer
-            ? SnackBarAction(
-                label: 'Undo',
-                onPressed: () {
-                  alsoUndo?.call();
-                  undoMoves(container!, messenger, undo, listId);
-                },
-              )
-            : null,
-      ));
+    messenger.hideCurrentSnackBar();
+    final bar = messenger.showSnackBar(SnackBar(
+      duration: kBottomMessage,
+      persist: false,
+      content: Text(said),
+      action: offer
+          ? SnackBarAction(
+              label: 'Undo',
+              onPressed: () {
+                alsoUndo?.call();
+                // Noted as work before the bar goes, which is after this:
+                // a window of its own kept up by a refusal's bar waits for
+                // the messages to be put back, rather than ending with the
+                // bar while they were still on their way. See WorkInFlight.
+                final app = container!;
+                app
+                    .read(workInFlightProvider)
+                    .add(undoMoves(app, messenger, undo, listId));
+              },
+            )
+          : null,
+    ));
+    if (notDone) to.container.read(workInFlightProvider).addSaying(bar.closed);
   }
 
   /// Everything saying something needs, taken while the widget is still
@@ -825,9 +879,13 @@ Future<void> undoMoves(
       ));
   } catch (e) {
     // Whatever went wrong, the messages are still where the move left them.
-    // Saying so is more use than failing silently.
-    messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text('Could not undo: $e')));
+    // Saying so is more use than failing silently; and in a window of its
+    // own, said before it ends, as any refusal is (see _say's notDone).
+    messenger.hideCurrentSnackBar();
+    final bar = messenger.showSnackBar(SnackBar(
+      duration: kBottomMessage,
+      content: Text('Could not undo: $e'),
+    ));
+    container.read(workInFlightProvider).addSaying(bar.closed);
   }
 }

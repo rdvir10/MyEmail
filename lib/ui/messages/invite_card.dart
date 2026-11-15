@@ -17,6 +17,7 @@ import '../../state/calendar_providers.dart';
 import '../../state/calendar_view_providers.dart'
     show calendarPrefsProvider, calendarRefreshProvider;
 import '../../state/providers.dart';
+import '../../state/window_providers.dart';
 import '../../domain/free_busy.dart';
 import 'date_format.dart';
 import 'invite_answers.dart';
@@ -79,8 +80,15 @@ class _InviteCardState extends ConsumerState<InviteCard> {
     // Every action here changes the calendar: the calendar view reads it
     // again rather than showing what it kept from before.
     final refresh = ref.read(calendarRefreshProvider.notifier);
+    final inFlight = ref.read(workInFlightProvider);
     try {
-      await action();
+      // Noted as on its way to a server, so a window of its own waits for
+      // it before it ends: Back pressed while an answer was being sent
+      // ended the window with it, and the organiser was never told. See
+      // WorkInFlight.
+      final work = action();
+      inFlight.add(work);
+      await work;
       refresh.now();
       if (done != null) {
         messenger
