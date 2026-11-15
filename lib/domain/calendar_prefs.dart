@@ -20,6 +20,9 @@ class CalendarPrefs {
     this.datesInMail = true,
     this.meetingReminders = const {},
     this.agendaAt = defaultAgendaAt,
+    this.reminderIfNone,
+    this.allDayReminder = AllDayReminder.none,
+    this.allDayReminderAt,
     this.deleteAnsweredInvites = true,
   });
 
@@ -49,6 +52,34 @@ class CalendarPrefs {
   /// Half past seven.
   static const defaultAgendaAt = 7 * 60 + 30;
 
+  /// Minutes before a meeting with no reminder of its own that MyEmail
+  /// reminds of it all the same, on an account it reminds for; null for
+  /// none, as before (calendar idea #68). The calendars cannot tell a
+  /// reminder turned off from one there never was, so both count as none.
+  final int? reminderIfNone;
+
+  /// What [reminderIfNone] can be.
+  static const reminderIfNoneChoices = [5, 10, 15, 30];
+
+  /// Whether, and when, MyEmail reminds of the all-day events on an
+  /// account it reminds for: once a day, however many begin on it (#68).
+  final AllDayReminder allDayReminder;
+
+  /// The time of day of [allDayReminder], in minutes past midnight, or
+  /// null for its own: 8:00 that morning, 18:00 the evening before. See
+  /// [allDayReminderMinutes].
+  final int? allDayReminderAt;
+
+  static const allDayMorningAt = 8 * 60;
+  static const allDayEveningAt = 18 * 60;
+
+  /// [allDayReminderAt], or the time its choice starts with.
+  int get allDayReminderMinutes =>
+      allDayReminderAt ??
+      (allDayReminder == AllDayReminder.eveningBefore
+          ? allDayEveningAt
+          : allDayMorningAt);
+
   /// An invitation answered, from its card or its notification, goes to
   /// Deleted Items, as Outlook's "Delete meeting request from Inbox when
   /// responding" sends it; the meeting stays on the calendar.
@@ -72,6 +103,10 @@ class CalendarPrefs {
     Map<String, bool>? meetingReminders,
     int? agendaAt,
     bool noAgenda = false,
+    int? reminderIfNone,
+    bool noReminderIfNone = false,
+    AllDayReminder? allDayReminder,
+    int? allDayReminderAt,
     bool? deleteAnsweredInvites,
   }) {
     final start = dayStart ?? this.dayStart;
@@ -85,6 +120,10 @@ class CalendarPrefs {
       datesInMail: datesInMail ?? this.datesInMail,
       meetingReminders: meetingReminders ?? this.meetingReminders,
       agendaAt: noAgenda ? null : agendaAt ?? this.agendaAt,
+      reminderIfNone:
+          noReminderIfNone ? null : reminderIfNone ?? this.reminderIfNone,
+      allDayReminder: allDayReminder ?? this.allDayReminder,
+      allDayReminderAt: allDayReminderAt ?? this.allDayReminderAt,
       deleteAnsweredInvites:
           deleteAnsweredInvites ?? this.deleteAnsweredInvites,
     );
@@ -98,6 +137,10 @@ class CalendarPrefs {
         'datesInMail': datesInMail,
         if (meetingReminders.isNotEmpty) 'reminders': meetingReminders,
         'agenda': agendaAt ?? false,
+        if (reminderIfNone != null) 'ifNone': reminderIfNone,
+        if (allDayReminder != AllDayReminder.none)
+          'allDay': allDayReminder.name,
+        if (allDayReminderAt != null) 'allDayAt': allDayReminderAt,
         'deleteAnswered': deleteAnsweredInvites,
       };
 
@@ -111,6 +154,8 @@ class CalendarPrefs {
     final zone = json['secondZone'];
     final reminders = json['reminders'];
     final agenda = json['agenda'];
+    final ifNone = json['ifNone'];
+    final allDayAt = json['allDayAt'];
     return CalendarPrefs(
       showDeclined: json['showDeclined'] == true,
       dayStart: end > start ? start : 9,
@@ -127,6 +172,17 @@ class CalendarPrefs {
           : agenda is int && agenda >= 0 && agenda < 24 * 60
               ? agenda
               : defaultAgendaAt,
+      reminderIfNone: reminderIfNoneChoices.contains(ifNone)
+          ? ifNone as int
+          : null,
+      allDayReminder: AllDayReminder.values
+              .where((r) => r.name == json['allDay'])
+              .firstOrNull ??
+          AllDayReminder.none,
+      allDayReminderAt:
+          allDayAt is int && allDayAt >= 0 && allDayAt < 24 * 60
+              ? allDayAt
+              : null,
       deleteAnsweredInvites: json['deleteAnswered'] != false,
     );
   }
@@ -151,6 +207,9 @@ class CalendarPrefs {
       other.datesInMail == datesInMail &&
       mapEquals(other.meetingReminders, meetingReminders) &&
       other.agendaAt == agendaAt &&
+      other.reminderIfNone == reminderIfNone &&
+      other.allDayReminder == allDayReminder &&
+      other.allDayReminderAt == allDayReminderAt &&
       other.deleteAnsweredInvites == deleteAnsweredInvites;
 
   @override
@@ -165,6 +224,13 @@ class CalendarPrefs {
             Object.hash(key, value),
         ]),
         agendaAt,
+        reminderIfNone,
+        allDayReminder,
+        allDayReminderAt,
         deleteAnsweredInvites,
       );
 }
+
+/// When MyEmail reminds of an all-day event: never, as before; on the
+/// morning of its day; or the evening before (calendar idea #68).
+enum AllDayReminder { none, morning, eveningBefore }

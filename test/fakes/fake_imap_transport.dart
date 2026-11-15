@@ -824,6 +824,9 @@ class FakeMessage {
   /// As the header gives it: normal by default, as though known, so most
   /// tests ask nothing more; null for a header that does not say.
   Importance? importance = Importance.normal;
+
+  /// Meeting mail, as the header's structure says with a calendar part.
+  bool isMeeting = false;
   final String body;
   final String? html;
   int modSeq;
@@ -864,6 +867,7 @@ class FakeMessage {
         preview: preview,
         messageId: messageId,
         sizeBytes: sizeBytes,
+        isMeeting: isMeeting,
       );
 
   /// What RFC822.SIZE would say: the text and a header's worth.

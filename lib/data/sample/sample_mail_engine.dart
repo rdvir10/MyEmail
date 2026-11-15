@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -37,7 +38,7 @@ import 'sample_messages.dart';
 /// Behaviour also mirrors IMAP where it matters for the UI: renaming or moving
 /// a folder rewrites the path (and therefore the id) of its whole subtree, and
 /// a name that collides with a sibling is refused.
-class SampleMailEngine implements MailEngine {
+class SampleMailEngine implements MailEngine, SaysMeetingMailArrived {
   SampleMailEngine() {
     for (final account in _accounts) {
       _folders[account.id] = _buildFolders(account.id, _specsFor(account.id));
@@ -45,6 +46,15 @@ class SampleMailEngine implements MailEngine {
   }
 
   final List<Account> _accounts = List.of(_seedAccounts);
+
+  final _meetingMail = StreamController<String>.broadcast();
+
+  @override
+  Stream<String> get meetingMailArrived => _meetingMail.stream;
+
+  /// Meeting mail arrived in [accountId], as the real engine says when a
+  /// sync finds some. For a test: nothing here arrives by itself.
+  void sayMeetingMail(String accountId) => _meetingMail.add(accountId);
 
   @override
   Future<Account> addAccount({

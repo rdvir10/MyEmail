@@ -4,6 +4,7 @@ import '../../state/calendar_providers.dart' show askedAnswerProvider;
 import '../../state/calendar_view_providers.dart'
     show
         calendarPrefsProvider,
+        calendarReadAgainProvider,
         calendarRefreshProvider,
         hiddenCalendarsProvider,
         phoneCalendarProvider;
@@ -15,6 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/imap/imap_mapping.dart';
+import '../../data/mail_engine.dart' show SaysMeetingMailArrived;
 import '../../domain/mail_message.dart';
 import '../../domain/meeting_alerts.dart' show MeetingRef, calendarDayOf;
 import '../../data/auth/microsoft_oauth.dart' show SignInExpired;
@@ -172,8 +174,17 @@ class _AppShellState extends ConsumerState<AppShell>
     ref.listenManual(calendarPrefsProvider, (_, _) => keepUpNow());
     ref.listenManual(hiddenCalendarsProvider, (_, _) => keepUpNow());
     ref.listenManual(workWeekProvider, (_, _) => keepUpNow());
+    // Meeting mail the app's own sync found arriving: that account's
+    // calendar read again (calendar idea #74). The background pass sees to
+    // what it finds itself.
+    if (ref.read(mailEngineProvider) case final SaysMeetingMailArrived says) {
+      _meetingMail = says.meetingMailArrived.listen((accountId) {
+        if (mounted) ref.read(calendarKeeperProvider).meetingMail(accountId);
+      });
+    }
     _listenForPressesDone();
     _listenForPassesDone();
+    _listenForCalendarsReadAgain();
     // A change kept for later and given up on, by the app or the
     // background: said, once. After the moment it arrives in, since saying
     // it takes it.
@@ -185,6 +196,7 @@ class _AppShellState extends ConsumerState<AppShell>
   }
 
   StreamSubscription<void>? _putAways;
+  StreamSubscription<String>? _meetingMail;
 
   /// Put away by the person (Home, another app): whatever was open over
   /// the mail closes, a message being written going to Drafts first, and
@@ -225,6 +237,7 @@ class _AppShellState extends ConsumerState<AppShell>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _putAways?.cancel();
+    _meetingMail?.cancel();
     // Only if it is still ours: a later window may have taken the name.
     if (IsolateNameServer.lookupPortByName(actionsDonePortName) ==
         _pressesDone.sendPort) {
@@ -236,6 +249,12 @@ class _AppShellState extends ConsumerState<AppShell>
       IsolateNameServer.removePortNameMapping(backgroundPassDonePortName);
     }
     _passesDone.close();
+    if (IsolateNameServer.lookupPortByName(calendarReadAgainPortName) ==
+        _calendarsReadAgain.sendPort) {
+      IsolateNameServer.removePortNameMapping(calendarReadAgainPortName);
+    }
+    _calendarsReadAgain.close();
+    _calendarReadsShown.dispose();
     _asking?.cancel();
     super.dispose();
   }
@@ -450,6 +469,36 @@ class _AppShellState extends ConsumerState<AppShell>
       // Just asked: the next of the app's own asks is a whole interval on,
       // not moments after this one.
       if (_asking != null) _keepAsking();
+    });
+  }
+
+  final _calendarsReadAgain = ReceivePort();
+
+  /// What the background read again for meeting mail, passed on to the
+  /// calendar screens open at most once a minute for each account, the
+  /// last of it once the minute is up.
+  late final _calendarReadsShown = MeetingMailReads((accountId) {
+    if (mounted) {
+      ref.read(calendarReadAgainProvider.notifier).readAgain({accountId});
+    }
+  });
+
+  /// The background has read accounts' calendars again for their meeting
+  /// mail, and kept what it found (calendar idea #74): the calendar, My Day
+  /// and the bar over the mail, where open, show it. The pass says it is
+  /// done before this read, too soon for them to have it then. Not while
+  /// the app is away, as with a pass: nothing is on screen.
+  void _listenForCalendarsReadAgain() {
+    IsolateNameServer.removePortNameMapping(calendarReadAgainPortName);
+    IsolateNameServer.registerPortWithName(
+      _calendarsReadAgain.sendPort,
+      calendarReadAgainPortName,
+    );
+    _calendarsReadAgain.listen((accounts) {
+      if (_away || accounts is! List) return;
+      for (final id in accounts) {
+        if (id is String) _calendarReadsShown.arrived(id);
+      }
     });
   }
 

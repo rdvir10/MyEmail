@@ -381,6 +381,308 @@ void main() {
     });
   });
 
+  // The calendar keeps up with meeting mail (#74): the account whose
+  // invitation, change or cancellation has just arrived is read again at
+  // once, and nothing else is asked of any server.
+  group('meeting mail arriving (#74)', () {
+    late Account gmail;
+
+    setUp(() async {
+      gmail = await engine.addOAuthAccount(
+        displayName: 'Gmail',
+        emailAddress: 'ron@gmail.example',
+        provider: MailProvider.gmail,
+        token: token,
+      );
+      await ui.writeString(
+        UiStateKeys.calendarPrefs,
+        jsonEncode(const CalendarPrefs()
+            .copyWith(meetingReminders: {gmail.id: true}).toJson()),
+      );
+      engine.events[hadco.id] = [meeting('h', DateTime(2026, 10, 26, 10))];
+      engine.events[gmail.id] = [
+        meeting('g', DateTime(2026, 10, 26, 11), accountId: gmail.id),
+      ];
+    });
+
+    Future<void> keepUp(
+      DateTime at, {
+      Set<String> meetingMail = const {},
+      InternetCalendars links = const NoInternetCalendars(),
+    }) =>
+        keepCalendarUpIfDue(
+          engine,
+          ui,
+          notifier,
+          surface,
+          links: links,
+          meetingMail: meetingMail,
+          clock: () => at,
+        );
+
+    Map<String, DateTime> reminders() => {
+          for (final r in notifier.meetingReminders.values)
+            r.meeting.eventId: r.at,
+        };
+
+    test("reads that account's calendar at once, and the others as the "
+        'device kept them', () async {
+      await keepUp(now);
+      // Both moved since; only Hadco's mail has come.
+      engine.events[hadco.id] = [meeting('h', DateTime(2026, 10, 26, 14))];
+      engine.events[gmail.id] = [
+        meeting('g', DateTime(2026, 10, 26, 15), accountId: gmail.id),
+      ];
+      engine.read.clear();
+      final drawn = surface.calendarRedraws;
+
+      await keepUp(now.add(const Duration(minutes: 2)),
+          meetingMail: {hadco.id});
+
+      expect(reminders()['h'], DateTime(2026, 10, 26, 13, 45),
+          reason: 'moved with its mail');
+      expect(reminders()['g'], DateTime(2026, 10, 26, 10, 45),
+          reason: 'as the device kept it, until its own read');
+      expect(engine.read, [hadco.id], reason: 'no other calendar asked');
+      expect(surface.calendarRedraws, drawn + 1, reason: 'the widget too');
+    });
+
+    test('other mail waits for the quarter hour, which it does not put '
+        'off', () async {
+      await keepUp(now);
+      engine.read.clear();
+      await keepUp(now.add(const Duration(minutes: 5)));
+      expect(engine.read, isEmpty, reason: 'as before');
+
+      await keepUp(now.add(const Duration(minutes: 6)),
+          meetingMail: {hadco.id});
+      engine.read.clear();
+      await keepUp(now.add(const Duration(minutes: 16)));
+      expect(engine.read, unorderedEquals([hadco.id, gmail.id]),
+          reason: 'the quarter hour counted from the last whole read');
+    });
+
+    test('an account with no calendar here reads nothing at all', () async {
+      final imap = await engine.addAccount(
+        displayName: 'Old ISP',
+        emailAddress: 'ron@isp.example',
+        provider: MailProvider.gmail,
+        secret: 'app-password',
+      );
+      await keepUp(now);
+      engine.read.clear();
+      final drawn = surface.calendarRedraws;
+
+      await keepUp(now.add(const Duration(minutes: 2)),
+          meetingMail: {imap.id});
+
+      expect(engine.read, isEmpty);
+      expect(surface.calendarRedraws, drawn, reason: 'nothing to redo');
+    });
+
+    test('a calendar from a link is taken as it was last read', () async {
+      const link = InternetCalendar(
+        id: 'il',
+        name: 'Holidays in Israel',
+        url: 'https://example.com/il.ics',
+        colour: 0xFF0B8043,
+      );
+      await ui.writeString(
+          UiStateKeys.internetCalendars, InternetCalendar.listToText([link]));
+      final links = MemoryInternetCalendars({
+        link.url: 'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:h\r\n'
+            'SUMMARY:Holiday\r\nDTSTART;VALUE=DATE:20261026\r\n'
+            'DTEND;VALUE=DATE:20261027\r\nEND:VEVENT\r\nEND:VCALENDAR',
+      })
+        // Read long enough ago to be due again.
+        ..clock = () => now.subtract(const Duration(days: 1));
+      await keepUp(now, links: links);
+      expect(links.asked, hasLength(1));
+
+      await keepUp(now.add(const Duration(minutes: 2)),
+          meetingMail: {hadco.id}, links: links);
+
+      expect(links.asked, hasLength(1), reason: 'its link not asked');
+      final rows = jsonDecode(surface.values[CalendarUpkeep.widgetKey]!
+          as String) as List;
+      expect([for (final r in rows) r['t']], contains('Holiday'));
+    });
+  });
+
+  // A reminder for meetings that have none, and for all-day events (#68).
+  group('reminders chosen for what has none', () {
+    Future<void> choose(CalendarPrefs Function(CalendarPrefs p) change) =>
+        ui.writeString(UiStateKeys.calendarPrefs,
+            jsonEncode(change(const CalendarPrefs()).toJson()));
+
+    CalendarEvent day(String id, String title, {String? accountId}) =>
+        CalendarEvent(
+          id: id,
+          accountId: accountId ?? hadco.id,
+          title: title,
+          start: DateTime(2026, 10, 26),
+          end: DateTime(2026, 10, 27),
+          allDay: true,
+          response: EventResponse.accepted,
+        );
+
+    test("a meeting with no reminder has the one chosen, on an account's "
+        'reminded', () async {
+      final gmail = await engine.addOAuthAccount(
+        displayName: 'Gmail',
+        emailAddress: 'ron@gmail.example',
+        provider: MailProvider.gmail,
+        token: token,
+      );
+      engine.events[hadco.id] = [
+        meeting('h', DateTime(2026, 10, 26, 10), reminder: null),
+      ];
+      engine.events[gmail.id] = [
+        meeting('g', DateTime(2026, 10, 26, 11),
+            reminder: null, accountId: gmail.id),
+      ];
+      await run();
+      expect(notifier.meetingReminders, isEmpty, reason: 'none, as before');
+
+      await choose((p) => p.copyWith(reminderIfNone: 10));
+      await run();
+      final set = notifier.meetingReminders.values.single;
+      expect(set.meeting.eventId, 'h',
+          reason: "Gmail's reminders are Google's until switched on");
+      expect(set.at, DateTime(2026, 10, 26, 9, 50));
+      expect(set.canJoin, isTrue, reason: 'a reminder like any other');
+    });
+
+    test('all-day events: one reminder for the day, at the time chosen, '
+        'taken back when none', () async {
+      now = DateTime(2026, 10, 25, 17);
+      engine.events[hadco.id] = [
+        day('t', 'Thanksgiving'),
+        day('b', "Ron's birthday"),
+      ];
+      await run();
+      expect(notifier.dayReminders, isEmpty, reason: 'none, as before');
+
+      await choose((p) => p.copyWith(allDayReminder: AllDayReminder.morning));
+      await run();
+      var set = notifier.dayReminders.values.single;
+      expect(set.at, DateTime(2026, 10, 26, 8));
+      expect(set.title, 'Today: Thanksgiving and 1 more');
+      expect(notifier.meetingReminders, isEmpty);
+
+      await choose((p) =>
+          p.copyWith(allDayReminder: AllDayReminder.eveningBefore));
+      await run();
+      set = notifier.dayReminders.values.single;
+      expect(set.at, DateTime(2026, 10, 25, 18));
+      expect(set.title, 'Tomorrow: Thanksgiving and 1 more');
+
+      await choose((p) => p);
+      await run();
+      expect(notifier.dayReminders, isEmpty, reason: 'taken back');
+    });
+
+    test('the morning agenda speaks up on a day of all-day events only',
+        () async {
+      engine.events[hadco.id] = [day('t', 'Thanksgiving')];
+      await run();
+      final agenda = notifier.agendas.values.single;
+      expect(agenda.at, DateTime(2026, 10, 26, 7, 30));
+      expect(agenda.title, 'No meetings today');
+      expect(agenda.body, 'All day: Thanksgiving');
+    });
+  });
+
+  // Quiet while you are in a meeting (#70): the background goes by the
+  // meetings the device kept, and asks no server.
+  group('in a meeting, from what the device kept', () {
+    final at = DateTime(2026, 10, 26, 10, 10);
+
+    setUp(() async {
+      engine.calendarLists[hadco.id] = [
+        CalendarInfo.main(hadco.id),
+        CalendarInfo(accountId: hadco.id, id: 'BBB', name: 'Projects'),
+      ];
+      engine.events[hadco.id] = [
+        // Ron's own, on a calendar beside his main one: he accepted it.
+        CalendarEvent(
+          id: 'p',
+          accountId: hadco.id,
+          calendarId: 'BBB',
+          title: 'Projects review',
+          start: DateTime(2026, 10, 26, 10),
+          end: DateTime(2026, 10, 26, 11),
+          organizer: const MailAddress(email: 'dana@example.com'),
+          attendees: const [
+            EventAttendee(MailAddress(email: 'ron@hadco.example'),
+                response: EventResponse.accepted),
+          ],
+        ),
+      ];
+      // Read once, as the quarter hour's read does, and kept.
+      await engine.calendarEvents(
+          hadco.id, DateTime(2026, 10, 26), DateTime(2026, 10, 27));
+      engine.read.clear();
+    });
+
+    test('a meeting under way on a calendar shown, and no server asked',
+        () async {
+      expect(await inMeetingFromKept(engine, ui, at), isTrue);
+      expect(await inMeetingFromKept(engine, ui, DateTime(2026, 10, 26, 11)),
+          isFalse);
+      expect(engine.read, isEmpty);
+    });
+
+    test("not someone else's meeting on a calendar the account follows",
+        () async {
+      engine.calendarLists[hadco.id] = [
+        CalendarInfo.main(hadco.id),
+        CalendarInfo(accountId: hadco.id, id: 'FAM', name: 'Family'),
+      ];
+      // As the family calendar's own copy says it: made by its owner.
+      engine.events[hadco.id] = [
+        CalendarEvent(
+          id: 'f',
+          accountId: hadco.id,
+          calendarId: 'FAM',
+          title: 'Parents evening',
+          start: DateTime(2026, 10, 26, 10),
+          end: DateTime(2026, 10, 26, 11),
+          isOrganizer: true,
+          response: EventResponse.organizer,
+          organizer: const MailAddress(email: 'family@group.example'),
+        ),
+      ];
+      await engine.calendarEvents(
+          hadco.id, DateTime(2026, 10, 26), DateTime(2026, 10, 27));
+
+      expect(await inMeetingFromKept(engine, ui, at), isFalse);
+    });
+
+    test('not on a calendar switched off, nor an account hidden', () async {
+      await ui.writeIds(UiStateKeys.hiddenCalendars, {'${hadco.id}|BBB'});
+      expect(await inMeetingFromKept(engine, ui, at), isFalse);
+      await ui.writeIds(UiStateKeys.hiddenCalendars, {hadco.id});
+      expect(await inMeetingFromKept(engine, ui, at), isFalse);
+    });
+
+    test('nothing kept is no meeting', () async {
+      final gmail = await engine.addOAuthAccount(
+        displayName: 'Gmail',
+        emailAddress: 'ron@gmail.example',
+        provider: MailProvider.gmail,
+        token: token,
+      );
+      engine.events[gmail.id] = [
+        meeting('g', DateTime(2026, 10, 26, 10), accountId: gmail.id),
+      ];
+      await ui.writeIds(UiStateKeys.hiddenCalendars, {hadco.id});
+      expect(await inMeetingFromKept(engine, ui, at), isFalse,
+          reason: "Gmail's calendar was never read here");
+      expect(engine.read, isEmpty);
+    });
+  });
+
   test('a calendar switched off has no reminders, and is not on the widget',
       () async {
     now = DateTime(2026, 10, 26, 9);
@@ -448,6 +750,9 @@ void main() {
 class _ReadingEngine extends SampleMailEngine {
   void Function()? onRead;
 
+  /// Each account whose calendar was read, in order.
+  final List<String> read = [];
+
   @override
   Future<List<CalendarEvent>> calendarEvents(
     String accountId,
@@ -455,6 +760,7 @@ class _ReadingEngine extends SampleMailEngine {
     DateTime end,
   ) {
     onRead?.call();
+    read.add(accountId);
     return super.calendarEvents(accountId, start, end);
   }
 }

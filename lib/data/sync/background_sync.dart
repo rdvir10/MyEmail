@@ -31,12 +31,20 @@ class BackgroundSync {
     this.scanWindow = 30,
     this.maxPerFolder = 5,
     this.maxShownPerAccount = 8,
+    this.inMeeting,
     DateTime Function()? clock,
   }) : _clock = clock ?? DateTime.now;
 
   final MailEngine engine;
   final MailNotifier notifier;
   final SyncStateStore state;
+
+  /// Whether you are in a meeting at a time, from what the device kept of
+  /// the calendars (`inMeetingFromKept`): new mail to an account quiet in
+  /// meetings is posted silently in one (calendar idea #70). Asked once a
+  /// pass, and only where an account is quiet in meetings. Null: never in
+  /// one.
+  final Future<bool> Function(DateTime now)? inMeeting;
 
   /// How many of the newest messages one pass looks at. Larger than any
   /// plausible fifteen minutes of mail, small enough to be cheap on a phone
@@ -103,6 +111,8 @@ class BackgroundSync {
     var unreachable = 0;
     final failures = <String>[];
     final synced = <String>{};
+    final meetingMail = <String>{};
+    final inMeetingNow = await _meetingOn(prefs, _clock());
 
     for (final account in accounts) {
       try {
@@ -110,12 +120,19 @@ class BackgroundSync {
         // is muted, or notifications switched off entirely, still wants its
         // mail on the device and ready when the app is opened. That is the
         // whole reason these are two settings and not one.
+        final announce = prefs.notifiesFor(account.id) &&
+            !prefs.quietFor(account.id, _clock());
         final result = await _runAccount(
           account,
-          announce: prefs.notifiesFor(account.id) &&
-              !prefs.quietFor(account.id, _clock()),
+          announce: announce,
+          // Quiet in a meeting posts silently; quiet by the clock, which
+          // leaves it unannounced, wins.
+          silently: announce &&
+              inMeetingNow &&
+              prefs.quietInMeetings(account.id),
           listFolders: listFolders,
           synced: synced,
+          meetingMail: meetingMail,
           prefs: prefs,
         );
         posted += result.posted;
@@ -135,6 +152,7 @@ class BackgroundSync {
       accounts: accounts.length,
       unreachable: unreachable,
       synced: synced,
+      meetingMail: meetingMail,
     );
   }
 
@@ -162,6 +180,7 @@ class BackgroundSync {
     try {
       final rules = prefs ?? await state.readPrefs();
       final now = _clock();
+      final inMeetingNow = await _meetingOn(rules, now);
       final accounts = {
         for (final a in await engine.loadAccounts()) a.id: a,
       };
@@ -194,9 +213,14 @@ class BackgroundSync {
             if (rules.announcesFrom(account.id, m.from.email)) m,
         ];
         if (folder == null || said.isEmpty) continue;
+        final silently = inMeetingNow && rules.quietInMeetings(account.id);
         final batch = [
           for (final m in said.take(maxPerFolder))
-            MailNotification.forMessage(m, invitation: await _isInvitation(m)),
+            MailNotification.forMessage(
+              m,
+              invitation: (await _invite(m))?.isRequest ?? false,
+              silent: silently,
+            ),
         ];
         await _makeRoom(account, batch);
         await notifier.showNewMail(
@@ -217,6 +241,8 @@ class BackgroundSync {
     required bool announce,
     required bool listFolders,
     required Set<String> synced,
+    required Set<String> meetingMail,
+    bool silently = false,
     SyncPrefs prefs = const SyncPrefs(),
   }) async {
     final saved =
@@ -236,6 +262,8 @@ class BackgroundSync {
         account,
         folder,
         announce: announce,
+        silently: silently,
+        meetingMail: meetingMail,
         keep: (m) => prefs.announcesFrom(account.id, m.from.email),
       );
       synced.add(folder.id);
@@ -243,29 +271,43 @@ class BackgroundSync {
     return (posted: posted, scanned: watched.length);
   }
 
+  /// [meetingMail] has [account] added where the folder has new meeting
+  /// mail that may have changed its calendar: see
+  /// [BackgroundSyncReport.meetingMail]. What is announced is posted
+  /// without a sound where [silently]: see [QuietRule.meetings].
   Future<int> _runFolder(
     Account account,
     MailFolder folder, {
     required bool announce,
+    required Set<String> meetingMail,
+    bool silently = false,
     bool Function(MailMessage message)? keep,
   }) async {
     final messages = await engine.loadMessages(folder.id, limit: scanWindow);
     await _withdrawDealtWith(folder, messages);
     final watermark = await state.readWatermark(folder.id);
 
+    final found = selectNotifiable(
+      messages: messages,
+      watermark: watermark,
+      now: _clock(),
+    );
     final fresh = [
-      for (final m in selectNotifiable(
-        messages: messages,
-        watermark: watermark,
-        now: _clock(),
-      ))
+      for (final m in found)
         if (keep == null || keep(m)) m,
+    ];
+    // Meeting mail new here, whoever it is from: a VIP or not, its meeting
+    // is on the calendar all the same.
+    final meetings = [
+      for (final m in found)
+        if (m.isMeeting) m,
     ];
     // Not snoozed mail announced as it came back (see announceWoken): one
     // dated within reach is new here too.
-    if (fresh.isNotEmpty) {
+    if (fresh.isNotEmpty || meetings.isNotEmpty) {
       final told = await _toldBack();
       fresh.removeWhere((m) => told.containsKey(m.id));
+      meetings.removeWhere((m) => told.containsKey(m.id));
     }
 
     // The mark moves whether or not anything was announced, and before the
@@ -289,12 +331,33 @@ class BackgroundSync {
     // The mark moved either way, so turning notifications on later announces
     // what arrives next rather than everything that arrived while they were
     // off. A backlog of forty is not a welcome.
-    if (!announce || fresh.isEmpty) return 0;
+    if (!announce || fresh.isEmpty) {
+      // Not opened to see what it is: that would be asking its server for
+      // more than the pass did before. It may be an answer, and its
+      // calendar is read all the same.
+      if (meetings.isNotEmpty) meetingMail.add(account.id);
+      return 0;
+    }
 
-    final batch = [
-      for (final m in fresh.take(maxPerFolder))
-        MailNotification.forMessage(m, invitation: await _isInvitation(m)),
-    ];
+    // What the meeting mail announced turned out to be, by message id: the
+    // calendar part read to know an invitation tells the rest too.
+    final kinds = <String, CalendarInvite?>{};
+    final batch = <MailNotification>[];
+    for (final m in fresh.take(maxPerFolder)) {
+      final invite = await _invite(m);
+      if (m.isMeeting) kinds[m.id] = invite;
+      batch.add(MailNotification.forMessage(
+        m,
+        invitation: invite?.isRequest ?? false,
+        silent: silently,
+      ));
+    }
+    // Before anything is posted, which may throw: the calendar is read
+    // whether or not the notifications go up.
+    if (meetings.any((m) =>
+        !kinds.containsKey(m.id) || mayChangeCalendar(kinds[m.id]))) {
+      meetingMail.add(account.id);
+    }
     await _makeRoom(account, batch);
     await notifier.showNewMail(
       account: account,
@@ -302,6 +365,23 @@ class BackgroundSync {
       notifications: batch,
     );
     return batch.length;
+  }
+
+  /// Whether you are in a meeting at [now], for the accounts quiet in one:
+  /// asked of [inMeeting] only where an account in [prefs] is, so a pass
+  /// for anyone else reads nothing more than it did. False where it
+  /// cannot be told.
+  Future<bool> _meetingOn(SyncPrefs prefs, DateTime now) async {
+    final asks = inMeeting;
+    if (asks == null || !prefs.quiet.values.any((r) => r.meetings)) {
+      return false;
+    }
+    try {
+      return await asks(now);
+    } catch (e) {
+      debugPrint('[myemail] could not tell whether a meeting is on: $e');
+      return false;
+    }
   }
 
   /// How long snoozed mail announced as it came back is kept from the scan
@@ -329,20 +409,20 @@ class BackgroundSync {
   /// as mail like any other.
   static const invitationReadFor = Duration(seconds: 15);
 
-  /// Whether [message] is an invitation to answer, so its notification has
-  /// Accept and Decline: meeting mail whose calendar part is a request,
-  /// not a cancellation or someone's answer. The header cannot say which,
-  /// so the body is read, and kept, which also opens it sooner. False
-  /// where it cannot be told.
-  Future<bool> _isInvitation(MailMessage message) async {
-    if (!message.isMeeting) return false;
+  /// [message]'s calendar part, where it is meeting mail being announced:
+  /// a request is an invitation to answer, so its notification has Accept
+  /// and Decline, not a cancellation or someone's answer. The header
+  /// cannot say which, so the body is read, and kept, which also opens it
+  /// sooner. Null for other mail, and where it cannot be told.
+  Future<CalendarInvite?> _invite(MailMessage message) async {
+    if (!message.isMeeting) return null;
     try {
       final body =
           await engine.loadMessageBody(message.id).timeout(invitationReadFor);
-      return CalendarInvite.parse(body.calendar ?? '')?.isRequest ?? false;
+      return CalendarInvite.parse(body.calendar ?? '');
     } catch (e) {
       debugPrint('[myemail] could not tell whether an invitation: $e');
-      return false;
+      return null;
     }
   }
 
@@ -409,6 +489,16 @@ class BackgroundSync {
   }
 }
 
+/// Whether meeting mail whose calendar part is [invite] may have changed
+/// the calendar it is about: an invitation, a change to one or a
+/// cancellation. Not someone's answer, which changes only who has said yes,
+/// nor a new time proposed or turned down, which changes nothing until the
+/// organiser moves the meeting. A part that could not be read may be any
+/// of them, and counts.
+bool mayChangeCalendar(CalendarInvite? invite) =>
+    invite == null ||
+    !(invite.isReply || invite.isCounter || invite.isDeclineCounter);
+
 /// [MailEngine.wakeSnoozed], answering the ids of the messages brought
 /// back where the engine can say them ([SaysWhatWoke]). Never throws.
 Future<List<String>> wakeSnoozedMail(MailEngine engine) async {
@@ -426,6 +516,7 @@ class BackgroundSyncReport {
     this.accounts = 0,
     this.unreachable = 0,
     this.synced = const {},
+    this.meetingMail = const {},
   });
 
   final int posted;
@@ -440,6 +531,14 @@ class BackgroundSyncReport {
   /// The folders the pass synced, whose mail is now in the cache: see
   /// `MailboxWidgets.refresh`.
   final Set<String> synced;
+
+  /// The accounts the pass found new meeting mail in that may have changed
+  /// their calendars (see [mayChangeCalendar]): an invitation, a change or
+  /// a cancellation, by what was read to announce it, and any not
+  /// announced, which is not opened to see. Each is read again in the same
+  /// pass, so the reminders, the widget and the morning agenda have the
+  /// new times: see `keepCalendarAfterPass` (calendar idea #74).
+  final Set<String> meetingMail;
 
   bool get ok => failures.isEmpty;
 

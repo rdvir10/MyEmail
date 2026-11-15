@@ -15,3 +15,16 @@ const backgroundPassDonePortName = 'myemail.sync.pass-done';
 void announceBackgroundPassDone() {
   IsolateNameServer.lookupPortByName(backgroundPassDonePortName)?.send(null);
 }
+
+/// Where a background pass says it has read accounts' calendars again for
+/// their meeting mail, for the calendar screens the app has open to show
+/// what it kept (calendar idea #74). Said after the read, which comes after
+/// the pass has said it is done.
+const calendarReadAgainPortName = 'myemail.calendar.read-again';
+
+/// Tell the app, if it is open, that [accountIds]' calendars were read
+/// again for their meeting mail, and what was found is kept.
+void announceCalendarReadAgain(Iterable<String> accountIds) {
+  IsolateNameServer.lookupPortByName(calendarReadAgainPortName)
+      ?.send([...accountIds]);
+}

@@ -408,6 +408,30 @@ void main() {
           reason: "the calendar's own icon, not new mail's envelope");
     });
 
+    // A reminder for all-day events (#68).
+    test("an all-day reminder: the meeting reminders' channel and icon, no "
+        "buttons, its day opened, gone at its own day's end", () async {
+      await notifier.scheduleDayReminder(DayReminder(
+        id: 9,
+        at: DateTime(2026, 10, 26, 18),
+        day: DateTime(2026, 10, 27),
+        title: 'Tomorrow: Thanksgiving',
+        body: 'All day',
+        until: DateTime(2026, 10, 27),
+      ));
+      final set = plugin.scheduled.single;
+      expect(set.id, 9);
+      expect(set.at.millisecondsSinceEpoch,
+          DateTime(2026, 10, 26, 18).millisecondsSinceEpoch);
+      expect(set.title, 'Tomorrow: Thanksgiving');
+      expect(set.payload, calendarDayPayload(DateTime(2026, 10, 27)));
+      final android = set.details.android!;
+      expect(android.channelId, AndroidMailNotifier.meetingChannelId);
+      expect(android.icon, '@drawable/ic_stat_event');
+      expect(android.actions ?? const [], isEmpty);
+      expect(android.timeoutAfter, const Duration(hours: 6).inMilliseconds);
+    });
+
     test('a reminder whose time has just passed goes off now, not refused',
         () async {
       // A meeting made inside its own reminder time is set for a moment
@@ -563,6 +587,78 @@ void main() {
       expect(await notifier.takeLaunchPayload(), 'a:INBOX#1');
     });
 
+    // Quiet while you are in a meeting (#70): in the shade, on the channel
+    // new mail always has, with no sound, vibration or pop-up.
+    test('mail posted silently goes up silently, the rest as ever',
+        () async {
+      const account = Account(
+        id: 'a',
+        displayName: 'Personal',
+        emailAddress: 'me@example.com',
+        provider: MailProvider.gmail,
+        authMethod: AuthMethod.oauth,
+        colorValue: 0xFF0F6CBD,
+      );
+      final inbox = MailFolder.at(
+        accountId: 'a',
+        path: 'INBOX',
+        role: FolderRole.inbox,
+        capabilities: FolderCapabilities.forGmail(FolderRole.inbox),
+      );
+      await notifier.showNewMail(
+        account: account,
+        folder: inbox,
+        notifications: [
+          MailNotification(
+            id: 5,
+            title: 'Dana Levi',
+            body: 'Lunch?',
+            payload: 'a:INBOX#5',
+            when: DateTime(2026, 10, 25),
+            silent: true,
+          ),
+        ],
+      );
+      await notifier.showNewMail(
+        account: account,
+        folder: inbox,
+        notifications: [
+          MailNotification(
+            id: 6,
+            title: 'Dana Levi',
+            body: 'After the meeting',
+            payload: 'a:INBOX#6',
+            when: DateTime(2026, 10, 25),
+          ),
+        ],
+      );
+      AndroidNotificationDetails row(int id) =>
+          plugin.shown.firstWhere((s) => s.id == id).details.android!;
+      expect(row(5).silent, isTrue);
+      expect(row(5).channelId, AndroidMailNotifier.channelId,
+          reason: 'no new channel');
+      expect(row(5).actions!.first.id, NotificationActions.replyId,
+          reason: 'its buttons as ever');
+      expect(row(6).silent, isFalse);
+      final summary = plugin.shown
+          .where((s) => s.details.android!.setAsGroupSummary)
+          .map((s) => s.details.android!);
+      expect(summary.every((s) => !s.silent), isTrue);
+      expect(
+          summary.every(
+              (s) => s.groupAlertBehavior == GroupAlertBehavior.children),
+          isTrue,
+          reason: 'the summary never sounds by itself');
+
+      await notifier.scheduleMeetingReminder(MeetingReminder(
+        id: 7,
+        at: DateTime(2026, 10, 26, 9, 45),
+        meeting: meeting,
+      ));
+      expect(plugin.scheduled.single.details.android!.silent, isFalse,
+          reason: 'meeting reminders still sound');
+    });
+
     test('a cancellation wears the calendar too, without Accept', () async {
       const account = Account(
         id: 'a',
@@ -653,6 +749,64 @@ void main() {
         {'a:INBOX#2': true, 'a:INBOX#3': true, 'a:INBOX#4': false},
         reason: 'a cancellation is meeting mail, so it wears the calendar',
       );
+    });
+
+    // The calendar keeps up with meeting mail (#74): the reminders, the
+    // widget and the morning agenda have a meeting moved or called off as
+    // its mail arrives, not at the next quarter hour's read.
+    group("says whose calendar to read again (#74)", () {
+      late _PassEngine engine;
+      late FakeMailNotifier notifier;
+      late MemorySyncStateStore state;
+
+      setUp(() {
+        engine = _PassEngine(now);
+        notifier = FakeMailNotifier();
+        state = MemorySyncStateStore(
+          prefs: const SyncPrefs(mode: SyncMode.periodic),
+        );
+      });
+
+      Future<BackgroundSyncReport> pass() => BackgroundSync(
+            engine: engine,
+            notifier: notifier,
+            state: state,
+            clock: () => now,
+          ).run();
+
+      test('an invitation, a change or a cancellation, once for the '
+          'account; an answer or other mail, not at all', () async {
+        await pass();
+        engine.arrive(2, ics('REPLY'));
+        engine.arrive(3, null);
+        expect((await pass()).meetingMail, isEmpty,
+            reason: 'an answer changes only who has said yes, and other '
+                'mail nothing');
+
+        engine.arrive(4, ics('REQUEST'));
+        expect((await pass()).meetingMail, {'a'});
+
+        engine.arrive(5, ics('CANCEL'));
+        engine.arrive(6, ics('REQUEST'));
+        expect((await pass()).meetingMail, {'a'});
+        expect((await pass()).meetingMail, isEmpty,
+            reason: 'mail is new to one pass only');
+      });
+
+      test('meeting mail that is not announced is not opened to see what '
+          'it is, and its calendar is read all the same', () async {
+        await pass();
+        await state.writePrefs((await state.readPrefs()).withQuiet(
+            'a', QuietRule(until: now.add(const Duration(hours: 1)))));
+        engine.arrive(2, ics('REPLY'));
+
+        final report = await pass();
+
+        expect(report.meetingMail, {'a'});
+        expect(engine.opened, isEmpty,
+            reason: 'nothing more is asked of the mail server');
+        expect(notifier.posted, isEmpty);
+      });
     });
   });
 }
@@ -767,9 +921,14 @@ class _PassEngine extends Fake implements MailEngine {
   Future<MailMessage?> cachedMessage(String messageId) async =>
       inbox.where((m) => m.id == messageId).firstOrNull;
 
+  /// Each message whose body was asked for, in order.
+  final List<String> opened = [];
+
   @override
-  Future<MailBody> loadMessageBody(String messageId) async =>
-      MailBody(text: 'Hello.', calendar: calendars[messageId]);
+  Future<MailBody> loadMessageBody(String messageId) async {
+    opened.add(messageId);
+    return MailBody(text: 'Hello.', calendar: calendars[messageId]);
+  }
 }
 
 /// Android's side: what is shown and what is set for later.
@@ -782,6 +941,7 @@ class _Plugin implements FlutterLocalNotificationsPlugin {
         int id,
         tz.TZDateTime at,
         String? title,
+        String? payload,
         NotificationDetails details,
       })> scheduled = [];
 
@@ -846,6 +1006,7 @@ class _Plugin implements FlutterLocalNotificationsPlugin {
       id: id,
       at: scheduledDate,
       title: title,
+      payload: payload,
       details: notificationDetails,
     ));
   }

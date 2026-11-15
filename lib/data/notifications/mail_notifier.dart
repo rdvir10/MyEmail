@@ -3,7 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../../domain/account.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
-import '../../domain/meeting_alerts.dart' show MeetingReminder;
+import '../../domain/meeting_alerts.dart' show DayReminder, MeetingReminder;
 
 /// One notification, already reduced to what a notification can show.
 @immutable
@@ -16,6 +16,7 @@ class MailNotification {
     required this.when,
     this.invitation = false,
     bool meeting = false,
+    this.silent = false,
   }) : meeting = meeting || invitation;
 
   /// Stable for a given message. Android knows a notification by this and
@@ -42,6 +43,11 @@ class MailNotification {
   /// than the envelope. Always true of an [invitation].
   final bool meeting;
 
+  /// Posted without a sound, a vibration or a pop-up, in the notifications
+  /// all the same: new mail while you are in a meeting, for an account
+  /// quiet in meetings (calendar idea #70).
+  final bool silent;
+
   /// Android notification ids are 32-bit signed and there is no id registry to
   /// allocate from, so the message id is hashed into that space. Each row is
   /// posted with the message id as its tag as well, so two messages whose ids
@@ -53,6 +59,7 @@ class MailNotification {
   factory MailNotification.forMessage(
     MailMessage message, {
     bool invitation = false,
+    bool silent = false,
   }) {
     final subject = message.subject.trim();
     final preview = message.preview.trim();
@@ -67,6 +74,7 @@ class MailNotification {
       when: message.date,
       invitation: invitation,
       meeting: message.isMeeting,
+      silent: silent,
     );
   }
 }
@@ -152,6 +160,12 @@ abstract class MailNotifier {
   /// Snooze where each can be done. A tap opens the meeting. Gone by
   /// itself once the meeting is over. False where it could not be set.
   Future<bool> scheduleMeetingReminder(MeetingReminder reminder);
+
+  /// [reminder], a day's all-day events', at its time: "Today: …" or
+  /// "Tomorrow: …", and the events by name. A tap opens the calendar on
+  /// the day. Gone by itself at [DayReminder.until]. False where it could
+  /// not be set.
+  Future<bool> scheduleDayReminder(DayReminder reminder);
 
   /// The morning's agenda at [at]: [title] and [body], with [lines] when
   /// it is opened out. A tap opens [payload], the calendar on its day.
@@ -252,6 +266,7 @@ class FakeMailNotifier implements MailNotifier {
     reminders.remove(id);
     meetingReminders.remove(id);
     agendas.remove(id);
+    dayReminders.remove(id);
   }
 
   /// The meetings' reminders set and not taken back, by id.
@@ -260,6 +275,15 @@ class FakeMailNotifier implements MailNotifier {
   @override
   Future<bool> scheduleMeetingReminder(MeetingReminder reminder) async {
     meetingReminders[reminder.id] = reminder;
+    return true;
+  }
+
+  /// The all-day events' reminders set and not taken back, by id.
+  final Map<int, DayReminder> dayReminders = {};
+
+  @override
+  Future<bool> scheduleDayReminder(DayReminder reminder) async {
+    dayReminders[reminder.id] = reminder;
     return true;
   }
 

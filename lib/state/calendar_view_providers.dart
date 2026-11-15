@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -291,6 +292,25 @@ class CalendarRefresh extends Notifier<DateTime> {
 final calendarRefreshProvider =
     NotifierProvider<CalendarRefresh, DateTime>(CalendarRefresh.new);
 
+/// Accounts whose calendars were just read again for their meeting mail,
+/// by the app's calendar keeper or the background's (calendar idea #74),
+/// with what was found kept on the device. The calendar screens open show
+/// it at once: see [calendarEventsProvider]. A new value each time, the
+/// same accounts or not.
+typedef CalendarReadAgainNews = ({Set<String> accounts, int count});
+
+class CalendarReadAgain extends Notifier<CalendarReadAgainNews?> {
+  @override
+  CalendarReadAgainNews? build() => null;
+
+  void readAgain(Set<String> accounts) =>
+      state = (accounts: accounts, count: (state?.count ?? 0) + 1);
+}
+
+final calendarReadAgainProvider =
+    NotifierProvider<CalendarReadAgain, CalendarReadAgainNews?>(
+        CalendarReadAgain.new);
+
 /// A change the app made to [before]: [now] is where it went, or null for
 /// one taken off (or waiting out its Undo), made at [at].
 typedef PendingChange = ({CalendarEvent before, CalendarEvent? now, DateTime at});
@@ -350,6 +370,10 @@ List<CalendarEvent> withPending(
 /// device kept, at once, then each account read again unless its kept read
 /// was just made. Not retried: a refusal's answer is a sign-in, which reads
 /// them again.
+///
+/// While it is on screen, an account read again for its meeting mail
+/// ([calendarReadAgainProvider]) is put in as soon as it is (calendar idea
+/// #74): see the end.
 final calendarEventsProvider = StreamProvider.autoDispose
     .family<CalendarLoad, CalendarRange>((ref, range) async* {
   final engine = ref.watch(mailEngineProvider);
@@ -364,6 +388,13 @@ final calendarEventsProvider = StreamProvider.autoDispose
     for (final c in ref.watch(internetCalendarsProvider))
       if (!hidden.contains(c.accountId)) c,
   ];
+  // Heard from the start, put in once the first load is made; nothing is
+  // heard once nothing has it on screen.
+  final readAgain = StreamController<Set<String>>();
+  ref.onDispose(readAgain.close);
+  ref.listen(calendarReadAgainProvider, (_, news) {
+    if (news != null && !readAgain.isClosed) readAgain.add(news.accounts);
+  });
   final kept = <String, KeptCalendar>{};
   final lists = <String, List<CalendarInfo>>{};
   final feeds = <String, KeptFeed>{};
@@ -468,36 +499,75 @@ final calendarEventsProvider = StreamProvider.autoDispose
               now.difference(k.readAt) >= InternetCalendars.readEvery)
         c,
   ];
-  if (toRead.isEmpty && linksToRead.isEmpty) {
-    yield load(const {}, const {}, reading: false);
-    return;
-  }
-  yield load(const {}, const {}, reading: true);
   final read = <String, List<CalendarEvent>>{};
   final problems = <String, Object>{};
-  await Future.wait([
-    for (final a in toRead)
-      engine.calendarEvents(a.id, range.start, range.end).then(
-        (events) {
-          read[a.id] = events;
-        },
-        onError: (Object e) {
-          problems[a.id] = e;
-        },
-      ),
-    for (final c in linksToRead)
-      reader.read(c).then(
-        (feed) {
-          feeds[c.id] = (feed: feed, readAt: DateTime.now());
-        },
-        onError: (Object e) {
-          problems[c.accountId] = e;
-        },
-      ),
-  ]);
-  // Reading listed the accounts' calendars again.
-  await readLists();
-  yield load(read, problems, reading: false);
+  if (toRead.isEmpty && linksToRead.isEmpty) {
+    yield load(read, const {}, reading: false);
+  } else {
+    yield load(const {}, const {}, reading: true);
+    await Future.wait([
+      for (final a in toRead)
+        engine.calendarEvents(a.id, range.start, range.end).then(
+          (events) {
+            read[a.id] = events;
+          },
+          onError: (Object e) {
+            problems[a.id] = e;
+          },
+        ),
+      for (final c in linksToRead)
+        reader.read(c).then(
+          (feed) {
+            feeds[c.id] = (feed: feed, readAt: DateTime.now());
+          },
+          onError: (Object e) {
+            problems[c.accountId] = e;
+          },
+        ),
+    ]);
+    // Reading listed the accounts' calendars again.
+    await readLists();
+    yield load(read, Map.of(problems), reading: false);
+  }
+
+  // An account read again for its meeting mail while this is on screen:
+  // what the device now keeps of it, where that read covered all of this
+  // and so was just made; where it did not, as when it moved a meeting to
+  // a day it did not read, that account alone read again here. The other
+  // accounts are left as they are, and nothing is asked of their servers.
+  // The reads behind it come once a minute at most, so this does too.
+  await for (final again in readAgain.stream) {
+    final mine = [
+      for (final a in accounts)
+        if (again.contains(a.id)) a,
+    ];
+    if (mine.isEmpty) continue;
+    for (final a in mine) {
+      KeptCalendar? k;
+      try {
+        k = await engine.keptCalendarEvents(a.id, range.start, range.end);
+      } catch (e) {
+        debugPrint('[myemail] kept calendar not read: $e');
+      }
+      final at = k?.readAt;
+      if (k != null &&
+          at != null &&
+          !at.isBefore(notBefore) &&
+          DateTime.now().difference(at) < freshFor) {
+        read[a.id] = k.events;
+        problems.remove(a.id);
+        continue;
+      }
+      try {
+        read[a.id] = await engine.calendarEvents(a.id, range.start, range.end);
+        problems.remove(a.id);
+      } catch (e) {
+        problems[a.id] = e;
+      }
+    }
+    await readLists();
+    yield load(read, Map.of(problems), reading: false);
+  }
 }, retry: notRetried);
 
 /// The phone's own calendar, through the phone_calendar plugin; a fake in

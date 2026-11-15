@@ -197,6 +197,92 @@ class CalendarSettingsScreen extends ConsumerWidget {
             const ListTile(
               title: Text('No account here with a calendar MyEmail reads.'),
             ),
+          // A reminder for what has none (calendar idea #68), on the
+          // accounts switched on above.
+          ListTile(
+            key: const ValueKey('calendar-reminder-if-none'),
+            title: const Text('When a meeting has no reminder'),
+            subtitle: const Text(
+              'On the accounts above. One whose reminder was turned off '
+              'counts too: the calendars do not tell the two apart.',
+            ),
+            trailing: DropdownButton<int>(
+              // 0 for none, which is no number of minutes offered.
+              value: prefs.reminderIfNone ?? 0,
+              onChanged: (m) {
+                if (m == null) return;
+                setPrefs(m == 0
+                    ? prefs.copyWith(noReminderIfNone: true)
+                    : prefs.copyWith(reminderIfNone: m));
+              },
+              items: [
+                const DropdownMenuItem(value: 0, child: Text('None')),
+                for (final m in CalendarPrefs.reminderIfNoneChoices)
+                  DropdownMenuItem(
+                    value: m,
+                    child: Text('$m minutes before'),
+                  ),
+              ],
+            ),
+          ),
+          ListTile(
+            key: const ValueKey('calendar-all-day-reminder'),
+            title: const Text('All-day events'),
+            subtitle: Text(switch (prefs.allDayReminder) {
+              AllDayReminder.none => 'No reminder',
+              AllDayReminder.morning =>
+                'At ${minutes(prefs.allDayReminderMinutes)} on the day, on '
+                    'the accounts above: one for the day, however many',
+              AllDayReminder.eveningBefore =>
+                'At ${minutes(prefs.allDayReminderMinutes)} the evening '
+                    'before, on the accounts above: one for the day, '
+                    'however many',
+            }),
+            trailing: DropdownButton<AllDayReminder>(
+              value: prefs.allDayReminder,
+              onChanged: (chosen) {
+                if (chosen == null || chosen == prefs.allDayReminder) return;
+                // Each starts at its own time: 8:00, or 18:00.
+                setPrefs(prefs.copyWith(
+                  allDayReminder: chosen,
+                  allDayReminderAt: chosen == AllDayReminder.eveningBefore
+                      ? CalendarPrefs.allDayEveningAt
+                      : CalendarPrefs.allDayMorningAt,
+                ));
+              },
+              items: const [
+                DropdownMenuItem(
+                  value: AllDayReminder.none,
+                  child: Text('None'),
+                ),
+                DropdownMenuItem(
+                  value: AllDayReminder.morning,
+                  child: Text('That morning'),
+                ),
+                DropdownMenuItem(
+                  value: AllDayReminder.eveningBefore,
+                  child: Text('The evening before'),
+                ),
+              ],
+            ),
+          ),
+          if (prefs.allDayReminder != AllDayReminder.none)
+            ListTile(
+              key: const ValueKey('calendar-all-day-time'),
+              title: const Text('All-day reminder time'),
+              trailing: Text(minutes(prefs.allDayReminderMinutes)),
+              onTap: () async {
+                final at = prefs.allDayReminderMinutes;
+                final picked = await showTimePicker(
+                  context: context,
+                  initialTime: TimeOfDay(hour: at ~/ 60, minute: at % 60),
+                );
+                if (picked == null) return;
+                setPrefs(prefs.copyWith(
+                  allDayReminderAt: picked.hour * 60 + picked.minute,
+                ));
+              },
+            ),
           SwitchListTile(
             key: const ValueKey('calendar-agenda'),
             title: const Text('Morning agenda'),

@@ -9,8 +9,9 @@ import 'free_busy.dart' show defaultWorkWeek;
 
 /// What MyEmail says about meetings away from the calendar: the bar over
 /// the mail, each meeting's reminder, the morning's agenda and the
-/// home-screen widget. Worked out here from the events, so the screen, the
-/// background pass and the tests agree.
+/// home-screen widget, and whether new mail is quiet for one. Worked out
+/// here from the events, so the screen, the background pass and the tests
+/// agree.
 
 /// How long before a meeting the bar over the mail says it is coming:
 /// Outlook for Android's quarter of an hour.
@@ -27,6 +28,10 @@ bool _timedAndOn(CalendarEvent e) => !e.allDay && !e.cancelled && !e.declined;
 
 String _titleOf(CalendarEvent e) =>
     e.title.trim().isEmpty ? '(No title)' : e.title.trim();
+
+/// [e]'s name as two calendars that both have it may write it: the same
+/// whatever its case or the spaces around it.
+String _sameName(CalendarEvent e) => _titleOf(e).toLowerCase();
 
 /// The meeting the bar over the mail shows at [now]: the next to start
 /// within [nextMeetingLead], or else the one under way that began last.
@@ -50,6 +55,51 @@ CalendarEvent? nextMeeting(
     }
   }
   return coming ?? going;
+}
+
+/// Whether you are in a meeting at [now], for "While I am in a meeting"
+/// in Do Not Disturb (calendar idea #70): one under way, with a time of its
+/// own, still on, that you made or accepted ([_yours]), and that shows you
+/// busy or out of office. Not one free, tentative or working elsewhere,
+/// not one declined, cancelled or not answered, and not a whole day.
+///
+/// [ownEmails] is each account's address, by account id: see [_yours].
+bool inMeetingAt(
+  Iterable<CalendarEvent> events,
+  DateTime now, {
+  Map<String, String> ownEmails = const {},
+}) =>
+    events.any((e) =>
+        _timedAndOn(e) &&
+        _yours(e, ownEmails[e.accountId] ?? '') &&
+        (e.showAs == EventShowAs.busy ||
+            e.showAs == EventShowAs.outOfOffice) &&
+        !e.start.isAfter(now) &&
+        e.end.isAfter(now));
+
+/// Whether [e] is a meeting the account, at address [own], made or
+/// accepted. On its main calendar, which is its own, its answer and its
+/// being the organiser say so. On any other, those are the calendar's
+/// owner's: a colleague's calendar shown beside the account's, or the
+/// family's, has its owner's meetings marked made and accepted. There only
+/// [own] says so, as the organiser or as an attendee who accepted. Never
+/// on a calendar the account only reads. One of the account's own
+/// calendars beside the main one that names itself rather than the account
+/// as the organiser, as Google's does, is not told apart from someone
+/// else's, and does not count.
+bool _yours(CalendarEvent e, String own) {
+  if (e.readOnly) return false;
+  if (e.calendarId == CalendarEvent.mainCalendar) {
+    return e.isOrganizer ||
+        e.response == EventResponse.organizer ||
+        e.response == EventResponse.accepted;
+  }
+  final me = own.trim().toLowerCase();
+  if (me.isEmpty) return false;
+  if (e.organizer?.email.trim().toLowerCase() == me) return true;
+  return e.attendees.any((a) =>
+      a.address.email.trim().toLowerCase() == me &&
+      a.response == EventResponse.accepted);
 }
 
 /// When [event] is, seen from [now], as the bar says it: "in 12 min", or
@@ -257,17 +307,22 @@ class MeetingReminder {
 ///
 /// [ownEmails] is each account's address, by account id, to know whether
 /// there is anyone else on a meeting for Running late to tell.
+///
+/// [ifNone] is the minutes for a meeting with no reminder of its own,
+/// which otherwise has none (calendar idea #68). A reminder turned off
+/// reads as none: the calendars do not say which it was.
 List<MeetingReminder> meetingRemindersFor(
   Iterable<CalendarEvent> events, {
   required DateTime now,
   required bool use24h,
   Map<String, String> ownEmails = const {},
   Duration ahead = const Duration(hours: 26),
+  int? ifNone,
 }) {
   final found = <MeetingReminder>[];
   final seen = <int>{};
   for (final e in events) {
-    final minutes = e.reminderMinutes;
+    final minutes = e.reminderMinutes ?? ifNone;
     if (minutes == null || minutes < 0 || !_timedAndOn(e)) continue;
     if (!e.start.isAfter(now) || e.start.difference(now) > ahead) continue;
     final id = meetingReminderId(e);
@@ -285,6 +340,105 @@ List<MeetingReminder> meetingRemindersFor(
         body: reminderBody(e, use24h: use24h),
         canTellLate: anyoneToTell,
       ),
+    ));
+  }
+  found.sort((a, b) => a.at.compareTo(b.at));
+  return found;
+}
+
+/// The reminder of a day's all-day events (calendar idea #68): one for the
+/// day, however many begin on it, as MyEmail sets it with Android.
+@immutable
+class DayReminder {
+  const DayReminder({
+    required this.id,
+    required this.at,
+    required this.day,
+    required this.title,
+    required this.body,
+    required this.until,
+  });
+
+  final int id;
+
+  /// When it goes off.
+  final DateTime at;
+
+  /// The day it is about, at midnight: a tap opens the calendar on it.
+  final DateTime day;
+
+  /// "Today: Ron's birthday", "Tomorrow: Thanksgiving and 1 more".
+  final String title;
+
+  /// Every event it is about, by name, or "All day" for one alone.
+  final String body;
+
+  /// When it goes by itself: the end of the day it goes off on, after
+  /// which its "Today" or "Tomorrow" would be wrong.
+  final DateTime until;
+
+  String get payload => calendarDayPayload(day);
+
+  /// The same reminder, going off at [time] instead.
+  DayReminder movedTo(DateTime time) => DayReminder(
+        id: id,
+        at: time,
+        day: day,
+        title: title,
+        body: body,
+        until: until,
+      );
+}
+
+/// The notification id of the all-day reminder for [day]: one a day.
+int allDayReminderId(DateTime day) =>
+    'allday:${day.year}-${day.month}-${day.day}'.hashCode & 0x7fffffff;
+
+/// The all-day reminders to set at [now] for [events]: one for each day
+/// on which all-day events begin, still on and not declined, at [minutes]
+/// past midnight that morning or, with [eveningBefore], the evening
+/// before; for those going off within [ahead]. One whose time has passed
+/// earlier on its own day is in the list too, with its time as it was:
+/// the caller sets it for now, unless it went off already. One of several
+/// days is told of on its first. The same name on the same day, a holiday
+/// on two accounts' calendars, is said once.
+List<DayReminder> allDayRemindersFor(
+  Iterable<CalendarEvent> events, {
+  required DateTime now,
+  required int minutes,
+  required bool eveningBefore,
+  Duration ahead = const Duration(hours: 26),
+}) {
+  final byDay = <DateTime, List<CalendarEvent>>{};
+  final seen = <String>{};
+  for (final e in events) {
+    if (!e.allDay || e.cancelled || e.declined) continue;
+    if (!seen.add(meetingKey(e))) continue;
+    (byDay[DateTime(e.start.year, e.start.month, e.start.day)] ??= [])
+        .add(e);
+  }
+  final found = <DayReminder>[];
+  for (final MapEntry(key: day, value: onIt) in byDay.entries) {
+    final at = DateTime(day.year, day.month,
+        eveningBefore ? day.day - 1 : day.day, minutes ~/ 60, minutes % 60);
+    final until = DateTime(at.year, at.month, at.day + 1);
+    final coming = at.isAfter(now) && at.difference(now) <= ahead;
+    final missed = !at.isAfter(now) && now.isBefore(until);
+    if (!coming && !missed) continue;
+    final said = <String>{};
+    final names = [
+      for (final e in onIt)
+        if (said.add(_sameName(e))) _titleOf(e),
+    ];
+    final more = names.length - 1;
+    found.add(DayReminder(
+      id: allDayReminderId(day),
+      at: at,
+      day: day,
+      title: '${eveningBefore ? 'Tomorrow' : 'Today'}: ${names.first}'
+          '${more > 0 ? ' and $more more' : ''}',
+      body: more > 0 ? names.join(', ') : 'All day',
+      until: until,
     ));
   }
   found.sort((a, b) => a.at.compareTo(b.at));
@@ -341,7 +495,9 @@ DateTime nextAgendaTime(DateTime now, int minutes, Set<int> workWeek) {
 
 /// The agenda for the next working morning after [now], at [minutes] past
 /// midnight: how many meetings that day, and when the first begins. Null
-/// for a day with no meeting at a time, which stays quiet.
+/// for a day with nothing on, which stays quiet. A day with all-day events
+/// and no meeting at a time says those: it stayed quiet too until calendar
+/// idea #68. An all-day name on two calendars is said once.
 MorningAgenda? morningAgendaFor(
   Iterable<CalendarEvent> events, {
   required DateTime now,
@@ -361,7 +517,7 @@ MorningAgenda? morningAgendaFor(
           seen.add(meetingKey(e)))
         e,
   ]..sort((a, b) => a.start.compareTo(b.start));
-  if (timed.isEmpty) return null;
+  final said = <String>{};
   final wholeDays = [
     for (final e in events)
       if (e.allDay &&
@@ -369,9 +525,22 @@ MorningAgenda? morningAgendaFor(
           !e.declined &&
           e.start.isBefore(next) &&
           e.end.isAfter(day) &&
-          seen.add(meetingKey(e)))
+          seen.add(meetingKey(e)) &&
+          said.add(_sameName(e)))
         e,
   ];
+  if (timed.isEmpty) {
+    if (wholeDays.isEmpty) return null;
+    final more = wholeDays.length - 1;
+    return MorningAgenda(
+      day: day,
+      at: at,
+      title: 'No meetings today',
+      body: 'All day: ${_titleOf(wholeDays.first)}'
+          '${more > 0 ? ' and $more more' : ''}',
+      lines: [for (final e in wholeDays) 'All day  ${_titleOf(e)}'],
+    );
+  }
   String clock(DateTime t) => formatClock(t, use24h: use24h);
   final first = timed.first;
   return MorningAgenda(

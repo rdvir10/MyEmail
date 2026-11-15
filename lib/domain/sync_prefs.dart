@@ -129,6 +129,9 @@ const idleRenewInterval = Duration(minutes: 24);
 /// time (an hour, until tomorrow), every evening between two hours, and on
 /// the days off all day. Its mail still syncs; it is only not announced,
 /// then or after.
+///
+/// And quiet while you are in a meeting ([meetings]), which is not by the
+/// clock and not unannounced: see there.
 @immutable
 class QuietRule {
   const QuietRule({
@@ -138,6 +141,7 @@ class QuietRule {
     this.to = 8,
     this.weekends = false,
     this.daysOff = const {DateTime.saturday, DateTime.sunday},
+    this.meetings = false,
   });
 
   /// Quiet until then: For an hour, Until tomorrow.
@@ -155,8 +159,16 @@ class QuietRule {
   final bool weekends;
   final Set<int> daysOff;
 
+  /// While I am in a meeting (calendar idea #70): new mail that comes while
+  /// you are in one is posted silently, in the notifications with no
+  /// sound, vibration or pop-up, rather than left unannounced as the
+  /// others leave it. Where one of the others is quiet too, it wins. In a
+  /// meeting is worked out by the background pass from the meetings the
+  /// device kept (`inMeetingAt`), so it is not part of [isQuiet].
+  final bool meetings;
+
   /// Whether anything is set at all.
-  bool get isEmpty => until == null && !evenings && !weekends;
+  bool get isEmpty => until == null && !evenings && !weekends && !meetings;
 
   bool isQuiet(DateTime now) {
     if (until != null && now.isBefore(until!)) return true;
@@ -177,6 +189,7 @@ class QuietRule {
     int? to,
     bool? weekends,
     Set<int>? daysOff,
+    bool? meetings,
   }) =>
       QuietRule(
         until: identical(until, _keep) ? this.until : until as DateTime?,
@@ -185,6 +198,7 @@ class QuietRule {
         to: to ?? this.to,
         weekends: weekends ?? this.weekends,
         daysOff: daysOff ?? this.daysOff,
+        meetings: meetings ?? this.meetings,
       );
 
   Map<String, Object?> toJson() => {
@@ -194,6 +208,8 @@ class QuietRule {
         'to': to,
         'weekends': weekends,
         'daysOff': daysOff.toList()..sort(),
+        // Only where it is on: kept as it was for anyone who never is.
+        if (meetings) 'meetings': true,
       };
 
   /// As tolerant as [SyncPrefs.fromJson], for the same reason.
@@ -215,6 +231,7 @@ class QuietRule {
                 if (d is int && d >= 1 && d <= 7) d,
             }
           : const {DateTime.saturday, DateTime.sunday},
+      meetings: json['meetings'] == true,
     );
   }
 
@@ -226,11 +243,12 @@ class QuietRule {
       other.from == from &&
       other.to == to &&
       other.weekends == weekends &&
-      setEquals(other.daysOff, daysOff);
+      setEquals(other.daysOff, daysOff) &&
+      other.meetings == meetings;
 
   @override
-  int get hashCode =>
-      Object.hash(until, evenings, from, to, weekends, daysOff.length);
+  int get hashCode => Object.hash(
+      until, evenings, from, to, weekends, daysOff.length, meetings);
 }
 
 const _keep = Object();
@@ -314,6 +332,10 @@ class SyncPrefs {
   /// Whether [accountId] is in Do Not Disturb at [now].
   bool quietFor(String accountId, DateTime now) =>
       quiet[accountId]?.isQuiet(now) ?? false;
+
+  /// Whether [accountId]'s new mail is posted silently while you are in a
+  /// meeting: see [QuietRule.meetings].
+  bool quietInMeetings(String accountId) => quiet[accountId]?.meetings ?? false;
 
   /// Whether mail from [email] to [accountId] is one to announce, as far as
   /// VIPs go: anyone's, unless the account is for VIPs only.

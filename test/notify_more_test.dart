@@ -81,6 +81,32 @@ void main() {
       expect(prefs.withQuiet('a', const QuietRule()).quiet, isEmpty,
           reason: 'nothing set is no rule');
     });
+
+    // Quiet while you are in a meeting (#70).
+    test('while in a meeting: off at first, kept, and a rule of its own',
+        () {
+      expect(const QuietRule().meetings, isFalse);
+      expect(const QuietRule().toJson(), isNot(contains('meetings')),
+          reason: 'kept as before for anyone who does not switch it on');
+      const meetings = QuietRule(meetings: true);
+      expect(meetings.isEmpty, isFalse);
+      expect(meetings.isQuiet(DateTime(2026, 10, 28, 10)), isFalse,
+          reason: 'not quiet by the clock');
+      final prefs =
+          const SyncPrefs(mode: SyncMode.periodic).withQuiet('a', meetings);
+      expect(SyncPrefs.fromJson(prefs.toJson()), prefs);
+      expect(prefs.quietInMeetings('a'), isTrue);
+      expect(prefs.quietInMeetings('b'), isFalse);
+      expect(
+          SyncPrefs.fromJson({
+            'mode': 'periodic',
+            'quiet': {
+              'a': {'meetings': 'yes'},
+            },
+          }).quietInMeetings('a'),
+          isFalse);
+      expect(meetings.copyWith(meetings: false).isEmpty, isTrue);
+    });
   });
 
   group('in the background pass', () {
@@ -150,6 +176,94 @@ void main() {
       await pass();
       expect(posted(), ['After'],
           reason: 'what came in while it was quiet is not announced later');
+    });
+
+    group('while in a meeting (#70)', () {
+      late bool meetingOn;
+      late List<DateTime> asked;
+
+      setUp(() {
+        meetingOn = true;
+        asked = [];
+      });
+
+      Future<BackgroundSyncReport> meetingPass() => BackgroundSync(
+            engine: engine,
+            notifier: notifier,
+            state: state,
+            clock: () => now,
+            inMeeting: (at) async {
+              asked.add(at);
+              return meetingOn;
+            },
+          ).run();
+
+      test('mail is posted silently, not left unannounced', () async {
+        await meetingPass();
+        await prefs((p) =>
+            p.withQuiet(account.id, const QuietRule(meetings: true)));
+        deliver('In the meeting');
+
+        final report = await meetingPass();
+
+        expect(report.posted, 1);
+        expect(notifier.posted.single.silent, isTrue);
+        expect(asked, [now]);
+      });
+
+      test('out of a meeting, mail sounds as ever', () async {
+        await meetingPass();
+        await prefs((p) =>
+            p.withQuiet(account.id, const QuietRule(meetings: true)));
+        meetingOn = false;
+        deliver('After the meeting');
+
+        await meetingPass();
+
+        expect(notifier.posted.single.silent, isFalse);
+      });
+
+      test('switched off, nothing is looked up and mail sounds', () async {
+        await meetingPass();
+        deliver('Ordinary');
+
+        await meetingPass();
+
+        expect(notifier.posted.single.silent, isFalse);
+        expect(asked, isEmpty,
+            reason: 'nothing more is read for anyone without it');
+      });
+
+      test('the other quiet choices win: nothing is announced', () async {
+        await meetingPass();
+        await prefs((p) => p.withQuiet(
+              account.id,
+              QuietRule(
+                meetings: true,
+                until: now.add(const Duration(hours: 1)),
+              ),
+            ));
+        deliver('Quiet hour');
+
+        final report = await meetingPass();
+
+        expect(report.posted, 0);
+        expect(notifier.posted, isEmpty);
+      });
+
+      test('snoozed mail back in a meeting is posted silently too', () async {
+        await meetingPass();
+        await prefs((p) =>
+            p.withQuiet(account.id, const QuietRule(meetings: true)));
+        deliver('Later today');
+        final message =
+            (await engine.loadMessages('${account.id}:INBOX')).single;
+        await engine.snooze([message.id], DateTime(2000));
+
+        await meetingPass();
+
+        expect(notifier.posted.single.silent, isTrue);
+      });
     });
 
     test('VIPs only: their mail announced, and no one else\'s', () async {
@@ -224,6 +338,21 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('quiet-evenings')));
       await tester.pumpAndSettle();
       expect((await state.readPrefs()).quiet['acct-personal']?.evenings, isTrue);
+
+      // Quiet while you are in a meeting (#70): off at first.
+      final meetings = find.byKey(const ValueKey('quiet-meetings'));
+      await tester.scrollUntilVisible(meetings, 200,
+          scrollable: find.byType(Scrollable).first);
+      expect(tester.widget<SwitchListTile>(meetings).value, isFalse);
+      await tester.tap(meetings);
+      await tester.pumpAndSettle();
+      expect((await state.readPrefs()).quiet['acct-personal']?.meetings,
+          isTrue);
+      expect(
+          notificationStatus(
+              await state.readPrefs(), 'acct-personal', DateTime.now(),
+              use24h: true),
+          contains('Quiet in meetings'));
 
       await tester.tap(find.byKey(const ValueKey('notify-vips')));
       await tester.pumpAndSettle();

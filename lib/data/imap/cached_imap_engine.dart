@@ -67,6 +67,7 @@ class CachedImapEngine
         PagesOlderMail,
         KeepsChangesForLater,
         SaysWhatWoke,
+        SaysMeetingMailArrived,
         FindsByMessageId {
   CachedImapEngine({
     required this.accountStore,
@@ -999,6 +1000,7 @@ class CachedImapEngine
       // As deep as the list asks for, so that what it shows is up to date.
       final result = await sync.sync(path, reach: offset + limit);
       await _junkBlocked(accountId, t, path, result.arrived);
+      await _sayMeetingMail(accountId, path, result.arrived);
       await sync.ensureCached(path, offset + limit, synced: true);
     } on ConnectionFailed catch (e) {
       // Offline: whatever is cached is what there is.
@@ -2925,6 +2927,35 @@ class CachedImapEngine
       debugPrint('[myemail] ${blocked.length} from blocked senders to Junk');
     } catch (e) {
       debugPrint('[myemail] could not move blocked mail to Junk: $e');
+    }
+  }
+
+  final _meetingMail = StreamController<String>.broadcast();
+
+  @override
+  Stream<String> get meetingMailArrived => _meetingMail.stream;
+
+  /// [accountId] said on [meetingMailArrived] where any of [arrived], the
+  /// mail a sync of [path] has just found new, is meeting mail. From the
+  /// rows the sync has just written, with nothing asked of the server, and
+  /// only while something listens: the app does, the background does not.
+  /// Best-effort, as junking a blocked sender's mail is.
+  Future<void> _sayMeetingMail(
+    String accountId,
+    String path,
+    List<int> arrived,
+  ) async {
+    if (arrived.isEmpty || !_meetingMail.hasListener) return;
+    try {
+      for (final uid in arrived) {
+        final row = await cache.readMessage(accountId, path, uid);
+        if (row != null && row.isMeeting) {
+          _meetingMail.add(accountId);
+          return;
+        }
+      }
+    } catch (e) {
+      debugPrint('[myemail] could not tell whether meeting mail came: $e');
     }
   }
 

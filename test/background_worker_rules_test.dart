@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:isolate';
+import 'dart:ui' show IsolateNameServer;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/account_store.dart';
+import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/imap/cached_imap_engine.dart';
@@ -11,8 +14,12 @@ import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/sync/background_sync.dart';
 import 'package:myemail/data/sync/background_worker.dart';
 import 'package:myemail/data/sync/live_sync.dart';
+import 'package:myemail/data/sync/pass_signal.dart';
 import 'package:myemail/data/sync/sync_state_store.dart';
+import 'package:myemail/data/ui_state_store.dart';
+import 'package:myemail/data/widget/home_screen_surface.dart';
 import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/sync_prefs.dart';
 import 'package:myemail/state/sync_providers.dart';
@@ -383,6 +390,71 @@ void main() {
       expect(done, isFalse, reason: 'a slow step is still waited for');
       await tester.pump(const Duration(seconds: 2));
       expect(done, isTrue);
+    });
+
+    // The calendar keeps up with meeting mail (#74).
+    test("meeting mail the pass found has its account's calendar read at "
+        'once; other mail waits for the quarter hour', () async {
+      final engine = SampleMailEngine();
+      final hadco = await engine.addOAuthAccount(
+        displayName: 'Hadco',
+        emailAddress: 'ron@hadco.example',
+        provider: MailProvider.outlook,
+        token: OAuthToken(
+          accessToken: 'a',
+          refreshToken: 'r',
+          expiresAt: DateTime.utc(2030),
+        ),
+      );
+      final notifier = FakeMailNotifier();
+      final surface = FakeHomeScreenSurface();
+      final ui = MemoryUiStateStore();
+      final at = DateTime(2026, 10, 25, 20);
+      CalendarEvent planning(DateTime start) => CalendarEvent(
+            id: 'p',
+            accountId: hadco.id,
+            title: 'Planning',
+            start: start,
+            end: start.add(const Duration(minutes: 30)),
+            reminderMinutes: 15,
+          );
+      Future<void> after(BackgroundSyncReport report, Duration later) =>
+          keepCalendarAfterPass(engine, ui, notifier, surface, report,
+              clock: () => at.add(later));
+      // The app, open, hears whose calendar was read again, and when.
+      final app = ReceivePort();
+      IsolateNameServer.removePortNameMapping(calendarReadAgainPortName);
+      IsolateNameServer.registerPortWithName(
+          app.sendPort, calendarReadAgainPortName);
+      addTearDown(() {
+        IsolateNameServer.removePortNameMapping(calendarReadAgainPortName);
+        app.close();
+      });
+      final heard = <(Object?, DateTime)>[];
+      app.listen((message) => heard
+          .add((message, notifier.meetingReminders.values.single.at)));
+      Future<void> letItArrive() =>
+          Future<void>.delayed(const Duration(milliseconds: 50));
+      engine.events[hadco.id] = [planning(DateTime(2026, 10, 26, 10))];
+      await after(const BackgroundSyncReport(), Duration.zero);
+      // Moved by its organiser since.
+      engine.events[hadco.id] = [planning(DateTime(2026, 10, 26, 12))];
+
+      await after(const BackgroundSyncReport(), const Duration(minutes: 1));
+      expect(notifier.meetingReminders.values.single.at,
+          DateTime(2026, 10, 26, 9, 45));
+      await letItArrive();
+      expect(heard, isEmpty, reason: 'nothing said for other mail');
+
+      await after(BackgroundSyncReport(meetingMail: {hadco.id}),
+          const Duration(minutes: 2));
+      expect(notifier.meetingReminders.values.single.at,
+          DateTime(2026, 10, 26, 11, 45));
+      await letItArrive();
+      expect(heard, hasLength(1));
+      expect(heard.single.$1, [hadco.id]);
+      expect(heard.single.$2, DateTime(2026, 10, 26, 11, 45),
+          reason: 'said once its calendar has been read');
     });
   });
 

@@ -8,7 +8,10 @@ import '../data/ui_state_store.dart';
 import '../domain/calendar_event.dart';
 import '../domain/meeting_alerts.dart';
 import 'calendar_view_providers.dart'
-    show CalendarRange, internetCalendarReaderProvider;
+    show
+        CalendarRange,
+        calendarReadAgainProvider,
+        internetCalendarReaderProvider;
 import 'providers.dart';
 import 'sync_providers.dart' show mailNotifierProvider;
 import 'widget_providers.dart' show homeScreenSurfaceProvider;
@@ -21,6 +24,11 @@ abstract class CalendarKeeper {
   /// Brought up to date if a quarter of an hour has passed since they
   /// last were, or whatever the time with [now].
   Future<void> keepUp({bool now = false});
+
+  /// Meeting mail has arrived in [accountId] while the app is open: its
+  /// calendar read again at once, so a meeting moved or called off is
+  /// moved or called off here too (calendar idea #74).
+  void meetingMail(String accountId);
 }
 
 /// Does nothing: the default, for the tests and the browser preview, which
@@ -31,35 +39,60 @@ class NoCalendarKeeper implements CalendarKeeper {
 
   @override
   Future<void> keepUp({bool now = false}) async {}
+
+  @override
+  void meetingMail(String accountId) {}
 }
 
 /// The app's: [keepCalendarUpIfDue] with the app's own engine, notifier
 /// and home screen, one run at a time.
 class AppCalendarKeeper implements CalendarKeeper {
-  AppCalendarKeeper(this._ref);
+  AppCalendarKeeper(this._ref) {
+    _ref.onDispose(_meetingMail.dispose);
+  }
 
   final Ref _ref;
   Future<void>? _running;
   bool _again = false;
 
+  /// Accounts whose meeting mail came while a run was going, which may
+  /// have read their calendars before it: read once more after.
+  final Set<String> _readAfter = {};
+
+  late final MeetingMailReads _meetingMail = MeetingMailReads(
+    (accountId) => unawaited(_keepUp(meetingMail: {accountId})),
+  );
+
   @override
-  Future<void> keepUp({bool now = false}) {
+  Future<void> keepUp({bool now = false}) => _keepUp(now: now);
+
+  @override
+  void meetingMail(String accountId) => _meetingMail.arrived(accountId);
+
+  Future<void> _keepUp({
+    bool now = false,
+    Set<String> meetingMail = const {},
+  }) {
     final running = _running;
     if (running != null) {
       // Something changed while it ran: once more after, with that in.
       if (now) _again = true;
+      _readAfter.addAll(meetingMail);
       return running;
     }
-    return _running = _run(now).whenComplete(() {
+    return _running = _run(now, meetingMail).whenComplete(() {
       _running = null;
-      if (_again) {
-        _again = false;
-        unawaited(keepUp(now: true));
+      final again = _again;
+      final readAfter = {..._readAfter};
+      _again = false;
+      _readAfter.clear();
+      if (again || readAfter.isNotEmpty) {
+        unawaited(_keepUp(now: again, meetingMail: readAfter));
       }
     });
   }
 
-  Future<void> _run(bool now) async {
+  Future<void> _run(bool now, Set<String> meetingMail) async {
     final uiState = _ref.read(uiStateStoreProvider);
     // The clock as the phone has it, for what the background writes.
     await uiState.writeString(
@@ -73,7 +106,68 @@ class AppCalendarKeeper implements CalendarKeeper {
       _ref.read(homeScreenSurfaceProvider),
       links: _ref.read(internetCalendarReaderProvider),
       force: now,
+      meetingMail: meetingMail,
     );
+    // Read, and kept: the calendar screens open show it. Once a minute at
+    // most, as these reads come.
+    if (meetingMail.isNotEmpty) {
+      _ref.read(calendarReadAgainProvider.notifier).readAgain(meetingMail);
+    }
+  }
+}
+
+/// Meeting mail arriving while the app is open (calendar idea #74): each
+/// account's calendar read for it at once, then at most once every
+/// [every] however much more comes. What comes inside that time is read
+/// for once as it is up, so the last change is had too.
+class MeetingMailReads {
+  MeetingMailReads(
+    this._read, {
+    this.every = const Duration(minutes: 1),
+    DateTime Function()? clock,
+    Timer Function(Duration wait, void Function() then)? timer,
+  })  : _clock = clock ?? DateTime.now,
+        _timer = timer ?? Timer.new;
+
+  final void Function(String accountId) _read;
+  final Duration every;
+  final DateTime Function() _clock;
+  final Timer Function(Duration wait, void Function() then) _timer;
+
+  /// When each account's calendar was last read for its meeting mail.
+  final Map<String, DateTime> _readAt = {};
+
+  /// A read waiting for an account's time to be up.
+  final Map<String, Timer> _waiting = {};
+
+  void arrived(String accountId) {
+    if (_waiting.containsKey(accountId)) return;
+    final now = _clock();
+    final last = _readAt[accountId];
+    final wait = last == null || now.isBefore(last)
+        ? Duration.zero
+        : every - now.difference(last);
+    if (wait <= Duration.zero) {
+      _readNow(accountId);
+      return;
+    }
+    _waiting[accountId] = _timer(wait, () {
+      _waiting.remove(accountId);
+      _readNow(accountId);
+    });
+  }
+
+  void _readNow(String accountId) {
+    _readAt[accountId] = _clock();
+    _read(accountId);
+  }
+
+  /// Nothing waiting is read: the app has gone.
+  void dispose() {
+    for (final waiting in _waiting.values) {
+      waiting.cancel();
+    }
+    _waiting.clear();
   }
 }
 

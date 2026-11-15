@@ -23,6 +23,7 @@ import '../folder_list_store.dart';
 import '../imap/cached_imap_engine.dart';
 import '../mail_engine.dart';
 import '../notifications/android_mail_notifier.dart';
+import '../notifications/mail_notifier.dart';
 import '../secure_credential_store.dart';
 import 'pass_signal.dart';
 import '../widget/home_screen_surface.dart';
@@ -418,6 +419,8 @@ Future<bool> _runWake() async {
         engine: woke,
         notifier: AndroidMailNotifier(),
         state: PrefsSyncStateStore(),
+        inMeeting: (now) =>
+            inMeetingFromKept(woke, PrefsUiStateStore(prefs), now),
       ).announceWoken(woken),
     );
   } catch (e, stack) {
@@ -658,6 +661,41 @@ Future<void> stepAfterMail(String what, Future<void> step) =>
           'without it');
     });
 
+/// Meeting reminders, the morning's agenda and the calendar widget after
+/// a pass: every quarter hour at most, and at once for each account whose
+/// meeting mail the pass found ([BackgroundSyncReport.meetingMail]), its
+/// calendar read again so they have a meeting moved or called off as its
+/// mail arrives (calendar idea #74). Once read, the app, if it is open, is
+/// told, for the calendar screens it shows. One of the steps after the
+/// mail: see [stepAfterMail]. Never throws.
+@visibleForTesting
+Future<void> keepCalendarAfterPass(
+  MailEngine engine,
+  UiStateStore uiState,
+  MailNotifier notifier,
+  HomeScreenSurface surface,
+  BackgroundSyncReport report, {
+  InternetCalendars links = const NoInternetCalendars(),
+  DateTime Function() clock = DateTime.now,
+}) {
+  Future<void> keepUp() async {
+    await keepCalendarUpIfDue(
+      engine,
+      uiState,
+      notifier,
+      surface,
+      links: links,
+      meetingMail: report.meetingMail,
+      clock: clock,
+    );
+    if (report.meetingMail.isNotEmpty) {
+      announceCalendarReadAgain(report.meetingMail);
+    }
+  }
+
+  return stepAfterMail('meeting reminders', keepUp());
+}
+
 /// The foreground modes: one worker that stays alive and loops, for as long
 /// as Android keeps its foreground service going.
 ///
@@ -698,6 +736,9 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
       engine: liveEngine,
       notifier: notifier,
       state: state,
+      // From the settings as reloaded each pass: see prefs.reloadCache.
+      inMeeting: (now) =>
+          inMeetingFromKept(liveEngine, PrefsUiStateStore(prefs), now),
     );
 
     final widgets = MailboxWidgets(
@@ -748,16 +789,14 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
           syncPhoneCalendarsIfDue(liveEngine, PrefsUiStateStore(prefs)),
         );
         // Meeting reminders, the morning's agenda and the calendar widget,
-        // every quarter hour at most.
-        await stepAfterMail(
-          'meeting reminders',
-          keepCalendarUpIfDue(
-            liveEngine,
-            PrefsUiStateStore(prefs),
-            notifier,
-            homeScreenSurface(),
-            links: FileInternetCalendars(),
-          ),
+        // every quarter hour at most, and at once for meeting mail.
+        await keepCalendarAfterPass(
+          liveEngine,
+          PrefsUiStateStore(prefs),
+          notifier,
+          homeScreenSurface(),
+          report,
+          links: FileInternetCalendars(),
         );
         // The Inboxes for Duet, at most every five minutes.
         await stepAfterMail(
@@ -915,10 +954,13 @@ Future<bool> _runOnePass() async {
     );
 
     final notifier = AndroidMailNotifier();
+    final passEngine = engine;
     final report = await BackgroundSync(
-      engine: engine,
+      engine: passEngine,
       notifier: notifier,
       state: PrefsSyncStateStore(),
+      inMeeting: (now) =>
+          inMeetingFromKept(passEngine, PrefsUiStateStore(prefs), now),
     ).run();
     announceBackgroundPassDone();
 
@@ -936,17 +978,15 @@ Future<bool> _runOnePass() async {
       'phone calendar',
       syncPhoneCalendarsIfDue(engine, PrefsUiStateStore(prefs)),
     );
-    // Meeting reminders, the morning's agenda and the calendar widget.
-    // Never throws either.
-    await stepAfterMail(
-      'meeting reminders',
-      keepCalendarUpIfDue(
-        engine,
-        PrefsUiStateStore(prefs),
-        notifier,
-        homeScreenSurface(),
-        links: FileInternetCalendars(),
-      ),
+    // Meeting reminders, the morning's agenda and the calendar widget, at
+    // once for meeting mail. Never throws either.
+    await keepCalendarAfterPass(
+      engine,
+      PrefsUiStateStore(prefs),
+      notifier,
+      homeScreenSurface(),
+      report,
+      links: FileInternetCalendars(),
     );
     // Nor this, where nothing is sent to Duet.
     await stepAfterMail(

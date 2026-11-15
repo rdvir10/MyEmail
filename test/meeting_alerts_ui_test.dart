@@ -10,6 +10,7 @@ import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/calendar_event.dart';
+import 'package:myemail/domain/calendar_prefs.dart' show AllDayReminder;
 import 'package:myemail/domain/mail_message.dart' show MailAddress;
 import 'package:myemail/domain/meeting_alerts.dart';
 import 'package:myemail/state/calendar_providers.dart'
@@ -70,6 +71,7 @@ void main() {
     Size size = const Size(1000, 1400),
     DateTime? clock,
     FakeMailNotifier? notifier,
+    CalendarKeeper? keeper,
     Future<void> Function(SampleMailEngine engine, Account hadco)? prepare,
   }) async {
     tester.view.physicalSize = size;
@@ -97,6 +99,7 @@ void main() {
       phoneCalendarProvider.overrideWithValue(FakePhoneCalendar()),
       if (clock != null) meetingClockProvider.overrideWithValue(() => clock),
       if (notifier != null) mailNotifierProvider.overrideWithValue(notifier),
+      if (keeper != null) calendarKeeperProvider.overrideWithValue(keeper),
     ]);
     addTearDown(c.dispose);
     await tester.pumpWidget(UncontrolledProviderScope(
@@ -130,6 +133,28 @@ void main() {
       expect(find.byKey(const ValueKey('next-meeting-bar')), findsOneWidget);
       expect(barText(tester), 'Weekly sync  in 10 min');
       expect(find.byKey(const ValueKey('next-meeting-join')), findsOneWidget);
+    });
+
+    // The calendar keeps up with meeting mail (#74).
+    testWidgets('a meeting moved has its new time there as soon as its mail '
+        'has its calendar read', (tester) async {
+      final (c, engine, hadco) = await pump(tester, barHome,
+          clock: now,
+          events: (hadco) => [meeting(hadco, 'a', DateTime(2026, 10, 26, 10))]);
+      expect(barText(tester), 'Weekly sync  in 10 min');
+      engine.events[hadco.id] = [
+        meeting(hadco, 'a', DateTime(2026, 10, 26, 10, 5)),
+      ];
+      // The read its meeting mail had made, of the days the reminders read.
+      await tester.runAsync(() => engine.calendarEvents(
+          hadco.id, DateTime(2026, 10, 26), DateTime(2026, 10, 29)));
+
+      c.read(calendarReadAgainProvider.notifier).readAgain({hadco.id});
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pumpAndSettle();
+
+      expect(barText(tester), 'Weekly sync  in 15 min');
     });
 
     testWidgets('nothing before then, and nothing without a calendar',
@@ -265,6 +290,21 @@ void main() {
     });
   });
 
+  // The calendar keeps up with meeting mail (#74), in the app.
+  group('meeting mail arriving while the app is open', () {
+    testWidgets("has its account's calendar read again", (tester) async {
+      final keeper = _Keeper();
+      final (_, engine, hadco) =
+          await pump(tester, const AppShell(), keeper: keeper);
+      expect(keeper.meetingMailOf, isEmpty);
+
+      engine.sayMeetingMail(hadco.id);
+      await tester.pump();
+
+      expect(keeper.meetingMailOf, [hadco.id]);
+    });
+  });
+
   group('a notification tapped', () {
     testWidgets("a meeting's reminder opens it on the calendar",
         (tester) async {
@@ -320,5 +360,63 @@ void main() {
       expect(c.read(calendarPrefsProvider).agendaAt, isNull);
       expect(find.byKey(const ValueKey('calendar-agenda-time')), findsNothing);
     });
+
+    // A reminder for meetings that have none, and for all-day events (#68).
+    testWidgets('a reminder for a meeting with none, and for all-day events',
+        (tester) async {
+      final (c, _, _) = await pump(tester, const CalendarSettingsScreen());
+      final ifNone = find.byKey(const ValueKey('calendar-reminder-if-none'));
+      await tester.scrollUntilVisible(ifNone, 200);
+      expect(find.descendant(of: ifNone, matching: find.text('None')),
+          findsOneWidget, reason: 'as before, to begin with');
+      await tester.tap(find.descendant(
+          of: ifNone, matching: find.byType(DropdownButton<int>)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('10 minutes before').last);
+      await tester.pumpAndSettle();
+      expect(c.read(calendarPrefsProvider).reminderIfNone, 10);
+
+      final allDay = find.byKey(const ValueKey('calendar-all-day-reminder'));
+      final time = find.byKey(const ValueKey('calendar-all-day-time'));
+      await tester.scrollUntilVisible(allDay, 200);
+      expect(find.descendant(of: allDay, matching: find.text('None')),
+          findsOneWidget);
+      expect(time, findsNothing);
+      Future<void> pick(String choice) async {
+        await tester.tap(find.descendant(
+            of: allDay,
+            matching: find.byType(DropdownButton<AllDayReminder>)));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(choice).last);
+        await tester.pumpAndSettle();
+      }
+
+      await pick('The evening before');
+      expect(c.read(calendarPrefsProvider).allDayReminder,
+          AllDayReminder.eveningBefore);
+      expect(find.descendant(of: time, matching: find.text('18:00')),
+          findsOneWidget);
+      await pick('That morning');
+      expect(c.read(calendarPrefsProvider).allDayReminder,
+          AllDayReminder.morning);
+      expect(find.descendant(of: time, matching: find.text('08:00')),
+          findsOneWidget);
+      await pick('None');
+      expect(c.read(calendarPrefsProvider).allDayReminder,
+          AllDayReminder.none);
+      expect(time, findsNothing);
+    });
   });
+}
+
+/// What the app asks of the calendar keeper, kept for a test to read.
+class _Keeper implements CalendarKeeper {
+  /// The accounts whose meeting mail was said to have arrived, in order.
+  final List<String> meetingMailOf = [];
+
+  @override
+  Future<void> keepUp({bool now = false}) async {}
+
+  @override
+  void meetingMail(String accountId) => meetingMailOf.add(accountId);
 }

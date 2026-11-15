@@ -408,6 +408,45 @@ class AndroidMailNotifier implements MailNotifier {
     return true;
   }
 
+  /// On the meeting reminders' channel, so Android's settings treat it as
+  /// they treat those, and on time as they are: no new channel and no new
+  /// permission.
+  @override
+  Future<bool> scheduleDayReminder(DayReminder reminder) async {
+    await ensureReady();
+    await _android?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        meetingChannelId,
+        'Meeting reminders',
+        description: 'A meeting on one of your calendars is about to begin.',
+        importance: Importance.high,
+      ),
+    );
+    final lasts = reminder.until.difference(reminder.at).inMilliseconds;
+    final details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        meetingChannelId,
+        'Meeting reminders',
+        icon: calendarIcon,
+        importance: Importance.high,
+        priority: Priority.high,
+        category: AndroidNotificationCategory.event,
+        // Its "Today" or "Tomorrow" is wrong once its own day is over.
+        timeoutAfter: lasts > 0 ? lasts : null,
+        styleInformation: BigTextStyleInformation(reminder.body),
+      ),
+    );
+    await _scheduleAt(
+      reminder.id,
+      reminder.at,
+      details,
+      title: reminder.title,
+      body: reminder.body,
+      payload: reminder.payload,
+    );
+    return true;
+  }
+
   @override
   Future<bool> scheduleAgenda({
     required int id,
@@ -573,6 +612,12 @@ class AndroidMailNotifier implements MailNotifier {
             importance: Importance.high,
             priority: Priority.high,
             category: AndroidNotificationCategory.email,
+            // In a meeting, for an account quiet in meetings: this one row
+            // goes up without a sound, a vibration or a pop-up, on the same
+            // channel (Android's setSilent, which makes it a child that
+            // leaves the alerting to its summary, and the summary never
+            // alerts: see groupAlertBehavior below).
+            silent: n.silent,
             // Meeting mail wears the calendar, as the reminders do; the
             // rest the envelope set in ensureReady.
             icon: n.meeting ? calendarIcon : null,

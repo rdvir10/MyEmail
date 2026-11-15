@@ -11,6 +11,8 @@ import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/mail_folder.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/message_move.dart';
+import 'package:myemail/state/calendar_view_providers.dart'
+    show calendarReadAgainProvider;
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
@@ -377,11 +379,60 @@ void main() {
       await pumpShell(tester);
       expect(IsolateNameServer.lookupPortByName(backgroundPassDonePortName),
           isNotNull);
+      expect(IsolateNameServer.lookupPortByName(calendarReadAgainPortName),
+          isNotNull);
 
       await tester.pumpWidget(const SizedBox());
 
       expect(IsolateNameServer.lookupPortByName(backgroundPassDonePortName),
           isNull);
+      expect(IsolateNameServer.lookupPortByName(calendarReadAgainPortName),
+          isNull);
+    });
+
+    // The calendar keeps up with meeting mail (#74): a calendar the
+    // background read again for its meeting mail is on the screens open.
+    group('a calendar read again in the background', () {
+      Future<void> letItArrive(WidgetTester tester) async {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+        await tester.pump();
+      }
+
+      testWidgets('reaches the calendar screens, once a minute at most',
+          (tester) async {
+        final c = await pumpShell(tester);
+        expect(c.read(calendarReadAgainProvider), isNull);
+
+        announceCalendarReadAgain({'acct-hadco'});
+        await letItArrive(tester);
+        final first = c.read(calendarReadAgainProvider);
+        expect(first?.accounts, {'acct-hadco'});
+
+        // More of its meeting mail inside the minute: told once it is up.
+        announceCalendarReadAgain({'acct-hadco'});
+        await letItArrive(tester);
+        expect(c.read(calendarReadAgainProvider), same(first));
+        await tester.pump(const Duration(minutes: 1));
+        expect(c.read(calendarReadAgainProvider), isNot(same(first)));
+        expect(c.read(calendarReadAgainProvider)?.accounts, {'acct-hadco'});
+      });
+
+      testWidgets('put away, nothing is done', (tester) async {
+        final c = await pumpShell(tester);
+        goTo(tester, const [
+          AppLifecycleState.inactive,
+          AppLifecycleState.hidden,
+          AppLifecycleState.paused,
+        ]);
+        await tester.pump();
+
+        announceCalendarReadAgain({'acct-hadco'});
+        await letItArrive(tester);
+
+        expect(c.read(calendarReadAgainProvider), isNull);
+      });
     });
   });
 }

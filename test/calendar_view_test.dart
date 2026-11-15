@@ -604,6 +604,8 @@ void main() {
       expect(find.byKey(const ValueKey('phone-calendar:acct-personal')),
           findsNothing, reason: "a Gmail account's is there through Google");
 
+      await tester.ensureVisible(row);
+      await tester.pumpAndSettle();
       await tester.tap(row);
       await tester.pumpAndSettle();
       expect(c.read(phoneCalendarsProvider), {hadco.id});
@@ -622,7 +624,10 @@ void main() {
       final phone = FakePhoneCalendar(allowed: false, grants: false);
       final (c, hadco) =
           await pump(tester, const CalendarSettingsScreen(), phone: phone);
-      await tester.tap(find.byKey(ValueKey('phone-calendar:${hadco.id}')));
+      final row = find.byKey(ValueKey('phone-calendar:${hadco.id}'));
+      await tester.ensureVisible(row);
+      await tester.pumpAndSettle();
+      await tester.tap(row);
       await tester.pumpAndSettle();
       expect(c.read(phoneCalendarsProvider), isEmpty);
       expect(find.textContaining('calendar permission'), findsOneWidget);

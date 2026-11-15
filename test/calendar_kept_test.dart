@@ -321,6 +321,157 @@ void main() {
     });
   });
 
+  // The calendar keeps up with meeting mail (#74): an account read again
+  // for its meeting mail is on the screens open at once.
+  group('an account read again for its meeting mail', () {
+    late _CountingEngine engine;
+    late ProviderContainer c;
+    late Account hadco;
+    late Account gmail;
+    final today = DateTime.now();
+    final day = DateTime(today.year, today.month, today.day);
+    DateTime at(int days, int hour) =>
+        DateTime(day.year, day.month, day.day + days, hour);
+    final range = (start: day, end: at(7, 0));
+
+    setUp(() async {
+      engine = _CountingEngine();
+      final token = OAuthToken(
+        accessToken: 'a',
+        refreshToken: 'r',
+        expiresAt: DateTime.utc(2030),
+      );
+      hadco = await engine.addOAuthAccount(
+        displayName: 'Hadco',
+        emailAddress: 'ron@hadco.example',
+        provider: MailProvider.outlook,
+        token: token,
+      );
+      gmail = await engine.addOAuthAccount(
+        displayName: 'Gmail',
+        emailAddress: 'ron@gmail.example',
+        provider: MailProvider.gmail,
+        token: token,
+      );
+      engine.events[hadco.id] = [
+        event('h', at(1, 9), at(1, 10),
+            accountId: hadco.id, title: 'Planning'),
+      ];
+      engine.events[gmail.id] = [
+        event('g', at(2, 9), at(2, 10), accountId: gmail.id, title: 'Dentist'),
+      ];
+      c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        mailEngineProvider.overrideWithValue(engine),
+      ]);
+      addTearDown(c.dispose);
+      await c.read(accountsProvider.future);
+    });
+
+    Future<void> until(bool Function() done) async {
+      for (var i = 0; i < 300 && !done(); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    }
+
+    /// Closes the screen [onScreen] opened, where a test does.
+    void Function() closeScreen = () {};
+
+    /// [range] on screen until [closeScreen] or the test's end: each load
+    /// it gives.
+    Future<List<CalendarLoad>> onScreen() async {
+      final seen = <CalendarLoad>[];
+      final sub = c.listen(calendarEventsProvider(range), (_, next) {
+        if (next.isLoading) return;
+        final v = next.value;
+        if (v != null) seen.add(v);
+      }, fireImmediately: true);
+      var open = true;
+      closeScreen = () {
+        if (open) sub.close();
+        open = false;
+      };
+      addTearDown(() => closeScreen());
+      await until(() => seen.isNotEmpty && !seen.last.reading);
+      return seen;
+    }
+
+    List<String> titles(CalendarLoad load) =>
+        [for (final e in load.events) e.title];
+
+    test('is shown as its read kept it, and no server is asked again',
+        () async {
+      final seen = await onScreen();
+      expect(titles(seen.last), unorderedEquals(['Planning', 'Dentist']));
+      // Moved by its organiser; its mail had the account read again, over
+      // all this screen shows.
+      engine.events[hadco.id] = [
+        event('h', at(1, 14), at(1, 15),
+            accountId: hadco.id, title: 'Planning, later'),
+      ];
+      await engine.calendarEvents(hadco.id, range.start, range.end);
+      engine.readFor.clear();
+
+      c.read(calendarReadAgainProvider.notifier).readAgain({hadco.id});
+      await until(() => titles(seen.last).contains('Planning, later'));
+
+      expect(titles(seen.last),
+          unorderedEquals(['Planning, later', 'Dentist']));
+      expect(engine.readFor, isEmpty, reason: 'the screen asked nothing');
+    });
+
+    test('a stretch that read did not cover is read again, of that account '
+        'alone', () async {
+      // Opened a while ago.
+      engine.calendarClock =
+          () => DateTime.now().subtract(const Duration(minutes: 5));
+      final seen = await onScreen();
+      engine.calendarClock = DateTime.now;
+      // Moved past the three days the meeting mail's read covers.
+      engine.events[hadco.id] = [
+        event('h', at(5, 9), at(5, 10),
+            accountId: hadco.id, title: 'Planning, next week'),
+      ];
+      await engine.calendarEvents(hadco.id, day, at(3, 0));
+      engine.readFor.clear();
+
+      c.read(calendarReadAgainProvider.notifier).readAgain({hadco.id});
+      await until(() => titles(seen.last).contains('Planning, next week'));
+
+      expect(titles(seen.last),
+          unorderedEquals(['Planning, next week', 'Dentist']));
+      expect(engine.readFor, [hadco.id], reason: 'Gmail was not asked again');
+      expect(seen.last.reading, isFalse);
+    });
+
+    test('nothing is read for an account with no calendar on screen',
+        () async {
+      final seen = await onScreen();
+      final loads = seen.length;
+      engine.readFor.clear();
+
+      c.read(calendarReadAgainProvider.notifier).readAgain({'acct-nobody'});
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(engine.readFor, isEmpty);
+      expect(seen, hasLength(loads), reason: 'the screen as it was');
+    });
+
+    test('nothing is read with no screen open', () async {
+      engine.calendarClock =
+          () => DateTime.now().subtract(const Duration(minutes: 5));
+      await onScreen();
+      closeScreen();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      engine.readFor.clear();
+
+      c.read(calendarReadAgainProvider.notifier).readAgain({hadco.id});
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(engine.readFor, isEmpty);
+    });
+  });
+
   group('the prefs', () {
     test('kept as text and read back; a day never ends before it starts',
         () {
@@ -383,6 +534,9 @@ void main() {
 class _CountingEngine extends SampleMailEngine {
   int reads = 0;
 
+  /// Each account whose calendar was read, in order.
+  final List<String> readFor = [];
+
   @override
   Future<List<CalendarEvent>> calendarEvents(
     String accountId,
@@ -390,6 +544,7 @@ class _CountingEngine extends SampleMailEngine {
     DateTime end,
   ) {
     reads++;
+    readFor.add(accountId);
     return super.calendarEvents(accountId, start, end);
   }
 }

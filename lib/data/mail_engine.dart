@@ -842,6 +842,19 @@ abstract interface class SaysWhatWoke {
   Future<List<String>> wakeSnoozedMail({DateTime? now});
 }
 
+/// An engine that says when its syncs find meeting mail arriving, so the
+/// app can read that account's calendar again at once (calendar idea #74):
+/// see `CalendarKeeper.meetingMail`. The background pass goes by what it
+/// reads to announce the mail instead: see `BackgroundSync`.
+abstract interface class SaysMeetingMailArrived {
+  /// The account of each sync that found meeting mail new since the last
+  /// one: an invitation, a change, a cancellation or someone's answer,
+  /// known from the header alone, as the list's calendar icon is. A first
+  /// fill of a folder is the folder as it was, and says nothing. Nothing
+  /// is asked of any server to say it.
+  Stream<String> get meetingMailArrived;
+}
+
 /// What [KeepsChangesForLater.sendWaitingChanges] did.
 class SentChanges {
   const SentChanges({

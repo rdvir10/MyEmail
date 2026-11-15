@@ -12,8 +12,9 @@ import '../../state/sync_providers.dart';
 import '../messages/date_format.dart';
 
 /// What one account's new mail may interrupt you for: everyone's, or VIPs'
-/// alone; Outlook for Android's Do Not Disturb; and which folders besides
-/// the Inbox are announced too. Its mail syncs whatever is chosen here.
+/// alone; Outlook for Android's Do Not Disturb, and quiet in a meeting; and
+/// which folders besides the Inbox are announced too. Its mail syncs
+/// whatever is chosen here.
 class AccountNotificationsScreen extends ConsumerWidget {
   const AccountNotificationsScreen({super.key, required this.account});
 
@@ -158,11 +159,25 @@ class AccountNotificationsScreen extends ConsumerWidget {
               },
             )),
           ),
+          SwitchListTile(
+            key: const ValueKey('quiet-meetings'),
+            title: const Text('While I am in a meeting'),
+            subtitle: const Text(
+              'During a meeting you made or accepted that shows you as '
+              'busy or out of office, new mail is in the notifications '
+              'with no sound, vibration or pop-up. Meeting reminders still '
+              'sound.',
+            ),
+            value: rule.meetings,
+            onChanged: (on) => quiet(rule.copyWith(meetings: on)),
+          ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
             child: Text(
               'Mail still comes in while it is quiet; it is only not '
-              'announced, then or after.',
+              'announced, then or after. In a meeting it is announced '
+              'without a sound, unless one of the others is quiet then '
+              'too.',
               style: muted,
             ),
           ),
@@ -308,6 +323,7 @@ String? notificationStatus(SyncPrefs prefs, String accountId, DateTime now,
       'Quiet now',
     if (rule?.evenings ?? false) 'Quiet evenings',
     if (rule?.weekends ?? false) 'Quiet weekends',
+    if (rule?.meetings ?? false) 'Quiet in meetings',
     if (prefs.vipOnlyAccountIds.contains(accountId)) 'VIPs only',
   ];
   return parts.isEmpty ? null : parts.join(' · ');
