@@ -1062,13 +1062,21 @@ class SampleMailEngine implements MailEngine, SaysMeetingMailArrived {
     _changeEvent(event, event.copyWith(response: eventResponseFor(response)));
   }
 
+  /// Each event's notes in full, by its id, for a test to fill; an event
+  /// not in it has its first lines for its notes.
+  final Map<String, EventNotes> eventNotesOf = {};
+
+  /// How many times [eventNotes] has been asked, for a test to count.
+  int eventNotesAsked = 0;
+
   @override
   Future<EventNotes> eventNotes(
     CalendarEvent event, {
     bool wholeSeries = false,
   }) async {
+    eventNotesAsked++;
     await _calendarCall(event.accountId);
-    return EventNotes(text: event.preview);
+    return eventNotesOf[event.id] ?? EventNotes(text: event.preview);
   }
 
   @override

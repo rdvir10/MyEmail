@@ -19,6 +19,8 @@ import '../../state/calendar_view_providers.dart'
 import '../../state/providers.dart';
 import '../../state/window_providers.dart';
 import '../../domain/free_busy.dart';
+import '../calendar/next_meeting_bar.dart' show joinMeeting;
+import '../calendar/place_link.dart';
 import 'date_format.dart';
 import 'invite_answers.dart';
 import 'invite_clashes.dart';
@@ -468,6 +470,13 @@ class _InviteCardState extends ConsumerState<InviteCard> {
         (i.isRequest ? failure != null || (settled && meeting == null)
             : !(i.isCancellation || i.isCounter || i.isReply ||
                 i.isDeclineCounter));
+    // Joined from the invitation itself, as from the meeting's sheet, while
+    // it is still on (#39). Not from an answer or a cancellation.
+    final joinUrl = i.joinUrl;
+    final canJoin = joinUrl != null &&
+        i.isRequest &&
+        done == null &&
+        !cancelledOnCalendar;
 
     return Container(
       margin: const EdgeInsets.fromLTRB(20, 0, 12, 12),
@@ -522,7 +531,7 @@ class _InviteCardState extends ConsumerState<InviteCard> {
               InviteClashes(invite: i),
           ],
           if (i.location != null && i.location!.trim().isNotEmpty)
-            _line(theme, Icons.place_outlined, i.location!),
+            _line(theme, Icons.place_outlined, i.location!, place: true),
           if (i.isReply || i.isDeclineCounter)
             _line(theme, Icons.person_outline, who.display)
           else if (!i.isCounter && i.organizer != null)
@@ -578,6 +587,13 @@ class _InviteCardState extends ConsumerState<InviteCard> {
                     ],
                   ),
               ],
+              if (canJoin)
+                OutlinedButton.icon(
+                  key: const ValueKey('invite-join'),
+                  onPressed: () => joinMeeting(joinUrl),
+                  icon: const Icon(Icons.videocam_outlined, size: 18),
+                  label: const Text('Join'),
+                ),
               if (canRemove)
                 FilledButton.icon(
                   onPressed: _busy ? null : () => _remove(meeting),
@@ -641,14 +657,32 @@ class _InviteCardState extends ConsumerState<InviteCard> {
         _ => 'Could not check your calendar. $e',
       };
 
-  Widget _line(ThemeData theme, IconData icon, String text) => Padding(
+  /// A line of the card. [place], the meeting's, is a tap from directions
+  /// where it is somewhere (#40).
+  Widget _line(
+    ThemeData theme,
+    IconData icon,
+    String text, {
+    bool place = false,
+  }) =>
+      Padding(
         padding: const EdgeInsets.only(top: 2),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Icon(icon, size: 16, color: theme.colorScheme.onSurfaceVariant),
             const SizedBox(width: 6),
-            Expanded(child: Text(text, style: theme.textTheme.bodyMedium)),
+            Expanded(
+              child: place
+                  ? Align(
+                      alignment: AlignmentDirectional.centerStart,
+                      child: PlaceLink(
+                        place: text,
+                        style: theme.textTheme.bodyMedium,
+                      ),
+                    )
+                  : Text(text, style: theme.textTheme.bodyMedium),
+            ),
           ],
         ),
       );

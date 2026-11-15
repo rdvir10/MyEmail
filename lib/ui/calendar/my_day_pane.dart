@@ -10,6 +10,7 @@ import '../../state/meeting_alert_providers.dart';
 import '../messages/date_format.dart';
 import 'calendar_screen.dart';
 import 'next_meeting_bar.dart' show joinMeeting;
+import 'place_link.dart';
 
 const _weekdayNames = [
   'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
@@ -236,6 +237,9 @@ class _MyDayEvent extends StatelessWidget {
         : e.joinUrl != null
             ? 'Online'
             : null;
+    final small = theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
     return Opacity(
       // What is over stays, faded, as the calendar shows a day gone by.
       opacity: over ? 0.5 : 1,
@@ -270,13 +274,21 @@ class _MyDayEvent extends StatelessWidget {
                             e.declined ? TextDecoration.lineThrough : null,
                       ),
                     ),
-                    Text(
-                      [when, ?place].join(' · '),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
+                    // Its place a tap from directions (#40); the rest of
+                    // the row opens its sheet.
+                    Row(
+                      children: [
+                        Text(place == null ? when : '$when · ', style: small),
+                        if (place != null)
+                          Flexible(
+                            child: PlaceLink(
+                              place: place,
+                              style: small,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
                     ),
                   ],
                 ),

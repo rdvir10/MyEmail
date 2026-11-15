@@ -11,6 +11,7 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
+import '../../domain/meeting_links.dart';
 import '../../domain/text_direction.dart';
 import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
@@ -355,6 +356,33 @@ class GraphCalendarApi {
   /// name.
   static const _inUtc = 'outlook.timezone="UTC"';
 
+  /// An event's body as text, links written out after their words:
+  /// Graph's own HTML for a Teams invitation is many times the size.
+  static const _asText = 'outlook.body-content-type="text"';
+
+  /// Whether every event in [value], a page of a read, came in UTC as
+  /// asked: the zone Graph names beside each time says.
+  static bool _allInUtc(Object? value) {
+    for (final e in value is List ? value : const []) {
+      if (e is! Map) continue;
+      for (final t in [e['start'], e['end']]) {
+        final zone = t is Map ? t['timeZone'] : null;
+        if (zone is String && !_utcNames.contains(zone.toLowerCase())) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /// What a zone named beside a time may be called and be UTC all the same.
+  static const _utcNames = {
+    'utc',
+    'etc/utc',
+    'coordinated universal time',
+    'tzone://microsoft/utc',
+  };
+
   /// The meeting [invite] is about, as this calendar has it, or null where
   /// it is not on it.
   ///
@@ -512,11 +540,22 @@ class GraphCalendarApi {
     final html = _bodyIn(json) ?? '';
     final split =
         json['isOnlineMeeting'] == true ? splitTeamsBlock(html) : null;
+    final body = json['body'];
+    final page = body is Map &&
+        '${body['contentType']}'.toLowerCase() == 'html' &&
+        html.isNotEmpty;
     return EventNotes(
-      text: _decodeNumeric(htmlToText(split?.notes ?? html)).trim(),
+      text: textOfHtml(split?.notes ?? html).trim(),
       keptBelow: split?.block,
+      // For the meeting's sheet, which shows a link written as words a tap
+      // from its address (#43).
+      html: page ? split?.notes ?? html : null,
     );
   }
+
+  /// [html], part of an event's body, as its text: tags gone, entities
+  /// read, and Teams' zero-width spaces left out.
+  static String textOfHtml(String html) => _decodeNumeric(htmlToText(html));
 
   /// [html], an event's body, as what was written above Exchange's Teams
   /// block and the block itself: from the element holding the first line
@@ -1054,6 +1093,11 @@ class GraphCalendarApi {
   /// calendar, or on [calendarId], one beside it. [readOnly] for one the
   /// account cannot change; [categoryColours] the colours of the mailbox's
   /// categories, by name, for an event's own.
+  ///
+  /// [withNotes] asks for each meeting's notes in full, as text, for the
+  /// link to join it where the calendar has none of its own (#39): a few
+  /// kilobytes more a meeting, kept to the reads of days. Only the link
+  /// is kept of them; see [eventFrom].
   Future<List<CalendarEvent>> events(
     DateTime start,
     DateTime end, {
@@ -1061,6 +1105,7 @@ class GraphCalendarApi {
     String calendarId = CalendarEvent.mainCalendar,
     bool readOnly = false,
     Map<String, int> categoryColours = const {},
+    bool withNotes = false,
   }) async {
     final found = <CalendarEvent>[];
     final view = calendarId == CalendarEvent.mainCalendar
@@ -1072,17 +1117,32 @@ class GraphCalendarApi {
       r'$select': 'subject,start,end,isAllDay,location,organizer,attendees,'
           'onlineMeeting,webLink,showAs,responseStatus,isOrganizer,'
           'isCancelled,isReminderOn,reminderMinutesBeforeStart,bodyPreview,'
-          'seriesMasterId,sensitivity,originalStartTimeZone,categories',
+          'seriesMasterId,sensitivity,originalStartTimeZone,categories'
+          '${withNotes ? ',body' : ''}',
       r'$orderby': 'start/dateTime',
       r'$top': '200',
     });
     for (var page = 0; page < 20; page++) {
       final response = await _exchange(
-        () => http.Request('GET', next)..headers['Prefer'] = _inUtc,
+        () => http.Request('GET', next)
+          ..headers['Prefer'] = withNotes ? '$_inUtc, $_asText' : _inUtc,
       );
       if (response.statusCode >= 400) throw _failureFor(response);
       final json = _jsonOf(response);
       final value = json['value'];
+      // The times are what must never go wrong. Two things are asked of
+      // Graph at once here: should it ever keep to the second and not the
+      // first, the read is made again as it always was.
+      if (withNotes && !_allInUtc(value)) {
+        return events(
+          start,
+          end,
+          accountId: accountId,
+          calendarId: calendarId,
+          readOnly: readOnly,
+          categoryColours: categoryColours,
+        );
+      }
       for (final e in value is List ? value : const []) {
         if (e is! Map) continue;
         final event = eventFrom(
@@ -1160,8 +1220,18 @@ class GraphCalendarApi {
     };
   }
 
+  /// How long Graph's first lines of a meeting's notes may be before they
+  /// may have been cut: it stops them at 255 characters, less any space
+  /// trimmed from them here.
+  static const _previewCut = 200;
+
   /// One of calendarView's events, asked for in UTC, as a [CalendarEvent]
   /// in local time; null for one with no id or no time.
+  ///
+  /// Its link to join it is the calendar's own, Teams or Skype, exactly as
+  /// Graph gives it; failing that, a known service's link in its place, in
+  /// its first lines, or in the whole of its notes where they were asked
+  /// for (#39). The notes themselves are not kept.
   static CalendarEvent? eventFrom(
     Map<String, Object?> json,
     String accountId, {
@@ -1204,8 +1274,13 @@ class GraphCalendarApi {
         };
     final attendees = json['attendees'];
     final location = json['location'];
+    final place =
+        location is Map ? '${location['displayName'] ?? ''}'.trim() : '';
     final online = json['onlineMeeting'];
     final joinUrl = online is Map ? online['joinUrl'] : null;
+    final preview = '${json['bodyPreview'] ?? ''}'.trim();
+    final body = json['body'];
+    final notes = body is Map ? body['content'] : null;
     final minutes = json['reminderMinutesBeforeStart'];
     final categories = [
       for (final c in json['categories'] is List
@@ -1226,7 +1301,7 @@ class GraphCalendarApi {
       start: start,
       end: end.isBefore(start) ? start : end,
       allDay: allDay,
-      location: location is Map ? '${location['displayName'] ?? ''}'.trim() : '',
+      location: place,
       organizer: address(json['organizer']),
       attendees: [
         for (final a in attendees is List ? attendees : const [])
@@ -1238,7 +1313,10 @@ class GraphCalendarApi {
                 optional: a['type'] == 'optional',
               ),
       ],
-      joinUrl: joinUrl is String && joinUrl.isNotEmpty ? joinUrl : null,
+      joinUrl: (joinUrl is String && joinUrl.isNotEmpty ? joinUrl : null) ??
+          meetingLinkIn(place) ??
+          meetingLinkIn(preview, mayBeCut: preview.length >= _previewCut) ??
+          meetingLinkIn(notes is String ? notes : null),
       webLink: json['webLink'] is String ? json['webLink'] as String : null,
       showAs: switch ('${json['showAs']}') {
         'free' => EventShowAs.free,
@@ -1252,7 +1330,7 @@ class GraphCalendarApi {
       cancelled: json['isCancelled'] == true,
       reminderMinutes:
           json['isReminderOn'] == true && minutes is num ? minutes.toInt() : null,
-      preview: '${json['bodyPreview'] ?? ''}'.trim(),
+      preview: preview,
       seriesId: json['seriesMasterId'] is String &&
               (json['seriesMasterId'] as String).isNotEmpty
           ? json['seriesMasterId'] as String

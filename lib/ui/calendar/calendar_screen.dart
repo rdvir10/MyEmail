@@ -34,7 +34,9 @@ import 'calendar_keys.dart';
 import 'calendar_search_screen.dart';
 import 'event_actions.dart';
 import 'event_colours.dart';
+import 'event_notes.dart';
 import 'meeting_mail.dart';
+import 'place_link.dart';
 
 /// Outlook's Calendar, beside the mail: every account's events as an
 /// agenda, a day, a week or a month. Shown from what the device kept of
@@ -2806,7 +2808,11 @@ class _EventDetails extends StatelessWidget {
               Text(setIn, key: const ValueKey('event-set-in'), style: muted),
             if (e.location.isNotEmpty) ...[
               const SizedBox(height: 4),
-              Text(e.location, style: muted),
+              // A tap from directions, where it is somewhere (#40).
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: PlaceLink(place: e.location, style: muted),
+              ),
             ],
             if (account != null) ...[
               const SizedBox(height: 8),
@@ -2942,10 +2948,14 @@ class _EventDetails extends StatelessWidget {
                 ),
               ),
             ],
-            if (e.preview.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Text(e.preview, style: muted),
-            ],
+            // The whole of what it says, its links a tap away (#43).
+            EventNotesView(
+              event: e,
+              reachable: account != null && AccountCalendar.canRead(account),
+              style: muted,
+              onEmail: (address) => then((c, ref, _) =>
+                  writeTo(c, ref, address, accountId: account?.id)),
+            ),
           ],
         ),
       ),

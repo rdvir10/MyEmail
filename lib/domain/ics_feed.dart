@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'calendar_event.dart';
+import 'meeting_links.dart';
 import 'time_zones.dart' show ianaZoneOf, instantIn, wallClockIn;
 
 /// A calendar published as a link: iCalendar text (RFC 5545) holding any
@@ -81,6 +82,9 @@ class IcsFeed {
       }
     }
     final found = <CalendarEvent>[];
+    // A known service's link in its place or description, to join it by
+    // (#39): looked for once an event, however often it repeats.
+    final links = Map<IcsEvent, String?>.identity();
     void add(IcsEvent e, DateTime at, {required bool repeats}) {
       final until = e.allDay
           ? DateTime(at.year, at.month, at.day + e.days)
@@ -100,6 +104,10 @@ class IcsFeed {
         preview: e.description.length > 300
             ? '${e.description.substring(0, 300)}…'
             : e.description,
+        joinUrl: links.putIfAbsent(
+          e,
+          () => meetingLinkIn(e.location) ?? meetingLinkIn(e.description),
+        ),
         showAs: e.transparent ? EventShowAs.free : EventShowAs.busy,
         readOnly: true,
       ));

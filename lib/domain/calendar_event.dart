@@ -87,7 +87,9 @@ class CalendarEvent {
   final MailAddress? organizer;
   final List<EventAttendee> attendees;
 
-  /// Where to join it online: Teams, Meet, Zoom.
+  /// Where to join it online: the calendar's own Teams or Meet link, or
+  /// failing that a known service's link in its place or notes, Zoom,
+  /// Webex and the rest (see `meetingLinkIn`).
   final String? joinUrl;
 
   /// The event in Outlook on the web or Google Calendar.
@@ -141,6 +143,7 @@ class CalendarEvent {
     String? location,
     List<EventAttendee>? attendees,
     EventResponse? response,
+    String? joinUrl,
   }) =>
       CalendarEvent(
         id: id,
@@ -153,7 +156,7 @@ class CalendarEvent {
         location: location ?? this.location,
         organizer: organizer,
         attendees: attendees ?? this.attendees,
-        joinUrl: joinUrl,
+        joinUrl: joinUrl ?? this.joinUrl,
         webLink: webLink,
         showAs: showAs,
         response: response ?? this.response,

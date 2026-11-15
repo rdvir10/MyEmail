@@ -11,6 +11,7 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
+import '../../domain/meeting_links.dart';
 import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
 import '../imap/imap_mapping.dart' show htmlToText;
@@ -660,6 +661,7 @@ class GoogleCalendarApi {
     final description = json['description'];
     var preview = description is String ? htmlToText(description).trim() : '';
     if (preview.length > 300) preview = '${preview.substring(0, 300)}…';
+    final place = '${json['location'] ?? ''}'.trim();
     return CalendarEvent(
       id: id,
       accountId: accountId,
@@ -670,7 +672,7 @@ class GoogleCalendarApi {
       start: start,
       end: end.isBefore(start) ? start : end,
       allDay: allDay,
-      location: '${json['location'] ?? ''}'.trim(),
+      location: place,
       organizer: address(organizer),
       attendees: [
         for (final a in attendees)
@@ -684,11 +686,15 @@ class GoogleCalendarApi {
                 optional: a['optional'] == true,
               ),
       ],
+      // The calendar's own, exactly as it gives it; failing that, a known
+      // service's link in the place or anywhere in the description, read
+      // whole before its first lines are cut (#39).
       joinUrl: video is String
           ? video
           : hangout is String
               ? hangout
-              : null,
+              : meetingLinkIn(place) ??
+                  meetingLinkIn(description is String ? description : null),
       webLink: json['htmlLink'] is String ? json['htmlLink'] as String : null,
       showAs: json['transparency'] == 'transparent'
           ? EventShowAs.free
@@ -796,12 +802,18 @@ class GoogleCalendarApi {
       throw const EventGone();
     }
     final description = event['description'];
+    final page = description is String && description.contains('<');
     final text = description is! String
         ? ''
-        : description.contains('<')
+        : page
             ? htmlToText(description)
             : description;
-    return EventNotes(text: text.trim());
+    return EventNotes(
+      text: text.trim(),
+      // For the meeting's sheet, which shows a link written as words a tap
+      // from its address (#43).
+      html: page ? description : null,
+    );
   }
 
   /// Change [eventId] as [change] says, and have Google send everyone on it

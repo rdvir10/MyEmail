@@ -153,12 +153,18 @@ class EventChange {
 /// or with it rewritten, loses the meeting).
 @immutable
 class EventNotes {
-  const EventNotes({required this.text, this.keptBelow});
+  const EventNotes({required this.text, this.keptBelow, this.html});
 
   final String text;
 
   /// The HTML kept under the notes on a change: Exchange's Teams block.
   final String? keptBelow;
+
+  /// The notes as the page the calendar holds writes them, above any Teams
+  /// block, where they are HTML: what a meeting's sheet shows, the address
+  /// of each link written as words among it. Null where they are plain
+  /// text. Not for a change: [text] is what Edit writes.
+  final String? html;
 }
 
 /// A meeting on a calendar being changed on the meeting screen: Edit on

@@ -335,6 +335,7 @@ class AccountCalendar {
             calendarId: calendarId,
             readOnly: readOnly,
             categoryColours: colours,
+            withNotes: readsNotes(account, start, end),
           );
         } finally {
           api.close();
@@ -427,6 +428,23 @@ class AccountCalendar {
     _categories[account.id] = (colours: colours, at: DateTime.now());
     return colours;
   }
+
+  /// How long a read of a Microsoft calendar may be and still have each
+  /// meeting's notes looked in for a link to join it (#39): the
+  /// reminders' three days, inside which the bar over the mail, My Day
+  /// and the widget all live too, since Join matters near the meeting.
+  /// Graph sends the notes whole for that, a few kilobytes a meeting. A
+  /// longer read, a week, a month, a search's two years or the phone's
+  /// calendar's, goes without them and keeps the links the reads of days
+  /// found (`withLinksKept`): never one a later read of days found gone,
+  /// since what a read of days found is what is kept for its days.
+  static const notesReadFor = Duration(days: 4);
+
+  /// Whether a read of [account]'s calendar from [start] to [end] looks in
+  /// each meeting's notes: always on Google, whose read has them anyway.
+  static bool readsNotes(Account account, DateTime start, DateTime end) =>
+      account.provider != MailProvider.outlook ||
+      !end.isAfter(start.add(notesReadFor));
 
   /// Whether [account] has a calendar the app can read: one signed in with
   /// Microsoft or Google itself, not a shared mailbox.

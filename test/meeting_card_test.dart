@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/calendar/device_calendar.dart';
@@ -314,6 +315,113 @@ void main() {
 
       expect(find.byType(InviteCard), findsOneWidget);
       expect(find.text('Accept'), findsOneWidget);
+    });
+
+    group('held online (#39)', () {
+      const link = 'https://teams.microsoft.com/l/meetup-join/'
+          '19%3ameeting_NjQ4%40thread.v2/0';
+      const teamsLine = 'X-MICROSOFT-SKYPETEAMSMEETINGURL:$link\r\n';
+
+      testWidgets('has Join, which opens its link as the sheet does',
+          (tester) async {
+        final opened = _catchLaunches(tester);
+        await show(
+            tester,
+            _MeetingMail(mail('REQUEST',
+                extra: '$organisedByDana$teamsLine')));
+
+        expect(find.text('Accept'), findsOneWidget);
+        await tester.tap(find.byKey(const ValueKey('invite-join')));
+        await tester.pumpAndSettle();
+
+        expect(opened, [Uri.parse(link).toString()]);
+      });
+
+      testWidgets('a Zoom link in what it says is Join too', (tester) async {
+        final opened = _catchLaunches(tester);
+        await show(
+            tester,
+            _MeetingMail(mail('REQUEST',
+                extra: '${organisedByDana}DESCRIPTION:Join Zoom Meeting\\n'
+                    'https://us02web.zoom.us/j/81234567890\r\n')));
+
+        await tester.tap(find.byKey(const ValueKey('invite-join')));
+        await tester.pumpAndSettle();
+
+        expect(opened, ['https://us02web.zoom.us/j/81234567890']);
+      });
+
+      testWidgets('one a work mailbox has inside Safe Links opens through '
+          'Safe Links', (tester) async {
+        // Defender's own check runs when it is tapped: Hadco IT's to set.
+        const wrapped = 'https://nam12.safelinks.protection.outlook.com/'
+            '?url=https%3A%2F%2Fus02web.zoom.us%2Fj%2F81234567890'
+            '&data=05%7C02%7C&reserved=0';
+        final opened = _catchLaunches(tester);
+        await show(
+            tester,
+            _MeetingMail(mail('REQUEST',
+                extra: '${organisedByDana}DESCRIPTION:Join Zoom Meeting'
+                    '<$wrapped>\r\n')));
+
+        await tester.tap(find.byKey(const ValueKey('invite-join')));
+        await tester.pumpAndSettle();
+
+        expect(opened, [wrapped]);
+      });
+
+      testWidgets('but not on its cancellation', (tester) async {
+        await show(
+            tester,
+            _MeetingMail(
+                mail('CANCEL', extra: '$organisedByDana$teamsLine')));
+        expect(find.text('Cancelled'), findsOneWidget);
+        expect(find.byKey(const ValueKey('invite-join')), findsNothing);
+      });
+
+      testWidgets('nor on one cancelled since', (tester) async {
+        await show(
+            tester,
+            _MeetingMail(mail('REQUEST', extra: '$organisedByDana$teamsLine'))
+              ..calendar[uid] = onCalendar(cancelled: true));
+        expect(find.text('Cancelled since, and still on your calendar.'),
+            findsOneWidget);
+        expect(find.byKey(const ValueKey('invite-join')), findsNothing);
+      });
+
+      testWidgets('and an invitation with no link is as it always was',
+          (tester) async {
+        await show(tester, _MeetingMail(invitation()));
+        expect(find.byKey(const ValueKey('invite-join')), findsNothing);
+        expect(find.text('Accept'), findsOneWidget);
+        expect(find.text('Room 4'), findsOneWidget);
+      });
+    });
+
+    group('its place (#40)', () {
+      final place = find.byKey(const ValueKey('place-link'));
+
+      testWidgets("is a tap from the phone's maps app", (tester) async {
+        final opened = _catchLaunches(tester);
+        await show(tester, _MeetingMail(invitation()));
+
+        expect(find.descendant(of: place, matching: find.text('Room 4')),
+            findsOneWidget);
+        await tester.tap(place);
+        await tester.pump();
+        expect(opened, ['geo:0,0?q=Room+4']);
+      });
+
+      testWidgets('but stays as it was where it only names an online meeting',
+          (tester) async {
+        await show(
+            tester,
+            _MeetingMail(invitation().replaceFirst(
+                'LOCATION:Room 4', 'LOCATION:Microsoft Teams Meeting')));
+
+        expect(find.text('Microsoft Teams Meeting'), findsOneWidget);
+        expect(place, findsNothing);
+      });
     });
   });
 
@@ -738,6 +846,22 @@ void main() {
       expect(draft.htmlBody, contains('Ron &lt;b&gt;Dvir&lt;/b&gt;'));
     });
   });
+}
+
+/// What the card's links open, kept instead of opened.
+List<String> _catchLaunches(WidgetTester tester) {
+  final opened = <String>[];
+  const launcher = MethodChannel('plugins.flutter.io/url_launcher');
+  tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+    launcher,
+    (call) async {
+      opened.add('${(call.arguments as Map)['url']}');
+      return true;
+    },
+  );
+  addTearDown(() => tester.binding.defaultBinaryMessenger
+      .setMockMethodCallHandler(launcher, null));
+  return opened;
 }
 
 /// The sample engine with one message, carrying [ics], whose lookups can be

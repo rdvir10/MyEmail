@@ -1,4 +1,5 @@
 import 'mail_message.dart';
+import 'meeting_links.dart';
 
 /// A meeting request, as it travels inside a message: the `text/calendar`
 /// part, iCalendar (RFC 5545) with METHOD:REQUEST, one VEVENT. Or any other
@@ -33,7 +34,15 @@ class CalendarInvite {
     this.responderAnswer,
     this.originalStart,
     this.originalEnd,
+    this.joinUrl,
   });
+
+  /// Where to join the meeting online, from the invitation itself (#39):
+  /// Teams' own line (X-MICROSOFT-SKYPETEAMSMEETINGURL), Meet's
+  /// (X-GOOGLE-CONFERENCE), then a known service's link in the place, the
+  /// URL or the description, each held to the same rules (see
+  /// `meetingLinkIn`), since anyone can send an invitation. Null for none.
+  final String? joinUrl;
 
   /// REQUEST for an invitation, CANCEL for one withdrawn, REPLY for an
   /// answer, COUNTER for a new time proposed to the organiser,
@@ -131,6 +140,9 @@ class CalendarInvite {
     _Line? originalEndLine;
     String? location;
     String? description;
+    String? teamsLink;
+    String? meetLink;
+    String? url;
     MailAddress? organizer;
     final attendees = <MailAddress>[];
     // The first attendee to carry an answer, with it: in an answer or a new
@@ -182,6 +194,12 @@ class CalendarInvite {
           location = _unescape(value);
         case 'DESCRIPTION':
           description = _unescape(value);
+        case 'X-MICROSOFT-SKYPETEAMSMEETINGURL':
+          teamsLink = _unescape(value);
+        case 'X-GOOGLE-CONFERENCE':
+          meetLink = _unescape(value);
+        case 'URL':
+          url = value.trim();
         case 'ORGANIZER':
           organizer = _address(value, params);
         case 'ATTENDEE':
@@ -266,6 +284,11 @@ class CalendarInvite {
           : null,
       originalStart: method == 'COUNTER' ? instant(originalStartLine) : null,
       originalEnd: method == 'COUNTER' ? instant(originalEndLine) : null,
+      joinUrl: meetingLinkIn(teamsLink) ??
+          meetingLinkIn(meetLink) ??
+          meetingLinkIn(location) ??
+          meetingLinkIn(url) ??
+          meetingLinkIn(description),
     );
   }
 }

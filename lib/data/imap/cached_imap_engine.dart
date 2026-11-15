@@ -20,6 +20,7 @@ import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/sender_blocks.dart';
 import '../../domain/meeting.dart';
+import '../../domain/meeting_links.dart' show withLinksKept;
 import '../../domain/message_move.dart';
 import '../../domain/draft.dart';
 import '../../domain/error_report.dart' show NeedsSignIn, ReadableError;
@@ -1399,7 +1400,7 @@ class CachedImapEngine
     DateTime end,
     DateTime asked,
   ) async {
-    final List<CalendarEvent> events;
+    List<CalendarEvent> events;
     try {
       events = await _calendars.events(account, start, end, calendar: calendar);
     } catch (e) {
@@ -1409,6 +1410,20 @@ class CachedImapEngine
       return (await cache.keptCalendar(account.id, start, end,
               calendarIds: {calendar.id}))
           .events;
+    }
+    // A read too long to look in the meetings' notes keeps the links to
+    // join them that the reads of days found there (#39).
+    if (!AccountCalendar.readsNotes(account, start, end)) {
+      try {
+        events = withLinksKept(
+          events,
+          (await cache.keptCalendar(account.id, start, end,
+                  calendarIds: {calendar.id}))
+              .events,
+        );
+      } catch (e) {
+        debugPrint('[myemail] the links kept were not read: $e');
+      }
     }
     try {
       await cache.keepCalendar(account.id, start, end, events,
