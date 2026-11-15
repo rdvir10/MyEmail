@@ -288,8 +288,15 @@ class BodyParts {
   final List<em.BodyPart> calendar;
 
   /// What each is fetched as, `BODY[n]`, once each.
-  List<String> get ids =>
-      {for (final p in [?text, ?html, ...calendar]) _partId(p)}.toList();
+  ///
+  /// Not one its structure says is empty, which [bodyFromParts] reads as
+  /// empty without it: sent as a literal of no length, `{0}`, enough_mail
+  /// takes the line after it for its value and loses the part asked for
+  /// next, the HTML beside an empty plain-text part.
+  List<String> get ids => {
+        for (final p in [?text, ?html, ...calendar])
+          if (p.size != 0) _partId(p),
+      }.toList();
 }
 
 /// The parts of a message [bodyFromParts] reads its body from, found in
@@ -350,6 +357,8 @@ BodyParts? bodyPartsOf(em.MimeMessage structure) {
 MailBody bodyFromParts(BodyParts parts, Map<String, List<int>> fetched) {
   String? read(em.BodyPart? part) {
     if (part == null) return null;
+    // Not fetched: see BodyParts.ids.
+    if (part.size == 0) return '';
     final raw = fetched[_partId(part)];
     if (raw == null) return null;
     // The bytes of the text in its charset, once the transfer encoding is

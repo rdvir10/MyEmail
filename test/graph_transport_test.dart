@@ -1524,6 +1524,90 @@ void main() {
         expect(filed['subject'], 'Invoice 12');
       });
 
+      test('is sent by whoever it is from, not by the mailbox', () async {
+        // With a From and no sender, Graph puts the mailbox's owner in the
+        // sender, and Outlook may show it sent by Ron on behalf of Dana.
+        await transport.listFolders();
+
+        await transport.fileMessage('Receipts', raw, seen: true);
+
+        final filed = server.messages.values.single;
+        expect(filed['sender'], filed['from']);
+        expect((filed['sender'] as Map)['emailAddress'],
+            {'address': 'dana@example.com', 'name': 'Dana Levi'});
+      });
+
+      test('a sender Graph will not take is left off, and it is filed as '
+          'before', () async {
+        // Turned away with it, the message goes as it went before it had
+        // one, its Message-ID and all, and once.
+        for (final status in [400, 403]) {
+          server
+            ..messages.clear()
+            ..createdAs.clear()
+            ..refuseSender = status;
+          await transport.listFolders();
+
+          final uid = await transport.fileMessage('Receipts', raw, seen: true);
+
+          expect(uid, isNotNull, reason: 'HTTP $status');
+          final filed = server.messages.values.single;
+          expect(filed.containsKey('sender'), isFalse);
+          expect(filed['internetMessageId'], '<inv12@example.com>');
+          expect((filed['from'] as Map)['emailAddress'],
+              {'address': 'dana@example.com', 'name': 'Dana Levi'});
+          expect(filed['isDraft'], isFalse);
+          expect(server.createdAs, hasLength(2), reason: 'HTTP $status');
+        }
+      });
+
+      test('a sender and a Message-ID both turned away: neither, and once',
+          () async {
+        server
+          ..refuseSender = 400
+          ..refuseInternetMessageId = true;
+        await transport.listFolders();
+
+        final uid = await transport.fileMessage('Receipts', raw, seen: true);
+
+        expect(uid, isNotNull);
+        final filed = server.messages.values.single;
+        expect(filed.containsKey('sender'), isFalse);
+        expect(filed.containsKey('internetMessageId'), isFalse);
+        expect(filed['subject'], 'Invoice 12');
+      });
+
+      test('a fault of Graph\'s own is not tried again without the sender',
+          () async {
+        // It may have made the message: tried again, it could be there
+        // twice. The move fails whole, as it did, and the original stays.
+        server.emptyRefusalOfCreate = 500;
+        await transport.listFolders();
+
+        await expectLater(
+          transport.fileMessage('Receipts', raw, seen: true),
+          throwsA(isA<Exception>()),
+        );
+        expect(server.createTries, 1);
+      });
+
+      test('with no From, no sender either', () async {
+        await transport.listFolders();
+
+        await transport.fileMessage(
+          'Receipts',
+          'To: ron@example.com\r\n'
+              'Subject: Note\r\n'
+              '\r\n'
+              'Hello\r\n',
+          seen: true,
+        );
+
+        final filed = server.messages.values.single;
+        expect(filed.containsKey('from'), isFalse);
+        expect(filed.containsKey('sender'), isFalse);
+      });
+
       test('a file that will not go takes the message back out', () async {
         server.refuseAttachments = true;
         await transport.listFolders();
@@ -3772,6 +3856,13 @@ class _FakeGraph {
   /// Refuse a message created with a Message-ID, as Graph may.
   bool refuseInternetMessageId = false;
 
+  /// Refuse a message created with a sender, with this status, as Graph
+  /// may.
+  int? refuseSender;
+
+  /// Every request to create a message, answered or refused.
+  int createTries = 0;
+
   /// Answer every message created with this status and nothing in the
   /// body, as a gateway in front of Graph does.
   int? emptyRefusalOfCreate;
@@ -4432,6 +4523,7 @@ class _FakeGraph {
     if (request.method == 'POST' && creating != null) {
       final folderId = wellKnown[creating.group(1)] ?? creating.group(1)!;
       if (!folders.containsKey(folderId)) return http.Response('{}', 404);
+      createTries++;
       if (emptyRefusalOfCreate case final status?) {
         return http.Response('', status);
       }
@@ -4450,6 +4542,12 @@ class _FakeGraph {
       }
       if (type == 'application/json') {
         final body = (jsonDecode(request.body) as Map).cast<String, Object?>();
+        if (refuseSender case final status? when body.containsKey('sender')) {
+          return http.Response(
+            '{"error":{"code":"ErrorInvalidPropertySet"}}',
+            status,
+          );
+        }
         if (refuseInternetMessageId && body.containsKey('internetMessageId')) {
           return http.Response(
             '{"error":{"code":"ErrorInvalidPropertySet"}}',

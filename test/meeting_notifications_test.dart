@@ -1,6 +1,11 @@
+import 'dart:convert';
+
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart' as http_testing;
 import 'package:myemail/data/auth/oauth_token.dart';
+import 'package:myemail/data/compose/graph_sender.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/notifications/android_mail_notifier.dart';
 import 'package:myemail/data/notifications/mail_notifier.dart';
@@ -162,6 +167,90 @@ void main() {
               '5 min late');
       expect(outcome, ActionOutcome.meetingOver);
       expect(engine.sent, isEmpty);
+    });
+
+    group('sent through Microsoft, answered with an error of its own', () {
+      /// The message goes to a Microsoft that answers the send with a 500
+      /// and, looked at after, has it in Sent Items where [filed], or
+      /// cannot be read at all where [unreadable].
+      void graph({required bool filed, bool unreadable = false}) {
+        var messageId = '';
+        final sender = GraphSender(
+          accessToken: ({bool force = false}) async => 'graph-token',
+          lookAfter: const [Duration.zero, Duration.zero],
+          httpClient: http_testing.MockClient((request) async {
+            if (request.method == 'POST') {
+              final mime = utf8.decode(base64Decode(request.body));
+              messageId =
+                  RegExp(r'Message-Id: (<[^>]+>)', caseSensitive: false)
+                      .firstMatch(mime)![1]!;
+              return http.Response(
+                jsonEncode({
+                  'error': {'code': 'ErrorInternalServerError'},
+                }),
+                500,
+              );
+            }
+            if (unreadable) return http.Response('', 503);
+            return http.Response(
+              jsonEncode({
+                'value': [
+                  if (filed) {'internetMessageId': messageId},
+                ],
+              }),
+              200,
+            );
+          }),
+        );
+        engine.sendWith =
+            (draft) => sender.sendDraft(draft: draft, account: hadco);
+      }
+
+      test('not in Sent Items: it could not be sent, as it always said',
+          () async {
+        // Taken for "may have gone", it reported the people told, in
+        // silence, when nobody had been.
+        graph(filed: false);
+
+        final outcome =
+            await actions(start.subtract(const Duration(minutes: 5))).perform(
+                NotificationActions.lateId,
+                MeetingRef.of(meeting).payload,
+                '10 min late');
+
+        expect(outcome, ActionOutcome.lateNotSent);
+        expect(outcome.message,
+            'Your running-late message could not be sent.');
+      });
+
+      test('Sent Items not to be read at all: it could not be sent, as it '
+          'always said', () async {
+        // Graph failing its reads as well as the send is when an honest
+        // 500 is likeliest. Taken for "may have gone", it said nothing.
+        graph(filed: false, unreadable: true);
+
+        final outcome =
+            await actions(start.subtract(const Duration(minutes: 5))).perform(
+                NotificationActions.lateId,
+                MeetingRef.of(meeting).payload,
+                '10 min late');
+
+        expect(outcome, ActionOutcome.lateNotSent);
+        expect(outcome.message,
+            'Your running-late message could not be sent.');
+      });
+
+      test('in Sent Items: they were told', () async {
+        graph(filed: true);
+
+        expect(
+          await actions(start.subtract(const Duration(minutes: 5))).perform(
+              NotificationActions.lateId,
+              MeetingRef.of(meeting).payload,
+              '10 min late'),
+          ActionOutcome.toldLate,
+        );
+      });
     });
 
     test('with nobody else on it, nobody is told', () async {
@@ -599,8 +688,12 @@ class _InviteEngine extends SampleMailEngine {
         note: note, send: send, proposal: proposal);
   }
 
+  /// How a draft goes, where a test says; otherwise it is only kept.
+  Future<void> Function(Draft draft)? sendWith;
+
   @override
   Future<void> sendDraft(Draft draft) async {
+    if (sendWith case final send?) return send(draft);
     sent.add(draft);
   }
 }

@@ -1,6 +1,12 @@
+import 'dart:convert';
+
 import 'package:enough_mail/enough_mail.dart' as em;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart' as http_testing;
 import 'package:myemail/data/account_store.dart';
+import 'package:myemail/data/auth/oauth_token.dart';
+import 'package:myemail/data/compose/graph_sender.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/imap/cached_imap_engine.dart';
@@ -313,6 +319,74 @@ void main() {
       );
 
       expect(order, ['written down', 'send']);
+    });
+  });
+
+  group('replying from a Microsoft account', () {
+    test('a fault of Microsoft\'s own, not in Sent Items: kept in Drafts, '
+        'as it always was', () async {
+      // Taken for "may have gone", the reply was in no Drafts folder, its
+      // words only in a report that went when it was swiped away.
+      var posts = 0;
+      final engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (_, _) => server,
+        graphSenderFactory: (_, _) => GraphSender(
+          accessToken: ({bool force = false}) async => 'graph-token',
+          lookAfter: const [Duration.zero],
+          httpClient: http_testing.MockClient((request) async {
+            if (request.method == 'POST') {
+              posts++;
+              return http.Response(
+                jsonEncode({
+                  'error': {'code': 'ErrorInternalServerError'},
+                }),
+                500,
+              );
+            }
+            return http.Response(jsonEncode({'value': <Object?>[]}), 200);
+          }),
+        ),
+      );
+      server
+        ..folder('Inbox', role: FolderRole.inbox)
+        ..folder('Sent Items', role: FolderRole.sent)
+        ..folder('Drafts', role: FolderRole.drafts);
+      server.folder('Inbox').deliver(
+            subject: 'Thursday',
+            from: 'dana@example.com',
+            body: 'Can you make ten?',
+          );
+      final account = await engine.addOAuthAccount(
+        displayName: 'Hadco',
+        emailAddress: 'ron@hadco.example',
+        provider: MailProvider.outlook,
+        token: OAuthToken(
+          accessToken: 'access',
+          refreshToken: 'refresh',
+          expiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+        ),
+      );
+      final message =
+          (await engine.loadMessages('${account.id}:Inbox')).single;
+
+      final outcome = await NotificationActions(
+        engine: engine,
+        accounts: [account],
+      ).perform(NotificationActions.replyId, message.id, 'Ten works.');
+
+      expect(outcome, ActionOutcome.savedAsDraft);
+      expect(outcome.message,
+          'Your reply could not be sent. It is in Drafts.');
+      expect(posts, 1, reason: 'never sent again');
+      final draft = em.MimeMessage.parseFromText(server.appended.single);
+      expect(draft.decodeSubject(), 'Re: Thursday');
+      expect(
+        '${draft.decodeTextPlainPart()}${draft.decodeTextHtmlPart()}',
+        contains('Ten works.'),
+      );
     });
   });
 

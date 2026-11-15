@@ -134,6 +134,53 @@ void main() {
     expect(flags.sizeBytes, 48213);
   });
 
+  test('news of another message during a header fetch is not a row',
+      () async {
+    // A server may say what changed in another message while it answers,
+    // and the library keeps the line in the result as a message of its
+    // own. Read as a header, it was a row with no subject, no sender, and
+    // the time of the sync for its date.
+    server.before = r'* 2 FETCH (UID 9 FLAGS (\Seen))';
+    final t = transport();
+
+    for (final headers in [
+      await t.fetchHeadersBySequence('INBOX', 1, 1),
+      await t.fetchHeadersFromUid('INBOX', 7),
+      await t.fetchHeadersByUids('INBOX', [7]),
+    ]) {
+      expect([for (final h in headers) h.uid], [7]);
+      expect(headers.single.subject, 'Hello');
+    }
+  });
+
+  test('nor news of the same message after its answer', () async {
+    // Not next to the answer, so not joined to it: a second header for
+    // the message, the later one, which is what a cache keeps.
+    server.after = '* 2 FETCH (UID 9 FLAGS (\\Seen))\r\n'
+        '* 1 FETCH (UID 7 FLAGS (\\Seen))';
+
+    final headers = await transport().fetchHeadersBySequence('INBOX', 1, 1);
+
+    expect([for (final h in headers) h.uid], [7]);
+    final h = headers.single;
+    expect(h.subject, 'Hello');
+    expect(h.from.email, 'dana@example.com');
+    expect(h.messageId, isNotNull);
+  });
+
+  test('an answer whose envelope could not be read is still a row', () async {
+    // An empty subject sent as {0}: the library takes the line after it
+    // for its value, and the envelope with it. The arrival and the size
+    // came before it, so it is an answer, and shows as the row it was.
+    server.envelopeBroken = true;
+
+    final headers = await transport().fetchHeadersBySequence('INBOX', 1, 1);
+
+    expect([for (final h in headers) h.uid], [7]);
+    expect(headers.single.sizeBytes, 48213);
+    expect(headers.single.arrived, isNotNull);
+  });
+
   test('a server that sends no size leaves it unknown', () async {
     server.sendSize = false;
     final t = transport();
@@ -187,6 +234,14 @@ class _HeaderServer {
   /// The message's BODYSTRUCTURE: plain text alone, unless a test says.
   String structure = '("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" 5 1)';
 
+  /// Lines about messages sent ahead of and after each FETCH answer.
+  String? before;
+  String? after;
+
+  /// The subject sent as an empty literal, `{0}`, which the library reads
+  /// the rest of the line into.
+  bool envelopeBroken = false;
+
   int get port => _socket.port;
 
   static Future<_HeaderServer> start() async {
@@ -226,13 +281,15 @@ class _HeaderServer {
             '$tag OK [READ-WRITE] selected\r\n');
       } else if (verb.startsWith('FETCH') || verb.startsWith('UID FETCH')) {
         fetches.add(command);
-        client.write('* 1 FETCH (UID 7 FLAGS ($flags) '
+        client.write('${before == null ? '' : '$before\r\n'}'
+            '* 1 FETCH (UID 7 FLAGS ($flags) '
             '${sendSize ? 'RFC822.SIZE 48213 ' : ''}'
             'INTERNALDATE "25-Oct-2019 16:35:31 +0200" '
-            'ENVELOPE (NIL "$subject" '
+            'ENVELOPE (NIL ${envelopeBroken ? '{0}\r\n' : '"$subject"'} '
             '(("$fromName" NIL "dana" "example.com")) '
             'NIL NIL NIL NIL NIL NIL "<m-1@example.com>") '
             'BODYSTRUCTURE $structure)\r\n'
+            '${after == null ? '' : '$after\r\n'}'
             '$tag OK FETCH done\r\n');
       } else if (verb.startsWith('STORE') || verb.startsWith('UID STORE')) {
         stores.add(command);

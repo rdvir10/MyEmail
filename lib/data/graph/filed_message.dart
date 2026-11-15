@@ -37,7 +37,14 @@ import 'graph_mail_api.dart';
         'contentType': body.isHtml ? 'html' : 'text',
         'content': body.content,
       },
-      if (from != null && from.isNotEmpty) 'from': _recipient(from.first),
+      if (from != null && from.isNotEmpty) ...{
+        'from': _recipient(from.first),
+        // Who sent it, the same. Without one, Graph may put the mailbox's
+        // owner there, and Outlook show it as sent by the owner on behalf
+        // of whoever it is from. Left off where Graph will not take it:
+        // see GraphMailApi.fileMessage.
+        'sender': _recipient(from.first),
+      },
       'toRecipients': _recipients(mime.to),
       'ccRecipients': _recipients(mime.cc),
       'bccRecipients': _recipients(mime.bcc),

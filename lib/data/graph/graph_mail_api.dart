@@ -1279,6 +1279,12 @@ class GraphMailApi {
   /// Its Message-ID goes with it where Graph will take one. If Graph turns
   /// the message away with it, it is filed without: the message matters
   /// more than the header.
+  ///
+  /// Its sender likewise, and before the Message-ID: turned away with one
+  /// for any reason (a 4xx, which makes nothing), it goes again without,
+  /// as it went before it had one, the Message-ID still with it. Not after
+  /// a fault of Graph's own, which may have made the message: tried again,
+  /// it could be there twice.
   Future<String> fileMessage(
     String folderId,
     Map<String, Object?> message,
@@ -1288,13 +1294,24 @@ class GraphMailApi {
       ..headers['Content-Type'] = 'application/json'
       ..body = jsonEncode(body);
 
-    var response = await _exchange(post(message));
+    var tried = message;
+    var response = await _exchange(post(tried));
+    final status = response.statusCode;
+    // Throttling, which _exchange waits out, is no refusal of what the
+    // message says.
+    if (status >= 400 && status < 500 && status != 429 &&
+        tried.containsKey('sender')) {
+      debugPrint('[myemail] filed without its sender: '
+          '${_errorOf(response)}');
+      tried = {...tried}..remove('sender');
+      response = await _exchange(post(tried));
+    }
     if (response.statusCode == 400 &&
-        message.containsKey('internetMessageId')) {
+        tried.containsKey('internetMessageId')) {
       debugPrint('[myemail] filed without its Message-ID: '
           '${_errorOf(response)}');
       response = await _exchange(
-        post({...message}..remove('internetMessageId')),
+        post({...tried}..remove('internetMessageId')),
       );
     }
     final id = _json(response)['id'];

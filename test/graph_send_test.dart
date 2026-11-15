@@ -306,6 +306,8 @@ void main() {
     GraphSender unanswered(
       List<Map<String, Object?>> Function(String messageId) rows, {
       int status = 502,
+      Map<String, String> headers = const {},
+      String body = '',
       List<String>? asked,
     }) {
       var messageId = '';
@@ -315,11 +317,26 @@ void main() {
           final mime = utf8.decode(base64Decode(request.body));
           messageId = RegExp(r'Message-Id: (<[^>]+>)', caseSensitive: false)
               .firstMatch(mime)![1]!;
-          return http.Response('', status);
+          return http.Response(body, status, headers: headers);
         }
         return sentItems(rows(messageId));
       });
     }
+
+    /// Graph's own words for a fault of its own.
+    final internalError = jsonEncode({
+      'error': {
+        'code': 'ErrorInternalServerError',
+        'message': 'An internal server error occurred.',
+      },
+    });
+
+    /// The refusal a send has always been, and not a may-have-gone: what
+    /// every caller does with it is what it did before 500 was looked for.
+    Matcher refusal(Object message) => allOf(
+          isA<SendFailed>().having((e) => e.message, 'message', message),
+          isNot(isA<SendMayHaveGone>()),
+        );
 
     test('there under its own Message-ID, it went', () async {
       final asked = <String>[];
@@ -482,6 +499,102 @@ void main() {
 
       await expectLater(sender.send(message()), throwsA(isA<SendFailed>()));
       expect(asked, ['POST sendMail']);
+    });
+
+    test('a fault of Microsoft\'s own is looked for, and there, it went',
+        () async {
+      // A 500 says the server failed while it handled the send, not that it
+      // never began: taken for a refusal, a message Exchange had queued was
+      // reported not sent, and sending it again sent it twice.
+      final asked = <String>[];
+      final sender =
+          unanswered((id) => [row(id: id)], status: 500, asked: asked);
+
+      await sender.send(message());
+
+      expect(asked, ['POST sendMail', 'GET messages']);
+    });
+
+    test('a fault of its own, not there: the refusal it always was',
+        () async {
+      // Looked for and not found, a 500 is what it was before it was
+      // looked for, so a reply from the shade still goes to Drafts and
+      // Running late still says it did not go.
+      final asked = <String>[];
+      final sender = unanswered((_) => [row(subject: 'Something else')],
+          status: 500, asked: asked);
+
+      await expectLater(
+        sender.send(message()),
+        throwsA(refusal(
+          'Microsoft would not accept the message (HTTP 500). It was looked '
+          'for in Sent Items for half a minute and is not there.',
+        )),
+      );
+      expect(asked.where((a) => a.startsWith('POST')), hasLength(1));
+    });
+
+    test('with Microsoft\'s own words for it, as they always were', () async {
+      final sender = unanswered((_) => [], status: 500, body: internalError);
+
+      await expectLater(
+        sender.send(message()),
+        throwsA(refusal(
+          'Microsoft would not accept the message (ErrorInternalServerError): '
+          'An internal server error occurred. It was looked for in Sent '
+          'Items for half a minute and is not there.',
+        )),
+      );
+    });
+
+    test('a fault of its own, and Sent Items cannot be read: still the '
+        'refusal, and to look', () async {
+      // Graph failing its reads too is when an honest 500 is likeliest.
+      // Taken for "may have gone", Running late from the shade said nothing,
+      // as if the people had been told.
+      for (final (body, said) in [
+        ('', 'Microsoft would not accept the message (HTTP 500).'),
+        (internalError,
+            'Microsoft would not accept the message '
+                '(ErrorInternalServerError): An internal server error '
+                'occurred.'),
+      ]) {
+        final sender = senderWith((request) async => request.method == 'POST'
+            ? http.Response(body, 500)
+            : http.Response('', 503));
+
+        await expectLater(
+          sender.send(message()),
+          throwsA(refusal(
+            '$said It could not be looked for in Sent Items, so check there '
+            'before sending it again.',
+          )),
+        );
+      }
+    });
+
+    test('a refusal that says when to try again is not looked for',
+        () async {
+      // Throttling, a server unavailable for now, or any fault that comes
+      // with a Retry-After: Microsoft says it took nothing.
+      final notGone = allOf(
+        isA<SendFailed>(),
+        isNot(isA<SendMayHaveGone>()),
+      );
+      for (final (status, headers) in [
+        (429, const <String, String>{}),
+        (503, const <String, String>{}),
+        (503, const {'retry-after': '30'}),
+        (500, const {'retry-after': '30'}),
+      ]) {
+        final asked = <String>[];
+        final sender = unanswered((id) => [row(id: id)],
+            status: status, headers: headers, asked: asked);
+
+        await expectLater(sender.send(message()), throwsA(notGone),
+            reason: 'HTTP $status $headers');
+        expect(asked, ['POST sendMail'], reason: 'HTTP $status $headers');
+      }
     });
   });
 
@@ -716,15 +829,19 @@ void main() {
 
     group('sent with no answer', () {
       /// A Microsoft that takes the draft and its file, answers the send
-      /// with a 502, and says [draft] when asked about the draft after.
-      GraphSender unanswered(http.Response Function() draft) => GraphSender(
+      /// with [status], and says [draft] when asked about the draft after.
+      GraphSender unanswered(
+        http.Response Function() draft, {
+        int status = 502,
+      }) =>
+          GraphSender(
             accessToken: ({bool force = false}) async => 'graph-token',
             maxMimeBytes: 4000,
             lookAfter: const [Duration.zero],
             httpClient: http_testing.MockClient((request) async {
               final path = request.url.path;
               if (request.method == 'GET') return draft();
-              if (path.endsWith('/send')) return http.Response('', 502);
+              if (path.endsWith('/send')) return http.Response('', status);
               if (path.endsWith('/attachments')) {
                 return http.Response(jsonEncode({'id': 'att-1'}), 201);
               }
@@ -767,6 +884,50 @@ void main() {
             (e) => e.message,
             'message',
             allOf(contains('may or may not'), contains('in Drafts')),
+          )),
+        );
+      });
+
+      test('a fault of Microsoft\'s own on the send: gone from Drafts, it '
+          'went', () async {
+        // Taken for a refusal, it said "nothing has gone out" of a message
+        // that may have.
+        await send(unanswered(() => http.Response('', 404), status: 500));
+      });
+
+      test('a fault of its own, the draft not to be asked about: the '
+          'refusal, and where it is', () async {
+        await expectLater(
+          send(unanswered(() => http.Response('', 503), status: 500)),
+          throwsA(allOf(
+            isA<SendFailed>().having(
+              (e) => e.message,
+              'message',
+              'Microsoft would not accept the message (HTTP 500). Whether it '
+                  'went could not be checked. If it has not, it is in '
+                  'Drafts; check Sent Items before sending it again.',
+            ),
+            isNot(isA<SendMayHaveGone>()),
+          )),
+        );
+      });
+
+      test('a fault of its own, still a draft: the refusal it always was',
+          () async {
+        await expectLater(
+          send(unanswered(
+            () => http.Response(jsonEncode({'isDraft': true}), 200),
+            status: 500,
+          )),
+          throwsA(allOf(
+            isA<SendFailed>().having(
+              (e) => e.message,
+              'message',
+              'Microsoft would not accept the message (HTTP 500). Half a '
+                  'minute later it had still not been sent. The message is '
+                  'in Drafts; nothing has gone out.',
+            ),
+            isNot(isA<SendMayHaveGone>()),
           )),
         );
       });

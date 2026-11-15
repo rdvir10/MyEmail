@@ -209,18 +209,32 @@ class GraphSender {
     // No answer, so the answer is looked for: a message Exchange took is
     // in Sent Items moments later. It used to be left to the person, who
     // was told it may or may not have gone and to go and look.
-    switch (await _went(() => _inSentItems(client, sent))) {
-      case true:
-        return;
-      case false:
-        throw SendMayHaveGone(
-          '${_firstSentence(unanswered.message)} It has not shown up in '
-          'Sent Items since, so it has probably not gone. Check Sent Items '
-          'before sending it again.',
-        );
-      case null:
-        throw unanswered;
+    final went = await _went(() => _inSentItems(client, sent));
+    if (went == true) return;
+    // A fault of Microsoft's own not found there, or not to be looked for:
+    // the refusal it always was, so whatever sent it does what it did: a
+    // reply from the shade goes to Drafts, Running late says it did not go.
+    if (unanswered case _FaultOfItsOwn(:final refusal)) {
+      throw SendFailed(
+        went == false
+            ? '${_ended(refusal.message)} It was looked for in Sent Items '
+                'for half a minute and is not there.'
+            : '${_ended(refusal.message)} It could not be looked for in '
+                'Sent Items, so check there before sending it again.',
+      );
     }
+    if (went == null) throw unanswered;
+    throw SendMayHaveGone(
+      '${_firstSentence(unanswered.message)} It has not shown up in '
+      'Sent Items since, so it has probably not gone. Check Sent Items '
+      'before sending it again.',
+    );
+  }
+
+  /// [message] ending as a sentence does, for another to follow it.
+  static String _ended(String message) {
+    final text = message.trimRight();
+    return RegExp(r'[.!?]$').hasMatch(text) ? text : '$text.';
   }
 
   /// What happened, as [message] begins, without the "so it may or may not
@@ -282,16 +296,31 @@ class GraphSender {
   }
 
   /// A refusal of the request that sends, except a gateway giving up on
-  /// the answer: Exchange may have queued the message behind it.
+  /// the answer, or a fault of Microsoft's own while it handled the send:
+  /// Exchange may have queued the message behind either. Each is looked
+  /// for before anything is said (see [_went]).
+  ///
+  /// A 500 says the server failed part way, not that it never began. One
+  /// that says when to try again (Retry-After) is a refusal, as 429 and
+  /// 503 are: Microsoft says it took nothing. One not found when looked
+  /// for, or not to be looked for, is the refusal it always was (see
+  /// [_FaultOfItsOwn]).
   static Object _sendFailureFor(http.Response response) {
-    if (response.statusCode == 502 || response.statusCode == 504) {
+    final status = response.statusCode;
+    if (status == 502 || status == 504) {
       return SendMayHaveGone(
-        'Microsoft did not answer in time (HTTP ${response.statusCode}), so '
+        'Microsoft did not answer in time (HTTP $status), so '
         'it may or may not have gone. Check Sent Items before sending it '
         'again.',
       );
     }
-    return _failureFor(response);
+    final refusal = _failureFor(response);
+    if (status == 500 &&
+        response.headers['retry-after'] == null &&
+        refusal is SendFailed) {
+      return _FaultOfItsOwn(refusal);
+    }
+    return refusal;
   }
 
   /// With a limit on making the connection, so one that is never made fails
@@ -360,22 +389,27 @@ class GraphSender {
     } on SendMayHaveGone catch (e) {
       // Lost with the send asked for and no answer: it may have gone. The
       // draft says which: sent, it has left Drafts.
-      switch (await _went(() => _draftHasGone(client, messageId))) {
-        case true:
-          return;
-        case false:
-          throw SendMayHaveGone(
-            '${_firstSentence(e.message)} It was still in Drafts half a '
-            'minute later, so it has probably not gone. Check Sent Items '
-            'before sending it again.',
-          );
-        case null:
-          throw _withNote(
-            e,
-            'If it has not, it is in Drafts; check Sent Items before sending '
-            'it again.',
-          );
+      final went = await _went(() => _draftHasGone(client, messageId));
+      if (went == true) return;
+      const unchecked = 'If it has not, it is in Drafts; check Sent Items '
+          'before sending it again.';
+      // A fault of Microsoft's own: the refusal it always was. Not caught
+      // below, so the note on where the message is goes on here.
+      if (e case _FaultOfItsOwn(:final refusal)) {
+        throw SendFailed(
+          went == false
+              ? '${_ended(refusal.message)} Half a minute later it had still '
+                  'not been sent. $_inDrafts'
+              : '${_ended(refusal.message)} Whether it went could not be '
+                  'checked. $unchecked',
+        );
       }
+      if (went == null) throw _withNote(e, unchecked);
+      throw SendMayHaveGone(
+        '${_firstSentence(e.message)} It was still in Drafts half a '
+        'minute later, so it has probably not gone. Check Sent Items '
+        'before sending it again.',
+      );
     } catch (e) {
       throw _withNote(e, _inDrafts);
     }
@@ -679,6 +713,21 @@ class GraphSender {
 
   static String _mb(int bytes) =>
       '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+}
+
+/// A 500 on the request that sends: a send that may have gone until it has
+/// been looked for, and then, found, one that went, and otherwise, not
+/// found or not to be looked for, [refusal], what a 500 always was, with
+/// Microsoft's own words for it.
+///
+/// Never leaves this file: a 500 ends as success or as [refusal], never as
+/// a may-have-gone. So every caller does with a 500 that was real what it
+/// always did: a reply from the shade is kept in Drafts, Running late says
+/// it did not go, a held send opens again with Send.
+class _FaultOfItsOwn extends SendMayHaveGone {
+  _FaultOfItsOwn(this.refusal) : super(refusal.message);
+
+  final SendFailed refusal;
 }
 
 /// What tells a message just sent from the others in Sent Items.

@@ -298,35 +298,49 @@ class EnoughMailTransport implements ImapTransport {
         // BODY[] is the whole message, every file with it: 27 MB of base64
         // downloaded and parsed to show a few lines beside a video, with
         // every other command for the account waiting behind it.
-        final structure = await c.uidFetchMessage(uid, 'BODYSTRUCTURE');
-        if (structure.messages.isEmpty) {
+        final structure =
+            _answerAbout(await c.uidFetchMessage(uid, 'BODYSTRUCTURE'), uid);
+        if (structure == null) {
           throw StateError('Message $uid in $path no longer exists');
         }
-        final parts = bodyPartsOf(structure.messages.first);
-        if (parts == null) {
-          final result = await c.uidFetchMessage(uid, 'BODY.PEEK[]');
-          if (result.messages.isEmpty) {
-            throw StateError('Message $uid in $path no longer exists');
-          }
-          return bodyFromMime(result.messages.first);
-        }
+        final parts = bodyPartsOf(structure);
+        if (parts == null) return _wholeBody(c, path, uid);
         final ids = parts.ids;
         final fetched = <String, Uint8List>{};
         if (ids.isNotEmpty) {
-          final result = await c.uidFetchMessage(
+          final message = _answerAbout(
+            await c.uidFetchMessage(
+              uid,
+              '(${[for (final id in ids) 'BODY.PEEK[$id]'].join(' ')})',
+            ),
             uid,
-            '(${[for (final id in ids) 'BODY.PEEK[$id]'].join(' ')})',
           );
-          if (result.messages.isEmpty) {
+          if (message == null) {
             throw StateError('Message $uid in $path no longer exists');
           }
           for (final id in ids) {
-            final raw = _fetchedPart(result.messages.first, id);
-            if (raw != null) fetched[id] = raw;
+            final raw = _fetchedPart(message, id);
+            // A part asked for that did not come back. Read without it, the
+            // body went into the cache short, and as nothing fetches a
+            // cached body again, the message opened that way for good. The
+            // whole message instead, then: the cost above, but only on this
+            // rare way, never for an answer that is whole.
+            if (raw == null) return _wholeBody(c, path, uid);
+            fetched[id] = raw;
           }
         }
         return bodyFromParts(parts, fetched);
       });
+
+  /// The body read from the whole message, `BODY[]`, every file with it.
+  Future<MailBody> _wholeBody(em.ImapClient c, String path, int uid) async {
+    final message =
+        _answerAbout(await c.uidFetchMessage(uid, 'BODY.PEEK[]'), uid);
+    if (message == null) {
+      throw StateError('Message $uid in $path no longer exists');
+    }
+    return bodyFromMime(message);
+  }
 
   /// IMAP has no preview to give: it would mean fetching a body part for
   /// every row. Previews here are written when a message is opened.
@@ -361,13 +375,14 @@ class EnoughMailTransport implements ImapTransport {
   @override
   Future<String> fetchRaw(String path, int uid) => _run(limit: transferLimit, (c) async {
         await _ensureSelected(c, path);
-        final result = await c.uidFetchMessage(uid, 'BODY.PEEK[]');
-        if (result.messages.isEmpty) {
+        final message =
+            _answerAbout(await c.uidFetchMessage(uid, 'BODY.PEEK[]'), uid);
+        if (message == null) {
           throw StateError('Message $uid in $path no longer exists');
         }
         // Rendered from the parsed message rather than read off the wire:
         // the same headers and parts, in the form every client reads.
-        return result.messages.first.renderMessage();
+        return message.renderMessage();
       });
 
   @override
@@ -377,9 +392,10 @@ class EnoughMailTransport implements ImapTransport {
         // BODYSTRUCTURE, not the message: the server describes the parts and
         // sends none of them, which is the whole point of listing separately
         // from fetching.
-        final result = await c.uidFetchMessage(uid, 'BODYSTRUCTURE');
-        if (result.messages.isEmpty) return const [];
-        return attachmentsOf(result.messages.first);
+        final message =
+            _answerAbout(await c.uidFetchMessage(uid, 'BODYSTRUCTURE'), uid);
+        if (message == null) return const [];
+        return attachmentsOf(message);
       });
 
   @override
@@ -393,10 +409,11 @@ class EnoughMailTransport implements ImapTransport {
         await _ensureSelected(c, path);
         // PEEK, so asking does not mark the message read.
         final fields = [for (final n in names) n.toUpperCase()].join(' ');
-        final result =
-            await c.uidFetchMessage(uid, 'BODY.PEEK[HEADER.FIELDS ($fields)]');
-        if (result.messages.isEmpty) return const {};
-        final message = result.messages.first;
+        final message = _answerAbout(
+          await c.uidFetchMessage(uid, 'BODY.PEEK[HEADER.FIELDS ($fields)]'),
+          uid,
+        );
+        if (message == null) return const {};
         return {
           for (final name in names)
             if (message.getHeaderValue(name) case final value?
@@ -465,14 +482,16 @@ class EnoughMailTransport implements ImapTransport {
         // PEEK, so downloading a file does not mark the message read. The
         // structure with it, in the same round trip, for how the part is
         // encoded: see decodePart.
-        final result = await c.uidFetchMessage(
+        final message = _answerAbout(
+          await c.uidFetchMessage(
+            uid,
+            '(BODYSTRUCTURE BODY.PEEK[$attachmentId])',
+          ),
           uid,
-          '(BODYSTRUCTURE BODY.PEEK[$attachmentId])',
         );
-        if (result.messages.isEmpty) {
+        if (message == null) {
           throw StateError('Attachment $attachmentId is no longer there');
         }
-        final message = result.messages.first;
         final raw = _fetchedPart(message, attachmentId);
         if (raw == null) {
           throw StateError('Attachment $attachmentId could not be decoded');
@@ -1002,9 +1021,45 @@ class EnoughMailTransport implements ImapTransport {
         _ => null,
       };
 
+  /// The answer about message [uid] among the lines a UID FETCH brought, or
+  /// null when none is about it: the message is gone.
+  ///
+  /// Not simply the first: a server may say what changed in another message
+  /// while it answers (RFC 3501 7.4.2), and the library keeps that line in
+  /// the result with the answer, ahead of it. The answer to a UID FETCH
+  /// carries its UID; where no line carries a UID at all, the first is
+  /// taken, as it always was, for a server that leaves it out.
+  static em.MimeMessage? _answerAbout(em.FetchImapResult result, int uid) {
+    final messages = result.messages;
+    for (final m in messages) {
+      if (m.uid == uid) return m;
+    }
+    if (messages.every((m) => m.uid == null)) return messages.firstOrNull;
+    return null;
+  }
+
+  /// The rows a fetch of [_headerCriteria] brought: the lines that answer
+  /// it.
+  ///
+  /// Not a line a server sent about a message while it answered, its UID,
+  /// FLAGS and MODSEQ alone (see [_answerAbout]), which the library keeps
+  /// in the result as a message of its own. Read as a header it was a row
+  /// with no subject, no sender and the time of the sync for its date: one
+  /// more row, kept for good, or about a message answered above it, the
+  /// later of two headers for it, which is the one the cache keeps.
+  ///
+  /// A line with anything else asked for is an answer, and a row as it
+  /// always was: one whose envelope the library could not read (an empty
+  /// subject sent as `{0}`) still has its structure, arrival or size, and
+  /// passed over, the message would be on no list and in no search.
   static List<RemoteHeader> _headers(em.FetchImapResult result) => [
         for (final m in result.messages)
-          if (m.uid != null) remoteHeaderFromMime(m),
+          if (m.uid != null &&
+              (m.envelope != null ||
+                  m.body != null ||
+                  m.internalDate != null ||
+                  m.size != null))
+            remoteHeaderFromMime(m),
       ];
 
   static String _flagName(MessageFlag flag) => switch (flag) {

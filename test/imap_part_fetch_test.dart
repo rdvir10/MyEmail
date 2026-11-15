@@ -105,6 +105,96 @@ void main() {
         expect(asked, isNot(contains('BODY.PEEK[$file]')),
             reason: 'part $file is a file, not the text');
       }
+      expect(server.fetches, hasLength(2),
+          reason: 'the structure, then the parts: nothing more');
+    });
+
+    test('an empty plain part beside the HTML is not asked for', () async {
+      // Sent as {0}, enough_mail reads the next line as its value and loses
+      // the HTML after it: the body came back empty and was cached so.
+      server.parts = [
+        _Part(
+          '1.1',
+          '("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" '
+              r'$size 0 NIL NIL NIL NIL)',
+          'Content-Type: text/plain; charset=utf-8\r\n'
+              'Content-Transfer-Encoding: 7bit\r\n',
+          '',
+        ),
+        ..._parts.skip(1),
+      ];
+
+      final body = await transport().fetchBody('INBOX', 7);
+
+      expect(body.html, '<p>Café at noon, see you there.</p>');
+      expect(body.text.trim(), 'Café at noon, see you there.',
+          reason: 'the text is made from the HTML, as with no plain part');
+      final asked = server.fetches.join('\n');
+      expect(asked, isNot(contains('BODY.PEEK[1.1]')));
+      expect(asked, isNot(contains('BODY.PEEK[]')),
+          reason: 'still the parts alone, not the whole message');
+      expect(server.fetches, hasLength(2));
+    });
+
+    test('a part asked for that does not come back: the message is read '
+        'whole', () async {
+      // Kept, a short answer is the message without its HTML for good: a
+      // cached body is never fetched again.
+      server.dropped = {'1.2'};
+
+      final body = await transport().fetchBody('INBOX', 7);
+
+      expect(body.html, '<p>Café at noon, see you there.</p>');
+      expect(body.text.trim(), 'Café at noon, see you there.');
+      expect(server.fetches, hasLength(3));
+      expect(server.fetches.last, contains('BODY.PEEK[]'));
+    });
+
+    test('news of another message ahead of the answer is not read as this '
+        'one', () async {
+      // A server may say what changed in another message at any time, and
+      // the library keeps that line with the answer, first.
+      server.before = r'* 2 FETCH (FLAGS (\Seen))';
+      final t = transport();
+
+      final body = await t.fetchBody('INBOX', 7);
+      expect(body.html, '<p>Café at noon, see you there.</p>');
+      expect(body.text.trim(), 'Café at noon, see you there.');
+      expect(server.fetches, hasLength(2));
+
+      expect(await t.fetchAttachment('INBOX', 7, '2'), _pdf);
+      expect(
+        [for (final a in await t.listAttachments('INBOX', 7)) a.name],
+        contains('Quote.pdf'),
+      );
+      expect(await t.fetchRaw('INBOX', 7), contains('Subject: Lunch'));
+      expect(await t.headerValues('INBOX', 7, ['Subject']),
+          {'subject': 'Lunch'});
+    });
+
+    test('an answer about another message is not taken for this one',
+        () async {
+      // Message 7 is gone, and the one line that came is about message 9.
+      server.uid = 9;
+      final t = transport();
+
+      await expectLater(t.fetchBody('INBOX', 7), throwsStateError);
+      await expectLater(t.fetchRaw('INBOX', 7), throwsStateError);
+      await expectLater(t.fetchAttachment('INBOX', 7, '2'), throwsStateError);
+      expect(await t.listAttachments('INBOX', 7), isEmpty);
+      expect(await t.headerValues('INBOX', 7, ['Subject']), isEmpty);
+    });
+
+    test('a server that leaves the UID out of its answer is still read',
+        () async {
+      // As every server should not, but the one answer there is is this
+      // message's, as it was taken before.
+      server.uid = null;
+
+      final body = await transport().fetchBody('INBOX', 7);
+
+      expect(body.html, '<p>Café at noon, see you there.</p>');
+      expect(server.fetches, hasLength(2));
     });
 
     test('Hebrew in the Windows and in the ISO charset reads as Hebrew',
@@ -251,6 +341,15 @@ class _PartServer {
   /// The parts of the message, [_parts] unless a test gives others.
   List<_Part> parts = _parts;
 
+  /// The parts left out of an answer that asked for them.
+  Set<String> dropped = {};
+
+  /// A line about another message, sent ahead of every FETCH answer.
+  String? before;
+
+  /// The UID the answers carry; null for a server that leaves it out.
+  int? uid = 7;
+
   int get port => _socket.port;
 
   static final _html = _wrapped(utf8.encode(
@@ -346,10 +445,17 @@ class _PartServer {
         fetches.add(command);
         // The parts first and the structure after, as a server may: what a
         // part is decoded with cannot depend on which came first.
-        final out = BytesBuilder()..add(ascii.encode('* 1 FETCH (UID 7'));
+        final out = BytesBuilder();
+        if (before case final line?) out.add(ascii.encode('$line\r\n'));
+        out.add(ascii.encode('* 1 FETCH (${uid == null ? '' : 'UID $uid'}'));
         for (final m in RegExp(r'BODY\.PEEK\[([^\]]*)\]').allMatches(command)) {
           final id = m.group(1)!;
-          final bytes = id.isEmpty ? _message : _part(id)?.content;
+          if (dropped.contains(id)) continue;
+          final bytes = id.isEmpty
+              ? _message
+              : id.startsWith('HEADER.FIELDS')
+                  ? ascii.encode('Subject: Lunch\r\n\r\n')
+                  : _part(id)?.content;
           if (bytes == null) continue;
           out
             ..add(ascii.encode(' BODY[$id] {${bytes.length}}\r\n'))
