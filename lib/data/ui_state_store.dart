@@ -125,6 +125,11 @@ abstract final class UiStateKeys {
   /// The calendars from links (see `InternetCalendar`). In the backup.
   static const internetCalendars = 'calendar.internet.v1';
 
+  /// The links to rooms of Ron's own that New meeting's Online menu offers
+  /// (see `MeetingLink`). In the backup only sealed with the sign-in
+  /// details: anyone with one of them can come in.
+  static const meetingLinks = 'calendar.meeting-links.v1';
+
   /// The meeting reminders and the morning agenda set with Android, and
   /// when they were last brought up to date; see `CalendarUpkeep`. Written
   /// by the background worker and the app, each through its own copy of

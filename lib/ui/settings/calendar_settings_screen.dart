@@ -15,6 +15,7 @@ import '../common/bottom_message.dart';
 import '../../domain/time_zones.dart' show placeOf;
 import '../calendar/time_zone_picker.dart';
 import '../messages/date_format.dart' show formatClock;
+import 'meeting_links_section.dart';
 
 /// Settings, Calendar: how MyEmail's calendar shows the day, its reminders
 /// and the morning's agenda, and Microsoft accounts' calendars in the
@@ -384,6 +385,8 @@ class CalendarSettingsScreen extends ConsumerWidget {
               style: muted,
             ),
           ),
+          const Divider(),
+          const MeetingLinksSection(),
         ],
       ),
     );

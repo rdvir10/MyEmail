@@ -24,6 +24,7 @@ import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/meeting.dart';
+import 'package:myemail/domain/meeting_link.dart';
 import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/domain/display_settings.dart';
 import 'package:myemail/state/calendar_providers.dart';
@@ -59,15 +60,22 @@ void main() {
   });
 
   /// [google] and [openInBrowser] stand in for the app's Google sign-in
-  /// where a test reaches it.
+  /// where a test reaches it. [links] are the meeting links kept in
+  /// Settings, Calendar.
   ProviderContainer container({
     MicrosoftOAuth? oauth,
     GoogleOAuth? google,
     Future<bool> Function(Uri)? openInBrowser,
     DateFinder? finder,
+    List<MeetingLink> links = const [],
   }) {
+    final ui = MemoryUiStateStore();
+    if (links.isNotEmpty) {
+      unawaited(ui.writeString(
+          UiStateKeys.meetingLinks, MeetingLink.listToText(links)));
+    }
     final c = ProviderContainer(overrides: [
-      uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+      uiStateStoreProvider.overrideWithValue(ui),
       mailEngineProvider.overrideWithValue(engine),
       deviceCalendarProvider.overrideWithValue(calendar),
       if (finder != null) dateFinderProvider.overrideWithValue(finder),
@@ -95,12 +103,14 @@ void main() {
     Future<bool> Function(Uri)? openInBrowser,
     DateFinder? finder,
     EventEdit? editing,
+    List<MeetingLink> links = const [],
   }) async {
     final c = container(
       oauth: oauth,
       google: google,
       openInBrowser: openInBrowser,
       finder: finder,
+      links: links,
     );
     await tester.pumpWidget(UncontrolledProviderScope(
       container: c,
@@ -1627,6 +1637,246 @@ void main() {
         final set = calls.singleWhere((c) => c.method == 'Clipboard.setData');
         expect((set.arguments as Map)['text'], teamsUrl);
         expect(find.text('Link copied'), findsOneWidget);
+      });
+    });
+
+    // A room of Ron's own, his Zoom room say, kept in Settings, Calendar,
+    // Meeting links (calendar idea #62). The menu offers it under Teams and
+    // Meet; the meeting goes with its link where a person pasting it would
+    // put it, the place where none was typed and the notes' last line, and
+    // nothing is made for it. Without a link kept, everything above holds.
+    group('in a room of your own (#62)', () {
+      const room = MeetingLink(
+        name: 'Zoom (my room)',
+        url: 'https://zoom.us/j/1234567890',
+      );
+      // What goes, and what shows under the notes: the service, by the
+      // link's host, never Ron's own name for the link, which stays on the
+      // switch and in Settings.
+      const line = 'Join the Zoom meeting: https://zoom.us/j/1234567890';
+      final invite = find.byKey(const ValueKey('meeting-invite-text'));
+
+      /// What the menu offers, in order, and what it shows chosen.
+      List<Object?> offered(WidgetTester tester) => [
+            for (final i
+                in tester.widget<DropdownButton<Object>>(kindMenu).items!)
+              i.value,
+          ];
+      Object? chosen(WidgetTester tester) =>
+          tester.widget<DropdownButton<Object>>(kindMenu).value;
+
+      String typed(WidgetTester tester, String key) =>
+          tester.widget<TextField>(field(key)).controller!.text;
+
+      testWidgets('is listed under Teams and Meet, and choosing it holds the '
+          'meeting there, with no Teams meeting made', (tester) async {
+        engine = _EachKind();
+        await pumpScreen(tester, accountId: 'acct-ms', links: const [room]);
+        await type(tester, 'meeting-title', 'Q3 review');
+        await type(tester, 'meeting-attendees', 'dana@example.com');
+        await type(tester, 'meeting-notes', 'Bring the numbers.');
+        expect(offered(tester),
+            [OnlineMeetingKind.teams, OnlineMeetingKind.googleMeet, room]);
+        expect(chosen(tester), OnlineMeetingKind.teams);
+        expect(tester.widget<Switch>(online).value, isFalse);
+
+        await chooseKind(tester, 'Zoom (my room)');
+
+        expect(tester.widget<Switch>(online).value, isTrue,
+            reason: 'choosing it is asking for it');
+        expect(chosen(tester), room, reason: 'named on the switch');
+        expect(engine.preparedMeetings, isEmpty, reason: 'nothing to make');
+        expect(find.descendant(of: invite, matching: find.textContaining(line)),
+            findsOneWidget);
+        expect(
+          find.descendant(
+              of: invite, matching: find.textContaining('my room')),
+          findsNothing,
+          reason: 'the line as it goes, without his name for the room',
+        );
+        // Shown, not written in: nothing Ron typed is touched.
+        expect(typed(tester, 'meeting-notes'), 'Bring the numbers.');
+        expect(typed(tester, 'meeting-location'), '');
+
+        await send(tester);
+
+        final m = engine.meetings.single;
+        expect(m.online, isNull, reason: 'no Teams meeting, and no Meet');
+        expect(m.prepared, isNull);
+        expect(m.location, room.url, reason: 'the place, none being typed');
+        expect(m.notes, 'Bring the numbers.\n\n$line');
+        expect('${m.title} ${m.location} ${m.notes}',
+            isNot(contains('my room')));
+        expect(find.text('Invitation sent, with the Zoom (my room) link'),
+            findsOneWidget);
+      });
+
+      testWidgets("notes that end with its line already, as a duplicate's "
+          'do, send it once', (tester) async {
+        engine = _EachKind();
+        await pumpScreen(tester, accountId: 'acct-ms', links: const [room]);
+        await type(tester, 'meeting-title', 'Q3 review, again');
+        await type(tester, 'meeting-location', room.url);
+        await type(tester, 'meeting-notes', 'Bring the numbers.\n\n$line');
+        await chooseKind(tester, 'Zoom (my room)');
+
+        await send(tester);
+
+        final m = engine.meetings.single;
+        expect(m.notes, 'Bring the numbers.\n\n$line');
+        expect(m.location, room.url);
+      });
+
+      testWidgets('after a Send with Teams that failed, the room is not said '
+          'to have gone where a place was typed: the calendar may keep the '
+          'Teams meeting that Send made, and the place', (tester) async {
+        final flaky = _SendFailsOnce();
+        engine = flaky;
+        await pumpScreen(tester, accountId: 'acct-ms', links: const [room]);
+        await type(tester, 'meeting-title', 'Q3 review');
+        await type(tester, 'meeting-attendees', 'dana@example.com');
+        await tester.tap(online);
+        await tester.pumpAndSettle();
+        await send(tester);
+        expect(find.byType(NewMeetingScreen), findsOneWidget);
+
+        await chooseKind(tester, 'Zoom (my room)');
+        await type(tester, 'meeting-location', 'Room 4');
+        await send(tester);
+
+        expect(find.byType(NewMeetingScreen), findsNothing);
+        expect(flaky.tried.last.changedSinceFailedSend, isTrue);
+        expect(flaky.tried.last.notes, line);
+        expect(find.text('Invitation sent'), findsOneWidget);
+      });
+
+      testWidgets('a place typed keeps its place; chosen after Teams, the '
+          'Teams meeting is undone, and Teams again leaves the room out',
+          (tester) async {
+        engine = _EachKind();
+        await pumpScreen(tester, accountId: 'acct-ms', links: const [room]);
+        await type(tester, 'meeting-title', 'Q3 review');
+        await type(tester, 'meeting-location', 'Room 4');
+        await tester.tap(online);
+        await tester.pumpAndSettle();
+        final teams = engine.preparedMeetings.single;
+
+        await chooseKind(tester, 'Zoom (my room)');
+        expect(engine.discardedMeetings.single, same(teams));
+        expect(engine.preparedMeetings, hasLength(1),
+            reason: 'nothing made for the room');
+
+        await chooseKind(tester, 'Teams meeting');
+        expect(engine.preparedMeetings, hasLength(2));
+        expect(find.descendant(of: invite, matching: find.textContaining(line)),
+            findsNothing);
+
+        await chooseKind(tester, 'Zoom (my room)');
+        await send(tester);
+        final m = engine.meetings.single;
+        expect(m.online, isNull);
+        expect(m.location, 'Room 4');
+        expect(m.notes, line);
+      });
+
+      testWidgets('switched off, the meeting goes without it', (tester) async {
+        engine = _EachKind();
+        await pumpScreen(tester, accountId: 'acct-ms', links: const [room]);
+        await type(tester, 'meeting-title', 'Q3 review');
+        await type(tester, 'meeting-notes', 'Bring the numbers.');
+        await chooseKind(tester, 'Zoom (my room)');
+        expect(invite, findsOneWidget);
+
+        await tester.tap(online);
+        await tester.pumpAndSettle();
+        expect(invite, findsNothing);
+        await send(tester);
+
+        final m = engine.meetings.single;
+        expect(m.online, isNull);
+        expect(m.notes, 'Bring the numbers.');
+        expect(m.location, '');
+        expect(find.text('Added to your calendar'), findsOneWidget);
+      });
+
+      testWidgets('kept through a change of From, with nothing made for the '
+          'account it now comes from', (tester) async {
+        engine = _EachKind();
+        await pumpScreen(tester, accountId: 'acct-ms', links: const [room]);
+        await type(tester, 'meeting-title', 'Planning');
+        await chooseKind(tester, 'Zoom (my room)');
+
+        await chooseFrom(tester, 'ron@gmail.com');
+
+        expect(offered(tester), [OnlineMeetingKind.googleMeet, room]);
+        expect(chosen(tester), room);
+        expect(tester.widget<Switch>(online).value, isTrue);
+        expect(engine.preparedMeetings, isEmpty, reason: 'no Meet made');
+        await send(tester);
+        final m = engine.meetings.single;
+        expect(m.accountId, 'acct-g');
+        expect(m.online, isNull);
+        expect(m.location, room.url);
+        expect(m.notes, line);
+        expect(find.text('Added to your calendar, with the Zoom (my room) link'),
+            findsOneWidget);
+      });
+
+      testWidgets('an account whose calendar the app cannot reach has the '
+          'switch for it alone, and hands the meeting over with it',
+          (tester) async {
+        // The link needs nothing of the calendar, and the phone's calendar
+        // app sends the invitation with the place and the notes.
+        engine = _NoCalendar();
+        await pumpScreen(tester, links: const [room]);
+        expect(online, findsOneWidget);
+        expect(kindMenu, findsNothing, reason: 'one choice is no menu');
+        expect(find.text('Zoom (my room)'), findsOneWidget);
+        await type(tester, 'meeting-title', 'Q3 review');
+        await type(tester, 'meeting-attendees', 'dana@example.com');
+        await type(tester, 'meeting-notes', 'Bring the numbers.');
+        await tester.tap(online);
+        await tester.pumpAndSettle();
+
+        await send(tester);
+
+        final e = calendar.inserted.single;
+        expect(e.location, room.url);
+        expect(e.description, 'Bring the numbers.\n\n$line');
+        expect(find.textContaining('Handed to your calendar app'),
+            findsOneWidget);
+      });
+
+      testWidgets('a Send that fails after Leave opens again with the room '
+          'still chosen, and goes as the same meeting', (tester) async {
+        final slow = _SlowSendFailsOnce();
+        engine = slow;
+        await pumpScreen(tester, accountId: 'acct-ms', links: const [room]);
+        await type(tester, 'meeting-title', 'Q3 review');
+        await type(tester, 'meeting-attendees', 'dana@example.com');
+        await chooseKind(tester, 'Zoom (my room)');
+        await tester.tap(find.byTooltip('Send'));
+        await tester.pump();
+        await tester.pageBack();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(find.text('Leave'));
+        await tester.pumpAndSettle();
+        expect(find.byType(NewMeetingScreen), findsNothing);
+
+        slow.gate.complete();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pumpAndSettle();
+        expect(find.byType(NewMeetingScreen), findsOneWidget);
+        expect(chosen(tester), room);
+        expect(tester.widget<Switch>(online).value, isTrue);
+
+        await tester.tap(find.byTooltip('Send'));
+        await tester.pumpAndSettle();
+        expect(slow.tried.map((m) => m.notes), [line, line]);
+        expect(slow.tried.last.changedSinceFailedSend, isFalse);
+        expect(slow.meetings.single.online, isNull);
+        expect(engine.preparedMeetings, isEmpty);
       });
     });
   });

@@ -30,6 +30,7 @@ import '../meetings/new_meeting_screen.dart' show openNewMeeting;
 import '../messages/date_format.dart';
 import '../messages/invite_answers.dart' show askHowToAnswer;
 import '../../state/date_providers.dart' show deviceZoneProvider;
+import 'calendar_keys.dart';
 import 'calendar_search_screen.dart';
 import 'event_actions.dart';
 import 'event_colours.dart';
@@ -434,7 +435,7 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
         value?.reading == false &&
         DateTime.now().difference(keptAt) > const Duration(minutes: 5);
 
-    return Scaffold(
+    final screen = Scaffold(
       appBar: AppBar(
         centerTitle: false,
         title: InkWell(
@@ -587,6 +588,22 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
           Expanded(child: content),
         ],
       ),
+    );
+    // The calendar's keys (calendar idea #75), each doing what the button
+    // for it does: Today, ‹ ›, the views, the title's date, search and +.
+    return CalendarKeys(
+      onToday: () => _jump(DateTime.now()),
+      onTurn: (direction) => _move(mode, direction),
+      onView: (view) {
+        if (view != mode) _setMode(view);
+      },
+      onGoToDate: _pickDate,
+      onSearch: () => CalendarSearchScreen.open(context),
+      onNewMeeting: accounts.isEmpty
+          ? null
+          : () => openNewMeeting(context, ref,
+              start: _newMeetingStart(mode, page)),
+      child: screen,
     );
   }
 }
@@ -855,6 +872,9 @@ class _PagerState extends State<_Pager> {
 
   void turn(int direction) {
     if (!_controller.hasClients) return;
+    // Nothing on the page turned from keeps the keyboard's focus, from the
+    // key or button on rather than half way through the turn.
+    releaseFocusWithin(context);
     final at = _controller.page?.round() ?? _home;
     _controller.animateToPage(
       at + direction,
@@ -869,7 +889,11 @@ class _PagerState extends State<_Pager> {
         controller: _controller,
         allowImplicitScrolling: true,
         physics: widget.locked ? const NeverScrollableScrollPhysics() : null,
-        onPageChanged: (index) => widget.onTurned(index - _home),
+        onPageChanged: (index) {
+          // A swipe too: the page left stays built, off screen.
+          releaseFocusWithin(context);
+          widget.onTurned(index - _home);
+        },
         itemBuilder: (context, index) => widget.page(index - _home),
       );
 }

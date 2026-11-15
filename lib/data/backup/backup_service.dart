@@ -4,6 +4,7 @@ import '../../domain/account.dart';
 import '../../domain/calendar_prefs.dart';
 import '../../domain/display_settings.dart';
 import '../../domain/internet_calendar.dart';
+import '../../domain/meeting_link.dart';
 import '../../domain/quick_step.dart';
 import '../../domain/settings_backup.dart';
 import '../../domain/signature.dart';
@@ -67,6 +68,8 @@ class BackupService {
     UiStateKeys.savedSearches: _Shape.text,
     UiStateKeys.calendarPrefs: _Shape.text,
     UiStateKeys.internetCalendars: _Shape.text,
+    // Never in the clear: see [export].
+    UiStateKeys.meetingLinks: _Shape.text,
     // Deliberately absent: UiStateKeys.selected, which is where you happened
     // to be standing, and UiStateKeys.recentMoves, which is a short history
     // rather than a setting. Neither is worth carrying and both would be odd
@@ -85,7 +88,9 @@ class BackupService {
   /// Calendars from links go with the secrets, sealed, or not at all: a
   /// private one's link is a key to it, and the file without a passphrase
   /// is the one the screen calls safe to keep anywhere. Only the public
-  /// holidays, the same link for everyone, go in the clear.
+  /// holidays, the same link for everyone, go in the clear. Saved meeting
+  /// links go the same way, and none of them in the clear: each lets
+  /// anyone into Ron's room.
   Future<SettingsBackup> export({String? passphrase}) async {
     final entries = <String, Object?>{};
     final calendars = InternetCalendar.listFrom(
@@ -103,6 +108,7 @@ class BackupService {
         if (open.isNotEmpty) entries[key] = InternetCalendar.listToText(open);
         continue;
       }
+      if (key == UiStateKeys.meetingLinks) continue;
       switch (shape) {
         case _Shape.ids:
           final ids = uiState.readIds(key);
@@ -136,6 +142,11 @@ class BackupService {
       if (private.isNotEmpty) {
         secrets[UiStateKeys.internetCalendars] =
             InternetCalendar.listToText(private);
+      }
+      final rooms =
+          MeetingLink.listFrom(uiState.readString(UiStateKeys.meetingLinks));
+      if (rooms.isNotEmpty) {
+        secrets[UiStateKeys.meetingLinks] = MeetingLink.listToText(rooms);
       }
       sealed = await vault.seal(secrets: secrets, passphrase: passphrase);
     }
@@ -288,6 +299,27 @@ class BackupService {
           ...fromFile,
           for (final c in here)
             if (!isPublicHolidayFeed(c.url) && !links.contains(c.url)) c,
+        ]),
+      };
+    }
+
+    // Meeting links: only those that came sealed, then this device's own
+    // that the file does not have, as the calendars from links are. One in
+    // the clear was written by nothing of ours, and is left out.
+    if (entries.containsKey(UiStateKeys.meetingLinks)) {
+      entries = {...entries}..remove(UiStateKeys.meetingLinks);
+    }
+    final sealedRooms = secrets[UiStateKeys.meetingLinks];
+    if (sealedRooms != null) {
+      final fromFile = MeetingLink.listFrom(sealedRooms);
+      final rooms = {for (final l in fromFile) l.url};
+      entries = {
+        ...entries,
+        UiStateKeys.meetingLinks: MeetingLink.listToText([
+          ...fromFile,
+          for (final l in MeetingLink.listFrom(
+              uiState.readString(UiStateKeys.meetingLinks)))
+            if (!rooms.contains(l.url)) l,
         ]),
       };
     }

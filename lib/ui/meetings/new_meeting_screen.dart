@@ -14,6 +14,7 @@ import '../../domain/calendar_event.dart';
 import '../../domain/error_report.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/meeting.dart';
+import '../../domain/meeting_link.dart';
 import '../../domain/text_direction.dart';
 import '../../state/calendar_providers.dart';
 import '../../state/calendar_view_providers.dart'
@@ -166,6 +167,14 @@ List<MailAddress> meetingAttendeesFor(
 /// under the notes while they are written, as Outlook has it; see
 /// [PreparedMeeting]. It is undone when the switch goes off, From changes,
 /// or the screen is left without sending.
+///
+/// With meeting links kept in Settings (Ron's Zoom room, say: see
+/// [MeetingLink]), the menu lists them under Teams and Meet, and the switch
+/// is there for every account once it has answered, an account whose own
+/// calendar holds none among them. Nothing is made for such a link: the
+/// meeting goes with it in the place, where none was typed, and as the
+/// notes' last line, which the screen shows under the notes and puts in
+/// what it sends, never in the fields.
 class NewMeetingScreen extends ConsumerStatefulWidget {
   const NewMeetingScreen({
     super.key,
@@ -233,6 +242,7 @@ class MeetingAsWritten {
     required this.prepared,
     required this.transactionId,
     required this.failedSends,
+    this.savedLink,
   });
 
   final String accountId;
@@ -257,6 +267,9 @@ class MeetingAsWritten {
   final PreparedMeeting? prepared;
   final String transactionId;
   final List<MeetingDraft> failedSends;
+
+  /// The meeting link picked from the Online menu, where one was.
+  final MeetingLink? savedLink;
 }
 
 class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
@@ -397,6 +410,30 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// switch for the account now.
   int _onlineAsk = 0;
 
+  /// Whether the account now in From has answered that ask. With meeting
+  /// links kept, the switch is there once it has, whatever it answered.
+  bool _onlineAnswered = false;
+
+  /// A meeting link picked from the menu (see [MeetingLink]), Ron's Zoom
+  /// room say, or null while the menu is on the account's own kind. Kept
+  /// through a change of From: the room is Ron's whichever account
+  /// invites to it.
+  late MeetingLink? _pickedLink = _written?.savedLink;
+
+  /// The meeting links kept in Settings, Calendar. Read through the app's
+  /// container, as a Send may still be finishing once the screen is gone.
+  List<MeetingLink> get _links => _container.read(meetingLinksProvider);
+
+  /// The meeting link the switch holds: the one picked, while it is still
+  /// kept, or else the first for an account that has answered and holds
+  /// none of its own. Null on Teams or Meet, and with no link kept.
+  MeetingLink? get _linkChoice {
+    final links = _links;
+    if (links.contains(_pickedLink)) return _pickedLink;
+    if (!_onlineAnswered || _onlineKinds.contains(_onlineKind)) return null;
+    return links.firstOrNull;
+  }
+
   /// Something the person can correct on the screen: no title, an end
   /// before the start, an address with a typo. Not a failure.
   String? _invalid;
@@ -525,6 +562,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     if (!mounted || ask != _onlineAsk) return;
     setState(() {
       _onlineKinds = kinds;
+      _onlineAnswered = true;
       _onlineKind =
           kinds.contains(_onlineKind) ? _onlineKind : kinds.firstOrNull;
     });
@@ -540,6 +578,8 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     _dropPrepared();
     final kind = _onlineKind;
     if (!_online || kind == null || !_onlineKinds.contains(kind)) return;
+    // Held in a room of Ron's own instead: there is nothing to make.
+    if (_linkChoice != null) return;
     // Made ahead on the main calendar alone; on another, Send makes the
     // link as it makes the meeting.
     if (_calendarId != CalendarEvent.mainCalendar) return;
@@ -719,6 +759,13 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     // Set in another zone: the times on its clock, and its name beside
     // them, so a 10:00 New York call stays New York's 10:00.
     final elsewhere = _allDay ? null : _options.zone;
+    // Held in a room of Ron's own: its link where a person pasting it
+    // would put it, the place where none was typed and the notes' last
+    // line, as Graph is given a Meet link made elsewhere. Every calendar
+    // takes it so, the phone's calendar app too, and none is asked for a
+    // link of its own. The fields keep what Ron typed.
+    final room = _online ? _linkChoice : null;
+    final place = _location.text.trim();
     MeetingDraft draft({bool changed = false}) => MeetingDraft(
           accountId: _accountId,
           title: _title.text.trim(),
@@ -726,11 +773,13 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
           start: _allDay ? day(_start) : _shown(_start),
           end: _allDay ? day(_end) : _shown(_end),
           allDay: _allDay,
-          location: _location.text.trim(),
-          notes: _notes.text.trim(),
+          location: room != null && place.isEmpty ? room.url : place,
+          notes: room?.endOf(_notes.text.trim()) ?? _notes.text.trim(),
           timeZone: elsewhere ?? zone,
-          online: _online ? _onlineKind : null,
-          prepared: _online && _calendarId == CalendarEvent.mainCalendar
+          online: _online && room == null ? _onlineKind : null,
+          prepared: _online &&
+                  room == null &&
+                  _calendarId == CalendarEvent.mainCalendar
               ? _prepared
               : null,
           calendarId: _calendarId,
@@ -765,6 +814,18 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       if (_gone) return;
     }
     final meeting = await _draft(attendees);
+    // The room it holds, if one of Ron's own, as the draft was made, for
+    // the message that says it went. Not said after a Send that asked the
+    // calendar for a link of its own and failed, where a place was typed:
+    // that Send may have made its meeting after all, with only the answer
+    // lost, and the calendar then answers this one with it, keeps its
+    // Teams body and takes the place typed, so the room is nowhere in it.
+    final room = _online ? _linkChoice : null;
+    final roomSaid = room != null &&
+            (meeting.location == room.url ||
+                !_failedSends.any((tried) => tried.online != null))
+        ? room
+        : null;
     if (_gone) return;
     final problem = meeting.problem;
     if (problem != null) {
@@ -809,9 +870,13 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             .then((_) => _discard(prepared))
             .catchError((_) {}));
       }
-      // Said whether the screen is still there or was left meanwhile.
+      // Said whether the screen is still there or was left meanwhile. A
+      // room by Ron's own name for it: this is said to him alone, where
+      // the invitation names only the service (MeetingLink.line).
       final link = held == null
-          ? ''
+          ? roomSaid == null
+              ? ''
+              : ', with the ${roomSaid.name} link'
           : remade
               ? ', with a new ${held.link.replaceFirst(RegExp('^an? '), '')}: '
                   'the one shown could not be used'
@@ -1193,6 +1258,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
         prepared: prepared,
         transactionId: _transactionId,
         failedSends: _failedSends,
+        savedLink: _pickedLink,
       );
 
   /// A Send or Save that failed once the screen was left: the screen again,
@@ -1301,11 +1367,76 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     return asking;
   }
 
+  /// The kind chosen from the Online menu: the switch on, the link of that
+  /// kind made unless it is made already, and any meeting link let go.
+  void _chooseKind(OnlineMeetingKind kind) {
+    final same = _online &&
+        kind == _onlineKind &&
+        (_prepared != null || _preparing != null);
+    setState(() {
+      _pickedLink = null;
+      _onlineKind = kind;
+      _online = true;
+    });
+    if (!same) unawaited(_prepare());
+  }
+
+  /// The Online menu with meeting links kept: the account's own kinds, then
+  /// the links by name, or the one there is as a label, a menu with one
+  /// entry being a puzzle. Choosing a link is asking for it, and nothing
+  /// is made: whatever was made for the account's own kind is undone.
+  Widget _onlineMenu(ThemeData theme, List<MeetingLink> links) {
+    final choices = <Object>[..._onlineKinds, ...links];
+    String label(Object choice) => switch (choice) {
+          final MeetingLink link => link.name,
+          final OnlineMeetingKind kind => kind.label,
+          _ => '',
+        };
+    if (choices.length == 1) {
+      return Text(
+        label(choices.single),
+        style: theme.textTheme.bodyMedium,
+        overflow: TextOverflow.ellipsis,
+      );
+    }
+    return DropdownButton<Object>(
+      key: const ValueKey('meeting-online-kind'),
+      value: _linkChoice ?? _onlineKind,
+      isExpanded: true,
+      underline: const SizedBox.shrink(),
+      style: theme.textTheme.bodyMedium,
+      items: [
+        for (final choice in choices)
+          DropdownMenuItem<Object>(
+            value: choice,
+            child: Text(label(choice), overflow: TextOverflow.ellipsis),
+          ),
+      ],
+      onChanged: _sending
+          ? null
+          : (choice) {
+              switch (choice) {
+                case final OnlineMeetingKind kind:
+                  _chooseKind(kind);
+                case final MeetingLink link:
+                  setState(() {
+                    _dropPrepared();
+                    _pickedLink = link;
+                    _online = true;
+                  });
+              }
+            },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
     final account = accounts.where((a) => a.id == _accountId).firstOrNull;
+    final links = ref.watch(meetingLinksProvider);
+    // A meeting link the switch holds, shown under the notes as it goes.
+    final room = _online ? _linkChoice : null;
     final muted = theme.textTheme.bodyMedium
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
 
@@ -1409,6 +1540,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                                   // answered for itself; the kind chosen
                                   // waits to see whether it can too.
                                   _onlineKinds = const [];
+                                  _onlineAnswered = false;
                                 });
                                 _askOnline();
                               },
@@ -1556,7 +1688,12 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                   ),
                 ),
               ),
-            if (_onlineKinds.isNotEmpty && _editing == null)
+            // With meeting links kept, for every account once it has said,
+            // one whose calendar holds none among them: a link needs
+            // nothing of the calendar.
+            if ((_onlineKinds.isNotEmpty ||
+                    (_onlineAnswered && links.isNotEmpty)) &&
+                _editing == null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
                 child: Row(
@@ -1577,7 +1714,10 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: _onlineKinds.length > 1
+                      child: links.isNotEmpty
+                          ? _onlineMenu(theme, links)
+                          // With no meeting link kept, as it always was.
+                          : _onlineKinds.length > 1
                           ? DropdownButton<OnlineMeetingKind>(
                               key: const ValueKey('meeting-online-kind'),
                               value: _onlineKind,
@@ -1597,16 +1737,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                               onChanged: _sending
                                   ? null
                                   : (kind) {
-                                      if (kind == null) return;
-                                      final same = _online &&
-                                          kind == _onlineKind &&
-                                          (_prepared != null ||
-                                              _preparing != null);
-                                      setState(() {
-                                        _onlineKind = kind;
-                                        _online = true;
-                                      });
-                                      if (!same) unawaited(_prepare());
+                                      if (kind != null) _chooseKind(kind);
                                     },
                             )
                           : Text(
@@ -1729,8 +1860,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                     // the notes are then what is being written, and a
                     // sliver of block would take their room to show nothing.
                     if (_online &&
-                        _onlineKind != null &&
-                        _onlineKinds.contains(_onlineKind) &&
+                        (room != null ||
+                            (_onlineKind != null &&
+                                _onlineKinds.contains(_onlineKind))) &&
                         box.maxHeight >=
                             // The screen's own context: the Scaffold
                             // takes the keyboard out of what its body sees.
@@ -1746,12 +1878,14 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                       ConstrainedBox(
                         constraints:
                             BoxConstraints(maxHeight: box.maxHeight / 2),
-                        child: _InviteText(
-                          kind: _onlineKind!,
-                          prepared: _prepared,
-                          making: _preparing != null,
-                          failed: _prepareFailed,
-                        ),
+                        child: room != null
+                            ? _InviteText.room(room)
+                            : _InviteText(
+                                kind: _onlineKind!,
+                                prepared: _prepared,
+                                making: _preparing != null,
+                                failed: _prepareFailed,
+                              ),
                       ),
                   ],
                 ),
@@ -1773,24 +1907,37 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
 /// be copied, to paste somewhere the invitation does not go.
 class _InviteText extends StatelessWidget {
   const _InviteText({
-    required this.kind,
+    required OnlineMeetingKind this.kind,
     required this.prepared,
     required this.making,
     required this.failed,
-  });
+  }) : room = null;
 
-  final OnlineMeetingKind kind;
+  /// A meeting link of Ron's own: the line the notes end with as the
+  /// meeting goes, with nothing made for it. Kept out of the notes field
+  /// so that nothing Ron wrote is ever taken out with it.
+  const _InviteText.room(MeetingLink this.room)
+      : kind = null,
+        prepared = null,
+        making = false,
+        failed = false;
+
+  final OnlineMeetingKind? kind;
   final PreparedMeeting? prepared;
   final bool making;
   final bool failed;
+  final MeetingLink? room;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final muted = theme.textTheme.bodySmall
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
-    final text = prepared?.inviteText.trim() ?? '';
-    final link = kind.link[0].toUpperCase() + kind.link.substring(1);
+    final text = room?.line ?? prepared?.inviteText.trim() ?? '';
+    final joinUrl = room?.url ?? prepared?.joinUrl;
+    final said = kind?.link ?? '';
+    final link =
+        said.isEmpty ? '' : said[0].toUpperCase() + said.substring(1);
     return Container(
       key: const ValueKey('meeting-invite-text'),
       width: double.infinity,
@@ -1811,11 +1958,11 @@ class _InviteText extends StatelessWidget {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                   const SizedBox(width: 10),
-                  Expanded(child: Text('Making ${kind.link}…', style: muted)),
+                  Expanded(child: Text('Making $said…', style: muted)),
                 ],
               ),
             )
-          : prepared == null || text.isEmpty
+          : joinUrl == null || text.isEmpty
               ? Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   child: Text(
@@ -1844,7 +1991,7 @@ class _InviteText extends StatelessWidget {
                           onPressed: () async {
                             final messenger = ScaffoldMessenger.of(context);
                             await Clipboard.setData(
-                              ClipboardData(text: prepared!.joinUrl),
+                              ClipboardData(text: joinUrl),
                             );
                             messenger
                               ..hideCurrentSnackBar()

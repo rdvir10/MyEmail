@@ -7,7 +7,7 @@ import 'calendar_view_providers.dart'
     show calendarPrefsProvider, internetCalendarsProvider;
 import 'compose_providers.dart' show signaturesProvider;
 import 'display_providers.dart';
-import 'meeting_providers.dart' show workWeekProvider;
+import 'meeting_providers.dart' show meetingLinksProvider, workWeekProvider;
 import 'search_providers.dart' show savedSearchesProvider;
 import 'sender_blocks.dart';
 import 'list_columns.dart';
@@ -64,6 +64,7 @@ const reloadedAfterRestore = {
   UiStateKeys.savedSearches,
   UiStateKeys.calendarPrefs,
   UiStateKeys.internetCalendars,
+  UiStateKeys.meetingLinks,
 };
 
 /// Every setting a restore wrote, read again from where it was written.
@@ -93,5 +94,6 @@ void reloadRestoredSettings(WidgetRef ref) {
     ..invalidate(senderBlocksProvider)
     ..invalidate(savedSearchesProvider)
     ..invalidate(calendarPrefsProvider)
-    ..invalidate(internetCalendarsProvider);
+    ..invalidate(internetCalendarsProvider)
+    ..invalidate(meetingLinksProvider);
 }

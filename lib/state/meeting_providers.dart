@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/mail_engine.dart';
 import '../data/ui_state_store.dart';
 import '../domain/meeting.dart';
+import '../domain/meeting_link.dart';
 import 'folder_tree.dart' show isSyntheticList;
 import 'providers.dart';
 
@@ -184,3 +185,33 @@ class WorkWeek extends Notifier<Set<int>> {
 }
 
 final workWeekProvider = NotifierProvider<WorkWeek, Set<int>>(WorkWeek.new);
+
+/// The links to rooms of Ron's own (see [MeetingLink]), kept in Settings,
+/// Calendar, Meeting links: New meeting's Online menu offers them under
+/// Teams and Meet.
+class MeetingLinks extends Notifier<List<MeetingLink>> {
+  @override
+  List<MeetingLink> build() {
+    final store = ref.watch(uiStateStoreProvider);
+    listenSelf((_, next) => store.writeString(
+          UiStateKeys.meetingLinks,
+          next.isEmpty ? null : MeetingLink.listToText(next),
+        ));
+    return List.unmodifiable(
+        MeetingLink.listFrom(store.readString(UiStateKeys.meetingLinks)));
+  }
+
+  void add(MeetingLink link) => state = List.unmodifiable([...state, link]);
+
+  /// [old] as [link] now has it, where it was in the list.
+  void replace(MeetingLink old, MeetingLink link) => state =
+      List.unmodifiable([for (final l in state) l == old ? link : l]);
+
+  void remove(MeetingLink link) => state = List.unmodifiable([
+        for (final l in state)
+          if (l != link) l,
+      ]);
+}
+
+final meetingLinksProvider =
+    NotifierProvider<MeetingLinks, List<MeetingLink>>(MeetingLinks.new);

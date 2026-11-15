@@ -249,7 +249,8 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
                     'them, the file is safe to keep anywhere and each account '
                     'is signed in once afterwards. Calendars added from a '
                     'link go in only with them, since a private link lets '
-                    'anyone read its calendar.',
+                    'anyone read its calendar, and so do meeting links, '
+                    'which let anyone into your room.',
                     style: theme.textTheme.bodySmall,
                   ),
                 ),

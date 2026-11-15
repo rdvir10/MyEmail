@@ -25,7 +25,8 @@ import 'account_colours.dart';
 ///
 /// Calendars added from a link go the same way: a private one's link is a
 /// key to it, so it is sealed with the secrets or left out (see
-/// BackupService.export); only the public holidays go in the clear.
+/// BackupService.export); only the public holidays go in the clear. Saved
+/// meeting links are sealed or left out too, every one of them.
 ///
 /// Both files are otherwise identical, and an [sealedSecrets] block is
 /// optional in the format rather than a new version of it — a build that

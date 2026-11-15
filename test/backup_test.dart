@@ -11,6 +11,7 @@ import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/internet_calendar.dart';
 import 'package:myemail/domain/meeting.dart';
+import 'package:myemail/domain/meeting_link.dart';
 import 'package:myemail/domain/settings_backup.dart';
 import 'package:myemail/state/backup_providers.dart';
 import 'package:myemail/state/compose_providers.dart' show signaturesProvider;
@@ -191,6 +192,18 @@ void main() {
             fresh.readString(UiStateKeys.internetCalendars)),
         [_holidays],
       );
+    });
+
+    test('a saved meeting link is not in a file without sign-in details',
+        () async {
+      // Anyone with the link can come into Ron's room (calendar idea #62).
+      await uiState.writeString(
+          UiStateKeys.meetingLinks, MeetingLink.listToText(const [_room]));
+
+      final backup = await service.export();
+
+      expect(backup.toJsonString(), isNot(contains(_roomCode)));
+      expect(backup.entries, isEmpty);
     });
   });
 
@@ -497,6 +510,37 @@ void main() {
             uiState.readString(UiStateKeys.internetCalendars)),
         [_familyCalendar, _holidays, _teamCalendar],
       );
+    });
+
+    test('a file without sign-in details leaves the meeting links already '
+        'on this device', () async {
+      await uiState.writeString(
+          UiStateKeys.meetingLinks, MeetingLink.listToText(const [_room]));
+      final file = (await service.export()).toJsonString();
+      final tablet = MemoryUiStateStore();
+      await tablet.writeString(
+          UiStateKeys.meetingLinks, MeetingLink.listToText(const [_webex]));
+
+      await BackupService(accountStore: MemoryAccountStore(), uiState: tablet)
+          .import(SettingsBackup.parse(file));
+
+      expect(MeetingLink.listFrom(tablet.readString(UiStateKeys.meetingLinks)),
+          [_webex]);
+    });
+
+    test('a meeting link in the clear, which no build writes, is not taken',
+        () async {
+      final odd = SettingsBackup(
+        accounts: const [],
+        entries: {
+          UiStateKeys.meetingLinks: MeetingLink.listToText(const [_room]),
+        },
+      );
+
+      final report = await service.import(odd);
+
+      expect(report.settingsRestored, 0);
+      expect(uiState.readString(UiStateKeys.meetingLinks), isNull);
     });
   });
 
@@ -970,6 +1014,36 @@ void main() {
       expect(report.settingsRestored, 1);
     });
 
+    test('meeting links travel sealed, and come back with the passphrase '
+        "beside this device's own", () async {
+      await uiState.writeString(
+          UiStateKeys.meetingLinks, MeetingLink.listToText(const [_room]));
+      final file = (await serviceWith(
+        store: accounts,
+        creds: MemoryCredentialStore(),
+        ui: uiState,
+      ).export(passphrase: passphrase))
+          .toJsonString();
+
+      expect(file, isNot(contains(_roomCode)));
+      final toUi = MemoryUiStateStore();
+      await toUi.writeString(
+        UiStateKeys.meetingLinks,
+        MeetingLink.listToText(
+            [_webex, MeetingLink(name: 'Zoom', url: _room.url)]),
+      );
+      final report = await serviceWith(
+        store: MemoryAccountStore(),
+        creds: MemoryCredentialStore(),
+        ui: toUi,
+      ).import(SettingsBackup.parse(file), passphrase: passphrase);
+
+      // The file's, then this device's own, and the same room once.
+      expect(MeetingLink.listFrom(toUi.readString(UiStateKeys.meetingLinks)),
+          [_room, _webex]);
+      expect(report.settingsRestored, 1);
+    });
+
     test('a file saved without a passphrase carries no secrets', () async {
       final creds = MemoryCredentialStore();
       await creds.writeSecret('acct-aaa', 'abcdabcdabcdabcd');
@@ -1203,6 +1277,17 @@ void main() {
     });
   });
 }
+
+/// Ron's Zoom room: anyone with its link can come in.
+const _roomCode = '8123456789';
+const _room = MeetingLink(
+  name: 'Zoom (my room)',
+  url: 'https://zoom.us/j/$_roomCode?pwd=Xy12AbCdEf',
+);
+const _webex = MeetingLink(
+  name: 'Webex',
+  url: 'https://acme.webex.com/meet/ron',
+);
 
 /// A family calendar's secret address in iCal format, as Google gives it.
 const _familyToken = 'private-0123456789abcdef0123456789abcdef';

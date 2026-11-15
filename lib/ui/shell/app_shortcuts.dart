@@ -1,3 +1,4 @@
+import '../calendar/calendar_keys.dart' show calendarKeys;
 import '../calendar/calendar_screen.dart';
 import '../quick_steps/apply_quick_step.dart';
 import '../../state/quick_steps.dart';
@@ -512,16 +513,24 @@ const shortcutHelp = <String, List<ShortcutHelp>>{
     ShortcutHelp('Ctrl+Enter', 'Send'),
     ShortcutHelp('Esc', 'Close (asks about the draft)'),
   ],
+  // The calendar's own table, which its keys are read from.
+  'In the calendar': calendarKeys,
 };
 
 /// The help sheet: every key, grouped. Reached from F1 and from Settings.
-Future<void> showShortcutsHelp(BuildContext context) {
+/// The calendar's F1 shows its own part of it alone, under its own
+/// [title].
+Future<void> showShortcutsHelp(
+  BuildContext context, {
+  String title = 'Keyboard shortcuts',
+  Map<String, List<ShortcutHelp>> sections = shortcutHelp,
+}) {
   return showDialog<void>(
     context: context,
     builder: (context) {
       final theme = Theme.of(context);
       return AlertDialog(
-        title: const Text('Keyboard shortcuts'),
+        title: Text(title),
         content: SizedBox(
           width: 440,
           child: SingleChildScrollView(
@@ -529,7 +538,7 @@ Future<void> showShortcutsHelp(BuildContext context) {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                for (final section in shortcutHelp.entries) ...[
+                for (final section in sections.entries) ...[
                   Padding(
                     padding: const EdgeInsets.only(top: 12, bottom: 4),
                     child: Text(
