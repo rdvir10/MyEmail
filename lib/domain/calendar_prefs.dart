@@ -80,7 +80,7 @@ class CalendarPrefs {
           ? allDayEveningAt
           : allDayMorningAt);
 
-  /// An invitation answered, from its card or its notification, goes to
+  /// An invitation answered (its card, its notification, the calendar) goes to
   /// Deleted Items, as Outlook's "Delete meeting request from Inbox when
   /// responding" sends it; the meeting stays on the calendar.
   final bool deleteAnsweredInvites;

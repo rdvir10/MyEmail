@@ -22,6 +22,7 @@ import '../compose/open_compose.dart';
 import '../meetings/new_meeting_screen.dart';
 import '../messages/date_format.dart';
 import '../messages/invite_answers.dart';
+import 'invitation_clearing.dart';
 
 /// What can be done with a meeting the calendar shows, as its sheet, its
 /// block in Day and Week, and the rest of the calendar do it: answer it,
@@ -134,18 +135,28 @@ const _pastOnesToo = 'The whole series goes, past ones too.';
 
 /// Answer [event] as [response], as the sheet's question was answered (see
 /// `askHowToAnswer`): telling the organiser, with [note] where there is
-/// one, or, [send] false, not telling them at all.
-Future<void> answerEvent(
+/// one, or, [send] false, not telling them at all. [lookup] is its
+/// invitation being looked for since the answer was chosen, where the
+/// caller began to (#51); otherwise it is looked for from here, before the
+/// answer goes.
+///
+/// Once the answer has gone, whether it was for every meeting of the
+/// series (false for this one, or one on its own); null where it did not
+/// go: backed out of, or refused.
+Future<bool?> answerEvent(
   BuildContext context,
   WidgetRef ref,
   CalendarEvent event,
   InviteResponse response, {
   String note = '',
   bool send = true,
+  InvitationLookup? lookup,
 }) async {
   final messenger = ScaffoldMessenger.of(context);
+  final clearing = InvitationClearing.before(context, ref);
+  final looking = lookup ?? clearing?.lookUp(event);
   final series = await askWholeSeries(context, event, doing: 'Answer');
-  if (series == null || !context.mounted) return;
+  if (series == null || !context.mounted) return null;
   try {
     await ref.read(mailEngineProvider).respondToEvent(
           event,
@@ -155,16 +166,41 @@ Future<void> answerEvent(
           wholeSeries: series,
         );
     final who = event.organizer;
-    _tell(
+    _answered(
       messenger,
+      event,
       send && who != null
           ? '${response.word}. ${_name(who)} is told.'
           : '${response.word}. The organiser was not told.',
+      clearing: clearing,
+      lookup: looking,
+      wholeSeries: series,
     );
     unawaited(settleCalendar(ref, event));
+    return series;
   } catch (e) {
     _tell(messenger, 'Could not answer: ${_why(e)}');
+    return null;
   }
+}
+
+/// [said], an answer to [event], along the bottom; or where Settings say an
+/// answered invitation goes to Deleted Items ([clearing]), said with its
+/// invitation going as from its card, as [lookup] finds it (#51).
+void _answered(
+  ScaffoldMessengerState messenger,
+  CalendarEvent event,
+  String said, {
+  required InvitationClearing? clearing,
+  required InvitationLookup? lookup,
+  bool wholeSeries = false,
+}) {
+  if (clearing == null || lookup == null) {
+    _tell(messenger, said);
+    return;
+  }
+  unawaited(clearing.answered(event,
+      said: said, lookup: lookup, wholeSeries: wholeSeries));
 }
 
 /// Propose a new time for [event], someone else's meeting on a Microsoft
@@ -175,6 +211,10 @@ Future<void> proposeForEvent(
   CalendarEvent event,
 ) async {
   final messenger = ScaffoldMessenger.of(context);
+  // A new time is an answer too, which takes the invitation out of the
+  // Inbox from its card: looked for while the time is chosen (#51).
+  final clearing = InvitationClearing.before(context, ref);
+  final lookup = clearing?.lookUp(event);
   final answer =
       await askForProposalAt(context, start: event.start, end: event.end);
   if (answer == null || !context.mounted) return;
@@ -185,8 +225,14 @@ Future<void> proposeForEvent(
           note: answer.note,
           proposal: answer.proposal,
         );
-    _tell(messenger, '${answer.response.word}, with a new time proposed. '
-        'The organiser is told.');
+    _answered(
+      messenger,
+      event,
+      '${answer.response.word}, with a new time proposed. The organiser is '
+      'told.',
+      clearing: clearing,
+      lookup: lookup,
+    );
     unawaited(settleCalendar(ref, event));
   } catch (e) {
     _tell(messenger, 'Could not propose it: ${_why(e)}');
@@ -301,9 +347,10 @@ Future<void> moveEvent(
 /// Cancel [event], the account's own with others on it, asked first, with
 /// a note to them where the calendar sends one; or delete it, where nobody
 /// else is on it, at once with Undo; or for someone else's meeting,
-/// decline it and take it off, asked first. Someone else's that its
-/// organiser has cancelled is only taken off, at once with Undo, as
-/// Remove from calendar on the cancellation does: nobody is told.
+/// decline it and take it off, asked first, and its invitation with it, as
+/// after an answer. Someone else's that its organiser has cancelled is only
+/// taken off, at once with Undo, as Remove from calendar on the
+/// cancellation does: nobody is told.
 Future<void> cancelOrDeleteEvent(
   BuildContext context,
   WidgetRef ref,
@@ -337,6 +384,12 @@ Future<void> cancelOrDeleteEvent(
     );
     return;
   }
+  // Someone else's, declined: its invitation goes from the Inbox as after
+  // an answer (#51). Looked for now, while the calendar still has the
+  // meeting to tie it to, and once it is off, cleared; the decline and the
+  // removal never wait for it.
+  final clearing = own ? null : InvitationClearing.before(context, ref);
+  final lookup = clearing?.lookUp(event);
   final series = await askWholeSeries(
     context,
     event,
@@ -361,9 +414,16 @@ Future<void> cancelOrDeleteEvent(
     } else {
       await engine.removeEvent(event, wholeSeries: series);
     }
-    _tell(messenger, own
-        ? 'Cancelled. Everyone on it is told.'
-        : 'Declined and taken off your calendar.');
+    _answered(
+      messenger,
+      event,
+      own
+          ? 'Cancelled. Everyone on it is told.'
+          : 'Declined and taken off your calendar.',
+      clearing: clearing,
+      lookup: lookup,
+      wholeSeries: series,
+    );
     unawaited(settleCalendar(ref, event));
   } catch (e) {
     pending.settle(event);

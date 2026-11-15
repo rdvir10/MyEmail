@@ -111,6 +111,11 @@ class MessageActions {
   MessageActions(WidgetRef ref, this.listId)
       : container = ProviderScope.containerOf(ref.context, listen: false);
 
+  /// The same, from the app's [container] itself, taken earlier: for an
+  /// action that comes once the screen it began on may have gone, as an
+  /// invitation cleared after its meeting is answered in the calendar.
+  MessageActions.within(this.container, this.listId);
+
   /// The app's container, taken while the widget is still there. Nothing
   /// here reads through the widget's own ref after that: an action outlives
   /// the widget that started it. Deleting from the reading pane on a tablet
@@ -485,6 +490,36 @@ class MessageActions {
     } catch (e) {
       _say(to, 'Could not delete: $e', notDone: true);
     }
+  }
+
+  /// [messages] into Trash as [delete] puts them, every list that showed
+  /// them told, but with nothing said: for a caller that says it its own
+  /// way, when it is time to, with Undo from the moves answered (see
+  /// [undoMoves]). Throws as the delete does.
+  Future<List<MessageMove>> deleteQuietly(List<MailMessage> messages) =>
+      _noted(_deleteQuietly(messages));
+
+  Future<List<MessageMove>> _deleteQuietly(List<MailMessage> messages) async {
+    if (messages.isEmpty) return const [];
+    final (held, elsewhere) = _split(messages);
+    final moves = <MessageMove>[];
+    if (held.isNotEmpty) {
+      moves.addAll(await container
+          .read(messagesProvider(listId).notifier)
+          .delete([for (final m in held) m.id]));
+      _refreshSearch();
+    }
+    if (elsewhere.isNotEmpty) {
+      final gone = await container
+          .read(mailEngineProvider)
+          .deleteMessages([for (final m in elsewhere) m.id]);
+      moves.addAll(gone);
+      _afterEngineChange(
+        elsewhere,
+        touched: [for (final m in gone) m.toFolderId],
+      );
+    }
+    return moves;
   }
 
   /// Read or unread, for several at once.

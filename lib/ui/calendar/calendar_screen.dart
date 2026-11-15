@@ -35,8 +35,10 @@ import 'calendar_search_screen.dart';
 import 'event_actions.dart';
 import 'event_colours.dart';
 import 'event_notes.dart';
+import 'invitation_clearing.dart' show InvitationClearing;
 import 'meeting_mail.dart';
 import 'place_link.dart';
+import 'waiting_answers.dart';
 
 /// Outlook's Calendar, beside the mail: every account's events as an
 /// agenda, a day, a week or a month. Shown from what the device kept of
@@ -587,6 +589,8 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
               keptAt: keptAt,
               onRefresh: () => ref.read(calendarRefreshProvider.notifier).now(),
             ),
+          if (mode == CalendarViewMode.agenda && accounts.isNotEmpty)
+            WaitingAnswersLine(agenda: range),
           Expanded(child: content),
         ],
       ),
@@ -1358,6 +1362,16 @@ class _AgendaRow extends StatelessWidget {
     );
   }
 }
+
+/// [event] drawn as the Agenda draws it under [day]'s heading, for a list
+/// of meetings beside it: those waiting for an answer (#50).
+Widget agendaRow(
+  CalendarEvent event, {
+  required DateTime day,
+  required Color colour,
+  required VoidCallback onTap,
+}) =>
+    _AgendaRow(event: event, day: day, colour: colour, onTap: onTap);
 
 // --- the month ------------------------------------------------------------------
 
@@ -2702,6 +2716,9 @@ class _EventDetails extends StatelessWidget {
         // Asked first, as Outlook asks, from a menu under the button while
         // the sheet is still up; answered once it has closed.
         Future<void> tap() async {
+          // Its invitation looked for while this is asked, before the
+          // answer goes: a decline takes a Microsoft meeting off (#51).
+          final lookup = InvitationClearing.before(host, hostRef)?.lookUp(e);
           final answer = await askHowToAnswer(
             context,
             r,
@@ -2710,7 +2727,7 @@ class _EventDetails extends StatelessWidget {
           );
           if (answer == null || !context.mounted) return;
           then((c, ref, ev) => answerEvent(c, ref, ev, r,
-              note: answer.note, send: answer.send));
+              note: answer.note, send: answer.send, lookup: lookup));
         }
 
         return chosen
