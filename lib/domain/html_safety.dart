@@ -23,6 +23,30 @@ String removeDocumentDirectives(String html) => html.replaceAll(
       ' ',
     );
 
+/// The message without its `<link>` tags, for while pictures are hidden: a
+/// resource hint (preconnect, dns-prefetch) whose host no pattern sees,
+/// written with an entity or backslashes, may not be stopped by
+/// [contentPolicyTag]. Mail has no use for one.
+///
+/// Each goes for a space, as [removeDocumentDirectives] takes its tags. A
+/// tag's name ends at a space, a `/` or a `>`, so `<linkage>` and
+/// `<link-card>` are other tags, left alone. A `<link` with a `<` straight
+/// after goes too, up to the next `>`: no tag as the message came, it would
+/// be one once a tag after it was taken out for a space. A `>` inside a
+/// quoted value leaves harmless text behind, and one left open at the very
+/// end goes too. Text, not HTML: a `<link ` with no `>` of its own inside a
+/// comment runs on to the comment's end, and what follows is hidden until
+/// the pictures are shown.
+///
+/// Used on the message, and again on the whole page the message view and
+/// the printer are given, last: what the page does to a message on the way
+/// there (a stray `<html>` taken out for nothing, a `<meta>` for a space)
+/// can put a link tag together after the first time.
+String removeLinkTags(String html) => html.replaceAll(
+      RegExp(r'<link(?=[\t\n\f\r /><]|$)[^>]*(?:>|$)', caseSensitive: false),
+      ' ',
+    );
+
 /// The Content-Security-Policy a received message is shown and printed under.
 ///
 /// The backstop behind the rewriting that hides remote pictures. That

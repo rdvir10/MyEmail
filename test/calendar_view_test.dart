@@ -917,12 +917,14 @@ void main() {
       bool alone = false,
       List<EventAttendee>? people,
       String? seriesId,
+      bool cancelled = false,
     }) {
       final t = today();
       return CalendarEvent(
         id: id,
         accountId: hadco.id,
         seriesId: seriesId,
+        cancelled: cancelled,
         title: own ? (alone ? 'Dentist' : 'Planning') : 'Budget',
         start: DateTime(t.year, t.month, t.day + 1, 10),
         end: DateTime(t.year, t.month, t.day + 1, 11),
@@ -1125,6 +1127,48 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('cancel-go')));
       await tester.pumpAndSettle();
       expect(engine.calendarActions, ['remove m declined']);
+    });
+
+    testWidgets('a meeting its organiser cancelled is removed from the '
+        'calendar, nobody told, with Undo (#125)', (tester) async {
+      final engine = SampleMailEngine();
+      await pump(tester, const CalendarScreen(), using: engine,
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          tomorrowAt10(hadco, cancelled: true, seriesId: 'weekly'),
+        ];
+      });
+      Future<void> remove() async {
+        await openSheet(tester, 'm');
+        await tester.tap(find.byKey(const ValueKey('event-more')));
+        await tester.pumpAndSettle();
+        expect(find.text('Remove from calendar'), findsOneWidget);
+        expect(find.text('Decline and remove'), findsNothing);
+        await tester.tap(find.byKey(const ValueKey('event-remove')));
+        await tester.pumpAndSettle();
+        // The meeting tapped alone, which is the one known to be cancelled,
+        // and nothing said about telling the organiser: nobody is told.
+        expect(find.byKey(const ValueKey('series-all')), findsNothing);
+        expect(find.byKey(const ValueKey('cancel-go')), findsNothing);
+        expect(find.textContaining('is told'), findsNothing);
+      }
+
+      await remove();
+      expect(find.text('Removed from your calendar.'), findsOneWidget);
+      expect(find.byKey(const ValueKey('agenda-event:m')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('delete-undo')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('agenda-event:m')), findsOneWidget);
+      expect(engine.calendarActions, isEmpty);
+
+      // Again, and left: taken off once Undo has gone, with no answer sent.
+      await remove();
+      await tester.pump(const Duration(seconds: 6));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions, ['remove m']);
+      expect(find.byKey(const ValueKey('agenda-event:m')), findsNothing);
     });
 
     testWidgets('a meeting of yours dragged an hour later moves there (#15)',

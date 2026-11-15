@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -28,6 +29,17 @@ Future<UiStateStore> _copy() async => PrefsUiStateStore(
         cacheOptions: const SharedPreferencesWithCacheOptions(),
       ),
     );
+
+/// Secrets in memory, whose writes wait for [gate] while there is one.
+class _HeldSecrets extends MemoryCredentialStore {
+  Completer<void>? gate;
+
+  @override
+  Future<void> writeSecret(String accountId, String secret) async {
+    await gate?.future;
+    await super.writeSecret(accountId, secret);
+  }
+}
 
 /// MyEmail's half of the connector for Claude (#2): what it sends to the
 /// connector, and Settings, Claude (Duet).
@@ -259,6 +271,126 @@ void main() {
       );
     });
 
+    group('a pass that would change nothing on the connector (#185)', () {
+      // Each upload rewrites the account's file in the connector's Blob
+      // store, and a pass every five minutes with nothing new could use up
+      // the store's monthly allowance.
+
+      /// The next pass, [after] the one before.
+      Future<DuetResult> later([Duration after = const Duration(minutes: 6)]) {
+        now = now.add(after);
+        return uploader().run();
+      }
+
+      /// A keep account switched on and its newest messages all sent: the
+      /// first pass sends twenty, the next the other ten.
+      Future<void> allSent() async {
+        await switchOn(
+            const DuetSettings(enabled: true, accounts: {'acct-personal'}));
+        await uploader().run();
+        await later();
+        expect(requests, hasLength(2));
+      }
+
+      test('a keep account with nothing new is not sent again until a few '
+          'hours have passed', () async {
+        await allSent();
+        final quiet = await later();
+        expect(requests, hasLength(2), reason: 'nothing new, the same Inbox');
+        expect(quiet.ran, isTrue);
+        expect(quiet.sent, 0);
+        expect(quiet.line, 'Up to date');
+        final kept = jsonDecode(ui.readString(UiStateKeys.duetStatus)!) as Map;
+        expect(kept['line'], 'Up to date');
+        expect(kept['ok'], isTrue);
+        await later(const Duration(hours: 1));
+        expect(requests, hasLength(2));
+
+        // Sent all the same every few hours, so the connector's copy
+        // cannot drift from the device's for long.
+        await later(DuetUploader.resendAfter);
+        expect(requests, hasLength(3));
+        expect(body(2)['messages'], isEmpty);
+        expect((body(2)['keep'] as List).toSet(),
+            (body(1)['keep'] as List).toSet());
+        await later();
+        expect(requests, hasLength(3));
+      });
+
+      test('Send now and Send everything again always send', () async {
+        await allSent();
+        await uploader().run(force: true);
+        expect(requests, hasLength(3), reason: 'Send now');
+        expect(body(2)['messages'], isEmpty);
+        await uploader().forgetSent();
+        await uploader().run(force: true);
+        expect(requests, hasLength(4), reason: 'Send everything again');
+        expect(body(3)['messages'] as List, hasLength(DuetUploader.perPass));
+      });
+
+      test('a message gone from the Inbox still leaves the connector at the '
+          'next pass', () async {
+        await allSent();
+        await later();
+        expect(requests, hasLength(2));
+        final gone = (body(1)['keep'] as List).first as String;
+        await engine.deleteMessages([gone]);
+        await later();
+        expect(requests, hasLength(3));
+        expect(body(2)['keep'] as List, isNot(contains(gone)));
+      });
+
+      test('a read-once account is sent every pass, as it was, so what is '
+          'past its day goes from the connector as soon as before', () async {
+        await allSent();
+        await switchOn(const DuetSettings(
+          enabled: true,
+          accounts: {'acct-personal'},
+          readOnce: {'acct-personal'},
+        ));
+        await later();
+        await later();
+        expect(requests, hasLength(4));
+        expect(body(3)['messages'], isEmpty);
+        expect((body(3)['account'] as Map)['policy'], 'readOnce');
+
+        // Back to keep, it is sent: the connector last took it as
+        // read-once, whatever it took before that.
+        await switchOn(
+            const DuetSettings(enabled: true, accounts: {'acct-personal'}));
+        await later();
+        expect(requests, hasLength(5));
+        expect((body(4)['account'] as Map)['policy'], 'keep');
+      });
+
+      test('a new connector address is sent to at the next pass', () async {
+        await allSent();
+        await switchOn(const DuetSettings(
+          enabled: true,
+          server: 'https://other.example',
+          accounts: {'acct-personal'},
+        ));
+        await later();
+        expect(requests, hasLength(3));
+        expect(requests.last.url.host, 'other.example');
+      });
+
+      test('one the connector refused is sent again at the next pass',
+          () async {
+        await allSent();
+        status = 500;
+        await uploader().run(force: true);
+        expect(requests, hasLength(3));
+        // It may have been kept before the answer was lost, or not at all:
+        // what the connector holds is not known, so it is not assumed.
+        status = 200;
+        await later();
+        expect(requests, hasLength(4));
+        await later();
+        expect(requests, hasLength(4));
+      });
+    });
+
     group('the app and the worker, each with its own copy of the settings',
         () {
       // The worker reads its copy again each pass; the app, kept alive for
@@ -299,6 +431,146 @@ void main() {
         now = now.add(const Duration(minutes: 2));
         expect((await uploader(app).run()).ran, isFalse);
         expect(requests, hasLength(1));
+      });
+
+      test('what the app last sent, the worker knows, and sends nothing new '
+          'again (#185)', () async {
+        await uploader(app).run();
+        now = now.add(const Duration(minutes: 6));
+        await uploader(app).run();
+        expect(requests, hasLength(2), reason: 'the newest thirty, all sent');
+
+        // The worker's copy was read before either pass.
+        now = now.add(const Duration(minutes: 6));
+        final quiet = await uploader(worker).run();
+        expect(quiet.ran, isTrue);
+        expect(requests, hasLength(2));
+      });
+
+      group('a Send now while the worker is part way through a pass (#185)',
+          () {
+        // Each pass wrote back every record it had read at its start, and
+        // the last to finish won. A record could then describe an upload
+        // the connector did not take last, and the next pass skip an
+        // account whose new message had since been deleted: it stayed on
+        // the connector for hours, where it used to leave at the next pass.
+        late Completer<void> hold;
+        late Completer<void> held;
+        String? holdOn;
+
+        setUp(() {
+          hold = Completer<void>();
+          held = Completer<void>();
+          holdOn = null;
+        });
+
+        /// An uploader whose next upload of [holdOn] waits for [hold],
+        /// once the connector has it.
+        DuetUploader over(UiStateStore store) => DuetUploader(
+              engine: engine,
+              ui: store,
+              secrets: secrets,
+              clock: () => now,
+              client: MockClient((request) async {
+                requests.add(request);
+                final sent = jsonDecode(request.body) as Map;
+                if ((sent['account'] as Map)['key'] == holdOn) {
+                  holdOn = null;
+                  held.complete();
+                  await hold.future;
+                }
+                return http.Response('{}', 200);
+              }),
+            );
+
+        Future<String> inboxIdOf(String accountId) async =>
+            (await engine.cachedFolders(accountId))
+                .firstWhere((f) => f.role == FolderRole.inbox)
+                .id;
+
+        /// A message off the end of [accountId]'s Inbox.
+        Future<void> oneGoneFrom(String accountId) async {
+          final inbox = await inboxIdOf(accountId);
+          final list = await engine.cachedMessages(inbox, limit: 500);
+          await engine.deleteMessages([list.last.id]);
+        }
+
+        /// New mail in Personal's Inbox (Side's newest, moved there): its
+        /// id there.
+        Future<String> arrives() async {
+          final side = await inboxIdOf('acct-side');
+          final newest = (await engine.cachedMessages(side, limit: 1)).single;
+          final moves = await engine.moveMessages(
+              [newest.id], await inboxIdOf('acct-personal'));
+          return moves.single.movedIds.single;
+        }
+
+        /// While the worker is held: new mail, sent by Send now, then
+        /// deleted, so Personal's Inbox is as it was before. Its id.
+        Future<String> meanwhile(Future<DuetResult> pass) async {
+          await held.future;
+          final m = await arrives();
+          now = now.add(const Duration(seconds: 30));
+          await over(app).run(force: true);
+          await engine.deleteMessages([m]);
+          hold.complete();
+          await pass;
+          return m;
+        }
+
+        /// Personal's uploads from the [from]th request on.
+        List<Map<String, Object?>> personal(int from) => [
+              for (var i = from; i < requests.length; i++)
+                if ((body(i)['account'] as Map)['key'] == 'acct-personal')
+                  body(i),
+            ];
+
+        test('the worker leaves alone the record of an account it did not '
+            'send', () async {
+          await app.writeString(
+            UiStateKeys.duet,
+            const DuetSettings(
+              enabled: true,
+              accounts: {'acct-personal', 'acct-side'},
+            ).toJson(),
+          );
+          await over(app).run();
+          now = now.add(const Duration(minutes: 6));
+          await over(app).run();
+          // Side has something for the worker to send, and it is held
+          // there; Personal it leaves, as nothing changed.
+          await oneGoneFrom('acct-side');
+          now = now.add(const Duration(minutes: 6));
+          holdOn = 'acct-side';
+          final m = await meanwhile(over(worker).run());
+
+          now = now.add(const Duration(minutes: 6));
+          final from = requests.length;
+          await over(app).run();
+          expect(personal(from), hasLength(1),
+              reason: 'the connector last took it with the new message');
+          expect(personal(from).single['keep'] as List, isNot(contains(m)));
+        });
+
+        test('an account both passes sent goes again at the next pass',
+            () async {
+          await over(app).run();
+          now = now.add(const Duration(minutes: 6));
+          await over(app).run();
+          // The worker sends Personal, and is held once the connector has
+          // it; Send now's comes after, so the connector keeps that one.
+          await oneGoneFrom('acct-personal');
+          now = now.add(const Duration(minutes: 6));
+          holdOn = 'acct-personal';
+          final m = await meanwhile(over(worker).run());
+
+          now = now.add(const Duration(minutes: 6));
+          final from = requests.length;
+          await over(app).run();
+          expect(personal(from), hasLength(1),
+              reason: 'which of the two it took last is not known');
+          expect(personal(from).single['keep'] as List, isNot(contains(m)));
+        });
       });
     });
 
@@ -466,6 +738,58 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.textContaining('Sent 3 messages'), findsOneWidget);
+    });
+
+    testWidgets('a new upload key typed is used at the next pass, not hours '
+        'later (#185)', (tester) async {
+      tester.view.physicalSize = const Size(1000, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      // What the connector last took, it took under the old key.
+      final ui = MemoryUiStateStore();
+      await ui.writeString(
+        UiStateKeys.duetPosted,
+        jsonEncode({
+          'acct-personal': {
+            'digest': 'x',
+            'at': DateTime(2026, 11, 15, 9).toIso8601String(),
+          },
+        }),
+      );
+      final secrets = _HeldSecrets();
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(ui),
+        credentialStoreProvider.overrideWithValue(secrets),
+        mailEngineProvider.overrideWithValue(SampleMailEngine()),
+      ]);
+      addTearDown(c.dispose);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: const MaterialApp(home: DuetScreen()),
+      ));
+      await tester.pumpAndSettle();
+      expect(ui.readString(UiStateKeys.duetPosted), isNotNull,
+          reason: 'opening the screen forgets nothing');
+
+      await tester.enterText(
+          find.byKey(const ValueKey('duet-key')), 'abcd-efgh-jkmn-pqrs-tuvw-xyz2');
+      await tester.pumpAndSettle();
+      expect(ui.readString(UiStateKeys.duetPosted), isNull);
+      expect(await tester.runAsync(() => secrets.readSecret(DuetUploader.keyName)),
+          'abcd-efgh-jkmn-pqrs-tuvw-xyz2');
+
+      // The screen closed while the key is still being kept: forgotten all
+      // the same, and nothing thrown.
+      await ui.writeString(UiStateKeys.duetPosted, '{}');
+      secrets.gate = Completer<void>();
+      await tester.enterText(
+          find.byKey(const ValueKey('duet-key')), 'bcde-fghj-kmnp-qrst-uvwx-yz23');
+      await tester.pumpWidget(const SizedBox());
+      secrets.gate!.complete();
+      await tester.pumpAndSettle();
+      expect(ui.readString(UiStateKeys.duetPosted), isNull);
+      expect(tester.takeException(), isNull);
     });
   });
 }

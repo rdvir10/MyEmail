@@ -38,6 +38,7 @@ void main() {
     String? seriesId,
     String calendarId = CalendarEvent.mainCalendar,
     bool allDay = false,
+    bool cancelled = false,
   }) =>
       CalendarEvent(
         id: id,
@@ -52,6 +53,7 @@ void main() {
         isOrganizer: own,
         response: own ? EventResponse.organizer : EventResponse.notResponded,
         seriesId: seriesId,
+        cancelled: cancelled,
       );
 
   group('the rules', () {
@@ -584,6 +586,39 @@ void main() {
       await c.removeEvent(microsoft, meeting(own: false));
       expect([for (final r in sent) '${r.method} ${r.url.path.split('/').last}'],
           ['POST decline', 'DELETE e1']);
+    });
+
+    test('a meeting its organiser cancelled is only taken off, as Remove '
+        'from calendar on the cancellation does (#125)', () async {
+      // Exchange refuses an answer to a cancelled meeting, and there is
+      // nobody left to tell.
+      final c = calendar((_) => http.Response('', 202));
+      await c.removeEvent(microsoft, meeting(own: false, cancelled: true));
+      expect([for (final r in sent) '${r.method} ${r.url.path.split('/').last}'],
+          ['DELETE e1']);
+
+      // Google drops a cancelled meeting as it reads one, so none comes
+      // here; were one to, it would go the same way, quietly.
+      sent.clear();
+      await c.removeEvent(gmail, meeting(own: false, cancelled: true));
+      expect(sent.single.method, 'DELETE');
+      expect(sent.single.url.queryParameters['sendUpdates'], 'none');
+    });
+
+    test('the series of a cancelled meeting is still declined: only the one '
+        'meeting is known to be cancelled', () async {
+      final c = calendar((_) => http.Response('', 202));
+      await c.removeEvent(
+        microsoft,
+        meeting(own: false, cancelled: true, seriesId: 'series-1'),
+        wholeSeries: true,
+      );
+      expect([for (final r in sent) '${r.method} ${r.url.path}'], [
+        endsWith('/events/series-1/decline'),
+        endsWith('/events/series-1'),
+      ]);
+      expect(sent.first.method, 'POST');
+      expect(sent.last.method, 'DELETE');
     });
 
     test("one's own meeting with people on it is cancelled, not deleted",

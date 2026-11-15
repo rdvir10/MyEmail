@@ -85,7 +85,7 @@ String printableMessage(
   // made up afresh for every print.
   final shut = 'mailtree-message-${_unguessable()}';
 
-  return '''<!doctype html>
+  final page = '''<!doctype html>
 <html style=""><head><meta charset="utf-8">
 ${contentPolicyTag(remoteAllowed: remoteAllowed)}
 <meta name="viewport" content="width=device-width">
@@ -106,6 +106,10 @@ ${_headerRules(shut)}
 $content
 </$shut>
 </body></html>''';
+  // Pictures hidden, no link tag either, the last thing done: the message's
+  // went before it came here, but taking out a <meta> for a space can put
+  // one together again. The page's own has none.
+  return remoteAllowed ? page : removeLinkTags(page);
 }
 
 /// The page's own rules, which the message's CSS cannot touch.

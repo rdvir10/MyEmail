@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:cryptography/cryptography.dart' show Sha256;
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
@@ -13,6 +14,10 @@ import '../ui_state_store.dart';
 /// What one pass did, for Settings, Claude (Duet) to say.
 typedef DuetResult = ({bool ran, int sent, String line});
 
+/// What the connector last took of an account from this device: a digest
+/// of the upload, and when. See `DuetUploader._digestOf`.
+typedef _Posted = ({String digest, DateTime at});
+
 /// MyEmail's half of the connector for Claude (C:/dev/myemail-duet): the
 /// newest Inbox messages of the accounts ticked in Settings, Claude (Duet),
 /// sent as text after a mail check, with no attachments. With each keep
@@ -23,6 +28,11 @@ typedef DuetResult = ({bool ran, int sent, String line});
 /// Each message is sent once: the ids sent are kept on the phone, by
 /// account, which is also the record of the accounts on the connector. One
 /// unticked, removed, or every one with the switch off, is cleared from it.
+///
+/// A keep account with nothing new, its name, its Inbox and the connector's
+/// address as they were when the connector last took it, is not sent again
+/// until [resendAfter]: each upload rewrites the account's file in the
+/// connector's Blob store, whose operations are counted by the month.
 class DuetUploader {
   DuetUploader({
     required this.engine,
@@ -57,6 +67,12 @@ class DuetUploader {
   static const readOnceWindow = Duration(days: 1);
   static const textChars = 20000;
 
+  /// How long a keep account with nothing new goes unsent at most: then it
+  /// is sent all the same, so what another device or an upload gone astray
+  /// left on the connector is put right within that time. The mail itself
+  /// goes once: a store emptied by hand still needs Send everything again.
+  static const resendAfter = Duration(hours: 3);
+
   /// Bring the connector up to date, if switched on and [every] has passed
   /// since the last time (or [force]). Never throws: what went wrong is the
   /// answer's line, and kept for the settings screen.
@@ -85,6 +101,13 @@ class DuetUploader {
       return (ran: false, sent: 0, line: '');
     }
     await ui.writeString(UiStateKeys.duetLastRun, now.toIso8601String());
+    // Read as what was sent is, and for the same reason: the worker's
+    // posts are the connector's as much as the app's.
+    final posted = await _readPosted();
+    // This pass's word on each account it sends: what the connector took,
+    // or not known. Put with what the device has at the end: see
+    // [_keepPosted].
+    final changed = <String, _Posted>{};
 
     final client = _given ?? http.Client();
     var sent = 0;
@@ -142,19 +165,37 @@ class DuetUploader {
           }
           messages.add(_messageJson(m, text));
         }
+        final about = {
+          'key': account.id,
+          'name': account.displayName,
+          'policy': readOnce ? 'readOnce' : 'keep',
+        };
+        final keep = readOnce ? null : [for (final m in list) m.id];
+        final digest = await _digestOf(settings, about, keep);
+        // Nothing it would change: the connector writes the same file
+        // again. Never a read-once account's: its upload is also when the
+        // connector takes out what is past its day, so it goes every pass,
+        // as it always has.
+        if (!force &&
+            !readOnce &&
+            messages.isEmpty &&
+            _unchanged(posted[account.id], digest, now)) {
+          continue;
+        }
         final problem = await _post(client, settings, key, {
-          'account': {
-            'key': account.id,
-            'name': account.displayName,
-            'policy': readOnce ? 'readOnce' : 'keep',
-          },
+          'account': about,
           'messages': messages,
-          if (!readOnce) 'keep': [for (final m in list) m.id],
+          'keep': ?keep,
         });
         if (problem != null) {
           problems.add(problem);
+          // Kept before the answer was lost, or not at all: not known, so
+          // not assumed. A digest no upload has, so it never stands for
+          // one, and another pass sees that this one sent it.
+          changed[account.id] = (digest: '', at: now);
           continue;
         }
+        changed[account.id] = (digest: digest, at: now);
         sent += messages.length;
         sentIds[account.id] = [
           for (final m in messages) '${m['id']}',
@@ -167,6 +208,8 @@ class DuetUploader {
       if (_given == null) client.close();
     }
     await ui.writeString(UiStateKeys.duetSent, jsonEncode(sentIds));
+    await _keepPosted(posted, changed, sentIds);
+    // A pass that left every account alone says Up to date, which it is.
     final line = switch (sent) {
       _ when problems.isNotEmpty => problems.first,
       _ when !settings.enabled => 'Cleared from your connector',
@@ -191,6 +234,86 @@ class DuetUploader {
       UiStateKeys.duetSent,
       jsonEncode({for (final id in sent.keys) id: const <String>[]}),
     );
+    // Nor is what the connector last took known any more.
+    await forgetPosted();
+  }
+
+  /// Forget what the connector last took, so the next pass sends every
+  /// account: for a new upload key, which would otherwise wait up to
+  /// [resendAfter] to be used for an account with nothing new.
+  Future<void> forgetPosted() => ui.writeString(UiStateKeys.duetPosted, null);
+
+  /// What the connector last took from this device, by account: a digest of
+  /// what the upload would leave there besides new mail (see [_digestOf]),
+  /// and when. Read fresh, as [_readSent] is.
+  Future<Map<String, _Posted>> _readPosted() async {
+    try {
+      final j = jsonDecode(await _readNow(UiStateKeys.duetPosted) ?? '{}');
+      if (j is! Map) return {};
+      return {
+        for (final MapEntry(:key, :value) in j.entries)
+          if (key is String && value is Map && value['digest'] is String)
+            if (DateTime.tryParse('${value['at']}') case final at?)
+              key: (digest: value['digest'] as String, at: at),
+      };
+    } on FormatException {
+      return {};
+    }
+  }
+
+  /// What an upload leaves on the connector besides new mail: where it
+  /// goes, the account's name and policy, and for a keep account the ids
+  /// its Inbox holds, sorted, since the connector takes them as a set.
+  static Future<String> _digestOf(
+    DuetSettings settings,
+    Map<String, Object?> about,
+    List<String>? keep,
+  ) async {
+    final hash = await Sha256().hash(utf8.encode(jsonEncode({
+      'server': settings.server,
+      'account': about,
+      'keep': keep == null ? null : ([...keep]..sort()),
+    })));
+    return base64Encode(hash.bytes);
+  }
+
+  /// Whether [last], what the connector last took of an account, is
+  /// [digest] and recent enough to stand for it [now]. One from a time
+  /// ahead of now (the clock put back) does not.
+  static bool _unchanged(_Posted? last, String digest, DateTime now) =>
+      last != null &&
+      last.digest == digest &&
+      !now.isBefore(last.at) &&
+      now.difference(last.at) < resendAfter;
+
+  /// [changed], this pass's word on the accounts it sent, put with what the
+  /// device has now. The app and the worker pass each with its own copy,
+  /// and can pass at once (Send now over a worker's pass): written back
+  /// whole, the last to finish won, and a record could describe an upload
+  /// the connector had not taken last. So only the accounts this pass sent
+  /// are written; the rest stay as the device has them. One whose record
+  /// another pass changed since [read] was read is left with none: which
+  /// upload the connector took last is not known, so the next pass sends
+  /// it, as every pass used to.
+  Future<void> _keepPosted(
+    Map<String, _Posted> read,
+    Map<String, _Posted> changed,
+    Map<String, List<String>> sentIds,
+  ) async {
+    final kept = await _readPosted();
+    for (final MapEntry(:key, :value) in changed.entries) {
+      if (kept[key] != read[key]) {
+        kept.remove(key);
+      } else {
+        kept[key] = value;
+      }
+    }
+    // An account cleared from the connector is not on it to be left alone.
+    kept.removeWhere((id, _) => !sentIds.containsKey(id));
+    await ui.writeString(UiStateKeys.duetPosted, jsonEncode({
+      for (final MapEntry(:key, :value) in kept.entries)
+        key: {'digest': value.digest, 'at': value.at.toIso8601String()},
+    }));
   }
 
   Future<Map<String, List<String>>> _readSent() async {

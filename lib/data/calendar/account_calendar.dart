@@ -751,13 +751,19 @@ class AccountCalendar {
           'everyone on it: cancel it instead.');
     }
     final id = _target(event, wholeSeries);
+    // One its organiser cancelled has nobody left to tell, and Exchange
+    // refuses an answer to it: it is only taken off, as Remove from
+    // calendar on the cancellation does. Only the meeting itself is known
+    // to be cancelled; the series it is one of may not be, and is declined
+    // as before.
+    final declines = !own && !(event.cancelled && id == event.id);
     switch (account.provider) {
       case MailProvider.outlook:
         final api = _graphApi(account);
         try {
           // Someone else's: declined first, so they know, then off the
           // calendar, where Exchange has not taken it off itself.
-          if (!own) await api.respond(id, InviteResponse.declined);
+          if (declines) await api.respond(id, InviteResponse.declined);
           await api.deleteEvent(id);
         } finally {
           api.close();
@@ -765,7 +771,7 @@ class AccountCalendar {
       case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
         final api = _googleApi(account);
         try {
-          if (!own) {
+          if (declines) {
             await api.respond(id, InviteResponse.declined,
                 calendarId: event.calendarId);
           }

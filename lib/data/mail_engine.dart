@@ -407,9 +407,10 @@ abstract class MailEngine {
   });
 
   /// Take [event] off its calendar: someone else's meeting declined first,
-  /// so its organiser knows, and the account's own only where nobody else
-  /// is on it (otherwise it is [cancelEvent]'s, and this refuses it with an
-  /// [ArgumentError]). Throws as [respondToEvent] does.
+  /// so its organiser knows (but one its organiser has cancelled only taken
+  /// off, as [removeFromCalendar] does), and the account's own only where
+  /// nobody else is on it (otherwise it is [cancelEvent]'s, and this
+  /// refuses it with an [ArgumentError]). Throws as [respondToEvent] does.
   Future<void> removeEvent(CalendarEvent event, {bool wholeSeries = false});
 
   /// Forward [event] to [to], with [note]: Microsoft sends them the

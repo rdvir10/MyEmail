@@ -301,7 +301,9 @@ Future<void> moveEvent(
 /// Cancel [event], the account's own with others on it, asked first, with
 /// a note to them where the calendar sends one; or delete it, where nobody
 /// else is on it, at once with Undo; or for someone else's meeting,
-/// decline it and take it off, asked first.
+/// decline it and take it off, asked first. Someone else's that its
+/// organiser has cancelled is only taken off, at once with Undo, as
+/// Remove from calendar on the cancellation does: nobody is told.
 Future<void> cancelOrDeleteEvent(
   BuildContext context,
   WidgetRef ref,
@@ -319,6 +321,20 @@ Future<void> cancelOrDeleteEvent(
         doing: 'Delete', allToo: _pastOnesToo);
     if (series == null || !context.mounted) return;
     await _deleteWithUndo(context, ref, event, wholeSeries: series);
+    return;
+  }
+  if (!own && event.cancelled) {
+    // This meeting alone, the one known to be cancelled: its series may
+    // not be, and that taken off quietly would leave its organiser
+    // counting on you for the rest.
+    await _deleteWithUndo(
+      context,
+      ref,
+      event,
+      wholeSeries: false,
+      done: 'Removed from your calendar.',
+      failed: 'Could not remove it',
+    );
     return;
   }
   final series = await askWholeSeries(
@@ -357,13 +373,17 @@ Future<void> cancelOrDeleteEvent(
   }
 }
 
-/// An appointment, with nobody else on it, off the calendar at once, and
-/// gone for good once Undo has had its moment.
+/// An appointment, with nobody else on it, or a meeting its organiser
+/// cancelled, off the calendar at once, and gone for good once Undo has had
+/// its moment. [done] is said as it goes, [failed] before the reason where
+/// the calendar refuses it.
 Future<void> _deleteWithUndo(
   BuildContext context,
   WidgetRef ref,
   CalendarEvent event, {
   required bool wholeSeries,
+  String done = 'Deleted.',
+  String failed = 'Could not delete it',
 }) async {
   final pending = ref.read(calendarPendingProvider.notifier);
   final engine = ref.read(mailEngineProvider);
@@ -374,7 +394,7 @@ Future<void> _deleteWithUndo(
   final shown = messenger.showSnackBar(SnackBar(
     duration: kBottomMessage,
     persist: false,
-    content: const Text('Deleted.'),
+    content: Text(done),
     action: SnackBarAction(
       key: const ValueKey('delete-undo'),
       label: 'Undo',
@@ -395,7 +415,7 @@ Future<void> _deleteWithUndo(
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(
         duration: kBottomMessage,
-        content: Text('Could not delete it: ${_why(e)}'),
+        content: Text('$failed: ${_why(e)}'),
       ));
   }
 }

@@ -85,6 +85,17 @@ class _DuetScreenState extends ConsumerState<DuetScreen> {
     }
   }
 
+  /// A key typed: kept, and what the connector last took forgotten, so the
+  /// next pass sends every account with it, not hours later. The key itself
+  /// is kept only with the account secrets.
+  Future<void> _keyTyped(String key) async {
+    // Taken before the wait: the screen may be closed by the time the key
+    // is kept, and the records must go all the same.
+    final uploader = ref.read(duetUploaderProvider);
+    await _saveKey(key);
+    await uploader.forgetPosted();
+  }
+
   Future<void> _send({bool again = false}) async {
     setState(() => _sending = true);
     final uploader = ref.read(duetUploaderProvider);
@@ -157,7 +168,7 @@ class _DuetScreenState extends ConsumerState<DuetScreen> {
                   onPressed: () => setState(() => _showKey = !_showKey),
                 ),
               ),
-              onChanged: _saveKey,
+              onChanged: _keyTyped,
             ),
           ),
           Padding(

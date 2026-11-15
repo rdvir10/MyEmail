@@ -2764,7 +2764,9 @@ class _EventDetails extends StatelessWidget {
                         value: 'remove',
                         child: Text(own
                             ? (others ? 'Cancel meeting' : 'Delete')
-                            : 'Decline and remove'),
+                            : e.cancelled
+                                ? 'Remove from calendar'
+                                : 'Decline and remove'),
                       ),
                     ],
                   ),

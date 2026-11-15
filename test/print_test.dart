@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:html/parser.dart' as html_parser;
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/print/message_printer.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
@@ -14,10 +15,13 @@ import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/print_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/trusted_senders.dart';
+import 'package:myemail/ui/messages/html_body_view.dart'
+    show stripRemoteContent;
 import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 
 import 'fakes/fake_webview.dart';
+import 'helpers/hidden_links.dart';
 
 /// A message on paper, or as a PDF, which are the same sheet.
 void main() {
@@ -162,6 +166,33 @@ void main() {
       expect(hidden, contains("default-src 'none'"));
       expect(hidden, isNot(contains('img-src *')));
       expect(shown, contains('img-src *'));
+    });
+
+    test('printed with pictures hidden, the page holds no link tag, however '
+        'one could be put together (#126)', () {
+      int links(String html) =>
+          html_parser.parse(html).querySelectorAll('link').length;
+      for (final x in hiddenLinks) {
+        expect(links(x), 0, reason: 'none as the message came: $x');
+        // As the print sheet is given it: see printMessage.
+        final page = printableMessage(
+          message,
+          const MailBody(text: 'x'),
+          bodyHtml: stripRemoteContent(x),
+        );
+        expect(links(page), 0, reason: x);
+      }
+      // Whatever it is handed, and only while pictures are hidden.
+      const given = '<p>Body</p><link rel=preconnect href="https://u1.t">';
+      final hidden = printableMessage(message, const MailBody(text: 'x'),
+          bodyHtml: given);
+      expect(links(hidden), 0);
+      expect(hidden, contains('<p>Body</p>'));
+      expect(
+        links(printableMessage(message, const MailBody(text: 'x'),
+            bodyHtml: given, remoteAllowed: true)),
+        1,
+      );
     });
   });
 

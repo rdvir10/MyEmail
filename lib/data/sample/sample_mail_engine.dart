@@ -1127,9 +1127,12 @@ class SampleMailEngine implements MailEngine {
     bool wholeSeries = false,
   }) async {
     await _calendarCall(event.accountId);
+    // As the real calendar: one its organiser cancelled is not answered,
+    // though the series it is one of still is.
+    final series = wholeSeries && event.seriesId != null;
     calendarActions.add([
       'remove ${event.id}',
-      if (!isOwnEvent(event)) 'declined',
+      if (!isOwnEvent(event) && !(event.cancelled && !series)) 'declined',
       if (wholeSeries) 'series',
     ].join(' '));
     _changeEvent(event, null);

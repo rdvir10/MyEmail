@@ -447,24 +447,36 @@ final _remoteRef = RegExp(r'''(https?:)?//''', caseSensitive: false);
 /// Whether the message references anything the WebView would fetch from the
 /// network. Used to decide whether to offer "Show images".
 ///
-/// Asked of [stripRemoteContent] itself, so the bar shows exactly when
-/// showing images would change something. A pattern of its own counted any
-/// `href`, a plain link included, and a note with a link in its signature
-/// offered to show images that were never there.
-bool htmlHasRemoteContent(String html) => stripRemoteContent(html) != html;
+/// Asked of the rewriting [stripRemoteContent] does, so the bar shows
+/// exactly when showing images would change something. A pattern of its
+/// own counted any `href`, a plain link included, and a note with a link in
+/// its signature offered to show images that were never there. The link
+/// tags it then drops are not counted: those show nothing either way, and
+/// Outlook puts one that names a file list in nearly every message.
+bool htmlHasRemoteContent(String html) => _withoutRemoteFetches(html) != html;
 
 /// The message with every remote fetch neutralised, leaving links alone:
 ///
 ///  * `src`, `srcset`, `poster` and `background` attributes pointing off the
 ///    device are renamed to `data-blocked-*`, so the tag stays but loads
 ///    nothing;
-///  * `<link>` elements with a remote `href` (stylesheets) are removed;
+///  * `<link>` elements are removed, every one ([removeLinkTags]): a
+///    stylesheet with a remote `href`, and a resource hint (preconnect,
+///    dns-prefetch) whose host no pattern sees, written with an entity or
+///    backslashes, which the page's security policy may not stop. Mail has
+///    no use for one, the head's are not carried over anyway (see
+///    [wrapHtmlForDisplay], which takes them out once more, last), and the
+///    editor's sanitiser drops them the same way;
 ///  * `url(...)` in styles and `@import` rules pointing off the device are
 ///    replaced with `none` / dropped.
 ///
 /// Anchors keep their `href`: a link is only followed when tapped, and the
 /// navigation delegate hands it to the browser.
-String stripRemoteContent(String html) {
+String stripRemoteContent(String html) =>
+    removeLinkTags(_withoutRemoteFetches(html));
+
+/// What [stripRemoteContent] rewrites of what points off the device.
+String _withoutRemoteFetches(String html) {
   var s = html;
 
   // (?<!-) keeps an already-renamed data-blocked-src from matching again, so
@@ -594,7 +606,7 @@ String wrapHtmlForDisplay(
   final bg = dark ? cssHex(darkPageColour) : '#fff';
   final rule = dark ? '#5a585c' : '#ccc';
   final quoted = dark ? '#b6b0b6' : '#444';
-  return '<!doctype html><html><head>'
+  final page = '<!doctype html><html><head>'
       '<meta charset="utf-8">'
       // First in the head, before anything the message brings.
       '${contentPolicyTag(remoteAllowed: remoteAllowed)}'
@@ -634,6 +646,11 @@ String wrapHtmlForDisplay(
       'border-left:3px solid $rule;color:$quoted}'
       // After ours, so the sender's rules win where the two disagree.
       '</style>$sheets</head>$bodyTag$body</body></html>';
+  // Pictures hidden, the message's link tags went before it came here; what
+  // was done to it above can put one together again (a stray <html> taken
+  // out for nothing, a <meta> for a space), so they go once more, last.
+  // The page's own has none.
+  return remoteAllowed ? page : removeLinkTags(page);
 }
 
 /// The `<style>` blocks from the message's head, with only their `media`.

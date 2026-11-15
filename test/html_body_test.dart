@@ -19,6 +19,7 @@ import 'package:myemail/ui/messages/reading_pane.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'fakes/fake_webview.dart';
+import 'helpers/hidden_links.dart';
 
 void main() {
   group('htmlHasRemoteContent', () {
@@ -98,6 +99,111 @@ void main() {
       const dirty = '<img src="https://t/x.png">';
       final once = stripRemoteContent(dirty);
       expect(stripRemoteContent(once), once);
+    });
+
+    test('removes every link tag, a disguised resource hint too (#126)', () {
+      // No pattern sees the host in these, and a browser reads both as
+      // https://u123.tracker.example: the page's security policy may not
+      // stop a preconnect or a dns-prefetch, so the sender could see the
+      // message opened with pictures blocked.
+      for (final link in [
+        '<link rel=preconnect href="&#104;ttps://u123.tracker.example">',
+        r'<link rel="dns-prefetch" href="https:\\u123.tracker.example">',
+        "<LINK REL=preconnect HREF='https:u123.tracker.example'>",
+        '<link/rel=preconnect/href=&#x2F;&#x2F;u123.tracker.example>',
+        '<link rel=preconnect href="https://u123.tracker.example">',
+        '<link rel=File-List href="cid:filelist.xml@01DA0001">',
+      ]) {
+        final out = stripRemoteContent('<p>Hello</p>$link<p>Bye</p>');
+        expect(out.toLowerCase(), isNot(contains('<link')), reason: link);
+        expect(out, contains('<p>Hello</p>'));
+        expect(out, contains('<p>Bye</p>'));
+        expect(stripRemoteContent(out), out, reason: 'idempotent: $link');
+      }
+      // One left open at the very end, and one inside another tag's name,
+      // whose halves must not join into a working tag.
+      expect(
+        stripRemoteContent('<p>Hi</p><link rel=preconnect href=&#104;ttps://x')
+            .toLowerCase(),
+        isNot(contains('<link')),
+      );
+      expect(
+        stripRemoteContent('<li<link rel=preconnect href="&#104;ttps://x">nk '
+                'rel=preconnect href="&#104;ttps://y">')
+            .toLowerCase(),
+        isNot(contains('<link')),
+      );
+    });
+
+    test('leaves alone what only looks like a link tag', () {
+      const html = '<linkage>a</linkage><link-card>b</link-card>'
+          '<p>Follow the link below, or < link here.</p>'
+          '<a href="https://example.com/x">link</a>';
+      expect(stripRemoteContent(html), html);
+    });
+
+    test('a link tag that loads nothing does not bring up the bar', () {
+      // Outlook writes these in nearly every message it sends; dropped
+      // with the rest while pictures are blocked, they still show nothing,
+      // so they are no reason to offer Show images.
+      const outlook = '<html><head>'
+          '<link rel=File-List href="cid:filelist.xml@01DA0001">'
+          '<link rel=themeData href="~~themedata~~">'
+          '</head><body><p>Hi Ron</p>'
+          '<link rel=File-List href="file:///C:/Users/x/clip_filelist.xml">'
+          '</body></html>';
+      expect(htmlHasRemoteContent(outlook), isFalse);
+      // A disguised hint has no picture behind it either.
+      expect(
+        htmlHasRemoteContent(
+            '<p>Hi</p><link rel=preconnect href="&#104;ttps://u1.t.example">'),
+        isFalse,
+      );
+      // A plain remote stylesheet still counts, as it did.
+      expect(
+        htmlHasRemoteContent('<link rel=stylesheet href="https://x/s.css">'),
+        isTrue,
+      );
+    });
+  });
+
+  group('what the message view is given, pictures blocked (#126)', () {
+    int links(String html) =>
+        html_parser.parse(html).querySelectorAll('link').length;
+
+    test('no link tag, however one could be put together', () {
+      // Each tag taken out leaves a space, and so does each <meta> and
+      // <base> the page takes out afterwards; a stray <html> or <head> in a
+      // message with no <body> goes for nothing. Any of them could finish
+      // a <link that was no tag at all as the message came.
+      for (final x in hiddenLinks) {
+        expect(links(x), 0, reason: 'none as the message came: $x');
+        // Nor once the strip has run, nor after the <meta> and <base> are
+        // taken out for a space, as the page and the printer take them.
+        expect(links(stripRemoteContent(x)), 0, reason: 'stripped: $x');
+        expect(links(removeDocumentDirectives(stripRemoteContent(x))), 0,
+            reason: 'directives out: $x');
+        for (final b in Brightness.values) {
+          final page = wrapHtmlForDisplay(stripRemoteContent(x), brightness: b);
+          expect(links(page), 0, reason: '$b: $x');
+        }
+      }
+    });
+
+    test('the page drops whatever link tag it is handed, and only while '
+        'pictures are blocked', () {
+      const html = '<p>Hi</p><link rel=preconnect href="https://u1.t.example">';
+      final blocked = wrapHtmlForDisplay(html);
+      expect(links(blocked), 0);
+      expect(blocked, contains('<p>Hi</p>'));
+      expect(links(wrapHtmlForDisplay(html, remoteAllowed: true)), 1,
+          reason: 'Show images shows the message whole, as before');
+    });
+
+    test('what only looks like a link tag reaches the page as it was', () {
+      const html = '<linkage>a</linkage><link-card>b</link-card>'
+          '<p>Follow the link below, or &lt; link here.</p>';
+      expect(wrapHtmlForDisplay(stripRemoteContent(html)), contains(html));
     });
   });
 
