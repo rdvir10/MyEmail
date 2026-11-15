@@ -757,6 +757,12 @@ String imapDateTime(DateTime when) {
       '${two(t.hour)}:${two(t.minute)}:${two(t.second)} +0000';
 }
 
+/// IMAP SEARCH criteria for the messages whose Message-ID is [messageId]
+/// (without its angle brackets). HEADER matches a part of the header, so
+/// the brackets around it are no matter.
+String messageIdCriteria(String messageId) =>
+    'HEADER Message-ID ${_quote(messageId)}';
+
 String _quote(String value) =>
     '"${value.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}"';
 

@@ -2494,7 +2494,7 @@ class CachedImapEngine
         ownAddress: account.emailAddress,
         limit: limit,
       );
-      rows = await _rowsFor(accountId, path, t, hits);
+      rows = await _flaggedRowsFor(accountId, path, t, hits);
     }
     // Flagged here while the server was out of reach, which it does not
     // know of yet; and not what is on its way to Trash, which a Gmail
@@ -2515,6 +2515,59 @@ class CachedImapEngine
       ..removeWhere((m) => !m.isFlagged)
       ..sort((a, b) => b.date.compareTo(a.date));
   }
+
+  /// Gmail's rows for the starred [hits] in All Mail, at [path]. A star's
+  /// headers are fetched once, the first time Flagged shows it, and kept
+  /// for as long as the app runs; after that only its flags are asked, the
+  /// rest of a message never changing. All Mail is seldom synced, so its
+  /// rows are seldom cached, and every star's headers were fetched again
+  /// on every refresh, a minute apart while Flagged was open, and dropped:
+  /// up to 500 at a time, about a megabyte, on the account's one
+  /// connection. Now a refresh is the search, and one request for the
+  /// flags of the stars already seen.
+  Future<List<MailMessage>> _flaggedRowsFor(
+    String accountId,
+    String path,
+    ImapTransport t,
+    List<SearchHit> hits,
+  ) async {
+    final key = MailFolder.idFor(accountId, path);
+    final seen = _flaggedSeen[key] ?? const <int, MailMessage>{};
+    final known = [
+      for (final h in hits)
+        if (seen.containsKey(h.uid)) h.uid,
+    ];
+    final fresh = await _rowsFor(accountId, path, t, [
+      for (final h in hits)
+        if (!seen.containsKey(h.uid)) h,
+    ]);
+    final flags = {
+      for (final f in await t.fetchFlagsByUids(path, known)) f.uid: f,
+    };
+    final waiting = await _overlay(accountId);
+    final rows = [
+      ...fresh,
+      for (final uid in known)
+        if ((seen[uid], flags[uid]) case (final m?, final f?)
+            when !waiting.hides(path, uid, m.messageId))
+          _rowLaidOver(
+            waiting,
+            path,
+            m.copyWith(
+              isRead: f.isRead,
+              isFlagged: f.isFlagged,
+              isAnswered: f.isAnswered,
+              isForwarded: f.isForwarded,
+            ),
+          ),
+    ];
+    _flaggedSeen[key] = {for (final m in rows) m.uid: m};
+    return rows;
+  }
+
+  /// The rows [_flaggedRowsFor] last answered with, by All Mail's path and
+  /// uid: what its next answer needs no headers for.
+  final _flaggedSeen = <String, Map<int, MailMessage>>{};
 
   @override
   Future<List<MailMessage>> cachedFlagged(
@@ -3194,6 +3247,51 @@ class CachedImapEngine
         if (uids.isEmpty) continue;
         return MailMessage.idFor(MailFolder.idFor(account, f.path), uids.first);
       }
+    }
+    return null;
+  }
+
+  /// On Microsoft one request for the whole mailbox. On Gmail All Mail is
+  /// asked, which holds every label's mail, once. On another IMAP server
+  /// each folder in turn until it is found.
+  @override
+  Future<String?> messageWithIdOnServer(
+    String messageId, {
+    required String accountId,
+  }) async {
+    final account = _accountFor(accountId);
+    final t = await _transport(accountId);
+    final remote = folderLists.read(accountId) ?? await t.listFolders();
+    final folders = [
+      for (final f in remote)
+        if (f.role != FolderRole.drafts && f.role != FolderRole.deleted) f,
+    ];
+    String idIn(String path, int uid) =>
+        MailMessage.idFor(MailFolder.idFor(accountId, path), uid);
+    if (t is GraphTransport) {
+      final kept = {for (final f in folders) f.path};
+      final inbox = {
+        for (final f in folders)
+          if (f.role == FolderRole.inbox) f.path,
+      };
+      final found = [
+        for (final h in await t.whereMessageId(messageId))
+          if (kept.contains(h.path)) h,
+      ]..sort((a, b) =>
+          (inbox.contains(a.path) ? 0 : 1) - (inbox.contains(b.path) ? 0 : 1));
+      return found.isEmpty ? null : idIn(found.first.path, found.first.uid);
+    }
+    final allMail = account.provider == MailProvider.gmail
+        ? folders.where((f) => f.role == FolderRole.archive).firstOrNull
+        : null;
+    for (final f in allMail != null
+        ? [allMail]
+        : [
+            ...folders.where((f) => f.role == FolderRole.inbox),
+            ...folders.where((f) => f.role != FolderRole.inbox),
+          ]) {
+      final uids = await t.uidsWithMessageId(f.path, messageId);
+      if (uids.isNotEmpty) return idIn(f.path, uids.first);
     }
     return null;
   }

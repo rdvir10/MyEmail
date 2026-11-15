@@ -12,6 +12,7 @@ import '../../state/list_navigation.dart';
 import '../../state/message_providers.dart';
 import '../../state/message_transfer.dart';
 import '../../state/pinned_messages.dart';
+import '../../state/read_marker.dart';
 import '../../state/search_providers.dart';
 import '../shell/pane_focus.dart';
 import 'list_groups.dart';
@@ -257,6 +258,15 @@ class _MessageListKeyboardState extends ConsumerState<MessageListKeyboard> {
         ref
             .read(lastOpenedInFolderProvider.notifier)
             .remember(widget.listId, message.id);
+        // Opened, as a tap on the row opens it (see ReadMarker). Claiming
+        // the selection is not enough beside a reading pane: the pane was
+        // already showing the message the folder opened at, so it did not
+        // come up again to say so, and the message stayed unread.
+        final actions = MessageActions(ref, widget.listId);
+        ref.read(readMarkerProvider).opened(
+              message.id,
+              mark: message.isRead ? null : () => actions.markOpened(message),
+            );
         widget.onOpen?.call(message);
         return KeyEventResult.handled;
       case LogicalKeyboardKey.space:

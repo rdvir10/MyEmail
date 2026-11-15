@@ -196,6 +196,16 @@ abstract class ImapTransport {
   /// Headers for specific UIDs, for turning search hits into rows.
   Future<List<RemoteHeader>> fetchHeadersByUids(String path, List<int> uids);
 
+  /// The flags of specific UIDs, and nothing more: for rows whose headers
+  /// are already known, which a message's never change. One small request
+  /// over IMAP. None for a UID that is gone.
+  Future<List<RemoteFlags>> fetchFlagsByUids(String path, List<int> uids);
+
+  /// The UIDs in [path] of the messages whose Message-ID is [messageId]
+  /// (without its angle brackets): one as a rule. Exact, where a search
+  /// for words looks at its newest hits only.
+  Future<List<int>> uidsWithMessageId(String path, String messageId);
+
   /// [searchUids], each hit with its header where the server's answer to
   /// the search carries it, so turning hits into rows asks nothing more.
   ///

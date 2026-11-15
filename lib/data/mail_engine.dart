@@ -1053,13 +1053,22 @@ abstract interface class PagesOlderMail {
 }
 
 /// An engine that can find a message by its `Message-ID` among the mail the
-/// device holds. A Message-ID goes wherever the message is moved, so it
-/// finds a message filed somewhere else since. Not part of [MailEngine]:
-/// the sample engine has no use for it.
+/// device holds, or on its account's server. A Message-ID goes wherever the
+/// message is moved, so it finds a message filed somewhere else since. Not
+/// part of [MailEngine]: the sample engine has no use for it.
 abstract interface class FindsByMessageId {
   /// A message carrying [messageId] (without its angle brackets), as
   /// `<folderId>#<uid>`: in [accountId] if it is there, its Inbox first,
   /// or else in another account. Not one in Drafts or Deleted. Null where
   /// the device holds none.
   Future<String?> messageWithId(String messageId, {required String accountId});
+
+  /// The message carrying [messageId] (without its angle brackets) in
+  /// [accountId], as its server has it now, wherever it is filed, the
+  /// Inbox first. Not one in Drafts or Deleted. Null where the server has
+  /// none; throws where it could not be asked.
+  Future<String?> messageWithIdOnServer(
+    String messageId, {
+    required String accountId,
+  });
 }

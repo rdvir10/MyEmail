@@ -988,6 +988,20 @@ class GraphMailApi {
     return _messagesFrom(json);
   }
 
+  /// [withMessageId] in the whole mailbox, each message with its folder:
+  /// one request, whatever folder it was filed in.
+  Future<List<GraphMessage>> withMessageIdEverywhere(String messageId) async {
+    final json = await _get(
+      Uri.parse('$base/$_me/messages').replace(queryParameters: {
+        '\$filter':
+            "internetMessageId eq '${messageId.replaceAll("'", "''")}'",
+        '\$select': '$headerFields,parentFolderId',
+        '\$expand': lastVerbExpand,
+      }),
+    );
+    return _messagesFrom(json);
+  }
+
   /// The newest [top] messages in a folder that [filter] keeps, newest
   /// first.
   ///

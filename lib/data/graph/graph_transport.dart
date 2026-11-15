@@ -755,6 +755,25 @@ class GraphTransport implements ImapTransport, LooksOnce {
     return _headers(path, messages);
   }
 
+  /// Graph has no cheaper way to ask a message's flags than for the
+  /// message, so this is [fetchHeadersByUids]'s answer. Nothing asks it of
+  /// Graph: Flagged gets the headers with its hits there.
+  @override
+  Future<List<RemoteFlags>> fetchFlagsByUids(
+    String path,
+    List<int> uids,
+  ) async =>
+      [
+        for (final h in await fetchHeadersByUids(path, uids))
+          RemoteFlags(
+            uid: h.uid,
+            isRead: h.isRead,
+            isFlagged: h.isFlagged,
+            isAnswered: h.isAnswered,
+            isForwarded: h.isForwarded,
+          ),
+      ];
+
   /// The most pages of [limit] hits [searchHitsEverywhere] reads.
   static const searchPages = 5;
 
@@ -825,6 +844,36 @@ class GraphTransport implements ImapTransport, LooksOnce {
     }
     return _headers(path, found);
   }
+
+  @override
+  Future<List<int>> uidsWithMessageId(String path, String messageId) async {
+    final found = await headersWithMessageIds(path, [_bracketed(messageId)]);
+    return [for (final h in found) h.uid];
+  }
+
+  /// Where the messages carrying [messageId] (without its angle brackets)
+  /// are, by folder and number, wherever they are filed: see
+  /// [GraphMailApi.withMessageIdEverywhere]. Not part of [ImapTransport]:
+  /// over IMAP each folder is asked on its own.
+  Future<List<({String path, int uid})>> whereMessageId(
+    String messageId,
+  ) async {
+    final found = await api.withMessageIdEverywhere(_bracketed(messageId));
+    if (found.isEmpty) return const [];
+    if (_folderIds.isEmpty) await listFolders();
+    final paths = {
+      for (final MapEntry(:key, :value) in _folderIds.entries) value: key,
+    };
+    return [
+      for (final m in found)
+        if (paths[m.parentFolderId] case final path?)
+          for (final h in await _headers(path, [m])) (path: path, uid: h.uid),
+    ];
+  }
+
+  /// A Message-ID as Exchange holds it, in its angle brackets.
+  static String _bracketed(String messageId) =>
+      messageId.startsWith('<') ? messageId : '<$messageId>';
 
   /// Every flagged message in the mailbox as search hits, by the folder
   /// each is in, with the day its flag is due: see

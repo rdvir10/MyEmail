@@ -19,6 +19,7 @@ import '../../domain/mail_message.dart';
 import '../../domain/meeting_alerts.dart' show MeetingRef, calendarDayOf;
 import '../../data/auth/microsoft_oauth.dart' show SignInExpired;
 import '../../domain/account.dart';
+import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/password_expiry.dart' show passwordAccountOf;
 import '../../state/password_providers.dart';
 import '../settings/edit_account_screen.dart';
@@ -26,6 +27,8 @@ import '../../data/notifications/notification_action_isolate.dart';
 import '../../data/notifications/notification_actions.dart';
 import '../../data/sync/pass_signal.dart';
 import '../../state/compose_providers.dart' show signaturesProvider;
+import '../../state/follow_ups.dart';
+import '../common/bottom_message.dart';
 import '../../data/sync/background_worker.dart'
     show runPendingNotificationActions;
 import '../../state/list_filter.dart';
@@ -552,6 +555,30 @@ class _AppShellState extends ConsumerState<AppShell>
       }
       return;
     }
+    // A follow-up's reminder for a message filed since it was set: where it
+    // is now, or what is true where it cannot be opened. It opened the
+    // folder the message had left, with nothing in it, and on the phone
+    // nothing at all.
+    final target =
+        await ref.read(followUpsProvider.notifier).whereNow(payload);
+    if (!mounted) return;
+    final now = target.id;
+    if (now == null) {
+      final failed = target.failed;
+      ScaffoldMessenger.maybeOf(context)
+        ?..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          duration: kBottomMessage,
+          content: Text(failed == null
+              ? 'The message this reminder is about is no longer in its '
+                  'account. It may have been deleted.'
+              : 'The message this reminder is about has moved, and could '
+                  'not be looked for: '
+                  '${failed is ReadableError ? failed.message : failed}'),
+        ));
+      return;
+    }
+    payload = now;
     final String folderId;
     try {
       (folderId, _) = splitMessageId(payload);

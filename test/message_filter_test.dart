@@ -1,13 +1,18 @@
 import 'dart:convert';
 
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart' as http_testing;
 import 'package:myemail/data/graph/graph_mail_api.dart';
 import 'package:myemail/data/imap/imap_mapping.dart';
+import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/message_filter.dart';
+import 'package:myemail/state/folder_tree.dart' show kUnifiedInboxId;
 import 'package:myemail/state/list_filter.dart';
+import 'package:myemail/state/message_providers.dart';
+import 'package:myemail/state/providers.dart';
 
 /// Outlook's All / Unread and Filter: what each keeps, how the server is
 /// asked for the rest, and how the two are put together.
@@ -144,4 +149,56 @@ void main() {
       );
     });
   });
+
+  group('All Inboxes', () {
+    test('each Inbox is asked once, not again as the counts move', () async {
+      // Marking a message read moves its folder's count, and lists the
+      // account's folders again, and either way the folders change. The
+      // server was searched again for every Inbox each time, twice a
+      // message read, and on every minute's refresh besides.
+      final engine = _CountingFilters();
+      final c = ProviderContainer(
+        overrides: [mailEngineProvider.overrideWithValue(engine)],
+      );
+      addTearDown(c.dispose);
+      const key = (kUnifiedInboxId, MessageFilter.unread);
+      c.listen(filterHitsProvider(key), (_, _) {});
+      c.listen(messagesProvider(kUnifiedInboxId), (_, _) {});
+      await c.read(filterHitsProvider(key).future);
+      final inboxes = engine.asked.length;
+      expect(inboxes, greaterThan(1), reason: 'every account has an Inbox');
+
+      final unread = [
+        for (final m in await c.read(messagesProvider(kUnifiedInboxId).future))
+          if (!m.isRead) m,
+      ].take(3);
+      expect(unread, hasLength(3));
+      for (final m in unread) {
+        await c
+            .read(messagesProvider(kUnifiedInboxId).notifier)
+            .setRead(m.id, true);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      // The minute's refresh, which lists every account's folders again.
+      c.read(listRefreshProvider.notifier).ping();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      expect(engine.asked, hasLength(inboxes));
+    });
+  });
+}
+
+/// The sample accounts, with every filter search of the server written down.
+class _CountingFilters extends SampleMailEngine {
+  final asked = <String>[];
+
+  @override
+  Future<List<MailMessage>> filterMessages(
+    String folderId,
+    MessageFilter filter, {
+    int limit = 100,
+  }) {
+    asked.add(folderId);
+    return super.filterMessages(folderId, filter, limit: limit);
+  }
 }

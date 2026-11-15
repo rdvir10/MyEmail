@@ -283,6 +283,39 @@ class FakeImapTransport implements ImapTransport {
     ];
   }
 
+  /// HEADER matches a part of the header, as a server does.
+  @override
+  Future<List<int>> uidsWithMessageId(String path, String messageId) async {
+    _online();
+    calls.add('UID SEARCH $path HEADER Message-ID "$messageId"');
+    return [
+      for (final m in _require(path).ordered)
+        if (!m.isDeleted && m.messageId.contains(messageId)) m.uid,
+    ];
+  }
+
+  @override
+  Future<List<RemoteFlags>> fetchFlagsByUids(
+    String path,
+    List<int> uids,
+  ) async {
+    _online();
+    if (uids.isEmpty) return const [];
+    calls.add('UID FETCH $path ${uids.join(',')} FLAGS');
+    final folder = _require(path);
+    return [
+      for (final uid in uids)
+        if (folder.messages[uid] case final m? when !m.isDeleted)
+          RemoteFlags(
+            uid: m.uid,
+            isRead: m.isRead,
+            isFlagged: m.isFlagged,
+            isAnswered: m.isAnswered,
+            isForwarded: m.isForwarded,
+          ),
+    ];
+  }
+
   @override
   Future<MailBody> fetchBody(String path, int uid) async {
     _online();

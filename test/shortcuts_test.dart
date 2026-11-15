@@ -12,12 +12,14 @@ import 'package:myemail/domain/window_handoff.dart';
 import 'package:myemail/domain/message_sort.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/message_move.dart';
+import 'package:myemail/domain/quick_step.dart';
 import 'package:myemail/state/conversations.dart';
 import 'package:myemail/state/display_providers.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/state/folder_tree.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/quick_steps.dart';
 import 'package:myemail/state/search_providers.dart';
 import 'package:myemail/ui/compose/compose_screen.dart';
 import 'package:myemail/ui/meetings/new_meeting_screen.dart';
@@ -41,13 +43,19 @@ import 'fakes/fake_webview.dart';
 void main() {
   setUpAll(FakeWebViewPlatform.install);
 
-  Future<ProviderContainer> pump(WidgetTester tester) async {
+  Future<ProviderContainer> pump(
+    WidgetTester tester, {
+    MailEngine? engine,
+  }) async {
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final c = ProviderContainer(
-      overrides: [uiStateStoreProvider.overrideWithValue(sendAtOnce())],
+      overrides: [
+        uiStateStoreProvider.overrideWithValue(sendAtOnce()),
+        if (engine != null) mailEngineProvider.overrideWithValue(engine),
+      ],
     );
     addTearDown(c.dispose);
     await tester.pumpWidget(
@@ -65,10 +73,13 @@ void main() {
     LogicalKeyboardKey key, {
     bool control = false,
     bool shift = false,
+    bool alt = false,
   }) async {
     if (control) await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
     if (shift) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    if (alt) await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
     await tester.sendKeyEvent(key);
+    if (alt) await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
     if (shift) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
     if (control) await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
     // Opening a compose window waits 150 ms before deciding whether to show
@@ -959,6 +970,143 @@ void main() {
       });
     });
 
+    group('Quick Steps and Forward as attachment with messages ticked', () {
+      // As Move was until 2026-11-11: Shift+Down to tick a run, and a Quick
+      // Step from the ribbon or Ctrl+Shift and its number, or Ctrl+Alt+F,
+      // took the message open in the reading pane alone, which is the last
+      // row reached, and left the ticked ones.
+      List<String> rows(ProviderContainer c) => [
+            for (final m in c.read(sortedMessagesProvider(
+                c.read(effectiveSelectedFolderIdProvider)!)))
+              m.id,
+          ];
+
+      void addStep(ProviderContainer c, QuickStepAction action) =>
+          c.read(quickStepsProvider.notifier).add(QuickStep(
+                id: 'qs-1',
+                name: 'Step one',
+                actions: [action],
+              ));
+
+      /// The first three rows ticked with Shift+Down, and the fourth open.
+      Future<List<String>> tickThree(
+          WidgetTester tester, ProviderContainer c) async {
+        final ids = rows(c);
+        await press(tester, LogicalKeyboardKey.arrowDown, shift: true);
+        await press(tester, LogicalKeyboardKey.arrowDown, shift: true);
+        await press(tester, LogicalKeyboardKey.arrowDown);
+        expect(selected(c), ids[3]);
+        expect(c.read(selectedMessageIdsProvider), ids.take(3).toSet());
+        return ids;
+      }
+
+      void expectTheTickedGone(ProviderContainer c, List<String> ids) {
+        expect(rows(c).toSet().intersection(ids.take(3).toSet()), isEmpty);
+        expect(rows(c), contains(ids[3]));
+        expect(c.read(selectedMessageIdsProvider), isEmpty);
+      }
+
+      testWidgets('Ctrl+Shift+1 runs the Quick Step on the ticked ones',
+          (tester) async {
+        final c = await pump(tester);
+        addStep(c, const QuickStepAction(QuickStepActionType.delete));
+        final ids = await tickThree(tester, c);
+
+        await press(tester, LogicalKeyboardKey.digit1,
+            control: true, shift: true);
+
+        expectTheTickedGone(c, ids);
+        expect(find.text('Step one applied to 3 messages'), findsOneWidget);
+      });
+
+      testWidgets('a step that fails part way stops there, and what it did '
+          'not do stays ticked', (tester) async {
+        // Each ticked message was tried whatever the one before had come
+        // to: "Flag, then Move" with a move the server refused flagged
+        // every one and moved none, and with some gone every tick went,
+        // the failed ones' with them.
+        final engine = _RefusesMoves();
+        final c = await pump(tester, engine: engine);
+        const inbox = 'acct-personal:INBOX';
+        c.read(selectedFolderIdProvider.notifier).select(inbox);
+        await tester.pumpAndSettle();
+        c.read(quickStepsProvider.notifier).add(const QuickStep(
+              id: 'qs-1',
+              name: 'Step one',
+              actions: [
+                QuickStepAction(QuickStepActionType.flag),
+                QuickStepAction(QuickStepActionType.moveTo,
+                    folderId: 'acct-personal:Travel'),
+              ],
+            ));
+        final ids = await tickThree(tester, c);
+        bool isFlagged(String id) => c
+            .read(messagesProvider(inbox))
+            .value!
+            .firstWhere((m) => m.id == id)
+            .isFlagged;
+        expect(isFlagged(ids[2]), isFalse);
+        engine.refused = ids[1];
+
+        await press(tester, LogicalKeyboardKey.digit1,
+            control: true, shift: true);
+
+        expect(rows(c), isNot(contains(ids[0])), reason: 'done');
+        expect(rows(c), containsAll([ids[1], ids[2]]));
+        expect(isFlagged(ids[2]), isFalse, reason: 'not tried');
+        expect(c.read(selectedMessageIdsProvider), {ids[1], ids[2]});
+        expect(find.textContaining('Step one applied to 1 of 3'),
+            findsOneWidget);
+      });
+
+      testWidgets("the ribbon's Quick Steps runs on the ticked ones",
+          (tester) async {
+        final c = await pump(tester);
+        addStep(c, const QuickStepAction(QuickStepActionType.delete));
+        final ids = await tickThree(tester, c);
+
+        await tester.tap(find.descendant(
+            of: find.byType(Ribbon), matching: find.text('Quick Steps')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.textContaining('Step one'));
+        await tester.pump(const Duration(milliseconds: 200));
+        await tester.pumpAndSettle();
+
+        expectTheTickedGone(c, ids);
+      });
+
+      testWidgets('one that opens a screen for its message says it takes '
+          'one message, and takes none', (tester) async {
+        final c = await pump(tester);
+        addStep(
+            c,
+            const QuickStepAction(QuickStepActionType.forwardTo,
+                address: 'boss@example.com'));
+        final ids = await tickThree(tester, c);
+
+        await press(tester, LogicalKeyboardKey.digit1,
+            control: true, shift: true);
+
+        expect(find.byType(ComposeScreen), findsNothing);
+        expect(find.textContaining('one message at a time'), findsOneWidget);
+        expect(c.read(selectedMessageIdsProvider), ids.take(3).toSet());
+      });
+
+      testWidgets('Ctrl+Alt+F forwards the ticked ones as attachments',
+          (tester) async {
+        final c = await pump(tester);
+        final ids = await tickThree(tester, c);
+
+        await press(tester, LogicalKeyboardKey.keyF, control: true, alt: true);
+
+        expect(find.byType(ComposeScreen), findsOneWidget);
+        final draft =
+            tester.widget<ComposeScreen>(find.byType(ComposeScreen)).draft;
+        expect(draft.attachments.map((a) => a.forwardedMessageId),
+            unorderedEquals(ids.take(3)));
+      });
+    });
+
     testWidgets('Ctrl+A ticks what is on screen, not the folder',
         (tester) async {
       final c = await pump(tester);
@@ -1598,5 +1746,20 @@ class _DatedEngine extends SampleMailEngine {
       isAnswered: m.isAnswered,
       isForwarded: m.isForwarded,
     );
+  }
+}
+
+/// A server that will not move one message, as one does with a folder
+/// gone on it, or a permission it will not give.
+class _RefusesMoves extends SampleMailEngine {
+  String? refused;
+
+  @override
+  Future<List<MessageMove>> moveMessages(
+    List<String> messageIds,
+    String toFolderId,
+  ) async {
+    if (messageIds.contains(refused)) throw StateError('the server said no');
+    return super.moveMessages(messageIds, toFolderId);
   }
 }

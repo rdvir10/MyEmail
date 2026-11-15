@@ -1,17 +1,24 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart' as http_testing;
 import 'package:myemail/data/account_store.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/graph/graph_mail_api.dart';
 import 'package:myemail/data/imap/cached_imap_engine.dart';
+import 'package:myemail/data/imap/imap_mapping.dart' show messageIdCriteria;
+import 'package:myemail/data/mail_engine.dart' show FindsByMessageId;
 import 'package:myemail/data/notifications/mail_notifier.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/folder_role.dart';
 import 'package:myemail/domain/follow_up.dart';
+import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/folder_tree.dart';
 import 'package:myemail/state/follow_ups.dart';
 import 'package:myemail/state/message_providers.dart';
@@ -184,6 +191,255 @@ void main() {
     final stored = await engine.cachedFlagged(account.id);
     expect(stored.map((m) => m.subject), ['In the Inbox'],
         reason: 'what the device has, shown before the server answers');
+  });
+
+  test("Gmail's flagged mail: each star's headers once, then its flags",
+      () async {
+    // All Mail is seldom synced, so each refresh fetched every star's
+    // headers again, and never kept them: with Flagged open, up to 500 a
+    // minute on the account's one connection.
+    final server = FakeImapTransport()
+      ..folder('INBOX', role: FolderRole.inbox)
+      ..folder('[Gmail]/All Mail', role: FolderRole.archive);
+    final engine = CachedImapEngine(
+      accountStore: MemoryAccountStore(),
+      credentialStore: MemoryCredentialStore(),
+      cache: MemoryCacheStore(),
+      transportFactory: (_, _) => server,
+    );
+    final account = await engine.addAccount(
+      displayName: 'P',
+      emailAddress: 'p@example.com',
+      provider: MailProvider.gmail,
+      secret: 'abcdabcdabcdabcd',
+    );
+    await engine.loadFolders(account.id);
+    const allMail = '[Gmail]/All Mail';
+    final all = server.folder(allMail);
+    final starred = [
+      for (var i = 0; i < 3; i++) all.deliver(subject: 'Starred $i')
+        ..isFlagged = true,
+    ];
+    expect(await engine.flaggedMessages(account.id), hasLength(3));
+
+    // Read on the PC, one more starred, and one unstarred.
+    starred[0].isRead = true;
+    starred[1].isFlagged = false;
+    final later = all.deliver(subject: 'Starred later')..isFlagged = true;
+    server.calls.clear();
+    final again = await engine.flaggedMessages(account.id);
+
+    expect(again.map((m) => m.subject).toSet(),
+        {'Starred 0', 'Starred 2', 'Starred later'});
+    expect(again.firstWhere((m) => m.subject == 'Starred 0').isRead, isTrue);
+    expect(
+      server.calls.where((call) =>
+          call.startsWith('UID FETCH $allMail') && !call.endsWith('FLAGS')),
+      ['UID FETCH $allMail ${later.uid}'],
+      reason: 'headers for the new star alone',
+    );
+  });
+
+  group('a reminder for a message filed since', () {
+    // The usual flag-then-file. The reminder opens the message by its id in
+    // the app, which has its folder in it, and a move gives it a new one:
+    // the tap opened the folder it had left, with nothing in it, and on
+    // the phone nothing at all.
+    late FakeImapTransport server;
+    late FakeImapTransport other;
+    late CachedImapEngine engine;
+    late Account account;
+    late FakeMailNotifier notifier;
+    late ProviderContainer c;
+    const subject = 'Re: Quote for 6063-T5';
+
+    /// A message in the Inbox with a reminder set, and the reminder's
+    /// payload. [other] is a second account's server.
+    Future<(MailMessage, String)> reminded() async {
+      FakeImapTransport mailbox() => FakeImapTransport()
+        ..folder('INBOX', role: FolderRole.inbox)
+        ..folder('Receipts')
+        ..folder('[Gmail]/Trash', role: FolderRole.deleted);
+      server = mailbox();
+      other = mailbox();
+      engine = CachedImapEngine(
+        accountStore: MemoryAccountStore(),
+        credentialStore: MemoryCredentialStore(),
+        cache: MemoryCacheStore(),
+        transportFactory: (a, _) =>
+            a.emailAddress == 'p@example.com' ? server : other,
+      );
+      account = await engine.addAccount(
+        displayName: 'P',
+        emailAddress: 'p@example.com',
+        provider: MailProvider.gmail,
+        secret: 'abcdabcdabcdabcd',
+      );
+      await engine.loadFolders(account.id);
+      server.folder('INBOX').deliver(subject: subject).isFlagged = true;
+      final message =
+          (await engine.loadMessages('${account.id}:INBOX')).single;
+      notifier = FakeMailNotifier();
+      c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        mailEngineProvider.overrideWithValue(engine),
+        mailNotifierProvider.overrideWithValue(notifier),
+      ]);
+      addTearDown(c.dispose);
+      await c.read(followUpsProvider.notifier).setReminder(
+            message,
+            DateTime.now().add(const Duration(days: 1)),
+          );
+      return (message, notifier.reminders.values.single.payload);
+    }
+
+    Future<ReminderTarget> whereNow(String payload) =>
+        c.read(followUpsProvider.notifier).whereNow(payload);
+
+    Future<String> fileInReceipts(MailMessage message) async =>
+        (await engine.moveMessages([message.id], '${account.id}:Receipts'))
+            .single
+            .movedIds
+            .single;
+
+    test('opens it where it is now', () async {
+      final (message, payload) = await reminded();
+      expect(payload, message.id);
+
+      final filed = await fileInReceipts(message);
+
+      expect((await whereNow(payload)).id, filed);
+    });
+
+    test('filed where the device holds the mail, finds it there without '
+        'asking the server', () async {
+      final (message, payload) = await reminded();
+      await engine.loadMessages('${account.id}:Receipts');
+      final filed = await fileInReceipts(message);
+      // Hours on, when the reminder comes: the sync behind the move into
+      // Receipts long done (see CachedImapEngine._syncBehind).
+      await engine.loadMessages('${account.id}:Receipts');
+      server.calls.clear();
+
+      expect((await whereNow(payload)).id, filed);
+      expect(server.calls.where((call) => call.contains('Message-ID')),
+          isEmpty);
+    });
+
+    test('found by its Message-ID, though a hundred more share its subject',
+        () async {
+      // The account was searched for the subject's words, and only the
+      // newest hundred hits looked at.
+      final (message, payload) = await reminded();
+      final filed = await fileInReceipts(message);
+      for (var i = 0; i < 120; i++) {
+        server.folder('Receipts').deliver(subject: subject);
+      }
+
+      expect((await whereNow(payload)).id, filed);
+    });
+
+    test("a copy in the other account does not stand in for it", () async {
+      // The device's own copies were looked at, every account's, before
+      // its own account's server: a copy in the other account that the
+      // device held won over the message itself, filed where it held
+      // nothing.
+      final (message, payload) = await reminded();
+      final second = await engine.addAccount(
+        displayName: 'Q',
+        emailAddress: 'q@example.com',
+        provider: MailProvider.gmail,
+        secret: 'abcdabcdabcdabcd',
+      );
+      await engine.loadFolders(second.id);
+      other.folder('INBOX').deliver(
+            subject: subject,
+            messageId: server.folder('INBOX').messages.values.single.messageId,
+          );
+      await engine.loadMessages('${second.id}:INBOX');
+      final filed = await fileInReceipts(message);
+
+      expect((await whereNow(payload)).id, filed);
+    });
+
+    test('where it has not moved, opens it as it was', () async {
+      final (_, payload) = await reminded();
+
+      expect((await whereNow(payload)).id, payload);
+    });
+
+    test('deleted: looked for, and nowhere', () async {
+      final (message, payload) = await reminded();
+
+      await engine.deleteMessages([message.id]);
+
+      final target = await whereNow(payload);
+      expect(target.id, isNull);
+      expect(target.failed, isNull);
+    });
+
+    test('asked of the server exactly: Microsoft in one request, IMAP by '
+        'the header', () async {
+      late Uri asked;
+      final api = GraphMailApi(
+        accessToken: ({bool force = false}) async => 'token',
+        httpClient: http_testing.MockClient((request) async {
+          asked = request.url;
+          return http.Response(jsonEncode({'value': []}), 200);
+        }),
+      );
+      await api.withMessageIdEverywhere("<o'brien@example.com>");
+      expect(asked.path, endsWith('/me/messages'));
+      expect(asked.queryParameters[r'$filter'],
+          "internetMessageId eq '<o''brien@example.com>'");
+      expect(asked.queryParameters[r'$select'], contains('parentFolderId'));
+
+      expect(messageIdCriteria('a"b@example.com'),
+          r'HEADER Message-ID "a\"b@example.com"');
+    });
+
+    test('with no connection, could not be looked for, which is not gone',
+        () async {
+      final (message, payload) = await reminded();
+      await fileInReceipts(message);
+      server.offline = true;
+
+      final target = await whereNow(payload);
+      expect(target.id, isNull);
+      expect(target.failed, isNotNull);
+    });
+  });
+
+  test('Flagged holds every flagged message of an account, not the newest '
+      'page of them', () async {
+    // It was asked for a page, as a folder is, with no row under it to ask
+    // for more: the older flags, the overdue ones among them, never showed,
+    // and soonest due first sorted only the newest fifty.
+    final engine = SampleMailEngine();
+    final c = ProviderContainer(overrides: [
+      uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+      mailEngineProvider.overrideWithValue(engine),
+    ]);
+    addTearDown(c.dispose);
+    await c.read(foldersProvider.future);
+    const account = 'acct-personal';
+    final mail = await engine.loadMessages('$account:INBOX', limit: 500);
+    final many = Messages.pageSize + 10;
+    expect(mail.length, greaterThanOrEqualTo(many));
+    await engine.setMessagesFlagged(
+        [for (final m in mail.take(many)) m.id], true);
+    final flagged = {
+      for (final m in await engine.cachedFlagged(account, limit: 1000)) m.id,
+    };
+    expect(flagged.length, greaterThanOrEqualTo(many));
+
+    c.listen(messagesProvider(kFlaggedId), (_, _) {});
+    await c.read(messagesProvider(kFlaggedId).future);
+
+    expect({
+      for (final m in c.read(sortedMessagesProvider(kFlaggedId)))
+        if (m.accountId == account) m.id,
+    }, flagged);
   });
 
   test('a Gmail account with nothing starred answers an empty list',
@@ -380,5 +636,120 @@ void main() {
 
       expect(find.text('Flagged'), findsWidgets);
     });
+
+    /// A reminder set on the Inbox's first message, as the real engines
+    /// have it, with a Message-ID; the message itself, and the reminder's
+    /// payload.
+    Future<(MailMessage, String)> remind(
+      WidgetTester tester,
+      ProviderContainer c,
+      SampleMailEngine engine,
+    ) async {
+      final message = (await tester
+              .runAsync(() => engine.loadMessages('acct-personal:INBOX')))!
+          .first;
+      await c.read(followUpsProvider.notifier).setReminder(
+            MailMessage(
+              id: message.id,
+              accountId: message.accountId,
+              folderId: message.folderId,
+              uid: message.uid,
+              subject: message.subject,
+              preview: '',
+              from: message.from,
+              to: message.to,
+              date: message.date,
+              messageId: 'quote@example.com',
+            ),
+            DateTime.now().add(const Duration(days: 1)),
+          );
+      return (message, notifier.reminders.values.single.payload);
+    }
+
+    /// The reminder tapped from the shade, over the app.
+    Future<void> tap(WidgetTester tester, String payload) async {
+      notifier.launchPayload = payload;
+      for (final state in [
+        AppLifecycleState.inactive,
+        AppLifecycleState.resumed,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a reminder for a message filed since opens it where it is '
+        'now', (tester) async {
+      final engine = _FindsMoved();
+      final c = await pump(tester, engine: engine);
+      final (message, payload) = await remind(tester, c, engine);
+      const travel = 'acct-personal:Travel';
+      final moves = (await tester
+          .runAsync(() => engine.moveMessages([message.id], travel)))!;
+      engine.found = moves.single.movedIds.single;
+
+      await tap(tester, payload);
+
+      expect(c.read(selectedFolderIdProvider), travel);
+      expect(c.read(selectedMessageIdProvider), engine.found);
+    });
+
+    testWidgets('and one for a message gone says so', (tester) async {
+      final engine = _FindsMoved();
+      final c = await pump(tester, engine: engine);
+      final (message, payload) = await remind(tester, c, engine);
+      final folder = c.read(effectiveSelectedFolderIdProvider);
+      await tester.runAsync(() => engine.deleteMessages([message.id]));
+
+      await tap(tester, payload);
+
+      expect(find.textContaining('may have been deleted'), findsOneWidget);
+      expect(c.read(effectiveSelectedFolderIdProvider), folder);
+    });
+
+    testWidgets('and one that could not be looked for says that, not that it '
+        'has gone', (tester) async {
+      final engine = _FindsMoved();
+      final c = await pump(tester, engine: engine);
+      final (message, payload) = await remind(tester, c, engine);
+      final folder = c.read(effectiveSelectedFolderIdProvider);
+      await tester.runAsync(() =>
+          engine.moveMessages([message.id], 'acct-personal:Travel'));
+      engine.failure = StateError('no signal');
+
+      await tap(tester, payload);
+
+      expect(find.textContaining('could not be looked for'), findsOneWidget);
+      expect(find.textContaining('may have been deleted'), findsNothing);
+      expect(c.read(effectiveSelectedFolderIdProvider), folder);
+    });
   });
+}
+
+/// The sample engine, finding a message by its Message-ID wherever a test
+/// says it has gone, and failing to ask as a test says; the sample mail has
+/// none to find it by.
+class _FindsMoved extends SampleMailEngine implements FindsByMessageId {
+  /// Where the server has it now.
+  String? found;
+
+  /// Why the server could not be asked.
+  Object? failure;
+
+  @override
+  Future<String?> messageWithId(
+    String messageId, {
+    required String accountId,
+  }) async =>
+      null;
+
+  @override
+  Future<String?> messageWithIdOnServer(
+    String messageId, {
+    required String accountId,
+  }) async {
+    if (failure case final e?) throw e;
+    return found;
+  }
 }

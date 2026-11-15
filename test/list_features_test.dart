@@ -10,6 +10,8 @@ import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/domain/row_format.dart';
 import 'package:myemail/state/display_providers.dart';
+import 'package:myemail/state/folder_tree.dart' show kUnifiedInboxId;
+import 'package:myemail/state/list_filter.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/pinned_messages.dart';
 import 'package:myemail/state/providers.dart';
@@ -33,8 +35,12 @@ void main() {
 
   setUp(() => engine = _Engine());
 
-  Future<void> pump(WidgetTester tester, {String folder = inbox}) async {
-    tester.view.physicalSize = const Size(400, 900);
+  Future<void> pump(
+    WidgetTester tester, {
+    String folder = inbox,
+    Size size = const Size(400, 900),
+  }) async {
+    tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -87,6 +93,85 @@ void main() {
     await tester.pumpAndSettle();
     expect(listed().any((m) => m.isRead), isTrue);
     expect(find.text('Older unread, only on the server'), findsNothing);
+  });
+
+  testWidgets('Unread on All Inboxes: opening a message does not search '
+      'every Inbox on the server again', (tester) async {
+    // Each message opened under Unread is marked read. The list's copy of
+    // it is the newer word about it, so what the server found is still
+    // good; it was asked for again all the same, every Inbox, on every
+    // message opened.
+    await pump(tester, folder: kUnifiedInboxId, size: const Size(1400, 900));
+    c
+        .read(listFiltersProvider.notifier)
+        .set(kUnifiedInboxId, MessageFilter.unread);
+    await tester.pumpAndSettle();
+    final asked = engine.filtered.length;
+    expect(asked, greaterThan(1), reason: 'every account has an Inbox');
+
+    // Messages the list holds, as reading down it opens them.
+    final held = {
+      for (final m in c.read(messagesProvider(kUnifiedInboxId)).value!) m.id,
+    };
+    String? before;
+    for (var i = 0; i < 2; i++) {
+      final unread = rows(tester).firstWhere((m) =>
+          !m.isRead &&
+          held.contains(m.id) &&
+          m.id != c.read(selectedMessageIdProvider));
+      await tester.tap(find.byKey(ValueKey('tile:${unread.id}')));
+      // The sample engine takes its time, as a server does.
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+      expect(engine.readMarked, contains(unread.id));
+      // The one read before, left for this one, is read: no longer shown.
+      if (before != null) {
+        expect(c.read(sortedMessagesProvider(kUnifiedInboxId)).map((m) => m.id),
+            isNot(contains(before)));
+      }
+      before = unread.id;
+    }
+
+    expect(engine.filtered, hasLength(asked));
+  });
+
+  testWidgets('Unread: a message read here stays away once the list no '
+      'longer holds it', (tester) async {
+    // The list holds the newest page of the folder, and new mail pushes
+    // the rest out of it. What the server found for the filter was from
+    // before the message was read, and drew it again from there, bold.
+    await pump(tester, size: const Size(1400, 900));
+    c.read(listFiltersProvider.notifier).set(inbox, MessageFilter.unread);
+    await tester.pumpAndSettle();
+    final held = c.read(messagesProvider(inbox)).value!;
+    final last = held.lastWhere((m) => !m.isRead);
+    List<String> shown() =>
+        [for (final m in c.read(sortedMessagesProvider(inbox))) m.id];
+
+    Future<void> open(String id) async {
+      c.read(selectedMessageIdProvider.notifier).select(id);
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+    }
+
+    await open(last.id);
+    expect(engine.readMarked, contains(last.id));
+    await open(held.firstWhere((m) => !m.isRead && m.id != last.id).id);
+    expect(shown(), isNot(contains(last.id)));
+
+    // New mail, enough to push it out of what the list holds, and the
+    // minute's refresh.
+    for (var i = held.indexOf(last); i < held.length; i++) {
+      engine.deliver(inbox);
+    }
+    c.read(listRefreshProvider.notifier).ping();
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pumpAndSettle();
+
+    expect(c.read(messagesProvider(inbox)).value!.map((m) => m.id),
+        isNot(contains(last.id)),
+        reason: 'pushed out of what the list holds');
+    expect(shown(), isNot(contains(last.id)));
   });
 
   testWidgets('a pinned message heads the list, under Pinned', (tester) async {
@@ -266,6 +351,9 @@ class _Engine extends SampleMailEngine {
   final readMarked = <String>[];
   final deleted = <String>[];
 
+  /// The folders the server was searched in for a filter, once a search.
+  final filtered = <String>[];
+
   @override
   Future<List<MessageMove>> deleteMessages(List<String> messageIds) {
     deleted.addAll(messageIds);
@@ -278,6 +366,7 @@ class _Engine extends SampleMailEngine {
     MessageFilter filter, {
     int limit = 100,
   }) async {
+    filtered.add(folderId);
     final found = await super.filterMessages(folderId, filter, limit: limit);
     if (filter != MessageFilter.unread) return found;
     return [
@@ -305,7 +394,52 @@ class _Engine extends SampleMailEngine {
   }) async {
     final reply = sentReply;
     if (reply != null && folderId == reply.folderId) return [reply];
-    return super.cachedMessages(folderId, offset: offset, limit: limit);
+    return _withArrived(folderId, offset, limit,
+        await super.cachedMessages(folderId, offset: offset, limit: limit));
+  }
+
+  @override
+  Future<List<MailMessage>> loadMessages(
+    String folderId, {
+    int offset = 0,
+    int limit = 50,
+  }) async =>
+      _withArrived(folderId, offset, limit,
+          await super.loadMessages(folderId, offset: offset, limit: limit));
+
+  /// New mail, newest first, by folder: see [deliver].
+  final _arrived = <String, List<MailMessage>>{};
+
+  /// A new unread message on top of [folderId], which pushes the oldest of
+  /// a page out of it, as new mail does.
+  void deliver(String folderId) {
+    final list = _arrived[folderId] ??= [];
+    final uid = 800000 + list.length;
+    list.insert(
+      0,
+      MailMessage(
+        id: MailMessage.idFor(folderId, uid),
+        accountId: folderId.split(':').first,
+        folderId: folderId,
+        uid: uid,
+        subject: 'Just arrived $uid',
+        preview: '',
+        from: const MailAddress(email: 'dana@example.com'),
+        to: const [MailAddress(email: 'me@example.com')],
+        date: DateTime.now(),
+      ),
+    );
+  }
+
+  List<MailMessage> _withArrived(
+    String folderId,
+    int offset,
+    int limit,
+    List<MailMessage> page,
+  ) {
+    final arrived = _arrived[folderId];
+    if (arrived == null || offset > 0) return page;
+    return [...arrived, ...page].take(limit).toList();
   }
 
   @override

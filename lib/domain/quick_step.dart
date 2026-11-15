@@ -43,6 +43,14 @@ enum QuickStepActionType {
   /// Flag for: when it is due.
   bool get needsWhen => this == QuickStepActionType.flagFor;
 
+  /// Opens a screen for the message (a forward, a reply, a new message, a
+  /// meeting), which waits for the person before the chain goes on.
+  bool get opensScreen =>
+      this == QuickStepActionType.forwardTo ||
+      this == QuickStepActionType.replyDelete ||
+      this == QuickStepActionType.newMessageTo ||
+      this == QuickStepActionType.meeting;
+
   /// After this action the message is no longer in the list, so anything
   /// after it in the chain would have nothing to act on.
   bool get isTerminal =>

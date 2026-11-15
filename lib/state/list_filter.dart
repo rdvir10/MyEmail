@@ -65,17 +65,24 @@ final accountNamesProvider = Provider<Map<String, String>>((ref) => {
 /// One folder that cannot answer leaves the others' mail standing; only
 /// when none can is it an error, and the list then shows the matching mail
 /// it holds, as a refresh that fails does.
-final filterHitsProvider = FutureProvider.autoDispose
-    .family<List<MailMessage>, (String, MessageFilter)>(
-  (ref, key) async {
+class FilterHits extends AsyncNotifier<List<MailMessage>> {
+  FilterHits(this.key);
+
+  final (String, MessageFilter) key;
+
+  /// Marked read here since the server was asked: see [markedRead].
+  final _read = <String>{};
+
+  @override
+  Future<List<MailMessage>> build() async {
+    // Asked from now, the server knows of what was read before.
+    _read.clear();
     final (listId, filter) = key;
     if (filter == MessageFilter.all) return const [];
     final engine = ref.watch(mailEngineProvider);
     // Flagged has nothing more to find on the server than it asked for.
     if (listId == kFlaggedId) return const [];
-    final ids = listId == kUnifiedInboxId
-        ? inboxIdsOf(await ref.watch(foldersProvider.future))
-        : [listId];
+    final ids = listId == kUnifiedInboxId ? await _inboxIds(ref) : [listId];
     Object? failure;
     StackTrace? trace;
     var failed = 0;
@@ -92,10 +99,49 @@ final filterHitsProvider = FutureProvider.autoDispose
     if (ids.isNotEmpty && failed == ids.length) {
       Error.throwWithStackTrace(failure!, trace!);
     }
-    return [for (final list in found) ...list];
-  },
+    return _laidOver([for (final list in found) ...list]);
+  }
+
+  /// [messageId] was marked read here, opened in the list, without the
+  /// server being asked again: asked on every message opened, every Inbox
+  /// was searched each time. What it found before still says unread, and
+  /// once new mail pushes the message out of the newest the list holds,
+  /// it was drawn from here again, bold, under Unread.
+  void markedRead(String messageId) {
+    _read.add(messageId);
+    final hits = state.value;
+    // While the server is being asked, its answer is laid over instead.
+    if (hits == null || state.isLoading) return;
+    if (hits.any((m) => m.id == messageId && !m.isRead)) {
+      state = AsyncData(_laidOver(hits));
+    }
+  }
+
+  List<MailMessage> _laidOver(List<MailMessage> hits) => _read.isEmpty
+      ? hits
+      : [
+          for (final m in hits)
+            _read.contains(m.id) && !m.isRead ? m.copyWith(isRead: true) : m,
+        ];
+}
+
+final filterHitsProvider = AsyncNotifierProvider.autoDispose
+    .family<FilterHits, List<MailMessage>, (String, MessageFilter)>(
+  FilterHits.new,
   retry: notRetried,
 );
+
+/// Every account's Inbox, watched for the set of them only, as the unified
+/// list watches it (see `Messages._folderIds`). The folders change with
+/// every unread count, twice for each message read and again on every
+/// minute's refresh, and each change searched every Inbox on the server
+/// again, the filter's spinner blinking with it.
+Future<List<String>> _inboxIds(Ref ref) async {
+  final joined = await ref.watch(
+    foldersProvider.selectAsync((folders) => inboxIdsOf(folders).join('\n')),
+  );
+  return joined.isEmpty ? const [] : joined.split('\n');
+}
 
 /// [messages] narrowed to what [filter] keeps, with [hits] the server
 /// found that [messages] does not hold. [keep] is a message to leave in

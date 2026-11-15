@@ -43,6 +43,19 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
   /// to start with and [loadMore] adds this many at a time.
   static const pageSize = 50;
 
+  /// How many flagged messages the Flagged list asks each account for.
+  /// Everything flagged, short of a mailbox flagged without end: it has no
+  /// pages, as it has no folder total to say there is more, and asked for
+  /// one page like a folder it showed the newest fifty of each account and
+  /// never the older flags, the overdue ones among them.
+  static const flaggedLimit = 500;
+
+  /// How many messages to ask each folder behind the list for: as deep as
+  /// it has been scrolled, or for Flagged, see [flaggedLimit].
+  int get _limit => folderId == kFlaggedId
+      ? flaggedLimit
+      : pageSize * ref.read(listDepthProvider(folderId)).pages;
+
   /// Counts the changes made to this list from here: a delete, a move, a
   /// flag, another page loaded.
   ///
@@ -101,10 +114,10 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
         () => _askAgain(() => current, storedFirst: true),
       ));
     });
-    // Read, not watched: paging appends in place, and the depth is only
-    // here so a refresh comes back as deep as the list had been scrolled
-    // rather than snapping back to the first page.
-    final limit = pageSize * ref.read(listDepthProvider(folderId)).pages;
+    // The depth read, not watched: paging appends in place, and the depth
+    // is only here so a refresh comes back as deep as the list had been
+    // scrolled rather than snapping back to the first page.
+    final limit = _limit;
     final ids = await _folderIds();
 
     // What is already known, which costs a database read and no network.
@@ -214,7 +227,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
       final changes = _changes;
       final ids = await _idsNow();
       if (!current()) return;
-      final limit = pageSize * ref.read(listDepthProvider(folderId)).pages;
+      final limit = _limit;
       if (storedFirst) await _showStored(ids, limit, changes, current);
       await _askServer(ids, limit, changes, current);
     } catch (_) {
@@ -266,8 +279,7 @@ class Messages extends AsyncNotifier<List<MailMessage>> {
     await future;
     final changes = _changes;
     final ids = await _idsNow();
-    final limit = pageSize * ref.read(listDepthProvider(folderId)).pages;
-    await _answer(ids, limit, changes, () => ref.mounted);
+    await _answer(ids, _limit, changes, () => ref.mounted);
   }
 
   /// The server folders behind this list as they are now, read rather

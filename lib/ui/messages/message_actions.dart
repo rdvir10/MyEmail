@@ -526,7 +526,17 @@ class MessageActions {
         await container
             .read(messagesProvider(listId).notifier)
             .setRead(message.id, true);
-        _refreshSearch();
+        // Not what a filter found on the server, which is told instead: the
+        // list's copy of a message it holds is the newer word about it
+        // (see filteredMessages) only while it holds it. Asked again,
+        // every Inbox was searched on the server for each message opened
+        // under Unread on All Inboxes.
+        _refreshSearch(filterHits: false);
+        final found = filterHitsProvider(
+            (listId, container.read(listFilterProvider(listId))));
+        if (container.exists(found)) {
+          container.read(found.notifier).markedRead(message.id);
+        }
       } else {
         await container.read(mailEngineProvider).setRead(message.id, true);
         _afterEngineChange(elsewhere);
@@ -594,13 +604,13 @@ class MessageActions {
   /// A search on screen shows the messages just changed, so it is asked
   /// again. It was only asked for a hit from another folder: one the open
   /// list also held stayed in the results as it was, deleted or not.
-  void _refreshSearch() {
+  void _refreshSearch({bool filterHits = true}) {
     if (container.read(searchQueryProvider).trim().isNotEmpty) {
       container.invalidate(searchHitsProvider);
     }
     // And what a filter found on the server, which is from before this:
     // a message deleted from the list would come back from it.
-    container.invalidate(filterHitsProvider);
+    if (filterHits) container.invalidate(filterHitsProvider);
   }
 
   /// The messages this list holds, and the rest.

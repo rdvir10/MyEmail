@@ -107,14 +107,18 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
     AppCommand.help,
   };
 
-  /// The [n]th Quick Step on the message in front, as its menu would run it.
+  /// The [n]th Quick Step on the ticked messages, as Delete and Move take
+  /// them, or else on the message in front, as its menu would run it.
   Future<void> _runQuickStep(int n) async {
     final listId = ref.read(effectiveSelectedFolderIdProvider);
-    final message = _target(listId);
     final steps = ref.read(quickStepsProvider);
-    if (message == null || listId == null || n > steps.length) return;
+    if (listId == null || n > steps.length) return;
+    final ticked = _ticked(listId);
+    if (ticked != null && ticked.isEmpty) return;
+    final chosen = ticked ?? [?_target(listId)];
+    if (chosen.isEmpty) return;
     final step = steps[n - 1];
-    if (!step.appliesTo(message.accountId)) {
+    if (!chosen.every((m) => step.appliesTo(m.accountId))) {
       ScaffoldMessenger.maybeOf(context)
         ?..hideCurrentSnackBar()
         ..showSnackBar(SnackBar(
@@ -123,8 +127,10 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
         ));
       return;
     }
-    await applyQuickStep(context, ref,
-        step: step, message: message, listId: listId);
+    final went = await applyQuickStepTo(context, ref,
+        step: step, messages: chosen, listId: listId);
+    // What it did not get to stays ticked: see untickWhatWent.
+    if (ticked != null && mounted) untickWhatWent(ref, ticked, went);
   }
 
   /// [AppShortcuts.message] as the list or the search has it now, so a flag
@@ -194,7 +200,15 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
               kind: ComposeKind.forward, original: message);
         }
       case AppCommand.forwardAsAttachment:
-        if (message != null) await forwardAsAttachment(context, ref, [message]);
+        // The ticked ones, as the ticked menu's Forward as attachments.
+        final ticked = listId == null ? null : _ticked(listId);
+        if (ticked != null) {
+          if (ticked.isEmpty) return;
+          await forwardAsAttachment(context, ref, ticked);
+          _clearTicks();
+        } else if (message != null) {
+          await forwardAsAttachment(context, ref, [message]);
+        }
       case AppCommand.fullScreen:
         if (message != null &&
             ref.read(messageBodyProvider(message.id)).value != null) {

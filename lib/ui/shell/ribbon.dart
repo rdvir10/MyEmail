@@ -176,7 +176,12 @@ class _RibbonState extends ConsumerState<Ribbon> {
           onPressed: has ? () => _compose(ComposeKind.forward, message) : null,
         ),
         const _Separator(),
-        _QuickStepsButton(enabled: has, message: message, listId: listId),
+        _QuickStepsButton(
+          enabled: some,
+          targets: ticked.isNotEmpty ? ticked : [?message],
+          message: message,
+          listId: listId,
+        ),
         _Button(
           icon: Icons.drive_file_move_outline,
           label: 'Move',
@@ -273,25 +278,33 @@ class _RibbonState extends ConsumerState<Ribbon> {
 
 /// Quick Steps, as a menu rather than a single action: there is no one Quick
 /// Step to run, and a button that ran the first one would be a trap.
+///
+/// On [commandTargets], as Delete and Move beside it: the ticked messages
+/// where any are ticked, the open one otherwise.
 class _QuickStepsButton extends ConsumerWidget {
   const _QuickStepsButton({
     required this.enabled,
+    required this.targets,
     required this.message,
     required this.listId,
   });
 
   final bool enabled;
+
+  /// What a step would run on, as it stands: for which steps to offer.
+  final List<MailMessage> targets;
+
+  /// The message open, for [commandTargets] when a step is chosen.
   final MailMessage? message;
   final String? listId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final target = message;
-    // Only the steps that can finish on this message: one that files into
-    // another account's folder cannot.
+    // Only the steps that can finish on every one of them: one that files
+    // into another account's folder cannot.
     final steps = [
       for (final s in ref.watch(quickStepsProvider))
-        if (target == null || s.appliesTo(target.accountId)) s,
+        if (targets.every((m) => s.appliesTo(m.accountId))) s,
     ];
     final folderIndex = ref.watch(folderIndexProvider);
 
@@ -326,12 +339,21 @@ class _QuickStepsButton extends ConsumerWidget {
     );
   }
 
+  /// The ticks go once it is done, as after Delete, those it did not get
+  /// to staying (see [untickWhatWent]); with none of them in the list now
+  /// there is nothing to run it on, and it says so.
   Future<void> _run(BuildContext context, WidgetRef ref, QuickStep step) async {
-    final target = message;
     final list = listId;
-    if (target == null || list == null) return;
-    await applyQuickStep(context, ref,
-        step: step, message: target, listId: list);
+    if (list == null) return;
+    final ticking = ref.read(selectedMessageIdsProvider).isNotEmpty;
+    final chosen = commandTargets(ref, list, message);
+    if (chosen.isEmpty) {
+      if (ticking) sayTicksGone(context);
+      return;
+    }
+    final went = await applyQuickStepTo(context, ref,
+        step: step, messages: chosen, listId: list);
+    if (ticking && context.mounted) untickWhatWent(ref, chosen, went);
   }
 }
 

@@ -7,16 +7,21 @@ import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/draft.dart';
 import 'package:myemail/domain/follow_up.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/message_filter.dart';
 import 'package:myemail/domain/quick_step.dart';
+import 'package:myemail/state/list_filter.dart';
 import 'package:myemail/state/message_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/quick_steps.dart';
+import 'package:myemail/state/search_providers.dart';
 import 'package:myemail/ui/messages/message_tile.dart';
 import 'package:myemail/ui/quick_steps/quick_steps_screen.dart';
 import 'package:myemail/ui/shell/app_shell.dart';
 import 'package:myemail/ui/shell/app_shortcuts.dart';
+import 'package:myemail/ui/shell/pane_focus.dart';
 
 import 'fakes/fake_webview.dart';
+import 'helpers/open_search.dart';
 
 /// More Quick Steps (#38): Archive, Flag for a day, Forward to, Reply then
 /// delete, New message to and Meeting from it, and Ctrl+Shift with a step's
@@ -289,6 +294,77 @@ void main() {
 
       expect(find.text('Flag it applied'), findsOneWidget);
       expect(c.read(selectedMessageProvider)!.isFlagged, isTrue);
+    });
+
+    // A Quick Step went to the list itself, past the follow-ups the swipes
+    // and the menus have: what a filter had found on the server, and the
+    // search on screen, both from before it, still had the message, and it
+    // was drawn again from there.
+
+    const travel = 'acct-personal:Travel';
+
+    /// A Quick Step filing into Travel, as Ctrl+Shift+1.
+    void addToTravel(ProviderContainer c) =>
+        c.read(quickStepsProvider.notifier).add(const QuickStep(
+              id: 'a',
+              name: 'To Travel',
+              actions: [
+                QuickStepAction(QuickStepActionType.moveTo, folderId: travel),
+              ],
+            ));
+
+    Future<void> firstQuickStep(WidgetTester tester) async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.digit1);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('with Unread on, a Quick Step that files the message takes '
+        'its row away', (tester) async {
+      final c = await pump(tester);
+      addToTravel(c);
+      const folder = 'acct-personal:Newsletters';
+      c.read(selectedFolderIdProvider.notifier).select(folder);
+      await tester.pumpAndSettle();
+      c.read(listFiltersProvider.notifier).set(folder, MessageFilter.unread);
+      await tester.pumpAndSettle();
+      final message =
+          c.read(messagesProvider(folder)).value!.firstWhere((m) => !m.isRead);
+      c.read(selectedMessageIdProvider.notifier).select(message.id);
+      await tester.pumpAndSettle();
+
+      await firstQuickStep(tester);
+
+      expect(find.text('To Travel applied'), findsOneWidget);
+      expect(c.read(sortedMessagesProvider(folder)).map((m) => m.id),
+          isNot(contains(message.id)));
+      expect(c.read(selectedMessageProvider)?.id, isNot(message.id));
+    });
+
+    testWidgets('a search hit filed by a Quick Step leaves the results',
+        (tester) async {
+      final c = await pump(tester);
+      addToTravel(c);
+      await openSearch(tester);
+      await tester.enterText(searchField, 'invoice');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+      final hit = c.read(searchResultsProvider).value!.firstWhere(
+          (m) => m.accountId == 'acct-personal' && m.folderId != travel);
+      c.read(selectedMessageIdProvider.notifier).select(hit.id);
+      // Out of the search box, where the keys are typing.
+      c.read(paneFocusProvider).list.requestFocus();
+      await tester.pumpAndSettle();
+
+      await firstQuickStep(tester);
+
+      expect(find.text('To Travel applied'), findsOneWidget);
+      expect(c.read(searchResultsProvider).value!.map((m) => m.id),
+          isNot(contains(hit.id)));
     });
   });
 }

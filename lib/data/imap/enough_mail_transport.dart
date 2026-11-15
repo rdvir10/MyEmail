@@ -260,6 +260,38 @@ class EnoughMailTransport implements ImapTransport {
       });
 
   @override
+  Future<List<int>> uidsWithMessageId(String path, String messageId) =>
+      _run((c) async {
+        await _ensureSelected(c, path);
+        final result = await c.uidSearchMessages(
+          searchCriteria: messageIdCriteria(messageId),
+        );
+        return result.matchingSequence?.toList() ?? const [];
+      });
+
+  @override
+  Future<List<RemoteFlags>> fetchFlagsByUids(String path, List<int> uids) =>
+      _run((c) async {
+        if (uids.isEmpty) return const [];
+        await _ensureSelected(c, path);
+        final result = await c.uidFetchMessages(
+          em.MessageSequence.fromIds(uids, isUid: true),
+          '(UID FLAGS)',
+        );
+        return [
+          for (final m in result.messages)
+            if (m.uid != null)
+              RemoteFlags(
+                uid: m.uid!,
+                isRead: m.isSeen,
+                isFlagged: m.isFlagged,
+                isAnswered: m.isAnswered,
+                isForwarded: markedForwarded(m),
+              ),
+        ];
+      });
+
+  @override
   Future<MailBody> fetchBody(String path, int uid) => _run(limit: transferLimit, (c) async {
         await _ensureSelected(c, path);
         // The structure first, then only the parts the body is read from.

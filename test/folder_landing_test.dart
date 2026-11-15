@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/ui_state_store.dart';
@@ -89,6 +90,28 @@ void main() {
     expect(row.message.isRead, isFalse);
     final listed = c.read(messagesProvider(folder)).value!;
     expect(listed.firstWhere((m) => m.id == landed).isRead, isFalse);
+  });
+
+  testWidgets('Enter on the message the folder opened at marks it read',
+      (tester) async {
+    // Enter is opening it, as a tap on its row is. The reading pane was
+    // already showing it, so the pane did not open again to say so, and
+    // the message stayed unread whatever Settings, View said.
+    final c = await pump(tester);
+    final landed = c.read(selectedMessageIdProvider)!;
+    final folder = c.read(effectiveSelectedFolderIdProvider)!;
+    bool isRead() => c
+        .read(messagesProvider(folder))
+        .value!
+        .firstWhere((m) => m.id == landed)
+        .isRead;
+    expect(isRead(), isFalse);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+
+    expect(c.read(selectedMessageIdProvider), landed);
+    expect(isRead(), isTrue);
   });
 
   testWidgets('coming back lands where the folder was left', (tester) async {
