@@ -177,6 +177,13 @@ abstract class MailNotifier {
     required List<String> lines,
     required String payload,
   });
+
+  /// Has the pictures at the side of a notification ready for accounts of
+  /// these [colours]: the app's mark, and a calendar, on each. Drawn where
+  /// there is a screen to draw on and kept, so that a notification posted
+  /// where there is none still has its picture. Never throws; one that
+  /// cannot be drawn is only missing.
+  Future<void> prepareBadges(Iterable<int> colours);
 }
 
 /// Records instead of posting. Used by the tests and by the browser preview,
@@ -268,6 +275,13 @@ class FakeMailNotifier implements MailNotifier {
     agendas.remove(id);
     dayReminders.remove(id);
   }
+
+  /// The colours badges were asked for, each time.
+  final List<Set<int>> badgesPrepared = [];
+
+  @override
+  Future<void> prepareBadges(Iterable<int> colours) async =>
+      badgesPrepared.add(colours.toSet());
 
   /// The meetings' reminders set and not taken back, by id.
   final Map<int, MeetingReminder> meetingReminders = {};

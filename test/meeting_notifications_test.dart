@@ -1,4 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui' show Color;
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -296,6 +299,25 @@ void main() {
       expect(again.at, DateTime(2026, 10, 26, 9, 50));
       expect(again.meeting, meeting);
       expect(again.canTellLate, isTrue);
+    });
+
+    test("it keeps its account's colour", () async {
+      final notifier = FakeMailNotifier();
+      final coloured = MeetingRef(
+        accountId: meeting.accountId,
+        eventId: meeting.eventId,
+        start: meeting.start,
+        end: meeting.end,
+        title: meeting.title,
+        colour: 0xFF0F6CBD,
+      );
+      await snoozeMeetingReminder(
+        7,
+        coloured.payload,
+        notifier: notifier,
+        clock: () => DateTime(2026, 10, 26, 9, 45),
+      );
+      expect(notifier.meetingReminders[7]!.meeting.colour, 0xFF0F6CBD);
     });
 
     test('nothing once the meeting is over, nor for a message', () async {
@@ -692,6 +714,200 @@ void main() {
           plugin.shown.firstWhere((s) => s.id == 3).details.android!;
       expect(android.icon, '@drawable/ic_stat_event');
       expect(android.actions!.first.id, NotificationActions.replyId);
+    });
+  });
+
+  // On Ron's tablet (2026-11-16) a Samsung draws the app's own icon on
+  // every notification's row, so a reminder showed neither a calendar nor
+  // its account's colour, and the mail notifications had lost the picture
+  // at their side: the background has no screen to draw one on.
+  group('the picture at the side of a calendar notification', () {
+    const blue = 0xFF0F6CBD;
+    final start = DateTime(2026, 10, 26, 10);
+    final now = DateTime(2026, 10, 26, 9);
+    late _Plugin plugin;
+    late Directory kept;
+
+    setUp(() {
+      plugin = _Plugin()..now = () => now;
+      kept = Directory.systemTemp.createTempSync('myemail-badges');
+      addTearDown(() => kept.deleteSync(recursive: true));
+    });
+
+    /// A notifier that draws: the dart as [1, …], a calendar as [2, …],
+    /// each with its colour's last byte. [draws] false is the background,
+    /// which cannot.
+    AndroidMailNotifier notifierThat({
+      bool draws = true,
+      bool keeps = false,
+      List<String>? drawn,
+    }) =>
+        AndroidMailNotifier(
+          plugin: plugin,
+          queueAction: (_) async {},
+          drawBadge: (c) async {
+            drawn?.add('dart');
+            return draws ? Uint8List.fromList([1, c & 0xff]) : null;
+          },
+          drawCalendar: (c) async {
+            drawn?.add('calendar');
+            return draws ? Uint8List.fromList([2, c & 0xff]) : null;
+          },
+          postingMarks: () async => null,
+          badgeFiles: () async => keeps ? kept : null,
+          clock: () => now,
+        );
+
+    MeetingReminder reminder({int? colour}) => MeetingReminder(
+          id: 7,
+          at: DateTime(2026, 10, 26, 9, 45),
+          meeting: MeetingRef(
+            accountId: 'hadco',
+            eventId: 'm1',
+            start: start,
+            end: start.add(const Duration(minutes: 30)),
+            title: 'Weekly sync',
+            colour: colour,
+          ),
+        );
+
+    test("a reminder has its account's colour, and a calendar on that "
+        'colour at its side; its own icon is still the calendar', () async {
+      await notifierThat().scheduleMeetingReminder(reminder(colour: blue));
+      final android = plugin.scheduled.single.details.android!;
+      expect(android.color, const Color(blue));
+      expect(android.icon, '@drawable/ic_stat_event');
+      expect((android.largeIcon! as ByteArrayAndroidBitmap).data,
+          [2, blue & 0xff]);
+    });
+
+    test('one with no colour given is as it was', () async {
+      await notifierThat().scheduleMeetingReminder(reminder());
+      final android = plugin.scheduled.single.details.android!;
+      expect(android.color, isNull);
+      expect(android.largeIcon, isNull);
+    });
+
+    test("an all-day reminder and the morning's agenda, which are no one "
+        "account's, have a calendar on the app's own colour", () async {
+      final notifier = notifierThat();
+      await notifier.scheduleDayReminder(DayReminder(
+        id: 9,
+        at: DateTime(2026, 10, 26, 18),
+        day: DateTime(2026, 10, 27),
+        title: 'Tomorrow: Thanksgiving',
+        body: 'All day',
+        until: DateTime(2026, 10, 27),
+      ));
+      await notifier.scheduleAgenda(
+        id: 10,
+        at: DateTime(2026, 10, 27, 7, 30),
+        title: '3 meetings today',
+        body: 'The first at 09:30: Stand-up',
+        lines: const ['09:30 Stand-up'],
+        payload: calendarDayPayload(DateTime(2026, 10, 27)),
+      );
+      expect(plugin.scheduled, hasLength(2));
+      for (final set in plugin.scheduled) {
+        final android = set.details.android!;
+        expect(android.color, const Color(AndroidMailNotifier.appColour));
+        expect((android.largeIcon! as ByteArrayAndroidBitmap).data,
+            [2, AndroidMailNotifier.appColour & 0xff]);
+      }
+    });
+
+    test('mail about a meeting has the calendar at its side, other mail '
+        "and the account's row the app's mark", () async {
+      const account = Account(
+        id: 'a',
+        displayName: 'Hadco',
+        emailAddress: 'me@example.com',
+        provider: MailProvider.gmail,
+        authMethod: AuthMethod.oauth,
+        colorValue: blue,
+      );
+      final inbox = MailFolder.at(
+        accountId: 'a',
+        path: 'INBOX',
+        role: FolderRole.inbox,
+        capabilities: FolderCapabilities.forGmail(FolderRole.inbox),
+      );
+      MailNotification mail(int id, {required bool meeting}) =>
+          MailNotification(
+            id: id,
+            title: 'Dana Levi',
+            body: meeting ? 'Invitation: Planning' : 'The numbers',
+            payload: 'a:INBOX#$id',
+            when: DateTime(2026, 10, 25),
+            meeting: meeting,
+          );
+      await notifierThat().showNewMail(
+        account: account,
+        folder: inbox,
+        notifications: [mail(3, meeting: true), mail(4, meeting: false)],
+      );
+      Object? sideOf(int id) => (plugin.shown
+              .firstWhere((s) => s.id == id)
+              .details
+              .android!
+              .largeIcon! as ByteArrayAndroidBitmap)
+          .data;
+      expect(sideOf(3), [2, blue & 0xff]);
+      expect(sideOf(4), [1, blue & 0xff]);
+      final row = plugin.shown.firstWhere((s) => s.id != 3 && s.id != 4);
+      expect((row.details.android!.largeIcon! as ByteArrayAndroidBitmap).data,
+          [1, blue & 0xff]);
+    });
+
+    test('drawn once, the picture is kept as a file, and a notification set '
+        'for later carries the file, not the picture', () async {
+      final drawn = <String>[];
+      final notifier = notifierThat(keeps: true, drawn: drawn);
+      await notifier.scheduleMeetingReminder(reminder(colour: blue));
+      await notifier.scheduleMeetingReminder(reminder(colour: blue));
+      expect(drawn, ['calendar']);
+      final side = plugin.scheduled.last.details.android!.largeIcon!;
+      expect(side, isA<FilePathAndroidBitmap>());
+      final file = File((side as FilePathAndroidBitmap).data);
+      expect(file.parent.path, kept.path);
+      expect(file.readAsBytesSync(), [2, blue & 0xff]);
+      expect(kept.listSync().whereType<File>(), hasLength(1),
+          reason: 'nothing half written is left beside it');
+    });
+
+    test('the background, which cannot draw, finds what the app drew; and '
+        'has no picture, and nothing worse, where the app drew none',
+        () async {
+      await notifierThat(keeps: true).prepareBadges([blue, blue]);
+      expect([for (final f in kept.listSync()) f.uri.pathSegments.last]..sort(),
+          ['v1-calendar-ff0f6cbd.png', 'v1-dart-ff0f6cbd.png']);
+
+      final drawn = <String>[];
+      final background = notifierThat(draws: false, keeps: true, drawn: drawn);
+      await background.scheduleMeetingReminder(reminder(colour: blue));
+      expect(plugin.scheduled.single.details.android!.largeIcon,
+          isA<FilePathAndroidBitmap>());
+      expect(drawn, isEmpty, reason: 'found, so not tried');
+
+      // Another account's, which nobody has drawn: set all the same.
+      await background.scheduleMeetingReminder(reminder(colour: 0xFF107C41));
+      final plain = plugin.scheduled.last.details.android!;
+      expect(plain.largeIcon, isNull);
+      expect(plain.color, const Color(0xFF107C41));
+      // And one failure spares the next the wait.
+      await background.scheduleMeetingReminder(reminder(colour: 0xFFB4009E));
+      expect(drawn, ['calendar']);
+    });
+
+    test('making them ready never throws, and tries again another time',
+        () async {
+      final drawn = <String>[];
+      final background = notifierThat(draws: false, keeps: true, drawn: drawn);
+      await background.prepareBadges([blue, 0xFF107C41]);
+      expect(drawn, hasLength(1), reason: 'one failure spares the rest');
+      await background.prepareBadges([blue]);
+      expect(drawn, hasLength(2), reason: 'tried again on the next pass');
+      expect(kept.listSync(), isEmpty);
     });
   });
 

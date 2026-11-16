@@ -149,6 +149,22 @@ void main() {
       expect(r.canTellLate, isTrue, reason: 'Dana organised it');
     });
 
+    test("each wears its account's colour, where one is given, and carries "
+        'it in what a tap or a Snooze hands back', () {
+      final e = event('a', DateTime(2026, 10, 26, 11));
+      final r = meetingRemindersFor([e],
+          now: now, use24h: true, colours: {e.accountId: 0xFF0F6CBD}).single;
+      expect(r.meeting.colour, 0xFF0F6CBD);
+      expect(MeetingRef.fromPayload(r.meeting.payload), r.meeting);
+      expect(MeetingRef.fromPayload(r.meeting.payload)!.colour, 0xFF0F6CBD);
+
+      final plain = meetingRemindersFor([e], now: now, use24h: true).single;
+      expect(plain.meeting.colour, isNull);
+      expect(plain.meeting.payload, isNot(contains('"k"')),
+          reason: 'as a reminder set by an older build has it');
+      expect(MeetingRef.fromPayload(plain.meeting.payload)!.colour, isNull);
+    });
+
     test('none for a meeting with no reminder, declined, or begun', () {
       expect(
           meetingRemindersFor([

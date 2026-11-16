@@ -55,4 +55,39 @@ void main() {
     final b = await drawAccountBadge(colour, size: size);
     expect(a, b);
   });
+
+  // The picture at the side of a calendar notification: on Ron's tablet
+  // the row's own icon is the app's, whatever the notification asks for,
+  // and a reminder showed neither a calendar nor its account's colour
+  // (2026-11-16).
+  group('a calendar on the same circle, for a calendar notification', () {
+    test("is a circle of the account's colour, clear outside it", () async {
+      final rgba = await pixels((await drawCalendarBadge(colour, size: size))!);
+      expect(at(rgba, size ~/ 2, 3), colour);
+      expect(at(rgba, 0, 0) >>> 24, 0);
+    });
+
+    test('with a white page, two rings over it, a line under its heading '
+        'and one day marked, both in the colour', () async {
+      final rgba = await pixels((await drawCalendarBadge(colour, size: size))!);
+      // The page's body, to the left of the marked day; its heading.
+      expect(at(rgba, 24, 38), 0xFFFFFFFF);
+      expect(at(rgba, 32, 22), 0xFFFFFFFF);
+      // A ring, above the page.
+      expect(at(rgba, 24, 16), 0xFFFFFFFF);
+      // Between the rings above the page: the circle.
+      expect(at(rgba, 32, 16), colour);
+      // The line under the heading, and the marked day.
+      expect(at(rgba, 32, 27), colour);
+      expect(at(rgba, 38, 39), colour);
+    });
+
+    test('is not the dart, and is one picture per colour', () async {
+      final calendar = await drawCalendarBadge(colour, size: size);
+      expect(calendar, isNot(await drawAccountBadge(colour, size: size)));
+      expect(calendar, await drawCalendarBadge(colour, size: size));
+      expect(calendar,
+          isNot(await drawCalendarBadge(0xFF0F6CBD, size: size)));
+    });
+  });
 }

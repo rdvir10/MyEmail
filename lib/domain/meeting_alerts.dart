@@ -127,12 +127,14 @@ class MeetingRef {
     this.body = '',
     this.joinUrl,
     this.canTellLate = false,
+    this.colour,
   });
 
   factory MeetingRef.of(
     CalendarEvent e, {
     String body = '',
     bool canTellLate = false,
+    int? colour,
   }) =>
       MeetingRef(
         accountId: e.accountId,
@@ -144,6 +146,7 @@ class MeetingRef {
         body: body,
         joinUrl: e.joinUrl,
         canTellLate: canTellLate,
+        colour: colour,
       );
 
   final String accountId;
@@ -162,6 +165,10 @@ class MeetingRef {
   /// Whether there is anyone to tell, for the reminder's Running late: the
   /// organiser, or the people on a meeting of your own.
   final bool canTellLate;
+
+  /// Its account's colour, for the reminder to wear, so a Snooze wears it
+  /// again; null where nothing gave one (a tap on the widget).
+  final int? colour;
 
   static const _meeting = 'myemail-meeting:';
   static const _join = 'myemail-join:';
@@ -182,6 +189,7 @@ class MeetingRef {
         if (body.isNotEmpty) 'b': body,
         'j': ?joinUrl,
         if (canTellLate) 'l': true,
+        'k': ?colour,
       };
 
   /// [payload], a reminder's, as Join hands it back; anything else as it
@@ -224,6 +232,7 @@ class MeetingRef {
         body: textOf(json['b']),
         joinUrl: join is String && join.isNotEmpty ? join : null,
         canTellLate: json['l'] == true,
+        colour: json['k'] is int ? json['k'] as int : null,
       );
     } on FormatException {
       return null;
@@ -241,11 +250,12 @@ class MeetingRef {
       other.title == title &&
       other.body == body &&
       other.joinUrl == joinUrl &&
-      other.canTellLate == canTellLate;
+      other.canTellLate == canTellLate &&
+      other.colour == colour;
 
   @override
   int get hashCode => Object.hash(accountId, eventId, calendarId, start, end,
-      title, body, joinUrl, canTellLate);
+      title, body, joinUrl, canTellLate, colour);
 }
 
 const _calendarDay = 'myemail-calendar:';
@@ -310,11 +320,15 @@ class MeetingReminder {
 /// [ifNone] is the minutes for a meeting with no reminder of its own,
 /// which otherwise has none (calendar idea #68). A reminder turned off
 /// reads as none: the calendars do not say which it was.
+///
+/// [colours] is each account's colour, by account id, for its meetings'
+/// reminders to wear.
 List<MeetingReminder> meetingRemindersFor(
   Iterable<CalendarEvent> events, {
   required DateTime now,
   required bool use24h,
   Map<String, String> ownEmails = const {},
+  Map<String, int> colours = const {},
   Duration ahead = const Duration(hours: 26),
   int? ifNone,
 }) {
@@ -338,6 +352,7 @@ List<MeetingReminder> meetingRemindersFor(
         e,
         body: reminderBody(e, use24h: use24h),
         canTellLate: anyoneToTell,
+        colour: colours[e.accountId],
       ),
     ));
   }

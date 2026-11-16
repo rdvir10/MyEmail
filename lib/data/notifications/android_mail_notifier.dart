@@ -32,12 +32,17 @@ class AndroidMailNotifier implements MailNotifier {
     FlutterLocalNotificationsPlugin? plugin,
     Future<void> Function(PendingAction action)? queueAction,
     Future<Uint8List?> Function(int colorValue)? drawBadge,
+    Future<Uint8List?> Function(int colorValue)? drawCalendar,
     Future<Directory?> Function()? postingMarks,
+    Future<Directory?> Function()? badgeFiles,
     DateTime Function()? clock,
   })  : _plugin = plugin ?? FlutterLocalNotificationsPlugin(),
         _queue = queueAction ?? queueNotificationAction,
         _draw = drawBadge ?? drawAccountBadge,
+        // A test's one drawer draws both, unless it gives the calendar's.
+        _drawCalendar = drawCalendar ?? drawBadge ?? drawCalendarBadge,
         _marks = postingMarks ?? _defaultMarks,
+        _badgeFiles = badgeFiles ?? _defaultBadgeFiles,
         _clock = clock ?? DateTime.now;
 
   /// The time, for [_scheduleAt]: a test's own.
@@ -102,9 +107,43 @@ class AndroidMailNotifier implements MailNotifier {
   bool _ready = false;
   String? _launchPayload;
 
-  /// Badges already drawn, by colour, so a pass announcing ten messages
-  /// to one account draws one.
-  final _badges = <int, Future<Uint8List?>>{};
+  /// Badges already found or drawn, by colour and by what is on them (the
+  /// dart, or the calendar), so a pass announcing ten messages to one
+  /// account looks for one.
+  final _badges = <(int, bool), Future<AndroidBitmap<Object>?>>{};
+
+  /// Where a badge is kept once it is drawn, a PNG by its colour and kind.
+  /// The background isolates have no screen to draw on, and until this was
+  /// kept their notifications went up without one (on the tablet,
+  /// 2026-11-16, no mail notification had its badge): whichever isolate can
+  /// draw does so once, and the rest find the file. A notification set for
+  /// later then carries the file's name, not a picture's bytes, in what
+  /// Android keeps of it. Null where there is nowhere to keep one (a test),
+  /// and then the picture goes as bytes, as before.
+  final Future<Directory?> Function() _badgeFiles;
+
+  static Future<Directory?> _defaultBadgeFiles() async {
+    try {
+      final dir = Directory(
+        '${(await getApplicationSupportDirectory()).path}'
+        '${Platform.pathSeparator}notify-badges',
+      );
+      await dir.create(recursive: true);
+      return dir;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The file of a badge. The number in its name changes when the drawing
+  /// does, so a new build is not left with an old build's pictures.
+  Future<File?> _badgeFile(int colorValue, bool calendar) async {
+    final dir = await _badgeFiles();
+    if (dir == null) return null;
+    final colour = colorValue.toUnsigned(32).toRadixString(16).padLeft(8, '0');
+    return File('${dir.path}${Platform.pathSeparator}'
+        'v1-${calendar ? 'calendar' : 'dart'}-$colour.png');
+  }
 
   /// Set once a badge has failed to draw, for the rest of one batch. The
   /// likeliest cause is an isolate with no screen, where every badge would
@@ -119,17 +158,71 @@ class AndroidMailNotifier implements MailNotifier {
   /// Draws a badge, and for tests, one that fails.
   final Future<Uint8List?> Function(int colorValue) _draw;
 
-  /// The app's dart on the account's colour; see [drawAccountBadge].
-  Future<AndroidBitmap<Object>?> _badgeFor(int colorValue) async {
+  /// Draws a calendar's badge; see [drawCalendarBadge].
+  final Future<Uint8List?> Function(int colorValue) _drawCalendar;
+
+  /// The app's dart on the account's colour, or with [calendar] a calendar
+  /// on it; see [drawAccountBadge] and [drawCalendarBadge]. From its file
+  /// where it has been drawn before, by this isolate or another.
+  Future<AndroidBitmap<Object>?> _badgeFor(
+    int colorValue, {
+    bool calendar = false,
+  }) async {
+    final key = (colorValue, calendar);
+    final badge = await _badges.putIfAbsent(
+        key, () => _findOrDraw(colorValue, calendar));
+    // Not kept, so the next batch tries this one again.
+    if (badge == null) _badges.remove(key);
+    return badge;
+  }
+
+  Future<AndroidBitmap<Object>?> _findOrDraw(
+    int colorValue,
+    bool calendar,
+  ) async {
+    File? file;
+    try {
+      file = await _badgeFile(colorValue, calendar);
+      if (file != null && await file.exists() && await file.length() > 0) {
+        return FilePathAndroidBitmap(file.path);
+      }
+    } catch (_) {
+      // Not to be read: drawn, then.
+    }
     if (_badgesFailed) return null;
-    final png = await _badges.putIfAbsent(colorValue, () => _draw(colorValue));
+    final png = await (calendar ? _drawCalendar : _draw)(colorValue);
     if (png == null) {
       _badgesFailed = true;
-      // Not kept, so the next batch tries this one again.
-      _badges.remove(colorValue);
       return null;
     }
+    if (file != null) {
+      try {
+        // Beside it and then renamed, so no isolate reads half a picture;
+        // under a name of its own, since two isolates may draw at once.
+        final part = File(
+            '${file.path}.${DateTime.now().microsecondsSinceEpoch}.part');
+        await part.writeAsBytes(png, flush: true);
+        await part.rename(file.path);
+        return FilePathAndroidBitmap(file.path);
+      } catch (_) {
+        // Not kept: as bytes this once.
+      }
+    }
     return ByteArrayAndroidBitmap(png);
+  }
+
+  /// Draws and keeps the badges of [colours], both kinds, where they are
+  /// not kept already. The app calls this with every account's colour while
+  /// it has a screen, so that the background, which has none, finds them.
+  @override
+  Future<void> prepareBadges(Iterable<int> colours) async {
+    // A batch of its own, as [showNewMail] is: one that failed before is
+    // tried again, and one failure now spares the rest the wait.
+    _badgesFailed = false;
+    for (final colour in colours.toSet()) {
+      await _badgeFor(colour);
+      await _badgeFor(colour, calendar: true);
+    }
   }
 
   /// One channel, so the user gets one row in Android's notification settings
@@ -332,6 +425,10 @@ class AndroidMailNotifier implements MailNotifier {
   /// res/raw/keep.xml, as the envelope is.
   static const calendarIcon = '@drawable/ic_stat_event';
 
+  /// The app's own colour, the launcher icon's orange: for a calendar
+  /// notification that is no one account's.
+  static const appColour = 0xFFFF7A18;
+
   /// Meeting reminders and the morning's agenda, each a channel of its
   /// own, so Android's settings can quieten one and keep the other.
   static const meetingChannelId = 'mailtree.meetings';
@@ -350,11 +447,20 @@ class AndroidMailNotifier implements MailNotifier {
     );
     final meeting = reminder.meeting;
     final lasts = meeting.end.difference(reminder.at).inMilliseconds;
+    final colour = meeting.colour;
     final details = NotificationDetails(
       android: AndroidNotificationDetails(
         meetingChannelId,
         'Meeting reminders',
         icon: calendarIcon,
+        // Whose calendar it is on, as mail says whose mailbox: the small
+        // icon's colour, and a calendar on that colour at the side. A
+        // Samsung draws the app's own icon on every row, whatever is set
+        // here, and the picture at the side is then the one thing on the
+        // row that says calendar, and whose (Ron's tablet, 2026-11-16).
+        color: colour == null ? null : Color(colour),
+        largeIcon:
+            colour == null ? null : await _badgeFor(colour, calendar: true),
         importance: Importance.high,
         priority: Priority.high,
         category: AndroidNotificationCategory.event,
@@ -428,6 +534,10 @@ class AndroidMailNotifier implements MailNotifier {
         meetingChannelId,
         'Meeting reminders',
         icon: calendarIcon,
+        // A day's events may be on several accounts' calendars: the
+        // calendar at the side is on the app's own colour.
+        color: const Color(appColour),
+        largeIcon: await _badgeFor(appColour, calendar: true),
         importance: Importance.high,
         priority: Priority.high,
         category: AndroidNotificationCategory.event,
@@ -471,6 +581,10 @@ class AndroidMailNotifier implements MailNotifier {
         agendaChannelId,
         'Morning agenda',
         icon: calendarIcon,
+        // Every account's meetings: the app's own colour, as an all-day
+        // reminder has it.
+        color: const Color(appColour),
+        largeIcon: await _badgeFor(appColour, calendar: true),
         importance: Importance.defaultImportance,
         priority: Priority.defaultPriority,
         category: AndroidNotificationCategory.event,
@@ -624,7 +738,10 @@ class AndroidMailNotifier implements MailNotifier {
             actions: n.invitation ? invitationActions : actions,
             when: n.when.millisecondsSinceEpoch,
             color: Color(account.colorValue),
-            largeIcon: await _badgeFor(account.colorValue),
+            // Meeting mail has a calendar on the account's colour, as a
+            // reminder has; the rest the app's dart.
+            largeIcon:
+                await _badgeFor(account.colorValue, calendar: n.meeting),
             // The subject and preview are two lines and will be cut off
             // otherwise; expanding the notification should show the whole
             // thing, which is often the entire message.
