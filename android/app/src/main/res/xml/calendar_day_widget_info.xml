@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One cell, the size of an app icon, as the mailbox widget is, to sit
+     beside it (calendar idea #87).
+
+     The date is Android's clock text, which turns over by itself. The
+     count is drawn whenever the calendar widget's meetings are, by the app
+     and by the calendar widget's half hour, and on a half hour of its own,
+     Android's least, as the calendar widget has: on the home screen alone,
+     a meeting that is over is not still counted. Nothing to choose when it
+     is placed. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="40dp"
+    android:minHeight="40dp"
+    android:targetCellWidth="1"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="1800000"
+    android:initialLayout="@layout/calendar_day_widget"
+    android:previewLayout="@layout/calendar_day_widget"
+    android:description="@string/calendar_day_widget_description"
+    android:resizeMode="none"
+    android:widgetCategory="home_screen" />

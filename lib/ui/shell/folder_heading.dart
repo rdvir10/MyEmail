@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/mail_folder.dart';
+import '../../domain/text_direction.dart' show firstStrongDirection;
 import '../../state/providers.dart';
 
 /// The folder the list is showing, from wherever the selection points.
@@ -17,10 +18,18 @@ MailFolder? folderOnScreen(WidgetRef ref) {
 /// whose one this is sits in a drawer. The unified Inbox belongs to no one
 /// account, and says so.
 class FolderHeading extends ConsumerWidget {
-  const FolderHeading({super.key, this.nameStyle});
+  const FolderHeading({super.key, this.nameStyle, this.leastScale});
 
   /// The folder name's style; the owner line under it is always small.
   final TextStyle? nameStyle;
+
+  /// How small the two lines may be drawn to fit the width, before they
+  /// end in "…" instead; null for as small as it takes. The phone's top
+  /// bar, which the calendar's button shares (calendar idea #98): a phone
+  /// 360 wide at a large text size drew an account's address at half its
+  /// size. Only where nothing asks the heading's width ahead of laying it
+  /// out, as the bar over a tablet's list does: it takes a [LayoutBuilder].
+  final double? leastScale;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -37,15 +46,19 @@ class FolderHeading extends ConsumerWidget {
                 ?.emailAddress;
     // Scaled down rather than cut off when a large text size makes the two
     // lines taller than the bar they sit in.
-    return FittedBox(
-      fit: BoxFit.scaleDown,
-      alignment: AlignmentDirectional.centerStart,
+    return _Fitted(
+      leastScale: leastScale,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Each line reads the way its first letter does, so a Hebrew
+          // name cut short ends in "…" on its left, at its own end, not
+          // before its first word (#98).
           Text(
             folder?.displayName ?? 'MyEmail',
+            textDirection:
+                firstStrongDirection(folder?.displayName ?? 'MyEmail'),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: nameStyle,
@@ -53,6 +66,7 @@ class FolderHeading extends ConsumerWidget {
           if (owner != null && owner.isNotEmpty)
             Text(
               owner,
+              textDirection: firstStrongDirection(owner),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: theme.textTheme.bodySmall
@@ -60,6 +74,34 @@ class FolderHeading extends ConsumerWidget {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// [child] scaled down to fit, as [FolderHeading] says, and no further than
+/// [leastScale] for the width where there is one.
+class _Fitted extends StatelessWidget {
+  const _Fitted({required this.leastScale, required this.child});
+
+  final double? leastScale;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget fitted(Widget child) => FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: AlignmentDirectional.centerStart,
+          child: child,
+        );
+    final least = leastScale;
+    if (least == null) return fitted(child);
+    // Laid out no wider than would fit drawn at [least], so a longer line
+    // ends in "…" there rather than being drawn any smaller.
+    return LayoutBuilder(
+      builder: (context, constraints) => fitted(ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: constraints.maxWidth / least),
+        child: child,
+      )),
     );
   }
 }

@@ -15,4 +15,13 @@
     <string name="calendar_widget_declined">Declined</string>
     <string name="calendar_widget_nothing_more">Nothing more today</string>
     <string name="calendar_widget_nothing">Nothing today or tomorrow</string>
+    <!-- The calendar as an app icon (calendar idea #87). Under the icon it
+         says calendar_widget_label. -->
+    <string name="calendar_day_widget_label">Calendar icon</string>
+    <string name="calendar_day_widget_description">An icon with today\'s date, badged with how many meetings are still to come today. Tap it for the calendar.</string>
+    <!-- What a screen reader says of the badge. -->
+    <plurals name="calendar_day_widget_left">
+        <item quantity="one">%d meeting still to come today</item>
+        <item quantity="other">%d meetings still to come today</item>
+    </plurals>
 </resources>

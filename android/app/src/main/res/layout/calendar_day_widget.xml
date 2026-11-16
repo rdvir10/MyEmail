@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The calendar as an app icon (calendar idea #87), to sit beside the
+     mailbox widget as one of a pair: the weekday over the day of the month
+     on a white tile, a badge in the bottom corner for the meetings still to
+     come today, and the name underneath. The tile, the badge and the name
+     are mailbox_count_widget.xml's, sizes and all.
+
+     The weekday and the day are Android's own clock text, which turns over
+     at midnight by itself with nothing of MyEmail's running. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/calendar_day_widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="0dp">
+
+    <!-- Wraps the tile, whatever size it is drawn at, so the badge sits on
+         its corner rather than on a box of its own. -->
+    <FrameLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content">
+
+        <!-- Painted by CalendarDayWidgetProvider in the shape the launcher
+             gives its icons; this white rounded square is what the picker
+             shows. White on any home screen, as an app icon keeps its
+             colours on a dark one. -->
+        <ImageView
+            android:id="@+id/calendar_day_widget_tile"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="center"
+            android:src="@drawable/mailbox_widget_tile"
+            android:contentDescription="@null" />
+
+        <!-- The tile's face, the tile's size. In dp rather than sp: part of
+             the picture, which a larger font in Android's settings would
+             push off the tile. The calendar widget's light colours, the
+             tile being white whatever the home screen. -->
+        <LinearLayout
+            android:id="@+id/calendar_day_widget_face"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="center"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:paddingTop="4dp">
+
+            <TextClock
+                android:id="@+id/calendar_day_widget_weekday"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:format12Hour="EEE"
+                android:format24Hour="EEE"
+                android:includeFontPadding="false"
+                android:maxLines="1"
+                android:textColor="#FFC75100"
+                android:textSize="9dp"
+                android:textStyle="bold" />
+
+            <TextClock
+                android:id="@+id/calendar_day_widget_day"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:format12Hour="d"
+                android:format24Hour="d"
+                android:includeFontPadding="false"
+                android:maxLines="1"
+                android:textColor="#FF1D1B20"
+                android:textSize="19dp" />
+        </LinearLayout>
+
+        <!-- How many meetings are still to come today: the mailbox widget's
+             total, where it is and as it looks, a fact rather than an
+             alert. None left is no badge at all. -->
+        <TextView
+            android:id="@+id/calendar_day_widget_count"
+            android:layout_width="wrap_content"
+            android:layout_height="17dp"
+            android:minWidth="17dp"
+            android:layout_gravity="bottom|start"
+            android:gravity="center"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:background="@drawable/mailbox_widget_total_badge"
+            android:textColor="#FFFFFFFF"
+            android:textSize="10sp"
+            android:maxLines="1"
+            android:visibility="gone"
+            android:text="" />
+    </FrameLayout>
+
+    <!-- White with a shadow, as the mailbox widget's name: what a launcher
+         draws its own labels with, readable over any wallpaper. -->
+    <TextView
+        android:id="@+id/calendar_day_widget_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:gravity="center"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textColor="#FFFFFFFF"
+        android:textSize="11sp"
+        android:shadowColor="#99000000"
+        android:shadowDx="0"
+        android:shadowDy="1"
+        android:shadowRadius="3"
+        android:text="@string/calendar_widget_label" />
+</LinearLayout>

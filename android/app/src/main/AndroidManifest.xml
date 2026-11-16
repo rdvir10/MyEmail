@@ -195,6 +195,20 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/calendar_widget_info"/>
         </receiver>
+        <!-- The calendar as an app icon (calendar idea #87): the date, and
+             how many meetings are left today, from what the calendar widget
+             reads. -->
+        <receiver
+            android:name=".CalendarDayWidgetProvider"
+            android:label="@string/calendar_day_widget_label"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/calendar_day_widget_info"/>
+        </receiver>
         <!-- Where a notification's buttons (Reply, Reply all, Delete) are
              delivered. flutter_local_notifications builds each button as a
              broadcast to this class, but its own manifest does not declare

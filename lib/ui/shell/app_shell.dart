@@ -62,6 +62,7 @@ import '../messages/view_options_sheet.dart';
 import 'app_shortcuts.dart';
 import 'folder_bar_layout.dart';
 import 'folder_heading.dart';
+import 'mail_calendar_button.dart';
 import 'pane_focus.dart';
 import 'put_away.dart';
 import 'ribbon.dart';
@@ -728,9 +729,20 @@ class _NarrowLayout extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(
         // Whose folder this is, under its name: with four Inboxes and the
-        // tree in a drawer, "Inbox" alone does not say which.
-        title: FolderHeading(
-          nameStyle: Theme.of(context).textTheme.titleLarge,
+        // tree in a drawer, "Inbox" alone does not say which. The usual 16
+        // before it, and 4 after where the bar's 16 doubled the unread
+        // count's own: a phone 360 wide needs the room for the calendar
+        // beside Search (#98).
+        titleSpacing: 0,
+        title: Padding(
+          padding: const EdgeInsetsDirectional.only(
+            start: NavigationToolbar.kMiddleSpacing,
+            end: 4,
+          ),
+          child: FolderHeading(
+            nameStyle: Theme.of(context).textTheme.titleLarge,
+            leastScale: 0.75,
+          ),
         ),
         centerTitle: false,
         actions: [
@@ -742,6 +754,9 @@ class _NarrowLayout extends ConsumerWidget {
             icon: const Icon(Icons.search),
             onPressed: () => ref.read(searchOpenProvider.notifier).open(),
           ),
+          // The calendar, one tap from the mail rather than through the
+          // drawer (calendar idea #98).
+          const MailCalendarButton(),
           // Sorting and what a row looks like, a tap from the list rather
           // than four taps into Settings. On screen while searching too,
           // because that is when the order matters most.
@@ -1084,6 +1099,8 @@ class _FolderTitleBar extends ConsumerWidget {
     final folder = folderOnScreen(ref);
     final myDay = ref.watch(myDayShownProvider);
     final paneShown = ref.watch(folderPaneVisibleProvider) && !myDay;
+    // The folders or My Day beside the list.
+    final beside = paneShown || myDay;
     // Not while the list is selecting or searching, whose own bars take
     // the filters' place over it.
     final filtering = folderId != null &&
@@ -1170,6 +1187,14 @@ class _FolderTitleBar extends ConsumerWidget {
                   icon: const Icon(Icons.search, size: 20),
                   onPressed: () => ref.read(searchOpenProvider.notifier).open(),
                 ),
+                // The calendar from here where no ribbon has it, a tablet
+                // held upright (#98), and only with nothing beside the
+                // list: the folders' foot has Calendar and My Day's date
+                // opens it, and a window 600 wide left the folder's name
+                // no room with the button there too.
+                if (!AppShell.hasRibbon(MediaQuery.sizeOf(context).width) &&
+                    !beside)
+                  const MailCalendarButton(compact: true),
                 IconButton(
                   tooltip: 'View and sort',
                   visualDensity: VisualDensity.compact,

@@ -178,8 +178,11 @@ class MailboxCountWidgetProvider : HomeWidgetProvider() {
      * round. Reading MIN for both understated the height by a whole
      * orientation, and multiplying that by 0.72 threw away a quarter of what
      * was left.
+     *
+     * The calendar as an app icon (CalendarDayWidgetProvider) is sized by
+     * this too, so the two stand side by side at the same size.
      */
-    private fun iconDpFor(context: Context, options: Bundle): Float? {
+    internal fun iconDpFor(context: Context, options: Bundle): Float? {
         val portrait = context.resources.configuration.orientation ==
             android.content.res.Configuration.ORIENTATION_PORTRAIT
         val width = options.getInt(

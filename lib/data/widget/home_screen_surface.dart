@@ -27,7 +27,8 @@ abstract class HomeScreenSurface {
   /// since the last time is put right by the next.
   Future<bool> show(Map<String, Object?> values);
 
-  /// The same for the calendar widget, from what `CalendarUpkeep` wrote.
+  /// The same for the calendar widget, from what `CalendarUpkeep` wrote,
+  /// and the calendar as an app icon, which counts from it (#87).
   Future<void> redrawCalendar();
 }
 
@@ -38,6 +39,10 @@ const mailboxWidgetProvider = 'MailboxCountWidgetProvider';
 
 /// The calendar widget's, likewise.
 const calendarWidgetProvider = 'CalendarWidgetProvider';
+
+/// The calendar as an app icon's (calendar idea #87), which counts from the
+/// calendar widget's meetings and is drawn with it.
+const calendarDayWidgetProvider = 'CalendarDayWidgetProvider';
 
 class AndroidHomeScreenSurface implements HomeScreenSurface {
   const AndroidHomeScreenSurface();
@@ -57,9 +62,15 @@ class AndroidHomeScreenSurface implements HomeScreenSurface {
   Future<void> redraw() =>
       HomeWidget.updateWidget(androidName: mailboxWidgetProvider);
 
+  /// The calendar as an app icon too, which counts from the same meetings
+  /// (#87). Asked for by its own name: the calendar widget's drawing draws
+  /// the icons as well, but Android does not call it with no calendar
+  /// widget on the home screen.
   @override
-  Future<void> redrawCalendar() =>
-      HomeWidget.updateWidget(androidName: calendarWidgetProvider);
+  Future<void> redrawCalendar() async {
+    await HomeWidget.updateWidget(androidName: calendarWidgetProvider);
+    await HomeWidget.updateWidget(androidName: calendarDayWidgetProvider);
+  }
 
   /// The app's own half of the widget, in MainActivity.
   static const _app = MethodChannel('mailtree/widget');

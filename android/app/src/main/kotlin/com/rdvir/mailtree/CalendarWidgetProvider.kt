@@ -49,6 +49,9 @@ class CalendarWidgetProvider : HomeWidgetProvider() {
         appWidgetIds.forEach { widgetId ->
             drawSafely(context, appWidgetManager, widgetId, widgetData)
         }
+        // The calendar as an app icon counts from the same meetings, and is
+        // drawn when this is: on Android's half hour as well as the app's.
+        CalendarDayWidgetProvider.drawAll(context)
     }
 
     /** Resized: as many meetings as fit now. */
