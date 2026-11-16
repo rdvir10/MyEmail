@@ -131,11 +131,11 @@ class _InviteCardState extends ConsumerState<InviteCard> {
     final deleting = answered != null &&
         ref.read(calendarPrefsProvider).deleteAnsweredInvites;
     final said = proposal != null
-        ? '${response.word}, with a new time proposed. The organiser has '
+        ? '${response.named}, with a new time proposed. The organiser has '
             'been told.'
         : send
-            ? '${response.word}. The organiser has been told.'
-            : '${response.word}. The organiser was not told.';
+            ? '${response.named}. The organiser has been told.'
+            : '${response.named}. The organiser was not told.';
     if (await _run(
       () => engine.respondToInvite(
         _id,
@@ -155,7 +155,7 @@ class _InviteCardState extends ConsumerState<InviteCard> {
     }
   }
 
-  /// Accept, Tentative or Decline, asked first as Outlook asks: Send the
+  /// Accept, Maybe or Decline, asked first as Outlook asks: Send the
   /// response now, Edit the response before sending, or Do not send a
   /// response. From under [anchor], the button pressed; as a dialog with
   /// none, for an answer begun on the notification. [quietRefusal]: see
@@ -349,7 +349,7 @@ class _InviteCardState extends ConsumerState<InviteCard> {
       'COUNTER' => (Icons.update, 'New time proposed'),
       'REPLY' => switch (i.responderAnswer) {
           InviteResponse.accepted => (Icons.event_available, 'Accepted'),
-          InviteResponse.tentative => (Icons.event_note, 'Tentative'),
+          InviteResponse.tentative => (Icons.event_note, 'Maybe'),
           InviteResponse.declined => (Icons.event_busy, 'Declined'),
           null => (Icons.event, 'Answer'),
         },
@@ -512,8 +512,7 @@ class _InviteCardState extends ConsumerState<InviteCard> {
                 InviteResponse.declined =>
                   '${who.display} declined and proposed a new time.',
                 InviteResponse.tentative =>
-                  '${who.display} tentatively accepted and proposed a new '
-                      'time.',
+                  '${who.display} said maybe and proposed a new time.',
                 _ => '${who.display} proposed a new time.',
               },
             ),
@@ -550,14 +549,18 @@ class _InviteCardState extends ConsumerState<InviteCard> {
               if (answered != null)
                 Chip(
                   avatar: const Icon(Icons.check, size: 16),
-                  label: Text('You ${answered.word.toLowerCase()}'),
+                  // As the meeting's sheet says it (#93).
+                  label: Text(answered == InviteResponse.tentative
+                      ? 'You said maybe'
+                      : 'You ${answered.named.toLowerCase()}'),
                 )
               else if (canAnswer) ...[
                 // Each asks how the answer goes before it goes, from a
-                // menu under the button pressed.
+                // menu under the button pressed. Maybe, as the meeting's
+                // sheet and the waiting list say it (#93).
                 for (final (response, label) in const [
                   (InviteResponse.accepted, 'Accept'),
-                  (InviteResponse.tentative, 'Tentative'),
+                  (InviteResponse.tentative, 'Maybe'),
                   (InviteResponse.declined, 'Decline'),
                 ])
                   Builder(builder: (button) {

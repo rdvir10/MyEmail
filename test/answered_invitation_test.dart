@@ -773,7 +773,7 @@ void main() {
       await answer(tester, 'event-tentative', id: 'n', how: 'answer-quiet');
       expect(engine.calendarActions.last, 'respond n tentative quietly');
       expect(
-          find.text('Tentative. The organiser was not told. The invitation '
+          find.text('Maybe. The organiser was not told. The invitation '
               'is in Deleted Items.'),
           findsOneWidget);
       expect(engine.inboxOf(hadco), isEmpty);
@@ -796,7 +796,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(engine.calendarActions.single, startsWith('respond m tentative'));
       expect(
-          find.text('Tentative, with a new time proposed. The organiser is '
+          find.text('Maybe, with a new time proposed. The organiser is '
               'told. The invitation is in Deleted Items.'),
           findsOneWidget);
       expect(engine.inboxOf(hadco), isEmpty);

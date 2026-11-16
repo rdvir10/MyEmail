@@ -1228,7 +1228,7 @@ class CachedImapEngine
       // The name everyone else sees, as the calendar part has it; the
       // account's own label ("Personal") is for the folder list.
       htmlBody: '<p>${escapeHtml(account.senderName)} has '
-          '${response.word.toLowerCase()} this invitation.</p>'
+          '${response.pastTense} this invitation.</p>'
           '${note.trim().isEmpty ? '' : '<p>${escapeHtml(note.trim())}</p>'}',
       calendarReply: iMipReply(invite, attendee: me, response: response),
       originalMessageId: messageId,

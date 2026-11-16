@@ -73,6 +73,46 @@ void main() {
     expect(message.decodeTextHtmlPart(), isNot(contains('Personal')));
   });
 
+  test('its line reads as English for each answer, and what a calendar '
+      'reads is as it was', () async {
+    // Found while building calendar idea #93: "Ron Dvir has tentative this
+    // invitation."
+    final account = await personal();
+    for (final (response, line, partStat, subject) in [
+      (
+        InviteResponse.accepted,
+        'Ron Dvir has accepted this invitation.',
+        'PARTSTAT=ACCEPTED',
+        'Accepted: Lunch',
+      ),
+      (
+        InviteResponse.tentative,
+        'Ron Dvir has tentatively accepted this invitation.',
+        'PARTSTAT=TENTATIVE',
+        'Tentative: Lunch',
+      ),
+      (
+        InviteResponse.declined,
+        'Ron Dvir has declined this invitation.',
+        'PARTSTAT=DECLINED',
+        'Declined: Lunch',
+      ),
+    ]) {
+      sent.clear();
+      await engine.respondToInvite(
+          '${account.id}:INBOX#1', invite(), response);
+      final message = sent.single;
+      expect(message.decodeTextHtmlPart(), contains('<p>$line</p>'),
+          reason: '$response');
+      final plain = message.decodeTextPlainPart();
+      if (plain != null) expect(plain, contains(line), reason: '$response');
+      expect(message.decodeSubject(), subject);
+      final rendered = message.renderMessage();
+      expect(rendered, contains(partStat));
+      expect(rendered.toLowerCase(), contains('method=reply'));
+    }
+  });
+
   test('one occurrence of a series is not looked up by the series UID',
       () async {
     // On Microsoft the UID finds the calendar's event for the whole series,

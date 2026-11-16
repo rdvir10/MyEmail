@@ -476,8 +476,10 @@ void main() {
       final engine = _MeetingMail(invitation());
       await show(tester, engine);
 
-      await answer(tester, 'Tentative', edit);
-      expect(find.text('Tentative: Ron and Dana'), findsOneWidget);
+      expect(find.text('Tentative'), findsNothing,
+          reason: 'Maybe, as the sheet and the waiting list say it (#93)');
+      await answer(tester, 'Maybe', edit);
+      expect(find.text('Maybe: Ron and Dana'), findsOneWidget);
       await tester.enterText(
           find.byKey(const ValueKey('answer-note')), '  Running late.  ');
       await tester.tap(find.byKey(const ValueKey('answer-send')));
@@ -488,8 +490,10 @@ void main() {
       expect(given.note, 'Running late.');
       expect(given.send, isTrue);
       expect(given.proposal, isNull);
-      expect(find.text('Tentative. The organiser has been told.'),
+      expect(find.text('Maybe. The organiser has been told.'),
           findsOneWidget);
+      expect(find.text('You said maybe'), findsOneWidget,
+          reason: 'as the sheet says it');
     });
 
     testWidgets('Do not send a response answers on the calendar alone',
@@ -600,6 +604,21 @@ void main() {
 
       await choose(tester, 'Propose a new time…');
       expect(find.text('Propose a new time'), findsOneWidget);
+      expect(
+          find.descendant(
+            of: find.byType(SegmentedButton<InviteResponse>),
+            matching: find.byType(Text),
+          ),
+          findsNWidgets(2));
+      for (final word in ['Maybe', 'Decline']) {
+        expect(
+            find.descendant(
+              of: find.byType(SegmentedButton<InviteResponse>),
+              matching: find.text(word),
+            ),
+            findsOneWidget,
+            reason: word);
+      }
       // Nine fifteen, typed into the clock.
       await tester.tap(find.byKey(const ValueKey('propose-start')));
       await tester.pumpAndSettle();
@@ -631,7 +650,7 @@ void main() {
       expect(answer.proposal?.end, start.add(const Duration(hours: 1)));
       expect(answer.note, 'Mornings suit me.');
       expect(
-        find.text('Tentative, with a new time proposed. The organiser has '
+        find.text('Maybe, with a new time proposed. The organiser has '
             'been told.'),
         findsOneWidget,
       );
@@ -805,6 +824,54 @@ void main() {
     expect(find.text('Add to calendar'), findsNothing,
         reason: 'an answer is not an event to keep');
     expect(engine.lookups, 0, reason: 'nothing on the calendar to check');
+  });
+
+  group('the middle answer is Maybe on screen (#93)', () {
+    testWidgets("someone's answer of maybe", (tester) async {
+      await show(
+          tester,
+          _MeetingMail(mail(
+            'REPLY',
+            extra: '$organisedByMe'
+                'ATTENDEE;PARTSTAT=TENTATIVE;CN=Dana Levi:'
+                'mailto:dana@example.com\r\n',
+          )));
+      expect(find.text('Maybe'), findsOneWidget);
+      expect(find.textContaining('Tentative'), findsNothing);
+    });
+
+    testWidgets('a new time proposed with a maybe', (tester) async {
+      await show(
+          tester,
+          _MeetingMail(mail(
+            'COUNTER',
+            start: '20261016T083000',
+            end: '20261016T090000',
+            extra: '$organisedByMe'
+                'ATTENDEE;PARTSTAT=TENTATIVE;CN=Dana Levi:'
+                'mailto:dana@example.com\r\n'
+                'X-MS-OLK-ORIGINALSTART;TZID=Eastern Standard Time:'
+                '20261016T073000\r\n'
+                'X-MS-OLK-ORIGINALEND;TZID=Eastern Standard Time:'
+                '20261016T080000\r\n',
+          ))
+            ..calendar[uid] = onCalendar(organiser: true));
+      expect(find.text('Dana Levi said maybe and proposed a new time.'),
+          findsOneWidget);
+    });
+
+    test("what goes to the organiser keeps Outlook's word, Tentative", () {
+      final invite =
+          CalendarInvite.parse(mail('REQUEST', extra: organisedByDana))!;
+      expect(inviteReplySubject(invite, InviteResponse.tentative),
+          'Tentative: Ron and Dana');
+      expect(InviteResponse.tentative.partStat, 'TENTATIVE');
+      expect(
+          iMipReply(invite,
+              attendee: const MailAddress(email: 'personal@example.com'),
+              response: InviteResponse.tentative),
+          contains('PARTSTAT=TENTATIVE'));
+    });
   });
 
   group('the mail that declines a time proposed', () {

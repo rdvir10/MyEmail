@@ -986,7 +986,7 @@ void main() {
       await answer('event-tentative', 'answer-quiet');
       expect(engine.calendarActions.last, 'respond m tentative quietly',
           reason: 'on the calendar, with no word to the organiser');
-      expect(find.text('Tentative. The organiser was not told.'),
+      expect(find.text('Maybe. The organiser was not told.'),
           findsOneWidget);
 
       // Last: declined, it leaves the agenda.

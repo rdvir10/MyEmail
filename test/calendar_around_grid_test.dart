@@ -731,8 +731,8 @@ void main() {
 
     group("the calendar's buttons answer a tap over 48 dp", () {
       testWidgets("an invitation's sheet: Accept, Maybe, Decline, Join, "
-          'Running late, Open in Outlook, Mail about this meeting and Show '
-          'more', (tester) async {
+          'Running late, Mail about this meeting and Show more; Open in '
+          'Outlook, under ⋮ since #93', (tester) async {
         final now = DateTime.now();
         await pump(tester,
             home: (hadco) => sheetHost(
@@ -752,7 +752,6 @@ void main() {
           'event-decline',
           'event-join',
           'event-late',
-          'event-web',
           'event-mail-about',
           'linked-text-more',
         ]) {
@@ -761,6 +760,23 @@ void main() {
           tallEnough(tester, find.byKey(ValueKey(key)));
         }
         await tester.ensureVisible(find.byKey(const ValueKey('event-accept')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('event-web')), findsNothing);
+        // Up to the title, where ⋮ is.
+        tester
+            .state<ScrollableState>(find
+                .descendant(
+                    of: find.byType(BottomSheet),
+                    matching: find.byType(Scrollable))
+                .first)
+            .position
+            .jumpTo(0);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('event-more')));
+        await tester.pumpAndSettle();
+        tallEnough(tester, find.byKey(const ValueKey('event-web')));
+        Navigator.of(tester.element(find.byKey(const ValueKey('event-web'))))
+            .pop();
         await tester.pumpAndSettle();
         // What a screen reader is told: the button, over the whole area.
         final told = tester
@@ -1022,7 +1038,7 @@ void main() {
           tester
               .widget<Text>(find.byKey(const ValueKey('event-answers')))
               .data,
-          '2 accepted · 1 tentative · 1 declined · 1 not answered');
+          '2 accepted · 1 maybe · 1 declined · 1 not answered');
     });
 
     testWidgets('a meeting you organised from another of your addresses, '
@@ -1177,7 +1193,7 @@ void main() {
           Finder agenda(String id) => find.byKey(ValueKey('agenda-event:$id'));
           final shown = [
             (agenda('he'), hebrew, place, 'Not answered', true),
-            (agenda('he-maybe'), budget, 'Room 4', 'Tentative', true),
+            (agenda('he-maybe'), budget, 'Room 4', 'Maybe', true),
             (agenda('en-he'), 'Supplier visit', place, 'Not answered', false),
             (agenda('he-far'), 'ביקור ספק', far, 'Not answered', true),
           ];

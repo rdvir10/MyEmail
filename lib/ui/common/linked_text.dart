@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../../domain/text_direction.dart';
 import '../../domain/text_links.dart';
 import '../messages/html_body_view.dart' show openExternally;
+import 'lined_up.dart';
 import 'tap_target.dart';
 
 /// Plain text with what it links to a tap away (#43), as a message's links
@@ -148,12 +149,16 @@ class _LinkedTextState extends State<LinkedText> {
           if (long)
             Align(
               alignment: AlignmentDirectional.centerStart,
-              // 48 to tap (#90), drawn as before.
-              child: TapTarget(
-                child: TextButton(
-                  key: const ValueKey('linked-text-more'),
-                  onPressed: () => setState(() => _open = !_open),
-                  child: Text(_open ? 'Show less' : 'Show more'),
+              // Its words where the text's begin (#93), 48 to tap (#90),
+              // drawn as before.
+              child: LinedUp(
+                icon: false,
+                child: TapTarget(
+                  child: TextButton(
+                    key: const ValueKey('linked-text-more'),
+                    onPressed: () => setState(() => _open = !_open),
+                    child: Text(_open ? 'Show less' : 'Show more'),
+                  ),
                 ),
               ),
             ),

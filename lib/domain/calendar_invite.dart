@@ -531,9 +531,29 @@ extension InviteResponseWords on InviteResponse {
         InviteResponse.declined => 'DECLINED',
       };
 
+  /// Outlook's word, as the organiser is sent it in the reply's subject
+  /// ("Tentative: Planning"). Not what Ron reads: see [named].
   String get word => switch (this) {
         InviteResponse.accepted => 'Accepted',
         InviteResponse.tentative => 'Tentative',
+        InviteResponse.declined => 'Declined',
+      };
+
+  /// The answer as the line of a reply sent as mail says it, after "has":
+  /// "Ron Dvir has tentatively accepted this invitation.", as Outlook puts
+  /// it. Its subject's [word] alone read "has tentative".
+  String get pastTense => switch (this) {
+        InviteResponse.accepted => 'accepted',
+        InviteResponse.tentative => 'tentatively accepted',
+        InviteResponse.declined => 'declined',
+      };
+
+  /// The answer as MyEmail names it on screen: Maybe for the middle one,
+  /// as its button says it, everywhere an answer is named (calendar idea
+  /// #93). Nothing sent to a server uses it.
+  String get named => switch (this) {
+        InviteResponse.accepted => 'Accepted',
+        InviteResponse.tentative => 'Maybe',
         InviteResponse.declined => 'Declined',
       };
 }

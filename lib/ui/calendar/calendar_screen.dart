@@ -18,6 +18,7 @@ import '../../domain/calendar_prefs.dart';
 import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/internet_calendar.dart' show isInternetAccount;
 import '../../domain/meeting_alerts.dart' show MeetingRef;
+import '../../domain/meeting_moment.dart';
 import '../../domain/search_refinement.dart' show weekStartFor;
 import '../../domain/text_direction.dart' show firstStrongDirection;
 import '../../domain/time_zones.dart';
@@ -27,6 +28,7 @@ import '../../state/providers.dart';
 import '../accounts/google_sign_in_screen.dart';
 import '../accounts/microsoft_sign_in_screen.dart';
 import '../common/bottom_message.dart';
+import '../common/lined_up.dart';
 import '../common/tap_target.dart';
 import '../meetings/new_meeting_screen.dart' show openNewMeeting;
 import '../messages/date_format.dart';
@@ -45,6 +47,7 @@ import 'event_notes.dart';
 import 'hour_scale.dart';
 import 'invitation_clearing.dart' show InvitationClearing;
 import 'meeting_mail.dart';
+import 'meeting_people.dart';
 import 'meeting_ticker.dart';
 import 'now_line.dart';
 import 'place_link.dart';
@@ -1385,8 +1388,9 @@ class _AgendaRow extends StatelessWidget {
       if (e.location.isNotEmpty) e.location,
       if (e.joinUrl != null && e.location.isEmpty) 'Online',
     ].join(' · ');
+    // Maybe, as the sheet's button says it (#93).
     final answer = [
-      if (e.response == EventResponse.tentative) 'Tentative',
+      if (e.response == EventResponse.tentative) 'Maybe',
       if (e.response == EventResponse.notResponded) 'Not answered',
       if (e.declined) 'Declined',
       if (e.cancelled) 'Cancelled',
@@ -2957,11 +2961,43 @@ AnswerCounts answerCounts(CalendarEvent event, String ownEmail) {
   );
 }
 
-/// [counts] as the sheet says them: "5 accepted · 1 declined · 2 not
-/// answered", leaving out what is none.
+/// How the people in [people] answered, as their marks on the sheet show
+/// it, for the counts of someone else's meeting folded (#93): the
+/// organiser as accepted, Ron and the organiser counted too, one not given
+/// yet (Google's needsAction) as not answered. Counted only where every
+/// answer is known: one given as none is no answer anyone knows of (what
+/// Exchange gives for everyone on a copy other than the organiser's), and
+/// counts of the rest would read as the whole list's.
+AnswerCounts countAsListed(List<EventAttendee> people) {
+  var accepted = 0, tentative = 0, declined = 0, waiting = 0;
+  for (final a in people) {
+    switch (a.response) {
+      case EventResponse.accepted || EventResponse.organizer:
+        accepted++;
+      case EventResponse.tentative:
+        tentative++;
+      case EventResponse.declined:
+        declined++;
+      case EventResponse.notResponded:
+        waiting++;
+      case EventResponse.none:
+        break;
+    }
+  }
+  return (
+    accepted: accepted,
+    tentative: tentative,
+    declined: declined,
+    notAnswered: waiting,
+  );
+}
+
+/// [counts] as the sheet says them: "5 accepted · 1 maybe · 2 not
+/// answered", leaving out what is none. Maybe, as the button says it
+/// (#93).
 String describeAnswers(AnswerCounts counts) => [
       if (counts.accepted > 0) '${counts.accepted} accepted',
-      if (counts.tentative > 0) '${counts.tentative} tentative',
+      if (counts.tentative > 0) '${counts.tentative} maybe',
       if (counts.declined > 0) '${counts.declined} declined',
       if (counts.notAnswered > 0) '${counts.notAnswered} not answered',
     ].join(' · ');
@@ -3064,7 +3100,18 @@ class _EventDetails extends StatelessWidget {
         counts.notAnswered;
     final tracked = own && others && invitedCount > 0;
     final waiting = notAnswered(e, email);
-    Widget answerButton(InviteResponse r, String label, String key) {
+    // The people as listed. On someone else's meeting Ron's own row has
+    // the answer the sheet has for him: Exchange keeps the people's answers
+    // on the organiser's copy alone and gives "none" for everyone on Ron's,
+    // Ron too (#93).
+    final listed = own ? _byAnswer(e.attendees) : _withOwnAnswer(e, email);
+    // Someone else's counted only where every answer listed is known:
+    // "1 accepted" of twelve, Ron alone known, would read as the list's.
+    final allKnown = listed.every((a) => a.response != EventResponse.none);
+    // [filled]: the one that matters now (#93), Accept on a meeting not
+    // answered while Join is not near.
+    Widget answerButton(InviteResponse r, String label, String key,
+        {bool filled = false}) {
       final chosen = e.response == eventResponseFor(r);
       return TapTarget(child: Builder(builder: (button) {
         // Asked first, as Outlook asks, from a menu under the button while
@@ -3084,6 +3131,13 @@ class _EventDetails extends StatelessWidget {
               note: answer.note, send: answer.send, lookup: lookup));
         }
 
+        if (filled) {
+          return FilledButton(
+            key: ValueKey(key),
+            onPressed: tap,
+            child: Text(label),
+          );
+        }
         return chosen
             ? FilledButton.tonal(
                 key: ValueKey(key),
@@ -3120,7 +3174,7 @@ class _EventDetails extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (reachable)
+                if (reachable || e.webLink != null)
                   PopupMenuButton<String>(
                     key: const ValueKey('event-more'),
                     tooltip: 'More',
@@ -3130,41 +3184,56 @@ class _EventDetails extends StatelessWidget {
                       'propose' => then(proposeForEvent),
                       'duplicate' => then(duplicateEvent),
                       'remove' => then(cancelOrDeleteEvent),
+                      // The sheet stays, as it did for the button.
+                      'web' => open(e.webLink!),
                       _ => null,
                     },
                     itemBuilder: (context) => [
-                      if (others)
+                      if (reachable) ...[
+                        if (others)
+                          const PopupMenuItem(
+                            key: ValueKey('event-email'),
+                            value: 'email',
+                            child: Text('Email everyone'),
+                          ),
+                        if (own || microsoft)
+                          PopupMenuItem(
+                            key: const ValueKey('event-invite'),
+                            value: 'invite',
+                            child: Text(own ? 'Invite people' : 'Forward'),
+                          ),
+                        if (invited && microsoft)
+                          const PopupMenuItem(
+                            key: ValueKey('event-propose'),
+                            value: 'propose',
+                            child: Text('Propose a new time'),
+                          ),
                         const PopupMenuItem(
-                          key: ValueKey('event-email'),
-                          value: 'email',
-                          child: Text('Email everyone'),
+                          key: ValueKey('event-duplicate'),
+                          value: 'duplicate',
+                          child: Text('Duplicate'),
                         ),
-                      if (own || microsoft)
                         PopupMenuItem(
-                          key: const ValueKey('event-invite'),
-                          value: 'invite',
-                          child: Text(own ? 'Invite people' : 'Forward'),
+                          key: const ValueKey('event-remove'),
+                          value: 'remove',
+                          child: Text(own
+                              ? (others ? 'Cancel meeting' : 'Delete')
+                              : e.cancelled
+                                  ? 'Remove from calendar'
+                                  : 'Decline and remove'),
                         ),
-                      if (invited && microsoft)
-                        const PopupMenuItem(
-                          key: ValueKey('event-propose'),
-                          value: 'propose',
-                          child: Text('Propose a new time'),
+                      ],
+                      // Last, for every meeting that has it, one on a
+                      // calendar only read too: a row of buttons of its own
+                      // on the sheet until #93.
+                      if (e.webLink != null)
+                        PopupMenuItem(
+                          key: const ValueKey('event-web'),
+                          value: 'web',
+                          child: Text(account?.provider == MailProvider.gmail
+                              ? 'Open in Google Calendar'
+                              : 'Open in Outlook'),
                         ),
-                      const PopupMenuItem(
-                        key: ValueKey('event-duplicate'),
-                        value: 'duplicate',
-                        child: Text('Duplicate'),
-                      ),
-                      PopupMenuItem(
-                        key: const ValueKey('event-remove'),
-                        value: 'remove',
-                        child: Text(own
-                            ? (others ? 'Cancel meeting' : 'Delete')
-                            : e.cancelled
-                                ? 'Remove from calendar'
-                                : 'Decline and remove'),
-                      ),
                     ],
                   ),
               ],
@@ -3173,6 +3242,22 @@ class _EventDetails extends StatelessWidget {
               Text('Cancelled by the organiser', style: muted),
             const SizedBox(height: 8),
             Text(when, key: const ValueKey('event-when')),
+            // How long until it starts, for a meeting today (#93), kept up
+            // with the clock while the sheet is open; in the colour the
+            // Agenda's "Now" has.
+            MeetingTicker(builder: (_, _, now) {
+              final left = timeToStart(e, now);
+              if (left == null) return const SizedBox.shrink();
+              return Text(
+                left.shown,
+                key: const ValueKey('event-starts'),
+                semanticsLabel: left.spoken,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              );
+            }),
             if (setInZone(e, hostRef.read(deviceZoneProvider).value,
                     use24h: use24h)
                 case final setIn?)
@@ -3199,142 +3284,82 @@ class _EventDetails extends StatelessWidget {
               const SizedBox(height: 4),
               Text(answer, style: muted),
             ],
-            if (invited && reachable) ...[
-              // Each button 48 to tap (#90), 4 more above and below than
-              // the 40 it had: drawn where it was, and rows of them as far
-              // apart to the eye.
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                children: [
-                  answerButton(InviteResponse.accepted, 'Accept', 'event-accept'),
-                  answerButton(InviteResponse.tentative, 'Maybe', 'event-tentative'),
-                  answerButton(InviteResponse.declined, 'Decline', 'event-decline'),
-                ],
-              ),
-            ],
-            if (e.joinUrl != null ||
-                e.webLink != null ||
-                (own && reachable) ||
-                soon) ...[
-              SizedBox(height: invited && reachable ? 8 : 12),
-              Wrap(
-                spacing: 8,
-                children: [
-                  if (e.joinUrl != null)
-                    TapTarget(
-                      child: FilledButton.icon(
-                        key: const ValueKey('event-join'),
-                        onPressed: () => open(e.joinUrl!),
-                        icon: const Icon(Icons.videocam_outlined),
-                        label: const Text('Join'),
-                      ),
-                    ),
-                  if (own && reachable && !e.cancelled)
-                    TapTarget(
-                      child: OutlinedButton.icon(
-                        key: const ValueKey('event-edit'),
-                        onPressed: () => then(editEvent),
-                        icon: const Icon(Icons.edit_outlined),
-                        label: const Text('Edit'),
-                      ),
-                    ),
-                  if (soon && account != null)
-                    TapTarget(
-                      child: OutlinedButton.icon(
-                        key: const ValueKey('event-late'),
-                        onPressed: () => then(runningLate),
-                        icon: const Icon(Icons.schedule),
-                        label: const Text('Running late'),
-                      ),
-                    ),
-                  if (e.webLink != null)
-                    TapTarget(
-                      child: OutlinedButton.icon(
-                        key: const ValueKey('event-web'),
-                        onPressed: () => open(e.webLink!),
-                        icon: const Icon(Icons.open_in_new),
-                        label: Text(account?.provider == MailProvider.gmail
-                            ? 'Open in Google Calendar'
-                            : 'Open in Outlook'),
-                      ),
-                    ),
-                ],
-              ),
-            ],
-            if (e.organizer != null && !own) ...[
-              const SizedBox(height: 16),
-              Text('Organiser', style: theme.textTheme.labelLarge),
-              Text(e.organizer!.display),
-            ],
-            if (e.attendees.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Text(
-                tracked
-                    ? invitedCount == 1
-                        ? '1 person invited'
-                        : '$invitedCount people invited'
-                    : '${e.attendees.length} '
-                        '${e.attendees.length == 1 ? 'person' : 'people'}',
-                style: theme.textTheme.labelLarge,
-              ),
-              if (tracked) ...[
-                Text(
-                  describeAnswers(counts),
-                  key: const ValueKey('event-answers'),
-                  style: muted,
-                ),
-                if (waiting.isNotEmpty && reachable)
-                  Align(
-                    alignment: AlignmentDirectional.centerStart,
-                    child: TextButton.icon(
-                      key: const ValueKey('event-nudge'),
-                      onPressed: () => then((c, ref, ev) =>
-                          emailEveryone(c, ref, ev, notAnsweredOnly: true)),
-                      icon: const Icon(Icons.mail_outline, size: 18),
-                      label: Text(waiting.length == 1
-                          ? 'Email the one who has not answered'
-                          : 'Email the ${waiting.length} who have not answered'),
+            // The one button that matters now filled (#93): Join from a
+            // quarter of an hour before the meeting until it ends, as the
+            // bar over the mail has it, else Accept on a meeting not
+            // answered, else none. Looked at again as the time goes by
+            // while the sheet is open.
+            MeetingTicker(builder: (_, _, now) {
+              final joinNow = e.joinUrl != null && meetingIsNear(e, now);
+              final acceptNow =
+                  !joinNow && e.response == EventResponse.notResponded;
+              final actions = [
+                if (e.joinUrl != null)
+                  TapTarget(
+                    child: joinNow
+                        ? FilledButton.icon(
+                            key: const ValueKey('event-join'),
+                            onPressed: () => open(e.joinUrl!),
+                            icon: const Icon(Icons.videocam_outlined),
+                            label: const Text('Join'),
+                          )
+                        : OutlinedButton.icon(
+                            key: const ValueKey('event-join'),
+                            onPressed: () => open(e.joinUrl!),
+                            icon: const Icon(Icons.videocam_outlined),
+                            label: const Text('Join'),
+                          ),
+                  ),
+                if (own && reachable && !e.cancelled)
+                  TapTarget(
+                    child: OutlinedButton.icon(
+                      key: const ValueKey('event-edit'),
+                      onPressed: () => then(editEvent),
+                      icon: const Icon(Icons.edit_outlined),
+                      label: const Text('Edit'),
                     ),
                   ),
-              ],
-              for (final a in own ? _byAnswer(e.attendees) : e.attendees)
-                ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(switch (a.response) {
-                    EventResponse.accepted ||
-                    EventResponse.organizer =>
-                      Icons.check_circle_outline,
-                    EventResponse.tentative => Icons.help_outline,
-                    EventResponse.declined => Icons.cancel_outlined,
-                    _ => Icons.radio_button_unchecked,
-                  }, size: 18),
-                  title: Text(a.address.display),
-                  subtitle: Text([
-                    if (a.address.name != null) a.address.email,
-                    if (a.response == EventResponse.organizer) 'Organiser',
-                    if (a.optional) 'Optional',
-                  ].join(' · ')),
-                ),
-            ],
-            // The invitation and the answers about it, from its account's
-            // mail.
-            if (account != null && e.title.trim().isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Align(
-                alignment: AlignmentDirectional.centerStart,
-                child: TapTarget(
-                  child: TextButton.icon(
-                    key: const ValueKey('event-mail-about'),
-                    onPressed: () => showMeetingMail(context, e),
-                    icon: const Icon(Icons.forum_outlined, size: 18),
-                    label: const Text('Mail about this meeting'),
+                if (soon && account != null)
+                  TapTarget(
+                    child: OutlinedButton.icon(
+                      key: const ValueKey('event-late'),
+                      onPressed: () => then(runningLate),
+                      icon: const Icon(Icons.schedule),
+                      label: const Text('Running late'),
+                    ),
                   ),
-                ),
-              ),
-            ],
-            // The whole of what it says, its links a tap away (#43).
+              ];
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (invited && reachable) ...[
+                    // Each button 48 to tap (#90), 4 more above and below
+                    // than the 40 it had: drawn where it was, and rows of
+                    // them as far apart to the eye.
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        answerButton(
+                            InviteResponse.accepted, 'Accept', 'event-accept',
+                            filled: acceptNow),
+                        answerButton(InviteResponse.tentative, 'Maybe',
+                            'event-tentative'),
+                        answerButton(InviteResponse.declined, 'Decline',
+                            'event-decline'),
+                      ],
+                    ),
+                  ],
+                  if (actions.isNotEmpty) ...[
+                    SizedBox(height: invited && reachable ? 8 : 12),
+                    Wrap(spacing: 8, children: actions),
+                  ],
+                ],
+              );
+            }),
+            // The whole of what it says, its links a tap away (#43): under
+            // the buttons since #93, where a long list of people no longer
+            // pushes it out of sight.
             EventNotesView(
               event: e,
               reachable: account != null && AccountCalendar.canRead(account),
@@ -3342,10 +3367,100 @@ class _EventDetails extends StatelessWidget {
               onEmail: (address) => then((c, ref, _) =>
                   writeTo(c, ref, address, accountId: account?.id)),
             ),
+            if (e.organizer != null && !own) ...[
+              const SizedBox(height: 16),
+              Text('Organiser', style: theme.textTheme.labelLarge),
+              Text(e.organizer!.display),
+            ],
+            if (e.attendees.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              MeetingPeople(
+                key: const ValueKey('event-people-list'),
+                heading: tracked
+                    ? invitedCount == 1
+                        ? '1 person invited'
+                        : '$invitedCount people invited'
+                    : '${e.attendees.length} '
+                        '${e.attendees.length == 1 ? 'person' : 'people'}',
+                count: tracked ? invitedCount : e.attendees.length,
+                people: listed,
+                organised: own,
+                // Someone else's counted only where they fold, as the
+                // marks of everyone listed show them, and only where every
+                // answer is known (#93).
+                answers: tracked
+                    ? describeAnswers(counts)
+                    : e.attendees.length > foldPeopleOver && allKnown
+                        ? describeAnswers(countAsListed(listed))
+                        : null,
+                nudge: tracked && waiting.isNotEmpty && reachable
+                    ? Align(
+                        alignment: AlignmentDirectional.centerStart,
+                        child: LinedUp(
+                          // 48 to tap, as the sheet's other buttons (#90).
+                          child: TapTarget(
+                            child: TextButton.icon(
+                              key: const ValueKey('event-nudge'),
+                              onPressed: () => then((c, ref, ev) =>
+                                  emailEveryone(c, ref, ev,
+                                      notAnsweredOnly: true)),
+                              icon:
+                                  const Icon(Icons.mail_outline, size: 18),
+                              label: Text(waiting.length == 1
+                                  ? 'Email the one who has not answered'
+                                  : 'Email the ${waiting.length} who have '
+                                      'not answered'),
+                            ),
+                          ),
+                        ),
+                      )
+                    : null,
+                muted: muted,
+              ),
+            ],
+            // The invitation and the answers about it, from its account's
+            // mail.
+            if (account != null && e.title.trim().isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: LinedUp(
+                  child: TapTarget(
+                    child: TextButton.icon(
+                      key: const ValueKey('event-mail-about'),
+                      onPressed: () => showMeetingMail(context, e),
+                      icon: const Icon(Icons.forum_outlined, size: 18),
+                      label: const Text('Mail about this meeting'),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
     );
+  }
+
+  /// [e]'s people, Ron's own row (by [email]) answered as the meeting says
+  /// he answered it, where it says.
+  static List<EventAttendee> _withOwnAnswer(CalendarEvent e, String email) {
+    final me = email.trim().toLowerCase();
+    final mine = switch (e.response) {
+      EventResponse.accepted ||
+      EventResponse.tentative ||
+      EventResponse.declined ||
+      EventResponse.notResponded =>
+        e.response,
+      _ => null,
+    };
+    if (me.isEmpty || mine == null) return e.attendees;
+    return [
+      for (final a in e.attendees)
+        a.address.email.trim().toLowerCase() == me
+            ? EventAttendee(a.address, response: mine, optional: a.optional)
+            : a,
+    ];
   }
 
   /// The people, as Outlook's Tracking groups them: the organiser, those

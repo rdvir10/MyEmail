@@ -170,8 +170,8 @@ Future<bool?> answerEvent(
       messenger,
       event,
       send && who != null
-          ? '${response.word}. ${_name(who)} is told.'
-          : '${response.word}. The organiser was not told.',
+          ? '${response.named}. ${_name(who)} is told.'
+          : '${response.named}. The organiser was not told.',
       clearing: clearing,
       lookup: looking,
       wholeSeries: series,
@@ -228,7 +228,7 @@ Future<void> proposeForEvent(
     _answered(
       messenger,
       event,
-      '${answer.response.word}, with a new time proposed. The organiser is '
+      '${answer.response.named}, with a new time proposed. The organiser is '
       'told.',
       clearing: clearing,
       lookup: lookup,

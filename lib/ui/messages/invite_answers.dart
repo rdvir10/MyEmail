@@ -7,8 +7,8 @@ import '../../domain/free_busy.dart';
 /// with no word to them at all ([send] false).
 typedef NotedAnswer = ({InviteResponse response, String note, bool send});
 
-/// A new time proposed: Outlook's Propose New Time, as a tentative or a
-/// declined answer with the time beside it.
+/// A new time proposed: Outlook's Propose New Time, as a tentative (Maybe)
+/// or a declined answer with the time beside it.
 typedef ProposedAnswer = ({
   InviteResponse response,
   TimeSpan proposal,
@@ -343,7 +343,7 @@ class _ProposeDialogState extends State<_ProposeDialog> {
               segments: const [
                 ButtonSegment(
                   value: InviteResponse.tentative,
-                  label: Text('Tentative'),
+                  label: Text('Maybe'),
                 ),
                 ButtonSegment(
                   value: InviteResponse.declined,
@@ -386,8 +386,10 @@ class _ProposeDialogState extends State<_ProposeDialog> {
   }
 }
 
+/// The button an answer was chosen with, as the heading of what is asked
+/// next. Maybe, as everywhere an answer is named (#93).
 String _label(InviteResponse r) => switch (r) {
       InviteResponse.accepted => 'Accept',
-      InviteResponse.tentative => 'Tentative',
+      InviteResponse.tentative => 'Maybe',
       InviteResponse.declined => 'Decline',
     };
