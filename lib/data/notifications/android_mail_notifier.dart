@@ -112,14 +112,17 @@ class AndroidMailNotifier implements MailNotifier {
   /// account looks for one.
   final _badges = <(int, bool), Future<AndroidBitmap<Object>?>>{};
 
-  /// Where a badge is kept once it is drawn, a PNG by its colour and kind.
-  /// The background isolates have no screen to draw on, and until this was
-  /// kept their notifications went up without one (on the tablet,
-  /// 2026-11-16, no mail notification had its badge): whichever isolate can
-  /// draw does so once, and the rest find the file. A notification set for
-  /// later then carries the file's name, not a picture's bytes, in what
-  /// Android keeps of it. Null where there is nowhere to keep one (a test),
-  /// and then the picture goes as bytes, as before.
+  /// Where a badge is kept once it is made, a PNG by its colour and kind:
+  /// made once by whichever isolate first wants it, and found by the rest.
+  /// A notification set for later then carries the file's name, not a
+  /// picture's bytes, in what Android keeps of it. Null where there is
+  /// nowhere to keep one (a test), and then the picture goes as bytes, as
+  /// before.
+  ///
+  /// The pictures were first kept because they were painted with the
+  /// phone's graphics, which the background isolates do not have; on the
+  /// tablet that painting failed in the app as well, and they are worked
+  /// out by arithmetic now (account_badge.dart), in any isolate.
   final Future<Directory?> Function() _badgeFiles;
 
   static Future<Directory?> _defaultBadgeFiles() async {
@@ -193,9 +196,15 @@ class AndroidMailNotifier implements MailNotifier {
       // Not to be read: drawn, then.
     }
     if (_badgesFailed) return null;
+    // Said in the log each time one is made or cannot be, so what a device
+    // did can be read off it: a picture missing from a notification was
+    // otherwise silent. Found ones say nothing.
+    final what = '${calendar ? 'calendar' : 'dart'} '
+        '${colorValue.toUnsigned(32).toRadixString(16)}';
     final png = await (calendar ? _drawCalendar : _draw)(colorValue);
     if (png == null) {
       _badgesFailed = true;
+      debugPrint('[myemail] notification picture not made: $what');
       return null;
     }
     if (file != null) {
@@ -207,15 +216,20 @@ class AndroidMailNotifier implements MailNotifier {
       try {
         await part.writeAsBytes(png, flush: true);
         await part.rename(file.path);
+        debugPrint('[myemail] notification picture made and kept: $what');
         return FilePathAndroidBitmap(file.path);
-      } catch (_) {
+      } catch (e) {
         // Not kept: as bytes this once, and nothing left beside it.
+        debugPrint('[myemail] notification picture made, not kept: $what: $e');
         try {
           if (await part.exists()) await part.delete();
         } catch (_) {
           // Left: a few kilobytes.
         }
       }
+    } else {
+      debugPrint('[myemail] notification picture made, nowhere to keep it: '
+          '$what');
     }
     return ByteArrayAndroidBitmap(png);
   }

@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -80,6 +81,34 @@ void main() {
       // The line under the heading, and the marked day.
       expect(at(rgba, 32, 27), colour);
       expect(at(rgba, 38, 39), colour);
+    });
+
+    // On the tablet (2026-11-16) no notification ever had its picture,
+    // with the app in front too: they were painted with dart:ui and read
+    // back as an image, which the isolates that post notifications cannot
+    // do, and there even the app could not.
+    test("both are worked out by arithmetic, asking nothing of the phone's "
+        'graphics, and are PNG files', () async {
+      final source = File('lib/data/notifications/account_badge.dart')
+          .readAsStringSync();
+      expect(source, isNot(contains("'dart:ui'")));
+      for (final png in [
+        await drawAccountBadge(colour, size: size),
+        await drawCalendarBadge(colour, size: size),
+      ]) {
+        expect(png!.sublist(0, 8),
+            [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        expect(png.length, lessThan(4000), reason: 'a few kilobytes at most');
+      }
+    });
+
+    test('at the size a notification uses, it is made in well under a '
+        'second', () async {
+      final watch = Stopwatch()..start();
+      expect(await drawCalendarBadge(colour), isNotNull);
+      expect(await drawAccountBadge(colour), isNotNull);
+      expect(watch.elapsed, lessThan(const Duration(seconds: 5)),
+          reason: 'this runs unoptimised; on a phone it is far quicker');
     });
 
     test('is not the dart, and is one picture per colour', () async {

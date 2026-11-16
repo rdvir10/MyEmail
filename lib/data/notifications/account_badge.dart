@@ -1,6 +1,5 @@
-import 'dart:async';
+import 'dart:io' show zlib;
 import 'dart:typed_data';
-import 'dart:ui' as ui;
 
 /// The app's own mark, the dart from the launcher icon, on a circle of the
 /// account's colour, as a PNG: the picture on the right of a mail
@@ -15,14 +14,20 @@ import 'dart:ui' as ui;
 /// background is kept for music players and ongoing tasks, and a mail
 /// notification cannot have one.
 ///
-/// Null when it cannot be drawn, including when drawing takes too long. This
-/// runs in the background isolate as well as the app's, with no screen to
-/// draw on, and a notification without its badge is a small loss where one
-/// that never arrives is not.
+/// Worked out here, point by point, and written as a PNG by hand, with
+/// nothing asked of the phone's graphics. It used to be painted with
+/// dart:ui and read back as an image, which needs a screen's worth of
+/// graphics behind it: every mail notification is posted from an isolate
+/// that has none, and on Ron's tablet none of them ever had its picture
+/// (seen 2026-11-16, and again after the pictures were kept as files, the
+/// app in front: nothing there could paint one). Arithmetic is the same in
+/// every isolate, on every phone.
+///
+/// Null only if something here is wrong: a notification without its badge
+/// is a small loss where one that never arrives is not.
 Future<Uint8List?> drawAccountBadge(int colorValue, {int size = 256}) async {
   try {
-    return await _draw(colorValue, size, _paintDart)
-        .timeout(const Duration(seconds: 2));
+    return _png(_paint(colorValue, size, _dart), size);
   } catch (_) {
     return null;
   }
@@ -38,93 +43,164 @@ Future<Uint8List?> drawAccountBadge(int colorValue, {int size = 256}) async {
 /// neither a calendar nor the account's colour (seen 2026-11-16). This
 /// picture is the one place both can be said on every phone.
 ///
-/// Null when it cannot be drawn, as [drawAccountBadge].
+/// Null as [drawAccountBadge] is.
 Future<Uint8List?> drawCalendarBadge(int colorValue, {int size = 256}) async {
   try {
-    return await _draw(colorValue, size, _paintCalendar)
-        .timeout(const Duration(seconds: 2));
+    return _png(_paint(colorValue, size, _calendar(colorValue)), size);
   } catch (_) {
     return null;
   }
 }
 
-/// The launcher icon's dart, on its 108-unit canvas: the body in white and
-/// the underside of the fold a shade darker, which is what stops it reading
-/// as a flat arrowhead. The same paths as ic_launcher_foreground.xml.
-const _dart = [
-  (0xFFFFFFFF, [(27.1, 52.9), (80.9, 30.1), (60.0, 80.9), (52.1, 62.2)]),
-  (0xFFF0D6C2, [(52.1, 62.2), (80.9, 30.1), (60.0, 80.9)]),
+/// A shape in one colour, on the launcher icon's 108-unit square: whether
+/// the point ([x], [y]) is inside it.
+typedef _Shape = ({int colour, bool Function(double x, double y) holds});
+
+/// The launcher icon's dart: the body in white and the underside of the
+/// fold a shade darker, which is what stops it reading as a flat
+/// arrowhead. The same paths as ic_launcher_foreground.xml.
+final List<_Shape> _dart = [
+  (
+    colour: 0xFFFFFFFF,
+    holds: _polygon(
+        const [(27.1, 52.9), (80.9, 30.1), (60.0, 80.9), (52.1, 62.2)]),
+  ),
+  (
+    colour: 0xFFF0D6C2,
+    holds: _polygon(const [(52.1, 62.2), (80.9, 30.1), (60.0, 80.9)]),
+  ),
 ];
-
-/// What goes on the circle: drawn on [canvas], on the launcher icon's
-/// 108-unit square, [scale] pixels to a unit, over [colorValue].
-typedef _Mark = void Function(ui.Canvas canvas, double scale, int colorValue);
-
-Future<Uint8List?> _draw(int colorValue, int size, _Mark mark) async {
-  final recorder = ui.PictureRecorder();
-  final canvas = ui.Canvas(recorder);
-  final radius = size / 2;
-  canvas.drawCircle(
-    ui.Offset(radius, radius),
-    radius,
-    ui.Paint()
-      ..isAntiAlias = true
-      ..color = ui.Color(colorValue),
-  );
-
-  mark(canvas, size / 108, colorValue);
-
-  final picture = recorder.endRecording();
-  final image = await picture.toImage(size, size);
-  picture.dispose();
-  try {
-    final png = await image.toByteData(format: ui.ImageByteFormat.png);
-    return png?.buffer.asUint8List();
-  } finally {
-    image.dispose();
-  }
-}
 
 /// A calendar's page in white: two rings over its top edge, a line of the
 /// circle's colour under its heading, and one day marked, as Material's
-/// "event" icon marks one. Plain shapes, with no font to load: this is
-/// drawn where there may be no screen.
-void _paintCalendar(ui.Canvas canvas, double scale, int colorValue) {
-  ui.RRect box(double l, double t, double r, double b, double round) =>
-      ui.RRect.fromLTRBR(l * scale, t * scale, r * scale, b * scale,
-          ui.Radius.circular(round * scale));
-  final white = ui.Paint()
-    ..isAntiAlias = true
-    ..color = const ui.Color(0xFFFFFFFF);
-  final colour = ui.Paint()
-    ..isAntiAlias = true
-    ..color = ui.Color(colorValue);
-  // The rings, then the page over their feet.
-  canvas.drawRRect(box(39, 25, 45, 39, 3), white);
-  canvas.drawRRect(box(63, 25, 69, 39, 3), white);
-  canvas.drawRRect(box(29, 32, 79, 82, 6), white);
-  // The heading's line, and the day.
-  canvas.drawRect(
-      ui.Rect.fromLTRB(29 * scale, 44 * scale, 79 * scale, 48 * scale), colour);
-  canvas.drawRRect(box(57, 59, 71, 73, 2), colour);
+/// "event" icon marks one. Later shapes lie over earlier ones.
+List<_Shape> _calendar(int colorValue) => [
+      (colour: 0xFFFFFFFF, holds: _box(39, 25, 45, 39, 3)),
+      (colour: 0xFFFFFFFF, holds: _box(63, 25, 69, 39, 3)),
+      (colour: 0xFFFFFFFF, holds: _box(29, 32, 79, 82, 6)),
+      (colour: colorValue, holds: _box(29, 44, 79, 48, 0)),
+      (colour: colorValue, holds: _box(57, 59, 71, 73, 2)),
+    ];
+
+/// A box from ([l], [t]) to ([r], [b]) with corners rounded by [round].
+bool Function(double, double) _box(
+  double l,
+  double t,
+  double r,
+  double b,
+  double round,
+) =>
+    (x, y) {
+      if (x < l || x >= r || y < t || y >= b) return false;
+      // Inside the cross the corners leave; in a corner, inside its arc.
+      final cx = x < l + round ? l + round : (x > r - round ? r - round : x);
+      final cy = y < t + round ? t + round : (y > b - round ? b - round : y);
+      final dx = x - cx, dy = y - cy;
+      return dx * dx + dy * dy <= round * round;
+    };
+
+/// The shape whose corners are [points], in order.
+bool Function(double, double) _polygon(List<(double, double)> points) =>
+    (x, y) {
+      var inside = false;
+      for (var i = 0, j = points.length - 1; i < points.length; j = i++) {
+        final (xi, yi) = points[i];
+        final (xj, yj) = points[j];
+        if ((yi > y) != (yj > y) &&
+            x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+          inside = !inside;
+        }
+      }
+      return inside;
+    };
+
+/// How many points across and down each pixel is tried at, for an edge
+/// that is not a staircase.
+const _fine = 4;
+
+/// The circle of [colorValue] with [shapes] on it, [size] pixels square,
+/// as red, green, blue and how solid, a byte each, row by row. Clear
+/// outside the circle, so the notification shows through.
+Uint8List _paint(int colorValue, int size, List<_Shape> shapes) {
+  final out = Uint8List(size * size * 4);
+  final unit = 108 / size;
+  for (var py = 0; py < size; py++) {
+    for (var px = 0; px < size; px++) {
+      var red = 0, green = 0, blue = 0, covered = 0;
+      for (var sy = 0; sy < _fine; sy++) {
+        final y = (py + (sy + 0.5) / _fine) * unit;
+        for (var sx = 0; sx < _fine; sx++) {
+          final x = (px + (sx + 0.5) / _fine) * unit;
+          final dx = x - 54, dy = y - 54;
+          if (dx * dx + dy * dy > 54 * 54) continue;
+          var colour = colorValue;
+          for (final shape in shapes) {
+            if (shape.holds(x, y)) colour = shape.colour;
+          }
+          red += (colour >> 16) & 0xff;
+          green += (colour >> 8) & 0xff;
+          blue += colour & 0xff;
+          covered++;
+        }
+      }
+      if (covered == 0) continue;
+      final at = (py * size + px) * 4;
+      out[at] = (red / covered).round();
+      out[at + 1] = (green / covered).round();
+      out[at + 2] = (blue / covered).round();
+      out[at + 3] = (255 * covered / (_fine * _fine)).round();
+    }
+  }
+  return out;
 }
 
-void _paintDart(ui.Canvas canvas, double scale, int colorValue) {
-  for (final (colour, points) in _dart) {
-    final path = ui.Path();
-    for (final (i, (x, y)) in points.indexed) {
-      if (i == 0) {
-        path.moveTo(x * scale, y * scale);
-      } else {
-        path.lineTo(x * scale, y * scale);
-      }
-    }
-    path.close();
-    canvas.drawPath(
-      path,
-      ui.Paint()
-        ..isAntiAlias = true
-        ..color = ui.Color(colour),
-    );
+/// [rgba], [size] pixels square, as a PNG file: its eight bytes, a header,
+/// the rows packed, and an end, each part with its length before it and
+/// its check after.
+Uint8List _png(Uint8List rgba, int size) {
+  final rows = Uint8List((size * 4 + 1) * size);
+  for (var y = 0; y < size; y++) {
+    final at = y * (size * 4 + 1);
+    // A row as it is, with nothing taken from the row before: byte 0.
+    rows.setRange(at + 1, at + 1 + size * 4, rgba, y * size * 4);
   }
+  final header = ByteData(13)
+    ..setUint32(0, size)
+    ..setUint32(4, size)
+    ..setUint8(8, 8) // eight bits to a colour
+    ..setUint8(9, 6); // red, green, blue and how solid
+  final file = BytesBuilder(copy: false)
+    ..add(const [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  void part(String name, List<int> data) {
+    final body = [...name.codeUnits, ...data];
+    file
+      ..add((ByteData(4)..setUint32(0, data.length)).buffer.asUint8List())
+      ..add(body)
+      ..add((ByteData(4)..setUint32(0, _check(body))).buffer.asUint8List());
+  }
+
+  part('IHDR', header.buffer.asUint8List());
+  part('IDAT', zlib.encode(rows));
+  part('IEND', const []);
+  return file.toBytes();
 }
+
+/// The check a PNG keeps after each of its parts (CRC-32).
+int _check(List<int> bytes) {
+  var crc = 0xFFFFFFFF;
+  for (final b in bytes) {
+    crc = _checks[(crc ^ b) & 0xff] ^ (crc >> 8);
+  }
+  return (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF;
+}
+
+final List<int> _checks = [
+  for (var n = 0; n < 256; n++)
+    () {
+      var c = n;
+      for (var k = 0; k < 8; k++) {
+        c = c & 1 != 0 ? 0xEDB88320 ^ (c >> 1) : c >> 1;
+      }
+      return c;
+    }(),
+];
