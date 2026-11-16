@@ -16,6 +16,7 @@ import '../../domain/time_zones.dart' show placeOf;
 import '../calendar/time_zone_picker.dart';
 import '../messages/date_format.dart' show formatClock;
 import 'meeting_links_section.dart';
+import 'meeting_replies_section.dart';
 import 'new_meeting_defaults_section.dart';
 
 /// Settings, Calendar: how MyEmail's calendar shows the day, its reminders
@@ -156,6 +157,7 @@ class CalendarSettingsScreen extends ConsumerWidget {
             onChanged: (on) =>
                 setPrefs(prefs.copyWith(deleteAnsweredInvites: on)),
           ),
+          const MeetingRepliesSection(),
           SwitchListTile(
             key: const ValueKey('calendar-dates-in-mail'),
             title: const Text('Find dates in mail'),

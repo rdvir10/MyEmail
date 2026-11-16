@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import 'account.dart';
+import 'meeting_reply_filing.dart';
+
+export 'meeting_reply_filing.dart' show ReplyFiling;
 
 /// How the calendar shows the day, chosen in Settings, Calendar, and
 /// carried by the backup: whether meetings you declined still show, the
@@ -24,6 +27,7 @@ class CalendarPrefs {
     this.allDayReminder = AllDayReminder.none,
     this.allDayReminderAt,
     this.deleteAnsweredInvites = true,
+    this.replyFiling = ReplyFiling.off,
   });
 
   /// A meeting you declined that its calendar keeps (Google's do; Outlook
@@ -85,6 +89,11 @@ class CalendarPrefs {
   /// responding" sends it; the meeting stays on the calendar.
   final bool deleteAnsweredInvites;
 
+  /// Replies to your meetings with nothing written in them, filed in
+  /// Deleted Items as they arrive (calendar idea #52): off, as before,
+  /// until Ron turns it on.
+  final ReplyFiling replyFiling;
+
   /// Whether MyEmail reminds before [account]'s meetings: as switched, or
   /// else for a Microsoft account whose calendar is not in the phone's own
   /// ([inPhoneCalendar]), where nothing else would. Google Calendar on the
@@ -108,6 +117,7 @@ class CalendarPrefs {
     AllDayReminder? allDayReminder,
     int? allDayReminderAt,
     bool? deleteAnsweredInvites,
+    ReplyFiling? replyFiling,
   }) {
     final start = dayStart ?? this.dayStart;
     final end = dayEnd ?? this.dayEnd;
@@ -126,6 +136,7 @@ class CalendarPrefs {
       allDayReminderAt: allDayReminderAt ?? this.allDayReminderAt,
       deleteAnsweredInvites:
           deleteAnsweredInvites ?? this.deleteAnsweredInvites,
+      replyFiling: replyFiling ?? this.replyFiling,
     );
   }
 
@@ -142,6 +153,7 @@ class CalendarPrefs {
           'allDay': allDayReminder.name,
         if (allDayReminderAt != null) 'allDayAt': allDayReminderAt,
         'deleteAnswered': deleteAnsweredInvites,
+        if (replyFiling != ReplyFiling.off) 'replies': replyFiling.name,
       };
 
   /// What [toJson] wrote; anything missing or out of range is the default.
@@ -184,6 +196,10 @@ class CalendarPrefs {
               ? allDayAt
               : null,
       deleteAnsweredInvites: json['deleteAnswered'] != false,
+      replyFiling: ReplyFiling.values
+              .where((f) => f.name == json['replies'])
+              .firstOrNull ??
+          ReplyFiling.off,
     );
   }
 
@@ -210,7 +226,8 @@ class CalendarPrefs {
       other.reminderIfNone == reminderIfNone &&
       other.allDayReminder == allDayReminder &&
       other.allDayReminderAt == allDayReminderAt &&
-      other.deleteAnsweredInvites == deleteAnsweredInvites;
+      other.deleteAnsweredInvites == deleteAnsweredInvites &&
+      other.replyFiling == replyFiling;
 
   @override
   int get hashCode => Object.hash(
@@ -228,6 +245,7 @@ class CalendarPrefs {
         allDayReminder,
         allDayReminderAt,
         deleteAnsweredInvites,
+        replyFiling,
       );
 }
 

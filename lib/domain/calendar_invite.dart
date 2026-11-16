@@ -35,7 +35,20 @@ class CalendarInvite {
     this.originalStart,
     this.originalEnd,
     this.joinUrl,
+    this.productId,
+    this.responderNote,
   });
+
+  /// What made it, as its PRODID says: "Microsoft Exchange Server 2010",
+  /// "-//Google Inc//Google Calendar 70.9054//EN". Null where it says
+  /// nothing.
+  final String? productId;
+
+  /// The words [responder] wrote with an answer, where the calendar part
+  /// carries them: Exchange's COMMENT, Google's X-RESPONSE-COMMENT on the
+  /// answering attendee's line. Null for none, or only spaces (calendar
+  /// idea #52).
+  final String? responderNote;
 
   /// Where to join the meeting online, from the invitation itself (#39):
   /// Teams' own line (X-MICROSOFT-SKYPETEAMSMEETINGURL), Meet's
@@ -151,6 +164,9 @@ class CalendarInvite {
     String? responderStat;
     var sequence = 0;
     DateTime? stamp;
+    String? productId;
+    String? comment;
+    String? responderComment;
 
     for (final line in lines) {
       final name = line.name;
@@ -159,6 +175,7 @@ class CalendarInvite {
 
       if (!inEvent) {
         if (name == 'METHOD') method = value.trim().toUpperCase();
+        if (name == 'PRODID') productId = value.trim();
         if (name == 'BEGIN' && value.trim().toUpperCase() == 'VEVENT') {
           if (seen) break; // The first event is the invitation.
           inEvent = true;
@@ -209,7 +226,10 @@ class CalendarInvite {
           if (a != null && responder == null && stat != null) {
             responder = a;
             responderStat = stat;
+            responderComment = params['X-RESPONSE-COMMENT'];
           }
+        case 'COMMENT':
+          comment = _unescape(value);
         case 'SEQUENCE':
           sequence = int.tryParse(value.trim()) ?? 0;
         case 'DTSTAMP':
@@ -289,8 +309,24 @@ class CalendarInvite {
           meetingLinkIn(location) ??
           meetingLinkIn(url) ??
           meetingLinkIn(description),
+      productId: productId == null || productId.isEmpty ? null : productId,
+      responderNote: _noteOf(
+        method == 'REPLY' || method == 'COUNTER'
+            ? [comment, responderComment]
+            : const [],
+      ),
     );
   }
+}
+
+/// The first of [notes] with something in it besides spaces, as written;
+/// null for none.
+String? _noteOf(List<String?> notes) {
+  for (final note in notes) {
+    final words = note?.trim() ?? '';
+    if (words.isNotEmpty) return words;
+  }
+  return null;
 }
 
 /// A DATE-TIME value's wall clock, with no zone applied; null for one not in

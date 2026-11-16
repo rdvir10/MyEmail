@@ -2,12 +2,16 @@ import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../../domain/account.dart';
 import '../../domain/calendar_invite.dart';
+import '../../domain/calendar_prefs.dart';
 import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
+import '../../domain/meeting_reply_filing.dart';
+import '../../domain/message_move.dart' show PartialMove;
 import '../../domain/sync_prefs.dart';
 import '../notifications/mail_notifier.dart';
 import '../mail_engine.dart';
+import '../ui_state_store.dart';
 import 'new_mail_scan.dart';
 import 'sync_state_store.dart';
 
@@ -32,6 +36,7 @@ class BackgroundSync {
     this.maxPerFolder = 5,
     this.maxShownPerAccount = 8,
     this.inMeeting,
+    this.replyFiling,
     DateTime Function()? clock,
   }) : _clock = clock ?? DateTime.now;
 
@@ -45,6 +50,10 @@ class BackgroundSync {
   /// pass, and only where an account is quiet in meetings. Null: never in
   /// one.
   final Future<bool> Function(DateTime now)? inMeeting;
+
+  /// Settings, Calendar's choice for replies to your meetings (calendar
+  /// idea #52), read once a pass: see [replyFilingIn]. Null: off.
+  final ReplyFiling Function()? replyFiling;
 
   /// How many of the newest messages one pass looks at. Larger than any
   /// plausible fifteen minutes of mail, small enough to be cheap on a phone
@@ -113,6 +122,7 @@ class BackgroundSync {
     final synced = <String>{};
     final meetingMail = <String>{};
     final inMeetingNow = await _meetingOn(prefs, _clock());
+    final filing = _replyFiling();
 
     for (final account in accounts) {
       try {
@@ -134,6 +144,7 @@ class BackgroundSync {
           synced: synced,
           meetingMail: meetingMail,
           prefs: prefs,
+          filing: filing,
         );
         posted += result.posted;
         scanned += result.scanned;
@@ -244,6 +255,7 @@ class BackgroundSync {
     required Set<String> meetingMail,
     bool silently = false,
     SyncPrefs prefs = const SyncPrefs(),
+    ReplyFiling filing = ReplyFiling.off,
   }) async {
     final saved =
         listFolders ? const <MailFolder>[] : await engine.cachedFolders(account.id);
@@ -255,6 +267,12 @@ class BackgroundSync {
         if (f.role == FolderRole.inbox || prefs.watchedFolderIds.contains(f.id))
           f,
     ];
+    // Where replies to the account's meetings are filed (#52): its Deleted
+    // Items, where it has one. An account with none would delete them for
+    // good, so they stay.
+    final deletedItems = filing == ReplyFiling.off
+        ? null
+        : folders.where((f) => f.role == FolderRole.deleted).firstOrNull;
 
     var posted = 0;
     for (final folder in watched) {
@@ -265,6 +283,9 @@ class BackgroundSync {
         silently: silently,
         meetingMail: meetingMail,
         keep: (m) => prefs.announcesFrom(account.id, m.from.email),
+        filing: folder.role == FolderRole.inbox && deletedItems != null
+            ? (to: deletedItems, as: filing)
+            : null,
       );
       synced.add(folder.id);
     }
@@ -274,7 +295,9 @@ class BackgroundSync {
   /// [meetingMail] has [account] added where the folder has new meeting
   /// mail that may have changed its calendar: see
   /// [BackgroundSyncReport.meetingMail]. What is announced is posted
-  /// without a sound where [silently]: see [QuietRule.meetings].
+  /// without a sound where [silently]: see [QuietRule.meetings]. Replies
+  /// to the account's meetings go to [filing]'s folder as Settings,
+  /// Calendar says, where it is given: see [_fileReplies].
   Future<int> _runFolder(
     Account account,
     MailFolder folder, {
@@ -282,6 +305,7 @@ class BackgroundSync {
     required Set<String> meetingMail,
     bool silently = false,
     bool Function(MailMessage message)? keep,
+    ({MailFolder to, ReplyFiling as})? filing,
   }) async {
     final messages = await engine.loadMessages(folder.id, limit: scanWindow);
     await _withdrawDealtWith(folder, messages);
@@ -318,6 +342,23 @@ class BackgroundSync {
       await state.writeWatermark(folder.id, next);
     }
 
+    // The bodies of the meeting mail read here, by message id: read once,
+    // whether to file it or to announce it.
+    final bodies = <String, MailBody?>{};
+    // After the mark: filing reads and moves, and nothing it does may leave
+    // the folder ready to announce the same mail again.
+    if (filing != null && meetings.isNotEmpty) {
+      final filed = await _fileReplies(
+        account,
+        meetings,
+        to: filing.to,
+        filing: filing.as,
+        bodies: bodies,
+      );
+      fresh.removeWhere((m) => filed.contains(m.id));
+      meetings.removeWhere((m) => filed.contains(m.id));
+    }
+
     // Counts and the folder's own name, nothing from any message: enough to
     // tell "nothing new" from "new but already read" from "muted" when a
     // notification that was expected does not arrive.
@@ -344,7 +385,7 @@ class BackgroundSync {
     final kinds = <String, CalendarInvite?>{};
     final batch = <MailNotification>[];
     for (final m in fresh.take(maxPerFolder)) {
-      final invite = await _invite(m);
+      final invite = await _invite(m, bodies: bodies);
       if (m.isMeeting) kinds[m.id] = invite;
       batch.add(MailNotification.forMessage(
         m,
@@ -365,6 +406,16 @@ class BackgroundSync {
       notifications: batch,
     );
     return batch.length;
+  }
+
+  /// [replyFiling] asked, or off where it is not given or cannot say.
+  ReplyFiling _replyFiling() {
+    try {
+      return replyFiling?.call() ?? ReplyFiling.off;
+    } catch (e) {
+      debugPrint('[myemail] could not tell how replies are filed: $e');
+      return ReplyFiling.off;
+    }
   }
 
   /// Whether you are in a meeting at [now], for the accounts quiet in one:
@@ -414,8 +465,15 @@ class BackgroundSync {
   /// and Decline, not a cancellation or someone's answer. The header
   /// cannot say which, so the body is read, and kept, which also opens it
   /// sooner. Null for other mail, and where it cannot be told.
-  Future<CalendarInvite?> _invite(MailMessage message) async {
+  Future<CalendarInvite?> _invite(
+    MailMessage message, {
+    Map<String, MailBody?>? bodies,
+  }) async {
     if (!message.isMeeting) return null;
+    if (bodies != null && bodies.containsKey(message.id)) {
+      final body = bodies[message.id];
+      return body == null ? null : CalendarInvite.parse(body.calendar ?? '');
+    }
     try {
       final body =
           await engine.loadMessageBody(message.id).timeout(invitationReadFor);
@@ -424,6 +482,82 @@ class BackgroundSync {
       debugPrint('[myemail] could not tell whether an invitation: $e');
       return null;
     }
+  }
+
+  /// The most meeting mail one folder's pass opens to see whether it is a
+  /// reply to file: each is a request or two to its server, and one that
+  /// does not answer holds the pass for [invitationReadFor]. Any past it
+  /// stay, and are announced as they would be.
+  static const repliesReadAtMost = 10;
+
+  /// Replies to [account]'s meetings among [meetings], new in its Inbox,
+  /// with nothing written in them, moved into [to], its Deleted Items, as
+  /// [filing] says (calendar idea #52); answers the ids of those that went,
+  /// which are not announced. The rest stay where they are, and are
+  /// announced as any mail is. See [whyReplyStays] for which go. Each body
+  /// read is kept in [bodies], so one announced is not read twice.
+  ///
+  /// Moved rather than deleted, so that a folder taken for Deleted Items
+  /// could never mean a delete for good, and left unread there, as each
+  /// arrived. There is no Undo, as nobody pressed anything: each is in
+  /// Deleted Items, from where Move puts it back. Never throws: one that
+  /// could not be read or moved stays in the Inbox.
+  Future<Set<String>> _fileReplies(
+    Account account,
+    List<MailMessage> meetings, {
+    required MailFolder to,
+    required ReplyFiling filing,
+    required Map<String, MailBody?> bodies,
+  }) async {
+    final going = <String>[];
+    // Why each that stays stays, counted, for the log: nothing of the
+    // messages themselves.
+    final kept = <String, int>{};
+    var filed = const <String>{};
+    try {
+      for (final m in meetings.take(repliesReadAtMost)) {
+        MailBody? body;
+        try {
+          body =
+              await engine.loadMessageBody(m.id).timeout(invitationReadFor);
+        } catch (e) {
+          debugPrint('[myemail] could not read meeting mail: $e');
+        }
+        bodies[m.id] = body;
+        final why = body == null
+            ? 'not read'
+            : whyReplyStays(m, body,
+                filing: filing, ownAddress: account.emailAddress);
+        if (why == null) {
+          going.add(m.id);
+        } else {
+          kept[why] = (kept[why] ?? 0) + 1;
+        }
+      }
+      if (meetings.length > repliesReadAtMost) {
+        kept['not read, too many'] = meetings.length - repliesReadAtMost;
+      }
+      if (going.isNotEmpty) {
+        await engine.moveMessages(going, to.id);
+        filed = going.toSet();
+      }
+    } on PartialMove catch (part) {
+      filed = {
+        for (final id in part.moved)
+          if (going.contains(id)) id,
+      };
+    } catch (e) {
+      debugPrint('[myemail] replies to meetings not filed: $e');
+    }
+    if (going.isNotEmpty || kept.isNotEmpty) {
+      final said = [
+        for (final MapEntry(:key, :value) in kept.entries) '$value $key',
+      ];
+      debugPrint('[myemail] replies to meetings · ${account.displayName}: '
+          '${filed.length} of ${going.length} to Deleted Items; kept '
+          '${said.isEmpty ? 'none' : said.join(', ')}');
+    }
+    return filed;
   }
 
   /// Take down the oldest of [account]'s rows that [batch] would put over
@@ -498,6 +632,22 @@ class BackgroundSync {
 bool mayChangeCalendar(CalendarInvite? invite) =>
     invite == null ||
     !(invite.isReply || invite.isCounter || invite.isDeclineCounter);
+
+/// What Settings, Calendar says of replies to your meetings, read from
+/// where the app keeps it, for a pass in an isolate of its own. Off where
+/// it cannot be read.
+ReplyFiling replyFilingIn(UiStateStore uiState) {
+  try {
+    return (CalendarPrefs.tryParse(
+              uiState.readString(UiStateKeys.calendarPrefs) ?? '',
+            ) ??
+            const CalendarPrefs())
+        .replyFiling;
+  } catch (e) {
+    debugPrint('[myemail] could not read how replies are filed: $e');
+    return ReplyFiling.off;
+  }
+}
 
 /// [MailEngine.wakeSnoozed], answering the ids of the messages brought
 /// back where the engine can say them ([SaysWhatWoke]). Never throws.
