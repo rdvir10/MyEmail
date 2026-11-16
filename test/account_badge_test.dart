@@ -83,10 +83,9 @@ void main() {
       expect(at(rgba, 38, 39), colour);
     });
 
-    // On the tablet (2026-11-16) no notification ever had its picture,
-    // with the app in front too: they were painted with dart:ui and read
-    // back as an image, which the isolates that post notifications cannot
-    // do, and there even the app could not.
+    // Mail notifications are posted from isolates with no screen, so the
+    // pictures ask nothing of the phone's graphics: they used to be
+    // painted with dart:ui and read back as an image.
     test("both are worked out by arithmetic, asking nothing of the phone's "
         'graphics, and are PNG files', () async {
       final source = File('lib/data/notifications/account_badge.dart')
@@ -102,8 +101,9 @@ void main() {
       }
     });
 
-    test('at the size a notification uses, it is made in well under a '
-        'second', () async {
+    test("a notification's is 160 pixels square, plenty for the 32 dp a "
+        'shade shows it at, and made in well under a second', () async {
+      expect(badgeSize, 160);
       final watch = Stopwatch()..start();
       expect(await drawCalendarBadge(colour), isNotNull);
       expect(await drawAccountBadge(colour), isNotNull);

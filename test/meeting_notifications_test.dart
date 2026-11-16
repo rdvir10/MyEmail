@@ -717,9 +717,10 @@ void main() {
   });
 
   // On Ron's tablet (2026-11-16) a Samsung draws the app's own icon on
-  // every notification's row, so a reminder showed neither a calendar nor
-  // its account's colour, and the mail notifications had lost the picture
-  // at their side: the background has no screen to draw one on.
+  // every notification's row, so a reminder, which had no picture at its
+  // side, showed neither a calendar nor its account's colour. (That the
+  // tablet then showed no picture at all was the plugin taking it away:
+  // notification_plugin_patch_test.dart.)
   group('the picture at the side of a calendar notification', () {
     const blue = 0xFF0F6CBD;
     final start = DateTime(2026, 10, 26, 10);
@@ -865,21 +866,22 @@ void main() {
       expect(drawn, ['calendar', 'calendar']);
       for (final set in plugin.scheduled) {
         expect(set.details.android!.largeIcon, isA<ByteArrayAndroidBitmap>(),
-            reason: 'not a file: 3.17.2 kept files, and on the tablet no '
-                'notification got its picture');
+            reason: 'the picture itself, not the name of a file');
       }
     });
 
     test('one that cannot be made leaves the notification as it would be '
-        'without, and spares the rest of the batch the wait', () async {
+        'without, and is tried again the next time one is wanted', () async {
       final drawn = <String>[];
       final notifier = notifierThat(draws: false, drawn: drawn);
       await notifier.scheduleMeetingReminder(reminder(colour: blue));
       final plain = plugin.scheduled.single.details.android!;
       expect(plain.largeIcon, isNull);
       expect(plain.color, const Color(blue));
-      await notifier.scheduleMeetingReminder(reminder(colour: 0xFF107C41));
-      expect(drawn, ['calendar'], reason: 'not tried again in this batch');
+      await notifier.scheduleMeetingReminder(reminder(colour: blue));
+      expect(drawn, ['calendar', 'calendar'],
+          reason: 'not given up on for good: the app posts no mail, and '
+              'nothing else would ever have set it trying again');
     });
   });
 

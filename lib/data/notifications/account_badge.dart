@@ -1,6 +1,9 @@
 import 'dart:io' show zlib;
 import 'dart:typed_data';
 
+/// How many pixels square a badge is made, unless asked otherwise.
+const badgeSize = 160;
+
 /// The app's own mark, the dart from the launcher icon, on a circle of the
 /// account's colour, as a PNG: the picture on the right of a mail
 /// notification.
@@ -16,16 +19,23 @@ import 'dart:typed_data';
 ///
 /// Worked out here, point by point, and written as a PNG by hand, with
 /// nothing asked of the phone's graphics. It used to be painted with
-/// dart:ui and read back as an image, which needs a screen's worth of
-/// graphics behind it: every mail notification is posted from an isolate
-/// that has none, and on Ron's tablet none of them ever had its picture
-/// (seen 2026-11-16, and again after the pictures were kept as files, the
-/// app in front: nothing there could paint one). Arithmetic is the same in
-/// every isolate, on every phone.
+/// dart:ui and read back as an image. Every mail notification is posted
+/// from an isolate with no screen, and arithmetic is the same in every
+/// isolate, on every phone. (This was changed while looking for why Ron's
+/// tablet showed no picture, 2026-11-16. That turned out to be the
+/// notifications plugin taking the picture away, not the painting; whether
+/// the painting ever failed is not known.)
+///
+/// [badgeSize] pixels square: a shade shows it at 32 dp, 61 pixels on the
+/// tablet and no more than 128 on the sharpest phone. It was 256, which
+/// was four times the work and the bytes for nothing seen.
 ///
 /// Null only if something here is wrong: a notification without its badge
 /// is a small loss where one that never arrives is not.
-Future<Uint8List?> drawAccountBadge(int colorValue, {int size = 256}) async {
+Future<Uint8List?> drawAccountBadge(
+  int colorValue, {
+  int size = badgeSize,
+}) async {
   try {
     return _png(_paint(colorValue, size, _dart), size);
   } catch (_) {
@@ -44,7 +54,10 @@ Future<Uint8List?> drawAccountBadge(int colorValue, {int size = 256}) async {
 /// picture is the one place both can be said on every phone.
 ///
 /// Null as [drawAccountBadge] is.
-Future<Uint8List?> drawCalendarBadge(int colorValue, {int size = 256}) async {
+Future<Uint8List?> drawCalendarBadge(
+  int colorValue, {
+  int size = badgeSize,
+}) async {
   try {
     return _png(_paint(colorValue, size, _calendar(colorValue)), size);
   } catch (_) {

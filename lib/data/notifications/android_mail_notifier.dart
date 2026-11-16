@@ -110,17 +110,6 @@ class AndroidMailNotifier implements MailNotifier {
   /// one.
   final _badges = <(int, bool), Future<Uint8List?>>{};
 
-  /// Set once a badge could not be made, for the rest of one batch, so one
-  /// failure does not cost every notification after it the same wait.
-  ///
-  /// Only for the batch: [showNewMail] clears it. Held for good, one
-  /// failure in a worker that had just started took the badges off every
-  /// notification that worker posted, which in push mode is most of an
-  /// hour. Since the pictures are worked out by arithmetic
-  /// (account_badge.dart) nothing on a phone should fail to make one; this
-  /// is kept for what cannot be foreseen.
-  bool _badgesFailed = false;
-
   /// Makes a badge, and for tests, one that fails.
   final Future<Uint8List?> Function(int colorValue) _draw;
 
@@ -129,23 +118,18 @@ class AndroidMailNotifier implements MailNotifier {
 
   /// The app's dart on the account's colour, or with [calendar] a calendar
   /// on it; see [drawAccountBadge] and [drawCalendarBadge]. Handed to
-  /// Android as the picture's own bytes, a few kilobytes.
-  ///
-  /// 3.17.2 kept each as a file and handed Android the file's name, so
-  /// that the app, which could paint, made them for the background, which
-  /// could not. On Ron's tablet that put no picture on any notification
-  /// (2026-11-16): the log showed the file looked for as each went up, and
-  /// none had one. Bytes are the way that has always worked on the phone,
-  /// and with nothing painted any more there is nothing to share.
+  /// Android as the picture's own bytes, a few kilobytes, as it always was
+  /// but for 3.17.2, which kept each as a file. Null where one cannot be
+  /// made, and then it is tried again the next time one is wanted: making
+  /// one is quick now, and nothing is gained by giving up.
   Future<AndroidBitmap<Object>?> _badgeFor(
     int colorValue, {
     bool calendar = false,
   }) async {
-    if (_badgesFailed) return null;
     final key = (colorValue, calendar);
     final png = await _badges.putIfAbsent(key, () async {
       final made = await (calendar ? _drawCalendar : _draw)(colorValue);
-      // Said in the log, once for each picture an isolate makes, so what a
+      // Said in the log, once for each picture a notifier makes, so what a
       // device did can be read off it: a picture missing from a
       // notification was otherwise silent.
       final what = '${calendar ? 'calendar' : 'dart'} '
@@ -157,8 +141,6 @@ class AndroidMailNotifier implements MailNotifier {
       return made;
     });
     if (png == null) {
-      _badgesFailed = true;
-      // Not kept, so the next batch tries this one again.
       _badges.remove(key);
       return null;
     }
@@ -578,7 +560,6 @@ class AndroidMailNotifier implements MailNotifier {
   }) async {
     if (notifications.isEmpty) return;
     await ensureReady();
-    _badgesFailed = false;
 
     final groupKey = '$_groupPrefix${account.id}';
     // Before the first row goes up: see [_marks].
