@@ -633,27 +633,26 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   List<OnlineMeetingKind> _onlineKinds = const [];
 
   /// Which of them, where there is a choice: a Microsoft account with
-  /// Teams and, through the Gmail account, Google Meet. The first unless
-  /// one was chosen, and the choice kept through a change of From where
-  /// the account now can hold it too.
+  /// Teams and, through the Gmail account, Google Meet. The one picked
+  /// from the menu ([_pickedKind]) wherever the account in From offers it,
+  /// and the account's own first otherwise.
   late OnlineMeetingKind? _onlineKind = _written?.onlineKind;
 
-  /// Whether [_onlineKind] was chosen from the menu, rather than being the
-  /// first of an account's: only a choice is kept through From. Without
-  /// one, Hadco's Teams, on by default (#61), came back as Meet once From
-  /// had been the Gmail account, whose only kind it is.
-  late bool _kindChosen = _written?.onlineKind != null;
+  /// The kind picked from the menu, kept in a field of its own, never
+  /// overwritten by another account's: Teams picked on Hadco is Teams
+  /// again after a visit to Gmail, whose only kind is Meet.
+  late OnlineMeetingKind? _pickedKind = _written?.onlineKind;
 
   /// Whether a link was asked for. Honoured only where the account's
   /// calendar holds meetings online: the switch keeps its setting through
   /// a change of From, and a meeting from an account with nowhere to hold
   /// one goes without.
   ///
-  /// On to begin with for an account Settings start online (#61), and
-  /// following From's own setting until the switch, a kind or a meeting
-  /// link is chosen here ([_onlineChosen]).
-  late bool _online = _written?.online ??
-      (_editing == null && _defaults.onlineFor(_accountId));
+  /// Settings start an account online (#61) as it answers, on its own kind
+  /// of link alone (see [_ownKind]), and the switch follows From's own
+  /// setting until it, a kind or a meeting link is chosen here
+  /// ([_onlineChosen]).
+  late bool _online = _written?.online ?? false;
 
   /// Whether the switch was set here, by hand, rather than by Settings: it
   /// then stays as set whatever From becomes.
@@ -819,13 +818,32 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     final ask = ++_onlineAsk;
     final kinds =
         await ref.read(mailEngineProvider).onlineMeetingsFor(_accountId);
+    // Which kind is the account's own needs the account, which may not
+    // have been read yet as the screen opens.
+    List<Account> accounts;
+    try {
+      accounts = await ref.read(accountsProvider.future);
+    } catch (_) {
+      accounts = const [];
+    }
     if (!mounted || ask != _onlineAsk) return;
+    final account = accounts.where((a) => a.id == _accountId).firstOrNull;
     setState(() {
       _onlineKinds = kinds;
       _onlineAnswered = true;
-      _onlineKind = _kindChosen && kinds.contains(_onlineKind)
-          ? _onlineKind
-          : kinds.firstOrNull;
+      final own = _ownKind(kinds, account?.provider);
+      final picked = _pickedKind;
+      _onlineKind = picked != null && kinds.contains(picked)
+          ? picked
+          : own ?? kinds.firstOrNull;
+      // On, where Settings say so, only with the account's own kind: a
+      // Hadco whose calendar could not be asked (no signal, no consent
+      // yet) offers Meet through Gmail alone, and stays off rather than
+      // send a work meeting on Ron's personal Meet. A later answer, From
+      // changed and back, can still turn it on.
+      if (!_onlineChosen && _editing == null && _written == null) {
+        _online = own != null && _defaults.onlineFor(_accountId);
+      }
     });
     // From changed with the switch on: this account's link, and its text.
     if (_online && _prepared == null && _preparing == null) {
@@ -954,6 +972,29 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       ?.where((a) => a.id == _accountId)
       .firstOrNull;
 
+  /// Whether the link under the notes was copied.
+  bool _linkCopied = false;
+
+  void _copied() => _linkCopied = true;
+
+  /// An account's own kind of link among [kinds], by its [provider]:
+  /// Teams (or Skype) on a Microsoft account, Meet on a Google one; null
+  /// where it is not offered, as when Hadco's calendar could not be asked
+  /// and only the Gmail account's Meet is.
+  static OnlineMeetingKind? _ownKind(
+    List<OnlineMeetingKind> kinds,
+    MailProvider? provider,
+  ) =>
+      switch (provider) {
+        MailProvider.outlook => kinds
+            .where((k) => k != OnlineMeetingKind.googleMeet)
+            .firstOrNull,
+        MailProvider.gmail => kinds.contains(OnlineMeetingKind.googleMeet)
+            ? OnlineMeetingKind.googleMeet
+            : null,
+        null => null,
+      };
+
   /// Whether leaving loses nothing: the screen is as it opened, and what it
   /// opened with can be had again.
   ///
@@ -964,8 +1005,11 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// made again as easily.
   ///
   /// Opened again after a Send that failed, what it holds is nowhere else.
+  /// A link copied counts (#61, review): pasted into another app, it would
+  /// stop working once the screen was put away and its meeting undone.
   bool get _untouched =>
       _written == null &&
+      !_linkCopied &&
       _accountId == (_editing?.event.accountId ?? widget.accountId) &&
       _start == _startToBegin &&
       _end == _endToBegin &&
@@ -1654,7 +1698,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     setState(() {
       _pickedLink = null;
       _onlineKind = kind;
-      _kindChosen = true;
+      _pickedKind = kind;
       _online = true;
       _onlineChosen = true;
     });
@@ -1815,9 +1859,8 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                                   _onlineAnswered = false;
                                   // Online as Settings start this account,
                                   // unless the switch was set here (#61).
-                                  if (!_onlineChosen) {
-                                    _online = _defaults.onlineFor(id);
-                                  }
+                                  // (on its own kind, once it answers).
+                                  if (!_onlineChosen) _online = false;
                                 });
                                 _askOnline();
                               },
@@ -2150,8 +2193,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                         constraints:
                             BoxConstraints(maxHeight: box.maxHeight / 2),
                         child: room != null
-                            ? _InviteText.room(room)
+                            ? _InviteText.room(room, onCopied: _copied)
                             : _InviteText(
+                                onCopied: _copied,
                                 kind: _onlineKind!,
                                 prepared: _prepared,
                                 making: _preparing != null,
@@ -2178,6 +2222,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
 /// be copied, to paste somewhere the invitation does not go.
 class _InviteText extends StatelessWidget {
   const _InviteText({
+    required this.onCopied,
     required OnlineMeetingKind this.kind,
     required this.prepared,
     required this.making,
@@ -2187,7 +2232,7 @@ class _InviteText extends StatelessWidget {
   /// A meeting link of Ron's own: the line the notes end with as the
   /// meeting goes, with nothing made for it. Kept out of the notes field
   /// so that nothing Ron wrote is ever taken out with it.
-  const _InviteText.room(MeetingLink this.room)
+  const _InviteText.room(MeetingLink this.room, {required this.onCopied})
       : kind = null,
         prepared = null,
         making = false,
@@ -2198,6 +2243,9 @@ class _InviteText extends StatelessWidget {
   final bool making;
   final bool failed;
   final MeetingLink? room;
+
+  /// Told once the link is copied: the screen is then something to keep.
+  final VoidCallback onCopied;
 
   @override
   Widget build(BuildContext context) {
@@ -2261,6 +2309,7 @@ class _InviteText extends StatelessWidget {
                           key: const ValueKey('meeting-copy-link'),
                           onPressed: () async {
                             final messenger = ScaffoldMessenger.of(context);
+                            onCopied();
                             await Clipboard.setData(
                               ClipboardData(text: joinUrl),
                             );
