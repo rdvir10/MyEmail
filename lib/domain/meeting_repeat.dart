@@ -115,12 +115,21 @@ class MeetingRepeat {
   /// Saturday and Sunday"); three or more in a row, Sunday to Monday
   /// counting as in a row, as a run (", Monday to Friday", ", Sunday to
   /// Thursday", ", Friday to Sunday"). All seven are a run from Monday.
+  /// Six days with one from Tuesday to Friday left out would be a run
+  /// right round the week ("Thursday to Tuesday"), which reads as two
+  /// days: they are said by the day left out, " on every day but
+  /// Wednesday".
   String _days() {
     String name(int weekday) => _weekdayNames[weekday - 1];
     int before(int weekday) => weekday == 1 ? 7 : weekday - 1;
     int after(int weekday) => weekday == 7 ? 1 : weekday + 1;
     if (weekdays.length == 7) {
       return ', ${name(DateTime.monday)} to ${name(DateTime.sunday)}';
+    }
+    if (weekdays.length == 6) {
+      for (var d = DateTime.tuesday; d <= DateTime.friday; d++) {
+        if (!weekdays.contains(d)) return ' on every day but ${name(d)}';
+      }
     }
     // One run: a single day with the day before it left out.
     final starts = [

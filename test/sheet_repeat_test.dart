@@ -502,6 +502,14 @@ void main() {
       expect(days({5, 6, 7}), 'Every week, Friday to Sunday');
       expect(days({6, 7, 1}), 'Every week, Saturday to Monday');
       expect(days({7, 1, 2, 3, 4}), 'Every week, Sunday to Thursday');
+      // Six days: a run that reads from one end of the week to the other,
+      // or, where the day left out is in the middle of the week, that day.
+      expect(days({1, 2, 3, 4, 5, 6}), 'Every week, Monday to Saturday');
+      expect(days({2, 3, 4, 5, 6, 7}), 'Every week, Tuesday to Sunday');
+      expect(days({7, 1, 2, 3, 4, 5}), 'Every week, Sunday to Friday');
+      expect(days({1, 2, 4, 5, 6, 7}), 'Every week on every day but Wednesday');
+      expect(days({1, 3, 4, 5, 6, 7}), 'Every week on every day but Tuesday');
+      expect(days({1, 2, 3, 4, 6, 7}), 'Every week on every day but Friday');
       expect(days({1, 2, 3, 4, 5, 6, 7}), 'Every day');
       expect(
           MeetingRepeat(RepeatUnit.week,
