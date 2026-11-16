@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'time_zones.dart' show ianaZoneOf, wallClockIn;
+
 /// What a series of meetings repeats by: days, weeks, months or years.
 enum RepeatUnit { day, week, month, year }
 
@@ -92,9 +94,11 @@ class MeetingRepeat {
     final last = until;
     final end = last != null
         ? ', until ${last.day} ${_monthNames[last.month - 1]} ${last.year}'
-        : count != null
-            ? ', $count times'
-            : '';
+        : count == 1
+            ? ', once'
+            : count != null
+                ? ', $count times'
+                : '';
     return '$how$end';
   }
 
@@ -143,8 +147,9 @@ class MeetingRepeat {
     if (recurrence is! Map) return null;
     final pattern = recurrence['pattern'];
     if (pattern is! Map) return null;
+    // A whole number, and no more than a rule's may be (see [_fromRule]).
     final interval = switch (pattern['interval']) {
-      final int n when n >= 1 => n,
+      final int n when n >= 1 && n <= _mostInterval => n,
       null => 1,
       _ => null,
     };
@@ -191,7 +196,9 @@ class MeetingRepeat {
         make(RepeatUnit.month, dayOfMonth: dayOfMonth),
       'relativeMonthly' when days.length == 1 && week != null =>
         make(RepeatUnit.month, weekdays: days, week: week),
-      'absoluteYearly' when dayOfMonth != null && month != null =>
+      'absoluteYearly' when dayOfMonth != null &&
+              month != null &&
+              _inMonth(dayOfMonth, month) =>
         make(RepeatUnit.year, dayOfMonth: dayOfMonth, month: month),
       'relativeYearly' when days.length == 1 && week != null && month != null =>
         make(RepeatUnit.year, weekdays: days, week: week, month: month),
@@ -200,11 +207,14 @@ class MeetingRepeat {
   }
 
   /// A Graph range's end: its last day, its number of meetings, or none.
-  /// Null for one that says it ends and cannot be read: left out, the
-  /// sheet would say the series goes on for good.
+  /// Null for one that says it ends and cannot be read, and for a range
+  /// missing or of a kind not known here: left out, the sheet would say
+  /// the series goes on for good.
   static ({DateTime? until, int? count})? _graphRange(Object? range) {
-    if (range is! Map) return (until: null, count: null);
+    if (range is! Map) return null;
     switch ('${range['type']}') {
+      case 'noEnd':
+        return (until: null, count: null);
       case 'endDate':
         final day = _date('${range['endDate']}');
         return day == null ? null : (until: day, count: null);
@@ -212,8 +222,68 @@ class MeetingRepeat {
         final n = range['numberOfOccurrences'];
         return n is int && n >= 1 ? (until: null, count: n) : null;
       default:
-        return (until: null, count: null);
+        return null;
     }
+  }
+
+  /// The most a series' interval may be and be said: "every 1000 weeks"
+  /// is already more than any calendar means.
+  static const _mostInterval = 1000;
+
+  /// Whether [day] is a day of [month] in some year: 29 February is, 31
+  /// April is not.
+  static bool _inMonth(int day, int month) =>
+      DateTime(2024, month, day).month == month;
+
+  /// Letters alone, and not too many, of a kind a calendar named: what a
+  /// log line may say of what it found, and nothing else.
+  static String _kind(Object? name) {
+    final letters = '${name ?? ''}'.replaceAll(RegExp('[^A-Za-z]'), '');
+    if (letters.isEmpty) return 'none';
+    return letters.length > 24 ? letters.substring(0, 24) : letters;
+  }
+
+  /// The kinds of a Graph `recurrence` [fromGraph] did not read, for a log
+  /// line: its pattern's type and its range's, "relativeMonthly, noEnd".
+  static String graphKinds(Object? recurrence) {
+    final r = recurrence is Map ? recurrence : const {};
+    String type(Object? part) => _kind(part is Map ? part['type'] : null);
+    return '${type(r['pattern'])}, ${type(r['range'])}';
+  }
+
+  /// The kinds of Google `recurrence` lines [fromRule] did not read, for a
+  /// log line: the rule's FREQ and the names of its other parts, then how
+  /// it ends, "MONTHLY BYDAY BYSETPOS, COUNT"; a line of another kind than
+  /// a rule or days left out by its name.
+  static String ruleKinds(Object? lines) {
+    String? freq;
+    final parts = <String>[];
+    var end = 'no end';
+    for (final line in lines is List ? lines : const []) {
+      final text = '$line'.trim();
+      final name = text.split(RegExp('[:;]')).first.toUpperCase();
+      if (name == 'EXDATE') continue;
+      if (name != 'RRULE') {
+        parts.add(_kind(name));
+        continue;
+      }
+      final at = text.indexOf(':');
+      for (final part in text.substring(at + 1).split(';')) {
+        final equals = part.indexOf('=');
+        final key = (equals < 0 ? part : part.substring(0, equals))
+            .trim()
+            .toUpperCase();
+        if (key.isEmpty || key == 'INTERVAL' || key == 'WKST') continue;
+        if (key == 'FREQ') {
+          freq = _kind(equals < 0 ? '' : part.substring(equals + 1).trim());
+        } else if (key == 'UNTIL' || key == 'COUNT') {
+          end = key;
+        } else {
+          parts.add(_kind(key));
+        }
+      }
+    }
+    return '${[freq ?? 'none', ...parts].join(' ')}, $end';
   }
 
   /// "2027-06-30" as that day at midnight; null for anything else.
@@ -238,17 +308,27 @@ class MeetingRepeat {
   /// A Google series' `recurrence` lines: its RRULE, read, beside any days
   /// left out of it (EXDATE), which do not change how it repeats. [start]
   /// is the series' first day, on its own clock, for what the rule leaves
-  /// to it: a week's day, a month's date. Null for a rule this cannot say
-  /// exactly, two rules, or days added (RDATE).
-  static MeetingRepeat? fromRule(Iterable<Object?> lines, {DateTime? start}) {
+  /// to it: a week's day, a month's date. [zone] is the zone it was set in,
+  /// by an IANA or Windows name, where an UNTIL in UTC is read: see
+  /// [_ruleDate]. Null for a rule this cannot say exactly, two rules, or
+  /// days added (RDATE).
+  static MeetingRepeat? fromRule(
+    Iterable<Object?> lines, {
+    DateTime? start,
+    String? zone,
+  }) {
     try {
-      return _fromRule(lines, start);
+      return _fromRule(lines, start, zone);
     } catch (_) {
       return null;
     }
   }
 
-  static MeetingRepeat? _fromRule(Iterable<Object?> lines, DateTime? start) {
+  static MeetingRepeat? _fromRule(
+    Iterable<Object?> lines,
+    DateTime? start,
+    String? zone,
+  ) {
     String? rule;
     for (final line in lines) {
       final text = '$line'.trim();
@@ -279,12 +359,13 @@ class MeetingRepeat {
 
     final interval = parts['INTERVAL'] == null
         ? 1
-        : number(parts['INTERVAL'], 1, 1000);
+        : number(parts['INTERVAL'], 1, _mostInterval);
     if (interval == null) return null;
     final count =
         parts['COUNT'] == null ? null : number(parts['COUNT'], 1, 100000);
     if (parts['COUNT'] != null && count == null) return null;
-    final until = parts['UNTIL'] == null ? null : _ruleDate(parts['UNTIL']!);
+    final until =
+        parts['UNTIL'] == null ? null : _ruleDate(parts['UNTIL']!, zone);
     if (parts['UNTIL'] != null && until == null) return null;
     if (count != null && until != null) return null;
     final dayOfMonth = parts['BYMONTHDAY'] == null
@@ -359,9 +440,10 @@ class MeetingRepeat {
               week: byDay.single.week,
               month: month);
         }
-        // A year's date, or the first meeting's, in the month named.
+        // A year's date, or the first meeting's, in the month named: one
+        // the month has.
         final day = dayOfMonth ?? start?.day;
-        return day == null
+        return day == null || !_inMonth(day, inMonth)
             ? null
             : make(RepeatUnit.year, dayOfMonth: day, month: inMonth);
       default:
@@ -369,20 +451,31 @@ class MeetingRepeat {
     }
   }
 
-  /// A rule's UNTIL as the last day a meeting may fall on: a date as it is,
-  /// a time in UTC on the phone's own clock, as the rule writes the end of
-  /// a timed series' last day.
-  static DateTime? _ruleDate(String text) {
+  /// A rule's UNTIL as the last day a meeting may fall on: a date as it is;
+  /// a time in UTC, as Google writes the end of a timed series' last day
+  /// in its own zone, read on that zone's clock ([zone]), and on the
+  /// phone's only where the zone is not known. Read on the phone's alone,
+  /// a series set in Dallas said it ended a day late on a phone further
+  /// east (the review). Null for a day or a time that does not exist.
+  static DateTime? _ruleDate(String text, String? zone) {
     final m = RegExp(r'^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z?))?$')
         .firstMatch(text);
     if (m == null) return null;
     final n = [for (var i = 1; i <= 6; i++) int.tryParse(m[i] ?? '') ?? 0];
     if (n[1] < 1 || n[1] > 12 || n[2] < 1 || n[2] > 31) return null;
-    final at = m[4] == null
-        ? DateTime(n[0], n[1], n[2])
-        : m[7] == 'Z'
-            ? DateTime.utc(n[0], n[1], n[2], n[3], n[4], n[5]).toLocal()
-            : DateTime(n[0], n[1], n[2], n[3], n[4], n[5]);
+    if (n[3] > 23 || n[4] > 59 || n[5] > 60) return null;
+    // 31 February is not a day, and is not read as 3 March.
+    if (DateTime(n[0], n[1], n[2]).day != n[2]) return null;
+    if (m[4] == null) return DateTime(n[0], n[1], n[2]);
+    if (m[7] != 'Z') return DateTime(n[0], n[1], n[2]);
+    final instant = DateTime.utc(n[0], n[1], n[2], n[3], n[4], n[5]);
+    DateTime at;
+    try {
+      final own = zone == null ? null : ianaZoneOf(zone);
+      at = own == null ? instant.toLocal() : wallClockIn(instant, own);
+    } catch (_) {
+      at = instant.toLocal();
+    }
     return DateTime(at.year, at.month, at.day);
   }
 
@@ -394,7 +487,12 @@ class MeetingRepeat {
     if (lines is! List) return null;
     final start = event['start'];
     final written = start is Map ? start['date'] ?? start['dateTime'] : null;
-    return fromRule(lines, start: written is String ? _date(written) : null);
+    final zone = start is Map ? start['timeZone'] : null;
+    return fromRule(
+      lines,
+      start: written is String ? _date(written) : null,
+      zone: zone is String && zone.isNotEmpty ? zone : null,
+    );
   }
 
   @override

@@ -161,6 +161,56 @@ void main() {
           isNull,
           reason: 'an end it cannot read is not left out as though none');
     });
+
+    test('odd values are not said', () {
+      expect(graph({'type': 'daily', 'interval': 1}, {'type': 'someday'}),
+          isNull,
+          reason: 'a range of a kind not known could be any end');
+      expect(MeetingRepeat.fromGraph({
+        'pattern': {'type': 'daily', 'interval': 1},
+      }), isNull, reason: 'no range, no end known');
+      expect(
+          MeetingRepeat.fromGraph({
+            'pattern': {'type': 'daily', 'interval': 1},
+            'range': 'soon',
+          }),
+          isNull);
+      for (final interval in <Object>[0, -3, 1000000, '2', 2.5]) {
+        expect(
+            graph({
+              'type': 'weekly',
+              'interval': interval,
+              'daysOfWeek': ['tuesday'],
+            }),
+            isNull,
+            reason: '$interval');
+      }
+      expect(
+          graph({
+            'type': 'weekly',
+            'interval': 1000,
+            'daysOfWeek': ['tuesday'],
+          })?.describe(),
+          'Every 1000 weeks on Tuesday',
+          reason: "capped where the rule's is");
+      expect(
+          graph({'type': 'absoluteYearly', 'dayOfMonth': 31, 'month': 2}),
+          isNull,
+          reason: 'there is no 31 February');
+      expect(
+          graph({'type': 'absoluteYearly', 'dayOfMonth': 29, 'month': 2})
+              ?.describe(),
+          'Every year on 29 February');
+      expect(
+          graph({'type': 'daily', 'interval': 1},
+              {'type': 'endDate', 'endDate': '2027-02-30'}),
+          isNull);
+      expect(
+          graph({'type': 'daily', 'interval': 1},
+              {'type': 'numbered', 'numberOfOccurrences': 1})?.describe(),
+          'Every day, once',
+          reason: 'not "1 times"');
+    });
   });
 
   group('how a series repeats, as Google keeps it', () {
@@ -191,6 +241,12 @@ void main() {
           reason: 'in any case of letters');
     });
 
+    test('a series of one is said once', () {
+      expect(said(['RRULE:FREQ=DAILY;COUNT=1']), 'Every day, once');
+      expect(said(['RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=2']),
+          'Every week on Tuesday, 2 times');
+    });
+
     test("what the rule leaves to the series' first day is taken from it",
         () {
       final tuesday = DateTime(2026, 10, 6);
@@ -215,6 +271,10 @@ void main() {
 
     test('what it cannot say exactly, it does not say at all', () {
       for (final rule in [
+        // A day that does not exist, and an hour past the day's last.
+        'RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20270231',
+        'RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20270630T990000Z',
+        'RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=31',
         'RRULE:FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1',
         'RRULE:FREQ=HOURLY',
         'RRULE:FREQ=MONTHLY;BYDAY=MO',
@@ -237,6 +297,47 @@ void main() {
       expect(said(['RRULE:FREQ=WEEKLY;BYDAY=TU', 'RDATE:20261111']), isNull,
           reason: 'with days added, the rule is not the whole of it');
       expect(said(const []), isNull);
+    });
+
+    // Google writes a timed series' UNTIL as the end of its last day in the
+    // series' own zone, in UTC. Each of these ends on Monday 28 June 2027
+    // where it was set; read on a phone east of it, the 29th (the review,
+    // from Dallas and Los Angeles on an Eastern phone).
+    test("its last day on the series' own clock, wherever the phone is", () {
+      for (final (zone, until, offset) in [
+        ('America/New_York', '20270629T035959Z', '-04:00'),
+        ('America/Chicago', '20270629T045959Z', '-05:00'),
+        ('America/Los_Angeles', '20270629T065959Z', '-07:00'),
+        ('Asia/Jerusalem', '20270628T205959Z', '+03:00'),
+        ('Pacific/Auckland', '20270628T115959Z', '+12:00'),
+      ]) {
+        expect(
+            MeetingRepeat.fromGoogle({
+              'recurrence': ['RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=$until'],
+              'start': {
+                'dateTime': '2026-10-05T10:00:00$offset',
+                'timeZone': zone,
+              },
+            })?.describe(),
+            'Every week on Monday, until 28 June 2027',
+            reason: zone);
+      }
+      // A zone by Windows' name is read too, as the sheet's other zone line
+      // reads one.
+      expect(
+          MeetingRepeat.fromRule(
+            const ['RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20270629T045959Z'],
+            zone: 'Central Standard Time',
+          )?.describe(),
+          'Every week on Monday, until 28 June 2027');
+      // With no zone known, the phone's clock, as before.
+      final onThePhone = DateTime.utc(2027, 6, 29, 4, 59, 59).toLocal();
+      expect(
+          MeetingRepeat.fromRule(
+            const ['RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20270629T045959Z'],
+            zone: 'Nowhere/Atlantis',
+          )?.until,
+          DateTime(onThePhone.year, onThePhone.month, onThePhone.day));
     });
 
     test("from the series as Google gives it: its rule, and its first day "
@@ -325,11 +426,15 @@ void main() {
           reason: "Outlook's own tentative is said");
     });
 
-    test('a meeting declined or cancelled takes no time: how it would show '
-        'is not said', () {
-      expect(meetingFacts(meeting(response: EventResponse.declined)),
-          'Reminder 15 minutes before');
-      expect(meetingFacts(meeting(cancelled: true, reminder: null)), '');
+    test('a meeting declined or cancelled takes no time: neither how it '
+        'would show nor its reminder is said, since MyEmail does not remind '
+        'of it', () {
+      expect(meetingFacts(meeting(response: EventResponse.declined)), '');
+      expect(meetingFacts(meeting(cancelled: true)), '');
+      expect(
+          meetingFacts(
+              meeting(cancelled: true, private: true, categories: ['Sales'])),
+          'Private · Sales');
     });
   });
 
@@ -380,6 +485,84 @@ void main() {
       expect(await api.seriesRepeat('s1'), isNull);
     });
 
+    /// What [work] printed, as `debugPrint` lines.
+    Future<List<String>> printed(Future<void> Function() work) async {
+      final lines = <String>[];
+      final was = debugPrint;
+      debugPrint = (String? m, {int? wrapWidth}) {
+        if (m != null) lines.add(m);
+      };
+      try {
+        await work();
+      } finally {
+        debugPrint = was;
+      }
+      return lines;
+    }
+
+    test('why the sheet says only "Repeats" is printed, by the kinds of '
+        'what was found and nothing of the meeting', () async {
+      GraphCalendarApi graph(http.Response answer) => GraphCalendarApi(
+            accessToken: ({bool force = false}) async => 'token',
+            httpClient: client((_) => answer),
+            sleep: (_) async {},
+          );
+      expect(
+          await printed(() => graph(json({}, 404)).seriesRepeat('s1')),
+          ['[myemail] series not found for its repeat']);
+      expect(
+          await printed(() => graph(json({
+                'subject': 'Secret board meeting',
+                'recurrence': {
+                  'pattern': {
+                    'type': 'relativeMonthly',
+                    'interval': 1,
+                    'daysOfWeek': ['monday', 'tuesday'],
+                    'index': 'first',
+                  },
+                  'range': {'type': 'noEnd'},
+                },
+              })).seriesRepeat('s1')),
+          [
+            '[myemail] a series repeats in a way the sheet does not say: '
+                'relativeMonthly, noEnd',
+          ]);
+      expect(
+          await printed(() => graph(json({
+                'recurrence': {
+                  'pattern': {
+                    'type': 'weekly',
+                    'interval': 1,
+                    'daysOfWeek': ['tuesday'],
+                  },
+                  'range': {'type': 'noEnd'},
+                },
+              })).seriesRepeat('s1')),
+          isEmpty,
+          reason: 'one that is read says nothing');
+
+      GoogleCalendarApi google(http.Response answer) => GoogleCalendarApi(
+            accessToken: ({bool force = false}) async => 'token',
+            httpClient: client((_) => answer),
+            sleep: (_) async {},
+          );
+      expect(await printed(() => google(json({}, 410)).seriesRepeat('s1')),
+          ['[myemail] series not found for its repeat']);
+      expect(
+          await printed(() => google(json({
+                'id': 's1',
+                'summary': 'Secret board meeting',
+                'recurrence': [
+                  'RRULE:FREQ=MONTHLY;BYDAY=MO,TU;BYSETPOS=1;COUNT=4',
+                ],
+                'start': {'date': '2026-10-05'},
+              })).seriesRepeat('s1')),
+          [
+            '[myemail] a series repeats in a way the sheet does not say: '
+                'MONTHLY BYDAY BYSETPOS, COUNT',
+          ]);
+    });
+
     test('Google: the series on the calendar the meeting is on', () async {
       final api = GoogleCalendarApi(
         accessToken: ({bool force = false}) async => 'token',
@@ -410,12 +593,14 @@ void main() {
         colorValue: 0xFF0F6CBD,
       );
       final calendar = AccountCalendar(
-        accessToken: (id, {bool force = false, List<String>? scopes}) async =>
+        accessToken: (id,
+                {bool force = false, List<String>? scopes}) async =>
             'token',
         accounts: () => const [microsoft],
         httpClient: client((_) => json({
               'recurrence': {
                 'pattern': {'type': 'daily', 'interval': 1},
+                'range': {'type': 'noEnd', 'startDate': '2026-10-06'},
               },
             })),
         sleep: (_) async {},

@@ -1007,14 +1007,23 @@ class GoogleCalendarApi {
   /// How series [seriesId], on [calendarId], repeats, as its rule says:
   /// read from the series itself, since a meeting of it carries only the
   /// series' id. Null where it is gone, or repeats in a way [MeetingRepeat]
-  /// does not say.
+  /// does not say. Why the sheet then says only "Repeats" is printed, by
+  /// the kinds of what was found and nothing of the meeting (the review).
   Future<MeetingRepeat?> seriesRepeat(
     String seriesId, {
     String calendarId = CalendarEvent.mainCalendar,
   }) async {
     final event = await _event(seriesId, calendarId: calendarId);
-    if (event == null || event['status'] == 'cancelled') return null;
-    return MeetingRepeat.fromGoogle(event);
+    if (event == null || event['status'] == 'cancelled') {
+      debugPrint('[myemail] series not found for its repeat');
+      return null;
+    }
+    final repeat = MeetingRepeat.fromGoogle(event);
+    if (repeat == null) {
+      debugPrint('[myemail] a series repeats in a way the sheet does not '
+          'say: ${MeetingRepeat.ruleKinds(event['recurrence'])}');
+    }
+    return repeat;
   }
 
   // --- the account's own copy of a meeting (calendar idea #45) --------------

@@ -39,14 +39,16 @@ String reminderChoice(int? minutes) {
 /// "Reminder 15 minutes before · Busy · Private · Sales". Each is left out
 /// where it has none. [freeOrBusy] is a Google calendar's, which keeps
 /// only whether the time is taken: a meeting answered maybe is busy there,
-/// whatever the app draws it as. How it would show is not said of one
-/// declined or cancelled, which takes no time.
+/// whatever the app draws it as. Neither the reminder nor how it would
+/// show is said of one declined or cancelled, which takes no time and
+/// which MyEmail does not remind of.
 String meetingFacts(CalendarEvent e, {bool freeOrBusy = false}) => [
-      if (e.reminderMinutes case final m? when m >= 0) reminderSaid(m),
-      if (!e.declined && !e.cancelled)
+      if (!e.declined && !e.cancelled) ...[
+        if (e.reminderMinutes case final m? when m >= 0) reminderSaid(m),
         showAsLabel(freeOrBusy && e.showAs != EventShowAs.free
             ? EventShowAs.busy
             : e.showAs),
+      ],
       if (e.isPrivate) 'Private',
       for (final c in e.categories)
         if (c.trim().isNotEmpty) c.trim(),
