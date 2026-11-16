@@ -122,6 +122,9 @@ void main() {
         const DefaultApp(packageName: 'com.example.reader', label: 'Reader'),
       );
       await files.share('/f/a.pdf', mimeType: 'application/pdf');
+      // A meeting's details, or a day's, as text (calendar idea #48).
+      await files.shareText('Supplier call', subject: 'Supplier call');
+      await files.shareText('Tue 24 Nov');
       await files.copyToClipboard('/f/a.pdf', mimeType: null, name: 'a.pdf');
       await files.pasteFiles();
       await files.startDrag('/f/a.pdf', mimeType: 'application/pdf', name: 'a');
@@ -210,6 +213,7 @@ void main() {
           'mailtree/files showDefaults',
           'mailtree/files pickFolder',
           'mailtree/files saveIntoFolder',
+          'mailtree/files shareText',
           'mailtree/speech speak',
           'mailtree/speech hasLanguage',
           'mailtree/installer install',

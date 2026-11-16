@@ -185,7 +185,19 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('agenda-event:h')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('event-accept')), findsNothing);
-    expect(find.byKey(const ValueKey('event-more')), findsNothing);
+    // Its ⋮ only copies and shares it (#48): nothing there changes it.
+    await tester.tap(find.byKey(const ValueKey('event-more')));
+    await tester.pumpAndSettle();
+    expect(
+      [
+        for (final item in tester.widgetList<PopupMenuItem<String>>(
+            find.byType(PopupMenuItem<String>)))
+          item.value,
+      ],
+      ['copy', 'share', 'share-day'],
+    );
+    await tester.tapAt(const Offset(4, 4));
+    await tester.pumpAndSettle();
     Navigator.of(tester.element(find.text('Holiday').last)).pop();
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('agenda-event:m')));

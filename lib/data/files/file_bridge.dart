@@ -253,6 +253,11 @@ abstract class FileBridge {
   /// The share sheet.
   Future<void> share(String path, {String? mimeType});
 
+  /// The share sheet, for [text] as plain text, with [subject] for an app
+  /// that takes one (an email's): a meeting's details, or a day's
+  /// meetings (calendar idea #48).
+  Future<void> shareText(String text, {String? subject});
+
   /// Put the file itself on the clipboard, so it pastes into Files or Drive
   /// as a file rather than as its name.
   Future<void> copyToClipboard(
@@ -395,6 +400,10 @@ class AndroidFileBridge implements FileBridge {
       _channel.invokeMethod<void>('share', {'path': path, 'mime': mimeType});
 
   @override
+  Future<void> shareText(String text, {String? subject}) => _channel
+      .invokeMethod<void>('shareText', {'text': text, 'subject': subject});
+
+  @override
   Future<void> copyToClipboard(
     String path, {
     String? mimeType,
@@ -514,6 +523,13 @@ class FakeFileBridge implements FileBridge {
   @override
   Future<void> share(String path, {String? mimeType}) async =>
       shared.add(path);
+
+  /// Each text handed to the share sheet, with its subject (#48).
+  final List<({String text, String? subject})> sharedTexts = [];
+
+  @override
+  Future<void> shareText(String text, {String? subject}) async =>
+      sharedTexts.add((text: text, subject: subject));
 
   @override
   Future<void> copyToClipboard(

@@ -12,6 +12,7 @@ import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
 import '../../domain/meeting_links.dart';
+import '../../domain/meeting_repeat.dart';
 import '../../domain/series_repeat.dart';
 import '../../domain/text_direction.dart';
 import '../answer_limit.dart';
@@ -753,6 +754,50 @@ class GraphCalendarApi {
     if (start == null || end == null) return null;
     return (start: start, end: end, allDay: allDay);
   }
+
+  // --- what a meeting's sheet reads (calendar idea #44) ----------------------
+
+  /// How series [seriesId] repeats, as its own recurrence says: the one
+  /// thing asked of it. Null where the series is gone, or repeats in a way
+  /// [MeetingRepeat] does not say.
+  Future<MeetingRepeat?> seriesRepeat(String seriesId) async {
+    final json = await _event(seriesId, select: 'recurrence');
+    return json == null ? null : MeetingRepeat.fromGraph(json['recurrence']);
+  }
+
+  // --- the account's own copy of a meeting (calendar idea #45) --------------
+
+  /// Change [eventId], the account's copy of someone else's meeting: when
+  /// it reminds of it, and how it shows the account. Exchange keeps both
+  /// for each person on a meeting and tells nobody of a change to them;
+  /// nothing else of the meeting is sent. One gone meanwhile is
+  /// [EventGone].
+  Future<void> changeOwnCopy(
+    String eventId, {
+    Reminder? reminder,
+    EventShowAs? showAs,
+  }) async {
+    final fields = ownCopyJson(reminder: reminder, showAs: showAs);
+    if (fields.isEmpty) return;
+    final body = jsonEncode(fields);
+    final response = await _exchange(() => _patch(eventId, body));
+    if (response.statusCode == 404) throw const EventGone();
+    if (response.statusCode >= 400) throw _failureFor(response);
+  }
+
+  /// What [changeOwnCopy] patches: the reminder and the show as, and only
+  /// those given.
+  static Map<String, Object?> ownCopyJson({
+    Reminder? reminder,
+    EventShowAs? showAs,
+  }) =>
+      {
+        if (reminder != null) ...{
+          'isReminderOn': reminder.isOn,
+          if (reminder.isOn) 'reminderMinutesBeforeStart': reminder.minutes,
+        },
+        if (showAs != null) 'showAs': graphShowAs(showAs),
+      };
 
   /// A meeting as Graph gives it, asked for with [meetingFields] in UTC; null
   /// for one with no id or no start.

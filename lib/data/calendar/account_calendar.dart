@@ -8,6 +8,7 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
+import '../../domain/meeting_repeat.dart';
 import '../auth/google_oauth.dart' show GoogleOAuth;
 import '../auth/microsoft_oauth.dart'
     show MicrosoftOAuth, SignInExpired, SignInNeedsConsent;
@@ -823,6 +824,77 @@ class AccountCalendar {
           'Google Calendar has no way to forward an invitation. Ask the '
           'organiser to add them.',
         );
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  // --- what a meeting's sheet reads (calendar idea #44) ----------------------
+
+  /// How [event]'s series repeats on [account]'s calendar; see
+  /// `ReadsMeetingRepeat.meetingRepeat`. A meeting on its own asks nothing.
+  Future<MeetingRepeat?> meetingRepeat(
+    Account account,
+    CalendarEvent event,
+  ) async {
+    final series = event.seriesId;
+    if (series == null) return null;
+    if (account.isShared) throw const CalendarUnavailable(_sharedOnly);
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          return await api.seriesRepeat(series);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          return await api.seriesRepeat(series, calendarId: event.calendarId);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  // --- the account's own copy of a meeting (calendar idea #45) --------------
+
+  /// Change [account]'s own copy of [event], someone else's meeting; see
+  /// `ChangesOwnCopy.changeOwnCopy`. For [wholeSeries], the series'.
+  Future<void> changeOwnCopy(
+    Account account,
+    CalendarEvent event, {
+    Reminder? reminder,
+    EventShowAs? showAs,
+    bool wholeSeries = false,
+  }) async {
+    // A change to one's own meeting is Edit's, which tells everyone on it.
+    if (isOwnEvent(event)) {
+      throw ArgumentError('This is your own meeting: Edit changes it.');
+    }
+    if (account.isShared) throw const CalendarUnavailable(_sharedOnly);
+    final id = _target(event, wholeSeries);
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          await api.changeOwnCopy(id, reminder: reminder, showAs: showAs);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          await api.changeOwnCopy(id,
+              reminder: reminder,
+              showAs: showAs,
+              calendarId: event.calendarId);
+        } finally {
+          api.close();
+        }
       case MailProvider.gmail:
         throw const CalendarUnavailable(_appPasswordOnly);
     }

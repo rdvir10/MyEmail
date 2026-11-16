@@ -13,6 +13,7 @@ import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
 import '../../domain/series_repeat.dart';
 import '../../domain/meeting_links.dart';
+import '../../domain/meeting_repeat.dart';
 import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
 import '../imap/imap_mapping.dart' show htmlToText;
@@ -999,6 +1000,42 @@ class GoogleCalendarApi {
       end: to,
       allDay: start is Map && start['date'] is String,
     );
+  }
+
+  // --- what a meeting's sheet reads (calendar idea #44) ----------------------
+
+  /// How series [seriesId], on [calendarId], repeats, as its rule says:
+  /// read from the series itself, since a meeting of it carries only the
+  /// series' id. Null where it is gone, or repeats in a way [MeetingRepeat]
+  /// does not say.
+  Future<MeetingRepeat?> seriesRepeat(
+    String seriesId, {
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async {
+    final event = await _event(seriesId, calendarId: calendarId);
+    if (event == null || event['status'] == 'cancelled') return null;
+    return MeetingRepeat.fromGoogle(event);
+  }
+
+  // --- the account's own copy of a meeting (calendar idea #45) --------------
+
+  /// Change [eventId], the account's copy of someone else's meeting on
+  /// [calendarId]: its reminder, and whether it shows the time as taken,
+  /// which Google keeps for each guest. Nothing else of the meeting is
+  /// sent, and Google is told to write to nobody.
+  Future<void> changeOwnCopy(
+    String eventId, {
+    Reminder? reminder,
+    EventShowAs? showAs,
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async {
+    final fields = {
+      if (reminder != null) 'reminders': remindersJson(reminder),
+      if (showAs != null) 'transparency': googleTransparency(showAs),
+    };
+    if (fields.isEmpty) return;
+    await _patchEvent(eventId, fields,
+        calendarId: calendarId, sendUpdates: 'none');
   }
 
   /// A patch to [eventId] with [fields], Google told to write to everyone
