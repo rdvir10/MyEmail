@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/calendar_event.dart';
 import '../../domain/meeting_alerts.dart' show nextMeeting;
+import '../../domain/text_direction.dart' show firstStrongDirection;
 import '../../state/calendar_view_providers.dart';
 import '../../state/meeting_alert_providers.dart';
 import '../messages/date_format.dart';
@@ -264,14 +265,21 @@ class _MyDayEvent extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      _titleOf(e),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontWeight: next ? FontWeight.w700 : FontWeight.w500,
-                        decoration:
-                            e.declined ? TextDecoration.lineThrough : null,
+                    // By its first letter, as its place is (#100): a
+                    // Hebrew title reads from the right.
+                    SizedBox(
+                      width: double.infinity,
+                      child: Text(
+                        _titleOf(e),
+                        textDirection: firstStrongDirection(_titleOf(e)),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontWeight:
+                              next ? FontWeight.w700 : FontWeight.w500,
+                          decoration:
+                              e.declined ? TextDecoration.lineThrough : null,
+                        ),
                       ),
                     ),
                     // Its place a tap from directions (#40); the rest of

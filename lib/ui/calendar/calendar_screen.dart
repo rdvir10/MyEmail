@@ -19,6 +19,7 @@ import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/internet_calendar.dart' show isInternetAccount;
 import '../../domain/meeting_alerts.dart' show MeetingRef;
 import '../../domain/search_refinement.dart' show weekStartFor;
+import '../../domain/text_direction.dart' show firstStrongDirection;
 import '../../domain/time_zones.dart';
 import '../../state/calendar_view_providers.dart';
 import '../../state/meeting_providers.dart' show workWeekProvider;
@@ -26,17 +27,21 @@ import '../../state/providers.dart';
 import '../accounts/google_sign_in_screen.dart';
 import '../accounts/microsoft_sign_in_screen.dart';
 import '../common/bottom_message.dart';
+import '../common/tap_target.dart';
 import '../meetings/new_meeting_screen.dart' show openNewMeeting;
 import '../messages/date_format.dart';
 import '../messages/invite_answers.dart' show askHowToAnswer;
 import '../../state/date_providers.dart' show deviceZoneProvider;
+import 'agenda_row_parts.dart';
 import 'calendar_keys.dart';
 import 'calendar_search_screen.dart';
+import 'calendar_title.dart';
 import 'event_actions.dart';
 import 'event_colours.dart';
 import 'event_notes.dart';
 import 'invitation_clearing.dart' show InvitationClearing;
 import 'meeting_mail.dart';
+import 'meeting_ticker.dart';
 import 'place_link.dart';
 import 'waiting_answers.dart';
 
@@ -270,19 +275,50 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
     if (pager != null) pager.turn(direction);
   }
 
-  String _title(CalendarViewMode mode, CalendarPage page) {
-    if (page.month case final month?) {
-      return '${_months[month.month - 1]} ${month.year}';
-    }
-    final from = mode == CalendarViewMode.agenda ? _day : page.days.first;
-    final last = mode == CalendarViewMode.agenda ? _day : page.days.last;
-    if (from.month == last.month && from.year == last.year) {
-      return '${_months[from.month - 1]} ${from.year}';
-    }
+  /// The title's words, longest first, each shorter for less room (#88):
+  /// "November 2026", "Nov 2026", "Nov". Over two months, as three days at
+  /// a month's end are, the year while it fits, then both months, then the
+  /// first alone: "Nov – Dec 2026", "Nov–Dec 2026", "Nov – Dec", "Nov–Dec",
+  /// "Nov". Over two years, "Dec 2026 – Jan 2027" where it fits, and
+  /// otherwise no year rather than one of the two: "Dec – Jan".
+  List<String> _titles(CalendarViewMode mode, CalendarPage page) {
     String short(DateTime d) => _months[d.month - 1].substring(0, 3);
-    return from.year == last.year
-        ? '${short(from)} – ${short(last)} ${last.year}'
-        : '${short(from)} ${from.year} – ${short(last)} ${last.year}';
+    final month = page.month;
+    final from =
+        month ?? (mode == CalendarViewMode.agenda ? _day : page.days.first);
+    final last =
+        month ?? (mode == CalendarViewMode.agenda ? _day : page.days.last);
+    if (from.month == last.month && from.year == last.year) {
+      return [
+        '${_months[from.month - 1]} ${from.year}',
+        '${short(from)} ${from.year}',
+        short(from),
+      ];
+    }
+    return [
+      if (from.year != last.year)
+        '${short(from)} ${from.year} – ${short(last)} ${last.year}'
+      else ...[
+        '${short(from)} – ${short(last)} ${last.year}',
+        '${short(from)}–${short(last)} ${last.year}',
+      ],
+      '${short(from)} – ${short(last)}',
+      '${short(from)}–${short(last)}',
+      short(from),
+    ];
+  }
+
+  /// What More says for ‹ and › on a phone, where they are not in the bar:
+  /// as far as each goes in [mode] (#88).
+  (String, String) _turnWords(CalendarViewMode mode, WeekSpan span) {
+    final what = switch (mode) {
+      CalendarViewMode.day => 'Day',
+      CalendarViewMode.month => 'Month',
+      CalendarViewMode.week when span == WeekSpan.threeDays => '3 days',
+      // A week, and in Agenda ‹ › go a week.
+      _ => 'Week',
+    };
+    return ('$what before', '$what after');
   }
 
   /// A new meeting from the view: at the next hour on a page with today,
@@ -439,42 +475,39 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
         value?.reading == false &&
         DateTime.now().difference(keptAt) > const Duration(minutes: 5);
 
+    // Once there is a choice: more than one account, an account with more
+    // than its main calendar, or a calendar from a link.
+    final choosing = accounts.length > 1 ||
+        (load.value?.calendars.length ?? 0) > accounts.length ||
+        ref.watch(internetCalendarsProvider).isNotEmpty;
+    // On a phone the title needs the room of three buttons (#88): ‹ › and
+    // Calendars shown go under More, where they say what they do. A swipe
+    // turns the page in Day, Week and Month, and the Agenda scrolls.
+    final (before, after) = _turnWords(mode, span);
+
     final screen = Scaffold(
       appBar: AppBar(
         centerTitle: false,
-        title: InkWell(
+        title: CalendarTitle(
           key: const ValueKey('calendar-title'),
+          forms: _titles(mode, page),
           onTap: _pickDate,
-          borderRadius: BorderRadius.circular(8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Flexible(
-                  child: Text(
-                    _title(mode, page),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                const Icon(Icons.arrow_drop_down),
-              ],
-            ),
-          ),
         ),
         actions: [
-          IconButton(
-            key: const ValueKey('calendar-previous'),
-            tooltip: 'Back',
-            icon: const Icon(Icons.chevron_left),
-            onPressed: () => _move(mode, -1),
-          ),
-          IconButton(
-            key: const ValueKey('calendar-next'),
-            tooltip: 'On',
-            icon: const Icon(Icons.chevron_right),
-            onPressed: () => _move(mode, 1),
-          ),
+          if (wide) ...[
+            IconButton(
+              key: const ValueKey('calendar-previous'),
+              tooltip: 'Back',
+              icon: const Icon(Icons.chevron_left),
+              onPressed: () => _move(mode, -1),
+            ),
+            IconButton(
+              key: const ValueKey('calendar-next'),
+              tooltip: 'On',
+              icon: const Icon(Icons.chevron_right),
+              onPressed: () => _move(mode, 1),
+            ),
+          ],
           IconButton(
             key: const ValueKey('calendar-search'),
             tooltip: 'Search the calendar',
@@ -487,11 +520,7 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
             icon: const Icon(Icons.today_outlined),
             onPressed: () => _jump(DateTime.now()),
           ),
-          // Once there is a choice: more than one account, an account with
-          // more than its main calendar, or a calendar from a link.
-          if (accounts.length > 1 ||
-              (load.value?.calendars.length ?? 0) > accounts.length ||
-              ref.watch(internetCalendarsProvider).isNotEmpty)
+          if (wide && choosing)
             IconButton(
               key: const ValueKey('calendar-accounts'),
               tooltip: 'Calendars shown',
@@ -503,6 +532,12 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
             tooltip: 'More',
             onSelected: (choice) {
               switch (choice) {
+                case 'previous':
+                  _move(mode, -1);
+                case 'next':
+                  _move(mode, 1);
+                case 'accounts':
+                  _chooseCalendars(accounts);
                 case 'declined':
                   ref.read(calendarPrefsProvider.notifier).set(
                       prefs.copyWith(showDeclined: !prefs.showDeclined));
@@ -523,6 +558,25 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
               }
             },
             itemBuilder: (context) => [
+              if (!wide) ...[
+                PopupMenuItem(
+                  key: const ValueKey('calendar-previous'),
+                  value: 'previous',
+                  child: Text(before),
+                ),
+                PopupMenuItem(
+                  key: const ValueKey('calendar-next'),
+                  value: 'next',
+                  child: Text(after),
+                ),
+                if (choosing)
+                  const PopupMenuItem(
+                    key: ValueKey('calendar-accounts'),
+                    value: 'accounts',
+                    child: Text('Calendars shown'),
+                  ),
+                const PopupMenuDivider(),
+              ],
               for (final s in WeekSpan.values)
                 CheckedPopupMenuItem(
                   key: ValueKey('calendar-span:${s.name}'),
@@ -558,8 +612,12 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-            child: SegmentedButton<CalendarViewMode>(
+            // 4 above and below less, for the 4 more each way the views
+            // answer a tap over (#90): drawn where they were.
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+            child: TapTarget(
+              oneButton: false,
+              child: SegmentedButton<CalendarViewMode>(
               showSelectedIcon: false,
               segments: [
                 for (final m in CalendarViewMode.values)
@@ -576,6 +634,7 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
               ],
               selected: {mode},
               onSelectionChanged: (chosen) => _setMode(chosen.first),
+              ),
             ),
           ),
           if (value?.reading == true && value?.events.isNotEmpty == true)
@@ -723,7 +782,10 @@ class _AccountCalendarsShown extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final listed = ref.watch(accountCalendarsProvider(account.id));
-    const inset = EdgeInsets.only(left: 56, right: 16);
+    // Indented under the account at the start, and at the end as far in as
+    // the account's own row (Material's 24), so the tick boxes line up
+    // (#100).
+    const inset = EdgeInsetsDirectional.only(start: 56, end: 24);
     return switch (listed) {
       AsyncData(value: final calendars) when calendars.length > 1 => Column(
           children: [
@@ -1215,6 +1277,13 @@ class _AgendaDay extends StatelessWidget {
         : _sameDay(day, _plus(today, 1))
             ? 'Tomorrow · $name'
             : name;
+    Widget row(CalendarEvent e, [DateTime? now]) => _AgendaRow(
+          event: e,
+          day: day,
+          colour: colours[e] ?? theme.colorScheme.primary,
+          onTap: () => onTap(e),
+          now: now,
+        );
     return Column(
       key: ValueKey('agenda-day:${_dayKey(day)}'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1240,13 +1309,18 @@ class _AgendaDay extends StatelessWidget {
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),
           ),
-        for (final e in events)
-          _AgendaRow(
-            event: e,
-            day: day,
-            colour: colours[e] ?? theme.colorScheme.primary,
-            onTap: () => onTap(e),
-          ),
+        if (_sameDay(day, today) && events.isNotEmpty)
+          // Where you are in the day (#91): today's rows go by the time,
+          // looked at again as the next meeting's "in 13 min" over the
+          // mail is.
+          MeetingTicker(
+            builder: (context, _, now) => Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [for (final e in events) row(e, now)],
+            ),
+          )
+        else
+          for (final e in events) row(e),
       ],
     );
   }
@@ -1258,12 +1332,19 @@ class _AgendaRow extends StatelessWidget {
     required this.day,
     required this.colour,
     required this.onTap,
+    this.now,
   });
 
   final CalendarEvent event;
   final DateTime day;
   final Color colour;
   final VoidCallback onTap;
+
+  /// The time, for a row of today's in the Agenda (#91): what is over is
+  /// dimmed, as My Day dims it, and what is on says "Now" under its times.
+  /// A whole day is neither. Null in the lists that draw the row too, the
+  /// waiting list and a day under the month, where nothing is.
+  final DateTime? now;
 
   @override
   Widget build(BuildContext context) {
@@ -1284,82 +1365,133 @@ class _AgendaRow extends StatelessWidget {
                 ? (endsToday ? clock(e.end) : '…')
                 : clock(e.end),
           );
-    final subtitle = [
+    // Where it is, which gives way on a short line, and how you answered,
+    // which never does (#90).
+    final place = [
       if (e.location.isNotEmpty) e.location,
       if (e.joinUrl != null && e.location.isEmpty) 'Online',
+    ].join(' · ');
+    final answer = [
       if (e.response == EventResponse.tentative) 'Tentative',
       if (e.response == EventResponse.notResponded) 'Not answered',
       if (e.declined) 'Declined',
       if (e.cancelled) 'Cancelled',
     ].join(' · ');
     final faint = e.showAs == EventShowAs.free || e.declined;
-    return InkWell(
+    final title = e.title.isEmpty ? '(No title)' : e.title;
+    // As wide as the times need at this text size and clock (#90).
+    final times = agendaTimesWidth(context);
+    final now = this.now;
+    final over = now != null && !e.allDay && !e.end.isAfter(now);
+    final on = now != null &&
+        !e.allDay &&
+        !e.start.isAfter(now) &&
+        e.end.isAfter(now);
+    final row = InkWell(
       key: ValueKey('agenda-event:${e.id}'),
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              width: 64,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(first, style: theme.textTheme.bodyMedium),
-                  if (second != null) Text(second, style: muted),
-                ],
-              ),
-            ),
-            Container(
-              width: 4,
-              height: 40,
-              decoration: BoxDecoration(
-                color: faint ? colour.withAlpha(110) : colour,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    e.title.isEmpty ? '(No title)' : e.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodyLarge?.copyWith(
-                      decoration: e.cancelled || e.declined
-                          ? TextDecoration.lineThrough
-                          : null,
-                      color: e.declined
-                          ? theme.colorScheme.onSurfaceVariant
-                          : null,
-                    ),
+        padding: const EdgeInsets.symmetric(
+            horizontal: agendaRowInset, vertical: 8),
+        child: ConstrainedBox(
+          // The colour's bar is never shorter than its 40 of old.
+          constraints: const BoxConstraints(minHeight: 40),
+          child: Stack(
+            children: [
+              // As tall as the row, however many lines its words take.
+              PositionedDirectional(
+                start: times,
+                top: 0,
+                bottom: 0,
+                width: 4,
+                child: DecoratedBox(
+                  key: ValueKey('agenda-bar:${e.id}'),
+                  decoration: BoxDecoration(
+                    color: faint ? agendaFaintBar(colour, theme) : colour,
+                    borderRadius: BorderRadius.circular(2),
                   ),
-                  if (subtitle.isNotEmpty)
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: muted,
-                    ),
-                ],
-              ),
-            ),
-            if (e.joinUrl != null)
-              Padding(
-                padding: const EdgeInsets.only(left: 8),
-                child: Icon(
-                  Icons.videocam_outlined,
-                  size: 18,
-                  color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
-          ],
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: times,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(first,
+                            maxLines: 1,
+                            softWrap: false,
+                            style: theme.textTheme.bodyMedium),
+                        if (second != null)
+                          Text(second,
+                              maxLines: 1, softWrap: false, style: muted),
+                        if (on)
+                          Text(
+                            'Now',
+                            maxLines: 1,
+                            softWrap: false,
+                            style: muted?.copyWith(
+                              color: theme.colorScheme.primary,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: agendaBarAndRoom),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // As wide as the room, laid out by its first
+                        // letter, as a place is (#100): a Hebrew title
+                        // reads from the right.
+                        SizedBox(
+                          width: double.infinity,
+                          child: Text(
+                            title,
+                            textDirection: firstStrongDirection(title),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodyLarge?.copyWith(
+                              decoration: e.cancelled || e.declined
+                                  ? TextDecoration.lineThrough
+                                  : null,
+                              color: e.declined
+                                  ? theme.colorScheme.onSurfaceVariant
+                                  : null,
+                            ),
+                          ),
+                        ),
+                        if (place.isNotEmpty || answer.isNotEmpty)
+                          AgendaWhere(
+                              place: place,
+                              answer: answer,
+                              reads: firstStrongDirection(title),
+                              style: muted),
+                      ],
+                    ),
+                  ),
+                  if (e.joinUrl != null)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Icon(
+                        Icons.videocam_outlined,
+                        size: 18,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
+    // What is over stays, faded, as My Day shows it.
+    return now == null ? row : Opacity(opacity: over ? 0.5 : 1, child: row);
   }
 }
 
@@ -1659,16 +1791,19 @@ class _DayList extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 88),
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 6, 8, 0),
+          // 4 less above, for the 4 more Open day answers a tap over (#90).
+          padding: const EdgeInsets.fromLTRB(16, 2, 8, 0),
           child: Row(
             children: [
               Expanded(
                 child: Text(formatDay(day), style: theme.textTheme.labelLarge),
               ),
-              TextButton(
-                key: const ValueKey('month-open-day'),
-                onPressed: onOpen,
-                child: const Text('Open day'),
+              TapTarget(
+                child: TextButton(
+                  key: const ValueKey('month-open-day'),
+                  onPressed: onOpen,
+                  child: const Text('Open day'),
+                ),
               ),
             ],
           ),
@@ -2709,10 +2844,18 @@ class _EventDetails extends StatelessWidget {
     }
 
     final counts = answerCounts(e, email);
+    // Those invited, as the answers count them: not you, who organised it
+    // (#100). None where you organised it from another of your addresses
+    // and nobody else is on it: then there is nothing to count.
+    final invitedCount = counts.accepted +
+        counts.tentative +
+        counts.declined +
+        counts.notAnswered;
+    final tracked = own && others && invitedCount > 0;
     final waiting = notAnswered(e, email);
     Widget answerButton(InviteResponse r, String label, String key) {
       final chosen = e.response == eventResponseFor(r);
-      return Builder(builder: (button) {
+      return TapTarget(child: Builder(builder: (button) {
         // Asked first, as Outlook asks, from a menu under the button while
         // the sheet is still up; answered once it has closed.
         Future<void> tap() async {
@@ -2741,7 +2884,7 @@ class _EventDetails extends StatelessWidget {
                 onPressed: tap,
                 child: Text(label),
               );
-      });
+      }));
     }
 
     return SafeArea(
@@ -2846,10 +2989,12 @@ class _EventDetails extends StatelessWidget {
               Text(answer, style: muted),
             ],
             if (invited && reachable) ...[
-              const SizedBox(height: 12),
+              // Each button 48 to tap (#90), 4 more above and below than
+              // the 40 it had: drawn where it was, and rows of them as far
+              // apart to the eye.
+              const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
-                runSpacing: 8,
                 children: [
                   answerButton(InviteResponse.accepted, 'Accept', 'event-accept'),
                   answerButton(InviteResponse.tentative, 'Maybe', 'event-tentative'),
@@ -2861,40 +3006,47 @@ class _EventDetails extends StatelessWidget {
                 e.webLink != null ||
                 (own && reachable) ||
                 soon) ...[
-              const SizedBox(height: 16),
+              SizedBox(height: invited && reachable ? 8 : 12),
               Wrap(
                 spacing: 8,
-                runSpacing: 8,
                 children: [
                   if (e.joinUrl != null)
-                    FilledButton.icon(
-                      key: const ValueKey('event-join'),
-                      onPressed: () => open(e.joinUrl!),
-                      icon: const Icon(Icons.videocam_outlined),
-                      label: const Text('Join'),
+                    TapTarget(
+                      child: FilledButton.icon(
+                        key: const ValueKey('event-join'),
+                        onPressed: () => open(e.joinUrl!),
+                        icon: const Icon(Icons.videocam_outlined),
+                        label: const Text('Join'),
+                      ),
                     ),
                   if (own && reachable && !e.cancelled)
-                    OutlinedButton.icon(
-                      key: const ValueKey('event-edit'),
-                      onPressed: () => then(editEvent),
-                      icon: const Icon(Icons.edit_outlined),
-                      label: const Text('Edit'),
+                    TapTarget(
+                      child: OutlinedButton.icon(
+                        key: const ValueKey('event-edit'),
+                        onPressed: () => then(editEvent),
+                        icon: const Icon(Icons.edit_outlined),
+                        label: const Text('Edit'),
+                      ),
                     ),
                   if (soon && account != null)
-                    OutlinedButton.icon(
-                      key: const ValueKey('event-late'),
-                      onPressed: () => then(runningLate),
-                      icon: const Icon(Icons.schedule),
-                      label: const Text('Running late'),
+                    TapTarget(
+                      child: OutlinedButton.icon(
+                        key: const ValueKey('event-late'),
+                        onPressed: () => then(runningLate),
+                        icon: const Icon(Icons.schedule),
+                        label: const Text('Running late'),
+                      ),
                     ),
                   if (e.webLink != null)
-                    OutlinedButton.icon(
-                      key: const ValueKey('event-web'),
-                      onPressed: () => open(e.webLink!),
-                      icon: const Icon(Icons.open_in_new),
-                      label: Text(account?.provider == MailProvider.gmail
-                          ? 'Open in Google Calendar'
-                          : 'Open in Outlook'),
+                    TapTarget(
+                      child: OutlinedButton.icon(
+                        key: const ValueKey('event-web'),
+                        onPressed: () => open(e.webLink!),
+                        icon: const Icon(Icons.open_in_new),
+                        label: Text(account?.provider == MailProvider.gmail
+                            ? 'Open in Google Calendar'
+                            : 'Open in Outlook'),
+                      ),
                     ),
                 ],
               ),
@@ -2907,11 +3059,15 @@ class _EventDetails extends StatelessWidget {
             if (e.attendees.isNotEmpty) ...[
               const SizedBox(height: 16),
               Text(
-                '${e.attendees.length} '
-                '${e.attendees.length == 1 ? 'person' : 'people'}',
+                tracked
+                    ? invitedCount == 1
+                        ? '1 person invited'
+                        : '$invitedCount people invited'
+                    : '${e.attendees.length} '
+                        '${e.attendees.length == 1 ? 'person' : 'people'}',
                 style: theme.textTheme.labelLarge,
               ),
-              if (own && others) ...[
+              if (tracked) ...[
                 Text(
                   describeAnswers(counts),
                   key: const ValueKey('event-answers'),
@@ -2954,14 +3110,16 @@ class _EventDetails extends StatelessWidget {
             // The invitation and the answers about it, from its account's
             // mail.
             if (account != null && e.title.trim().isNotEmpty) ...[
-              const SizedBox(height: 8),
+              const SizedBox(height: 4),
               Align(
                 alignment: AlignmentDirectional.centerStart,
-                child: TextButton.icon(
-                  key: const ValueKey('event-mail-about'),
-                  onPressed: () => showMeetingMail(context, e),
-                  icon: const Icon(Icons.forum_outlined, size: 18),
-                  label: const Text('Mail about this meeting'),
+                child: TapTarget(
+                  child: TextButton.icon(
+                    key: const ValueKey('event-mail-about'),
+                    onPressed: () => showMeetingMail(context, e),
+                    icon: const Icon(Icons.forum_outlined, size: 18),
+                    label: const Text('Mail about this meeting'),
+                  ),
                 ),
               ),
             ],

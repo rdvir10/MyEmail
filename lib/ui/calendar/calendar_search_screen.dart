@@ -3,7 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/calendar_event.dart';
 import '../../domain/calendar_finding.dart';
+import '../../domain/text_direction.dart' show firstStrongDirection;
 import '../../state/calendar_view_providers.dart';
+import '../../state/meeting_alert_providers.dart'
+    show meetingClockProvider;
 import '../messages/date_format.dart';
 import 'calendar_screen.dart' show showEventDetails;
 import 'event_colours.dart';
@@ -50,7 +53,21 @@ class _CalendarSearchScreenState extends ConsumerState<CalendarSearchScreen> {
       calendars: load.value?.calendars ?? const {},
     );
     final query = _query.text;
-    final found = searchEvents(load.value?.events ?? const [], query, DateTime.now());
+    final now = ref.watch(meetingClockProvider)();
+    final found = searchEvents(load.value?.events ?? const [], query, now);
+    // What is over: this morning's under "Earlier today", between those to
+    // come and the days before (#100).
+    final today = DateTime(now.year, now.month, now.day);
+    final gone = [
+      ('Earlier today', [
+        for (final e in found.past)
+          if (!e.start.isBefore(today)) e,
+      ]),
+      ('Before today', [
+        for (final e in found.past)
+          if (e.start.isBefore(today)) e,
+      ]),
+    ];
     final reading = load.isLoading || (load.value?.reading ?? false);
     final muted = theme.textTheme.bodyMedium
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
@@ -103,19 +120,22 @@ class _CalendarSearchScreenState extends ConsumerState<CalendarSearchScreen> {
                   children: [
                     for (final e in found.coming)
                       _Result(event: e, colour: colours[e], onTap: () => open(e)),
-                    if (found.past.isNotEmpty) ...[
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-                        child: Text(
-                          'Before today',
-                          style: theme.textTheme.labelMedium
-                              ?.copyWith(color: theme.colorScheme.primary),
+                    for (final (heading, events) in gone)
+                      if (events.isNotEmpty) ...[
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                          child: Text(
+                            heading,
+                            style: theme.textTheme.labelMedium
+                                ?.copyWith(color: theme.colorScheme.primary),
+                          ),
                         ),
-                      ),
-                      for (final e in found.past)
-                        _Result(
-                            event: e, colour: colours[e], onTap: () => open(e)),
-                    ],
+                        for (final e in events)
+                          _Result(
+                              event: e,
+                              colour: colours[e],
+                              onTap: () => open(e)),
+                      ],
                   ],
                 ),
     );
@@ -134,6 +154,7 @@ class _Result extends StatelessWidget {
     final theme = Theme.of(context);
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
     final e = event;
+    final title = e.title.trim().isEmpty ? '(No title)' : e.title.trim();
     final when = e.allDay
         ? '${formatDay(e.start)}, all day'
         : '${formatDay(e.start)}, ${formatClock(e.start, use24h: use24h)}';
@@ -147,10 +168,16 @@ class _Result extends StatelessWidget {
           borderRadius: BorderRadius.circular(2),
         ),
       ),
-      title: Text(
-        e.title.trim().isEmpty ? '(No title)' : e.title.trim(),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
+      // By its first letter, as its place is (#100): a Hebrew title reads
+      // from the right.
+      title: SizedBox(
+        width: double.infinity,
+        child: Text(
+          title,
+          textDirection: firstStrongDirection(title),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
       ),
       subtitle: Text(
         [when, if (e.location.trim().isNotEmpty) e.location.trim()].join(' · '),

@@ -424,11 +424,17 @@ void main() {
       final t = today();
       final next = DateTime(t.year, t.month + 1);
 
+      // A phone's title has the month short, as room allows (#88).
+      Finder title(DateTime month) => find.descendant(
+            of: find.byKey(const ValueKey('calendar-title')),
+            matching:
+                find.textContaining(months[month.month - 1].substring(0, 3)),
+          );
+
       await press(tester, LogicalKeyboardKey.arrowRight);
-      expect(find.text('${months[next.month - 1]} ${next.year}'),
-          findsOneWidget);
+      expect(title(next), findsOneWidget);
       await press(tester, LogicalKeyboardKey.keyT);
-      expect(find.text('${months[t.month - 1]} ${t.year}'), findsOneWidget);
+      expect(title(t), findsOneWidget);
       await press(tester, LogicalKeyboardKey.keyD);
       expect(c.read(calendarViewProvider), CalendarViewMode.day);
       expect(dayShown(t), findsOneWidget);

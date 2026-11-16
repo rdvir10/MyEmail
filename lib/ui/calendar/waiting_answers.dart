@@ -13,8 +13,10 @@ import '../../domain/calendar_invite.dart' show InviteResponse;
 import '../../state/calendar_view_providers.dart';
 import '../../state/message_keeping.dart' show notRetried;
 import '../../state/providers.dart';
+import '../common/tap_target.dart';
 import '../messages/date_format.dart';
 import '../messages/invite_answers.dart' show askHowToAnswer;
+import 'agenda_row_parts.dart' show agendaTitleIndent;
 import 'calendar_screen.dart' show agendaRow, showEventDetails;
 import 'event_actions.dart' show answerEvent;
 import 'event_colours.dart';
@@ -518,15 +520,17 @@ class _Waiting extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // Under the title, past the time and the colour's bar.
-    const indent = EdgeInsetsDirectional.fromSTEB(96, 0, 16, 8);
+    // Under the title, past the time and the colour's bar, as wide as the
+    // row has them (#90).
+    final start = agendaTitleIndent(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         agendaRow(event, day: day, colour: colour, onTap: onOpen),
         if (event.seriesId != null)
           Padding(
-            padding: indent,
+            // 4 less under it, for the 4 more the answers take above.
+            padding: EdgeInsetsDirectional.fromSTEB(start, 0, 16, 4),
             child: Text(
               more == 0 ? 'Repeats' : 'Repeats · $more more not answered',
               style: theme.textTheme.bodySmall
@@ -534,21 +538,25 @@ class _Waiting extends StatelessWidget {
             ),
           ),
         Padding(
-          padding: indent,
+          // Each answer 48 to tap (#90), 4 more above and below than it
+          // had: 4 less under them, and rows of them as far apart.
+          padding: EdgeInsetsDirectional.fromSTEB(start, 0, 16, 4),
           child: Wrap(
             spacing: 8,
-            runSpacing: 8,
             children: [
               for (final (response, label, key) in const [
                 (InviteResponse.accepted, 'Accept', 'waiting-accept'),
                 (InviteResponse.tentative, 'Maybe', 'waiting-tentative'),
                 (InviteResponse.declined, 'Decline', 'waiting-decline'),
               ])
-                Builder(
-                  builder: (button) => OutlinedButton(
-                    key: ValueKey(key),
-                    onPressed: busy ? null : () => onAnswer(response, button),
-                    child: Text(label),
+                TapTarget(
+                  child: Builder(
+                    builder: (button) => OutlinedButton(
+                      key: ValueKey(key),
+                      onPressed:
+                          busy ? null : () => onAnswer(response, button),
+                      child: Text(label),
+                    ),
                   ),
                 ),
             ],

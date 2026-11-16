@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +10,7 @@ import '../../domain/mail_message.dart';
 import '../../state/compose_providers.dart' show addressesLookValid, parseAddresses;
 import '../../state/meeting_providers.dart' show workWeekProvider;
 import '../../state/providers.dart';
+import '../common/tap_target.dart';
 
 /// Outlook's Scheduling Assistant, on New meeting. A button beside All day
 /// says whether everyone is free at the meeting's time; it opens each
@@ -177,14 +179,17 @@ class _WhoIsFreeState extends ConsumerState<WhoIsFree> {
   Widget build(BuildContext context) {
     final status = _status();
     final scheme = Theme.of(context).colorScheme;
-    return TextButton.icon(
-      key: const ValueKey('who-is-free'),
-      style: status.busy
-          ? TextButton.styleFrom(foregroundColor: scheme.error)
-          : null,
-      onPressed: widget.enabled ? _open : null,
-      icon: Icon(status.icon, size: 18),
-      label: Text(status.label, overflow: TextOverflow.ellipsis),
+    // 48 to tap (#90), drawn as before.
+    return TapTarget(
+      child: TextButton.icon(
+        key: const ValueKey('who-is-free'),
+        style: status.busy
+            ? TextButton.styleFrom(foregroundColor: scheme.error)
+            : null,
+        onPressed: widget.enabled ? _open : null,
+        icon: Icon(status.icon, size: 18),
+        label: Text(status.label, overflow: TextOverflow.ellipsis),
+      ),
     );
   }
 }
@@ -389,25 +394,11 @@ class _SchedulingSheetState extends ConsumerState<_SchedulingSheet> {
             if (busy != null)
               Padding(
                 padding: const EdgeInsets.only(left: _PersonRow.nameWidth),
-                child: SizedBox(
-                  height: 16,
-                  child: Stack(
-                    children: [
-                      for (var h = hours.first; h <= hours.last; h += 2)
-                        Align(
-                          alignment: Alignment(
-                            -1 + 2 * (h - hours.first) / (hours.last - hours.first),
-                            0,
-                          ),
-                          child: Text(
-                            '${(h % 24).toString().padLeft(2, '0')}:00',
-                            style: theme.textTheme.labelSmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
+                child: _HourScale(
+                  key: const ValueKey('assistant-hours'),
+                  first: hours.first,
+                  last: hours.last,
+                  use24h: use24h,
                 ),
               ),
             if (_problem != null)
@@ -459,6 +450,97 @@ class _SchedulingSheetState extends ConsumerState<_SchedulingSheet> {
     final first = s.hour < 8 ? s.hour : 8;
     final endHour = _sameDay(s, e) ? e.hour + (e.minute > 0 ? 1 : 0) : 24;
     return (first: first, last: endHour > 20 ? endHour : 20);
+  }
+}
+
+/// The hours under the people's lines, as the phone's clock writes them
+/// (#88): "08:00", or "8 AM" on a 12-hour clock. Every two hours, or every
+/// three, four or six where two would run into each other, on a narrow
+/// phone at large text.
+class _HourScale extends StatelessWidget {
+  const _HourScale({
+    super.key,
+    required this.first,
+    required this.last,
+    required this.use24h,
+  });
+
+  final int first;
+  final int last;
+  final bool use24h;
+
+  /// The least room between two hours' labels.
+  static const _apart = 4.0;
+
+  String _label(int hour) {
+    final h = hour % 24;
+    if (use24h) return '${h.toString().padLeft(2, '0')}:00';
+    return '${h % 12 == 0 ? 12 : h % 12} ${h < 12 ? 'AM' : 'PM'}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final style = theme.textTheme.labelSmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
+    final scaler = MediaQuery.textScalerOf(context);
+    final direction = Directionality.of(context);
+    return LayoutBuilder(builder: (context, box) {
+      final width = box.maxWidth;
+      final span = last - first;
+      Size measure(String text) {
+        final painter = TextPainter(
+          text: TextSpan(text: text, style: style),
+          textDirection: direction,
+          textScaler: scaler,
+          maxLines: 1,
+        )..layout();
+        final size = painter.size;
+        painter.dispose();
+        return size;
+      }
+
+      final sizes = {
+        for (var h = first; h <= last; h++) h: measure(_label(h)),
+      };
+      // Each label sits where the line has its hour, the first and last
+      // flush with the ends: its left edge is that share of the room the
+      // label leaves.
+      double leftOf(int h) => (width - sizes[h]!.width) * (h - first) / span;
+      List<int> every(int step) =>
+          [for (var h = first; h <= last; h += step) h];
+      bool clear(List<int> hours) {
+        for (var i = 1; i < hours.length; i++) {
+          final before = hours[i - 1];
+          if (leftOf(hours[i]) - leftOf(before) - sizes[before]!.width <
+              _apart) {
+            return false;
+          }
+        }
+        return true;
+      }
+
+      final hours = [2, 3, 4, 6, 12].map(every).firstWhere(
+            clear,
+            orElse: () => every(12),
+          );
+      // A line as tall as the labels: 16 at the usual text size.
+      final height =
+          sizes.values.fold<double>(16, (h, s) => math.max(h, s.height));
+      return SizedBox(
+        height: height,
+        child: Stack(
+          children: [
+            for (final h in hours)
+              Align(
+                alignment: Alignment(-1 + 2 * (h - first) / span, 0),
+                child: Text(_label(h), style: style),
+              ),
+          ],
+        ),
+      );
+    });
   }
 }
 

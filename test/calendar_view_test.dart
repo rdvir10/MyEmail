@@ -1259,7 +1259,10 @@ void main() {
           tomorrowAt10(hadco, id: 'p', own: true),
         ];
       });
-      await openSheet(tester, 'm');
+      // Its first row: begun before midnight and ending after, the meeting
+      // is under both days.
+      await tester.tap(find.byKey(const ValueKey('agenda-event:m')).first);
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('event-late')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('late-10')));

@@ -8,7 +8,9 @@ import '../../domain/calendar_event.dart';
 import '../../domain/meeting_alerts.dart';
 import '../../state/calendar_view_providers.dart';
 import '../../state/meeting_alert_providers.dart';
+import '../common/tap_target.dart';
 import 'calendar_screen.dart' show showEventDetails;
+import 'meeting_ticker.dart';
 
 /// The next meeting, over the mail: "Weekly sync  in 12 min", with Join
 /// where it is online, from a quarter of an hour before it until it ends,
@@ -17,42 +19,27 @@ import 'calendar_screen.dart' show showEventDetails;
 ///
 /// From the day's meetings as the calendar has them: kept on the device,
 /// and read again behind them every quarter of an hour while it is shown.
-class NextMeetingBar extends ConsumerStatefulWidget {
+class NextMeetingBar extends StatefulWidget {
   const NextMeetingBar({super.key});
-
-  /// How often the time is looked at again.
-  static const tick = Duration(seconds: 30);
 
   /// How often the day's meetings are read again while it is on screen.
   static const readEvery = Duration(minutes: 15);
 
   @override
-  ConsumerState<NextMeetingBar> createState() => _NextMeetingBarState();
+  State<NextMeetingBar> createState() => _NextMeetingBarState();
 }
 
-class _NextMeetingBarState extends ConsumerState<NextMeetingBar> {
-  Timer? _ticking;
+class _NextMeetingBarState extends State<NextMeetingBar> {
   DateTime? _readAt;
 
+  /// The time looked at again every [MeetingTicker.tick], which the
+  /// Agenda's "Now" goes by too (#91).
   @override
-  void initState() {
-    super.initState();
-    _ticking = Timer.periodic(NextMeetingBar.tick, (_) {
-      if (mounted) setState(() {});
-    });
-  }
+  Widget build(BuildContext context) => MeetingTicker(builder: _bar);
 
-  @override
-  void dispose() {
-    _ticking?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _bar(BuildContext context, WidgetRef ref, DateTime now) {
     final accounts = ref.watch(calendarAccountsProvider);
     if (accounts.isEmpty) return const SizedBox.shrink();
-    final now = ref.watch(meetingClockProvider)();
     final range = dayRange(now);
     final readAt = _readAt;
     if (readAt == null) {
@@ -86,7 +73,9 @@ class _NextMeetingBarState extends ConsumerState<NextMeetingBar> {
           key: const ValueKey('next-meeting-bar'),
           onTap: () => showEventDetails(context, ref, meeting, account),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
+            // No room above and below: Join, 48 to tap (#90), is the bar's
+            // height, as the 4 each way and its 40 were.
+            padding: const EdgeInsets.fromLTRB(12, 0, 4, 0),
             child: Row(
               children: [
                 Container(
@@ -120,13 +109,15 @@ class _NextMeetingBarState extends ConsumerState<NextMeetingBar> {
                   ),
                 ),
                 if (meeting.joinUrl != null)
-                  TextButton(
-                    key: const ValueKey('next-meeting-join'),
-                    onPressed: () => joinMeeting(meeting.joinUrl!),
-                    child: const Text('Join'),
+                  TapTarget(
+                    child: TextButton(
+                      key: const ValueKey('next-meeting-join'),
+                      onPressed: () => joinMeeting(meeting.joinUrl!),
+                      child: const Text('Join'),
+                    ),
                   )
                 else
-                  const SizedBox(height: 40),
+                  const SizedBox(height: kMinInteractiveDimension),
               ],
             ),
           ),
