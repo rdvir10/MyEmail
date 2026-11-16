@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' show Color;
 
@@ -726,24 +725,18 @@ void main() {
     final start = DateTime(2026, 10, 26, 10);
     final now = DateTime(2026, 10, 26, 9);
     late _Plugin plugin;
-    late Directory kept;
 
-    setUp(() {
-      plugin = _Plugin()..now = () => now;
-      kept = Directory.systemTemp.createTempSync('myemail-badges');
-      addTearDown(() => kept.deleteSync(recursive: true));
-    });
+    setUp(() => plugin = _Plugin()..now = () => now);
 
     /// What a drawer here draws: how a PNG begins, then which picture it
     /// is, the dart (1) or a calendar (2), and its colour's last byte.
     Uint8List picture(int kind, int colour) => Uint8List.fromList(
         [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, kind, colour & 0xff]);
 
-    /// A notifier that draws [picture]s. [draws] false is the background,
-    /// which cannot.
+    /// A notifier that makes [picture]s; with [draws] false, one that
+    /// cannot.
     AndroidMailNotifier notifierThat({
       bool draws = true,
-      bool keeps = false,
       List<String>? drawn,
     }) =>
         AndroidMailNotifier(
@@ -758,7 +751,6 @@ void main() {
             return draws ? picture(2, c) : null;
           },
           postingMarks: () async => null,
-          badgeFiles: () async => keeps ? kept : null,
           clock: () => now,
         );
 
@@ -863,75 +855,31 @@ void main() {
           picture(1, blue));
     });
 
-    test('drawn once, the picture is kept as a file, and a notification set '
-        'for later carries the file, not the picture', () async {
+    test('one notifier makes each picture once, however many notifications '
+        'wear it, and hands Android the picture itself', () async {
       final drawn = <String>[];
-      final notifier = notifierThat(keeps: true, drawn: drawn);
+      final notifier = notifierThat(drawn: drawn);
       await notifier.scheduleMeetingReminder(reminder(colour: blue));
       await notifier.scheduleMeetingReminder(reminder(colour: blue));
-      expect(drawn, ['calendar']);
-      final side = plugin.scheduled.last.details.android!.largeIcon!;
-      expect(side, isA<FilePathAndroidBitmap>());
-      final file = File((side as FilePathAndroidBitmap).data);
-      expect(file.parent.path, kept.path);
-      expect(file.readAsBytesSync(), picture(2, blue));
-      expect(kept.listSync().whereType<File>(), hasLength(1),
-          reason: 'nothing half written is left beside it');
-    });
-
-    test('a file under a picture\'s name that is not a picture, or is '
-        'empty, is drawn over, not handed to Android for good', () async {
-      for (final junk in [<int>[], 'not a picture'.codeUnits]) {
-        File('${kept.path}${Platform.pathSeparator}v1-calendar-ff0f6cbd.png')
-            .writeAsBytesSync(junk);
-        final drawn = <String>[];
-        await notifierThat(keeps: true, drawn: drawn)
-            .scheduleMeetingReminder(reminder(colour: blue));
-        expect(drawn, ['calendar'], reason: '${junk.length} bytes of junk');
-        final side = plugin.scheduled.last.details.android!.largeIcon!
-            as FilePathAndroidBitmap;
-        expect(File(side.data).readAsBytesSync(), picture(2, blue));
+      await notifier.scheduleMeetingReminder(reminder(colour: 0xFF107C41));
+      expect(drawn, ['calendar', 'calendar']);
+      for (final set in plugin.scheduled) {
+        expect(set.details.android!.largeIcon, isA<ByteArrayAndroidBitmap>(),
+            reason: 'not a file: 3.17.2 kept files, and on the tablet no '
+                'notification got its picture');
       }
     });
 
-    test('the background, which cannot draw, finds what the app drew; and '
-        'has no picture, and nothing worse, where the app drew none',
-        () async {
-      await notifierThat(keeps: true).prepareBadges([blue, blue]);
-      // Both of the account's, and the calendar on the app's own orange,
-      // which an all-day reminder and the agenda wear.
-      expect([for (final f in kept.listSync()) f.uri.pathSegments.last]..sort(), [
-        'v1-calendar-ff0f6cbd.png',
-        'v1-calendar-ffff7a18.png',
-        'v1-dart-ff0f6cbd.png',
-      ]);
-
+    test('one that cannot be made leaves the notification as it would be '
+        'without, and spares the rest of the batch the wait', () async {
       final drawn = <String>[];
-      final background = notifierThat(draws: false, keeps: true, drawn: drawn);
-      await background.scheduleMeetingReminder(reminder(colour: blue));
-      expect(plugin.scheduled.single.details.android!.largeIcon,
-          isA<FilePathAndroidBitmap>());
-      expect(drawn, isEmpty, reason: 'found, so not tried');
-
-      // Another account's, which nobody has drawn: set all the same.
-      await background.scheduleMeetingReminder(reminder(colour: 0xFF107C41));
-      final plain = plugin.scheduled.last.details.android!;
+      final notifier = notifierThat(draws: false, drawn: drawn);
+      await notifier.scheduleMeetingReminder(reminder(colour: blue));
+      final plain = plugin.scheduled.single.details.android!;
       expect(plain.largeIcon, isNull);
-      expect(plain.color, const Color(0xFF107C41));
-      // And one failure spares the next the wait.
-      await background.scheduleMeetingReminder(reminder(colour: 0xFFB4009E));
-      expect(drawn, ['calendar']);
-    });
-
-    test('making them ready never throws, and tries again another time',
-        () async {
-      final drawn = <String>[];
-      final background = notifierThat(draws: false, keeps: true, drawn: drawn);
-      await background.prepareBadges([blue, 0xFF107C41]);
-      expect(drawn, hasLength(1), reason: 'one failure spares the rest');
-      await background.prepareBadges([blue]);
-      expect(drawn, hasLength(2), reason: 'tried again on the next pass');
-      expect(kept.listSync(), isEmpty);
+      expect(plain.color, const Color(blue));
+      await notifier.scheduleMeetingReminder(reminder(colour: 0xFF107C41));
+      expect(drawn, ['calendar'], reason: 'not tried again in this batch');
     });
   });
 

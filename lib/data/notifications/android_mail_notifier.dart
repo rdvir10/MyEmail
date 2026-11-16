@@ -34,7 +34,6 @@ class AndroidMailNotifier implements MailNotifier {
     Future<Uint8List?> Function(int colorValue)? drawBadge,
     Future<Uint8List?> Function(int colorValue)? drawCalendar,
     Future<Directory?> Function()? postingMarks,
-    Future<Directory?> Function()? badgeFiles,
     DateTime Function()? clock,
   })  : _plugin = plugin ?? FlutterLocalNotificationsPlugin(),
         _queue = queueAction ?? queueNotificationAction,
@@ -42,7 +41,6 @@ class AndroidMailNotifier implements MailNotifier {
         // A test's one drawer draws both, unless it gives the calendar's.
         _drawCalendar = drawCalendar ?? drawBadge ?? drawCalendarBadge,
         _marks = postingMarks ?? _defaultMarks,
-        _badgeFiles = badgeFiles ?? _defaultBadgeFiles,
         _clock = clock ?? DateTime.now;
 
   /// The time, for [_scheduleAt]: a test's own.
@@ -107,167 +105,64 @@ class AndroidMailNotifier implements MailNotifier {
   bool _ready = false;
   String? _launchPayload;
 
-  /// Badges already found or drawn, by colour and by what is on them (the
-  /// dart, or the calendar), so a pass announcing ten messages to one
-  /// account looks for one.
-  final _badges = <(int, bool), Future<AndroidBitmap<Object>?>>{};
+  /// Badges already made, by colour and by what is on them (the dart, or
+  /// the calendar), so a pass announcing ten messages to one account makes
+  /// one.
+  final _badges = <(int, bool), Future<Uint8List?>>{};
 
-  /// Where a badge is kept once it is made, a PNG by its colour and kind:
-  /// made once by whichever isolate first wants it, and found by the rest.
-  /// A notification set for later then carries the file's name, not a
-  /// picture's bytes, in what Android keeps of it. Null where there is
-  /// nowhere to keep one (a test), and then the picture goes as bytes, as
-  /// before.
+  /// Set once a badge could not be made, for the rest of one batch, so one
+  /// failure does not cost every notification after it the same wait.
   ///
-  /// The pictures were first kept because they were painted with the
-  /// phone's graphics, which the background isolates do not have; on the
-  /// tablet that painting failed in the app as well, and they are worked
-  /// out by arithmetic now (account_badge.dart), in any isolate.
-  final Future<Directory?> Function() _badgeFiles;
-
-  static Future<Directory?> _defaultBadgeFiles() async {
-    try {
-      final dir = Directory(
-        '${(await getApplicationSupportDirectory()).path}'
-        '${Platform.pathSeparator}notify-badges',
-      );
-      await dir.create(recursive: true);
-      return dir;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// The file of a badge. The number in its name changes when the drawing
-  /// does, so a new build is not left with an old build's pictures.
-  Future<File?> _badgeFile(int colorValue, bool calendar) async {
-    final dir = await _badgeFiles();
-    if (dir == null) return null;
-    final colour = colorValue.toUnsigned(32).toRadixString(16).padLeft(8, '0');
-    return File('${dir.path}${Platform.pathSeparator}'
-        'v1-${calendar ? 'calendar' : 'dart'}-$colour.png');
-  }
-
-  /// Set once a badge has failed to draw, for the rest of one batch. The
-  /// likeliest cause is an isolate with no screen, where every badge would
-  /// fail the same way, and each failure can cost the full wait before its
-  /// notification goes out.
-  ///
-  /// Only for the batch: [showNewMail] clears it, and so does
-  /// [prepareBadges], which the calendar's upkeep calls before it sets its
-  /// reminders. Held for good, one slow draw in a worker that had just
-  /// started took the badges off every notification that worker posted,
-  /// which in push mode is most of an hour. A reminder snoozed, set
-  /// between batches, reads it as the last batch left it.
+  /// Only for the batch: [showNewMail] clears it. Held for good, one
+  /// failure in a worker that had just started took the badges off every
+  /// notification that worker posted, which in push mode is most of an
+  /// hour. Since the pictures are worked out by arithmetic
+  /// (account_badge.dart) nothing on a phone should fail to make one; this
+  /// is kept for what cannot be foreseen.
   bool _badgesFailed = false;
 
-  /// Draws a badge, and for tests, one that fails.
+  /// Makes a badge, and for tests, one that fails.
   final Future<Uint8List?> Function(int colorValue) _draw;
 
-  /// Draws a calendar's badge; see [drawCalendarBadge].
+  /// Makes a calendar's badge; see [drawCalendarBadge].
   final Future<Uint8List?> Function(int colorValue) _drawCalendar;
 
   /// The app's dart on the account's colour, or with [calendar] a calendar
-  /// on it; see [drawAccountBadge] and [drawCalendarBadge]. From its file
-  /// where it has been drawn before, by this isolate or another.
+  /// on it; see [drawAccountBadge] and [drawCalendarBadge]. Handed to
+  /// Android as the picture's own bytes, a few kilobytes.
+  ///
+  /// 3.17.2 kept each as a file and handed Android the file's name, so
+  /// that the app, which could paint, made them for the background, which
+  /// could not. On Ron's tablet that put no picture on any notification
+  /// (2026-11-16): the log showed the file looked for as each went up, and
+  /// none had one. Bytes are the way that has always worked on the phone,
+  /// and with nothing painted any more there is nothing to share.
   Future<AndroidBitmap<Object>?> _badgeFor(
     int colorValue, {
     bool calendar = false,
   }) async {
-    final key = (colorValue, calendar);
-    final badge = await _badges.putIfAbsent(
-        key, () => _findOrDraw(colorValue, calendar));
-    // Not kept, so the next batch tries this one again.
-    if (badge == null) _badges.remove(key);
-    return badge;
-  }
-
-  Future<AndroidBitmap<Object>?> _findOrDraw(
-    int colorValue,
-    bool calendar,
-  ) async {
-    File? file;
-    try {
-      file = await _badgeFile(colorValue, calendar);
-      if (file != null && await _isPicture(file)) {
-        return FilePathAndroidBitmap(file.path);
-      }
-    } catch (_) {
-      // Not to be read: drawn, then.
-    }
     if (_badgesFailed) return null;
-    // Said in the log each time one is made or cannot be, so what a device
-    // did can be read off it: a picture missing from a notification was
-    // otherwise silent. Found ones say nothing.
-    final what = '${calendar ? 'calendar' : 'dart'} '
-        '${colorValue.toUnsigned(32).toRadixString(16)}';
-    final png = await (calendar ? _drawCalendar : _draw)(colorValue);
+    final key = (colorValue, calendar);
+    final png = await _badges.putIfAbsent(key, () async {
+      final made = await (calendar ? _drawCalendar : _draw)(colorValue);
+      // Said in the log, once for each picture an isolate makes, so what a
+      // device did can be read off it: a picture missing from a
+      // notification was otherwise silent.
+      final what = '${calendar ? 'calendar' : 'dart'} '
+          '${colorValue.toUnsigned(32).toRadixString(16)}';
+      debugPrint(made == null
+          ? '[myemail] notification picture not made: $what'
+          : '[myemail] notification picture made: $what, '
+              '${made.length} bytes');
+      return made;
+    });
     if (png == null) {
       _badgesFailed = true;
-      debugPrint('[myemail] notification picture not made: $what');
+      // Not kept, so the next batch tries this one again.
+      _badges.remove(key);
       return null;
     }
-    if (file != null) {
-      // Beside it and then renamed over it, so no isolate reads half a
-      // picture; under a name of its own, since two isolates may draw at
-      // once.
-      final part =
-          File('${file.path}.${DateTime.now().microsecondsSinceEpoch}.part');
-      try {
-        await part.writeAsBytes(png, flush: true);
-        await part.rename(file.path);
-        debugPrint('[myemail] notification picture made and kept: $what');
-        return FilePathAndroidBitmap(file.path);
-      } catch (e) {
-        // Not kept: as bytes this once, and nothing left beside it.
-        debugPrint('[myemail] notification picture made, not kept: $what: $e');
-        try {
-          if (await part.exists()) await part.delete();
-        } catch (_) {
-          // Left: a few kilobytes.
-        }
-      }
-    } else {
-      debugPrint('[myemail] notification picture made, nowhere to keep it: '
-          '$what');
-    }
     return ByteArrayAndroidBitmap(png);
-  }
-
-  /// How a PNG begins.
-  static const _png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-
-  /// Whether [file] is there and is a picture, by how it begins. Anything
-  /// else under a badge's name would be handed to Android for good, which
-  /// shows nothing for it, and never drawn again.
-  static Future<bool> _isPicture(File file) async {
-    if (!await file.exists()) return false;
-    final start = <int>[];
-    await for (final part in file.openRead(0, _png.length)) {
-      start.addAll(part);
-    }
-    if (start.length < _png.length) return false;
-    for (var i = 0; i < _png.length; i++) {
-      if (start[i] != _png[i]) return false;
-    }
-    return true;
-  }
-
-  /// Draws and keeps the badges of [colours], both kinds, where they are
-  /// not kept already, and the calendar on the app's own colour, which an
-  /// all-day reminder and the agenda wear. The app calls this with every
-  /// account's colour while it has a screen, so that the background, which
-  /// has none, finds them.
-  @override
-  Future<void> prepareBadges(Iterable<int> colours) async {
-    // A batch of its own, as [showNewMail] is: one that failed before is
-    // tried again, and one failure now spares the rest the wait.
-    _badgesFailed = false;
-    for (final colour in colours.toSet()) {
-      await _badgeFor(colour);
-      await _badgeFor(colour, calendar: true);
-    }
-    await _badgeFor(appColour, calendar: true);
   }
 
   /// One channel, so the user gets one row in Android's notification settings

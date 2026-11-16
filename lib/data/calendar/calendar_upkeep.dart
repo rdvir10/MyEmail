@@ -68,9 +68,8 @@ class CalendarUpkeep {
   /// as each quarter of an hour does.
   Future<void> run({Set<String>? reading}) async {
     final now = _clock();
-    final everyAccount = await engine.loadAccounts();
     final accounts = [
-      for (final a in everyAccount)
+      for (final a in await engine.loadAccounts())
         if (AccountCalendar.canRead(a)) a,
     ];
     if (reading != null && !accounts.any((a) => reading.contains(a.id))) {
@@ -101,17 +100,6 @@ class CalendarUpkeep {
           for (final e in byAccount[a.id]!)
             if (calendarShown(e, hidden)) e,
     ];
-    // The pictures at the side of the notifications, a calendar or the
-    // app's mark on each account's colour, drawn while there is a screen
-    // to draw on (this runs in the app as well as in the background) and
-    // kept for where there is none. Every account's, those with no
-    // calendar too: their mail wears the app's mark.
-    try {
-      await notifier
-          .prepareBadges([for (final a in everyAccount) a.colorValue]);
-    } catch (e) {
-      debugPrint('[myemail] notification pictures not prepared: $e');
-    }
     await _remind(
       meetingRemindersFor(
         reminded,

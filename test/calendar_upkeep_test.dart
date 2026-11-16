@@ -94,28 +94,14 @@ void main() {
   });
 
   // On Ron's tablet a reminder showed neither a calendar nor its account's
-  // colour (2026-11-16): each carries its account's colour now, and the
-  // pictures that show it are made ready on every pass, the app's among
-  // them, which has a screen to draw them on.
-  test("a reminder wears its account's colour, and the pictures for every "
-      "account's notifications are made ready", () async {
-    // Gmail by an app password: mail, and no calendar MyEmail can read.
-    final imap = await engine.addAccount(
-      displayName: 'Old mail',
-      emailAddress: 'me@example.org',
-      provider: MailProvider.gmail,
-      secret: 'app password',
-    );
+  // colour (2026-11-16): each carries its account's colour now.
+  test("a reminder wears its account's colour", () async {
     engine.events[hadco.id] = [
       meeting('a', DateTime(2026, 10, 26, 9, 30), title: 'Stand-up'),
     ];
     await run();
     expect(notifier.meetingReminders.values.single.meeting.colour,
         hadco.colorValue);
-    expect(notifier.badgesPrepared, isNotEmpty);
-    expect(notifier.badgesPrepared.last,
-        containsAll([hadco.colorValue, imap.colorValue]),
-        reason: 'an account with no calendar has mail to announce too');
   });
 
   test("a Google account's are left to Google until switched on", () async {

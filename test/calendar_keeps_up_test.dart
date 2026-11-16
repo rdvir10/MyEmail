@@ -234,29 +234,6 @@ void main() {
       expect(c.read(calendarReadAgainProvider), isNull);
     });
 
-    // The pictures at the side of notifications can only be drawn where
-    // there is a screen, the app. Left to the quarter hour's upkeep they
-    // were drawn only when that turn fell to the app, and the background
-    // usually takes it first.
-    test("the pictures for every account's notifications are made ready "
-        "each time it is asked, the quarter hour's upkeep due or not",
-        () async {
-      final keeper = c.read(calendarKeeperProvider);
-      await keeper.keepUp(now: true);
-      final after = notifier.badgesPrepared.length;
-      expect(after, greaterThan(0));
-
-      // A minute later, in front: the upkeep is not due, and sets nothing.
-      notifier.meetingReminders.clear();
-      engine.events[hadco.id] = [meeting(hadco, 'h', hour)];
-      await keeper.keepUp();
-      expect(notifier.meetingReminders, isEmpty,
-          reason: 'the upkeep itself was not due');
-      expect(notifier.badgesPrepared.length, after + 1);
-      expect(notifier.badgesPrepared.last,
-          containsAll([hadco.colorValue, gmail.colorValue]));
-    });
-
     test('meeting mail while a read is going is read once it is done',
         () async {
       engine.events[hadco.id] = [meeting(hadco, 'h', hour)];
