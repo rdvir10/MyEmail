@@ -424,12 +424,26 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// Whether More offers Repeat: on a new meeting; on a meeting on its own
   /// being changed, to make it a series; and on every meeting of a series
   /// whose repeat New meeting has words for. Never on one meeting of a
-  /// series, which repeats as its series does.
+  /// series, which repeats as its series does; nor on a timed meeting
+  /// whose zone its calendar does not name, as a repeat is written in the
+  /// zone it was set in (see [forSeries]).
   bool get _canRepeat => switch (_editing) {
         null => true,
+        final e when !_zoneKnown(e.event) => false,
         final e when e.wholeSeries => _series?.repeat != null,
         final e => e.event.seriesId == null,
       };
+
+  /// Whether a repeat can be written for [event] on its own clock: its
+  /// zone known, or a whole day, which no zone moves.
+  static bool _zoneKnown(CalendarEvent event) =>
+      event.allDay || ownZoneOf(event) != null;
+
+  /// The day the account's calendar counts a series' weeks from: Sunday
+  /// for Outlook, Monday for Google, as each writes every other week.
+  int get _weekStart => _account?.provider == MailProvider.gmail
+      ? DateTime.monday
+      : DateTime.sunday;
 
   /// The series' repeat as Repeat starts: as read, and Every working day
   /// where it is the work week's days every week, which is how New meeting
@@ -459,9 +473,40 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     final from = _series?.firstDay;
     final repeat = _options.repeat;
     if (from == null || repeat == null) return shown;
-    final day = firstDayOf(repeat, from);
+    final day = firstDayOf(repeat, from, weekStart: _weekStart);
     return DateTime(day.year, day.month, day.day, shown.hour, shown.minute);
   }
+
+  /// The day of the last meeting the repeat, as now chosen, makes, where
+  /// it ends; null where it goes on.
+  DateTime? get _lastMeeting {
+    final repeat = _options.repeat;
+    if (repeat == null) return null;
+    return lastMeetingOf(repeat, _repeatStart, weekStart: _weekStart);
+  }
+
+  /// Whether that last meeting is already past: every meeting after it
+  /// would come off everyone's calendar, which Save asks about first.
+  bool get _endsInThePast {
+    if (!_repeatChanged) return false;
+    final last = _lastMeeting;
+    final now = DateTime.now();
+    return last != null &&
+        last.isBefore(DateTime(now.year, now.month, now.day));
+  }
+
+  /// Whether anyone besides the account is on the meeting, as the screen
+  /// has it, or was: who a change is sent to.
+  bool get _anyoneOn =>
+      parseAddresses(_attendees.text).isNotEmpty ||
+      (_editing?.event.attendees.any(
+              (a) => a.response != EventResponse.organizer) ??
+          false);
+
+  /// The sentence that says the last meeting is already past.
+  String _pastWords(DateTime last) =>
+      "The series' last meeting is then ${dayInWords(last)}, already past: "
+      "every meeting after it comes off everyone's calendar.";
 
   /// What saving a new repeat does, said before Save (#55), or null where
   /// Repeat is as it was.
@@ -472,23 +517,45 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// when a series' pattern changes, in its own app at least, and Google
   /// keeps a change to a meeting whose day is still in the series. Neither
   /// was seen on a live account, so the screen says "may".
+  ///
+  /// The last meeting is named where the repeat ends, and an end already
+  /// past says what it does: the series is stopped there, and every
+  /// meeting after it comes off everyone's calendar. Nobody is said to be
+  /// sent anything where nobody else is on it.
   String? get _repeatNote {
     final edit = _editing;
     if (edit == null || !_repeatChanged) return null;
+    final told = _anyoneOn ? ', and everyone on it is sent the change' : '';
+    final last = _lastMeeting;
+    final past = _endsInThePast && last != null;
     if (!edit.wholeSeries) {
-      return 'It becomes a series from this meeting on, and everyone on it '
-          'is sent the change.';
+      final ends = last == null
+          ? ''
+          : past
+              ? ' ${_pastWords(last)}'
+              : ' Its last meeting is then ${dayInWords(last)}.';
+      return 'It becomes a series from this meeting on$told.$ends';
     }
     final before = _optionsToBegin.repeat;
     final now = _options.repeat;
     final endOnly = before != null &&
         now != null &&
         before.ending(day: now.until, times: now.count) == now;
-    final what = endOnly
-        ? 'The series now ends as set, and everyone on it is sent the '
-            'change.'
-        : 'Every meeting in the series follows the new repeat, past ones '
-            'too, and everyone on it is sent the change.';
+    final String what;
+    if (past) {
+      what = endOnly
+          ? _pastWords(last)
+          : 'Every meeting in the series follows the new repeat, past ones '
+              'too$told. ${_pastWords(last)}';
+    } else if (endOnly) {
+      what = last == null
+          ? 'The series now goes on with no end$told.'
+          : "The series' last meeting is then ${dayInWords(last)}$told.";
+    } else {
+      what = 'Every meeting in the series follows the new repeat, past ones '
+          'too$told.${last == null ? '' : ' Its last meeting is then '
+              '${dayInWords(last)}.'}';
+    }
     final own = _account?.provider == MailProvider.outlook
         ? ' Any meeting you changed on its own, or deleted, may go back to '
             'how the series has it.'
@@ -496,6 +563,33 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             ? ''
             : ' Any meeting you changed on its own may stay where it was.';
     return '$what$own';
+  }
+
+  /// Asked before Save sends a repeat whose last meeting is already past
+  /// (#55): true to send it.
+  Future<bool> _endInThePastAsked() async {
+    final last = _lastMeeting;
+    if (!_endsInThePast || last == null) return true;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('End the series in the past?'),
+        content: Text(_pastWords(last)),
+        actions: [
+          TextButton(
+            key: const ValueKey('repeat-past-keep'),
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Keep editing'),
+          ),
+          FilledButton(
+            key: const ValueKey('repeat-past-save'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    return go ?? false;
   }
 
   /// More, in its sheet.
@@ -509,6 +603,8 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
         freeOrBusy: _account?.provider == MailProvider.gmail,
         repeats: _canRepeat,
         seriesFrom: _canRepeat ? _series?.firstDay : null,
+        seriesWeekStart: _weekStart,
+        seriesCount: _optionsToBegin.repeat?.count,
         onChanged: (o) => setState(() => _options = o),
       );
 
@@ -701,6 +797,12 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     _container = ProviderScope.containerOf(context, listen: false);
     // A meeting being changed keeps the link it has: there is no switch.
     if (_editing == null) _askOnline();
+    // Said, so that Edit offering no Repeat on a device can be told apart
+    // from a series not read (#55).
+    if (_editing case final edit? when !_zoneKnown(edit.event)) {
+      debugPrint('[myemail] no Repeat on Edit: the calendar names no time '
+          'zone for this meeting');
+    }
     // Opened again after a Send or Save that failed once it was left: why,
     // as it would have been said had the screen stayed.
     if (widget.failure case final failure?) {
@@ -1098,6 +1200,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
           'The repeat has to end on the first meeting or after it.');
       return;
     }
+    // An end already past stops the series there, for everyone: asked
+    // once (#55).
+    if (!await _endInThePastAsked() || !mounted) return;
     _messenger = ScaffoldMessenger.maybeOf(context);
     _navigator = Navigator.of(context);
     setState(() {

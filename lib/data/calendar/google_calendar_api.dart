@@ -11,7 +11,9 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
+import '../../domain/recurrence.dart';
 import '../../domain/series_repeat.dart';
+import '../../domain/time_zones.dart' show instantIn;
 import '../../domain/meeting_links.dart';
 import '../../domain/meeting_repeat.dart';
 import '../answer_limit.dart';
@@ -887,7 +889,8 @@ class GoogleCalendarApi {
       },
       if (repeat != null)
         'recurrence': [
-          repeat.toRule(change.start ?? before.start, allDay: allDay),
+          ruleIn(repeat, change.start ?? before.start,
+              allDay: allDay, zone: zone),
         ],
       if (change.location != null) 'location': change.location,
       if (change.notes != null) 'description': change.notes,
@@ -1165,6 +1168,29 @@ class GoogleCalendarApi {
         'transparency': googleTransparency(showAs),
       if (meeting.isPrivate) 'visibility': 'private',
     };
+  }
+
+  /// [repeat]'s rule from [start], its UNTIL the end of its last day on
+  /// [zone]'s clock where one is given (#55): a series set in Jerusalem
+  /// ends at Jerusalem's midnight, whatever the phone's zone. The rule is
+  /// otherwise `Recurrence.toRule`'s, whose UNTIL is the phone's midnight.
+  static String ruleIn(
+    Recurrence repeat,
+    DateTime start, {
+    required bool allDay,
+    String? zone,
+  }) {
+    final rule = repeat.toRule(start, allDay: allDay);
+    final last = repeat.until;
+    if (allDay || zone == null || last == null) return rule;
+    final end = instantIn(
+            DateTime(last.year, last.month, last.day, 23, 59, 59), zone)
+        .toUtc();
+    final stamp = '${end.year.toString().padLeft(4, '0')}'
+        '${_two(end.month)}${_two(end.day)}T${_two(end.hour)}'
+        '${_two(end.minute)}${_two(end.second)}Z';
+    return rule.replaceFirst(
+        RegExp(r'UNTIL=\d{8}T\d{6}Z'), 'UNTIL=$stamp');
   }
 
   /// A reminder as Google keeps one: on the phone, so many minutes before,
