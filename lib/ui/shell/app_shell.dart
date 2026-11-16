@@ -1251,7 +1251,10 @@ void _pushMessage(BuildContext context, MailMessage message) {
 /// New message, on every layout. Outlook puts it bottom-right and so does
 /// every mail app; putting it anywhere else would be novelty for its own sake.
 /// New meeting sits above it, smaller: the rarer of the two, and out of the
-/// way of a thumb reaching for the first.
+/// way of a thumb reaching for the first. It is drawn as a calendar with a
+/// pencil, a pair with the pencil under it: since the top bar got a calendar
+/// button of its own (3.17.0), a plain calendar here read as a second way
+/// into the calendar.
 class _ComposeButton extends ConsumerWidget {
   const _ComposeButton();
 
@@ -1267,7 +1270,7 @@ class _ComposeButton extends ConsumerWidget {
           heroTag: 'new-meeting',
           tooltip: 'New meeting',
           onPressed: () => openNewMeeting(context, ref),
-          child: const Icon(Icons.event),
+          child: const Icon(Icons.edit_calendar_outlined),
         ),
         const SizedBox(height: 12),
         FloatingActionButton(

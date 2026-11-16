@@ -2285,6 +2285,29 @@ void main() {
       expect(find.byType(NewMeetingScreen), findsOneWidget);
     });
 
+    // Since 3.17.0 the phone's top bar has a calendar button of its own,
+    // which opens the calendar. New meeting's round button drew a calendar
+    // too, and a thumb looking for "the calendar" could take either. Ron,
+    // asked (2026-11-16): "Yes, change it".
+    testWidgets(
+        "on the phone, New meeting's button is a calendar with a pencil, "
+        "not the calendar the top bar's button draws", (tester) async {
+      await pumpShell(tester, size: const Size(400, 800));
+      IconData iconIn(Finder button) => tester
+          .widget<Icon>(
+              find.descendant(of: button, matching: find.byType(Icon)).first)
+          .icon!;
+      final meeting = iconIn(find.byTooltip('New meeting'));
+      final calendar = iconIn(find.byKey(const ValueKey('mail-calendar')));
+
+      expect(meeting, Icons.edit_calendar_outlined);
+      expect(meeting, isNot(calendar));
+      expect(meeting, isNot(Icons.event));
+      // A pair with the pencil under it: one writes a message, the other
+      // a meeting, both drawn in outline.
+      expect(iconIn(find.byTooltip('New message')), Icons.edit_outlined);
+    });
+
     testWidgets("on a phone it is in the reading pane's menu, not the bar",
         (tester) async {
       final c = await pumpShell(tester, size: const Size(400, 900));
