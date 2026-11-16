@@ -18,7 +18,9 @@ import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/domain/mail_message.dart' show MailAddress;
+import 'package:myemail/domain/meeting.dart' show Reminder;
 import 'package:myemail/domain/meeting_repeat.dart';
+import 'package:myemail/domain/recurrence.dart';
 import 'package:myemail/state/calendar_providers.dart'
     show deviceCalendarProvider;
 import 'package:myemail/state/meeting_alert_providers.dart'
@@ -28,6 +30,7 @@ import 'package:myemail/theme/app_theme.dart' show buildTheme;
 import 'package:myemail/ui/calendar/calendar_screen.dart'
     show showEventDetails;
 import 'package:myemail/ui/calendar/meeting_facts.dart';
+import 'package:myemail/ui/meetings/meeting_options.dart' show MeetingOptions;
 
 import 'fakes/fake_webview.dart';
 import 'helpers/real_fonts.dart';
@@ -359,6 +362,198 @@ void main() {
           })?.describe(),
           'Every year on 3 March');
       expect(MeetingRepeat.fromGoogle({'id': 'x'}), isNull);
+    });
+  });
+
+  // The sheet's repeat line and New meeting's (and Edit's) summary say a
+  // series the same way: the review found them saying one series two ways.
+  group('one way of saying a series', () {
+    final tuesday = DateTime(2026, 10, 6);
+    final monday = DateTime(2026, 10, 5);
+    final sunday = DateTime(2026, 10, 4);
+    MeetingRepeat graph(Map<String, Object?> pattern,
+            [Map<String, Object?> range = const {'type': 'noEnd'}]) =>
+        MeetingRepeat.fromGraph({'pattern': pattern, 'range': range})!;
+    MeetingRepeat rule(String line) => MeetingRepeat.fromRule([line])!;
+
+    test('New meeting and the sheet say each series in the same words', () {
+      final table = <(Recurrence, DateTime, MeetingRepeat, String)>[
+        (
+          const Recurrence(RepeatKind.weekly),
+          tuesday,
+          graph({'type': 'weekly', 'interval': 1, 'daysOfWeek': ['tuesday']}),
+          'Every week on Tuesday',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly, days: {DateTime.thursday}),
+          tuesday,
+          rule('RRULE:FREQ=WEEKLY;BYDAY=TU,TH'),
+          'Every week on Tuesday and Thursday',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly, days: {DateTime.sunday}),
+          tuesday,
+          rule('RRULE:FREQ=WEEKLY;BYDAY=SU,TU'),
+          'Every week on Sunday and Tuesday',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly, days: {DateTime.saturday}),
+          sunday,
+          rule('RRULE:FREQ=WEEKLY;BYDAY=SA,SU'),
+          'Every week on Saturday and Sunday',
+        ),
+        (
+          const Recurrence(RepeatKind.workDays),
+          monday,
+          graph({
+            'type': 'weekly',
+            'interval': 1,
+            'daysOfWeek': [
+              'monday', 'tuesday', 'wednesday', 'thursday', 'friday',
+            ],
+          }),
+          'Every week, Monday to Friday',
+        ),
+        (
+          const Recurrence(RepeatKind.workDays, days: {7, 1, 2, 3, 4}),
+          sunday,
+          rule('RRULE:FREQ=WEEKLY;BYDAY=SU,MO,TU,WE,TH'),
+          'Every week, Sunday to Thursday',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly, days: {5, 6}),
+          sunday,
+          rule('RRULE:FREQ=WEEKLY;BYDAY=FR,SA,SU'),
+          'Every week, Friday to Sunday',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly, days: {1, 2, 3, 4, 5, 6, 7}),
+          tuesday,
+          rule('RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU'),
+          'Every day',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly, interval: 2),
+          tuesday,
+          graph({'type': 'weekly', 'interval': 2, 'daysOfWeek': ['tuesday']}),
+          'Every 2 weeks on Tuesday',
+        ),
+        (
+          const Recurrence(RepeatKind.monthlyOnDate),
+          DateTime(2026, 10, 15),
+          graph({'type': 'absoluteMonthly', 'interval': 1, 'dayOfMonth': 15}),
+          'Every month on day 15',
+        ),
+        (
+          const Recurrence(RepeatKind.monthlyOnWeekday),
+          DateTime(2026, 10, 30),
+          rule('RRULE:FREQ=MONTHLY;BYDAY=-1FR'),
+          'Every month on the last Friday',
+        ),
+        (
+          const Recurrence(RepeatKind.yearly),
+          DateTime(2027, 3, 3),
+          graph({
+            'type': 'absoluteYearly',
+            'interval': 1,
+            'dayOfMonth': 3,
+            'month': 3,
+          }),
+          'Every year on 3 March',
+        ),
+        (
+          const Recurrence(RepeatKind.daily, interval: 3).ending(times: 6),
+          tuesday,
+          rule('RRULE:FREQ=DAILY;INTERVAL=3;COUNT=6'),
+          'Every 3 days, 6 times',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly)
+              .ending(day: DateTime(2026, 11, 30)),
+          tuesday,
+          graph({'type': 'weekly', 'interval': 1, 'daysOfWeek': ['tuesday']},
+              {'type': 'endDate', 'endDate': '2026-11-30'}),
+          'Every week on Tuesday, until 30 November 2026',
+        ),
+        (
+          const Recurrence(RepeatKind.daily).ending(times: 1),
+          tuesday,
+          rule('RRULE:FREQ=DAILY;COUNT=1'),
+          'Every day, once',
+        ),
+      ];
+      for (final (made, start, read, said) in table) {
+        expect(made.describe(start), said, reason: 'New meeting: $said');
+        expect(read.describe(), said, reason: 'the sheet: $said');
+      }
+    });
+
+    test("a week's days: Monday first, but Sunday leads where Saturday is "
+        'not among them; three or more in a row, over the week\'s end too, '
+        'as a run', () {
+      String days(Set<int> days) =>
+          MeetingRepeat(RepeatUnit.week, weekdays: days).describe();
+      expect(days({2, 4}), 'Every week on Tuesday and Thursday');
+      expect(days({7, 2}), 'Every week on Sunday and Tuesday');
+      expect(days({6, 7}), 'Every week on Saturday and Sunday');
+      expect(days({7, 1, 3}), 'Every week on Sunday, Monday and Wednesday');
+      expect(days({2, 6, 7}), 'Every week on Tuesday, Saturday and Sunday');
+      expect(days({1, 2, 3}), 'Every week, Monday to Wednesday');
+      expect(days({5, 6, 7}), 'Every week, Friday to Sunday');
+      expect(days({6, 7, 1}), 'Every week, Saturday to Monday');
+      expect(days({7, 1, 2, 3, 4}), 'Every week, Sunday to Thursday');
+      expect(days({1, 2, 3, 4, 5, 6, 7}), 'Every day');
+      expect(
+          MeetingRepeat(RepeatUnit.week,
+                  interval: 2, weekdays: const {1, 2, 3, 4, 5, 6, 7})
+              .describe(),
+          'Every 2 weeks, Monday to Sunday');
+    });
+
+    test('a reminder is said in the same words in New meeting and on the '
+        'sheet', () {
+      for (final (minutes, words) in [
+        (1, '1 minute before'),
+        (5, '5 minutes before'),
+        (60, '1 hour before'),
+        (90, '90 minutes before'),
+        (120, '2 hours before'),
+        (1080, '18 hours before'),
+        (1440, '1 day before'),
+        (2880, '2 days before'),
+        (10080, '1 week before'),
+      ]) {
+        expect(Reminder.before(minutes).label, words);
+        expect(reminderSaid(minutes), 'Reminder $words');
+      }
+      expect(const Reminder.before(0).label, 'At the start');
+      expect(reminderSaid(0), 'Reminder at the start');
+      expect(const Reminder.none().label, 'None');
+    });
+
+    test("New meeting's and Edit's line under More says the same", () {
+      expect(
+        const MeetingOptions(
+          repeat: Recurrence(RepeatKind.workDays),
+          reminder: Reminder.before(120),
+        ).summary(monday),
+        'Every week, Monday to Friday · 2 hours before',
+      );
+    });
+
+    test("the first day of a series' week is kept, for every 2 weeks", () {
+      expect(
+          graph({
+            'type': 'weekly',
+            'interval': 2,
+            'daysOfWeek': ['tuesday'],
+            'firstDayOfWeek': 'sunday',
+          }).weekStart,
+          DateTime.sunday);
+      expect(rule('RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TU;WKST=MO').weekStart,
+          DateTime.monday);
+      expect(rule('RRULE:FREQ=WEEKLY;BYDAY=TU').weekStart, isNull,
+          reason: 'not said, not made up');
     });
   });
 

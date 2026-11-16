@@ -26,7 +26,6 @@ import '../meetings/new_meeting_screen.dart';
 import '../messages/date_format.dart';
 import '../messages/invite_answers.dart';
 import 'invitation_clearing.dart';
-import 'meeting_facts.dart' show reminderChoice;
 
 /// What can be done with a meeting the calendar shows, as its sheet, its
 /// block in Day and Week, and the rest of the calendar do it: answer it,
@@ -686,7 +685,7 @@ Future<void> changeMyReminder(
         for (final r in offered)
           (
             value: r,
-            label: reminderChoice(r.minutes),
+            label: r.label,
             key: 'my-reminder:${r.minutes ?? 'none'}',
           ),
       ],
@@ -711,10 +710,10 @@ Future<void> changeMyReminder(
   _tell(
     messenger,
     chosen.isOn
-        ? 'Your reminder: ${reminderChoice(chosen.minutes)}. Nobody is told.'
+        ? 'Your reminder: ${chosen.label}. Nobody is told.'
         : ifNone != null && prefs.remindsFor(account, inPhoneCalendar: inPhone)
             ? 'No reminder from the calendar. MyEmail still reminds you '
-                '${reminderChoice(ifNone)}, as Settings say. Nobody is told.'
+                '${Reminder.labelFor(ifNone)}, as Settings say. Nobody is told.'
             : 'No reminder. Nobody is told.',
   );
   unawaited(settleCalendar(ref, event));

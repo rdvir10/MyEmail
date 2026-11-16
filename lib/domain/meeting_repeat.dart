@@ -27,6 +27,7 @@ class MeetingRepeat {
     this.month,
     this.until,
     this.count,
+    this.weekStart,
   });
 
   final RepeatUnit every;
@@ -53,6 +54,12 @@ class MeetingRepeat {
   /// meetings in all; or neither, for good.
   final DateTime? until;
   final int? count;
+
+  /// The day a series' weeks start on, as a `DateTime.weekday` number:
+  /// Graph's firstDayOfWeek, a rule's WKST; null where it is not said. It
+  /// is not said on the sheet, but every 2 weeks counts from it, and Edit
+  /// needs it to write such a series back as it was.
+  final int? weekStart;
 
   static const _weekdayNames = [
     'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
@@ -102,18 +109,40 @@ class MeetingRepeat {
     return '$how$end';
   }
 
-  /// A week's days, in the order of Ron's week, which starts on Sunday as
-  /// his Outlook does: " on Tuesday and Thursday", or a run of three or
-  /// more as ", Monday to Friday".
+  /// A week's days, the one rule for New meeting, Edit and the sheet:
+  /// " on Tuesday and Thursday", Monday first, except that Sunday leads
+  /// where Saturday is not among them (" on Sunday and Tuesday", but " on
+  /// Saturday and Sunday"); three or more in a row, Sunday to Monday
+  /// counting as in a row, as a run (", Monday to Friday", ", Sunday to
+  /// Thursday", ", Friday to Sunday"). All seven are a run from Monday.
   String _days() {
-    int place(int weekday) => weekday % 7; // Sunday first.
-    final days = weekdays.toList()
-      ..sort((a, b) => place(a).compareTo(place(b)));
-    final names = [for (final d in days) _weekdayNames[d - 1]];
-    if (days.length >= 3 &&
-        place(days.last) - place(days.first) == days.length - 1) {
-      return ', ${names.first} to ${names.last}';
+    String name(int weekday) => _weekdayNames[weekday - 1];
+    int before(int weekday) => weekday == 1 ? 7 : weekday - 1;
+    int after(int weekday) => weekday == 7 ? 1 : weekday + 1;
+    if (weekdays.length == 7) {
+      return ', ${name(DateTime.monday)} to ${name(DateTime.sunday)}';
     }
+    // One run: a single day with the day before it left out.
+    final starts = [
+      for (final d in weekdays)
+        if (!weekdays.contains(before(d))) d,
+    ];
+    if (weekdays.length >= 3 && starts.length == 1) {
+      var last = starts.single;
+      while (weekdays.contains(after(last))) {
+        last = after(last);
+      }
+      return ', ${name(starts.single)} to ${name(last)}';
+    }
+    final sundayFirst = weekdays.contains(DateTime.sunday) &&
+        !weekdays.contains(DateTime.saturday);
+    int place(int weekday) =>
+        sundayFirst && weekday == DateTime.sunday ? 0 : weekday;
+    final names = [
+      for (final d in weekdays.toList()
+        ..sort((a, b) => place(a).compareTo(place(b))))
+        name(d),
+    ];
     final list = names.length == 1
         ? names.single
         : '${names.sublist(0, names.length - 1).join(', ')} and ${names.last}';
@@ -170,6 +199,8 @@ class MeetingRepeat {
       _ => null,
     };
     final week = _graphWeeks['${pattern['index']}'.toLowerCase()];
+    final firstDay = _graphDays.indexOf(
+        '${pattern['firstDayOfWeek']}'.toLowerCase());
     final end = _graphRange(recurrence['range']);
     if (end == null) return null;
     MeetingRepeat make(
@@ -188,6 +219,7 @@ class MeetingRepeat {
           month: month,
           until: end.until,
           count: end.count,
+          weekStart: firstDay < 0 ? null : firstDay + 1,
         );
     return switch ('${pattern['type']}') {
       'daily' => make(RepeatUnit.day),
@@ -389,6 +421,10 @@ class MeetingRepeat {
       byDay.add((weekday: weekday, week: week));
     }
     if (parts['BYDAY'] != null && byDay.isEmpty) return null;
+    final weekStart = parts['WKST'] == null
+        ? null
+        : _ruleDays.indexOf(parts['WKST']!) + 1;
+    if (weekStart == 0) return null;
     MeetingRepeat make(
       RepeatUnit every, {
       Set<int> weekdays = const {},
@@ -405,6 +441,7 @@ class MeetingRepeat {
           month: month,
           until: until,
           count: count,
+          weekStart: weekStart,
         );
     final numbered = byDay.length == 1 && byDay.single.week != null;
     switch (parts['FREQ']) {
@@ -505,11 +542,13 @@ class MeetingRepeat {
       other.week == week &&
       other.month == month &&
       other.until == until &&
-      other.count == count;
+      other.count == count &&
+      other.weekStart == weekStart;
 
   @override
   int get hashCode => Object.hash(every, interval,
-      Object.hashAllUnordered(weekdays), dayOfMonth, week, month, until, count);
+      Object.hashAllUnordered(weekdays), dayOfMonth, week, month, until, count,
+      weekStart);
 
   @override
   String toString() => 'MeetingRepeat(${describe()})';
