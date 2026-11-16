@@ -18,6 +18,7 @@ import 'package:myemail/domain/message_move.dart';
 import 'package:myemail/domain/sync_prefs.dart';
 import 'package:myemail/state/calendar_view_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/sync_providers.dart' show syncStateStoreProvider;
 import 'package:myemail/ui/settings/calendar_settings_screen.dart';
 
 /// Replies to your meetings file themselves (calendar idea #52): an
@@ -28,15 +29,18 @@ void main() {
   const me = 'RDvir@hadco.example';
 
   /// A reply's calendar part as [prodId] writes it: [answer] from Dana to
-  /// the meeting [organizer] organised, with [extra] lines in the event and
-  /// [attendeeParams] on Dana's line.
+  /// the meeting [organizer] organised, titled [summary], with [extra]
+  /// lines in the event and [attendeeParams] on Dana's line; [attendees],
+  /// where given, in place of Dana's line.
   String reply({
     String method = 'REPLY',
     String answer = 'ACCEPTED',
     String? organizer = 'mailto:rdvir@hadco.example',
     String prodId = 'Microsoft Exchange Server 2010',
+    String summary = 'Accepted: Planning',
     List<String> extra = const [],
     String attendeeParams = '',
+    List<String>? attendees,
   }) =>
       [
         'BEGIN:VCALENDAR',
@@ -44,10 +48,12 @@ void main() {
         'PRODID:$prodId',
         'VERSION:2.0',
         'BEGIN:VEVENT',
-        'ATTENDEE;PARTSTAT=$answer;CN=Dana Levi$attendeeParams'
-            ':mailto:dana@example.com',
+        ...?attendees,
+        if (attendees == null)
+          'ATTENDEE;PARTSTAT=$answer;CN=Dana Levi$attendeeParams'
+              ':mailto:dana@example.com',
         ...extra,
-        'SUMMARY;LANGUAGE=en-US:Accepted: Planning',
+        'SUMMARY;LANGUAGE=en-US:$summary',
         'DTSTART:20261118T080000Z',
         'DTEND:20261118T090000Z',
         'UID:040000008200E00074C5B7101A82E0080000000001',
@@ -60,6 +66,7 @@ void main() {
 
   MailMessage message({
     String subject = 'Accepted: Planning',
+    String from = 'Dana@Example.com',
     bool isRead = false,
     bool isFlagged = false,
     Importance importance = Importance.normal,
@@ -73,7 +80,7 @@ void main() {
         folderId: 'h:Inbox',
         uid: 7,
         subject: subject,
-        from: const MailAddress(email: 'dana@example.com', name: 'Dana Levi'),
+        from: MailAddress(email: from, name: 'Dana Levi'),
         to: to,
         date: DateTime(2026, 11, 16, 12),
         preview: '',
@@ -93,12 +100,19 @@ void main() {
       whyReplyStays(of ?? message(), body,
           filing: filing, ownAddress: me);
 
+  const google = '-//Google Inc//Google Calendar 70.9054//EN';
+  const googleText = 'Dana Levi has accepted this invitation.\n\nPlanning\n'
+      'Wednesday 18 Nov 2026 ⋅ 10am – 11am (Israel Standard Time)\n\n'
+      'Organiser\nRon Dvir\n\nInvitation from Google Calendar\n\n'
+      'You are receiving this email because you are subscribed to '
+      'calendar notifications.';
+
   group('what goes', () {
     test('an Accepted from Outlook with nothing written in it', () {
       // As Exchange hands it over: an empty body, and an empty COMMENT.
       expect(
         stays(MailBody(
-          text: ' \n',
+          text: '\u00a0\n',
           html: '<html><head></head><body><p>&nbsp;</p></body></html>',
           calendar: reply(extra: [r'COMMENT;LANGUAGE=en-US:\n']),
         )),
@@ -124,52 +138,32 @@ void main() {
       );
     });
 
-    test("Google Calendar's own reply, whose words are all Google's", () {
+    test("MyEmail's own reply, its one line, under its own subject", () {
       expect(
-        stays(MailBody(
-          text: 'Dana Levi has accepted this invitation.\n\nPlanning\n'
-              'Wednesday 18 Nov 2026 ⋅ 10am – 11am (Israel Standard Time)\n\n'
-              'Organiser\nRon Dvir\n\nInvitation from Google Calendar\n\n'
-              'You are receiving this email because you are subscribed to '
-              'calendar notifications.',
-          calendar: reply(
-            prodId: '-//Google Inc//Google Calendar 70.9054//EN',
-            attendeeParams: ';X-NUM-GUESTS=0',
+        stays(
+          MailBody(
+            text: 'Dana Levi has tentatively accepted this invitation.',
+            html: '<p>Dana Levi has tentatively accepted this invitation.</p>',
+            calendar: reply(
+              answer: 'TENTATIVE',
+              prodId: '-//MyEmail//EN',
+              summary: 'Planning',
+            ),
           ),
-        )),
+          of: message(subject: 'Tentative: Planning'),
+        ),
         isNull,
       );
     });
 
-    test("MyEmail's own reply, its one line", () {
-      expect(
-        stays(MailBody(
-          text: 'Dana Levi has tentatively accepted this invitation.',
-          html: '<p>Dana Levi has tentatively accepted this invitation.</p>',
-          calendar: reply(answer: 'TENTATIVE', prodId: '-//MyEmail//EN'),
-        )),
-        isNull,
-      );
-    });
-
-    test('the organiser is known whatever the case of the address', () {
+    test('the organiser and the sender are known whatever the case of the '
+        'address', () {
       expect(
         stays(MailBody(
           text: '',
           calendar: reply(organizer: 'MAILTO:rdvir@HADCO.example'),
         )),
         isNull,
-      );
-    });
-
-    test('with no organiser named, one addressed to you is to your meeting',
-        () {
-      expect(stays(MailBody(text: '', calendar: reply(organizer: null))),
-          isNull);
-      expect(
-        stays(MailBody(text: '', calendar: reply(organizer: null)),
-            of: message(to: const [MailAddress(email: 'boss@hadco.example')])),
-        isNotNull,
       );
     });
 
@@ -203,18 +197,162 @@ void main() {
         isNotNull,
       );
       expect(
-        stays(MailBody(
-          text: 'Dana Levi has accepted this invitation.\n\nSee you there',
-          html: '<p>Dana Levi has accepted this invitation.</p>'
-              '<p>See you there</p>',
-          calendar: reply(prodId: '-//MyEmail//EN'),
-        )),
+        stays(
+          MailBody(
+            text: 'Dana Levi has accepted this invitation.\n\nSee you there',
+            html: '<p>Dana Levi has accepted this invitation.</p>'
+                '<p>See you there</p>',
+            calendar: reply(prodId: '-//MyEmail//EN', summary: 'Planning'),
+          ),
+          of: message(subject: 'Accepted: Planning'),
+        ),
         isNotNull,
         reason: "MyEmail's line, and a note after it",
       );
+      expect(
+        stays(MailBody(
+          text: 'Dana Levi has accepted this invitation.',
+          calendar: reply(),
+        )),
+        isNotNull,
+        reason: "MyEmail's line is MyEmail's only where MyEmail wrote the "
+            'part',
+      );
     });
 
-    test('a note the calendar part carries, either way it is written', () {
+    test("Google Calendar's reply, whose words cannot be told from the "
+        "guest's", () {
+      // Until a real one has been read from Ron's own mail (review of h3).
+      expect(
+        stays(MailBody(
+          text: googleText,
+          calendar: reply(prodId: google, attendeeParams: ';X-NUM-GUESTS=0'),
+        )),
+        isNotNull,
+      );
+    });
+
+    test('a Google reply forwarded with words typed above it (P1)', () {
+      expect(
+        stays(
+          MailBody(
+            text: 'Ron - she says yes but wants to bring her manager, OK?\n\n'
+                '---------- Forwarded message ---------\n$googleText',
+            calendar: reply(prodId: google),
+          ),
+          of: message(
+            subject: 'Fwd: Accepted: Planning',
+            from: 'assistant@example.com',
+            hasAttachments: true,
+            attachmentNames: ['invite.ics'],
+          ),
+        ),
+        isNotNull,
+      );
+    });
+
+    test('a new time proposed in another language, sent as an answer (P2)',
+        () {
+      expect(
+        stays(
+          MailBody(
+            text: 'דנה לוי הציעה מועד חדש לאירוע הזה.\nהזמנה מיומן Google',
+            calendar: reply(prodId: google),
+          ),
+          of: message(subject: 'הוצע מועד חדש: Planning'),
+        ),
+        isNotNull,
+      );
+    });
+
+    test("a stranger's part that looks like Google's, with anything in it "
+        '(P3)', () {
+      expect(
+        stays(
+          MailBody(
+            text: 'Your account will be suspended unless you call today.',
+            calendar: reply(
+              prodId: google,
+              attendees: const [
+                'ATTENDEE;PARTSTAT=ACCEPTED:mailto:billing@stranger.example',
+              ],
+            ),
+          ),
+          of: message(
+            subject: 'Invoice 4471 overdue - please call',
+            from: 'billing@stranger.example',
+          ),
+        ),
+        isNotNull,
+      );
+    });
+
+    test('a part with more than one attendee, whoever is first (P4)', () {
+      final body = MailBody(
+        text: '',
+        calendar: reply(attendees: const [
+          'ATTENDEE;PARTSTAT=ACCEPTED;CN=Ron:mailto:rdvir@hadco.example',
+          'ATTENDEE;PARTSTAT=DECLINED;CN=Dana;X-RESPONSE-COMMENT="Sorry, I '
+              'am in hospital that week":mailto:dana@example.com',
+        ]),
+      );
+      expect(stays(body, filing: ReplyFiling.keepDeclines), isNotNull);
+      expect(stays(body), isNotNull);
+    });
+
+    test('an answer sent by someone other than the attendee it carries (P9)',
+        () {
+      expect(
+        stays(MailBody(text: '', calendar: reply()),
+            of: message(from: 'someone.else@example.com')),
+        isNotNull,
+      );
+    });
+
+    test("a subject that is not the answer's own: a forward, a reply, "
+        'anything else', () {
+      for (final subject in [
+        'Fwd: Accepted: Planning',
+        'RE: Accepted: Planning',
+        'Accepted: Planning - and a question',
+        'New Time Proposed: Planning',
+        'Accepted',
+      ]) {
+        expect(
+          stays(MailBody(text: '', calendar: reply()),
+              of: message(subject: subject)),
+          isNotNull,
+          reason: subject,
+        );
+      }
+    });
+
+    test('a note, wherever the part carries it and however it is written',
+        () {
+      for (final params in [
+        ';X-RESPONSE-COMMENT="Ten minutes late"',
+        // The parameters are not split with the quotes in mind (P5).
+        ';X-RESPONSE-COMMENT=";) bringing the contract"',
+        ';X-RESPONSE-COMMENT="Note: late"',
+        ';X-RESPONSE-COMMENT=late',
+      ]) {
+        expect(
+          stays(MailBody(
+            text: '',
+            calendar: reply(attendeeParams: params),
+          )),
+          isNotNull,
+          reason: params,
+        );
+      }
+      expect(
+        stays(MailBody(
+          text: '',
+          calendar: reply(attendeeParams: ';X-RESPONSE-COMMENT=""'),
+        )),
+        isNull,
+        reason: 'an empty pair of quotes is no note',
+      );
       expect(
         stays(MailBody(
           text: '',
@@ -224,14 +362,14 @@ void main() {
       );
       expect(
         stays(MailBody(
-          text: 'Dana Levi has accepted this invitation.',
-          calendar: reply(
-            prodId: '-//Google Inc//Google Calendar 70.9054//EN',
-            attendeeParams: ';X-RESPONSE-COMMENT="Ten minutes late"',
-          ),
+          text: '',
+          calendar: reply(extra: [
+            'COMMENT:Running late',
+            r'COMMENT;LANGUAGE=en-US:\n',
+          ]),
         )),
         isNotNull,
-        reason: "Google's note goes on the attendee's line",
+        reason: 'an empty COMMENT after one with words does not hide it',
       );
     });
 
@@ -240,12 +378,6 @@ void main() {
         expect(stays(MailBody(text: '', calendar: reply(method: method))),
             isNotNull, reason: method);
       }
-      expect(
-        stays(MailBody(text: '', calendar: reply()),
-            of: message(subject: 'New Time Proposed: Planning')),
-        isNotNull,
-        reason: 'a proposal Outlook sent as an answer',
-      );
     });
 
     test('an answer that is not one of the three', () {
@@ -255,7 +387,8 @@ void main() {
       }
     });
 
-    test("someone else's meeting", () {
+    test("someone else's meeting, or one whose organiser is not named (P8)",
+        () {
       expect(
         stays(MailBody(
           text: '',
@@ -263,6 +396,8 @@ void main() {
         )),
         isNotNull,
       );
+      expect(stays(MailBody(text: '', calendar: reply(organizer: null))),
+          isNotNull, reason: 'addressed to Ron or not, when in doubt');
     });
 
     test('a reply read, flagged, marked important or with a file', () {
@@ -348,6 +483,9 @@ void main() {
       final declines = find.byKey(const ValueKey('calendar-keep-declines'));
       expect(files, findsOneWidget);
       expect(tester.widget<SwitchListTile>(files).value, isFalse);
+      expect(find.textContaining('Only when I open MyEmail'), findsOneWidget,
+          reason: 'background checks are off, the store as it starts, and '
+              'nothing is filed while they are');
       expect(declines, findsNothing, reason: 'nothing to keep while off');
       expect(find.text('File replies to your meetings'), findsOneWidget);
 
@@ -371,6 +509,30 @@ void main() {
           ReplyFiling.off);
       expect(declines, findsNothing);
     });
+
+    testWidgets('says nothing of the checks while MyEmail checks for mail',
+        (tester) async {
+      tester.view.physicalSize = const Size(900, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final container = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        mailEngineProvider.overrideWithValue(SampleMailEngine()),
+        syncStateStoreProvider.overrideWithValue(MemorySyncStateStore(
+            prefs: const SyncPrefs(mode: SyncMode.periodic))),
+      ]);
+      addTearDown(container.dispose);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(home: CalendarSettingsScreen()),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('calendar-file-replies')),
+          findsOneWidget);
+      expect(find.textContaining('Only when I open MyEmail'), findsNothing);
+    });
   });
 
   group('the background pass', () {
@@ -389,12 +551,16 @@ void main() {
       filing = ReplyFiling.all;
     });
 
-    Future<BackgroundSyncReport> pass() => BackgroundSync(
+    Future<BackgroundSyncReport> pass({
+      Duration filingWithin = const Duration(seconds: 20),
+    }) =>
+        BackgroundSync(
           engine: engine,
           notifier: notifier,
           state: state,
           clock: () => now,
           replyFiling: () => filing,
+          filingWithin: filingWithin,
         ).run();
 
     final empty = reply();
@@ -416,6 +582,91 @@ void main() {
           {'h:Inbox#3', 'h:Inbox#4'});
       expect(report.posted, 2);
       expect(engine.inbox.map((m) => m.id), isNot(contains('h:Inbox#2')));
+    });
+
+    test('a reply filed is marked read where it went, once it has gone',
+        () async {
+      await pass();
+      engine.arrive(2, calendar: empty, text: '');
+
+      await pass();
+
+      expect(engine.markedRead, [
+        ['h:Inbox#2-moved'],
+      ], reason: 'by the id the move answered with, after the move');
+    });
+
+    test('not where the move waits for the server, nor where it gave no id, '
+        'and a mark that fails is no matter', () async {
+      await pass();
+      engine.movedAs = (ids, to) => [
+            MessageMove(
+              fromFolderId: 'h:Inbox',
+              toFolderId: to,
+              movedIds: const [],
+              waiting: ids,
+            ),
+          ];
+      engine.arrive(2, calendar: empty, text: '');
+      await pass();
+      expect(engine.moved.single.ids, ['h:Inbox#2']);
+      expect(engine.markedRead, isEmpty, reason: 'kept for later');
+
+      engine.movedAs = (ids, to) => [
+            MessageMove(
+                fromFolderId: 'h:Inbox', toFolderId: to, movedIds: const []),
+          ];
+      engine.arrive(3, calendar: empty, text: '');
+      await pass();
+      expect(engine.markedRead, isEmpty, reason: 'no id came back');
+
+      engine.movedAs = null;
+      engine.markFailure = const ConnectionFailed('Microsoft is busy');
+      engine.arrive(4, calendar: empty, text: '');
+      final report = await pass();
+      expect(report.ok, isTrue);
+      expect(engine.moved.last.ids, ['h:Inbox#4']);
+      expect(notifier.posted, isEmpty, reason: 'filed all the same');
+    });
+
+    test('the mail that is not meeting mail is announced before any meeting '
+        'mail is read', () async {
+      await pass();
+      engine.arrive(2, calendar: empty, text: '');
+      engine.arrive(3, text: 'An ordinary message');
+      List<String>? postedAtFirstRead;
+      engine.onBodyRead = (_) =>
+          postedAtFirstRead ??= [for (final n in notifier.posted) n.payload];
+
+      await pass();
+
+      expect(postedAtFirstRead, ['h:Inbox#3']);
+      expect(engine.moved.single.ids, ['h:Inbox#2']);
+    });
+
+    test('the reading has one budget for the folder: past it the rest stay, '
+        'and are announced without being read again', () async {
+      await pass();
+      for (var uid = 2; uid <= 5; uid++) {
+        engine.arrive(uid, calendar: empty, text: '');
+      }
+      engine.bodyDelay = const Duration(milliseconds: 150);
+      final took = Stopwatch()..start();
+
+      await pass(filingWithin: const Duration(milliseconds: 400));
+
+      took.stop();
+      expect(engine.moved.single.ids, hasLength(lessThan(4)));
+      expect(engine.moved.single.ids, isNotEmpty);
+      final left = {
+        for (var uid = 2; uid <= 5; uid++) 'h:Inbox#$uid',
+      }.difference(engine.moved.single.ids.toSet());
+      expect({for (final n in notifier.posted) n.payload}, left);
+      for (final id in left) {
+        expect(engine.opened.where((o) => o == id), hasLength(lessThan(2)),
+            reason: '$id not read a second time to announce');
+      }
+      expect(took.elapsed, lessThan(const Duration(seconds: 2)));
     });
 
     test('everything stays, and nothing more is opened, while the switch is '
@@ -553,6 +804,18 @@ class _RepliesEngine extends Fake implements MailEngine {
   Object? moveFailure;
   Exception? bodyFailure;
 
+  /// How long each body takes to come, and who is told as one is asked.
+  Duration bodyDelay = Duration.zero;
+  void Function(String id)? onBodyRead;
+
+  /// What a move answers, where a test says; otherwise each id moved with
+  /// "-moved" after it.
+  List<MessageMove> Function(List<String> ids, String to)? movedAs;
+
+  /// Every mark as read asked, and what one throws.
+  final List<List<String>> markedRead = [];
+  Object? markFailure;
+
   final List<({List<String> ids, String to})> moved = [];
   final List<List<String>> deleted = [];
   final List<String> opened = [];
@@ -635,6 +898,8 @@ class _RepliesEngine extends Fake implements MailEngine {
   @override
   Future<MailBody> loadMessageBody(String messageId) async {
     opened.add(messageId);
+    onBodyRead?.call(messageId);
+    if (bodyDelay > Duration.zero) await Future<void>.delayed(bodyDelay);
     final failure = bodyFailure;
     if (failure != null) throw failure;
     return bodies[messageId] ?? const MailBody(text: '');
@@ -653,6 +918,8 @@ class _RepliesEngine extends Fake implements MailEngine {
     if (failure != null) throw failure;
     moved.add((ids: messageIds, to: toFolderId));
     inbox.removeWhere((m) => messageIds.contains(m.id));
+    final answer = movedAs;
+    if (answer != null) return answer(messageIds, toFolderId);
     return [
       MessageMove(
         fromFolderId: 'h:Inbox',
@@ -660,6 +927,13 @@ class _RepliesEngine extends Fake implements MailEngine {
         movedIds: [for (final id in messageIds) '$id-moved'],
       ),
     ];
+  }
+
+  @override
+  Future<void> setMessagesRead(List<String> messageIds, bool isRead) async {
+    final failure = markFailure;
+    if (failure != null) throw failure;
+    if (isRead) markedRead.add(messageIds);
   }
 
   @override

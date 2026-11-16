@@ -37,6 +37,7 @@ class CalendarInvite {
     this.joinUrl,
     this.productId,
     this.responderNote,
+    this.attendeeNoted = false,
     this.rule,
   });
 
@@ -57,6 +58,13 @@ class CalendarInvite {
   /// answering attendee's line. Null for none, or only spaces (calendar
   /// idea #52).
   final String? responderNote;
+
+  /// Whether an attendee's line carries a note at all: an
+  /// X-RESPONSE-COMMENT with anything in it but an empty pair of quotes,
+  /// looked for in the line as written. The parameters are split without
+  /// regard to quotes, so a note beginning ";)" read as none; this does
+  /// not depend on that (calendar idea #52, after its review).
+  final bool attendeeNoted;
 
   /// Where to join the meeting online, from the invitation itself (#39):
   /// Teams' own line (X-MICROSOFT-SKYPETEAMSMEETINGURL), Meet's
@@ -175,6 +183,7 @@ class CalendarInvite {
     String? productId;
     String? comment;
     String? responderComment;
+    var attendeeNoted = false;
     String? rule;
 
     for (final line in lines) {
@@ -237,8 +246,11 @@ class CalendarInvite {
             responderStat = stat;
             responderComment = params['X-RESPONSE-COMMENT'];
           }
+          if (_carriesNote(line.raw)) attendeeNoted = true;
         case 'COMMENT':
-          comment = _unescape(value);
+          // The first with words in it: an empty one after it, as Exchange
+          // writes one, does not hide it.
+          if (_unescape(value).trim().isNotEmpty) comment ??= _unescape(value);
         case 'RRULE':
           rule = value.trim();
         case 'SEQUENCE':
@@ -322,6 +334,7 @@ class CalendarInvite {
           meetingLinkIn(description),
       productId: productId == null || productId.isEmpty ? null : productId,
       rule: rule == null || rule.isEmpty ? null : rule,
+      attendeeNoted: attendeeNoted,
       responderNote: _noteOf(
         method == 'REPLY' || method == 'COUNTER'
             ? [comment, responderComment]
@@ -329,6 +342,25 @@ class CalendarInvite {
       ),
     );
   }
+}
+
+/// Whether [raw], an ATTENDEE line as written, has an X-RESPONSE-COMMENT
+/// with anything in it: not where the parameter is followed at once by the
+/// next or by the value, nor by an empty pair of quotes. Anything else is
+/// a note, however it is quoted.
+bool _carriesNote(String raw) {
+  // Matched in the line itself: upper-cased, a letter such as ß is two,
+  // and a place found there is not the same place here.
+  final found = RegExp('X-RESPONSE-COMMENT=', caseSensitive: false)
+      .firstMatch(raw);
+  if (found == null) return false;
+  var rest = raw.substring(found.end);
+  if (rest.startsWith('""')) {
+    rest = rest.substring(2);
+  } else if (rest.startsWith('"')) {
+    return true;
+  }
+  return !(rest.isEmpty || rest.startsWith(';') || rest.startsWith(':'));
 }
 
 /// The first of [notes] with something in it besides spaces, as written;

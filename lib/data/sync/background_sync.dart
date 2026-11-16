@@ -7,7 +7,7 @@ import '../../domain/folder_role.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/meeting_reply_filing.dart';
-import '../../domain/message_move.dart' show PartialMove;
+import '../../domain/message_move.dart' show MessageMove, PartialMove;
 import '../../domain/sync_prefs.dart';
 import '../notifications/mail_notifier.dart';
 import '../mail_engine.dart';
@@ -37,6 +37,7 @@ class BackgroundSync {
     this.maxShownPerAccount = 8,
     this.inMeeting,
     this.replyFiling,
+    this.filingWithin = const Duration(seconds: 20),
     DateTime Function()? clock,
   }) : _clock = clock ?? DateTime.now;
 
@@ -54,6 +55,11 @@ class BackgroundSync {
   /// Settings, Calendar's choice for replies to your meetings (calendar
   /// idea #52), read once a pass: see [replyFilingIn]. Null: off.
   final ReplyFiling Function()? replyFiling;
+
+  /// How long one folder's pass may spend reading meeting mail to see
+  /// whether a reply goes, all of it together: past it the rest stay, and
+  /// are announced. The Inbox's other new mail is announced before.
+  final Duration filingWithin;
 
   /// How many of the newest messages one pass looks at. Larger than any
   /// plausible fifteen minutes of mail, small enough to be cheap on a phone
@@ -343,11 +349,39 @@ class BackgroundSync {
     }
 
     // The bodies of the meeting mail read here, by message id: read once,
-    // whether to file it or to announce it.
+    // whether to file it or to announce it. And what the meeting mail
+    // announced turned out to be: the calendar part read to know an
+    // invitation tells the rest too.
     final bodies = <String, MailBody?>{};
+    final kinds = <String, CalendarInvite?>{};
+    var posted = 0;
+    Object? failed;
+    StackTrace? failedAt;
     // After the mark: filing reads and moves, and nothing it does may leave
-    // the folder ready to announce the same mail again.
+    // the folder ready to announce the same mail again. The Inbox's other
+    // new mail is announced first, as it would have been: the reads may
+    // take a while on a poor link, and must not hold it (#52's review).
     if (filing != null && meetings.isNotEmpty) {
+      final ordinary = [
+        for (final m in fresh)
+          if (!m.isMeeting) m,
+      ];
+      if (announce && ordinary.isNotEmpty) {
+        try {
+          posted = await _post(
+            account,
+            folder,
+            ordinary.take(maxPerFolder).toList(),
+            silently: silently,
+            bodies: bodies,
+            kinds: kinds,
+          );
+        } catch (e, stack) {
+          // Said once the filing is done, as the pass would have said it.
+          failed = e;
+          failedAt = stack;
+        }
+      }
       final filed = await _fileReplies(
         account,
         meetings,
@@ -355,7 +389,7 @@ class BackgroundSync {
         filing: filing.as,
         bodies: bodies,
       );
-      fresh.removeWhere((m) => filed.contains(m.id));
+      fresh.removeWhere((m) => !m.isMeeting || filed.contains(m.id));
       meetings.removeWhere((m) => filed.contains(m.id));
     }
 
@@ -365,39 +399,74 @@ class BackgroundSync {
     debugPrint(
       '[myemail] pass ${folder.displayName} · ${account.displayName}: '
       '${messages.length} in window, ${messages.where((m) => !m.isRead).length} '
-      'unread, mark $watermark→$next, ${fresh.length} to announce, '
+      'unread, mark $watermark→$next, ${fresh.length + posted} to announce, '
       'announce=$announce',
     );
+
+    // Whether the meeting mail not filed may have changed its calendar:
+    // what was announced, by what it was read to be; what was only read to
+    // file it, the same; and what was not opened at all, which may be
+    // anything. Asked before anything more is posted, which may throw: the
+    // calendar is read whether or not the notifications go up.
+    bool mayChange(MailMessage m) => mayChangeCalendar(kinds.containsKey(m.id)
+        ? kinds[m.id]
+        : bodies[m.id] == null
+            ? null
+            : CalendarInvite.parse(bodies[m.id]!.calendar ?? ''));
 
     // The mark moved either way, so turning notifications on later announces
     // what arrives next rather than everything that arrived while they were
     // off. A backlog of forty is not a welcome.
-    if (!announce || fresh.isEmpty) {
-      // Not opened to see what it is: that would be asking its server for
-      // more than the pass did before. It may be an answer, and its
-      // calendar is read all the same.
-      if (meetings.isNotEmpty) meetingMail.add(account.id);
-      return 0;
+    final room = maxPerFolder - posted;
+    if (!announce || fresh.isEmpty || room <= 0) {
+      // Not opened to see what it is, unless it was to file it: that would
+      // be asking its server for more than the pass did before. It may be
+      // an answer, and its calendar is read all the same.
+      if (meetings.any(mayChange)) meetingMail.add(account.id);
+      if (failed != null) Error.throwWithStackTrace(failed, failedAt!);
+      return posted;
     }
 
-    // What the meeting mail announced turned out to be, by message id: the
-    // calendar part read to know an invitation tells the rest too.
-    final kinds = <String, CalendarInvite?>{};
+    final batch = fresh.take(room).toList();
+    // Read for what the batch is, before the calendar is asked about.
+    for (final m in batch) {
+      if (m.isMeeting) kinds[m.id] = await _invite(m, bodies: bodies);
+    }
+    if (meetings.any(mayChange)) meetingMail.add(account.id);
+    if (failed != null) Error.throwWithStackTrace(failed, failedAt!);
+    return posted +
+        await _post(
+          account,
+          folder,
+          batch,
+          silently: silently,
+          bodies: bodies,
+          kinds: kinds,
+        );
+  }
+
+  /// [messages] announced, as one batch: an invitation's with Accept and
+  /// Decline, what each meeting mail is kept in [kinds]. Answers how many
+  /// went up. Throws as the notifier does.
+  Future<int> _post(
+    Account account,
+    MailFolder folder,
+    List<MailMessage> messages, {
+    required bool silently,
+    required Map<String, MailBody?> bodies,
+    required Map<String, CalendarInvite?> kinds,
+  }) async {
     final batch = <MailNotification>[];
-    for (final m in fresh.take(maxPerFolder)) {
-      final invite = await _invite(m, bodies: bodies);
+    for (final m in messages) {
+      final invite = kinds.containsKey(m.id)
+          ? kinds[m.id]
+          : await _invite(m, bodies: bodies);
       if (m.isMeeting) kinds[m.id] = invite;
       batch.add(MailNotification.forMessage(
         m,
         invitation: invite?.isRequest ?? false,
         silent: silently,
       ));
-    }
-    // Before anything is posted, which may throw: the calendar is read
-    // whether or not the notifications go up.
-    if (meetings.any((m) =>
-        !kinds.containsKey(m.id) || mayChangeCalendar(kinds[m.id]))) {
-      meetingMail.add(account.id);
     }
     await _makeRoom(account, batch);
     await notifier.showNewMail(
@@ -497,11 +566,18 @@ class BackgroundSync {
   /// announced as any mail is. See [whyReplyStays] for which go. Each body
   /// read is kept in [bodies], so one announced is not read twice.
   ///
+  /// The reads have [filingWithin] in all: past it the rest are not read,
+  /// and stay, kept in [bodies] as not read so they are not read again to
+  /// be announced.
+  ///
   /// Moved rather than deleted, so that a folder taken for Deleted Items
-  /// could never mean a delete for good, and left unread there, as each
-  /// arrived. There is no Undo, as nobody pressed anything: each is in
-  /// Deleted Items, from where Move puts it back. Never throws: one that
-  /// could not be read or moved stays in the Inbox.
+  /// could never mean a delete for good; then marked read where they went,
+  /// by the ids the move answers with, so Deleted Items does not count
+  /// them in Outlook: never before the move, nor for a move kept for later
+  /// or one that named no id, and a mark that fails leaves one unread
+  /// there, which is no harm. There is no Undo, as nobody pressed
+  /// anything: each is in Deleted Items, from where Move puts it back.
+  /// Never throws: one that could not be read or moved stays in the Inbox.
   Future<Set<String>> _fileReplies(
     Account account,
     List<MailMessage> meetings, {
@@ -514,12 +590,20 @@ class BackgroundSync {
     // messages themselves.
     final kept = <String, int>{};
     var filed = const <String>{};
+    final reading = Stopwatch()..start();
     try {
       for (final m in meetings.take(repliesReadAtMost)) {
+        final left = filingWithin - reading.elapsed;
+        if (left <= Duration.zero) {
+          bodies[m.id] = null;
+          kept['not read in time'] = (kept['not read in time'] ?? 0) + 1;
+          continue;
+        }
         MailBody? body;
         try {
-          body =
-              await engine.loadMessageBody(m.id).timeout(invitationReadFor);
+          body = await engine
+              .loadMessageBody(m.id)
+              .timeout(left < invitationReadFor ? left : invitationReadFor);
         } catch (e) {
           debugPrint('[myemail] could not read meeting mail: $e');
         }
@@ -536,16 +620,21 @@ class BackgroundSync {
       }
       if (meetings.length > repliesReadAtMost) {
         kept['not read, too many'] = meetings.length - repliesReadAtMost;
+        for (final m in meetings.skip(repliesReadAtMost)) {
+          bodies[m.id] = null;
+        }
       }
       if (going.isNotEmpty) {
-        await engine.moveMessages(going, to.id);
+        final moves = await engine.moveMessages(going, to.id);
         filed = going.toSet();
+        await _markRead(moves);
       }
     } on PartialMove catch (part) {
       filed = {
         for (final id in part.moved)
           if (going.contains(id)) id,
       };
+      await _markRead(part.done);
     } catch (e) {
       debugPrint('[myemail] replies to meetings not filed: $e');
     }
@@ -558,6 +647,21 @@ class BackgroundSync {
           '${said.isEmpty ? 'none' : said.join(', ')}');
     }
     return filed;
+  }
+
+  /// What [moves] filed, marked read where it went: by the ids each move
+  /// answers with, and not for one kept for later. Never throws.
+  Future<void> _markRead(List<MessageMove> moves) async {
+    final ids = [
+      for (final move in moves)
+        if (!move.isWaiting) ...move.movedIds,
+    ];
+    if (ids.isEmpty) return;
+    try {
+      await engine.setMessagesRead(ids, true);
+    } catch (e) {
+      debugPrint('[myemail] replies filed, not marked read: $e');
+    }
   }
 
   /// Take down the oldest of [account]'s rows that [batch] would put over

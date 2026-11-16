@@ -24,26 +24,27 @@ enum ReplyFiling {
 /// organised with nothing written in it, to go to Deleted Items.
 ///
 /// When in doubt, it stays: it must never file something Ron needed to
-/// read. "Nothing written" is what the answering calendar wrote by itself,
-/// and nothing else:
+/// read. It goes only where all of this holds:
 ///
-/// - Outlook and Exchange send an answer with an empty body (the words
-///   are a space, or none), and put any note in the body and in the
-///   calendar part's COMMENT.
-/// - Google Calendar writes the whole message itself ("Dana Levi has
-///   accepted this invitation.", then the meeting, then its own lines at
-///   the foot), in the guest's language; the one thing the guest writes
-///   is the note, which it puts on the guest's line in the calendar part
-///   (X-RESPONSE-COMMENT), and on screen.
-/// - MyEmail's own answer is one line ("… has accepted this invitation."),
-///   with the note in a paragraph after it.
+/// - the calendar part is an answer (REPLY), Accepted, Maybe or Declined,
+///   with one attendee in it, who is the message's sender: the one who
+///   answered sent it, and nobody else's answer rides with it;
+/// - it names its organiser, and that is the account;
+/// - the subject is the answer's own, as the answering calendar writes
+///   it: the part's title (Exchange writes "Accepted: Planning" in both),
+///   or MyEmail's "Accepted: Planning" over a part titled "Planning";
+///   a forward, a reply, anything else stays;
+/// - no note anywhere in the part (a COMMENT with words, an attendee's
+///   X-RESPONSE-COMMENT with anything in it);
+/// - no word in the body: an Outlook answer sent as it was, with no note,
+///   has none; MyEmail's own answer has its one line, and nothing after;
+/// - no file but the invitation; not read, flagged or marked important.
 ///
-/// Anything else with words in it stays, whoever sent it. So does a new
-/// time proposed (Outlook's COUNTER, or an answer whose subject says so,
-/// or whose words do where Google wrote them),
-/// an answer that is not one of the three, someone else's meeting, and a
-/// reply read, flagged, marked important or with a file of its own.
-/// Never throws: the calendar part is written by whoever answered.
+/// Google Calendar's answers have words of Google's in every one, which
+/// cannot be told from a guest's until a real one has been read from
+/// Ron's own mail: they stay. (On a Microsoft account Exchange writes the
+/// answer again in its own way first.) Never throws: the calendar part is
+/// written by whoever answered.
 String? whyReplyStays(
   MailMessage message,
   MailBody body, {
@@ -77,9 +78,14 @@ String? _whyStays(
       filing == ReplyFiling.keepDeclines) {
     return 'a decline, kept';
   }
-  if (!_toYourMeeting(reply, message, ownAddress)) return 'not your meeting';
-  if (reply.responderNote != null) return 'a note';
-  if (_newTimeProposed.hasMatch(message.subject)) return 'a new time';
+  if (!_fromTheOneWhoAnswered(reply, message)) {
+    return 'not from the one who answered';
+  }
+  if (!_toYourMeeting(reply, ownAddress)) return 'not your meeting';
+  if (reply.responderNote != null || reply.attendeeNoted) return 'a note';
+  if (!_answersOwnSubject(message.subject, reply, answer)) {
+    return "a subject not the answer's";
+  }
   if (message.hasAttachments &&
       (message.attachmentNames.isEmpty ||
           message.attachmentNames
@@ -90,51 +96,54 @@ String? _whyStays(
   return null;
 }
 
-/// A subject that says a new time is proposed, as Outlook's and Google's
-/// do, for one sent as an answer rather than as a COUNTER.
-final _newTimeProposed = RegExp(
-  r'^\s*(new time proposed|proposed new time)',
-  caseSensitive: false,
-);
-
-/// Whether [reply] is to a meeting the account at [own] organised: the
-/// organiser its calendar part names, or where it names none, the message
-/// addressed to the account. Addresses come in any case.
-bool _toYourMeeting(CalendarInvite reply, MailMessage message, String own) {
-  final me = own.trim().toLowerCase();
-  if (me.isEmpty) return false;
-  final organizer = reply.organizer?.email.trim().toLowerCase();
-  if (organizer != null && organizer.isNotEmpty) return organizer == me;
-  return message.to.any((a) => a.email.trim().toLowerCase() == me);
+/// Whether [reply] has one attendee, and that is who sent [message].
+/// Addresses come in any case.
+bool _fromTheOneWhoAnswered(CalendarInvite reply, MailMessage message) {
+  if (reply.attendees.length != 1) return false;
+  final sender = message.from.email.trim().toLowerCase();
+  return sender.isNotEmpty &&
+      reply.attendees.single.email.trim().toLowerCase() == sender;
 }
 
-/// Whether [text], an answer's words, holds any its sender wrote: anything
-/// at all, but for what the answering calendar writes by itself (see
-/// [whyReplyStays]).
+/// Whether [reply] names the account at [own] as its organiser. One that
+/// names none, which an answer must, stays.
+bool _toYourMeeting(CalendarInvite reply, String own) {
+  final me = own.trim().toLowerCase();
+  final organizer = reply.organizer?.email.trim().toLowerCase() ?? '';
+  return me.isNotEmpty && organizer == me;
+}
+
+/// Whether [subject] is the answer's own: the part's title, or, where
+/// MyEmail wrote the part, its answer's word before the title, as
+/// `inviteReplySubject` writes it. Spaces aside, letter for letter.
+bool _answersOwnSubject(
+  String subject,
+  CalendarInvite reply,
+  InviteResponse answer,
+) {
+  final said = _spaced(subject);
+  if (said.isEmpty) return false;
+  if (said == _spaced(reply.summary)) return true;
+  return _isMyEmail(reply.productId) &&
+      said == _spaced('${answer.word}: ${reply.summary}');
+}
+
+String _spaced(String text) => text.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+/// Whether [text], an answer's words, holds any its sender wrote: any word
+/// at all, but for MyEmail's own line where MyEmail wrote the part.
 bool _wordsWritten(String text, CalendarInvite reply) {
   final words = text.replaceAll(_invisible, '').trim();
   if (words.isEmpty) return false;
-  // Every word of Google's is its own, but for a new time it may say is
-  // proposed; the guest's note is in the calendar part, looked at already.
-  if (_isGoogleCalendar(reply.productId)) {
-    return _proposes.hasMatch(words);
-  }
-  // MyEmail's own line, and nothing after it.
-  return !_ownLine.hasMatch(words);
+  return !(_isMyEmail(reply.productId) && _ownLine.hasMatch(words));
 }
 
 /// Characters that take no room: a zero-width space or joiner, a byte
 /// order mark. An empty Outlook body is sometimes nothing but these.
-final _invisible = RegExp('[​‌‍⁠﻿]');
+final _invisible = RegExp('[\u200b\u200c\u200d\u2060\ufeff]');
 
-final _proposes = RegExp(
-  r'proposed a new time|new time proposed|proposed new time',
-  caseSensitive: false,
-);
-
-bool _isGoogleCalendar(String? productId) =>
-    productId != null &&
-    productId.toLowerCase().contains('//google inc//google calendar');
+/// MyEmail's own answer, as `iMipReply` marks it.
+bool _isMyEmail(String? productId) => productId == '-//MyEmail//EN';
 
 /// "Dana Levi has tentatively accepted this invitation.", as MyEmail sends
 /// an answer (see `InviteResponseWords.pastTense`): one line, whole.
