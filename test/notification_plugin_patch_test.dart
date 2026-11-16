@@ -53,17 +53,33 @@ void main() {
     expect(method, contains('intent.setData('));
   });
 
-  test('where the small icon is asked for, the large one goes', () {
+  // Ron's tablet (Samsung, One UI 8.5 on Android 16, 2026-11-16) has the
+  // key from API 36.1, takes the request, and draws the app's launcher icon
+  // all the same. With the large icon taken away there, a notification
+  // showed neither the account's colour nor a calendar: every picture the
+  // app handed over, as a file or as itself, was dropped right here.
+  test('where the small icon is asked for, the large one goes, but not '
+      'where the shade draws the launcher icon whatever is asked', () {
     final java = File(pluginJava).readAsStringSync();
     final method = java.substring(
       java.indexOf('private static void preferSmallIcon('),
-      java.indexOf('private static void setSmallIcon('),
+      java.indexOf('private static boolean drawsLauncherIconWhateverIsAsked('),
     );
     final ask = method.indexOf('putBoolean((String) key, true);');
     final drop = method.indexOf('builder.setLargeIcon((android.graphics.Bitmap) null);');
     expect(ask, greaterThan(0));
     expect(drop, greaterThan(ask), reason: 'in the same branch, after it');
-    expect(method.substring(ask, drop), isNot(contains('}')),
+    final between = method.substring(ask, drop);
+    expect(between, isNot(contains('}')),
         reason: 'only where the small icon is asked for');
+    expect(between, contains('if (!drawsLauncherIconWhateverIsAsked()) {'),
+        reason: 'and only where asking gets it shown');
+
+    final samsung = java.substring(
+      java.indexOf('private static boolean drawsLauncherIconWhateverIsAsked('),
+      java.indexOf('private static void setSmallIcon('),
+    );
+    expect(samsung, contains('"samsung".equalsIgnoreCase(Build.MANUFACTURER)'));
+    expect(java, contains('import android.os.Build;'));
   });
 }

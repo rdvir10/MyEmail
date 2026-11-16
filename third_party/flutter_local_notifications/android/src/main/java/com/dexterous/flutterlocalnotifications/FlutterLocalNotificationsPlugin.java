@@ -502,14 +502,15 @@ public class FlutterLocalNotificationsPlugin
    * icon. MyEmail's small icon is drawn in the notification's colour, the
    * mail account's, which is what tells one account's mail from another's at
    * a glance, so every notification asks. The key is read from the platform
-   * rather than written out: the constant exists from API 37, and a version
-   * without it has neither the constant nor the behaviour it undoes.
+   * rather than written out: a version without the constant has neither the
+   * constant nor the behaviour it undoes. (It came with API 36.1, not 37.)
    *
    * Where it is asked for, the large icon goes: MyEmail's is the same dart
    * on the same colour, drawn for Android versions that show the launcher
    * icon on the left, and beside the small icon it said the same thing
    * twice. Earlier versions keep it, since there it is the only place the
-   * account's colour shows.
+   * account's colour shows; and so does a phone that has the key and draws
+   * the launcher icon anyway (see drawsLauncherIconWhateverIsAsked).
    */
   /**
    * MyEmail: each button's intent its own, by notification id, tag and action.
@@ -541,11 +542,29 @@ public class FlutterLocalNotificationsPlugin
       Object key = Notification.class.getField("EXTRA_PREFER_SMALL_ICON").get(null);
       if (key instanceof String) {
         builder.getExtras().putBoolean((String) key, true);
-        builder.setLargeIcon((android.graphics.Bitmap) null);
+        if (!drawsLauncherIconWhateverIsAsked()) {
+          builder.setLargeIcon((android.graphics.Bitmap) null);
+        }
       }
     } catch (ReflectiveOperationException | RuntimeException e) {
-      // Before Android 17: nothing to ask for.
+      // Before the key existed: nothing to ask for.
     }
+  }
+
+  /**
+   * MyEmail: whether this phone's shade draws the app's launcher icon on a
+   * notification's row even where the small icon is asked for.
+   *
+   * <p>Samsung's does. Ron's tablet (One UI 8.5 on Android 16, seen
+   * 2026-11-16) has the key above, which came with API 36.1 and not 37 as
+   * was thought; it takes the request, and draws the launcher icon all the
+   * same. With the large icon taken away there, a notification showed
+   * neither the account's colour nor, for a meeting, a calendar, and every
+   * picture the app handed over was dropped here. On such a phone the large
+   * icon is the only place either can show, so it stays.
+   */
+  private static boolean drawsLauncherIconWhateverIsAsked() {
+    return "samsung".equalsIgnoreCase(Build.MANUFACTURER);
   }
 
   private static void setSmallIcon(
