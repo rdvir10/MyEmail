@@ -1,0 +1,802 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../data/calendar/away_run.dart';
+import '../../domain/account.dart';
+import '../../domain/away.dart';
+import '../../domain/calendar_change.dart' show everyoneOn;
+import '../../domain/calendar_event.dart';
+import '../../domain/error_report.dart' show ReadableError;
+import '../../domain/meeting.dart' show MeetingDraft;
+import '../../domain/text_direction.dart' show firstStrongDirection;
+import '../../state/calendar_providers.dart' show deviceCalendarProvider;
+import '../../state/calendar_view_providers.dart';
+import '../../state/meeting_alert_providers.dart' show meetingClockProvider;
+import '../../state/providers.dart';
+import '../common/bottom_message.dart';
+import '../messages/date_format.dart';
+import '../settings/auto_replies_screen.dart';
+import 'meeting_share.dart' show meetingWhen;
+
+/// I am away (calendar idea #53), from the calendar's ⋮: the days asked
+/// for, then [AwayScreen] for them. Backing out of the days opens nothing.
+Future<void> openAway(BuildContext context, WidgetRef ref) async {
+  final now = ref.read(meetingClockProvider)();
+  final days = await _askDays(context, now: now);
+  if (days == null || !context.mounted) return;
+  await Navigator.of(context).push(MaterialPageRoute<void>(
+    builder: (_) => AwayScreen(first: days.start, last: days.end),
+  ));
+}
+
+/// The days, from today on, up to two years ahead.
+Future<DateTimeRange?> _askDays(
+  BuildContext context, {
+  required DateTime now,
+  DateTimeRange? initial,
+}) {
+  final today = DateTime(now.year, now.month, now.day);
+  return showDateRangePicker(
+    context: context,
+    firstDate: today,
+    lastDate: DateTime(today.year + 2, today.month, today.day),
+    currentDate: today,
+    initialDateRange: initial,
+    helpText: 'The days you are away',
+  );
+}
+
+DateTime _midnight(DateTime t) => DateTime(t.year, t.month, t.day);
+
+/// The days blocked, and the meetings in them declined or cancelled, as
+/// ticked here. Treated as the most dangerous screen in the app: it
+/// answers and cancels real meetings and writes to the people on them.
+/// So nothing is made, declined or cancelled until Ron has seen the list
+/// and pressed the button, which says in numbers what it will do; only
+/// what he left ticked goes, each once; a meeting of a series is only that
+/// meeting; and a press that leaves some not done says which, and a press
+/// again does only those (see [AwayRun]).
+///
+/// What it starts with: the days blocked on every account's calendar that
+/// is not blocked already; every meeting Ron was invited to ticked, unless
+/// he organised it from another of his addresses; his own meetings
+/// unticked; the organisers told; no note.
+class AwayScreen extends ConsumerStatefulWidget {
+  const AwayScreen({super.key, required this.first, required this.last});
+
+  /// The first and the last day away, both at midnight.
+  final DateTime first;
+  final DateTime last;
+
+  @override
+  ConsumerState<AwayScreen> createState() => _AwayScreenState();
+}
+
+class _AwayScreenState extends ConsumerState<AwayScreen> {
+  late DateTime _first = _midnight(widget.first);
+  late DateTime _last = _midnight(widget.last);
+  late final AwayRun _run = AwayRun(ref.read(mailEngineProvider));
+  final _note = TextEditingController();
+  bool _tell = true;
+
+  /// The calendars are being read for the days.
+  bool _reading = true;
+
+  /// Asking whether to go, or going: the button does nothing meanwhile.
+  bool _asking = false;
+  bool _running = false;
+
+  /// Pressed at least once: the days stay as they are from then on.
+  bool _pressed = false;
+
+  /// What one press is doing, and how far it has got.
+  int _going = 0, _goingOf = 0;
+
+  List<Account> _accounts = const [];
+  List<AwayItem> _blocks = const [];
+  List<AwayItem> _invited = const [];
+  List<AwayItem> _own = const [];
+  final Set<AwayItem> _ticked = {};
+
+  /// Where a calendar already has the days out of office, by account.
+  Map<String, CalendarEvent> _blockedAlready = const {};
+
+  /// An account whose calendar could not be read for the days, and why.
+  Map<String, Object> _unread = const {};
+
+  /// The key each calendar's block goes with from this screen, so a block
+  /// sent again is the one event (see [awayBlock]).
+  final Map<String, String> _blockKeys = {};
+
+  /// Which read is the latest, where the days changed while one went on.
+  int _reads = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _read();
+  }
+
+  @override
+  void dispose() {
+    _note.dispose();
+    super.dispose();
+  }
+
+  List<AwayItem> get _all => [..._blocks, ..._invited, ..._own];
+
+  /// What a press would do now: ticked, and not done or gone.
+  List<AwayItem> get _toDo => [
+        for (final i in _all)
+          if (i.open && _ticked.contains(i)) i,
+      ];
+
+  Account? _account(String id) =>
+      _accounts.where((a) => a.id == id).firstOrNull;
+
+  /// The calendars, read afresh for the days, whatever the views kept: what
+  /// is listed is what each calendar has now.
+  Future<void> _read() async {
+    final read = ++_reads;
+    if (!_reading) setState(() => _reading = true);
+    final engine = ref.read(mailEngineProvider);
+    try {
+      // The accounts as they are, where they are still being read.
+      await ref.read(accountsProvider.future);
+    } catch (_) {
+      // Then those known, as the calendar has them.
+    }
+    if (!mounted || read != _reads) return;
+    final accounts = ref.read(calendarAccountsProvider);
+    final events = <CalendarEvent>[];
+    final unread = <String, Object>{};
+    String? zone;
+    await Future.wait([
+      for (final a in accounts)
+        engine.calendarEvents(a.id, _first, _dayAfter(_last)).then(
+          events.addAll,
+          onError: (Object e) {
+            unread[a.id] = e;
+          },
+        ),
+      ref.read(deviceCalendarProvider).timeZoneId().then(
+        (z) {
+          zone = z;
+        },
+        // Then the block's days go as UTC's, which every calendar reads.
+        onError: (Object _) {},
+      ),
+    ]);
+    if (!mounted || read != _reads) return;
+    final emails = {for (final a in accounts) a.id: a.emailAddress};
+    final listed = awayMeetings(
+      events,
+      first: _first,
+      last: _last,
+      now: ref.read(meetingClockProvider)(),
+      ownEmails: emails,
+    );
+    final blocked = {
+      for (final a in accounts)
+        a.id: ?awayBlockOn(events, a.id, first: _first, last: _last),
+    };
+    setState(() {
+      _accounts = accounts;
+      _unread = unread;
+      _blockedAlready = blocked;
+      _blocks = [
+        for (final a in accounts)
+          AwayItem.block(awayBlock(
+            accountId: a.id,
+            first: _first,
+            last: _last,
+            timeZone: zone,
+            transactionId:
+                _blockKeys.putIfAbsent(a.id, MeetingDraft.newTransactionId),
+          )),
+      ];
+      _invited = [for (final e in listed.invited) AwayItem.decline(e)];
+      _own = [for (final e in listed.own) AwayItem.cancel(e)];
+      _ticked
+        ..clear()
+        ..addAll([
+          // Not where the days are blocked already, nor where the
+          // calendar could not be read to see whether they are.
+          for (final b in _blocks)
+            if (!blocked.containsKey(b.accountId) &&
+                !unread.containsKey(b.accountId))
+              b,
+          for (final i in _invited)
+            if (awayStartsTicked(i.event!, emails.values)) i,
+        ]);
+      _reading = false;
+    });
+  }
+
+  Future<void> _changeDays() async {
+    final days = await _askDays(
+      context,
+      now: ref.read(meetingClockProvider)(),
+      initial: DateTimeRange(start: _first, end: _last),
+    );
+    if (days == null || !mounted || _pressed) return;
+    setState(() {
+      _first = _midnight(days.start);
+      _last = _midnight(days.end);
+      // Other days, another block.
+      _blockKeys.clear();
+    });
+    await _read();
+  }
+
+  int _count(List<AwayItem> items, AwayAction action) => items
+      .where((i) => i.action == action)
+      .length;
+
+  Future<void> _go() async {
+    if (_reading || _asking || _running) return;
+    final todo = _toDo;
+    if (todo.isEmpty) return;
+    final declines = _count(todo, AwayAction.decline);
+    final cancels = _count(todo, AwayAction.cancel);
+    // Whoever is told is told for good: asked once more, in words.
+    if (declines + cancels > 0) {
+      _asking = true;
+      final sure = await showDialog<bool>(
+        context: context,
+        builder: (_) => _SureDialog(
+          blocks: [
+            for (final b in todo)
+              if (b.action == AwayAction.block)
+                _account(b.accountId)?.displayName ?? '',
+          ],
+          days: _daysText(),
+          declines: declines,
+          cancels: cancels,
+          tell: _tell,
+          note: _note.text.trim().isNotEmpty,
+          words: _words(todo)!,
+        ),
+      );
+      _asking = false;
+      if (sure != true || !mounted) return;
+    }
+    setState(() {
+      _running = true;
+      _pressed = true;
+      _going = 0;
+      _goingOf = todo.length;
+    });
+    try {
+      await _run.go(
+        todo,
+        first: _first,
+        last: _last,
+        note: _note.text,
+        tell: _tell,
+        changed: (through) {
+          if (mounted) setState(() => _going = through);
+        },
+      );
+    } finally {
+      // The views and the reminders, from the calendars as they now are.
+      if (mounted) {
+        ref.read(calendarRefreshProvider.notifier).now();
+        setState(() => _running = false);
+      }
+    }
+  }
+
+  /// The button's words for [todo]; again where an earlier press left
+  /// some not done.
+  String? _words(List<AwayItem> todo) => awayButtonWords(
+        blocks: _count(todo, AwayAction.block),
+        declines: _count(todo, AwayAction.decline),
+        cancels: _count(todo, AwayAction.cancel),
+        again: todo.any((i) => i.state == AwayState.failed),
+      );
+
+  String _daysText() => _first == _last
+      ? formatDay(_first)
+      : '${formatDay(_first)} – ${formatDay(_last)}';
+
+  /// After a press: how it went, in a line over the button.
+  String? _summary() {
+    if (!_pressed || _running) return null;
+    final all = _all;
+    final went = all.where((i) => i.state == AwayState.done).length;
+    final failed = all.where((i) => i.state == AwayState.failed).length;
+    final gone = all.where((i) => i.state == AwayState.gone).length;
+    return [
+      if (failed == 0)
+        went == 0 ? 'Nothing more to send.' : 'Done: $went went.'
+      else
+        '$went went, $failed did not (marked in red).',
+      if (gone > 0)
+        '$gone ${gone == 1 ? 'is' : 'are'} no longer on the calendar, so '
+            'nothing was sent for ${gone == 1 ? 'it' : 'them'}.',
+      if (failed > 0)
+        'Those that went are not sent again. Pressing again does only the '
+            '$failed, each once it is found still on its calendar as it was.',
+    ].join(' ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
+    final muted = theme.textTheme.bodyMedium
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final todo = _toDo;
+    final words = _words(todo);
+    final summary = _summary();
+    final locked = _running || _asking;
+
+    Widget row(
+      AwayItem item, {
+      required String title,
+      List<String> lines = const [],
+    }) =>
+        _AwayRow(
+          key: ValueKey(switch (item.action) {
+            AwayAction.block => 'away-block:${item.accountId}',
+            _ => 'away:${item.accountId}:${item.event!.id}',
+          }),
+          item: item,
+          ticked: _ticked.contains(item),
+          enabled: !locked && !_reading,
+          colour: Color(_account(item.accountId)?.colorValue ??
+              theme.colorScheme.primary.toARGB32()),
+          title: title,
+          lines: lines,
+          onTick: (on) => setState(() =>
+              on ? _ticked.add(item) : _ticked.remove(item)),
+        );
+
+    Widget meeting(AwayItem item) {
+      final e = item.event!;
+      final title = e.title.trim().isEmpty ? '(No title)' : e.title.trim();
+      final account = _account(e.accountId);
+      final who = item.action == AwayAction.decline
+          ? (e.organizer?.display.trim() ?? '')
+          : switch (everyoneOn(e, account?.emailAddress ?? '').length) {
+              1 => '1 other person',
+              final n => '$n other people',
+            };
+      final mine = item.action == AwayAction.decline &&
+          !awayStartsTicked(e, [for (final a in _accounts) a.emailAddress]);
+      return row(item, title: title, lines: [
+        [meetingWhen(e, use24h: use24h), if (who.isNotEmpty) who].join(' · '),
+        if (mine) 'You organised it, from ${e.organizer!.email}',
+        if (e.seriesId != null)
+          item.action == AwayAction.decline
+              ? 'One of a series: only this one is declined'
+              : 'One of a series: only this one is cancelled',
+      ]);
+    }
+
+    List<Widget> problems(Iterable<String> accountIds) => [
+          for (final id in accountIds)
+            if (_unread[id] case final why?)
+              Padding(
+                key: ValueKey('away-unread:$id'),
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+                child: Text(
+                  "${_account(id)?.displayName ?? id}'s calendar could not "
+                  'be read: ${_why(why)} Its meetings are not listed.',
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(color: theme.colorScheme.error),
+                ),
+              ),
+        ];
+
+    // Counted on dates, not hours: a day the clocks change is a day too.
+    final dayCount = DateTime.utc(_last.year, _last.month, _last.day)
+            .difference(DateTime.utc(_first.year, _first.month, _first.day))
+            .inDays +
+        1;
+    final body = ListView(
+      key: const ValueKey('away-list'),
+      padding: const EdgeInsets.only(bottom: 16),
+      children: [
+        if (_reading) const LinearProgressIndicator(),
+        ListTile(
+          key: const ValueKey('away-days'),
+          leading: const Icon(Icons.date_range_outlined),
+          title: Text(_daysText()),
+          subtitle: Text(dayCount == 1 ? '1 day' : '$dayCount days'),
+          trailing: _pressed
+              ? null
+              : TextButton(
+                  key: const ValueKey('away-days-change'),
+                  onPressed: locked ? null : _changeDays,
+                  child: const Text('Change'),
+                ),
+        ),
+        _Heading('Block the days'),
+        _Note('An all-day event shown as out of office, on each calendar '
+            'ticked. Nobody is sent anything.'),
+        for (final b in _blocks)
+          row(b,
+              title: _account(b.accountId)?.displayName ?? '',
+              lines: [
+                _account(b.accountId)?.emailAddress ?? '',
+                if (_blockedAlready[b.accountId] case final already?)
+                  'Out of office already: '
+                      '${already.title.trim().isEmpty ? awayTitle : ''}'
+                      '${already.title.trim()}',
+              ]),
+        _Heading(_reading
+            ? 'Meetings you were invited to'
+            : 'Meetings you were invited to (${_invited.length})'),
+        _Note('Ticked ones are declined, each as Decline does it: only the '
+            'meeting in these days, never the rest of its series.'),
+        ...problems(_accounts.map((a) => a.id)),
+        if (!_reading && _invited.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+            child: Text('None in these days.', style: muted),
+          ),
+        for (final i in _invited) meeting(i),
+        _Heading(_reading
+            ? 'Your own meetings'
+            : 'Your own meetings (${_own.length})'),
+        _Note('Ticked ones are cancelled, as Cancel meeting does it: '
+            'everyone on them is told.'),
+        if (!_reading && _own.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+            child: Text('None with others on them in these days.',
+                style: muted),
+          ),
+        for (final i in _own) meeting(i),
+        _Heading('Your answer'),
+        SwitchListTile(
+          key: const ValueKey('away-tell'),
+          title: const Text('Tell the organisers'),
+          subtitle: Text(_tell
+              ? 'Each gets your decline, with the note below'
+              : 'Declined without a word to them'),
+          value: _tell,
+          onChanged: locked ? null : (on) => setState(() => _tell = on),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: TextField(
+            key: const ValueKey('away-note'),
+            controller: _note,
+            enabled: !locked,
+            minLines: 2,
+            maxLines: 5,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: InputDecoration(
+              labelText: 'A note to them',
+              helperText: _tell
+                  ? 'Goes with each decline, and with each cancellation '
+                      'from a Microsoft account.'
+                  : 'Goes with each cancellation from a Microsoft account. '
+                      'Declines go without a word.',
+              helperMaxLines: 3,
+              border: const OutlineInputBorder(),
+            ),
+          ),
+        ),
+        _Heading('While you are away'),
+        ListTile(
+          key: const ValueKey('away-auto-replies'),
+          leading: const Icon(Icons.reply_all_outlined),
+          title: const Text('Automatic replies'),
+          subtitle: const Text('What people are told when they write to '
+              'you, on its own screen'),
+          trailing: const Icon(Icons.chevron_right, size: 20),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
+            builder: (_) => const AutoRepliesScreen(),
+          )),
+        ),
+      ],
+    );
+
+    final done = _pressed && words == null && !_running;
+    return PopScope(
+      canPop: !_running,
+      onPopInvokedWithResult: (popped, _) {
+        if (popped) return;
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(const SnackBar(
+            duration: kBottomMessage,
+            content: Text('Wait until it is done: each one is being sent.'),
+          ));
+      },
+      child: Scaffold(
+        appBar: AppBar(title: const Text('I am away'), centerTitle: false),
+        body: body,
+        bottomNavigationBar: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (summary != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      summary,
+                      key: const ValueKey('away-summary'),
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: _all.any((i) => i.state == AwayState.failed)
+                            ? theme.colorScheme.error
+                            : null,
+                      ),
+                    ),
+                  ),
+                FilledButton(
+                  key: const ValueKey('away-go'),
+                  onPressed: done
+                      ? () => Navigator.of(context).maybePop()
+                      : (_reading || locked || words == null ? null : _go),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text(
+                      _running
+                          ? 'Sending: $_going of $_goingOf'
+                          : _reading
+                              ? 'Reading the calendars…'
+                              : done
+                                  ? 'Close'
+                                  : words ?? 'Nothing ticked',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+DateTime _dayAfter(DateTime day) => DateTime(day.year, day.month, day.day + 1);
+
+String _why(Object e) => switch (e) {
+      ReadableError(:final message) => message,
+      _ => '$e',
+    };
+
+/// Asked once more before anything that tells anyone goes: what will go,
+/// in words, and that it cannot be taken back.
+class _SureDialog extends StatelessWidget {
+  const _SureDialog({
+    required this.blocks,
+    required this.days,
+    required this.declines,
+    required this.cancels,
+    required this.tell,
+    required this.note,
+    required this.words,
+  });
+
+  final List<String> blocks;
+  final String days;
+  final int declines;
+  final int cancels;
+  final bool tell;
+  final bool note;
+  final String words;
+
+  @override
+  Widget build(BuildContext context) {
+    String meetings(int n) => n == 1 ? '1 meeting' : '$n meetings';
+    final names = blocks.length < 3
+        ? blocks.join(' and ')
+        : '${blocks.length} calendars';
+    return AlertDialog(
+      title: const Text('Go ahead?'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final line in [
+              if (blocks.isNotEmpty)
+                '$days blocked as out of office on $names.',
+              if (declines > 0)
+                tell
+                    ? '${meetings(declines)} declined. '
+                        '${declines == 1 ? 'Its organiser is' : 'Their '
+                            'organisers are'} told'
+                        '${note ? ', with your note' : ''}.'
+                    : '${meetings(declines)} declined, without a word to '
+                        '${declines == 1 ? 'its' : 'their'} '
+                        '${declines == 1 ? 'organiser' : 'organisers'}.',
+              if (cancels > 0)
+                '${meetings(cancels)} of your own cancelled. Everyone on '
+                    '${cancels == 1 ? 'it' : 'them'} is told.',
+              'An answer or a cancellation cannot be taken back.',
+            ])
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(line),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          key: const ValueKey('away-go-back'),
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Go back'),
+        ),
+        FilledButton(
+          key: const ValueKey('away-go-sure'),
+          onPressed: () => Navigator.of(context).pop(true),
+          child: Text(words),
+        ),
+      ],
+    );
+  }
+}
+
+/// One thing on the list: its tick, or where it has got to, its
+/// calendar's colour, and what it is.
+class _AwayRow extends StatelessWidget {
+  const _AwayRow({
+    super.key,
+    required this.item,
+    required this.ticked,
+    required this.enabled,
+    required this.colour,
+    required this.title,
+    required this.lines,
+    required this.onTick,
+  });
+
+  final AwayItem item;
+  final bool ticked;
+  final bool enabled;
+  final Color colour;
+  final String title;
+  final List<String> lines;
+  final void Function(bool on) onTick;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final small = theme.textTheme.bodySmall
+        ?.copyWith(color: scheme.onSurfaceVariant);
+    // Done or gone: never again, so no tick to give it.
+    final tickable = enabled && item.open;
+    final Widget lead = switch (item.state) {
+      AwayState.going => const SizedBox.square(
+          dimension: 20,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      AwayState.done => Icon(Icons.check_circle, color: scheme.primary),
+      AwayState.gone =>
+        Icon(Icons.remove_circle_outline, color: scheme.onSurfaceVariant),
+      AwayState.waiting || AwayState.failed => Checkbox(
+          value: ticked,
+          onChanged: tickable ? (on) => onTick(on ?? false) : null,
+        ),
+    };
+    final said = switch (item.state) {
+      AwayState.done => switch (item.action) {
+          AwayAction.block => 'Blocked',
+          AwayAction.decline => 'Declined',
+          AwayAction.cancel => 'Cancelled',
+        },
+      AwayState.gone => 'No longer on your calendar: nothing more is sent',
+      AwayState.failed => 'Did not go: ${item.problem ?? 'no answer came'}',
+      AwayState.going || AwayState.waiting => null,
+    };
+    // One thing to a screen reader: its tick, what it is, and how it went.
+    return MergeSemantics(
+      child: InkWell(
+        onTap: tickable ? () => onTick(!ticked) : null,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 6, 16, 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 48,
+                height: 40,
+                child: Center(child: lead),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Container(
+                  width: 4,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: colour,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // By its first letter: a Hebrew title reads from the
+                      // right, as everywhere a meeting is named.
+                      SizedBox(
+                        width: double.infinity,
+                        child: Text(
+                          title,
+                          textDirection: firstStrongDirection(title),
+                          style: theme.textTheme.bodyLarge,
+                        ),
+                      ),
+                      for (final line in lines)
+                        if (line.isNotEmpty) Text(line, style: small),
+                      if (said != null)
+                        Text(
+                          said,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: item.state == AwayState.failed
+                                ? scheme.error
+                                : item.state == AwayState.done
+                                    ? scheme.primary
+                                    : scheme.onSurfaceVariant,
+                            fontWeight: item.state == AwayState.gone
+                                ? null
+                                : FontWeight.w600,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Heading extends StatelessWidget {
+  const _Heading(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 2),
+      child: Text(
+        text,
+        style: theme.textTheme.titleSmall
+            ?.copyWith(color: theme.colorScheme.primary),
+      ),
+    );
+  }
+}
+
+class _Note extends StatelessWidget {
+  const _Note(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+      child: Text(
+        text,
+        style: theme.textTheme.bodySmall
+            ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+      ),
+    );
+  }
+}
