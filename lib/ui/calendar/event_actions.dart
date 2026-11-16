@@ -635,6 +635,11 @@ Future<void> duplicateEvent(
     notes: notes,
     location: event.location,
     attendees: everyoneOn(event, own),
+    // Those asked as optional on the original are on the copy (#56).
+    optional: {
+      for (final a in event.attendees)
+        if (a.optional) a.address.email.trim().toLowerCase(),
+    },
     start: start,
     length: event.end.difference(event.start),
     allDay: event.allDay,

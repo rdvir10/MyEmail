@@ -52,6 +52,7 @@ Future<void> openNewMeeting(
   String title = '',
   String notes = '',
   List<MailAddress> attendees = const [],
+  Set<String> optional = const {},
   DateTime? start,
   String location = '',
   Duration? length,
@@ -81,6 +82,7 @@ Future<void> openNewMeeting(
         title: title,
         notes: notes,
         attendees: attendees,
+        optional: optional,
         start: start,
         location: location,
         length: length,
@@ -190,6 +192,7 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
     this.title = '',
     this.notes = '',
     this.attendees = const [],
+    this.optional = const {},
     this.start,
     this.location = '',
     this.length,
@@ -205,6 +208,10 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
 
   /// Who is asked, to begin with: everyone on the message it was made from.
   final List<MailAddress> attendees;
+
+  /// Who of [attendees] is asked as optional to begin with, by address:
+  /// a meeting duplicated keeps those its original had (#56).
+  final Set<String> optional;
 
   /// When it starts. The next whole hour when null; the end is [length]
   /// on, or where that is null as long as Settings say a new meeting lasts
@@ -336,9 +343,12 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// those still on the field at Send or Save count.
   late final ValueNotifier<Set<String>> _optional =
       ValueNotifier(_written?.optional ?? _optionalToBegin);
-  late final Set<String> _optionalToBegin = {
-    for (final a in _editing?.event.attendees ?? const <EventAttendee>[])
-      if (a.optional) a.address.email.trim().toLowerCase(),
+  late final Set<String> _optionalToBegin = switch (_editing) {
+    final edit? => {
+        for (final a in edit.event.attendees)
+          if (a.optional) a.address.email.trim().toLowerCase(),
+      },
+    null => {for (final o in widget.optional) o.trim().toLowerCase()},
   };
 
   /// Who of [people] is optional now.
@@ -1754,6 +1764,40 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     );
   }
 
+  /// The labels down the left of the screen.
+  static const _labels = [
+    'From',
+    'Calendar',
+    'Title',
+    'Attendees',
+    'Start',
+    'End',
+    'All day',
+    'Online',
+    'Location',
+  ];
+
+  /// How wide their column is: the longest of them in [style] at the text
+  /// size in use, and a little room after it, never less than the 64 it
+  /// was. In 64, "Attendees" broke to "Attendee / s" on the phone, and
+  /// "Location" at text 1.3. The message composer keeps its 64.
+  static double _labelWidth(BuildContext context, TextStyle? style) {
+    final scaler = MediaQuery.textScalerOf(context);
+    var widest = 0.0;
+    for (final label in _labels) {
+      final painter = TextPainter(
+        text: TextSpan(text: label, style: style),
+        textDirection: TextDirection.ltr,
+        textScaler: scaler,
+        maxLines: 1,
+      )..layout();
+      if (painter.width > widest) widest = painter.width;
+      painter.dispose();
+    }
+    final width = (widest + 8).ceilToDouble();
+    return width < 64 ? 64 : width;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1764,6 +1808,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     final room = _online ? _linkChoice : null;
     final muted = theme.textTheme.bodyMedium
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final labelWidth = _labelWidth(context, muted);
 
     return PopScope(
       canPop: false,
@@ -1823,7 +1868,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                 padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
                 child: Row(
                   children: [
-                    SizedBox(width: 64, child: Text('From', style: muted)),
+                    SizedBox(
+                        width: labelWidth,
+                        child: Text('From', style: muted)),
                     Expanded(
                       child: DropdownButton<String>(
                         key: const ValueKey('meeting-from-account'),
@@ -1891,6 +1938,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                 accountId: _accountId,
                 chosen: _calendarId,
                 muted: muted,
+                labelWidth: labelWidth,
                 onChanged: _sending
                     ? null
                     : (id) {
@@ -1905,6 +1953,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             HeaderField(
               key: const ValueKey('meeting-title'),
               label: 'Title',
+              labelWidth: labelWidth,
               controller: _title,
               enabled: !_sending,
               // A meeting from a message has its title; the cursor is
@@ -1914,6 +1963,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             RecipientField(
               key: const ValueKey('meeting-attendees'),
               label: 'Attendees',
+              labelWidth: labelWidth,
               controller: _attendees,
               optional: _optional,
               enabled: !_sending,
@@ -1921,6 +1971,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             ),
             _WhenRow(
               label: 'Start',
+              labelWidth: labelWidth,
               at: _shown(_start),
               allDay: _allDay,
               enabled: !_sending,
@@ -1933,6 +1984,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             ),
             _WhenRow(
               label: 'End',
+              labelWidth: labelWidth,
               at: _shown(_end),
               allDay: _allDay,
               enabled: !_sending,
@@ -1945,7 +1997,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             ),
             if (_options.zone case final zone? when !_allDay)
               Padding(
-                padding: const EdgeInsets.fromLTRB(80, 0, 16, 4),
+                padding: EdgeInsets.fromLTRB(16 + labelWidth, 0, 16, 4),
                 child: Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
@@ -1961,7 +2013,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
               padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
               child: Row(
                 children: [
-                  SizedBox(width: 64, child: Text('All day', style: muted)),
+                  SizedBox(
+                      width: labelWidth,
+                      child: Text('All day', style: muted)),
                   Switch(
                     key: const ValueKey('meeting-all-day'),
                     value: _allDay,
@@ -2019,7 +2073,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                 padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
                 child: Row(
                   children: [
-                    SizedBox(width: 64, child: Text('Online', style: muted)),
+                    SizedBox(
+                        width: labelWidth,
+                        child: Text('Online', style: muted)),
                     Switch(
                       key: const ValueKey('meeting-online'),
                       value: _online,
@@ -2074,6 +2130,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             HeaderField(
               key: const ValueKey('meeting-location'),
               label: 'Location',
+              labelWidth: labelWidth,
               controller: _location,
               enabled: !_sending,
             ),
@@ -2346,6 +2403,7 @@ class _InviteText extends StatelessWidget {
 class _WhenRow extends StatelessWidget {
   const _WhenRow({
     required this.label,
+    required this.labelWidth,
     required this.at,
     required this.allDay,
     required this.enabled,
@@ -2356,6 +2414,7 @@ class _WhenRow extends StatelessWidget {
   });
 
   final String label;
+  final double labelWidth;
   final DateTime at;
   final bool allDay;
   final bool enabled;
@@ -2374,27 +2433,41 @@ class _WhenRow extends StatelessWidget {
       child: Row(
         children: [
           SizedBox(
-            width: 64,
+            width: labelWidth,
             child: Text(
               label,
               style: theme.textTheme.bodyMedium
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),
           ),
-          TextButton(
-            key: ValueKey('$keyPrefix-date'),
-            onPressed: enabled && dateEnabled ? onDate : null,
-            child: Text(formatDay(at)),
-          ),
-          if (!allDay)
-            TextButton(
-              key: ValueKey('$keyPrefix-time'),
-              onPressed: enabled ? onTime : null,
-              child: Text(formatClock(
-                at,
-                use24h: MediaQuery.alwaysUse24HourFormatOf(context),
-              )),
+          // Drawn smaller rather than cut off where the labels' column and
+          // the text size leave them too little room; as they were
+          // otherwise.
+          Flexible(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: AlignmentDirectional.centerStart,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton(
+                    key: ValueKey('$keyPrefix-date'),
+                    onPressed: enabled && dateEnabled ? onDate : null,
+                    child: Text(formatDay(at)),
+                  ),
+                  if (!allDay)
+                    TextButton(
+                      key: ValueKey('$keyPrefix-time'),
+                      onPressed: enabled ? onTime : null,
+                      child: Text(formatClock(
+                        at,
+                        use24h: MediaQuery.alwaysUse24HourFormatOf(context),
+                      )),
+                    ),
+                ],
+              ),
             ),
+          ),
         ],
       ),
     );
@@ -2489,12 +2562,14 @@ class _CalendarChoice extends ConsumerWidget {
     required this.accountId,
     required this.chosen,
     required this.muted,
+    required this.labelWidth,
     required this.onChanged,
   });
 
   final String accountId;
   final String chosen;
   final TextStyle? muted;
+  final double labelWidth;
   final void Function(String calendarId)? onChanged;
 
   @override
@@ -2513,7 +2588,8 @@ class _CalendarChoice extends ConsumerWidget {
       padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
       child: Row(
         children: [
-          SizedBox(width: 64, child: Text('Calendar', style: muted)),
+          SizedBox(
+              width: labelWidth, child: Text('Calendar', style: muted)),
           Expanded(
             child: DropdownButton<String>(
               key: const ValueKey('meeting-calendar'),

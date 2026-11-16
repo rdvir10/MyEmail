@@ -909,10 +909,11 @@ class GoogleCalendarApi {
   /// people, and anyone on it that [before] did not have, added elsewhere
   /// since, whom nobody here could have meant to take off.
   ///
-  /// [optional] is who of [now] is optional, as Edit had them (#56): each
-  /// entry of theirs is marked so, and each other's of [now] not, their
-  /// answers kept. Null where a change does not say (Invite people): each
-  /// entry as it was, and anyone new required.
+  /// [optional] is who of [now] is optional, as Edit had them (#56): the
+  /// entry of each whose flag Ron changed there is marked or unmarked,
+  /// answers kept, and the rest left as the event has them; anyone new is
+  /// marked as Edit had them. Null where a change does not say (Invite
+  /// people): each entry as it was, and anyone new required.
   static List<Map<String, Object?>> mergedAttendees(
     Object? had,
     List<MailAddress> now, {
@@ -922,15 +923,23 @@ class GoogleCalendarApi {
     String key(Object? email) => '${email ?? ''}'.trim().toLowerCase();
     final wanted = {for (final a in now) key(a.email)};
     final shown = {for (final a in before.attendees) key(a.address.email)};
+    // Who the screen started with as optional: the phone's copy. Only
+    // those whose flag Ron changed there are marked or unmarked, so one
+    // made optional in Google Calendar since it was read is not set back.
+    final wasOptional = {
+      for (final a in before.attendees)
+        if (a.optional) key(a.address.email),
+    };
     final kept = <String, Map<String, Object?>>{};
     for (final a in had is List ? had.whereType<Map>() : const <Map>[]) {
       final entry = a.cast<String, Object?>();
       final email = key(entry['email']);
       if (optional != null &&
           wanted.contains(email) &&
+          shown.contains(email) &&
           entry['organizer'] != true &&
           entry['resource'] != true &&
-          (entry['optional'] == true) != optional.contains(email)) {
+          wasOptional.contains(email) != optional.contains(email)) {
         kept[email] = {...entry, 'optional': optional.contains(email)};
       } else if (entry['organizer'] == true ||
           entry['resource'] == true ||
