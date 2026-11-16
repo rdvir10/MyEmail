@@ -8,6 +8,7 @@ import '../data/mail_engine.dart';
 import '../data/ui_state_store.dart';
 import '../domain/meeting.dart';
 import '../domain/meeting_link.dart';
+import '../domain/new_meeting_defaults.dart';
 import 'folder_tree.dart' show isSyntheticList;
 import 'providers.dart';
 
@@ -215,3 +216,26 @@ class MeetingLinks extends Notifier<List<MeetingLink>> {
 
 final meetingLinksProvider =
     NotifierProvider<MeetingLinks, List<MeetingLink>>(MeetingLinks.new);
+
+/// How a new meeting starts (see [NewMeetingDefaults]), kept in Settings,
+/// Calendar, New meetings.
+class NewMeetingDefaultsNotifier extends Notifier<NewMeetingDefaults> {
+  @override
+  NewMeetingDefaults build() {
+    final store = ref.watch(uiStateStoreProvider);
+    listenSelf((_, next) => store.writeString(
+          UiStateKeys.newMeetingDefaults,
+          jsonEncode(next.toJson()),
+        ));
+    final kept = store.readString(UiStateKeys.newMeetingDefaults);
+    return kept == null
+        ? const NewMeetingDefaults()
+        : NewMeetingDefaults.tryParse(kept) ?? const NewMeetingDefaults();
+  }
+
+  void set(NewMeetingDefaults defaults) => state = defaults;
+}
+
+final newMeetingDefaultsProvider =
+    NotifierProvider<NewMeetingDefaultsNotifier, NewMeetingDefaults>(
+        NewMeetingDefaultsNotifier.new);

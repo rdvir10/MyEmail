@@ -130,6 +130,11 @@ abstract final class UiStateKeys {
   /// details: anyone with one of them can come in.
   static const meetingLinks = 'calendar.meeting-links.v1';
 
+  /// How a new meeting starts: its length, whether it ends early, and the
+  /// accounts it starts online for; see `NewMeetingDefaults`. In the
+  /// backup.
+  static const newMeetingDefaults = 'calendar.new-meeting.v1';
+
   /// The meeting reminders and the morning agenda set with Android, and
   /// when they were last brought up to date; see `CalendarUpkeep`. Written
   /// by the background worker and the app, each through its own copy of

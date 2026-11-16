@@ -15,6 +15,7 @@ import '../../domain/error_report.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/meeting.dart';
 import '../../domain/meeting_link.dart';
+import '../../domain/new_meeting_defaults.dart';
 import '../../domain/text_direction.dart';
 import '../../state/calendar_providers.dart';
 import '../../state/calendar_view_providers.dart'
@@ -175,6 +176,10 @@ List<MailAddress> meetingAttendeesFor(
 /// meeting goes with it in the place, where none was typed, and as the
 /// notes' last line, which the screen shows under the notes and puts in
 /// what it sends, never in the fields.
+///
+/// How long a new meeting lasts, and whether its switch starts on, are as
+/// Settings, Calendar, New meetings say ([NewMeetingDefaults]); a meeting
+/// being changed keeps what it has.
 class NewMeetingScreen extends ConsumerStatefulWidget {
   const NewMeetingScreen({
     super.key,
@@ -199,7 +204,8 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
   final List<MailAddress> attendees;
 
   /// When it starts. The next whole hour when null; the end is [length]
-  /// on, an hour where that is null.
+  /// on, or where that is null as long as Settings say a new meeting lasts
+  /// (an hour until chosen; see [NewMeetingDefaults]).
   final DateTime? start;
   final String location;
   final Duration? length;
@@ -341,6 +347,18 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   late final _notes =
       TextEditingController(text: _written?.notes ?? _notesToBegin);
 
+  /// How a new meeting starts, as Settings, Calendar, New meetings have it
+  /// (calendar idea #61): read once, as the screen opens. A meeting being
+  /// changed never starts from them.
+  late final NewMeetingDefaults _defaults =
+      ref.read(newMeetingDefaultsProvider);
+
+  /// How long a new meeting is where nothing says: the length chosen in
+  /// Settings, less the minutes it ends early. An hour for a meeting being
+  /// changed, as it always was.
+  Duration get _defaultLength =>
+      _editing == null ? _defaults.length : const Duration(hours: 1);
+
   /// The times as the screen opened, kept to tell a time picked from one
   /// left alone. A whole day ends on its last day here, where a calendar
   /// counts the day after.
@@ -351,7 +369,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     final e? => e.allDay ? DateTime(e.end.year, e.end.month, e.end.day - 1) : e.end,
     null => widget.allDay
         ? _startToBegin
-        : _startToBegin.add(widget.length ?? const Duration(hours: 1)),
+        : _startToBegin.add(widget.length ?? _defaultLength),
   };
   late final bool _allDayToBegin = _editing?.event.allDay ?? widget.allDay;
 
@@ -399,11 +417,26 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// the account now can hold it too.
   late OnlineMeetingKind? _onlineKind = _written?.onlineKind;
 
+  /// Whether [_onlineKind] was chosen from the menu, rather than being the
+  /// first of an account's: only a choice is kept through From. Without
+  /// one, Hadco's Teams, on by default (#61), came back as Meet once From
+  /// had been the Gmail account, whose only kind it is.
+  late bool _kindChosen = _written?.onlineKind != null;
+
   /// Whether a link was asked for. Honoured only where the account's
   /// calendar holds meetings online: the switch keeps its setting through
   /// a change of From, and a meeting from an account with nowhere to hold
   /// one goes without.
-  late bool _online = _written?.online ?? false;
+  ///
+  /// On to begin with for an account Settings start online (#61), and
+  /// following From's own setting until the switch, a kind or a meeting
+  /// link is chosen here ([_onlineChosen]).
+  late bool _online = _written?.online ??
+      (_editing == null && _defaults.onlineFor(_accountId));
+
+  /// Whether the switch was set here, by hand, rather than by Settings: it
+  /// then stays as set whatever From becomes.
+  late bool _onlineChosen = _written != null;
 
   /// Which ask is the current one. From can change while an answer is on
   /// its way, and the answer for the account before must not label the
@@ -563,8 +596,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     setState(() {
       _onlineKinds = kinds;
       _onlineAnswered = true;
-      _onlineKind =
-          kinds.contains(_onlineKind) ? _onlineKind : kinds.firstOrNull;
+      _onlineKind = _kindChosen && kinds.contains(_onlineKind)
+          ? _onlineKind
+          : kinds.firstOrNull;
     });
     // From changed with the switch on: this account's link, and its text.
     if (_online && _prepared == null && _preparing == null) {
@@ -721,7 +755,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     final length = _end.difference(_start);
     setState(() {
       _start = next;
-      _end = next.add(length.isNegative ? const Duration(hours: 1) : length);
+      _end = next.add(length.isNegative ? _defaultLength : length);
     });
   }
 
@@ -1008,7 +1042,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     final read = readQuickMeeting(
       line,
       found,
-      length: _allDay ? const Duration(hours: 1) : _end.difference(_start),
+      length: _allDay ? _defaultLength : _end.difference(_start),
     );
     setState(() {
       _reading = false;
@@ -1017,7 +1051,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       if (read.start case final start?) {
         _allDay = read.allDay;
         _start = start;
-        _end = read.end ?? start.add(const Duration(hours: 1));
+        _end = read.end ?? start.add(_defaultLength);
       }
       _quick.clear();
     });
@@ -1376,7 +1410,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     setState(() {
       _pickedLink = null;
       _onlineKind = kind;
+      _kindChosen = true;
       _online = true;
+      _onlineChosen = true;
     });
     if (!same) unawaited(_prepare());
   }
@@ -1423,6 +1459,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                     _dropPrepared();
                     _pickedLink = link;
                     _online = true;
+                    _onlineChosen = true;
                   });
               }
             },
@@ -1541,6 +1578,11 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                                   // waits to see whether it can too.
                                   _onlineKinds = const [];
                                   _onlineAnswered = false;
+                                  // Online as Settings start this account,
+                                  // unless the switch was set here (#61).
+                                  if (!_onlineChosen) {
+                                    _online = _defaults.onlineFor(id);
+                                  }
                                 });
                                 _askOnline();
                               },
@@ -1707,6 +1749,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                           : (on) {
                               setState(() {
                                 _online = on;
+                                _onlineChosen = true;
                                 if (!on) _dropPrepared();
                               });
                               if (on) unawaited(_prepare());
