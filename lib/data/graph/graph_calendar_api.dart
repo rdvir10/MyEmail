@@ -12,6 +12,7 @@ import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
 import '../../domain/meeting_links.dart';
+import '../../domain/meeting_repeat.dart';
 import '../../domain/text_direction.dart';
 import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
@@ -739,6 +740,16 @@ class GraphCalendarApi {
     final end = _utcTimeOf(json['end'], wholeDay: allDay);
     if (start == null || end == null) return null;
     return (start: start, end: end, allDay: allDay);
+  }
+
+  // --- what a meeting's sheet reads (calendar idea #44) ----------------------
+
+  /// How series [seriesId] repeats, as its own recurrence says: the one
+  /// thing asked of it. Null where the series is gone, or repeats in a way
+  /// [MeetingRepeat] does not say.
+  Future<MeetingRepeat?> seriesRepeat(String seriesId) async {
+    final json = await _event(seriesId, select: 'recurrence');
+    return json == null ? null : MeetingRepeat.fromGraph(json['recurrence']);
   }
 
   /// A meeting as Graph gives it, asked for with [meetingFields] in UTC; null

@@ -8,6 +8,7 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
+import '../../domain/meeting_repeat.dart';
 import '../auth/google_oauth.dart' show GoogleOAuth;
 import '../auth/microsoft_oauth.dart'
     show MicrosoftOAuth, SignInExpired, SignInNeedsConsent;
@@ -822,6 +823,37 @@ class AccountCalendar {
           'Google Calendar has no way to forward an invitation. Ask the '
           'organiser to add them.',
         );
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
+  // --- what a meeting's sheet reads (calendar idea #44) ----------------------
+
+  /// How [event]'s series repeats on [account]'s calendar; see
+  /// `ReadsMeetingRepeat.meetingRepeat`. A meeting on its own asks nothing.
+  Future<MeetingRepeat?> meetingRepeat(
+    Account account,
+    CalendarEvent event,
+  ) async {
+    final series = event.seriesId;
+    if (series == null) return null;
+    if (account.isShared) throw const CalendarUnavailable(_sharedOnly);
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          return await api.seriesRepeat(series);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          return await api.seriesRepeat(series, calendarId: event.calendarId);
+        } finally {
+          api.close();
+        }
       case MailProvider.gmail:
         throw const CalendarUnavailable(_appPasswordOnly);
     }

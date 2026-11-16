@@ -47,6 +47,7 @@ import 'event_colours.dart';
 import 'event_notes.dart';
 import 'hour_scale.dart';
 import 'invitation_clearing.dart' show InvitationClearing;
+import 'meeting_facts.dart';
 import 'meeting_mail.dart';
 import 'meeting_people.dart';
 import 'meeting_ticker.dart';
@@ -3283,6 +3284,18 @@ class _EventDetails extends StatelessWidget {
                     use24h: use24h)
                 case final setIn?)
               Text(setIn, key: const ValueKey('event-set-in'), style: muted),
+            // How it repeats, then its reminder, how it shows, private and
+            // its categories (#44): quiet, under the time, and nothing for
+            // what it has none of.
+            MeetingRepeatLine(
+              event: e,
+              asks: account != null && AccountCalendar.canRead(account),
+              style: muted,
+            ),
+            if (meetingFacts(e,
+                    freeOrBusy: account?.provider == MailProvider.gmail)
+                case final facts when facts.isNotEmpty)
+              Text(facts, key: const ValueKey('event-facts'), style: muted),
             if (e.location.isNotEmpty) ...[
               const SizedBox(height: 4),
               // A tap from directions, where it is somewhere (#40).

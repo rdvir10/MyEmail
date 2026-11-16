@@ -21,6 +21,7 @@ import '../../domain/mail_message.dart';
 import '../../domain/sender_blocks.dart';
 import '../../domain/meeting.dart';
 import '../../domain/meeting_links.dart' show withLinksKept;
+import '../../domain/meeting_repeat.dart';
 import '../../domain/message_move.dart';
 import '../../domain/draft.dart';
 import '../../domain/error_report.dart' show NeedsSignIn, ReadableError;
@@ -35,6 +36,7 @@ import '../auth/oauth_token_repository.dart';
 import '../cache/cache_store.dart';
 import '../cache/folder_sync.dart';
 import '../calendar/account_calendar.dart';
+import '../calendar/sheet_calendar.dart';
 import '../contacts/account_people.dart';
 import '../compose/graph_sender.dart';
 import '../compose/mime_parts.dart' show draftOnlyHeaders;
@@ -69,7 +71,8 @@ class CachedImapEngine
         KeepsChangesForLater,
         SaysWhatWoke,
         SaysMeetingMailArrived,
-        FindsByMessageId {
+        FindsByMessageId,
+        ReadsMeetingRepeat {
   CachedImapEngine({
     required this.accountStore,
     required this.credentialStore,
@@ -1563,6 +1566,12 @@ class CachedImapEngine
   }) =>
       _calendars.forwardEvent(_accountFor(event.accountId), event, to,
           note: note);
+
+  // What a meeting's sheet asks (calendar idea #44): see sheet_calendar.dart.
+
+  @override
+  Future<MeetingRepeat?> meetingRepeat(CalendarEvent event) =>
+      _calendars.meetingRepeat(_accountFor(event.accountId), event);
 
   @override
   Future<List<TimeSpan>> busyTimes(

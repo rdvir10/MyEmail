@@ -18,11 +18,13 @@ import '../../domain/mail_attachment.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/meeting.dart';
+import '../../domain/meeting_repeat.dart';
 import '../../domain/message_move.dart';
 import '../cache/cache_store.dart' show MemoryCalendarKeep;
 import '../compose/quote_builder.dart';
 import '../imap/imap_mapping.dart';
 import '../auth/oauth_token.dart';
+import '../calendar/sheet_calendar.dart';
 import '../contacts/account_people.dart' show AccountPeople;
 import '../mail_engine.dart';
 import '../mailbox_settings/server_settings.dart';
@@ -38,7 +40,8 @@ import 'sample_messages.dart';
 /// Behaviour also mirrors IMAP where it matters for the UI: renaming or moving
 /// a folder rewrites the path (and therefore the id) of its whole subtree, and
 /// a name that collides with a sibling is refused.
-class SampleMailEngine implements MailEngine, SaysMeetingMailArrived {
+class SampleMailEngine
+    implements MailEngine, SaysMeetingMailArrived, ReadsMeetingRepeat {
   SampleMailEngine() {
     for (final account in _accounts) {
       _folders[account.id] = _buildFolders(account.id, _specsFor(account.id));
@@ -1167,6 +1170,18 @@ class SampleMailEngine implements MailEngine, SaysMeetingMailArrived {
       'forward ${event.id} to=${[for (final a in to) a.email].join(',')}',
       if (note.isNotEmpty) 'note=$note',
     ].join(' '));
+  }
+
+  // What a meeting's sheet asks (calendar idea #44): see sheet_calendar.dart.
+
+  /// How each series repeats, by its id, for a test to fill: what
+  /// [meetingRepeat] answers. A series not in it is not known.
+  final Map<String, MeetingRepeat> repeats = {};
+
+  @override
+  Future<MeetingRepeat?> meetingRepeat(CalendarEvent event) async {
+    await _calendarCall(event.accountId);
+    return repeats[event.seriesId];
   }
 
   /// A working week of meetings, the same each week: a stand-up each
