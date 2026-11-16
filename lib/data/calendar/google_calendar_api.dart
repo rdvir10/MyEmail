@@ -976,6 +976,27 @@ class GoogleCalendarApi {
     return MeetingRepeat.fromGoogle(event);
   }
 
+  // --- the account's own copy of a meeting (calendar idea #45) --------------
+
+  /// Change [eventId], the account's copy of someone else's meeting on
+  /// [calendarId]: its reminder, and whether it shows the time as taken,
+  /// which Google keeps for each guest. Nothing else of the meeting is
+  /// sent, and Google is told to write to nobody.
+  Future<void> changeOwnCopy(
+    String eventId, {
+    Reminder? reminder,
+    EventShowAs? showAs,
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async {
+    final fields = {
+      if (reminder != null) 'reminders': remindersJson(reminder),
+      if (showAs != null) 'transparency': googleTransparency(showAs),
+    };
+    if (fields.isEmpty) return;
+    await _patchEvent(eventId, fields,
+        calendarId: calendarId, sendUpdates: 'none');
+  }
+
   /// A patch to [eventId] with [fields], Google told to write to everyone
   /// on it unless [sendUpdates] says otherwise.
   Future<void> _patchEvent(

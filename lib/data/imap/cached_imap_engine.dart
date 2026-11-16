@@ -72,7 +72,8 @@ class CachedImapEngine
         SaysWhatWoke,
         SaysMeetingMailArrived,
         FindsByMessageId,
-        ReadsMeetingRepeat {
+        ReadsMeetingRepeat,
+        ChangesOwnCopy {
   CachedImapEngine({
     required this.accountStore,
     required this.credentialStore,
@@ -1567,11 +1568,22 @@ class CachedImapEngine
       _calendars.forwardEvent(_accountFor(event.accountId), event, to,
           note: note);
 
-  // What a meeting's sheet asks (calendar idea #44): see sheet_calendar.dart.
+  // What a meeting's sheet asks (calendar ideas #44, #45): see
+  // sheet_calendar.dart.
 
   @override
   Future<MeetingRepeat?> meetingRepeat(CalendarEvent event) =>
       _calendars.meetingRepeat(_accountFor(event.accountId), event);
+
+  @override
+  Future<void> changeOwnCopy(
+    CalendarEvent event, {
+    Reminder? reminder,
+    EventShowAs? showAs,
+    bool wholeSeries = false,
+  }) =>
+      _calendars.changeOwnCopy(_accountFor(event.accountId), event,
+          reminder: reminder, showAs: showAs, wholeSeries: wholeSeries);
 
   @override
   Future<List<TimeSpan>> busyTimes(

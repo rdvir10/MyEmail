@@ -859,6 +859,46 @@ class AccountCalendar {
     }
   }
 
+  // --- the account's own copy of a meeting (calendar idea #45) --------------
+
+  /// Change [account]'s own copy of [event], someone else's meeting; see
+  /// `ChangesOwnCopy.changeOwnCopy`. For [wholeSeries], the series'.
+  Future<void> changeOwnCopy(
+    Account account,
+    CalendarEvent event, {
+    Reminder? reminder,
+    EventShowAs? showAs,
+    bool wholeSeries = false,
+  }) async {
+    // A change to one's own meeting is Edit's, which tells everyone on it.
+    if (isOwnEvent(event)) {
+      throw ArgumentError('This is your own meeting: Edit changes it.');
+    }
+    if (account.isShared) throw const CalendarUnavailable(_sharedOnly);
+    final id = _target(event, wholeSeries);
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final api = _graphApi(account);
+        try {
+          await api.changeOwnCopy(id, reminder: reminder, showAs: showAs);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail when account.authMethod == AuthMethod.oauth:
+        final api = _googleApi(account);
+        try {
+          await api.changeOwnCopy(id,
+              reminder: reminder,
+              showAs: showAs,
+              calendarId: event.calendarId);
+        } finally {
+          api.close();
+        }
+      case MailProvider.gmail:
+        throw const CalendarUnavailable(_appPasswordOnly);
+    }
+  }
+
   /// Why a Gmail account with an app password has no calendar here.
   static const _appPasswordOnly =
       "The app cannot reach this account's calendar: an app password covers "

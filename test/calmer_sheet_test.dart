@@ -399,6 +399,9 @@ void main() {
         'Email everyone',
         'Forward',
         'Propose a new time',
+        // Your own copy of someone else's meeting (#45).
+        'My reminder',
+        'Show me as',
         'Duplicate',
         'Decline and remove',
         'Open in Outlook',

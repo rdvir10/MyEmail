@@ -41,7 +41,11 @@ import 'sample_messages.dart';
 /// a folder rewrites the path (and therefore the id) of its whole subtree, and
 /// a name that collides with a sibling is refused.
 class SampleMailEngine
-    implements MailEngine, SaysMeetingMailArrived, ReadsMeetingRepeat {
+    implements
+        MailEngine,
+        SaysMeetingMailArrived,
+        ReadsMeetingRepeat,
+        ChangesOwnCopy {
   SampleMailEngine() {
     for (final account in _accounts) {
       _folders[account.id] = _buildFolders(account.id, _specsFor(account.id));
@@ -1172,7 +1176,8 @@ class SampleMailEngine
     ].join(' '));
   }
 
-  // What a meeting's sheet asks (calendar idea #44): see sheet_calendar.dart.
+  // What a meeting's sheet asks (calendar ideas #44, #45): see
+  // sheet_calendar.dart.
 
   /// How each series repeats, by its id, for a test to fill: what
   /// [meetingRepeat] answers. A series not in it is not known.
@@ -1182,6 +1187,34 @@ class SampleMailEngine
   Future<MeetingRepeat?> meetingRepeat(CalendarEvent event) async {
     await _calendarCall(event.accountId);
     return repeats[event.seriesId];
+  }
+
+  /// Written down as "own e1 reminder=30 showAs=free series", and the
+  /// event changed where a test gave it, as the calendar would have it.
+  @override
+  Future<void> changeOwnCopy(
+    CalendarEvent event, {
+    Reminder? reminder,
+    EventShowAs? showAs,
+    bool wholeSeries = false,
+  }) async {
+    await _calendarCall(event.accountId);
+    if (isOwnEvent(event)) {
+      throw ArgumentError('This is your own meeting: Edit changes it.');
+    }
+    calendarActions.add([
+      'own ${event.id}',
+      if (reminder != null) 'reminder=${reminder.minutes ?? 'none'}',
+      if (showAs != null) 'showAs=${showAs.name}',
+      if (wholeSeries) 'series',
+    ].join(' '));
+    // Through what the event keeps, so every field it has comes along.
+    final changed = CalendarEvent.fromJson({
+      ...event.toJson(),
+      if (reminder != null) 'reminderMinutes': reminder.minutes,
+      if (showAs != null) 'showAs': showAs.name,
+    });
+    if (changed != null) _changeEvent(event, changed);
   }
 
   /// A working week of meetings, the same each week: a stand-up each

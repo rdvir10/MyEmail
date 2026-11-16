@@ -14,8 +14,15 @@ import '../meetings/meeting_options.dart' show showAsLabel;
 
 /// A reminder [minutes] before a meeting, in plain words: "Reminder 15
 /// minutes before", "Reminder 1 hour before", "Reminder at the start".
-String reminderSaid(int minutes) {
-  if (minutes <= 0) return 'Reminder at the start';
+String reminderSaid(int minutes) => minutes <= 0
+    ? 'Reminder at the start'
+    : 'Reminder ${reminderChoice(minutes)}';
+
+/// A reminder as My reminder lists it (calendar idea #45): "None", "At
+/// the start", "15 minutes before", "2 hours before", "1 day before".
+String reminderChoice(int? minutes) {
+  if (minutes == null) return 'None';
+  if (minutes <= 0) return 'At the start';
   String n(int count, String unit) =>
       count == 1 ? '1 $unit' : '$count ${unit}s';
   final how = minutes % 10080 == 0
@@ -25,7 +32,7 @@ String reminderSaid(int minutes) {
           : minutes % 60 == 0
               ? n(minutes ~/ 60, 'hour')
               : n(minutes, 'minute');
-  return 'Reminder $how before';
+  return '$how before';
 }
 
 /// [e]'s reminder, how it shows, private and its categories, in one line:

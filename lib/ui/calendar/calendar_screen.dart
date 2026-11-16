@@ -3204,6 +3204,8 @@ class _EventDetails extends StatelessWidget {
                       'email' => then(emailEveryone),
                       'invite' => then(invitePeople),
                       'propose' => then(proposeForEvent),
+                      'my-reminder' => then(changeMyReminder),
+                      'show-me-as' => then(changeHowIShow),
                       'duplicate' => then(duplicateEvent),
                       'remove' => then(cancelOrDeleteEvent),
                       // The sheet stays, as it did for the button.
@@ -3230,6 +3232,22 @@ class _EventDetails extends StatelessWidget {
                             value: 'propose',
                             child: Text('Propose a new time'),
                           ),
+                        // Your own copy of it (#45): when you are reminded,
+                        // and how it shows you, told to nobody.
+                        if (invited &&
+                            !e.declined &&
+                            canChangeOwnCopy(hostRef)) ...[
+                          const PopupMenuItem(
+                            key: ValueKey('event-my-reminder'),
+                            value: 'my-reminder',
+                            child: Text('My reminder'),
+                          ),
+                          const PopupMenuItem(
+                            key: ValueKey('event-show-me-as'),
+                            value: 'show-me-as',
+                            child: Text('Show me as'),
+                          ),
+                        ],
                         const PopupMenuItem(
                           key: ValueKey('event-duplicate'),
                           value: 'duplicate',

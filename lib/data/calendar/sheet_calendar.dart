@@ -1,4 +1,5 @@
 import '../../domain/calendar_event.dart';
+import '../../domain/meeting.dart' show Reminder;
 import '../../domain/meeting_repeat.dart';
 
 /// What a meeting's sheet asks of a calendar beyond the meeting the views
@@ -16,4 +17,23 @@ abstract interface class ReadsMeetingRepeat {
   /// one that repeats in a way the app does not say. Throws as
   /// `MailEngine.respondToEvent` does.
   Future<MeetingRepeat?> meetingRepeat(CalendarEvent event);
+}
+
+/// An engine that changes the account's own copy of someone else's meeting
+/// (calendar idea #45): when it reminds of it, and how it shows the
+/// account. Outlook and Google keep both for each person on a meeting, and
+/// a change to them is told to nobody.
+abstract interface class ChangesOwnCopy {
+  /// Change [event], a meeting someone else organised, on the account's
+  /// own calendar alone: its [reminder], how it shows the account
+  /// ([showAs]), or both; for [wholeSeries], every meeting of its series.
+  /// Nobody is told. Refused with an [ArgumentError] for a meeting of the
+  /// account's own, which Edit changes, telling everyone on it. Throws as
+  /// `MailEngine.respondToEvent` does.
+  Future<void> changeOwnCopy(
+    CalendarEvent event, {
+    Reminder? reminder,
+    EventShowAs? showAs,
+    bool wholeSeries = false,
+  });
 }
