@@ -29,12 +29,45 @@ const _monthNames = [
 /// meeting's Join at the top, each meeting's sheet a tap away, and the
 /// whole calendar from the date. Tomorrow's meetings come after today's,
 /// under a date of their own that opens the calendar on that day.
+///
+/// On the phone, a sheet over the mail ([showMyDaySheet]).
 class MyDayPane extends ConsumerStatefulWidget {
-  const MyDayPane({super.key});
+  const MyDayPane({super.key, this.over});
+
+  /// Where My Day is a sheet over the phone's mail (#76): the mail screen
+  /// and its ref, which outlive the sheet, and the sheet's own context. A
+  /// tap closes the sheet first, then opens over the mail what the pane
+  /// opens over itself on a tablet; its X closes the sheet, and the
+  /// tablet's pane stays as it was. Null for the tablet's pane.
+  final ({BuildContext mail, WidgetRef ref, BuildContext sheet})? over;
 
   @override
   ConsumerState<MyDayPane> createState() => _MyDayPaneState();
 }
+
+/// My Day as a sheet over the phone's mail (calendar idea #76), from
+/// [context], the mail screen, and its [ref]. The phone has no folder pane
+/// to give its place, and its top bar no room for another button: the
+/// calendar button, held, opens this.
+Future<void> showMyDaySheet(BuildContext context, WidgetRef ref) =>
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheet) => SafeArea(
+        // Above the system's bar at the foot, a Samsung's taskbar: the
+        // list scrolls its last meeting up over it.
+        top: false,
+        child: FractionallySizedBox(
+          heightFactor: 0.75,
+          child: MyDayPane(
+            key: const ValueKey('my-day-sheet'),
+            over: (mail: context, ref: ref, sheet: sheet),
+          ),
+        ),
+      ),
+    );
 
 class _MyDayPaneState extends ConsumerState<MyDayPane> {
   Timer? _ticking;
@@ -74,6 +107,18 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
     final today = range.start;
     final tomorrow = nextDay.start;
+    final over = widget.over;
+
+    /// [open] on the screen My Day is on; from a sheet, on the mail under
+    /// it, once the sheet has closed.
+    void then(void Function(BuildContext context, WidgetRef ref) open) {
+      if (over == null) {
+        open(context, ref);
+        return;
+      }
+      Navigator.of(over.sheet).pop();
+      if (over.mail.mounted) open(over.mail, over.ref);
+    }
 
     /// One day's meetings, keyed '[name]:id', or a line saying it has none.
     List<Widget> meetings(
@@ -105,12 +150,12 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
               over: !e.end.isAfter(now),
               next: identical(e, next),
               use24h: use24h,
-              onTap: () => showEventDetails(
-                context,
-                ref,
-                e,
-                accounts.where((a) => a.id == e.accountId).firstOrNull,
-              ),
+              onTap: () => then((context, ref) => showEventDetails(
+                    context,
+                    ref,
+                    e,
+                    accounts.where((a) => a.id == e.accountId).firstOrNull,
+                  )),
             ),
         ];
 
@@ -125,7 +170,8 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
                 child: InkWell(
                   key: const ValueKey('my-day-date'),
                   borderRadius: BorderRadius.circular(8),
-                  onTap: () => CalendarScreen.open(context),
+                  onTap: () =>
+                      then((context, _) => CalendarScreen.open(context)),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 6),
                     child: Column(
@@ -142,10 +188,11 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
               ),
               IconButton(
                 key: const ValueKey('my-day-close'),
-                tooltip: 'Show folders',
+                tooltip: over == null ? 'Show folders' : 'Close',
                 icon: const Icon(Icons.close, size: 20),
-                onPressed: () =>
-                    ref.read(myDayShownProvider.notifier).set(false),
+                onPressed: () => over == null
+                    ? ref.read(myDayShownProvider.notifier).set(false)
+                    : Navigator.of(over.sheet).pop(),
               ),
             ],
           ),
@@ -174,7 +221,8 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
               const Divider(height: 25, indent: 16, endIndent: 16),
               InkWell(
                 key: const ValueKey('my-day-tomorrow-date'),
-                onTap: () => CalendarScreen.open(context, day: tomorrow),
+                onTap: () => then((context, _) =>
+                    CalendarScreen.open(context, day: tomorrow)),
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
                   child: Column(
