@@ -301,6 +301,10 @@ class FilesBridge(
                     share(call.argument<String>("path")!!, call.argument<String>("mime"))
                     result.success(null)
                 }
+                "shareText" -> {
+                    shareText(call.argument<String>("text")!!, call.argument<String>("subject"))
+                    result.success(null)
+                }
                 "copy" -> {
                     copy(
                         call.argument<String>("path")!!,
@@ -678,6 +682,20 @@ class FilesBridge(
             type = mime ?: "*/*"
             putExtra(Intent.EXTRA_STREAM, uriFor(path))
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        activity.startActivity(Intent.createChooser(intent, null))
+    }
+
+    /**
+     * Plain text to whichever app is chosen, with a subject for one that
+     * takes it (an email's): a meeting's details, or a day's meetings
+     * (calendar idea #48). No file and no permission to grant.
+     */
+    private fun shareText(text: String, subject: String?) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+            if (!subject.isNullOrEmpty()) putExtra(Intent.EXTRA_SUBJECT, subject)
         }
         activity.startActivity(Intent.createChooser(intent, null))
     }

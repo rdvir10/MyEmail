@@ -409,6 +409,9 @@ void main() {
         'My reminder',
         'Show me as',
         'Duplicate',
+        'Copy details',
+        'Share',
+        'Share the day',
         'Decline and remove',
       ]);
     });
@@ -442,7 +445,7 @@ void main() {
       }
 
       await pump(tester, (a) => invited(a.id, readOnly: true));
-      expect(find.byKey(const ValueKey('event-more')), findsNothing);
+      expect(await menu(tester), ['Copy details', 'Share', 'Share the day']);
     });
 
     testWidgets('My reminder: the reminder as it is marked; another chosen '
