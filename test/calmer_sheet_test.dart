@@ -1068,6 +1068,154 @@ void main() {
     });
   });
 
+  // Seen on the tablet (2026-11-16), on a Hadco meeting someone else
+  // organised, which the group above had guessed at: Ron's copy does carry
+  // the other people's answers (eight of the eleven had accepted). The
+  // organiser's own entry comes as "none", its address in other letters
+  // than the organiser's, and so does one who has not answered. 3.17.0 drew
+  // the organiser as not answered, with no Organiser beside the address,
+  // and gave no counts at all.
+  group("someone else's meeting as Exchange Online gives Ron's copy of it",
+      () {
+    final toggle = find.byKey(const ValueKey('event-people'));
+
+    Map<String, Object?> person(String name, String address, String answer) =>
+        {
+          'type': 'required',
+          'status': {'response': answer},
+          'emailAddress': {'name': name, 'address': address},
+        };
+
+    /// Dana's meeting next week: Dana's own entry "none", Ron and
+    /// [accepted] more accepted, [declined] declined, [silent] "none".
+    CalendarEvent live(
+      Account a, {
+      int accepted = 7,
+      int declined = 0,
+      int silent = 2,
+      String mine = 'accepted',
+    }) =>
+        GraphCalendarApi.eventFrom({
+          'id': 'm',
+          'subject': 'Weekly sales',
+          'start': {'dateTime': '2026-11-24T08:00:00', 'timeZone': 'UTC'},
+          'end': {'dateTime': '2026-11-24T09:00:00', 'timeZone': 'UTC'},
+          'isOrganizer': false,
+          'responseStatus': {'response': mine},
+          'organizer': {
+            'emailAddress': {
+              'name': 'Dana Levi',
+              'address': 'Dana.Levi@Hadco.Example',
+            },
+          },
+          'attendees': [
+            person('Dana Levi', dana.email, 'none'),
+            for (var i = 1; i <= accepted; i++)
+              person('Guest $i', 'guest$i@hadco.example', 'accepted'),
+            person('Ron', 'Ron@Hadco.example', mine),
+            for (var i = 1; i <= declined; i++)
+              person('Sorry $i', 'sorry$i@hadco.example', 'declined'),
+            for (var i = 1; i <= silent; i++)
+              person('Quiet $i', 'quiet$i@hadco.example', 'none'),
+          ],
+        }, a.id)!;
+
+    ListTile rowOf(WidgetTester tester, String name) => tester.widget(
+        find.ancestor(of: find.text(name), matching: find.byType(ListTile)));
+
+    String heard(WidgetTester tester, String name) => tester
+        .getSemantics(
+            find.ancestor(of: find.text(name), matching: find.byType(ListTile)))
+        .label;
+
+    test("the organiser's own entry is the organiser's, whatever letters "
+        'its address is in', () {
+      final e = GraphCalendarApi.eventFrom({
+        'id': 'm',
+        'subject': 'Weekly sales',
+        'start': {'dateTime': '2026-11-24T08:00:00', 'timeZone': 'UTC'},
+        'end': {'dateTime': '2026-11-24T09:00:00', 'timeZone': 'UTC'},
+        'organizer': {
+          'emailAddress': {'name': 'Dana', 'address': 'Dana.Levi@Hadco.Example'},
+        },
+        'attendees': [
+          person('Dana Levi', ' dana.levi@hadco.example', 'none'),
+          person('Guest', 'guest@hadco.example', 'none'),
+          person('Other Dana', 'dana.levi@elsewhere.example', 'accepted'),
+        ],
+      }, 'acct')!;
+      expect([for (final a in e.attendees) a.response], [
+        EventResponse.organizer,
+        EventResponse.none,
+        EventResponse.accepted,
+      ]);
+    });
+
+    testWidgets('the organiser is drawn as the organiser: the accepted mark, '
+        'Organiser beside the address, and said so', (tester) async {
+      await pump(tester, live, size: const Size(412, 1800));
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      final row = rowOf(tester, 'Dana Levi');
+      expect((row.subtitle! as Text).data, contains('Organiser'));
+      expect((row.leading! as Icon).icon, Icons.check_circle_outline);
+      expect(heard(tester, 'Dana Levi'), startsWith('Dana Levi, accepted'));
+    });
+
+    testWidgets('the answers are counted, the organiser with those who '
+        'accepted, and one given as none is not answered', (tester) async {
+      await pump(tester, live, size: const Size(412, 1800));
+      expect(find.descendant(of: toggle, matching: find.text('11 people')),
+          findsOneWidget);
+      expect(countsOf(tester), '9 accepted · 2 not answered');
+
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.check_circle_outline), findsNWidgets(9));
+      expect(heard(tester, 'Quiet 1'), startsWith('Quiet 1, not answered'));
+      expect(heard(tester, 'Guest 3'), startsWith('Guest 3, accepted'));
+    });
+
+    testWidgets('a declined one is counted too, and the counts add up to '
+        'the heading', (tester) async {
+      await pump(tester,
+          (a) => live(a, accepted: 4, declined: 2, silent: 3, mine: 'none'),
+          size: const Size(412, 1800));
+      // Dana, four guests; two declined; three quiet and Ron, who has not
+      // answered either.
+      expect(find.descendant(of: toggle, matching: find.text('11 people')),
+          findsOneWidget);
+      expect(countsOf(tester), '5 accepted · 2 declined · 4 not answered');
+    });
+
+    testWidgets('where nobody but Ron and the organiser has an answer, '
+        'nothing is counted: nothing says the copy carries any',
+        (tester) async {
+      await pump(tester, (a) => live(a, accepted: 0, silent: 9),
+          size: const Size(412, 1800));
+      expect(find.descendant(of: toggle, matching: find.text('11 people')),
+          findsOneWidget);
+      expect(find.byKey(const ValueKey('event-answers')), findsNothing);
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      expect(heard(tester, 'Quiet 1'), startsWith('Quiet 1\n'),
+          reason: 'not known, so not said to be not answered');
+      // The organiser is still the organiser.
+      expect((rowOf(tester, 'Dana Levi').subtitle! as Text).data,
+          contains('Organiser'));
+    });
+
+    testWidgets('six or fewer are listed with no counts, as before, each '
+        'with the answer the copy has', (tester) async {
+      await pump(tester, (a) => live(a, accepted: 2, silent: 1),
+          size: const Size(412, 1800));
+      expect(toggle, findsNothing);
+      expect(find.byKey(const ValueKey('event-answers')), findsNothing);
+      expect(heard(tester, 'Quiet 1'), startsWith('Quiet 1, not answered'));
+      expect(heard(tester, 'Dana Levi'), startsWith('Dana Levi, accepted'));
+    });
+  });
+
   group('the keys through the sheet (#93)', () {
     /// The key of what has the focus, the nearest one round it.
     String? focused() {

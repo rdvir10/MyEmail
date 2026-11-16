@@ -692,17 +692,25 @@ void main() {
       ]);
     });
 
-    testWidgets('one that only names an online meeting, or is its link, '
-        'stays as it was', (tester) async {
+    // A link as the place is named, not written out, since the tablet
+    // showed one with its passcode in the Agenda (2026-11-16).
+    testWidgets('one that only names an online meeting stays as it was, one '
+        "that is the meeting's link is named and not written out, and "
+        'neither is a way to the maps app', (tester) async {
       await host(tester);
-      for (final place in [
-        'Microsoft Teams Meeting',
-        'https://us02web.zoom.us/j/81234567890',
+      const zoomLink = 'https://us02web.zoom.us/j/81234567890?pwd=AbC123.1';
+      for (final (place, shown) in [
+        ('Microsoft Teams Meeting', 'Microsoft Teams Meeting'),
+        (zoomLink, 'Zoom'),
       ]) {
         await open(tester, meeting(location: place));
-        expect(find.text(place), findsOneWidget);
+        expect(find.text(shown), findsOneWidget);
         expect(link, findsNothing, reason: place);
-        Navigator.of(tester.element(find.text(place))).pop();
+        if (place != shown) {
+          expect(find.text(place), findsNothing);
+          expect(find.textContaining('pwd='), findsNothing);
+        }
+        Navigator.of(tester.element(find.text(shown))).pop();
         await tester.pumpAndSettle();
       }
     });

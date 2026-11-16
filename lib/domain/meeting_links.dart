@@ -1,4 +1,5 @@
 import 'calendar_event.dart';
+import 'meeting_link.dart' show meetingServiceOf;
 
 /// Links to join an online meeting (calendar idea #39), found in what
 /// someone else wrote: a meeting's place and notes, and an invitation's
@@ -53,6 +54,62 @@ String? _somewhere(String part) {
       .replaceAll(RegExp(r'[^\p{L}\p{N} ]', unicode: true), '')
       .trim();
   return _onlineNames.contains(name) ? null : words;
+}
+
+/// A meeting's [place] for one line: a list's row, a block, a reminder, the
+/// meeting's sheet. As written, but with each link in it named, never
+/// written out. A Zoom link as a meeting's place is a line of letters with
+/// its passcode in it (seen in the Agenda on the tablet, 2026-11-16);
+/// "Zoom" says where, and gives nothing away to whoever is looking at the
+/// screen. A link is named by its service, or by its host, less www.,
+/// where the service is not one known here; one inside Safe Links by the
+/// link it holds. The words beside a link stay, and where they say its
+/// service already it is not said twice. Empty for a place with nothing to
+/// say.
+String placeNamed(String place) {
+  if (!_writtenLink.hasMatch(place)) return place.trim();
+  final words = _besideLinks(place.replaceAll(_writtenLink, ' '));
+  final said = words.toLowerCase();
+  final names = <String>[];
+  for (final m in _writtenLink.allMatches(place)) {
+    final name = _linkName(m[0]!);
+    if (name.isEmpty || names.contains(name)) continue;
+    if (said.contains(name.toLowerCase())) continue;
+    names.add(name);
+  }
+  return [if (words.isNotEmpty) words, ...names].join(' · ');
+}
+
+/// Where [e] is, for one line: its place with its links named
+/// ([placeNamed]); "Online" for one held online with no place written;
+/// null with neither.
+String? placeLine(CalendarEvent e) {
+  final place = placeNamed(e.location);
+  if (place.isNotEmpty) return place;
+  return e.joinUrl != null ? 'Online' : null;
+}
+
+/// A link as it is written in a place: from https://, http:// or www. to
+/// the next space.
+final _writtenLink = RegExp(r'(?:https?://|www\.)\S+', caseSensitive: false);
+
+/// What is left of a place with its links taken out: its words, without
+/// the signs that led to a link or held it. Empty where no word is left.
+String _besideLinks(String text) {
+  final words = text
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .replaceAll(
+          RegExp(r'^[\s:,;|/·–—()\[\]<>-]+|[\s:,;|/·–—()\[\]<>-]+$'), '');
+  return RegExp(r'[\p{L}\p{N}]', unicode: true).hasMatch(words) ? words : '';
+}
+
+/// What [link], written in a place, is called: its service, or its host.
+/// Empty for one with no host to name.
+String _linkName(String link) {
+  final typed = link.toLowerCase().startsWith('www.') ? 'https://$link' : link;
+  final uri = Uri.tryParse(typed);
+  if (uri == null || uri.host.isEmpty) return '';
+  return meetingServiceOf((throughSafeLinks(uri) ?? uri).toString());
 }
 
 /// What a place says that names nowhere but an online meeting, in lower

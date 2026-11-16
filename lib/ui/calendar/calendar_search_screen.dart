@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/calendar_event.dart';
 import '../../domain/calendar_finding.dart';
+import '../../domain/meeting_links.dart' show placeNamed;
 import '../../domain/text_direction.dart' show firstStrongDirection;
 import '../../state/calendar_view_providers.dart';
 import '../../state/meeting_alert_providers.dart'
@@ -180,7 +181,12 @@ class _Result extends StatelessWidget {
         ),
       ),
       subtitle: Text(
-        [when, if (e.location.trim().isNotEmpty) e.location.trim()].join(' · '),
+        // A link in the place named, not written out, as in the Agenda.
+        [
+          when,
+          if (placeNamed(e.location) case final place when place.isNotEmpty)
+            place,
+        ].join(' · '),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),

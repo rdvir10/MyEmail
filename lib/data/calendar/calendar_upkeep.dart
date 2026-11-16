@@ -8,6 +8,7 @@ import '../../domain/calendar_event.dart';
 import '../../domain/calendar_prefs.dart';
 import '../../domain/internet_calendar.dart';
 import '../../domain/meeting_alerts.dart';
+import '../../domain/meeting_links.dart' show placeNamed;
 import '../mail_engine.dart';
 import '../notifications/mail_notifier.dart';
 import '../ui_state_store.dart';
@@ -393,7 +394,11 @@ class CalendarUpkeep {
               accounts[e.accountId]?.colorValue ?? 0xFFFF7A18,
               calendars: calendars,
             ).toSigned(32),
-            if (e.location.trim().isNotEmpty) 'w': e.location.trim(),
+            // On the home screen for anyone to read: a link in the place
+            // is named ("Zoom"), not written out with its passcode.
+            if (placeNamed(e.location) case final where
+                when where.isNotEmpty)
+              'w': where,
             'j': ?e.joinUrl,
             'l': calendarWidgetLink(e),
           },

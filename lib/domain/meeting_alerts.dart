@@ -6,6 +6,7 @@ import 'calendar_change.dart' show everyoneOn, isOwnEvent;
 import 'calendar_event.dart';
 import 'clock_text.dart';
 import 'free_busy.dart' show defaultWorkWeek;
+import 'meeting_links.dart' show placeLine;
 
 /// What MyEmail says about meetings away from the calendar: the bar over
 /// the mail, each meeting's reminder, the morning's agenda and the
@@ -272,10 +273,8 @@ int meetingReminderId(CalendarEvent event) =>
 String reminderBody(CalendarEvent e, {required bool use24h}) => [
       '${formatClock(e.start, use24h: use24h)}–'
           '${formatClock(e.end, use24h: use24h)}',
-      if (e.location.trim().isNotEmpty)
-        e.location.trim()
-      else if (e.joinUrl != null)
-        'Online',
+      // A link in the place named, not written out on a locked screen.
+      ?placeLine(e),
     ].join(' · ');
 
 /// A meeting's reminder, as MyEmail sets it with Android.

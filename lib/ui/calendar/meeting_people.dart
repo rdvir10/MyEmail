@@ -22,7 +22,7 @@ class MeetingPeople extends StatefulWidget {
     required this.heading,
     required this.count,
     required this.people,
-    this.organised = false,
+    this.answersCarried = false,
     this.answers,
     this.nudge,
     this.muted,
@@ -37,11 +37,12 @@ class MeetingPeople extends StatefulWidget {
   /// Everyone, in the order listed.
   final List<EventAttendee> people;
 
-  /// Whether Ron organised the meeting. There an answer of none is one
-  /// not given; on someone else's it is one not known (Exchange gives none
-  /// for everyone on a copy other than the organiser's), and a screen
-  /// reader hears the name alone.
-  final bool organised;
+  /// Whether this copy of the meeting carries the people's answers: one
+  /// Ron organised, or someone else's where his copy has them (Exchange
+  /// Online's does, Google's does). There an answer of none is one not
+  /// given. Where the copy carries none, none is an answer not known, and
+  /// a screen reader hears the name alone.
+  final bool answersCarried;
 
   /// The answers counted, under [heading]; null for none.
   final String? answers;
@@ -121,7 +122,7 @@ class _MeetingPeopleState extends State<MeetingPeople>
         ?nudge,
         if (!folds || _open)
           for (final a in widget.people)
-            _Person(attendee: a, organised: widget.organised),
+            _Person(attendee: a, answersCarried: widget.answersCarried),
       ],
     );
   }
@@ -145,16 +146,16 @@ Color answerColour(EventResponse response, ThemeData theme) {
 }
 
 /// An answer as a screen reader says it after the name: "Dana Levi,
-/// accepted". Null for an answer of none on someone else's meeting
-/// ([organised] false), which is not known, not one not given: the name is
-/// said alone.
-String? answerSaid(EventResponse response, {required bool organised}) =>
+/// accepted". Null for an answer of none on a copy that carries no
+/// answers ([answersCarried] false), where it is not known, not one not
+/// given: the name is said alone.
+String? answerSaid(EventResponse response, {required bool answersCarried}) =>
     switch (response) {
       EventResponse.accepted || EventResponse.organizer => 'accepted',
       EventResponse.tentative => 'maybe',
       EventResponse.declined => 'declined',
       EventResponse.notResponded => 'not answered',
-      EventResponse.none => organised ? 'not answered' : null,
+      EventResponse.none => answersCarried ? 'not answered' : null,
     };
 
 /// One person on the list: how they answered, by a mark in the answer's
@@ -163,18 +164,18 @@ String? answerSaid(EventResponse response, {required bool organised}) =>
 /// never told it, where the answer is known. An answer not known keeps the
 /// grey mark of one not given.
 class _Person extends StatelessWidget {
-  const _Person({required this.attendee, required this.organised});
+  const _Person({required this.attendee, required this.answersCarried});
 
   final EventAttendee attendee;
 
-  /// See [MeetingPeople.organised].
-  final bool organised;
+  /// See [MeetingPeople.answersCarried].
+  final bool answersCarried;
 
   @override
   Widget build(BuildContext context) {
     final a = attendee;
     final name = a.address.display;
-    final said = answerSaid(a.response, organised: organised);
+    final said = answerSaid(a.response, answersCarried: answersCarried);
     return ListTile(
       dense: true,
       contentPadding: EdgeInsets.zero,

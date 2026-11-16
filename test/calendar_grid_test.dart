@@ -1210,4 +1210,85 @@ void main() {
       });
     }
   });
+
+  // Seen on the tablet (2026-11-16). Samsung's taskbar lies over the foot
+  // of the screen, 48 dp of it, and the month, which fills the page and
+  // does not scroll, had its last week under the bar: the last lines of
+  // its days, and their "+N more", could not be read.
+  group("the tablet's own bar at the foot of the screen", () {
+    const bar = 48.0;
+    void withBar(WidgetTester tester) {
+      tester.view.padding = const FakeViewPadding(bottom: bar);
+      tester.view.viewPadding = const FakeViewPadding(bottom: bar);
+      addTearDown(tester.view.resetPadding);
+      addTearDown(tester.view.resetViewPadding);
+    }
+
+    for (final size in [const Size(1280, 800), const Size(800, 1280)]) {
+      testWidgets("the month's last week ends above it, every line and "
+          '"+N more" with it, on a tablet ${size.width.toInt()} wide',
+          (tester) async {
+        withBar(tester);
+        final days = calendarPage(CalendarViewMode.month, WeekSpan.sevenDays,
+                defaultWorkWeek, today, 0)
+            .days;
+        final lastWeek = days.sublist(days.length - 7);
+        await pump(tester,
+            view: CalendarViewMode.month,
+            size: size,
+            day: today,
+            events: [
+              for (final d in lastWeek)
+                for (var i = 0; i < 9; i++)
+                  meeting(
+                      'w${d.day}-$i',
+                      DateTime(d.year, d.month, d.day, 9 + i),
+                      DateTime(d.year, d.month, d.day, 10 + i),
+                      title: 'Meeting $i'),
+            ]);
+        final foot = size.height - bar;
+        for (final d in lastWeek) {
+          final box = find.byKey(ValueKey('month-day:${key(d)}'));
+          expect(tester.getRect(box).bottom, lessThanOrEqualTo(foot),
+              reason: 'the box of ${key(d)} runs under the bar');
+          final more =
+              find.descendant(of: box, matching: find.textContaining('more'));
+          expect(more, findsOneWidget, reason: 'nine meetings on ${key(d)}');
+          expect(tester.getRect(more).bottom, lessThanOrEqualTo(foot),
+              reason: '"more" of ${key(d)} is under the bar');
+        }
+        // And the + button stands where it stood, over the last box's
+        // corner, with no line of that day under it.
+        final button = tester.getRect(find.byType(FloatingActionButton));
+        expect(button.bottom, lessThanOrEqualTo(foot));
+        final last = find.byKey(ValueKey('month-day:${key(lastWeek.last)}'));
+        expect(tester.getRect(last).overlaps(button), isTrue);
+        for (final e in find
+            .descendant(of: last, matching: find.byType(RichText))
+            .evaluate()) {
+          final line = rectOf(e.renderObject! as RenderBox);
+          final words =
+              (e.renderObject! as RenderParagraph).text.toPlainText();
+          if (words == '${lastWeek.last.day}') continue;
+          expect(line.overlaps(button), isFalse,
+              reason: '"$words" of the last day is under the + button');
+        }
+      });
+    }
+
+    testWidgets('with no bar the month still fills the page to its foot',
+        (tester) async {
+      const size = Size(1280, 800);
+      final days = calendarPage(CalendarViewMode.month, WeekSpan.sevenDays,
+              defaultWorkWeek, today, 0)
+          .days;
+      await pump(tester,
+          view: CalendarViewMode.month, size: size, day: today);
+      expect(
+          tester
+              .getRect(find.byKey(ValueKey('month-day:${key(days.last)}')))
+              .bottom,
+          size.height);
+    });
+  });
 }

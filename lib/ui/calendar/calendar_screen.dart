@@ -18,6 +18,7 @@ import '../../domain/calendar_prefs.dart';
 import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/internet_calendar.dart' show isInternetAccount;
 import '../../domain/meeting_alerts.dart' show MeetingRef;
+import '../../domain/meeting_links.dart' show placeLine;
 import '../../domain/meeting_moment.dart';
 import '../../domain/search_refinement.dart' show weekStartFor;
 import '../../domain/text_direction.dart' show firstStrongDirection;
@@ -1029,15 +1030,26 @@ class _CalendarPageView extends ConsumerWidget {
     if (mode == CalendarViewMode.month) {
       final month = page.month!;
       if (wide) {
-        return _MonthGrid(
-          days: page.days,
-          month: month,
-          events: events,
-          colours: colours,
-          selected: null,
-          titles: true,
-          onDay: onOpenDay,
-          onEvent: onTap,
+        // The month fills the page and does not scroll, so it ends above
+        // the tablet's own bar at the foot of the screen: under Samsung's
+        // taskbar its last week could not be read (seen on the tablet,
+        // 2026-11-16). Inside, the bar is no longer there to allow for,
+        // and the + button stands over the last box's corner as it does
+        // where there is no bar.
+        return SafeArea(
+          top: false,
+          left: false,
+          right: false,
+          child: _MonthGrid(
+            days: page.days,
+            month: month,
+            events: events,
+            colours: colours,
+            selected: null,
+            titles: true,
+            onDay: onOpenDay,
+            onEvent: onTap,
+          ),
         );
       }
       // A day picked from the next month's first days, drawn faint at the
@@ -1383,11 +1395,9 @@ class _AgendaRow extends StatelessWidget {
                 : clock(e.end),
           );
     // Where it is, which gives way on a short line, and how you answered,
-    // which never does (#90).
-    final place = [
-      if (e.location.isNotEmpty) e.location,
-      if (e.joinUrl != null && e.location.isEmpty) 'Online',
-    ].join(' · ');
+    // which never does (#90). A link in its place is named, not written
+    // out: a Zoom link here was a line of letters with its passcode in it.
+    final place = placeLine(e) ?? '';
     // Maybe, as the sheet's button says it (#93).
     final answer = [
       if (e.response == EventResponse.tentative) 'Maybe',
@@ -2868,11 +2878,7 @@ class _Block extends StatelessWidget {
                       )
                     : BlockText(
                         title: event.title,
-                        place: event.location.trim().isNotEmpty
-                            ? event.location.trim()
-                            : event.joinUrl != null
-                                ? 'Online'
-                                : null,
+                        place: placeLine(event),
                         time: formatClock(event.start, use24h: use24h),
                         style: style,
                       ),
@@ -2963,11 +2969,11 @@ AnswerCounts answerCounts(CalendarEvent event, String ownEmail) {
 
 /// How the people in [people] answered, as their marks on the sheet show
 /// it, for the counts of someone else's meeting folded (#93): the
-/// organiser as accepted, Ron and the organiser counted too, one not given
-/// yet (Google's needsAction) as not answered. Counted only where every
-/// answer is known: one given as none is no answer anyone knows of (what
-/// Exchange gives for everyone on a copy other than the organiser's), and
-/// counts of the rest would read as the whole list's.
+/// organiser as accepted, Ron and the organiser counted too, and one not
+/// given yet as not answered, Google's needsAction and Exchange's none
+/// alike, so the counts add up to the heading. Only for a copy that
+/// carries people's answers: where it carries none, "none" is no answer
+/// anyone knows of, and the sheet counts nothing.
 AnswerCounts countAsListed(List<EventAttendee> people) {
   var accepted = 0, tentative = 0, declined = 0, waiting = 0;
   for (final a in people) {
@@ -2978,10 +2984,8 @@ AnswerCounts countAsListed(List<EventAttendee> people) {
         tentative++;
       case EventResponse.declined:
         declined++;
-      case EventResponse.notResponded:
+      case EventResponse.notResponded || EventResponse.none:
         waiting++;
-      case EventResponse.none:
-        break;
     }
   }
   return (
@@ -3105,9 +3109,26 @@ class _EventDetails extends StatelessWidget {
     // on the organiser's copy alone and gives "none" for everyone on Ron's,
     // Ron too (#93).
     final listed = own ? _byAnswer(e.attendees) : _withOwnAnswer(e, email);
-    // Someone else's counted only where every answer listed is known:
-    // "1 accepted" of twelve, Ron alone known, would read as the list's.
-    final allKnown = listed.every((a) => a.response != EventResponse.none);
+    // Whether Ron's copy of someone else's meeting carries the people's
+    // answers: it does where anyone but Ron and the organiser has one.
+    // Exchange Online gives an attendee the others' answers, with "none"
+    // for one not given yet (seen on Hadco's, 2026-11-16: eight of eleven
+    // accepted, and 3.17.0 counted nothing). A calendar that keeps them on
+    // the organiser's copy alone gives "none" for everyone, and there
+    // nothing is counted: "1 accepted" of twelve, Ron alone known, would
+    // read as the list's.
+    final me = email.trim().toLowerCase();
+    final carried = !own &&
+        listed.any((a) =>
+            a.address.email.trim().toLowerCase() != me &&
+            switch (a.response) {
+              EventResponse.accepted ||
+              EventResponse.tentative ||
+              EventResponse.declined ||
+              EventResponse.notResponded =>
+                true,
+              EventResponse.organizer || EventResponse.none => false,
+            });
     // [filled]: the one that matters now (#93), Accept on a meeting not
     // answered while Join is not near.
     Widget answerButton(InviteResponse r, String label, String key,
@@ -3384,13 +3405,13 @@ class _EventDetails extends StatelessWidget {
                         '${e.attendees.length == 1 ? 'person' : 'people'}',
                 count: tracked ? invitedCount : e.attendees.length,
                 people: listed,
-                organised: own,
+                answersCarried: own || carried,
                 // Someone else's counted only where they fold, as the
-                // marks of everyone listed show them, and only where every
-                // answer is known (#93).
+                // marks of everyone listed show them, and only where the
+                // copy carries people's answers (#93).
                 answers: tracked
                     ? describeAnswers(counts)
-                    : e.attendees.length > foldPeopleOver && allKnown
+                    : e.attendees.length > foldPeopleOver && carried
                         ? describeAnswers(countAsListed(listed))
                         : null,
                 nudge: tracked && waiting.isNotEmpty && reachable

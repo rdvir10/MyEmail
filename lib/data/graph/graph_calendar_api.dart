@@ -1273,6 +1273,8 @@ class GraphCalendarApi {
           _ => EventResponse.none,
         };
     final attendees = json['attendees'];
+    final organizer = address(json['organizer']);
+    final organizerIs = organizer?.email.toLowerCase();
     final location = json['location'];
     final place =
         location is Map ? '${location['displayName'] ?? ''}'.trim() : '';
@@ -1302,14 +1304,21 @@ class GraphCalendarApi {
       end: end.isBefore(start) ? start : end,
       allDay: allDay,
       location: place,
-      organizer: address(json['organizer']),
+      organizer: organizer,
       attendees: [
         for (final a in attendees is List ? attendees : const [])
           if (a is Map && a['type'] != 'resource')
             if (address(a) case final who?)
               EventAttendee(
                 who,
-                response: response(a['status']),
+                // The organiser's own entry is the organiser's, as Google
+                // marks its own. Exchange gives it "none" on an attendee's
+                // copy, its address in letters of its own (seen on
+                // Hadco's, 2026-11-16), and it was drawn as someone who
+                // had not answered.
+                response: who.email.toLowerCase() == organizerIs
+                    ? EventResponse.organizer
+                    : response(a['status']),
                 optional: a['type'] == 'optional',
               ),
       ],

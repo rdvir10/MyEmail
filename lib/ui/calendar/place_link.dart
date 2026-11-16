@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../domain/meeting_links.dart' show placeToFind;
+import '../../domain/meeting_links.dart' show placeNamed, placeToFind;
 import '../../domain/text_direction.dart';
 
 /// A meeting's place, a tap from directions in the phone's maps app (#40),
 /// on the meeting's sheet, in My Day and on an invitation's card. A place
-/// that only names an online meeting, or is its link, stays the plain text
-/// it was: Join is the way in to those.
+/// that only names an online meeting, or is its link, stays plain text:
+/// Join is the way in to those. A link in a place is shown by its name,
+/// "Zoom", never written out ([placeNamed]): what is looked up is the
+/// place, as before.
 class PlaceLink extends StatelessWidget {
   const PlaceLink({
     super.key,
@@ -25,8 +27,9 @@ class PlaceLink extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final query = placeToFind(place);
+    final shown = placeNamed(place);
     if (query == null) {
-      return Text(place, style: style, maxLines: maxLines, overflow: overflow);
+      return Text(shown, style: style, maxLines: maxLines, overflow: overflow);
     }
     final scheme = Theme.of(context).colorScheme;
     return Semantics(
@@ -37,14 +40,14 @@ class PlaceLink extends StatelessWidget {
         borderRadius: BorderRadius.circular(4),
         onTap: () => openPlace(query),
         child: Text(
-          place,
+          shown,
           style: (style ?? const TextStyle()).copyWith(
             color: scheme.primary,
             decoration: TextDecoration.underline,
             decorationColor: scheme.primary,
           ),
           // As the place is written in New meeting: by its first letter.
-          textDirection: firstStrongDirection(place),
+          textDirection: firstStrongDirection(shown),
           maxLines: maxLines,
           overflow: overflow,
         ),

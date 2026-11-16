@@ -581,6 +581,82 @@ void main() {
     });
   });
 
+  // Seen on the tablet (2026-11-16): a meeting whose place was its Zoom
+  // link had the whole link, its passcode in it, as its place in the
+  // Agenda.
+  group('a place on one line, its links named and never written out', () {
+    const gov = 'https://www.zoomgov.com/j/1653774483?pwd=AbCdEf123.1';
+
+    test('a link is its service, or its host where the service is not known',
+        () {
+      expect(placeNamed(gov), 'Zoom');
+      expect(placeNamed('https://acme.zoom.us/j/82563765410?pwd=x1&jst=3'),
+          'Zoom');
+      expect(placeNamed('https://meet.google.com/abc-defg-hij'),
+          'Google Meet');
+      expect(placeNamed('https://www.example.com/where?key=secret'),
+          'example.com');
+      expect(placeNamed('www.example.org/room/9'), 'example.org');
+    });
+
+    test('the words beside a link stay, and its service is said once', () {
+      expect(placeNamed('Board room - $gov'), 'Board room · Zoom');
+      expect(placeNamed('Zoom: $gov'), 'Zoom');
+      expect(
+          placeNamed('Microsoft Teams Meeting; '
+              'https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0'),
+          'Microsoft Teams Meeting');
+      expect(placeNamed('$gov $gov'), 'Zoom');
+    });
+
+    test('a place with no link in it is as it is written', () {
+      for (final place in [
+        'Café Noir, 12 Rothschild Blvd, Tel Aviv',
+        'Microsoft Teams Meeting; MTR-CAConf',
+        'קפה נואר, רוטשילד 12',
+        'Room 4 (2nd floor), Hadco HQ',
+        'Dr. Levi - see www for the form',
+      ]) {
+        expect(placeNamed(place), place);
+      }
+      expect(placeNamed('  Board room  '), 'Board room');
+      expect(placeNamed(''), '');
+    });
+
+    test('nothing of a link is left: no passcode, no number, no address',
+        () {
+      for (final place in [gov, 'Board room - $gov', 'Zoom: $gov', '($gov)']) {
+        final named = placeNamed(place);
+        for (final part in ['pwd', 'AbCdEf', 'http', '1653774483', '?', '/']) {
+          expect(named, isNot(contains(part)), reason: '$place -> $named');
+        }
+      }
+    });
+
+    test('a link inside Safe Links is named for the link it holds', () {
+      final wrapped = 'https://nam02.safelinks.protection.outlook.com/'
+          '?url=${Uri.encodeQueryComponent(gov)}&data=05';
+      expect(placeNamed(wrapped), 'Zoom');
+    });
+
+    test('a meeting is where its place says; Online with a link to join '
+        'and no place; nowhere with neither', () {
+      CalendarEvent held(String location, {String? joinUrl}) => CalendarEvent(
+            id: 'e',
+            accountId: 'a',
+            title: 'Budget',
+            start: DateTime(2026, 11, 17, 9),
+            end: DateTime(2026, 11, 17, 10),
+            location: location,
+            joinUrl: joinUrl,
+          );
+      expect(placeLine(held(gov, joinUrl: gov)), 'Zoom');
+      expect(placeLine(held('', joinUrl: gov)), 'Online');
+      expect(placeLine(held('  ')), isNull);
+      expect(placeLine(held(' Board room ')), 'Board room');
+    });
+  });
+
   group("an invitation's own lines", () {
     String invitation(String lines) => 'BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\n'
         'BEGIN:VEVENT\r\nUID:abc\r\nSUMMARY:Supplier call\r\n'
