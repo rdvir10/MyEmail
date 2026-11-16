@@ -29,10 +29,13 @@ enum AwayState {
   /// once the calendar has been read again and still has it as it was.
   failed,
 
-  /// No longer on the calendar when it was tried or looked for again:
-  /// declined or cancelled elsewhere, or by a try whose answer was lost.
-  /// Nothing more is sent for it.
+  /// No longer on the calendar when it was tried, before anything was
+  /// sent for it: declined, cancelled or deleted elsewhere. Nothing is.
   gone,
+
+  /// Sent once, its answer lost on the way back, and no longer on the
+  /// calendar when looked for again: it went. Not sent again.
+  sentGone,
 }
 
 /// The day after [day], at midnight.

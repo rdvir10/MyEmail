@@ -1,3 +1,5 @@
+import 'dart:async' show TimeoutException;
+
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../../domain/away.dart';
@@ -41,6 +43,12 @@ class AwayItem {
 
   /// Why it did not go, where it did not.
   String? problem;
+
+  /// Its last try had no answer (the connection, or the server, gave
+  /// none), as against a refusal: it may have gone. Found gone from its
+  /// calendar after that, it was sent ([AwayState.sentGone]); after a
+  /// refusal, nothing was ([AwayState.gone]).
+  bool unanswered = false;
 
   String get key => switch (action) {
         AwayAction.block => 'block\u0000$accountId',
@@ -108,11 +116,20 @@ class AwayRun {
         await _do(item, note: note, tell: tell);
         item.state = AwayState.done;
       } on EventGone {
+        // Before anything went: a decline Exchange answers 404, or a
+        // cancellation whose meeting the look first found gone.
         item.state = AwayState.gone;
+      } on _NothingSent catch (e) {
+        debugPrint('[myemail] away: ${item.action.name} not sent: ${e.cause}');
+        item
+          ..state = AwayState.failed
+          ..unanswered = false
+          ..problem = _why(e.cause);
       } catch (e) {
         debugPrint('[myemail] away: ${item.action.name} did not go: $e');
         item
           ..state = AwayState.failed
+          ..unanswered = _noAnswer(e)
           ..problem = _why(e);
       }
       changed?.call(++through);
@@ -120,8 +137,19 @@ class AwayRun {
     // In the log, for a look over adb at what a press did.
     int count(AwayState s) => todo.where((i) => i.state == s).length;
     debugPrint('[myemail] away: ${count(AwayState.done)} went, '
-        '${count(AwayState.failed)} did not, ${count(AwayState.gone)} gone');
+        '${count(AwayState.failed)} did not, ${count(AwayState.gone)} gone, '
+        '${count(AwayState.sentGone)} sent with no answer and now gone');
   }
+
+  /// Whether [e] leaves it open that the request was carried out: no
+  /// answer came (a connection lost, a timeout, a server in trouble), as
+  /// against a refusal, after which nothing was done.
+  static bool _noAnswer(Object e) => switch (e) {
+        ConnectionFailed() || TimeoutException() => true,
+        ReadableError() || ArgumentError() || StateError() => false,
+        // Anything else came from below the engine's own words: the socket.
+        _ => true,
+      };
 
   Future<void> _do(
     AwayItem item, {
@@ -142,6 +170,16 @@ class AwayRun {
         );
       case AwayAction.cancel:
         final event = _oneMeeting(item.event!);
+        // Looked for first: a meeting gone already is answered "done" by
+        // both calendars (Graph's 404, Google's 410), and the screen would
+        // say Cancelled for a cancellation that never went.
+        try {
+          await _engine.eventNotes(event);
+        } on EventGone {
+          rethrow;
+        } catch (e) {
+          throw _NothingSent(e);
+        }
         await _engine.cancelEvent(event, note: note.trim(), wholeSeries: false);
     }
   }
@@ -196,7 +234,9 @@ class AwayRun {
           .where((e) => e.id == was.id && e.calendarId == was.calendarId)
           .firstOrNull;
       if (now == null || now.cancelled) {
-        item.state = AwayState.gone;
+        // Gone after a try with no answer: that try went. After a refusal,
+        // nothing did.
+        item.state = item.unanswered ? AwayState.sentGone : AwayState.gone;
       } else if (item.action == AwayAction.decline && now.declined) {
         item.state = AwayState.done;
       } else {
@@ -207,8 +247,16 @@ class AwayRun {
   }
 
   static String _why(Object e) => switch (e) {
+        _NothingSent(:final cause) => _why(cause),
         ReadableError(:final message) => message,
         ArgumentError(:final message) => '$message',
         _ => '$e',
       };
+}
+
+/// A step before the request itself failed: nothing was sent.
+class _NothingSent implements Exception {
+  const _NothingSent(this.cause);
+
+  final Object cause;
 }

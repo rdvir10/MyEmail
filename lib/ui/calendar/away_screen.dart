@@ -9,6 +9,7 @@ import '../../domain/calendar_event.dart';
 import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/meeting.dart' show MeetingDraft;
 import '../../domain/text_direction.dart' show firstStrongDirection;
+import '../../state/away_providers.dart';
 import '../../state/calendar_providers.dart' show deviceCalendarProvider;
 import '../../state/calendar_view_providers.dart';
 import '../../state/meeting_alert_providers.dart' show meetingClockProvider;
@@ -16,6 +17,7 @@ import '../../state/providers.dart';
 import '../common/bottom_message.dart';
 import '../messages/date_format.dart';
 import '../settings/auto_replies_screen.dart';
+import '../shell/put_away.dart' show GuardsPutAway;
 import 'meeting_share.dart' show meetingWhen;
 
 /// I am away (calendar idea #53), from the calendar's ⋮: the days asked
@@ -72,73 +74,59 @@ class AwayScreen extends ConsumerStatefulWidget {
   ConsumerState<AwayScreen> createState() => _AwayScreenState();
 }
 
-class _AwayScreenState extends ConsumerState<AwayScreen> {
-  late DateTime _first = _midnight(widget.first);
-  late DateTime _last = _midnight(widget.last);
-  late final AwayRun _run = AwayRun(ref.read(mailEngineProvider));
-  final _note = TextEditingController();
-  bool _tell = true;
+class _AwayScreenState extends ConsumerState<AwayScreen>
+    with GuardsPutAway<AwayScreen> {
+  /// The press going now, where one is: shown rather than a list of this
+  /// screen's own. Otherwise a list of its own, read for the days.
+  late final AwayPress _press =
+      ref.read(awayPressProvider) ?? AwayPress(first: _first0, last: _last0);
+  late final TextEditingController _note =
+      TextEditingController(text: _press.note);
 
-  /// The calendars are being read for the days.
-  bool _reading = true;
+  DateTime get _first0 => _midnight(widget.first);
+  DateTime get _last0 => _midnight(widget.last);
 
-  /// Asking whether to go, or going: the button does nothing meanwhile.
+  /// Asking whether to go: the button does nothing meanwhile.
   bool _asking = false;
-  bool _running = false;
-
-  /// Pressed at least once: the days stay as they are from then on.
-  bool _pressed = false;
-
-  /// What one press is doing, and how far it has got.
-  int _going = 0, _goingOf = 0;
-
-  List<Account> _accounts = const [];
-  List<AwayItem> _blocks = const [];
-  List<AwayItem> _invited = const [];
-  List<AwayItem> _own = const [];
-  final Set<AwayItem> _ticked = {};
-
-  /// Where a calendar already has the days out of office, by account.
-  Map<String, CalendarEvent> _blockedAlready = const {};
-
-  /// An account whose calendar could not be read for the days, and why.
-  Map<String, Object> _unread = const {};
-
-  /// The key each calendar's block goes with from this screen, so a block
-  /// sent again is the one event (see [awayBlock]).
-  final Map<String, String> _blockKeys = {};
-
-  /// Which read is the latest, where the days changed while one went on.
-  int _reads = 0;
 
   @override
   void initState() {
     super.initState();
-    _read();
+    _press.addListener(_changed);
+    _note.addListener(() => _press.note = _note.text);
+    if (!_press.running && !_press.pressed && _press.reads == 0) _read();
   }
 
   @override
   void dispose() {
+    _press.removeListener(_changed);
     _note.dispose();
     super.dispose();
   }
 
-  List<AwayItem> get _all => [..._blocks, ..._invited, ..._own];
+  void _changed() {
+    if (mounted) setState(() {});
+  }
 
-  /// What a press would do now: ticked, and not done or gone.
-  List<AwayItem> get _toDo => [
-        for (final i in _all)
-          if (i.open && _ticked.contains(i)) i,
-      ];
+  /// Put away while it sends, or with some left that did not go: the
+  /// screen stays, and its report with it (the press goes on regardless,
+  /// in [awayPressProvider]).
+  @override
+  Future<bool> whenPutAway() async => !(_press.running || _press.leftUndone);
 
   Account? _account(String id) =>
-      _accounts.where((a) => a.id == id).firstOrNull;
+      _press.accounts.where((a) => a.id == id).firstOrNull;
 
   /// The calendars, read afresh for the days, whatever the views kept: what
   /// is listed is what each calendar has now.
   Future<void> _read() async {
-    final read = ++_reads;
-    if (!_reading) setState(() => _reading = true);
+    final press = _press;
+    final read = ++press.reads;
+    if (!press.reading) {
+      press
+        ..reading = true
+        ..changed();
+    }
     final engine = ref.read(mailEngineProvider);
     try {
       // The accounts as they are, where they are still being read.
@@ -146,14 +134,15 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
     } catch (_) {
       // Then those known, as the calendar has them.
     }
-    if (!mounted || read != _reads) return;
+    if (!mounted || read != press.reads) return;
     final accounts = ref.read(calendarAccountsProvider);
+    final first = press.first, last = press.last;
     final events = <CalendarEvent>[];
     final unread = <String, Object>{};
     String? zone;
     await Future.wait([
       for (final a in accounts)
-        engine.calendarEvents(a.id, _first, _dayAfter(_last)).then(
+        engine.calendarEvents(a.id, first, _dayAfter(last)).then(
           events.addAll,
           onError: (Object e) {
             unread[a.id] = e;
@@ -167,65 +156,65 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
         onError: (Object _) {},
       ),
     ]);
-    if (!mounted || read != _reads) return;
+    if (!mounted || read != press.reads) return;
     final emails = {for (final a in accounts) a.id: a.emailAddress};
     final listed = awayMeetings(
       events,
-      first: _first,
-      last: _last,
+      first: first,
+      last: last,
       now: ref.read(meetingClockProvider)(),
       ownEmails: emails,
     );
     final blocked = {
       for (final a in accounts)
-        a.id: ?awayBlockOn(events, a.id, first: _first, last: _last),
+        a.id: ?awayBlockOn(events, a.id, first: first, last: last),
     };
-    setState(() {
-      _accounts = accounts;
-      _unread = unread;
-      _blockedAlready = blocked;
-      _blocks = [
+    press
+      ..accounts = accounts
+      ..unread = unread
+      ..blockedAlready = blocked
+      ..blocks = [
         for (final a in accounts)
           AwayItem.block(awayBlock(
             accountId: a.id,
-            first: _first,
-            last: _last,
+            first: first,
+            last: last,
             timeZone: zone,
-            transactionId:
-                _blockKeys.putIfAbsent(a.id, MeetingDraft.newTransactionId),
+            transactionId: press.blockKeys
+                .putIfAbsent(a.id, MeetingDraft.newTransactionId),
           )),
-      ];
-      _invited = [for (final e in listed.invited) AwayItem.decline(e)];
-      _own = [for (final e in listed.own) AwayItem.cancel(e)];
-      _ticked
-        ..clear()
-        ..addAll([
-          // Not where the days are blocked already, nor where the
-          // calendar could not be read to see whether they are.
-          for (final b in _blocks)
-            if (!blocked.containsKey(b.accountId) &&
-                !unread.containsKey(b.accountId))
-              b,
-          for (final i in _invited)
-            if (awayStartsTicked(i.event!, emails.values)) i,
-        ]);
-      _reading = false;
-    });
+      ]
+      ..invited = [for (final e in listed.invited) AwayItem.decline(e)]
+      ..own = [for (final e in listed.own) AwayItem.cancel(e)];
+    press.ticked
+      ..clear()
+      ..addAll([
+        // Not where the days are blocked already, nor where the calendar
+        // could not be read to see whether they are.
+        for (final b in press.blocks)
+          if (!blocked.containsKey(b.accountId) &&
+              !unread.containsKey(b.accountId))
+            b,
+        for (final i in press.invited)
+          if (awayStartsTicked(i.event!, emails.values)) i,
+      ]);
+    press
+      ..reading = false
+      ..changed();
   }
 
   Future<void> _changeDays() async {
     final days = await _askDays(
       context,
       now: ref.read(meetingClockProvider)(),
-      initial: DateTimeRange(start: _first, end: _last),
+      initial: DateTimeRange(start: _press.first, end: _press.last),
     );
-    if (days == null || !mounted || _pressed) return;
-    setState(() {
-      _first = _midnight(days.start);
-      _last = _midnight(days.end);
+    if (days == null || !mounted || _press.pressed || _press.running) return;
+    _press
+      ..first = _midnight(days.start)
+      ..last = _midnight(days.end)
       // Other days, another block.
-      _blockKeys.clear();
-    });
+      ..blockKeys.clear();
     await _read();
   }
 
@@ -234,8 +223,11 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
       .length;
 
   Future<void> _go() async {
-    if (_reading || _asking || _running) return;
-    final todo = _toDo;
+    final press = _press;
+    if (press.reading || _asking || press.running) return;
+    // One press at a time, in the whole app.
+    if (ref.read(awayPressProvider) != null) return;
+    final todo = press.toDo;
     if (todo.isEmpty) return;
     final declines = _count(todo, AwayAction.decline);
     final cancels = _count(todo, AwayAction.cancel);
@@ -253,38 +245,17 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
           days: _daysText(),
           declines: declines,
           cancels: cancels,
-          tell: _tell,
-          note: _note.text.trim().isNotEmpty,
+          tell: press.tell,
+          note: press.note.trim().isNotEmpty,
           words: _words(todo)!,
         ),
       );
       _asking = false;
       if (sure != true || !mounted) return;
     }
-    setState(() {
-      _running = true;
-      _pressed = true;
-      _going = 0;
-      _goingOf = todo.length;
-    });
-    try {
-      await _run.go(
-        todo,
-        first: _first,
-        last: _last,
-        note: _note.text,
-        tell: _tell,
-        changed: (through) {
-          if (mounted) setState(() => _going = through);
-        },
-      );
-    } finally {
-      // The views and the reminders, from the calendars as they now are.
-      if (mounted) {
-        ref.read(calendarRefreshProvider.notifier).now();
-        setState(() => _running = false);
-      }
-    }
+    // Held by the app, not the screen: it goes on to its end, and reads
+    // the views and the reminders again then, whatever becomes of this.
+    await ref.read(awayPressProvider.notifier).go(press);
   }
 
   /// The button's words for [todo]; again where an earlier press left
@@ -296,24 +267,30 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
         again: todo.any((i) => i.state == AwayState.failed),
       );
 
-  String _daysText() => _first == _last
-      ? formatDay(_first)
-      : '${formatDay(_first)} – ${formatDay(_last)}';
+  String _daysText() => _press.first == _press.last
+      ? formatDay(_press.first)
+      : '${formatDay(_press.first)} – ${formatDay(_press.last)}';
 
   /// After a press: how it went, in a line over the button.
   String? _summary() {
-    if (!_pressed || _running) return null;
-    final all = _all;
-    final went = all.where((i) => i.state == AwayState.done).length;
-    final failed = all.where((i) => i.state == AwayState.failed).length;
-    final gone = all.where((i) => i.state == AwayState.gone).length;
+    final press = _press;
+    if (!press.pressed || press.running) return null;
+    final all = press.all;
+    int count(AwayState s) => all.where((i) => i.state == s).length;
+    final went = count(AwayState.done);
+    final failed = count(AwayState.failed);
+    final gone = count(AwayState.gone);
+    final sentGone = count(AwayState.sentGone);
     return [
       if (failed == 0)
         went == 0 ? 'Nothing more to send.' : 'Done: $went went.'
       else
         '$went went, $failed did not (marked in red).',
+      if (sentGone > 0)
+        '$sentGone sent once with no answer back, and no longer on the '
+            'calendar: not sent again.',
       if (gone > 0)
-        '$gone ${gone == 1 ? 'is' : 'are'} no longer on the calendar, so '
+        '$gone ${gone == 1 ? 'was' : 'were'} no longer on the calendar, so '
             'nothing was sent for ${gone == 1 ? 'it' : 'them'}.',
       if (failed > 0)
         'Those that went are not sent again. Pressing again does only the '
@@ -323,14 +300,18 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final press = _press;
     final theme = Theme.of(context);
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
     final muted = theme.textTheme.bodyMedium
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
-    final todo = _toDo;
+    final todo = press.toDo;
     final words = _words(todo);
     final summary = _summary();
-    final locked = _running || _asking;
+    final running = press.running;
+    final reading = press.reading;
+    final locked = running || _asking;
+    final first = press.first, last = press.last;
 
     Widget row(
       AwayItem item, {
@@ -343,14 +324,16 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
             _ => 'away:${item.accountId}:${item.event!.id}',
           }),
           item: item,
-          ticked: _ticked.contains(item),
-          enabled: !locked && !_reading,
+          ticked: press.ticked.contains(item),
+          enabled: !locked && !reading,
           colour: Color(_account(item.accountId)?.colorValue ??
               theme.colorScheme.primary.toARGB32()),
           title: title,
           lines: lines,
-          onTick: (on) => setState(() =>
-              on ? _ticked.add(item) : _ticked.remove(item)),
+          onTick: (on) {
+            on ? press.ticked.add(item) : press.ticked.remove(item);
+            press.changed();
+          },
         );
 
     Widget meeting(AwayItem item) {
@@ -364,7 +347,8 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
               final n => '$n other people',
             };
       final mine = item.action == AwayAction.decline &&
-          !awayStartsTicked(e, [for (final a in _accounts) a.emailAddress]);
+          !awayStartsTicked(
+              e, [for (final a in press.accounts) a.emailAddress]);
       return row(item, title: title, lines: [
         [meetingWhen(e, use24h: use24h), if (who.isNotEmpty) who].join(' · '),
         if (mine) 'You organised it, from ${e.organizer!.email}',
@@ -377,7 +361,7 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
 
     List<Widget> problems(Iterable<String> accountIds) => [
           for (final id in accountIds)
-            if (_unread[id] case final why?)
+            if (press.unread[id] case final why?)
               Padding(
                 key: ValueKey('away-unread:$id'),
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
@@ -391,21 +375,21 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
         ];
 
     // Counted on dates, not hours: a day the clocks change is a day too.
-    final dayCount = DateTime.utc(_last.year, _last.month, _last.day)
-            .difference(DateTime.utc(_first.year, _first.month, _first.day))
+    final dayCount = DateTime.utc(last.year, last.month, last.day)
+            .difference(DateTime.utc(first.year, first.month, first.day))
             .inDays +
         1;
     final body = ListView(
       key: const ValueKey('away-list'),
       padding: const EdgeInsets.only(bottom: 16),
       children: [
-        if (_reading) const LinearProgressIndicator(),
+        if (reading) const LinearProgressIndicator(),
         ListTile(
           key: const ValueKey('away-days'),
           leading: const Icon(Icons.date_range_outlined),
           title: Text(_daysText()),
           subtitle: Text(dayCount == 1 ? '1 day' : '$dayCount days'),
-          trailing: _pressed
+          trailing: press.pressed || running
               ? null
               : TextButton(
                   key: const ValueKey('away-days-change'),
@@ -416,49 +400,55 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
         _Heading('Block the days'),
         _Note('An all-day event shown as out of office, on each calendar '
             'ticked. Nobody is sent anything.'),
-        for (final b in _blocks)
+        for (final b in press.blocks)
           row(b,
               title: _account(b.accountId)?.displayName ?? '',
               lines: [
                 _account(b.accountId)?.emailAddress ?? '',
-                if (_blockedAlready[b.accountId] case final already?)
+                if (press.blockedAlready[b.accountId] case final already?)
                   'Out of office already: '
                       '${already.title.trim().isEmpty ? awayTitle : ''}'
                       '${already.title.trim()}',
               ]),
-        _Heading(_reading
+        _Heading(reading
             ? 'Meetings you were invited to'
-            : 'Meetings you were invited to (${_invited.length})'),
+            : 'Meetings you were invited to (${press.invited.length})'),
         _Note('Ticked ones are declined, each as Decline does it: only the '
             'meeting in these days, never the rest of its series.'),
-        ...problems(_accounts.map((a) => a.id)),
-        if (!_reading && _invited.isEmpty)
+        ...problems(press.accounts.map((a) => a.id)),
+        if (!reading && press.invited.isEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
             child: Text('None in these days.', style: muted),
           ),
-        for (final i in _invited) meeting(i),
-        _Heading(_reading
+        for (final i in press.invited) meeting(i),
+        _Heading(reading
             ? 'Your own meetings'
-            : 'Your own meetings (${_own.length})'),
+            : 'Your own meetings (${press.own.length})'),
         _Note('Ticked ones are cancelled, as Cancel meeting does it: '
             'everyone on them is told.'),
-        if (!_reading && _own.isEmpty)
+        if (!reading && press.own.isEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
             child: Text('None with others on them in these days.',
                 style: muted),
           ),
-        for (final i in _own) meeting(i),
+        for (final i in press.own) meeting(i),
         _Heading('Your answer'),
         SwitchListTile(
           key: const ValueKey('away-tell'),
           title: const Text('Tell the organisers'),
-          subtitle: Text(_tell
+          subtitle: Text(press.tell
               ? 'Each gets your decline, with the note below'
               : 'Declined without a word to them'),
-          value: _tell,
-          onChanged: locked ? null : (on) => setState(() => _tell = on),
+          value: press.tell,
+          onChanged: locked
+              ? null
+              : (on) {
+                  press
+                    ..tell = on
+                    ..changed();
+                },
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
@@ -471,7 +461,7 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
             textCapitalization: TextCapitalization.sentences,
             decoration: InputDecoration(
               labelText: 'A note to them',
-              helperText: _tell
+              helperText: press.tell
                   ? 'Goes with each decline, and with each cancellation '
                       'from a Microsoft account.'
                   : 'Goes with each cancellation from a Microsoft account. '
@@ -496,9 +486,9 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
       ],
     );
 
-    final done = _pressed && words == null && !_running;
+    final done = press.pressed && words == null && !running;
     return PopScope(
-      canPop: !_running,
+      canPop: !running,
       onPopInvokedWithResult: (popped, _) {
         if (popped) return;
         ScaffoldMessenger.of(context)
@@ -525,7 +515,7 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
                       summary,
                       key: const ValueKey('away-summary'),
                       style: theme.textTheme.bodyMedium?.copyWith(
-                        color: _all.any((i) => i.state == AwayState.failed)
+                        color: press.leftUndone
                             ? theme.colorScheme.error
                             : null,
                       ),
@@ -535,13 +525,13 @@ class _AwayScreenState extends ConsumerState<AwayScreen> {
                   key: const ValueKey('away-go'),
                   onPressed: done
                       ? () => Navigator.of(context).maybePop()
-                      : (_reading || locked || words == null ? null : _go),
+                      : (reading || locked || words == null ? null : _go),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
                     child: Text(
-                      _running
-                          ? 'Sending: $_going of $_goingOf'
-                          : _reading
+                      running
+                          ? 'Sending: ${press.through} of ${press.of}'
+                          : reading
                               ? 'Reading the calendars…'
                               : done
                                   ? 'Close'
@@ -675,7 +665,8 @@ class _AwayRow extends StatelessWidget {
           dimension: 20,
           child: CircularProgressIndicator(strokeWidth: 2),
         ),
-      AwayState.done => Icon(Icons.check_circle, color: scheme.primary),
+      AwayState.done || AwayState.sentGone =>
+        Icon(Icons.check_circle, color: scheme.primary),
       AwayState.gone =>
         Icon(Icons.remove_circle_outline, color: scheme.onSurfaceVariant),
       AwayState.waiting || AwayState.failed => Checkbox(
@@ -689,7 +680,14 @@ class _AwayRow extends StatelessWidget {
           AwayAction.decline => 'Declined',
           AwayAction.cancel => 'Cancelled',
         },
-      AwayState.gone => 'No longer on your calendar: nothing more is sent',
+      // Nothing went: gone before anything was sent. A cancellation finds
+      // its meeting gone as it looks first (Graph would answer it "done").
+      AwayState.gone => item.action == AwayAction.cancel
+          ? 'Already gone from your calendar: nothing was sent'
+          : 'No longer on your calendar: nothing was sent',
+      // It went once; what came back was lost.
+      AwayState.sentGone => 'Sent once; no answer came back, and it is no '
+          'longer on your calendar, so it is not sent again',
       AwayState.failed => 'Did not go: ${item.problem ?? 'no answer came'}',
       AwayState.going || AwayState.waiting => null,
     };
@@ -743,7 +741,8 @@ class _AwayRow extends StatelessWidget {
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: item.state == AwayState.failed
                                 ? scheme.error
-                                : item.state == AwayState.done
+                                : item.state == AwayState.done ||
+                                        item.state == AwayState.sentGone
                                     ? scheme.primary
                                     : scheme.onSurfaceVariant,
                             fontWeight: item.state == AwayState.gone

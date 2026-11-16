@@ -28,11 +28,15 @@ import 'package:myemail/state/calendar_view_providers.dart'
     show calendarRefreshProvider;
 import 'package:myemail/state/meeting_alert_providers.dart'
     show meetingClockProvider;
+import 'package:myemail/state/away_providers.dart' show awayPressProvider;
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/put_away_providers.dart'
+    show putAwayGuardsProvider;
 import 'package:myemail/theme/app_theme.dart' show buildTheme;
 import 'package:myemail/ui/calendar/away_screen.dart';
 import 'package:myemail/ui/calendar/calendar_screen.dart';
 import 'package:myemail/ui/settings/auto_replies_screen.dart';
+import 'package:myemail/ui/shell/put_away.dart' show closeForPutAway;
 
 import 'fakes/fake_webview.dart';
 import 'helpers/real_fonts.dart';
@@ -413,7 +417,7 @@ void main() {
     });
 
     test('one whose answer was lost: Exchange took it off the calendar, so '
-        'nothing more is sent', () async {
+        'it went, and nothing more is sent', () async {
       engine
         ..loseAnswer.add('design')
         ..takesDeclinedOff = true;
@@ -423,7 +427,7 @@ void main() {
       engine.loseAnswer.clear();
       await run.go([item], first: wed, last: fri);
       expect(engine.calendarActions, ['respond design declined']);
-      expect(item.state, AwayState.gone);
+      expect(item.state, AwayState.sentGone);
     });
 
     test('a cancellation whose answer was lost is not sent again',
@@ -435,7 +439,55 @@ void main() {
       engine.loseAnswer.clear();
       await run.go([item], first: wed, last: fri);
       expect(engine.calendarActions, ['cancel q4']);
+      expect(item.state, AwayState.sentGone,
+          reason: 'it went once: its answer was what was lost');
+    });
+
+    test('a refusal, then gone from the calendar: nothing was sent',
+        () async {
+      engine.refuse.add('design');
+      final item = AwayItem.decline(byId('design'));
+      final run = AwayRun(engine);
+      await run.go([item], first: wed, last: fri);
+      expect(item.unanswered, isFalse);
+      engine
+        ..refuse.clear()
+        ..events['h']!.removeWhere((e) => e.id == 'design');
+      await run.go([item], first: wed, last: fri);
+      expect(engine.calendarActions, isEmpty);
       expect(item.state, AwayState.gone);
+    });
+
+    test('no answer, as against a refusal: a lost connection may have gone',
+        () async {
+      engine.loseAnswer.add('design');
+      engine.refuse.add('standup-18');
+      final lost = AwayItem.decline(byId('design'));
+      final refused = AwayItem.decline(byId('standup-18'));
+      await AwayRun(engine).go([lost, refused], first: wed, last: fri);
+      expect(lost.state, AwayState.failed);
+      expect(lost.unanswered, isTrue);
+      expect(refused.state, AwayState.failed);
+      expect(refused.unanswered, isFalse);
+    });
+
+    test('a cancellation looks first: a meeting gone already is said gone, '
+        'and no cancellation is sent', () async {
+      engine.notesGone.add('q4');
+      final item = AwayItem.cancel(byId('q4'));
+      await AwayRun(engine).go([item], first: wed, last: fri);
+      expect(engine.calendarActions, isEmpty);
+      expect(item.state, AwayState.gone);
+    });
+
+    test('a look that cannot be made leaves the cancellation unsent, and '
+        'certainly so', () async {
+      engine.notesFail = const ConnectionFailed('No connection.');
+      final item = AwayItem.cancel(byId('q4'));
+      await AwayRun(engine).go([item], first: wed, last: fri);
+      expect(engine.calendarActions, isEmpty);
+      expect(item.state, AwayState.failed);
+      expect(item.unanswered, isFalse);
     });
 
     test('where its calendar cannot be read again, it is not tried again',
@@ -1021,6 +1073,172 @@ void main() {
       expect(find.text('Done: 8 went.'), findsOneWidget);
     });
 
+    Future<void> spin(WidgetTester tester) async {
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+    }
+
+    Future<void> pressAndHold(WidgetTester tester) async {
+      await tester.tap(find.byKey(const ValueKey('away-go')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('away-go-sure')));
+      await spin(tester);
+    }
+
+    NavigatorState navigator(WidgetTester tester) =>
+        tester.state<NavigatorState>(find.byType(Navigator).first);
+
+    testWidgets('put away while it sends: the screen stays with its press, '
+        'and nothing goes twice', (tester) async {
+      final engine = _Engine()..hold = Completer<void>();
+      final (c, _) = await pump(tester, with_: engine);
+      await pressAndHold(tester);
+      expect(button(tester), startsWith('Sending: '));
+
+      // Home: what the shell does as Android says the app is put away.
+      final closed = await closeForPutAway(
+          navigator(tester), c.read(putAwayGuardsProvider));
+      await spin(tester);
+      expect(closed, isFalse);
+      expect(find.byType(AwayScreen), findsOneWidget);
+
+      engine.hold!.complete();
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions, hasLength(6));
+      expect(engine.calendarActions.toSet(), hasLength(6),
+          reason: 'each once');
+      expect(find.text('Done: 8 went.'), findsOneWidget);
+    });
+
+    testWidgets('put away with some left that did not go: the report stays',
+        (tester) async {
+      final engine = _Engine()..refuse.add('webinar');
+      final (c, _) = await pump(tester, with_: engine);
+      await press(tester);
+      expect(
+          await closeForPutAway(
+              navigator(tester), c.read(putAwayGuardsProvider)),
+          isFalse);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('away-summary')), findsOneWidget);
+    });
+
+    testWidgets('Away opened again while a press goes shows that press, and '
+        'a second press sends nothing more', (tester) async {
+      final engine = _Engine()..hold = Completer<void>();
+      await pump(tester, with_: engine);
+      final readsBefore = engine.reads;
+      await pressAndHold(tester);
+      unawaited(navigator(tester).push(MaterialPageRoute<void>(
+          builder: (_) => AwayScreen(first: wed, last: fri))));
+      await spin(tester);
+      expect(find.byType(AwayScreen, skipOffstage: false), findsNWidgets(2));
+      final second = find.byType(AwayScreen);
+      final go = find.descendant(
+          of: second, matching: find.byKey(const ValueKey('away-go')));
+      String words() => tester
+          .widget<Text>(find.descendant(of: go, matching: find.byType(Text)))
+          .data!;
+      expect(words(), startsWith('Sending: '),
+          reason: 'the press going, not a list of its own');
+      await tester.tap(go);
+      await spin(tester);
+      expect(find.byKey(const ValueKey('away-go-sure')), findsNothing);
+
+      engine.hold!.complete();
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions, hasLength(6));
+      expect(engine.calendarActions.toSet(), hasLength(6));
+      expect(engine.meetings, hasLength(2));
+      expect(engine.reads, readsBefore, reason: 'nothing read for it');
+      expect(words(), 'Close');
+      expect(find.descendant(of: second, matching: find.text('Done: 8 went.')),
+          findsOneWidget);
+    });
+
+    testWidgets('the screen taken away under a press: it goes to its end, '
+        'and the views and reminders are read again all the same',
+        (tester) async {
+      final engine = _Engine()..hold = Completer<void>();
+      final (c, _) = await pump(tester, with_: engine);
+      await pressAndHold(tester);
+      final before = c.read(calendarRefreshProvider);
+      navigator(tester).removeRoute(
+          ModalRoute.of(tester.element(find.byType(AwayScreen)))!);
+      await spin(tester);
+      expect(find.byType(AwayScreen), findsNothing);
+      engine.hold!.complete();
+      // Nothing on screen asks for frames: the time pumped by hand.
+      for (var i = 0; i < 30; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(engine.calendarActions, hasLength(6));
+      expect(c.read(calendarRefreshProvider).isAfter(before), isTrue);
+      expect(c.read(awayPressProvider), isNull, reason: 'free for the next');
+    });
+
+    testWidgets('what it says is what it did: sent with no answer and then '
+        'gone, apart from gone before anything was sent', (tester) async {
+      final engine = _Engine()
+        ..loseAnswer.add('design')
+        ..takesDeclinedOff = true
+        ..gone.add('standup-19');
+      await pump(tester, with_: engine);
+      // Its row's key, had while the meeting is still on its calendar.
+      final designRow = rowOf(engine, 'design');
+      await press(tester);
+      engine.loseAnswer.clear();
+      await scrollTo(tester, designRow);
+      if (!ticked(tester, designRow)) {
+        await tester.tap(designRow);
+        await tester.pump();
+      }
+      await press(tester);
+      expect(
+          engine.calendarActions.where((a) => a.startsWith('respond design')),
+          hasLength(1));
+      await scrollTo(tester, designRow);
+      expect(
+          find.descendant(
+              of: designRow,
+              matching: find.text('Sent once; no answer came back, and it is '
+                  'no longer on your calendar, so it is not sent again')),
+          findsOneWidget);
+      await scrollTo(tester, rowOf(engine, 'standup-19'));
+      expect(
+          find.descendant(
+              of: rowOf(engine, 'standup-19'),
+              matching:
+                  find.text('No longer on your calendar: nothing was sent')),
+          findsOneWidget);
+      final summary = tester
+          .widget<Text>(find.byKey(const ValueKey('away-summary')))
+          .data!;
+      expect(summary, contains('1 sent once with no answer back, and no '
+          'longer on the calendar: not sent again.'));
+      expect(summary, contains('1 was no longer on the calendar, so nothing '
+          'was sent for it.'));
+    });
+
+    testWidgets('a cancellation whose meeting is gone already says so, not '
+        'Cancelled', (tester) async {
+      final (_, engine) = await pump(tester,
+          prepare: (engine, hadco, _) => engine.notesGone.add('q4'));
+      await scrollTo(tester, rowOf(engine, 'q4'));
+      await tester.tap(rowOf(engine, 'q4'));
+      await tester.pump();
+      await press(tester);
+      expect(engine.calendarActions, isNot(contains(startsWith('cancel'))));
+      await scrollTo(tester, rowOf(engine, 'q4'));
+      expect(
+          find.descendant(
+              of: rowOf(engine, 'q4'),
+              matching: find
+                  .text('Already gone from your calendar: nothing was sent')),
+          findsOneWidget);
+    });
+
     testWidgets('a screen reader hears each row as one: its tick, what it is, '
         'and how it went', (tester) async {
       final semantics = tester.ensureSemantics();
@@ -1198,6 +1416,28 @@ class _Engine extends SampleMailEngine {
 
   /// Each answer waits for this, where a test holds them.
   Completer<void>? hold;
+
+  /// What a look at a meeting throws instead, for a test.
+  Exception? notesFail;
+
+  /// Meetings a look finds gone, though a read listed them.
+  final Set<String> notesGone = {};
+
+  /// A meeting no longer among [events] is gone, as both calendars say.
+  @override
+  Future<EventNotes> eventNotes(
+    CalendarEvent event, {
+    bool wholeSeries = false,
+  }) async {
+    final fails = notesFail;
+    if (fails != null) throw fails;
+    if (notesGone.contains(event.id)) throw const EventGone();
+    final list = events[event.accountId];
+    if (list != null && !list.any((e) => e.id == event.id)) {
+      throw const EventGone();
+    }
+    return super.eventNotes(event, wholeSeries: wholeSeries);
+  }
 
   @override
   Future<List<CalendarEvent>> calendarEvents(
