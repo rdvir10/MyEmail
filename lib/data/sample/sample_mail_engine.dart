@@ -1219,6 +1219,10 @@ class SampleMailEngine
     if (isOwnEvent(event)) {
       throw ArgumentError('This is your own meeting: Edit changes it.');
     }
+    if (event.calendarId != CalendarEvent.mainCalendar) {
+      throw ArgumentError('This meeting is on a calendar shared to you, not '
+          'your own copy of it.');
+    }
     calendarActions.add([
       'own ${event.id}',
       if (reminder != null) 'reminder=${reminder.minutes ?? 'none'}',

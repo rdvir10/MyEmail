@@ -3230,9 +3230,12 @@ class _EventDetails extends StatelessWidget {
                           child: Text('Propose a new time'),
                         ),
                       // Your own copy of it (#45): when you are reminded,
-                      // and how it shows you, told to nobody.
+                      // and how it shows you, told to nobody. Only on the
+                      // account's main calendar, where its own copy is: on
+                      // one shared to it, the copy is its owner's.
                       if (invited &&
                           !e.declined &&
+                          e.calendarId == CalendarEvent.mainCalendar &&
                           canChangeOwnCopy(hostRef)) ...[
                         const PopupMenuItem(
                           key: ValueKey('event-my-reminder'),

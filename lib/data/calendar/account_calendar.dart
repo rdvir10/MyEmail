@@ -875,6 +875,14 @@ class AccountCalendar {
     if (isOwnEvent(event)) {
       throw ArgumentError('This is your own meeting: Edit changes it.');
     }
+    // Only the account's main calendar is its own copy: both services put
+    // its invitations there. One beside it it may change is someone
+    // else's shared to it (a colleague's), where Google would change that
+    // person's reminder and busy or free.
+    if (event.calendarId != CalendarEvent.mainCalendar) {
+      throw ArgumentError('This meeting is on a calendar shared to you, not '
+          'your own copy of it.');
+    }
     if (account.isShared) throw const CalendarUnavailable(_sharedOnly);
     final id = _target(event, wholeSeries);
     switch (account.provider) {

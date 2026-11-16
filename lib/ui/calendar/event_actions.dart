@@ -676,6 +676,11 @@ Future<void> changeMyReminder(
     context: context,
     builder: (_) => _OwnCopyDialog<Reminder>(
       title: 'My reminder',
+      // Google's copy may keep several reminders, or its calendar's own:
+      // the one chosen takes the place of them all.
+      note: account.provider == MailProvider.gmail
+          ? "On Google this becomes the meeting's only reminder."
+          : null,
       current: current,
       choices: [
         for (final r in offered)
@@ -687,7 +692,9 @@ Future<void> changeMyReminder(
       ],
     ),
   );
-  if (chosen == null || !context.mounted) return;
+  // The one ticked, chosen again: nothing to change, and on Google a
+  // change would still replace the reminders the copy has.
+  if (chosen == null || chosen == current || !context.mounted) return;
   final series = await askWholeSeries(context, event, doing: 'My reminder');
   if (series == null || !context.mounted) return;
   try {
@@ -748,7 +755,7 @@ Future<void> changeHowIShow(
       ],
     ),
   );
-  if (chosen == null || !context.mounted) return;
+  if (chosen == null || chosen == current || !context.mounted) return;
   final series = await askWholeSeries(context, event, doing: 'Show me as');
   if (series == null || !context.mounted) return;
   try {
@@ -770,26 +777,35 @@ class _OwnCopyDialog<T> extends StatelessWidget {
     required this.title,
     required this.current,
     required this.choices,
+    this.note,
   });
 
   final String title;
+
+  /// A quiet line more under the first, where the choice does more than
+  /// it seems to.
+  final String? note;
   final T current;
   final List<({T value, String label, String key})> choices;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final quiet = theme.textTheme.bodyMedium
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
     return SimpleDialog(
       title: Text(title),
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-          child: Text(
-            'Only your calendar changes. Nobody is told.',
-            style: theme.textTheme.bodyMedium
-                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-          ),
+          child: Text('Only your calendar changes. Nobody is told.',
+              style: quiet),
         ),
+        if (note case final note?)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+            child: Text(note, style: quiet),
+          ),
         for (final c in choices)
           Semantics(
             container: true,
