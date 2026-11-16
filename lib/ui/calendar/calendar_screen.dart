@@ -558,6 +558,8 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
                   ref.read(calendarRefreshProvider.notifier).now();
                 case 'away':
                   openAway(context, ref);
+                case 'share-day':
+                  showDayToShare(context, _day);
                 default:
                   final chosen = WeekSpan.values
                       .where((s) => 'span:${s.name}' == choice)
@@ -619,6 +621,13 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
                   key: ValueKey('calendar-away'),
                   value: 'away',
                   child: Text('I am away'),
+                ),
+                // The day the view is on, as a few lines to copy or to
+                // share, as a meeting's sheet shares its own day (#48).
+                const PopupMenuItem(
+                  key: ValueKey('calendar-share-day'),
+                  value: 'share-day',
+                  child: Text('Share my day'),
                 ),
               ],
             ],
