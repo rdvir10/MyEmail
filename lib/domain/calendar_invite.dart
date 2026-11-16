@@ -37,7 +37,15 @@ class CalendarInvite {
     this.joinUrl,
     this.productId,
     this.responderNote,
+    this.rule,
   });
+
+  /// How the meeting repeats, as the event's own RRULE has it, without its
+  /// name: "FREQ=WEEKLY;BYDAY=WE;UNTIL=20270630T000000Z". Null for one
+  /// that does not. Not a zone's rule, which sits outside the event.
+  /// Written by whoever sent it: see `ruleForPhone` before handing it on
+  /// (calendar idea #67).
+  final String? rule;
 
   /// What made it, as its PRODID says: "Microsoft Exchange Server 2010",
   /// "-//Google Inc//Google Calendar 70.9054//EN". Null where it says
@@ -167,6 +175,7 @@ class CalendarInvite {
     String? productId;
     String? comment;
     String? responderComment;
+    String? rule;
 
     for (final line in lines) {
       final name = line.name;
@@ -230,6 +239,8 @@ class CalendarInvite {
           }
         case 'COMMENT':
           comment = _unescape(value);
+        case 'RRULE':
+          rule = value.trim();
         case 'SEQUENCE':
           sequence = int.tryParse(value.trim()) ?? 0;
         case 'DTSTAMP':
@@ -310,6 +321,7 @@ class CalendarInvite {
           meetingLinkIn(url) ??
           meetingLinkIn(description),
       productId: productId == null || productId.isEmpty ? null : productId,
+      rule: rule == null || rule.isEmpty ? null : rule,
       responderNote: _noteOf(
         method == 'REPLY' || method == 'COUNTER'
             ? [comment, responderComment]

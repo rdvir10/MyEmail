@@ -99,6 +99,7 @@ class FilesBridge(
      */
     fun takeShare(intent: Intent?, pushNow: Boolean) {
         if (intent == null) return
+        if (takeCalendar(intent, pushNow)) return
         val action = intent.action
         // VIEW only on a mailto: link. The sign-in's way back is a VIEW as
         // well, on a scheme of its own, and is MainActivity's.
@@ -156,6 +157,65 @@ class FilesBridge(
                 if (asked != null) asked.success(share) else pendingShare = share
             }
         }
+    }
+
+    /**
+     * A calendar the app was opened with (calendar idea #67): an .ics file
+     * viewed in Files, a browser's downloads or another app, or a webcal:
+     * link tapped anywhere. True where the intent was one, and is taken.
+     *
+     * Only on VIEW. The file is copied in as a share's files are, with
+     * copyIn's checks, while the grant that came with the intent holds;
+     * nothing of it is read here. The link is handed over as written, and
+     * nothing is fetched. Dart shows what either holds and adds nothing
+     * until Ron says where.
+     *
+     * This activity is exported, so any app can name it with any data.
+     * A content: URI of another type, or none, is copied in all the same,
+     * and Dart reads it as a calendar or says it is none; a scheme other
+     * than these is not a calendar's.
+     */
+    private fun takeCalendar(intent: Intent, pushNow: Boolean): Boolean {
+        if (intent.action != Intent.ACTION_VIEW) return false
+        val data = intent.data ?: return false
+        val scheme = data.scheme?.lowercase()
+        if (scheme == "webcal" || scheme == "webcals") {
+            intent.action = null
+            deliverCalendar(
+                mapOf("calendarOpened" to true, "calendarLink" to data.toString()),
+                pushNow,
+            )
+            return true
+        }
+        if (scheme != ContentResolver.SCHEME_CONTENT) return false
+        val type = intent.type?.substringBefore(";")?.trim()?.lowercase()
+        if (type != null && type !in CALENDAR_TYPES) return false
+        intent.action = null
+        if (!pushNow) shareCopying = true
+        copyInBackground(listOf(data)) { incoming ->
+            deliverCalendar(
+                mapOf(
+                    "calendarOpened" to true,
+                    "calendarFile" to incoming.files.firstOrNull(),
+                    "skipped" to incoming.skipped,
+                ),
+                pushNow,
+            )
+        }
+        return true
+    }
+
+    /// A calendar opened with the app, to Dart: pushed now, or kept to be
+    /// asked for, as a share is.
+    private fun deliverCalendar(calendar: Map<String, Any?>, pushNow: Boolean) {
+        if (pushNow) {
+            channel.invokeMethod("shared", calendar)
+            return
+        }
+        shareCopying = false
+        val asked = shareAsked
+        shareAsked = null
+        if (asked != null) asked.success(calendar) else pendingShare = calendar
     }
 
     /// The addresses under [name]: an array of them, as Android documents
@@ -973,6 +1033,9 @@ class FilesBridge(
     }
 
     companion object {
+        /** The types a calendar file is opened as: the manifest's. */
+        val CALENDAR_TYPES = setOf("text/calendar", "application/ics")
+
         const val CHANNEL = "mailtree/files"
 
         const val ANDROID_PACKAGE = "application/vnd.android.package-archive"

@@ -42,7 +42,20 @@ class SharedContent {
     this.cc = const [],
     this.bcc = const [],
     this.skipped = 0,
+    this.calendarFile,
+    this.calendarLink,
+    this.calendarOpened = false,
   });
+
+  /// The app opened with a calendar rather than shared to (calendar idea
+  /// #67): an .ics file from another app, copied in as a share's files
+  /// are, or a webcal: link tapped somewhere, as it was tapped. Either is
+  /// a stranger's, and is only shown until Ron says where it goes. Opened
+  /// with a calendar, the rest is empty; with [calendarOpened] and neither,
+  /// the file could not be copied in.
+  final IncomingFile? calendarFile;
+  final String? calendarLink;
+  final bool calendarOpened;
 
   final List<IncomingFile> files;
   final String? text;
@@ -65,7 +78,8 @@ class SharedContent {
       files.isEmpty &&
       (text == null || text!.trim().isEmpty) &&
       subject == null &&
-      !hasRecipients;
+      !hasRecipients &&
+      !calendarOpened;
 
   static SharedContent? fromMap(Object? value) {
     if (value is! Map) return null;
@@ -73,6 +87,14 @@ class SharedContent {
       for (final item in (value['files'] as List? ?? const []))
         ?IncomingFile.fromMap(item),
     ];
+    if (value['calendarOpened'] == true) {
+      return SharedContent(
+        calendarFile: IncomingFile.fromMap(value['calendarFile']),
+        calendarLink: calendarLinkIn(value['calendarLink']),
+        calendarOpened: true,
+        skipped: skippedFiles(value),
+      );
+    }
     final mailto = value['mailto'];
     final link = mailto is String ? MailtoLink.parse(mailto) : null;
     String? given(Object? v) => v is String && v.trim().isNotEmpty ? v : null;
@@ -163,6 +185,20 @@ class MailtoLink {
       return s;
     }
   }
+}
+
+/// [value] where it is a calendar link as a calendar app hands one out,
+/// webcal:// or webcals:// to a host; null for anything else, which is no
+/// calendar's.
+String? calendarLinkIn(Object? value) {
+  if (value is! String) return null;
+  final uri = Uri.tryParse(value.trim());
+  if (uri == null ||
+      !(uri.isScheme('webcal') || uri.isScheme('webcals')) ||
+      uri.host.isEmpty) {
+    return null;
+  }
+  return value.trim();
 }
 
 /// How many files Android was handed and could not copy in: refused, too

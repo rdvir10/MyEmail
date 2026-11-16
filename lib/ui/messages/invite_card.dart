@@ -8,6 +8,7 @@ import '../../data/auth/microsoft_oauth.dart' show SignInNeedsConsent;
 import '../../data/compose/reply_draft.dart' show escapeHtml;
 import '../../data/mail_engine.dart' show CalendarUnavailable;
 import '../../domain/account.dart';
+import '../../domain/calendar_files.dart' show repeatWordsOf, ruleForPhoneOf;
 import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
 import '../../domain/draft.dart';
@@ -222,6 +223,9 @@ class _InviteCardState extends ConsumerState<InviteCard> {
           start: i.start,
           end: i.end,
           allDay: i.isAllDay,
+          // A series goes as a series (calendar idea #67), where the phone
+          // can be told its repeat: see ruleForPhone.
+          rule: ruleForPhoneOf(i),
         );
     if (!ok) {
       messenger?.showSnackBar(
@@ -340,6 +344,8 @@ class _InviteCardState extends ConsumerState<InviteCard> {
     final mine = meeting != null && meeting.isOrganizer;
 
     final who = proposerOf(widget.message, i);
+    // Not on an answer, which is about the meeting the organiser has.
+    final repeats = i.isReply || i.isDeclineCounter ? null : repeatWordsOf(i);
     final (IconData icon, String heading) = switch (i.method) {
       'CANCEL' => (Icons.event_busy, 'Cancelled'),
       'REQUEST' => (
@@ -525,6 +531,9 @@ class _InviteCardState extends ConsumerState<InviteCard> {
             ),
           ] else ...[
             _line(theme, Icons.schedule, describeWhen(i, use24h: use24h)),
+            // How a series repeats, as its sheet says it (#44), so Add to
+            // calendar is seen to add them all (#67).
+            if (repeats != null) _line(theme, Icons.repeat, repeats),
             // What else is on then, on any of the calendars.
             if (i.isRequest && done == null && answered == null)
               InviteClashes(invite: i),

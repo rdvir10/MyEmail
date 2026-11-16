@@ -120,6 +120,26 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="mailto"/>
             </intent-filter>
+            <!-- A calendar file opened from Files, a browser's downloads or
+                 another app: its events, to add where Ron picks. Only a
+                 file another app grants (content:), never a path; it is
+                 copied in under the checks a share's files are. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:scheme="content"/>
+                <data android:mimeType="text/calendar"/>
+                <data android:mimeType="application/ics"/>
+            </intent-filter>
+            <!-- A calendar link tapped anywhere: offered under Calendars
+                 from links, and read only once Add is pressed. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="webcal"/>
+                <data android:scheme="webcals"/>
+            </intent-filter>
         </activity>
         <!-- A way back from the browser after a Google sign-in: the app's
              Google client ID reversed as a URI scheme. The loopback address

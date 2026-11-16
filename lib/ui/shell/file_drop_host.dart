@@ -11,9 +11,11 @@ import '../../state/folder_drag.dart';
 import '../../state/message_providers.dart';
 import '../../state/message_transfer.dart';
 import '../../state/providers.dart';
+import '../calendar/calendar_file_screen.dart';
 import '../folder_tree/folder_tile.dart';
 import '../messages/message_actions.dart';
 import '../compose/open_compose.dart';
+import '../settings/calendar_settings_screen.dart' show addCalendarFromLink;
 import '../../domain/draft.dart';
 
 /// Catches files dragged into the app from another one.
@@ -53,9 +55,11 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
 
   /// Something shared from another app is a new message holding it: files
   /// as attachments, text as the body, a subject and recipients if they
-  /// came along. A mailto: link is one too, with no files.
+  /// came along. A mailto: link is one too, with no files. A calendar
+  /// opened with the app is not: see [_calendar].
   Future<void> _shared(SharedContent content) async {
     if (!mounted) return;
+    if (content.calendarOpened) return _calendar(content);
     _sayLeftOut(content.skipped);
     final attachments = await readIncoming(content.files);
     if (!mounted) return;
@@ -87,6 +91,28 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
       subject: content.subject,
       bodyText: content.text,
     );
+  }
+
+  /// The app opened with a calendar (calendar idea #67): a file's events
+  /// shown, each to be added where Ron picks; a link offered under
+  /// Calendars from links. Nothing is added on the way in.
+  Future<void> _calendar(SharedContent content) async {
+    final file = content.calendarFile;
+    final link = content.calendarLink;
+    debugPrint('[myemail] opened with a calendar '
+        '${file != null ? 'file' : link != null ? 'link' : 'that was not read'}');
+    if (file != null) {
+      await CalendarFileScreen.open(context, file);
+    } else if (link != null) {
+      await addCalendarFromLink(context, ref, link);
+    } else {
+      ScaffoldMessenger.maybeOf(context)
+        ?..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(
+          duration: kBottomMessage,
+          content: Text('That calendar file could not be read.'),
+        ));
+    }
   }
 
   Future<void> _dropped(DroppedFiles dropped) async {
