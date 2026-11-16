@@ -20,6 +20,7 @@ import 'package:myemail/domain/meeting.dart';
 import 'package:myemail/state/calendar_providers.dart';
 import 'package:myemail/state/contact_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/ui/calendar/event_actions.dart' show duplicateEvent;
 import 'package:myemail/ui/compose/header_fields.dart';
 import 'package:myemail/ui/meetings/new_meeting_screen.dart';
 
@@ -301,6 +302,27 @@ void main() {
       ]);
     });
 
+    test('only those whose optional Ron changed are marked or unmarked: one '
+        'made optional in Google Calendar since the phone read the meeting '
+        'is not set back', () {
+      final merged = GoogleCalendarApi.mergedAttendees(
+        [
+          // Dana made optional in Google Calendar; the phone's copy has
+          // her required, and Edit left her so.
+          {'email': 'dana@example.com', 'optional': true},
+          {'email': 'yossi@example.com', 'optional': true},
+        ],
+        const [dana, yossi],
+        before: meeting(),
+        // Yossi made required on the screen; Dana untouched there.
+        optional: const {},
+      );
+      expect(merged, [
+        {'email': 'dana@example.com', 'optional': true},
+        {'email': 'yossi@example.com', 'optional': false},
+      ]);
+    });
+
     test('a change that does not say, Invite people, leaves each as they '
         'were', () {
       final merged = GoogleCalendarApi.mergedAttendees(
@@ -538,6 +560,50 @@ void main() {
           contains('optional=dana@example.com'));
       expect(find.text('Saved. Everyone on it is sent the change.'),
           findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('Duplicate opens with the same people optional',
+        (tester) async {
+      final semantics = tester.ensureSemantics();
+      tester.view.physicalSize = const Size(1000, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        mailEngineProvider.overrideWithValue(engine),
+        deviceContactsProvider.overrideWithValue(FakeDeviceContacts()),
+        deviceCalendarProvider.overrideWithValue(
+            FakeDeviceCalendar(timeZone: 'Asia/Jerusalem')),
+      ]);
+      addTearDown(c.dispose);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: MaterialApp(
+          home: Scaffold(
+            body: Consumer(
+              builder: (context, ref, _) => TextButton(
+                onPressed: () => duplicateEvent(context, ref, meeting()),
+                child: const Text('duplicate'),
+              ),
+            ),
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('duplicate'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(NewMeetingScreen), findsOneWidget);
+      expect(find.bySemanticsLabel(RegExp(r'Yossi Cohen, optional')),
+          findsOneWidget);
+      expect(find.bySemanticsLabel(RegExp(r'Dana Levi, optional')),
+          findsNothing);
+      await tester.enterText(field('meeting-title'), 'Q3 review again');
+      await tester.tap(find.byTooltip('Send'));
+      await tester.pumpAndSettle();
+      expect(engine.meetings.single.optional, {'yossi@example.com'});
       semantics.dispose();
     });
 

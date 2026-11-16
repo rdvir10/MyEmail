@@ -65,7 +65,7 @@ class NewMeetingDefaultsSection extends ConsumerWidget {
         ListTile(
           title: const Text('End early'),
           subtitle: Text(defaults.endEarly == 0
-              ? 'Off: it ends on the hour or the half hour'
+              ? 'Off: it ends when the length is up'
               : 'Time to get to the next one: one at ${clock(nine)} ends at '
                   '${clock(nine.add(defaults.length))}'),
           trailing: DropdownButton<int>(

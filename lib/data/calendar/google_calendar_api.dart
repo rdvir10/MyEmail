@@ -11,7 +11,9 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
+import '../../domain/recurrence.dart';
 import '../../domain/series_repeat.dart';
+import '../../domain/time_zones.dart' show instantIn;
 import '../../domain/meeting_links.dart';
 import '../../domain/meeting_repeat.dart';
 import '../answer_limit.dart';
@@ -887,7 +889,8 @@ class GoogleCalendarApi {
       },
       if (repeat != null)
         'recurrence': [
-          repeat.toRule(change.start ?? before.start, allDay: allDay),
+          ruleIn(repeat, change.start ?? before.start,
+              allDay: allDay, zone: zone),
         ],
       if (change.location != null) 'location': change.location,
       if (change.notes != null) 'description': change.notes,
@@ -906,10 +909,11 @@ class GoogleCalendarApi {
   /// people, and anyone on it that [before] did not have, added elsewhere
   /// since, whom nobody here could have meant to take off.
   ///
-  /// [optional] is who of [now] is optional, as Edit had them (#56): each
-  /// entry of theirs is marked so, and each other's of [now] not, their
-  /// answers kept. Null where a change does not say (Invite people): each
-  /// entry as it was, and anyone new required.
+  /// [optional] is who of [now] is optional, as Edit had them (#56): the
+  /// entry of each whose flag Ron changed there is marked or unmarked,
+  /// answers kept, and the rest left as the event has them; anyone new is
+  /// marked as Edit had them. Null where a change does not say (Invite
+  /// people): each entry as it was, and anyone new required.
   static List<Map<String, Object?>> mergedAttendees(
     Object? had,
     List<MailAddress> now, {
@@ -919,15 +923,23 @@ class GoogleCalendarApi {
     String key(Object? email) => '${email ?? ''}'.trim().toLowerCase();
     final wanted = {for (final a in now) key(a.email)};
     final shown = {for (final a in before.attendees) key(a.address.email)};
+    // Who the screen started with as optional: the phone's copy. Only
+    // those whose flag Ron changed there are marked or unmarked, so one
+    // made optional in Google Calendar since it was read is not set back.
+    final wasOptional = {
+      for (final a in before.attendees)
+        if (a.optional) key(a.address.email),
+    };
     final kept = <String, Map<String, Object?>>{};
     for (final a in had is List ? had.whereType<Map>() : const <Map>[]) {
       final entry = a.cast<String, Object?>();
       final email = key(entry['email']);
       if (optional != null &&
           wanted.contains(email) &&
+          shown.contains(email) &&
           entry['organizer'] != true &&
           entry['resource'] != true &&
-          (entry['optional'] == true) != optional.contains(email)) {
+          wasOptional.contains(email) != optional.contains(email)) {
         kept[email] = {...entry, 'optional': optional.contains(email)};
       } else if (entry['organizer'] == true ||
           entry['resource'] == true ||
@@ -1174,6 +1186,29 @@ class GoogleCalendarApi {
         'transparency': googleTransparency(showAs),
       if (meeting.isPrivate) 'visibility': 'private',
     };
+  }
+
+  /// [repeat]'s rule from [start], its UNTIL the end of its last day on
+  /// [zone]'s clock where one is given (#55): a series set in Jerusalem
+  /// ends at Jerusalem's midnight, whatever the phone's zone. The rule is
+  /// otherwise `Recurrence.toRule`'s, whose UNTIL is the phone's midnight.
+  static String ruleIn(
+    Recurrence repeat,
+    DateTime start, {
+    required bool allDay,
+    String? zone,
+  }) {
+    final rule = repeat.toRule(start, allDay: allDay);
+    final last = repeat.until;
+    if (allDay || zone == null || last == null) return rule;
+    final end = instantIn(
+            DateTime(last.year, last.month, last.day, 23, 59, 59), zone)
+        .toUtc();
+    final stamp = '${end.year.toString().padLeft(4, '0')}'
+        '${_two(end.month)}${_two(end.day)}T${_two(end.hour)}'
+        '${_two(end.minute)}${_two(end.second)}Z';
+    return rule.replaceFirst(
+        RegExp(r'UNTIL=\d{8}T\d{6}Z'), 'UNTIL=$stamp');
   }
 
   /// A reminder as Google keeps one: on the phone, so many minutes before,

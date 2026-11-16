@@ -6,6 +6,7 @@ import 'mail_message.dart' show MailAddress;
 import 'meeting.dart' show Reminder;
 import 'recurrence.dart';
 import 'series_repeat.dart';
+import 'time_zones.dart';
 
 /// What an edit changes on an event already on a calendar: whatever is
 /// null stays as it is, so the calendar is sent only what was changed. A
@@ -34,7 +35,10 @@ class EventChange {
 
   /// Local time, as [CalendarEvent.start] is: for a whole day, the first
   /// day at midnight, and [end] the day after the last. Given together,
-  /// with [allDay]: a calendar wants a meeting's times as a pair.
+  /// with [allDay]: a calendar wants a meeting's times as a pair. Where
+  /// [timeZone] is given they are that zone's wall clock, which is what a
+  /// calendar is sent beside it: the phone's own, or for a series changed
+  /// whole, the series' own (see [forSeries]).
   final DateTime? start;
   final DateTime? end;
   final bool? allDay;
@@ -101,7 +105,12 @@ class EventChange {
   /// Whether the times change.
   bool get movesIt => start != null && end != null;
 
-  EventChange copyWith({DateTime? start, DateTime? end, bool? allDay}) =>
+  EventChange copyWith({
+    DateTime? start,
+    DateTime? end,
+    bool? allDay,
+    String? timeZone,
+  }) =>
       EventChange(
         title: title,
         start: start ?? this.start,
@@ -112,7 +121,7 @@ class EventChange {
         keptBelow: keptBelow,
         attendees: attendees,
         optional: optional,
-        timeZone: timeZone,
+        timeZone: timeZone ?? this.timeZone,
         reminder: reminder,
         showAs: showAs,
         isPrivate: isPrivate,
@@ -255,11 +264,51 @@ typedef SeriesTimes = ({DateTime start, DateTime end, bool allDay});
 /// With a new [EventChange.repeat] (#55) the series starts again from the
 /// first day on or after its own that the repeat falls on (a weekly series
 /// moved from Tuesday to Wednesday starts on the Wednesday after its first
-/// Tuesday), at the new time where the change moves it and at its own
-/// otherwise: a calendar takes a series' repeat from its first meeting.
-EventChange forSeries(EventChange change, SeriesTimes series) {
+/// Tuesday; every other week, see [firstDayOf] and [weekStart]), at the new
+/// time where the change moves it and at its own otherwise: a calendar
+/// takes a series' repeat from its first meeting.
+///
+/// [zone] is the series' own, by its IANA name, where it is known (see
+/// [ownZoneOf]): everything is then worked out and written on its clock,
+/// never the phone's, so a series set in Jerusalem stays Jerusalem's when
+/// changed on a phone in New York, and its guests keep their hour through
+/// both countries' clock changes. A new time picked on the phone's clock
+/// is the moment picked, on the meeting opened, read on the series' clock
+/// (03:00 in New York on 17 November is 10:00 in Jerusalem, every week).
+/// Where the zone is not known, the phone's, as it always was.
+EventChange forSeries(
+  EventChange change,
+  SeriesTimes series, {
+  String? zone,
+  int weekStart = DateTime.sunday,
+}) {
   final repeat = change.repeat;
   if (!change.movesIt && repeat == null) return change;
+  final timed = !(change.allDay ?? series.allDay);
+  if (zone != null && timed) {
+    // The series' first meeting on its own clock, and the time of day:
+    // its own, or the one picked, read there.
+    final own = series.allDay
+        ? DateTime(series.start.year, series.start.month, series.start.day)
+        : wallClockIn(series.start, zone);
+    final at = change.movesIt ? wallClockIn(change.start!, zone) : own;
+    final length = change.movesIt
+        ? change.end!.difference(change.start!)
+        : series.allDay
+            ? const Duration(hours: 1)
+            : series.end.difference(series.start);
+    final firstDay = DateTime(own.year, own.month, own.day);
+    final day = repeat == null
+        ? firstDay
+        : firstDayOf(repeat, firstDay, weekStart: weekStart);
+    final from = DateTime(day.year, day.month, day.day, at.hour, at.minute);
+    return change.copyWith(
+      start: from,
+      end: _wallPlus(from, length),
+      allDay: false,
+      timeZone: zone,
+    );
+  }
   final first = series.allDay
       ? DateTime(series.start.year, series.start.month, series.start.day)
       : series.start.toLocal();
@@ -272,7 +321,7 @@ EventChange forSeries(EventChange change, SeriesTimes series) {
   final allDay = change.allDay ?? series.allDay;
   final day = repeat == null
       ? DateTime(first.year, first.month, first.day)
-      : firstDayOf(repeat, first);
+      : firstDayOf(repeat, first, weekStart: weekStart);
   if (allDay) {
     final days = DateTime(end.year, end.month, end.day)
         .difference(DateTime(start.year, start.month, start.day))
@@ -281,6 +330,8 @@ EventChange forSeries(EventChange change, SeriesTimes series) {
       start: day,
       end: DateTime(day.year, day.month, day.day + (days < 1 ? 1 : days)),
       allDay: allDay,
+      // Dates, which no zone moves; named as the series' own where known.
+      timeZone: zone,
     );
   }
   final from =
@@ -289,6 +340,35 @@ EventChange forSeries(EventChange change, SeriesTimes series) {
     start: from,
     end: from.add(end.difference(start)),
     allDay: allDay,
+  );
+}
+
+/// [wall], a wall clock, [length] on, as a wall clock: worked out in UTC,
+/// so the phone's own clock changes play no part.
+DateTime _wallPlus(DateTime wall, Duration length) {
+  final u = DateTime.utc(wall.year, wall.month, wall.day, wall.hour,
+          wall.minute, wall.second)
+      .add(length);
+  return DateTime(u.year, u.month, u.day, u.hour, u.minute, u.second);
+}
+
+/// [change], to a meeting on its own given a repeat (#55), on [before]'s
+/// own clock, [zone]: its times, as changed or as they are, as that zone's
+/// wall clock, so the series it becomes is written in the zone it was set
+/// in, from its own day there. A whole day's dates stay as they are.
+EventChange inOwnZone(
+  EventChange change,
+  CalendarEvent before,
+  String zone,
+) {
+  if (change.allDay ?? before.allDay) return change.copyWith(timeZone: zone);
+  final start = change.start ?? before.start;
+  final end = change.end ?? before.end;
+  return change.copyWith(
+    start: wallClockIn(start, zone),
+    end: wallClockIn(end, zone),
+    allDay: false,
+    timeZone: zone,
   );
 }
 
