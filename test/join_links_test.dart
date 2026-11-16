@@ -683,6 +683,61 @@ void main() {
       expect(placeLinkToOpen('https://?x=1'), isNull);
     });
 
+    // The re-read found the one that mattered. A place is written by
+    // whoever sends the invitation, and naming it is on the way to every
+    // reminder: a link whose host is not text at all threw, and with it
+    // went the reminders of every meeting on every account.
+    test('a link whose host cannot be read as text never throws, and still '
+        'has a name', () {
+      for (final place in [
+        'https://%ff.example/x',
+        'https://caf%E9.example/x',
+        'https://%c3/x',
+        'Room 4 https://%ff.example/x',
+        'https://%/x',
+        'https://[::1/x',
+        'https://%ff.example/x https://%fe.example/y',
+      ]) {
+        expect(() => placeNamed(place), returnsNormally, reason: place);
+        expect(placeNamed(place), isNotEmpty, reason: place);
+        expect(() => placeLinkToOpen(place), returnsNormally, reason: place);
+      }
+      expect(placeNamed('Room 4 https://%ff.example/x'), startsWith('Room 4'));
+    });
+
+    test('a host that mixes alphabets in one name, or holds a mark that '
+        'turns the text round, is shown as it came, not as it would read',
+        () {
+      // A Cyrillic а before the Latin "pple": how a look-alike is made.
+      final cyrillicA = String.fromCharCode(0x430);
+      final lookalike = placeNamed('https://${cyrillicA}pple.com/x');
+      expect(lookalike, isNot(contains(cyrillicA)));
+      expect(lookalike, contains('pple.com'));
+      // A mark that turns what follows it right to left.
+      final turn = String.fromCharCode(0x202e);
+      expect(placeNamed('https://moc.elgoog$turn.example/x'),
+          isNot(contains(turn)));
+      // One alphabet to a name is read: Hebrew, then co.il.
+      expect(placeNamed('https://דוגמה.co.il/room'), 'דוגמה.co.il');
+    });
+
+    test('a bracket that belongs to a link is kept in what is opened; one '
+        'that closed the words around it is not', () {
+      const wiki = 'https://en.wikipedia.org/wiki/Foo_(bar)';
+      expect(placeLinkToOpen(wiki), Uri.parse(wiki));
+      expect(placeLinkToOpen('($wiki)'), Uri.parse(wiki));
+      expect(placeLinkToOpen('$wiki.'), Uri.parse(wiki));
+    });
+
+    test('only a place that is nothing but the link opens it: with words '
+        'beside it the line is not a way to somewhere else', () {
+      expect(placeLinkToOpen('Zoom https://elsewhere.example/x'), isNull,
+          reason: 'the line would read Zoom and open elsewhere');
+      expect(placeLinkToOpen('See https://elsewhere.example/x'), isNull);
+      expect(placeLinkToOpen(' https://elsewhere.example/x '),
+          Uri.parse('https://elsewhere.example/x'));
+    });
+
     test('a meeting is where its place says; Online with a link to join '
         'and no place; nowhere with neither', () {
       CalendarEvent held(String location, {String? joinUrl}) => CalendarEvent(

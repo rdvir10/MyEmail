@@ -90,13 +90,25 @@ String placeNamed(String place) {
 ///
 /// Its name is all that is shown of it ([placeNamed]), so without this a
 /// place that was only such a link could no longer be read or opened.
+///
+/// Only for a place that is nothing but its link. With words beside it
+/// the whole line would be the link, and words that name a meeting,
+/// "Zoom", would open somewhere else. Never throws: a place is written by
+/// whoever sends the invitation.
 Uri? placeLinkToOpen(String place) {
-  for (final m in _writtenLink.allMatches(place)) {
-    final link = _asWritten(m[0]!);
-    if (_joinLink(link) != null) continue;
-    final uri = Uri.tryParse(link);
-    if (uri == null || uri.host.isEmpty) continue;
-    if (uri.isScheme('https') || uri.isScheme('http')) return uri;
+  try {
+    if (_besideLinks(place.replaceAll(_writtenLink, ' ')).isNotEmpty) {
+      return null;
+    }
+    for (final m in _writtenLink.allMatches(place)) {
+      final link = _asWritten(m[0]!);
+      if (_joinLink(link) != null) continue;
+      final uri = Uri.tryParse(link);
+      if (uri == null || uri.host.isEmpty) continue;
+      if (uri.isScheme('https') || uri.isScheme('http')) return uri;
+    }
+  } catch (_) {
+    // Nothing to open.
   }
   return null;
 }
@@ -119,10 +131,22 @@ final _writtenLink = RegExp(
 );
 
 /// [written], a link as [_writtenLink] found it, as a link to read: without
-/// the full stop, comma or bracket that closed the words around it, and
-/// with its https:// where it was written from www.
+/// the full stop, comma or quote that closed the words around it, without
+/// a bracket it did not open itself (…/Foo_(bar) keeps its own, as
+/// [_trimmed] leaves a meeting's), and with its https:// where it was
+/// written from www.
 String _asWritten(String written) {
-  final link = written.replaceFirst(RegExp(r'''[.,;:!?)\]}>'"]+$'''), '');
+  const closing = '.,;:!?>"\'';
+  const opens = {')': '(', ']': '[', '}': '{'};
+  var link = written;
+  while (link.isNotEmpty) {
+    final last = link[link.length - 1];
+    final open = opens[last];
+    final unopened = open != null &&
+        open.allMatches(link).length < last.allMatches(link).length;
+    if (!closing.contains(last) && !unopened) break;
+    link = link.substring(0, link.length - 1);
+  }
   return link.toLowerCase().startsWith('www.') ? 'https://$link' : link;
 }
 
@@ -137,24 +161,53 @@ String _besideLinks(String text) {
 }
 
 /// What [written], a link in a place, is called: its service, or its host
-/// less www., in its own letters. "Link" for one with no host to name, so
-/// a place that is only such a link still has a line.
+/// less www., in its own letters where they read safely ([_readable]).
+/// "Link" for one with no host to name, so a place that is only such a
+/// link still has a line.
+///
+/// Never throws, whatever the link. A place is written by whoever sends
+/// the invitation, and naming it is on the way to every reminder: one
+/// that threw here (a host with an escape that is no letter, %ff) took
+/// the reminders of every meeting on every account with it.
 String _linkName(String written) {
-  final uri = Uri.tryParse(_asWritten(written));
-  if (uri == null || uri.host.isEmpty) return 'Link';
-  final target = throughSafeLinks(uri) ?? uri;
-  final known = knownMeetingService(target.toString());
-  if (known != null) return known;
-  var host = target.host;
   try {
-    // A name in another alphabet comes back as %d7%93…: as it is written.
-    host = Uri.decodeComponent(host);
-  } on ArgumentError {
-    // Not to be read: as it came.
+    final uri = Uri.tryParse(_asWritten(written));
+    if (uri == null || uri.host.isEmpty) return 'Link';
+    final target = throughSafeLinks(uri) ?? uri;
+    final known = knownMeetingService(target.toString());
+    if (known != null) return known;
+    var host = _readable(target.host).replaceFirst(RegExp(r'\.+$'), '');
+    if (host.toLowerCase().startsWith('www.')) host = host.substring(4);
+    return host.isEmpty ? 'Link' : host;
+  } catch (_) {
+    return 'Link';
   }
-  host = host.replaceFirst(RegExp(r'\.+$'), '');
-  if (host.toLowerCase().startsWith('www.')) host = host.substring(4);
-  return host.isEmpty ? 'Link' : host;
+}
+
+/// [host] as it reads. A name in another alphabet comes from Dart as
+/// %d7%93…, and is shown in its own letters. As it came where that is not
+/// safe to show as a name: where it is not text at all; where what it
+/// reads as holds a mark that cannot be seen or turns the text round, a
+/// space, or a sign that divides an address; or where one of its names
+/// mixes Latin letters with others, a Cyrillic а in "apple", which is how
+/// a look-alike is made.
+String _readable(String host) {
+  final String read;
+  try {
+    read = Uri.decodeComponent(host);
+  } catch (_) {
+    return host;
+  }
+  if (read == host) return host;
+  if (RegExp(r'[\p{C}\p{Z}/\\@:%?#]', unicode: true).hasMatch(read)) {
+    return host;
+  }
+  for (final name in read.split('.')) {
+    final latin = RegExp(r'[A-Za-z]').hasMatch(name);
+    final other = RegExp(r'[^\x00-\x7F]').hasMatch(name);
+    if (latin && other) return host;
+  }
+  return read;
 }
 
 /// What a place says that names nowhere but an online meeting, in lower

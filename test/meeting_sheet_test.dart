@@ -706,6 +706,8 @@ void main() {
         await open(tester, meeting(location: place));
         expect(find.text(shown), findsOneWidget);
         expect(link, findsNothing, reason: place);
+        expect(find.byKey(const ValueKey('place-opens')), findsNothing,
+            reason: "a meeting's own link is Join's to open: $place");
         if (place != shown) {
           expect(find.text(place), findsNothing);
           expect(find.textContaining('pwd='), findsNothing);
