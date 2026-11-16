@@ -611,10 +611,13 @@ class GraphCalendarApi {
         : zone == null
             ? {'dateTime': _stamp(t.toUtc()), 'timeZone': 'UTC'}
             : {'dateTime': _stamp(t), 'timeZone': zone};
-    final optional = {
-      for (final a in before.attendees)
-        if (a.optional) a.address.email.trim().toLowerCase(),
-    };
+    // Who is optional: as Edit had them (#56), or where a change does not
+    // say, Invite people's, each as they were, and anyone new required.
+    final optional = change.optional ??
+        {
+          for (final a in before.attendees)
+            if (a.optional) a.address.email.trim().toLowerCase(),
+        };
     final notes = change.notes;
     final kept = change.keptBelow;
     return {
@@ -885,11 +888,10 @@ class GraphCalendarApi {
   /// The times are wall-clock values with the zone named beside them, which
   /// is Graph's own shape. A whole day ends at the next day's midnight,
   /// because Graph counts the end as exclusive and refuses one on the same
-  /// day. Every attendee is required: the screen has no optional list, and
-  /// Graph wants each one typed. A link made elsewhere goes where a person
-  /// pasting one would put it: the body's last line, and the location
-  /// where none was given, so every client shows it and Outlook's Join
-  /// finds it.
+  /// day. Each attendee is typed, required or optional, as Graph wants. A
+  /// link made elsewhere goes where a person pasting one would put it: the
+  /// body's last line, and the location where none was given, so every
+  /// client shows it and Outlook's Join finds it.
   static Map<String, Object?> eventJson(
     MeetingDraft meeting, {
     String? onlineMeetingProvider,
@@ -972,8 +974,8 @@ class GraphCalendarApi {
     };
   }
 
-  /// Every attendee, required: the screen has no optional list, and Graph
-  /// wants each one typed.
+  /// Every attendee, typed as Graph wants each: optional where the screen
+  /// made them so (calendar idea #56), required otherwise.
   static List<Map<String, Object?>> _attendees(MeetingDraft meeting) => [
         for (final a in meeting.attendees)
           {
@@ -981,7 +983,7 @@ class GraphCalendarApi {
               'address': a.email,
               if (a.name?.trim().isNotEmpty ?? false) 'name': a.name!.trim(),
             },
-            'type': 'required',
+            'type': meeting.isOptional(a) ? 'optional' : 'required',
           },
       ];
 

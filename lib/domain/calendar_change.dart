@@ -20,6 +20,7 @@ class EventChange {
     this.notes,
     this.keptBelow,
     this.attendees,
+    this.optional,
     this.timeZone,
     this.reminder,
     this.showAs,
@@ -46,6 +47,12 @@ class EventChange {
   /// Everyone on it after the change: the attendees as they now stand, not
   /// those added.
   final List<MailAddress>? attendees;
+
+  /// Who of [attendees] is optional after the change, by address in lower
+  /// case (calendar idea #56): Edit says, with the people. Null keeps each
+  /// person as the event has them and asks anyone new as required, as
+  /// Invite people does.
+  final Set<String>? optional;
 
   /// The device's zone by its IANA name, which the new times are on; null
   /// where the device would not say, and the times then go as UTC.
@@ -92,6 +99,7 @@ class EventChange {
         notes: notes,
         keptBelow: keptBelow,
         attendees: attendees,
+        optional: optional,
         timeZone: timeZone,
         reminder: reminder,
         showAs: showAs,
@@ -101,6 +109,8 @@ class EventChange {
   /// What changes between [before] and the screen's [title], [start] and
   /// the rest: only what differs. [notesBefore] is what the notes were as
   /// the screen opened, which the event itself holds only the start of.
+  /// [optional] is who of [attendees] the screen has as optional: a change
+  /// of that alone is a change of the people.
   static EventChange between(
     CalendarEvent before, {
     required EventNotes notesBefore,
@@ -111,17 +121,32 @@ class EventChange {
     required String location,
     required String notes,
     required List<MailAddress> attendees,
+    Set<String>? optional,
     String? timeZone,
     Reminder? reminder,
     EventShowAs? showAs,
     bool? isPrivate,
   }) {
     String key(MailAddress a) => a.email.trim().toLowerCase();
+    // Not said: each as the event has them.
+    final optionalNow = optional ??
+        {
+          for (final a in before.attendees)
+            if (a.optional) key(a.address),
+        };
+    // Each person as "address" or "address optional", so that one made
+    // optional, or required, is a change of the people too.
+    String entry(String email, bool isOptional) =>
+        isOptional ? '$email optional' : email;
     final had = [
       for (final a in before.attendees)
-        if (a.response != EventResponse.organizer) key(a.address),
+        if (a.response != EventResponse.organizer)
+          entry(key(a.address), a.optional),
     ]..sort();
-    final now = [for (final a in attendees) key(a)]..sort();
+    final now = [
+      for (final a in attendees) entry(key(a), optionalNow.contains(key(a))),
+    ]..sort();
+    final peopleChanged = !listEquals(had, now);
     final timesChanged =
         start != before.start || end != before.end || allDay != before.allDay;
     final notesChanged = notes.trim() != notesBefore.text.trim();
@@ -134,7 +159,13 @@ class EventChange {
           location.trim() == before.location.trim() ? null : location.trim(),
       notes: notesChanged ? notes.trim() : null,
       keptBelow: notesChanged ? notesBefore.keptBelow : null,
-      attendees: listEquals(had, now) ? null : attendees,
+      attendees: peopleChanged ? attendees : null,
+      optional: peopleChanged
+          ? {
+              for (final a in attendees)
+                if (optionalNow.contains(key(a))) key(a),
+            }
+          : null,
       timeZone: timeZone,
       reminder: reminder == null ||
               reminder.minutes == before.reminderMinutes

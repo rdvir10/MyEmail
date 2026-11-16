@@ -833,8 +833,8 @@ class GoogleCalendarApi {
       if (event == null || event['status'] == 'cancelled') {
         throw const EventGone();
       }
-      fields['attendees'] =
-          mergedAttendees(event['attendees'], people, before: before);
+      fields['attendees'] = mergedAttendees(event['attendees'], people,
+          before: before, optional: change.optional);
     }
     if (fields.isEmpty) return;
     await _patchEvent(eventId, fields, calendarId: calendarId);
@@ -876,10 +876,16 @@ class GoogleCalendarApi {
   /// added. Its rooms stay too, which the calendar does not show as
   /// people, and anyone on it that [before] did not have, added elsewhere
   /// since, whom nobody here could have meant to take off.
+  ///
+  /// [optional] is who of [now] is optional, as Edit had them (#56): each
+  /// entry of theirs is marked so, and each other's of [now] not, their
+  /// answers kept. Null where a change does not say (Invite people): each
+  /// entry as it was, and anyone new required.
   static List<Map<String, Object?>> mergedAttendees(
     Object? had,
     List<MailAddress> now, {
     required CalendarEvent before,
+    Set<String>? optional,
   }) {
     String key(Object? email) => '${email ?? ''}'.trim().toLowerCase();
     final wanted = {for (final a in now) key(a.email)};
@@ -888,7 +894,13 @@ class GoogleCalendarApi {
     for (final a in had is List ? had.whereType<Map>() : const <Map>[]) {
       final entry = a.cast<String, Object?>();
       final email = key(entry['email']);
-      if (entry['organizer'] == true ||
+      if (optional != null &&
+          wanted.contains(email) &&
+          entry['organizer'] != true &&
+          entry['resource'] != true &&
+          (entry['optional'] == true) != optional.contains(email)) {
+        kept[email] = {...entry, 'optional': optional.contains(email)};
+      } else if (entry['organizer'] == true ||
           entry['resource'] == true ||
           wanted.contains(email) ||
           !shown.contains(email)) {
@@ -902,6 +914,7 @@ class GoogleCalendarApi {
           {
             'email': a.email.trim(),
             if (a.name?.trim().isNotEmpty ?? false) 'displayName': a.name!.trim(),
+            if (optional?.contains(key(a.email)) ?? false) 'optional': true,
           },
     ];
   }
@@ -1069,6 +1082,8 @@ class GoogleCalendarApi {
             'email': a.email,
             if (a.name?.trim().isNotEmpty ?? false)
               'displayName': a.name!.trim(),
+            // Asked as optional (#56); Google's default is required.
+            if (meeting.isOptional(a)) 'optional': true,
           },
       ],
       if (meeting.isOnline)

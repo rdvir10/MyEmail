@@ -148,7 +148,8 @@ class RecipientLines {
 /// Enter, or leaving the line, of the rest. A bubble shows the name alone
 /// (the address for someone without one), in the error colours where the
 /// address does not look right. Tapped, it has a menu: the address, Move
-/// to the message's other [lines], Edit, Copy address, Remove. Held, it is
+/// to the message's other [lines], Optional or Required on a meeting's
+/// attendees ([optional]), Edit, Copy address, Remove. Held, it is
 /// picked up, to be dropped on another line. Backspace with nothing typed
 /// picks out the last bubble, and a second takes it away.
 ///
@@ -184,6 +185,7 @@ class RecipientField extends ConsumerStatefulWidget {
     this.onNext,
     this.lines,
     this.folds = true,
+    this.optional,
   });
 
   final String label;
@@ -191,6 +193,14 @@ class RecipientField extends ConsumerStatefulWidget {
   final bool enabled;
   final Widget? trailing;
   final bool autofocus;
+
+  /// For a meeting's attendees (calendar idea #56): who of them is asked
+  /// as optional, by address in lower case. Their bubbles are drawn
+  /// fainter, a screen reader is told, and a bubble's menu offers
+  /// Optional, or Required for one who is; one taken off the line is
+  /// required again should they come back. Null for a message's lines,
+  /// which have no such thing.
+  final ValueNotifier<Set<String>>? optional;
 
   /// The field's own, for a screen that moves the cursor itself. Left to
   /// whoever made it to dispose.
@@ -268,7 +278,7 @@ class _Carried {
 }
 
 /// What a bubble's menu was closed with.
-enum _Act { move, edit, copy, remove }
+enum _Act { move, optional, edit, copy, remove }
 
 class _RecipientFieldState extends ConsumerState<RecipientField> {
   late final FocusNode _focus = widget.focusNode ?? FocusNode();
@@ -327,6 +337,7 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
     _typing.addListener(_onText);
     widget.controller.addListener(_onLine);
     widget.lines?._shown[widget.controller] = this;
+    widget.optional?.addListener(_onOptional);
   }
 
   @override
@@ -344,6 +355,10 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
       _bubbles = [for (final p in _peopleIn(_line)) _Bubble(p)];
       _picked = null;
     }
+    if (!identical(oldWidget.optional, widget.optional)) {
+      oldWidget.optional?.removeListener(_onOptional);
+      widget.optional?.addListener(_onOptional);
+    }
   }
 
   void _leave(RecipientLines? lines, TextEditingController line) {
@@ -357,6 +372,7 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
     _answers?.cancel();
     _leave(widget.lines, widget.controller);
     widget.controller.removeListener(_onLine);
+    widget.optional?.removeListener(_onOptional);
     _typing.dispose();
     _focus.removeListener(_onFocus);
     if (widget.focusNode == null) _focus.dispose();
@@ -364,6 +380,27 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
   }
 
   bool get _open => !widget.folds || _focus.hasFocus || _keptOpen;
+
+  /// Who is optional changed: the bubbles are drawn again.
+  void _onOptional() {
+    if (mounted) setState(() {});
+  }
+
+  /// Whether [bubble]'s person is asked as optional (see
+  /// [RecipientField.optional]).
+  bool _isOptional(_Bubble bubble) =>
+      widget.optional?.value.contains(bubble.key) ?? false;
+
+  /// [bubble]'s person optional, or required again.
+  void _setOptional(_Bubble bubble, bool optional) {
+    final people = widget.optional;
+    if (people == null) return;
+    people.value = {
+      for (final key in people.value)
+        if (key != bubble.key) key,
+      if (optional) bubble.key,
+    };
+  }
 
   void _onFocus() {
     if (_focus.hasFocus) {
@@ -668,6 +705,7 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
     if (erase && event is KeyDownEvent && _typing.text.isEmpty) {
       final picked = _picked;
       if (picked != null) {
+        _setOptional(picked, false);
         _remove(picked);
         return KeyEventResult.handled;
       }
@@ -726,6 +764,13 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
             value: (act: _Act.move, to: l.controller),
             child: Text('Move to ${l.label}'),
           ),
+        // A meeting's people: asked as optional, or required (#56).
+        if (widget.optional != null)
+          PopupMenuItem(
+            key: const ValueKey('bubble-optional'),
+            value: (act: _Act.optional, to: null),
+            child: Text(_isOptional(bubble) ? 'Required' : 'Optional'),
+          ),
         const PopupMenuItem(
           key: ValueKey('bubble-edit'),
           value: (act: _Act.edit, to: null),
@@ -751,6 +796,8 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
     switch (choice?.act) {
       case _Act.move:
         _moveTo(choice!.to!, bubble);
+      case _Act.optional:
+        _setOptional(bubble, !_isOptional(bubble));
       case _Act.edit:
         // Typed back into the field, at the end of the line, as it was
         // written; a bubble again once finished.
@@ -770,6 +817,8 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
             content: Text('Address copied.'),
           ));
       case _Act.remove:
+        // Taken off: required again, should they be added back.
+        _setOptional(bubble, false);
         _remove(bubble);
       case null:
         break;
@@ -1035,6 +1084,7 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
           height: look.bubbleHeight,
           style: look.style,
           picked: picked,
+          optional: _isOptional(bubble),
           onTap: onTap,
         );
     final tappable = Builder(
@@ -1227,7 +1277,9 @@ class _SuggestionRow extends StatelessWidget {
 
 /// A person on a recipients line: the name in a pill, in the error colours
 /// where the address does not look right, and filled in the theme's colour
-/// where Backspace has picked it out.
+/// where Backspace has picked it out. A meeting's optional person is drawn
+/// fainter, an outline with the name in the muted colour, and a screen
+/// reader is told.
 class _BubbleChip extends StatelessWidget {
   const _BubbleChip({
     required this.bubble,
@@ -1235,6 +1287,7 @@ class _BubbleChip extends StatelessWidget {
     required this.height,
     required this.style,
     required this.picked,
+    this.optional = false,
     this.onTap,
   });
 
@@ -1243,6 +1296,7 @@ class _BubbleChip extends StatelessWidget {
   final double height;
   final TextStyle style;
   final bool picked;
+  final bool optional;
   final VoidCallback? onTap;
 
   @override
@@ -1250,16 +1304,23 @@ class _BubbleChip extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final (fill, ink) = picked
         ? (scheme.primary, scheme.onPrimary)
-        : bubble.looksRight
-            ? (scheme.surfaceContainerHigh, scheme.onSurface)
-            : (scheme.errorContainer, scheme.onErrorContainer);
+        : !bubble.looksRight
+            ? (scheme.errorContainer, scheme.onErrorContainer)
+            : optional
+                ? (Colors.transparent, scheme.onSurfaceVariant)
+                : (scheme.surfaceContainerHigh, scheme.onSurface);
+    final faint = optional && !picked && bubble.looksRight;
     final shown = bubble.shown;
     return SizedBox(
       width: width,
       height: height,
       child: Material(
         color: fill,
-        shape: const StadiumBorder(),
+        shape: StadiumBorder(
+          side: faint
+              ? BorderSide(color: scheme.outlineVariant)
+              : BorderSide.none,
+        ),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: onTap,
@@ -1272,6 +1333,7 @@ class _BubbleChip extends StatelessWidget {
                 softWrap: false,
                 overflow: TextOverflow.ellipsis,
                 textDirection: firstStrongDirection(shown),
+                semanticsLabel: optional ? '$shown, optional' : null,
                 style: style.copyWith(color: ink),
               ),
             ),

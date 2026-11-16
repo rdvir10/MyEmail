@@ -18,6 +18,7 @@ class MeetingDraft {
     required this.accountId,
     required this.title,
     this.attendees = const [],
+    this.optional = const {},
     required this.start,
     required this.end,
     this.allDay = false,
@@ -61,6 +62,15 @@ class MeetingDraft {
   /// Everyone invited. Empty is allowed: the event still goes on the
   /// calendar, with nobody to tell.
   final List<MailAddress> attendees;
+
+  /// Who of [attendees] is asked as optional (calendar idea #56), by
+  /// address in lower case; the rest are required. Graph's attendee type
+  /// "optional", Google's `optional: true`.
+  final Set<String> optional;
+
+  /// Whether [person] is asked as optional.
+  bool isOptional(MailAddress person) =>
+      optional.contains(person.email.trim().toLowerCase());
 
   /// On the device's clock. For a whole day, [start] is the first day and
   /// [end] the last, both at midnight, so a meeting on one day has the two
@@ -139,6 +149,7 @@ class MeetingDraft {
       other.accountId == accountId &&
       other.title == title &&
       listEquals(other.attendees, attendees) &&
+      setEquals(other.optional, optional) &&
       other.start == start &&
       other.end == end &&
       other.allDay == allDay &&

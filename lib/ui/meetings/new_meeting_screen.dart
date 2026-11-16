@@ -1,6 +1,7 @@
 import 'scheduling_assistant.dart';
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -249,6 +250,7 @@ class MeetingAsWritten {
     required this.transactionId,
     required this.failedSends,
     this.savedLink,
+    this.optional = const {},
   });
 
   final String accountId;
@@ -257,6 +259,9 @@ class MeetingAsWritten {
 
   /// As the Attendees field had them.
   final String attendees;
+
+  /// Who of them was optional, by address in lower case.
+  final Set<String> optional;
   final String location;
   final String notes;
 
@@ -322,6 +327,24 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
         : _peopleOn(_editing!.event);
     return formatAddresses(people);
   }();
+
+  /// Who of the attendees is asked as optional, by address in lower case
+  /// (calendar idea #56): chosen from a bubble's menu, and for a meeting
+  /// being changed, those its calendar has as optional to begin with. Only
+  /// those still on the field at Send or Save count.
+  late final ValueNotifier<Set<String>> _optional =
+      ValueNotifier(_written?.optional ?? _optionalToBegin);
+  late final Set<String> _optionalToBegin = {
+    for (final a in _editing?.event.attendees ?? const <EventAttendee>[])
+      if (a.optional) a.address.email.trim().toLowerCase(),
+  };
+
+  /// Who of [people] is optional now.
+  Set<String> _optionalOf(List<MailAddress> people) => {
+        for (final a in people)
+          if (_optional.value.contains(a.email.trim().toLowerCase()))
+            a.email.trim().toLowerCase(),
+      };
 
   /// Who [event] is with, as the attendees field lists them.
   List<MailAddress> _peopleOn(CalendarEvent event) {
@@ -714,6 +737,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     if (!_sent && !_sendingMeeting) _dropPrepared();
     _title.dispose();
     _attendees.dispose();
+    _optional.dispose();
     _location.dispose();
     _notes.dispose();
     _quick.dispose();
@@ -744,6 +768,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       _allDay == _allDayToBegin &&
       _title.text == _titleToBegin &&
       _attendees.text == _attendeesToBegin &&
+      setEquals(_optional.value, _optionalToBegin) &&
       _location.text == _locationToBegin &&
       _notes.text == _notesToBegin &&
       _options == _optionsToBegin &&
@@ -804,6 +829,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
           accountId: _accountId,
           title: _title.text.trim(),
           attendees: attendees,
+          optional: _optionalOf(attendees),
           start: _allDay ? day(_start) : _shown(_start),
           end: _allDay ? day(_end) : _shown(_end),
           allDay: _allDay,
@@ -989,6 +1015,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       location: _location.text,
       notes: _notes.text,
       attendees: attendees,
+      optional: _optionalOf(attendees),
       timeZone: zone,
       reminder: _options.reminder,
       showAs: _options.showAs,
@@ -1281,6 +1308,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
         calendarId: _calendarId,
         title: _title.text,
         attendees: _attendees.text,
+        optional: _optional.value,
         location: _location.text,
         notes: _notes.text,
         start: _start,
@@ -1637,6 +1665,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
               key: const ValueKey('meeting-attendees'),
               label: 'Attendees',
               controller: _attendees,
+              optional: _optional,
               enabled: !_sending,
               autofocus: widget.title.isNotEmpty && _editing == null,
             ),

@@ -1100,11 +1100,23 @@ class SampleMailEngine implements MailEngine, SaysMeetingMailArrived {
       if (change.notes != null) 'notes=${change.notes}',
       if (change.attendees case final people?)
         'attendees=${[for (final a in people) a.email].join(',')}',
+      if (change.optional case final optional? when optional.isNotEmpty)
+        'optional=${(optional.toList()..sort()).join(',')}',
       if (wholeSeries) 'series',
     ].join(' '));
     final had = {
       for (final a in event.attendees) a.address.email.toLowerCase(): a,
     };
+    // Who is optional, where the change says (#56); as they were where not.
+    EventAttendee asked(EventAttendee a) => switch (change.optional) {
+          final optional? => EventAttendee(
+              a.address,
+              response: a.response,
+              optional:
+                  optional.contains(a.address.email.trim().toLowerCase()),
+            ),
+          null => a,
+        };
     _changeEvent(
       event,
       event.copyWith(
@@ -1117,8 +1129,8 @@ class SampleMailEngine implements MailEngine, SaysMeetingMailArrived {
             ? null
             : [
                 for (final a in change.attendees!)
-                  had[a.email.toLowerCase()] ??
-                      EventAttendee(a, response: EventResponse.notResponded),
+                  asked(had[a.email.toLowerCase()] ??
+                      EventAttendee(a, response: EventResponse.notResponded)),
               ],
       ),
     );
