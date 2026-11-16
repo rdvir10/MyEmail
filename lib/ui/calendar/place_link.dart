@@ -1,15 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../domain/meeting_links.dart' show placeNamed, placeToFind;
+import '../../domain/meeting_links.dart'
+    show placeLinkToOpen, placeNamed, placeToFind;
 import '../../domain/text_direction.dart';
+import '../messages/html_body_view.dart' show openExternally;
 
 /// A meeting's place, a tap from directions in the phone's maps app (#40),
 /// on the meeting's sheet, in My Day and on an invitation's card. A place
 /// that only names an online meeting, or is its link, stays plain text:
 /// Join is the way in to those. A link in a place is shown by its name,
 /// "Zoom", never written out ([placeNamed]): what is looked up is the
-/// place, as before.
+/// place, as before. A place that is only a link to something else, a map
+/// or a document, is that link by its name, and a tap opens it, as a link
+/// in the notes opens: with only its name shown it could not be read.
 class PlaceLink extends StatelessWidget {
   const PlaceLink({
     super.key,
@@ -28,17 +32,19 @@ class PlaceLink extends StatelessWidget {
   Widget build(BuildContext context) {
     final query = placeToFind(place);
     final shown = placeNamed(place);
-    if (query == null) {
+    final elsewhere = query == null ? placeLinkToOpen(place) : null;
+    if (query == null && elsewhere == null) {
       return Text(shown, style: style, maxLines: maxLines, overflow: overflow);
     }
     final scheme = Theme.of(context).colorScheme;
     return Semantics(
       link: true,
-      hint: 'Directions',
+      hint: query != null ? 'Directions' : 'Opens the link',
       child: InkWell(
-        key: const ValueKey('place-link'),
+        key: ValueKey(query != null ? 'place-link' : 'place-opens'),
         borderRadius: BorderRadius.circular(4),
-        onTap: () => openPlace(query),
+        onTap: () =>
+            query != null ? openPlace(query) : openExternally(elsewhere!),
         child: Text(
           shown,
           style: (style ?? const TextStyle()).copyWith(

@@ -639,6 +639,50 @@ void main() {
       expect(placeNamed(wrapped), 'Zoom');
     });
 
+    // What the review of these found: marks left on a name, a www. inside
+    // a word taken for a link, a name in other letters shown as %d7…, and
+    // a link with nothing to name leaving an empty line.
+    test('the full stop, comma or bracket that closed the words around a '
+        'link is no part of its name', () {
+      expect(placeNamed('Room 4, www.hadco.com, floor 2'),
+          'Room 4, floor 2 · hadco.com');
+      expect(placeNamed('Conference Room (WWW.HADCO.COM)'),
+          'Conference Room · hadco.com');
+      expect(placeNamed('https://zoom.us.'), 'Zoom');
+      // The comma closed the link; the full stop ends the words, and stays.
+      expect(placeNamed('See https://example.com/a?b=1, then come up.'),
+          'See then come up. · example.com');
+    });
+
+    test('www. inside a word is not a link; a name in other letters is '
+        'shown in them; a link with nothing to name is still a line', () {
+      expect(placeNamed('Meet at swww.thecafe'), 'Meet at swww.thecafe');
+      expect(placeNamed('https://דוגמה.co.il/room'), 'דוגמה.co.il');
+      expect(placeNamed('https://?x=1'), 'Link');
+    });
+
+    test('a place that is only a link to something else, a map or a '
+        'document, can still be opened, as written; a meeting\'s own link, '
+        'and a place with somewhere to find, are not opened this way', () {
+      const map =
+          'https://www.google.com/maps/place/Hadco+Warehouse+5/@32.1,34.8,17z';
+      expect(placeNamed(map), 'google.com');
+      expect(placeLinkToOpen(map), Uri.parse(map));
+      expect(placeLinkToOpen('($map).'), Uri.parse(map));
+      expect(placeLinkToOpen('www.example.org/room/9'),
+          Uri.parse('https://www.example.org/room/9'));
+      final wrapped = 'https://nam02.safelinks.protection.outlook.com/'
+          '?url=${Uri.encodeQueryComponent(map)}&data=05';
+      expect(placeLinkToOpen(wrapped), Uri.parse(wrapped),
+          reason: 'as Safe Links gives it, so Defender still checks it');
+
+      expect(placeLinkToOpen(gov), isNull, reason: 'Join opens that');
+      expect(placeLinkToOpen('$gov $map'), Uri.parse(map));
+      expect(placeLinkToOpen('Board room'), isNull);
+      expect(placeLinkToOpen('ftp://example.com/x'), isNull);
+      expect(placeLinkToOpen('https://?x=1'), isNull);
+    });
+
     test('a meeting is where its place says; Online with a link to join '
         'and no place; nowhere with neither', () {
       CalendarEvent held(String location, {String? joinUrl}) => CalendarEvent(

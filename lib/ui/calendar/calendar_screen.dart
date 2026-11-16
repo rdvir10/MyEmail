@@ -3105,9 +3105,9 @@ class _EventDetails extends StatelessWidget {
     final tracked = own && others && invitedCount > 0;
     final waiting = notAnswered(e, email);
     // The people as listed. On someone else's meeting Ron's own row has
-    // the answer the sheet has for him: Exchange keeps the people's answers
-    // on the organiser's copy alone and gives "none" for everyone on Ron's,
-    // Ron too (#93).
+    // the answer the sheet has for him: a copy may give "none" for his own
+    // entry among the attendees while the meeting itself says how he
+    // answered (#93).
     final listed = own ? _byAnswer(e.attendees) : _withOwnAnswer(e, email);
     // Whether Ron's copy of someone else's meeting carries the people's
     // answers: it does where anyone but Ron and the organiser has one.

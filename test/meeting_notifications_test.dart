@@ -734,8 +734,12 @@ void main() {
       addTearDown(() => kept.deleteSync(recursive: true));
     });
 
-    /// A notifier that draws: the dart as [1, …], a calendar as [2, …],
-    /// each with its colour's last byte. [draws] false is the background,
+    /// What a drawer here draws: how a PNG begins, then which picture it
+    /// is, the dart (1) or a calendar (2), and its colour's last byte.
+    Uint8List picture(int kind, int colour) => Uint8List.fromList(
+        [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, kind, colour & 0xff]);
+
+    /// A notifier that draws [picture]s. [draws] false is the background,
     /// which cannot.
     AndroidMailNotifier notifierThat({
       bool draws = true,
@@ -747,11 +751,11 @@ void main() {
           queueAction: (_) async {},
           drawBadge: (c) async {
             drawn?.add('dart');
-            return draws ? Uint8List.fromList([1, c & 0xff]) : null;
+            return draws ? picture(1, c) : null;
           },
           drawCalendar: (c) async {
             drawn?.add('calendar');
-            return draws ? Uint8List.fromList([2, c & 0xff]) : null;
+            return draws ? picture(2, c) : null;
           },
           postingMarks: () async => null,
           badgeFiles: () async => keeps ? kept : null,
@@ -778,7 +782,7 @@ void main() {
       expect(android.color, const Color(blue));
       expect(android.icon, '@drawable/ic_stat_event');
       expect((android.largeIcon! as ByteArrayAndroidBitmap).data,
-          [2, blue & 0xff]);
+          picture(2, blue));
     });
 
     test('one with no colour given is as it was', () async {
@@ -812,7 +816,7 @@ void main() {
         final android = set.details.android!;
         expect(android.color, const Color(AndroidMailNotifier.appColour));
         expect((android.largeIcon! as ByteArrayAndroidBitmap).data,
-            [2, AndroidMailNotifier.appColour & 0xff]);
+            picture(2, AndroidMailNotifier.appColour));
       }
     });
 
@@ -852,11 +856,11 @@ void main() {
               .android!
               .largeIcon! as ByteArrayAndroidBitmap)
           .data;
-      expect(sideOf(3), [2, blue & 0xff]);
-      expect(sideOf(4), [1, blue & 0xff]);
+      expect(sideOf(3), picture(2, blue));
+      expect(sideOf(4), picture(1, blue));
       final row = plugin.shown.firstWhere((s) => s.id != 3 && s.id != 4);
       expect((row.details.android!.largeIcon! as ByteArrayAndroidBitmap).data,
-          [1, blue & 0xff]);
+          picture(1, blue));
     });
 
     test('drawn once, the picture is kept as a file, and a notification set '
@@ -870,17 +874,37 @@ void main() {
       expect(side, isA<FilePathAndroidBitmap>());
       final file = File((side as FilePathAndroidBitmap).data);
       expect(file.parent.path, kept.path);
-      expect(file.readAsBytesSync(), [2, blue & 0xff]);
+      expect(file.readAsBytesSync(), picture(2, blue));
       expect(kept.listSync().whereType<File>(), hasLength(1),
           reason: 'nothing half written is left beside it');
+    });
+
+    test('a file under a picture\'s name that is not a picture, or is '
+        'empty, is drawn over, not handed to Android for good', () async {
+      for (final junk in [<int>[], 'not a picture'.codeUnits]) {
+        File('${kept.path}${Platform.pathSeparator}v1-calendar-ff0f6cbd.png')
+            .writeAsBytesSync(junk);
+        final drawn = <String>[];
+        await notifierThat(keeps: true, drawn: drawn)
+            .scheduleMeetingReminder(reminder(colour: blue));
+        expect(drawn, ['calendar'], reason: '${junk.length} bytes of junk');
+        final side = plugin.scheduled.last.details.android!.largeIcon!
+            as FilePathAndroidBitmap;
+        expect(File(side.data).readAsBytesSync(), picture(2, blue));
+      }
     });
 
     test('the background, which cannot draw, finds what the app drew; and '
         'has no picture, and nothing worse, where the app drew none',
         () async {
       await notifierThat(keeps: true).prepareBadges([blue, blue]);
-      expect([for (final f in kept.listSync()) f.uri.pathSegments.last]..sort(),
-          ['v1-calendar-ff0f6cbd.png', 'v1-dart-ff0f6cbd.png']);
+      // Both of the account's, and the calendar on the app's own orange,
+      // which an all-day reminder and the agenda wear.
+      expect([for (final f in kept.listSync()) f.uri.pathSegments.last]..sort(), [
+        'v1-calendar-ff0f6cbd.png',
+        'v1-calendar-ffff7a18.png',
+        'v1-dart-ff0f6cbd.png',
+      ]);
 
       final drawn = <String>[];
       final background = notifierThat(draws: false, keeps: true, drawn: drawn);

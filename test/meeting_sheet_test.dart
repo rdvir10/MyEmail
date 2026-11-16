@@ -715,6 +715,26 @@ void main() {
       }
     });
 
+    // With a link shown by its name alone, a place that was only a link to
+    // a map or a document could no longer be read: a tap opens it.
+    testWidgets('a place that is only a link to something else, a map say, '
+        'is that link by its name, and a tap opens it as written',
+        (tester) async {
+      await host(tester);
+      final opened = catchLaunches(tester);
+      const map = 'https://maps.app.goo.gl/AbCdEf123';
+      await open(tester, meeting(location: map));
+
+      expect(link, findsNothing, reason: 'nowhere to look up in a maps app');
+      final opens = find.byKey(const ValueKey('place-opens'));
+      expect(find.descendant(of: opens, matching: find.text('maps.app.goo.gl')),
+          findsOneWidget);
+      expect(find.text(map), findsNothing);
+      await tester.tap(opens);
+      await tester.pump();
+      expect(opened, [map]);
+    });
+
     testWidgets('a Hebrew place still reads from the right', (tester) async {
       await host(tester);
       const place = 'קפה נואר, רוטשילד 12';

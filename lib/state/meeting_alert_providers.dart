@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui' show PlatformDispatcher;
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/calendar/calendar_upkeep.dart';
@@ -99,6 +100,20 @@ class AppCalendarKeeper implements CalendarKeeper {
       UiStateKeys.clock24h,
       '${PlatformDispatcher.instance.alwaysUse24HourFormat}',
     );
+    // The pictures at the side of notifications, a calendar or the app's
+    // mark on each account's colour, while there is a screen to draw them
+    // on. Here, on every start, resume and minute in front, not left to
+    // the upkeep below: that runs in the app only when the quarter hour
+    // falls to it, and the background, which cannot draw, usually takes
+    // the turn. Once drawn they are found at no cost.
+    try {
+      final accounts = await _ref.read(mailEngineProvider).loadAccounts();
+      await _ref
+          .read(mailNotifierProvider)
+          .prepareBadges([for (final a in accounts) a.colorValue]);
+    } catch (e) {
+      debugPrint('[myemail] notification pictures not prepared: $e');
+    }
     await keepCalendarUpIfDue(
       _ref.read(mailEngineProvider),
       uiState,

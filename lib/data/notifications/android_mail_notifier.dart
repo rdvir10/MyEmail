@@ -150,9 +150,12 @@ class AndroidMailNotifier implements MailNotifier {
   /// fail the same way, and each failure can cost the full wait before its
   /// notification goes out.
   ///
-  /// Only for the batch: [showNewMail] clears it. Held for good, one slow
-  /// draw in a worker that had just started took the badges off every
-  /// notification that worker posted, which in push mode is most of an hour.
+  /// Only for the batch: [showNewMail] clears it, and so does
+  /// [prepareBadges], which the calendar's upkeep calls before it sets its
+  /// reminders. Held for good, one slow draw in a worker that had just
+  /// started took the badges off every notification that worker posted,
+  /// which in push mode is most of an hour. A reminder snoozed, set
+  /// between batches, reads it as the last batch left it.
   bool _badgesFailed = false;
 
   /// Draws a badge, and for tests, one that fails.
@@ -183,7 +186,7 @@ class AndroidMailNotifier implements MailNotifier {
     File? file;
     try {
       file = await _badgeFile(colorValue, calendar);
-      if (file != null && await file.exists() && await file.length() > 0) {
+      if (file != null && await _isPicture(file)) {
         return FilePathAndroidBitmap(file.path);
       }
     } catch (_) {
@@ -196,24 +199,51 @@ class AndroidMailNotifier implements MailNotifier {
       return null;
     }
     if (file != null) {
+      // Beside it and then renamed over it, so no isolate reads half a
+      // picture; under a name of its own, since two isolates may draw at
+      // once.
+      final part =
+          File('${file.path}.${DateTime.now().microsecondsSinceEpoch}.part');
       try {
-        // Beside it and then renamed, so no isolate reads half a picture;
-        // under a name of its own, since two isolates may draw at once.
-        final part = File(
-            '${file.path}.${DateTime.now().microsecondsSinceEpoch}.part');
         await part.writeAsBytes(png, flush: true);
         await part.rename(file.path);
         return FilePathAndroidBitmap(file.path);
       } catch (_) {
-        // Not kept: as bytes this once.
+        // Not kept: as bytes this once, and nothing left beside it.
+        try {
+          if (await part.exists()) await part.delete();
+        } catch (_) {
+          // Left: a few kilobytes.
+        }
       }
     }
     return ByteArrayAndroidBitmap(png);
   }
 
+  /// How a PNG begins.
+  static const _png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+  /// Whether [file] is there and is a picture, by how it begins. Anything
+  /// else under a badge's name would be handed to Android for good, which
+  /// shows nothing for it, and never drawn again.
+  static Future<bool> _isPicture(File file) async {
+    if (!await file.exists()) return false;
+    final start = <int>[];
+    await for (final part in file.openRead(0, _png.length)) {
+      start.addAll(part);
+    }
+    if (start.length < _png.length) return false;
+    for (var i = 0; i < _png.length; i++) {
+      if (start[i] != _png[i]) return false;
+    }
+    return true;
+  }
+
   /// Draws and keeps the badges of [colours], both kinds, where they are
-  /// not kept already. The app calls this with every account's colour while
-  /// it has a screen, so that the background, which has none, finds them.
+  /// not kept already, and the calendar on the app's own colour, which an
+  /// all-day reminder and the agenda wear. The app calls this with every
+  /// account's colour while it has a screen, so that the background, which
+  /// has none, finds them.
   @override
   Future<void> prepareBadges(Iterable<int> colours) async {
     // A batch of its own, as [showNewMail] is: one that failed before is
@@ -223,6 +253,7 @@ class AndroidMailNotifier implements MailNotifier {
       await _badgeFor(colour);
       await _badgeFor(colour, calendar: true);
     }
+    await _badgeFor(appColour, calendar: true);
   }
 
   /// One channel, so the user gets one row in Android's notification settings

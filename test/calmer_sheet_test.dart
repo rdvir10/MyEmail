@@ -916,10 +916,11 @@ void main() {
     });
   });
 
-  // Exchange keeps people's answers on the organiser's copy of a meeting
-  // alone: on Ron's copy of someone else's, Graph gives every attendee
-  // "none", Ron too, and his own answer only as the event's. As Graph is
-  // known to give it; not seen on a live mailbox.
+  // A copy of someone else's meeting that carries nobody's answer: every
+  // attendee "none", Ron too, and his own answer only as the event's. A
+  // calendar that keeps the answers on the organiser's copy alone gives
+  // this. Hadco's does not (the next group is what it gives), so these
+  // hold the other case: with nothing known, nothing is counted or said.
   group("answers not known on Ron's copy of someone else's meeting (#93)",
       () {
     final toggle = find.byKey(const ValueKey('event-people'));
