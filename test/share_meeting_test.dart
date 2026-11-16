@@ -116,6 +116,34 @@ void main() {
           'Supplier call\n$day, 14:00–15:00\n$map');
     });
 
+    test('a place that is nothing but links: only the link to somewhere, '
+        "not a meeting's link and its passcode beside it", () {
+      const map = 'https://maps.app.goo.gl/AbC';
+      final text = meetingText(
+          meeting('m', location: '$zoom $map'), use24h: true);
+      expect(text, 'Supplier call\n$day, 14:00–15:00\n$map');
+      expect(text, isNot(contains('pwd=')));
+    });
+
+    test("a map's link inside Safe Links goes out as the link it holds: the "
+        "wrapper carries Ron's own address and tenant", () {
+      const wrapped = 'https://nam12.safelinks.protection.outlook.com/'
+          '?url=https%3A%2F%2Fmaps.app.goo.gl%2FAbC'
+          '&data=05%7C02%7Cron%40hadco.example%7C8f1e%7C72f9&reserved=0';
+      final text = meetingText(meeting('m', location: wrapped), use24h: true);
+      expect(text,
+          'Supplier call\n$day, 14:00–15:00\nhttps://maps.app.goo.gl/AbC');
+
+      // One that holds no single link to go by is named, never written.
+      const twice = 'https://nam12.safelinks.protection.outlook.com/'
+          '?url=https%3A%2F%2Fa.example%2F&url=https%3A%2F%2Fb.example%2F'
+          '&data=05%7C02%7Cron%40hadco.example';
+      final named = meetingText(meeting('m', location: twice), use24h: true);
+      expect(named, isNot(contains('data=')));
+      expect(named, isNot(contains('%40')));
+      expect(named.split('\n'), hasLength(3), reason: 'a place line still');
+    });
+
     test('a whole day, untitled, Hebrew as it is written', () {
       expect(
           meetingText(meeting('m', allDay: true, title: ''), use24h: true),
@@ -157,6 +185,16 @@ void main() {
       expect(text, isNot(contains('teams.microsoft.com')));
     });
 
+    test("a link in a meeting's title is named too, never written out", () {
+      final text = dayText(
+        tuesday,
+        [meeting('t', title: 'Board call $zoom', location: 'Room 4')],
+        use24h: true,
+      );
+      expect(text, '$day\n14:00–15:00  Board call · Zoom · Room 4');
+      expect(text, isNot(contains('pwd=')));
+    });
+
     test('what Ron will not be at is left out: declined, cancelled', () {
       expect(
         dayText(
@@ -184,6 +222,61 @@ void main() {
         ).split('\n'),
         hasLength(2),
       );
+      expect(
+        dayText(
+          tuesday,
+          [
+            meeting('a', accountId: 'gmail'),
+            meeting('b', accountId: 'gmail', calendarId: 'team@group'),
+          ],
+          use24h: true,
+        ).split('\n'),
+        hasLength(2),
+        reason: "one account's two calendars",
+      );
+    });
+
+    test('two meetings on one calendar are two lines, whatever they share',
+        () {
+      expect(
+        dayText(
+          tuesday,
+          [
+            meeting('x', title: 'Call', location: 'Room 4'),
+            meeting('y', title: 'Call', location: 'Home'),
+          ],
+          use24h: true,
+        ),
+        '$day\n14:00–15:00  Call · Room 4\n14:00–15:00  Call · Home',
+      );
+      // Three: two on one calendar, and a copy of one on another.
+      expect(
+        dayText(
+          tuesday,
+          [
+            meeting('x', title: 'Call'),
+            meeting('y', title: 'Call'),
+            meeting('z', accountId: 'gmail', title: 'Call'),
+          ],
+          use24h: true,
+        ).split('\n'),
+        hasLength(3),
+      );
+    });
+
+    test('a meeting on two calendars, private on either, says only Private, '
+        'whichever comes first', () {
+      final open = meeting('o',
+          accountId: 'gmail', title: 'Doctor', location: 'Clinic');
+      final closed =
+          meeting('c', accountId: 'hadco', title: 'Doctor', private: true);
+      for (final order in [
+        [open, closed],
+        [closed, open],
+      ]) {
+        expect(dayText(tuesday, order, use24h: true),
+            '$day\n14:00–15:00  Private');
+      }
     });
 
     test("a private meeting says only that the time is taken: it is kept to "
@@ -419,6 +512,38 @@ void main() {
       await tapKey(tester, 'event-share-day');
       await tapKey(tester, 'day-share');
       expect(files.sharedTexts, [(text: expected, subject: day)]);
+    });
+
+    testWidgets("the day's box keeps Copy and Share off, and says Reading…, "
+        'until the calendars have read the day', (tester) async {
+      await pump(tester, (a) => [meeting('m', accountId: a.id)]);
+      await menu(tester);
+      await tester.tap(find.byKey(const ValueKey('event-share-day')));
+      // A moment in: the device's kept copy is shown, the calendar still
+      // being read (the sample engine answers in 30 ms).
+      for (var i = 0; i < 5; i++) {
+        await tester.pump(const Duration(milliseconds: 1));
+      }
+      expect(find.text('Reading…'), findsOneWidget);
+      expect(
+          tester
+              .widget<FilledButton>(find.byKey(const ValueKey('day-share')))
+              .onPressed,
+          isNull);
+      expect(
+          tester
+              .widget<TextButton>(find.byKey(const ValueKey('day-copy')))
+              .onPressed,
+          isNull);
+
+      await tester.pumpAndSettle();
+      expect(find.text('Reading…'), findsNothing);
+      expect(
+          tester
+              .widget<FilledButton>(find.byKey(const ValueKey('day-share')))
+              .onPressed,
+          isNotNull);
+      expect(find.text('14:00–15:00  Supplier call'), findsOneWidget);
     });
 
     testWidgets("a Hebrew line in the day's list reads from the right",
