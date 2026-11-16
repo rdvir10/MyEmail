@@ -674,7 +674,8 @@ class AccountCalendar {
   }
 
   /// Change [event], [account]'s own; see `MailEngine.updateEvent`. For
-  /// [wholeSeries] the series keeps its days: see [forSeries].
+  /// [wholeSeries] the series keeps its days, unless its repeat changes:
+  /// see [forSeries].
   Future<void> updateEvent(
     Account account,
     CalendarEvent event,
@@ -692,7 +693,7 @@ class AccountCalendar {
         final api = _graphApi(account);
         try {
           var sent = change;
-          if (series && change.movesIt) {
+          if (series && (change.movesIt || change.repeat != null)) {
             final times = await api.seriesTimes(id);
             if (times == null) throw const EventGone();
             sent = forSeries(change, times);
@@ -705,7 +706,7 @@ class AccountCalendar {
         final api = _googleApi(account);
         try {
           var sent = change;
-          if (series && change.movesIt) {
+          if (series && (change.movesIt || change.repeat != null)) {
             final times =
                 await api.seriesTimes(id, calendarId: event.calendarId);
             if (times == null) throw const EventGone();

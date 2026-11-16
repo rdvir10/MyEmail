@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../domain/calendar_event.dart' show EventShowAs;
 import '../../domain/meeting.dart' show Reminder;
 import '../../domain/recurrence.dart';
+import '../../domain/series_repeat.dart' show firstDayOf;
 import '../../domain/time_zones.dart';
 import '../calendar/time_zone_picker.dart';
 import '../messages/date_format.dart' show formatDay;
@@ -102,8 +103,9 @@ const _monthNames = [
 
 /// New meeting's More, in a sheet from its bar: the choices, each change
 /// handed to [onChanged] as it is made. [editing] leaves out what a meeting
-/// already on a calendar keeps (its repeat, its zone); [freeOrBusy] is a
-/// Google calendar, which keeps only whether the time is taken.
+/// already on a calendar keeps (its zone, and its repeat unless [repeats]);
+/// [freeOrBusy] is a Google calendar, which keeps only whether the time is
+/// taken. [repeats] and [seriesFrom]: see [MeetingOptionsPanel].
 Future<void> showMeetingOptions(
   BuildContext context, {
   required MeetingOptions options,
@@ -113,6 +115,8 @@ Future<void> showMeetingOptions(
   required ValueChanged<MeetingOptions> onChanged,
   bool editing = false,
   bool freeOrBusy = false,
+  bool? repeats,
+  DateTime? seriesFrom,
 }) {
   var shown = options;
   return showModalBottomSheet<void>(
@@ -134,6 +138,8 @@ Future<void> showMeetingOptions(
               workWeek: workWeek,
               editing: editing,
               freeOrBusy: freeOrBusy,
+              repeats: repeats,
+              seriesFrom: seriesFrom,
               onChanged: (o) {
                 setState(() => shown = o);
                 onChanged(o);
@@ -158,6 +164,8 @@ class MeetingOptionsPanel extends StatefulWidget {
     this.enabled = true,
     this.editing = false,
     this.freeOrBusy = false,
+    this.repeats,
+    this.seriesFrom,
   });
 
   final MeetingOptions options;
@@ -171,12 +179,49 @@ class MeetingOptionsPanel extends StatefulWidget {
   final bool editing;
   final bool freeOrBusy;
 
+  /// Whether Repeat is offered: on a new meeting unless said, and on a
+  /// meeting being changed where it may be (calendar idea #55): a meeting
+  /// on its own, to make it a series, or every meeting of a series.
+  final bool? repeats;
+
+  /// For every meeting of a series being changed: the series' first day.
+  /// Repeat then has no Never (a series stays one), any day of a week may
+  /// be unticked but the last, and the days and names go from where the
+  /// series will start: the first day on or after its own that the repeat
+  /// falls on.
+  final DateTime? seriesFrom;
+
   @override
   State<MeetingOptionsPanel> createState() => _MeetingOptionsPanelState();
 }
 
 class _MeetingOptionsPanelState extends State<MeetingOptionsPanel> {
   MeetingOptions get o => widget.options;
+
+  bool get _repeats => widget.repeats ?? !widget.editing;
+
+  /// Every meeting of a series, which starts again where its repeat falls.
+  bool get _series => widget.seriesFrom != null;
+
+  /// [day] at the first meeting's time of day.
+  DateTime _at(DateTime day) => DateTime(day.year, day.month, day.day,
+      widget.start.hour, widget.start.minute);
+
+  /// The first meeting as the repeat now has it: for a series, its first
+  /// day on or after the series' own that the repeat falls on.
+  DateTime get _start {
+    final from = widget.seriesFrom;
+    final repeat = o.repeat;
+    if (from == null) return widget.start;
+    return _at(repeat == null ? from : firstDayOf(repeat, from));
+  }
+
+  /// The day a month's or a year's repeat is named from: a series' own
+  /// first day, which those keep.
+  DateTime get _namedFrom {
+    final from = widget.seriesFrom;
+    return from == null ? widget.start : _at(from);
+  }
 
   _Repeat get _repeat => switch (o.repeat) {
         null => _Repeat.never,
@@ -190,7 +235,7 @@ class _MeetingOptionsPanelState extends State<MeetingOptionsPanel> {
       };
 
   String _repeatLabel(_Repeat r) {
-    final s = widget.start;
+    final s = _namedFrom;
     return switch (r) {
       _Repeat.never => 'Never',
       _Repeat.daily => 'Every day',
@@ -208,10 +253,15 @@ class _MeetingOptionsPanelState extends State<MeetingOptionsPanel> {
   void _setRepeat(_Repeat r) {
     // A week's other days, as picked: the first meeting's own goes with
     // its date (daysFrom adds it), so a date moved after Every week does
-    // not leave the old day behind. Working days are not picked days.
+    // not leave the old day behind. Working days are not picked days. A
+    // series' days are all picked: its first meeting goes where they are.
     final days = o.repeat?.kind == RepeatKind.weekly
-        ? o.repeat!.days
-        : const <int>{};
+        ? _series
+            ? o.repeat!.daysFrom(_start)
+            : o.repeat!.days
+        : _series
+            ? {_namedFrom.weekday}
+            : const <int>{};
     final until = o.repeat?.until;
     final count = o.repeat?.count;
     final next = switch (r) {
@@ -231,13 +281,25 @@ class _MeetingOptionsPanelState extends State<MeetingOptionsPanel> {
   }
 
   Future<void> _pickUntil() async {
-    final from = widget.start;
+    final from = _start;
+    final first = DateTime(from.year, from.month, from.day);
+    final last = DateTime(from.year + 10);
+    final now = DateTime.now();
+    var initial = o.repeat?.until ??
+        DateTime(from.year, from.month + 3, from.day);
+    // A series begun long ago (#55) is ended from now on, not from three
+    // months after it began; and an end read from a calendar, or the first
+    // meeting moved past it, is never outside what the picker can show.
+    if (o.repeat?.until == null && initial.isBefore(now)) {
+      initial = DateTime(now.year, now.month + 3, now.day);
+    }
+    if (initial.isBefore(first)) initial = first;
+    if (initial.isAfter(last)) initial = last;
     final day = await showDatePicker(
       context: context,
-      initialDate: o.repeat?.until ??
-          DateTime(from.year, from.month + 3, from.day),
-      firstDate: DateTime(from.year, from.month, from.day),
-      lastDate: DateTime(from.year + 10),
+      initialDate: initial,
+      firstDate: first,
+      lastDate: last,
     );
     if (day == null || !mounted) return;
     widget.onChanged(o.copyWith(repeat: o.repeat!.ending(day: day)));
@@ -296,6 +358,7 @@ class _MeetingOptionsPanelState extends State<MeetingOptionsPanel> {
         );
     final repeat = o.repeat;
     final weekly = repeat != null && repeat.kind == RepeatKind.weekly;
+    final shownDays = repeat?.daysFrom(_start) ?? const <int>{};
     final ends = repeat == null
         ? 'never'
         : repeat.until != null
@@ -314,13 +377,16 @@ class _MeetingOptionsPanelState extends State<MeetingOptionsPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-          if (!widget.editing) ...[
+          if (_repeats) ...[
             row(
               'Repeat',
               dropdown<_Repeat>(
                 key: const ValueKey('meeting-repeat'),
                 value: _repeat,
-                items: [for (final r in _Repeat.values) (r, _repeatLabel(r))],
+                items: [
+                  for (final r in _Repeat.values)
+                    if (r != _Repeat.never || !_series) (r, _repeatLabel(r)),
+                ],
                 onChanged: _setRepeat,
               ),
             ),
@@ -335,15 +401,25 @@ class _MeetingOptionsPanelState extends State<MeetingOptionsPanel> {
                       FilterChip(
                         key: ValueKey('meeting-repeat-day:$d'),
                         label: Text(_weekdayNames[d - 1].substring(0, 3)),
-                        selected: repeat.daysFrom(widget.start).contains(d),
-                        // The first meeting's own day is always one of them.
-                        onSelected: !widget.enabled || d == widget.start.weekday
+                        selected: shownDays.contains(d),
+                        // The first meeting's own day is always one of
+                        // them; a series' first meeting goes with its days,
+                        // the last of which stays.
+                        onSelected: !widget.enabled ||
+                                (_series
+                                    ? shownDays.length == 1 &&
+                                        shownDays.contains(d)
+                                    : d == _start.weekday)
                             ? null
-                            : (on) => widget.onChanged(o.copyWith(
+                            : (on) {
+                                final had =
+                                    _series ? shownDays : repeat.days;
+                                widget.onChanged(o.copyWith(
                                   repeat: repeat.onDays(on
-                                      ? {...repeat.days, d}
-                                      : ({...repeat.days}..remove(d))),
-                                )),
+                                      ? {...had, d}
+                                      : ({...had}..remove(d))),
+                                ));
+                              },
                       ),
                   ],
                 ),

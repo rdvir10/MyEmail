@@ -17,6 +17,8 @@ import '../../domain/mail_message.dart';
 import '../../domain/meeting.dart';
 import '../../domain/meeting_link.dart';
 import '../../domain/new_meeting_defaults.dart';
+import '../../domain/recurrence.dart';
+import '../../domain/series_repeat.dart';
 import '../../domain/text_direction.dart';
 import '../../state/calendar_providers.dart';
 import '../../state/calendar_view_providers.dart'
@@ -402,13 +404,113 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   bool _sending = false;
 
   /// More's choices: the repeat, reminder, show as, privacy and zone. A
-  /// meeting being changed starts from how it shows and its privacy, and
-  /// its reminder as it is.
+  /// meeting being changed starts from how it shows and its privacy, its
+  /// reminder as it is, and every meeting of a series from its repeat.
   late final MeetingOptions _optionsToBegin = switch (_editing?.event) {
-    final e? => MeetingOptions(showAs: e.showAs, isPrivate: e.isPrivate),
+    final e? => MeetingOptions(
+        showAs: e.showAs,
+        isPrivate: e.isPrivate,
+        repeat: _repeatToBegin,
+      ),
     null => const MeetingOptions(),
   };
   late MeetingOptions _options = _written?.options ?? _optionsToBegin;
+
+  /// How the series repeats, as its calendar has it, where every meeting
+  /// of one is being changed (calendar idea #55); null otherwise.
+  SeriesRepeat? get _series =>
+      _editing?.wholeSeries ?? false ? _editing!.notes.repeat : null;
+
+  /// Whether More offers Repeat: on a new meeting; on a meeting on its own
+  /// being changed, to make it a series; and on every meeting of a series
+  /// whose repeat New meeting has words for. Never on one meeting of a
+  /// series, which repeats as its series does.
+  bool get _canRepeat => switch (_editing) {
+        null => true,
+        final e when e.wholeSeries => _series?.repeat != null,
+        final e => e.event.seriesId == null,
+      };
+
+  /// The series' repeat as Repeat starts: as read, and Every working day
+  /// where it is the work week's days every week, which is how New meeting
+  /// sends that.
+  late final Recurrence? _repeatToBegin = () {
+    final read = _series?.repeat;
+    final work = ref.read(workWeekProvider);
+    if (read != null &&
+        read.kind == RepeatKind.weekly &&
+        read.interval == 1 &&
+        setEquals(read.days, work)) {
+      return Recurrence(RepeatKind.workDays,
+          days: work, until: read.until, count: read.count);
+    }
+    return read;
+  }();
+
+  /// Whether Repeat was changed on a meeting being changed.
+  bool get _repeatChanged =>
+      _editing != null && _options.repeat != _optionsToBegin.repeat;
+
+  /// The first meeting, as Repeat names it: for every meeting of a series,
+  /// at the first day on or after the series' own that its repeat, as now
+  /// chosen, falls on, where the series starts again once saved.
+  DateTime get _repeatStart {
+    final shown = _shown(_start);
+    final from = _series?.firstDay;
+    final repeat = _options.repeat;
+    if (from == null || repeat == null) return shown;
+    final day = firstDayOf(repeat, from);
+    return DateTime(day.year, day.month, day.day, shown.hour, shown.minute);
+  }
+
+  /// What saving a new repeat does, said before Save (#55), or null where
+  /// Repeat is as it was.
+  ///
+  /// A series is changed whole, past meetings too: neither calendar keeps
+  /// a series' past apart from its pattern. What becomes of a meeting of
+  /// it changed on its own is each calendar's: Outlook drops such changes
+  /// when a series' pattern changes, in its own app at least, and Google
+  /// keeps a change to a meeting whose day is still in the series. Neither
+  /// was seen on a live account, so the screen says "may".
+  String? get _repeatNote {
+    final edit = _editing;
+    if (edit == null || !_repeatChanged) return null;
+    if (!edit.wholeSeries) {
+      return 'It becomes a series from this meeting on, and everyone on it '
+          'is sent the change.';
+    }
+    final before = _optionsToBegin.repeat;
+    final now = _options.repeat;
+    final endOnly = before != null &&
+        now != null &&
+        before.ending(day: now.until, times: now.count) == now;
+    final what = endOnly
+        ? 'The series now ends as set, and everyone on it is sent the '
+            'change.'
+        : 'Every meeting in the series follows the new repeat, past ones '
+            'too, and everyone on it is sent the change.';
+    final own = _account?.provider == MailProvider.outlook
+        ? ' Any meeting you changed on its own, or deleted, may go back to '
+            'how the series has it.'
+        : endOnly
+            ? ''
+            : ' Any meeting you changed on its own may stay where it was.';
+    return '$what$own';
+  }
+
+  /// More, in its sheet.
+  void _openMore() => showMeetingOptions(
+        context,
+        options: _options,
+        start: _shown(_start),
+        allDay: _allDay,
+        workWeek: ref.read(workWeekProvider),
+        editing: _editing != null,
+        freeOrBusy: _account?.provider == MailProvider.gmail,
+        repeats: _canRepeat,
+        seriesFrom: _canRepeat ? _series?.firstDay : null,
+        onChanged: (o) => setState(() => _options = o),
+      );
 
   /// The line a meeting is typed in, "Lunch with Dana Thursday 1pm", and
   /// whether it is being read.
@@ -988,6 +1090,14 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
           : 'The meeting has to end after it starts.');
       return;
     }
+    // A repeat changed here, as New meeting asks of one.
+    final repeat = _repeatChanged ? _options.repeat : null;
+    final last = repeat?.until;
+    if (last != null && last.isBefore(day(_repeatStart))) {
+      setState(() => _invalid =
+          'The repeat has to end on the first meeting or after it.');
+      return;
+    }
     _messenger = ScaffoldMessenger.maybeOf(context);
     _navigator = Navigator.of(context);
     setState(() {
@@ -1020,6 +1130,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       reminder: _options.reminder,
       showAs: _options.showAs,
       isPrivate: _options.isPrivate,
+      repeat: repeat,
     );
     _sendingMeeting = true;
     try {
@@ -1532,20 +1643,11 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
               key: const ValueKey('meeting-more'),
               tooltip: _editing == null
                   ? 'Repeat, reminder, show as, private, time zone'
-                  : 'Reminder, show as, private',
+                  : _canRepeat
+                      ? 'Repeat, reminder, show as, private'
+                      : 'Reminder, show as, private',
               icon: const Icon(Icons.tune),
-              onPressed: _sending
-                  ? null
-                  : () => showMeetingOptions(
-                        context,
-                        options: _options,
-                        start: _shown(_start),
-                        allDay: _allDay,
-                        workWeek: ref.read(workWeekProvider),
-                        editing: _editing != null,
-                        freeOrBusy: _account?.provider == MailProvider.gmail,
-                        onChanged: (o) => setState(() => _options = o),
-                      ),
+              onPressed: _sending ? null : _openMore,
             ),
             IconButton(
               key: const ValueKey('meeting-send'),
@@ -1828,22 +1930,11 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
               enabled: !_sending,
             ),
             // What More holds, in a line, once anything is chosen there.
-            if (_options.summary(_shown(_start), editing: _editing != null)
+            if (_options.summary(_repeatStart, editing: _editing != null)
                 case final summary when summary.isNotEmpty)
               InkWell(
                 key: const ValueKey('meeting-more-summary'),
-                onTap: _sending
-                    ? null
-                    : () => showMeetingOptions(
-                          context,
-                          options: _options,
-                          start: _shown(_start),
-                          allDay: _allDay,
-                          workWeek: ref.read(workWeekProvider),
-                          editing: _editing != null,
-                          freeOrBusy: account?.provider == MailProvider.gmail,
-                          onChanged: (o) => setState(() => _options = o),
-                        ),
+                onTap: _sending ? null : _openMore,
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
                   child: Row(
@@ -1862,6 +1953,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                   ),
                 ),
               ),
+            // What a new repeat does, before Save (#55).
+            if (_repeatNote case final words?)
+              _Notice(words, key: const ValueKey('meeting-repeat-note')),
             if (_invalid != null)
               Container(
                 width: double.infinity,
@@ -2156,7 +2250,7 @@ class _WhenRow extends StatelessWidget {
 /// A quiet band of explanation, distinct from the error band above it,
 /// with the one thing to do about it beside the words when there is one.
 class _Notice extends StatelessWidget {
-  const _Notice(this.text, {this.action});
+  const _Notice(this.text, {super.key, this.action});
 
   final String text;
   final Widget? action;

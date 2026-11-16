@@ -4,6 +4,8 @@ import 'calendar_event.dart';
 import 'calendar_invite.dart' show InviteResponse;
 import 'mail_message.dart' show MailAddress;
 import 'meeting.dart' show Reminder;
+import 'recurrence.dart';
+import 'series_repeat.dart';
 
 /// What an edit changes on an event already on a calendar: whatever is
 /// null stays as it is, so the calendar is sent only what was changed. A
@@ -25,6 +27,7 @@ class EventChange {
     this.reminder,
     this.showAs,
     this.isPrivate,
+    this.repeat,
   });
 
   final String? title;
@@ -64,6 +67,12 @@ class EventChange {
   final EventShowAs? showAs;
   final bool? isPrivate;
 
+  /// How it repeats from now on (calendar idea #55): a series' new days,
+  /// how often it comes or when it ends, or a meeting on its own made a
+  /// series, from its own day. Null leaves it as it is. A series given one
+  /// starts again from its first day the repeat falls on: see [forSeries].
+  final Recurrence? repeat;
+
   bool get isEmpty =>
       title == null &&
       start == null &&
@@ -74,7 +83,8 @@ class EventChange {
       attendees == null &&
       reminder == null &&
       showAs == null &&
-      isPrivate == null;
+      isPrivate == null &&
+      repeat == null;
 
   /// Only who is on it changes.
   bool get onlyPeople =>
@@ -85,16 +95,18 @@ class EventChange {
       notes == null &&
       reminder == null &&
       showAs == null &&
-      isPrivate == null;
+      isPrivate == null &&
+      repeat == null;
 
   /// Whether the times change.
   bool get movesIt => start != null && end != null;
 
-  EventChange copyWith({DateTime? start, DateTime? end}) => EventChange(
+  EventChange copyWith({DateTime? start, DateTime? end, bool? allDay}) =>
+      EventChange(
         title: title,
         start: start ?? this.start,
         end: end ?? this.end,
-        allDay: allDay,
+        allDay: allDay ?? this.allDay,
         location: location,
         notes: notes,
         keptBelow: keptBelow,
@@ -104,13 +116,15 @@ class EventChange {
         reminder: reminder,
         showAs: showAs,
         isPrivate: isPrivate,
+        repeat: repeat,
       );
 
   /// What changes between [before] and the screen's [title], [start] and
   /// the rest: only what differs. [notesBefore] is what the notes were as
   /// the screen opened, which the event itself holds only the start of.
   /// [optional] is who of [attendees] the screen has as optional: a change
-  /// of that alone is a change of the people.
+  /// of that alone is a change of the people. [repeat], where the screen
+  /// changed how it repeats, goes as it is.
   static EventChange between(
     CalendarEvent before, {
     required EventNotes notesBefore,
@@ -126,6 +140,7 @@ class EventChange {
     Reminder? reminder,
     EventShowAs? showAs,
     bool? isPrivate,
+    Recurrence? repeat,
   }) {
     String key(MailAddress a) => a.email.trim().toLowerCase();
     // Not said: each as the event has them.
@@ -174,6 +189,7 @@ class EventChange {
       showAs: showAs == null || showAs == before.showAs ? null : showAs,
       isPrivate:
           isPrivate == null || isPrivate == before.isPrivate ? null : isPrivate,
+      repeat: repeat,
     );
   }
 }
@@ -181,10 +197,16 @@ class EventChange {
 /// An event's notes as the calendar holds them, read for editing: the
 /// text, and for a Teams meeting on Exchange, the Teams block below it,
 /// which goes back unchanged under any new notes (a body sent without it,
-/// or with it rewritten, loses the meeting).
+/// or with it rewritten, loses the meeting). Read in the same ask, a
+/// series' repeat, for Edit's Repeat.
 @immutable
 class EventNotes {
-  const EventNotes({required this.text, this.keptBelow, this.html});
+  const EventNotes({
+    required this.text,
+    this.keptBelow,
+    this.html,
+    this.repeat,
+  });
 
   final String text;
 
@@ -196,11 +218,18 @@ class EventNotes {
   /// of each link written as words among it. Null where they are plain
   /// text. Not for a change: [text] is what Edit writes.
   final String? html;
+
+  /// How the event repeats, where it is a series' master, read as the
+  /// notes were (calendar idea #55): what Edit's Repeat starts from for
+  /// every meeting of a series. Null for a meeting on its own, or one
+  /// meeting of a series.
+  final SeriesRepeat? repeat;
 }
 
 /// A meeting on a calendar being changed on the meeting screen: Edit on
 /// its sheet. [wholeSeries] for every meeting of the series it is one of,
-/// which keep their days: only the time of day and the length move.
+/// which keep their days unless Repeat is changed (#55): otherwise only
+/// the time of day and the length move.
 @immutable
 class EventEdit {
   const EventEdit({
@@ -222,25 +251,45 @@ typedef SeriesTimes = ({DateTime start, DateTime end, bool allDay});
 /// the series keeps its days, and takes the new time of day and length
 /// from its own first day. Where [change] does not move the meeting, it is
 /// as it was.
+///
+/// With a new [EventChange.repeat] (#55) the series starts again from the
+/// first day on or after its own that the repeat falls on (a weekly series
+/// moved from Tuesday to Wednesday starts on the Wednesday after its first
+/// Tuesday), at the new time where the change moves it and at its own
+/// otherwise: a calendar takes a series' repeat from its first meeting.
 EventChange forSeries(EventChange change, SeriesTimes series) {
-  if (!change.movesIt) return change;
-  final start = change.start!, end = change.end!;
+  final repeat = change.repeat;
+  if (!change.movesIt && repeat == null) return change;
   final first = series.allDay
       ? DateTime(series.start.year, series.start.month, series.start.day)
       : series.start.toLocal();
-  if (change.allDay ?? series.allDay) {
+  final last = series.allDay
+      ? DateTime(series.end.year, series.end.month, series.end.day)
+      : series.end.toLocal();
+  // The series' own times where the change does not move it.
+  final start = change.movesIt ? change.start! : first;
+  final end = change.movesIt ? change.end! : last;
+  final allDay = change.allDay ?? series.allDay;
+  final day = repeat == null
+      ? DateTime(first.year, first.month, first.day)
+      : firstDayOf(repeat, first);
+  if (allDay) {
     final days = DateTime(end.year, end.month, end.day)
         .difference(DateTime(start.year, start.month, start.day))
         .inDays;
-    final from = DateTime(first.year, first.month, first.day);
     return change.copyWith(
-      start: from,
-      end: DateTime(from.year, from.month, from.day + (days < 1 ? 1 : days)),
+      start: day,
+      end: DateTime(day.year, day.month, day.day + (days < 1 ? 1 : days)),
+      allDay: allDay,
     );
   }
-  final from = DateTime(
-      first.year, first.month, first.day, start.hour, start.minute);
-  return change.copyWith(start: from, end: from.add(end.difference(start)));
+  final from =
+      DateTime(day.year, day.month, day.day, start.hour, start.minute);
+  return change.copyWith(
+    start: from,
+    end: from.add(end.difference(start)),
+    allDay: allDay,
+  );
 }
 
 /// The answer a calendar keeps for [response].

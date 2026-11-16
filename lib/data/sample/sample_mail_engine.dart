@@ -19,6 +19,7 @@ import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/meeting.dart';
 import '../../domain/message_move.dart';
+import '../../domain/series_repeat.dart' show firstDayOf;
 import '../cache/cache_store.dart' show MemoryCalendarKeep;
 import '../compose/quote_builder.dart';
 import '../imap/imap_mapping.dart';
@@ -1102,6 +1103,10 @@ class SampleMailEngine implements MailEngine, SaysMeetingMailArrived {
         'attendees=${[for (final a in people) a.email].join(',')}',
       if (change.optional case final optional? when optional.isNotEmpty)
         'optional=${(optional.toList()..sort()).join(',')}',
+      // Said from the first day it falls on, as the real calendars start a
+      // series changed so (#55).
+      if (change.repeat case final r?)
+        'repeat=${r.describe(firstDayOf(r, change.start ?? event.start))}',
       if (wholeSeries) 'series',
     ].join(' '));
     final had = {

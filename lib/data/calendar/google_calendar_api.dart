@@ -11,6 +11,7 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
+import '../../domain/series_repeat.dart';
 import '../../domain/meeting_links.dart';
 import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
@@ -813,6 +814,8 @@ class GoogleCalendarApi {
       // For the meeting's sheet, which shows a link written as words a tap
       // from its address (#43).
       html: page ? description : null,
+      // A series' repeat, for Edit's Repeat (#55).
+      repeat: SeriesRepeat.fromGoogle(event),
     );
   }
 
@@ -828,13 +831,25 @@ class GoogleCalendarApi {
   }) async {
     final fields = changeJson(change, before: before);
     final people = change.attendees;
-    if (people != null) {
+    if (people != null || change.repeat != null) {
       final event = await _event(eventId, calendarId: calendarId);
       if (event == null || event['status'] == 'cancelled') {
         throw const EventGone();
       }
-      fields['attendees'] = mergedAttendees(event['attendees'], people,
-          before: before, optional: change.optional);
+      if (people != null) {
+        fields['attendees'] = mergedAttendees(event['attendees'], people,
+            before: before, optional: change.optional);
+      }
+      // A new rule in the old one's place (#55); the days taken out of
+      // the series by hand (EXDATE) stay out.
+      final had = event['recurrence'];
+      if (change.repeat != null && had is List) {
+        fields['recurrence'] = [
+          ...fields['recurrence']! as List,
+          for (final line in had)
+            if (!'$line'.toUpperCase().startsWith('RRULE')) '$line',
+        ];
+      }
     }
     if (fields.isEmpty) return;
     await _patchEvent(eventId, fields, calendarId: calendarId);
@@ -843,23 +858,36 @@ class GoogleCalendarApi {
   /// [change] as Google's patch takes it, less the people: see [update].
   /// The other way of giving a time is emptied, or an event moved between
   /// a time and a whole day would hold both.
+  ///
+  /// A new repeat (#55) goes as its rule, from the first day: a series'
+  /// as forSeries moved it, a meeting's own otherwise. Google wants a
+  /// series' times with a zone to work its days out in, so they go with
+  /// it, UTC where the phone named none; a meeting made a series sends
+  /// its own times as they are.
   static Map<String, Object?> changeJson(
     EventChange change, {
     required CalendarEvent before,
   }) {
     final allDay = change.allDay ?? before.allDay;
     final zone = change.timeZone;
+    final repeat = change.repeat;
     Map<String, Object?> at(DateTime t) => allDay
         ? {'date': _date(t), 'dateTime': null, 'timeZone': null}
-        : zone == null
-            ? {'dateTime': _utc(t), 'timeZone': null, 'date': null}
-            : {'dateTime': _stamp(t), 'timeZone': zone, 'date': null};
+        : zone != null
+            ? {'dateTime': _stamp(t), 'timeZone': zone, 'date': null}
+            : repeat != null
+                ? {'dateTime': _utc(t), 'timeZone': 'UTC', 'date': null}
+                : {'dateTime': _utc(t), 'timeZone': null, 'date': null};
     return {
       if (change.title != null) 'summary': change.title,
-      if (change.movesIt) ...{
-        'start': at(change.start!),
-        'end': at(change.end!),
+      if (change.movesIt || repeat != null) ...{
+        'start': at(change.start ?? before.start),
+        'end': at(change.end ?? before.end),
       },
+      if (repeat != null)
+        'recurrence': [
+          repeat.toRule(change.start ?? before.start, allDay: allDay),
+        ],
       if (change.location != null) 'location': change.location,
       if (change.notes != null) 'description': change.notes,
       if (change.reminder case final r?) 'reminders': remindersJson(r),

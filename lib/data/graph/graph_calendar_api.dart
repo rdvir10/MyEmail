@@ -12,6 +12,7 @@ import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
 import '../../domain/meeting_links.dart';
+import '../../domain/series_repeat.dart';
 import '../../domain/text_direction.dart';
 import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
@@ -533,9 +534,11 @@ class GraphCalendarApi {
 
   /// [eventId]'s notes, for changing them: its body as text, and on a
   /// Teams meeting the block Exchange wrote, which goes back under any new
-  /// notes as it is.
+  /// notes as it is. A series' repeat comes in the same ask, for Edit's
+  /// Repeat (#55).
   Future<EventNotes> notes(String eventId) async {
-    final json = await _event(eventId);
+    final json = await _event(eventId,
+        select: 'id,body,isOnlineMeeting,onlineMeeting,attendees,recurrence');
     if (json == null) throw const EventGone();
     final html = _bodyIn(json) ?? '';
     final split =
@@ -550,6 +553,7 @@ class GraphCalendarApi {
       // For the meeting's sheet, which shows a link written as words a tap
       // from its address (#43).
       html: page ? split?.notes ?? html : null,
+      repeat: SeriesRepeat.fromGraph(json['recurrence']),
     );
   }
 
@@ -635,6 +639,12 @@ class GraphCalendarApi {
       if (change.showAs case final showAs?) 'showAs': graphShowAs(showAs),
       if (change.isPrivate case final private?)
         'sensitivity': private ? 'private' : 'normal',
+      // How it repeats from now on (#55), from its first day: a series'
+      // as forSeries moved it, a meeting's own otherwise. Graph wants the
+      // range to start on the day the event does.
+      if (change.repeat case final r?)
+        'recurrence':
+            r.toGraph(change.start ?? before.start, timeZone: zone ?? 'UTC'),
       if (notes != null)
         'body': kept == null
             ? {'contentType': 'text', 'content': notes}
