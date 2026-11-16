@@ -36,8 +36,17 @@ class NewMeetingDefaults {
   static const lengthChoices = [15, 30, 45, 60];
   static const endEarlyChoices = [0, 5, 10];
 
-  /// How long a new meeting is drawn and sent: [minutes] less [endEarly].
-  Duration get length => Duration(minutes: minutes - endEarly);
+  /// How long a new meeting is drawn and sent: [minutes] less [endEarly],
+  /// never less than ten minutes (15 minutes ending 10 early ends 5 early).
+  Duration get length {
+    final early = minutes - endEarly < shortest
+        ? (minutes - shortest).clamp(0, endEarly)
+        : endEarly;
+    return Duration(minutes: minutes - early);
+  }
+
+  /// The shortest a meeting ending early is left.
+  static const shortest = 10;
 
   /// Whether a new meeting from [accountId] starts online.
   bool onlineFor(String accountId) => online.contains(accountId);
@@ -68,8 +77,9 @@ class NewMeetingDefaults {
     final early = json['endEarly'];
     final online = json['online'];
     return NewMeetingDefaults(
-      minutes: lengthChoices.contains(minutes) ? minutes as int : 60,
-      endEarly: endEarlyChoices.contains(early) ? early as int : 0,
+      // Whole numbers only: 60.0 equals 60, and is not one.
+      minutes: minutes is int && lengthChoices.contains(minutes) ? minutes : 60,
+      endEarly: early is int && endEarlyChoices.contains(early) ? early : 0,
       online: {
         if (online is List)
           for (final id in online)

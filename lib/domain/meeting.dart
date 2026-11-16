@@ -236,13 +236,26 @@ class Reminder {
     Reminder.before(1440),
   ];
 
-  String get label => switch (minutes) {
-        null => 'None',
-        0 => 'At the start',
-        60 => '1 hour before',
-        1440 => '1 day before',
-        final m => '$m minutes before',
-      };
+  String get label => labelFor(minutes);
+
+  /// A reminder [minutes] before, in the words New meeting, Edit, My
+  /// reminder and the meeting's sheet all use: "None", "At the start",
+  /// "15 minutes before", "2 hours before", "1 day before", "1 week
+  /// before". The largest whole unit it is.
+  static String labelFor(int? minutes) {
+    if (minutes == null) return 'None';
+    if (minutes <= 0) return 'At the start';
+    String n(int count, String unit) =>
+        count == 1 ? '1 $unit' : '$count ${unit}s';
+    final how = minutes % 10080 == 0
+        ? n(minutes ~/ 10080, 'week')
+        : minutes % 1440 == 0
+            ? n(minutes ~/ 1440, 'day')
+            : minutes % 60 == 0
+                ? n(minutes ~/ 60, 'hour')
+                : n(minutes, 'minute');
+    return '$how before';
+  }
 
   @override
   bool operator ==(Object other) => other is Reminder && other.minutes == minutes;

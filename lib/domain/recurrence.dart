@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'meeting_repeat.dart';
+
 /// How a meeting repeats: New meeting's Repeat, as Outlook and Google
 /// Calendar offer it.
 enum RepeatKind {
@@ -199,52 +201,43 @@ class Recurrence {
         'T${two(u.hour)}${two(u.minute)}${two(u.second)}Z';
   }
 
-  static const _weekdayNames = [
-    'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
-    'Sunday',
-  ];
-  static const _monthNames = [
-    'January', 'February', 'March', 'April', 'May', 'June', 'July',
-    'August', 'September', 'October', 'November', 'December',
-  ];
-  static const _ordinals = {
-    1: 'first',
-    2: 'second',
-    3: 'third',
-    4: 'fourth',
-    -1: 'last',
-  };
-
-  static String _list(List<String> words) => words.length <= 1
-      ? words.join()
-      : '${words.sublist(0, words.length - 1).join(', ')} and ${words.last}';
-
   /// What it does, in a sentence for the screen: "Every week on Tuesday and
-  /// Thursday, until 30 November 2026".
-  String describe(DateTime start) {
-    String every(String unit) =>
-        interval == 1 ? 'Every $unit' : 'Every $interval ${unit}s';
-    final weekdays = [
-      for (final d in (daysFrom(start).toList()..sort())) _weekdayNames[d - 1],
-    ];
-    final how = switch (kind) {
-      RepeatKind.daily => every('day'),
-      RepeatKind.workDays => 'Every working day',
-      RepeatKind.weekly => '${every('week')} on ${_list(weekdays)}',
-      RepeatKind.monthlyOnDate => '${every('month')} on day ${start.day}',
+  /// Thursday, until 30 November 2026". In the meeting's sheet's words, by
+  /// the sheet's own code ([MeetingRepeat.describe]), so New meeting, Edit
+  /// and the sheet say one series one way: every working day is said by
+  /// its days ("Every week, Monday to Friday"), as the sheet reads a
+  /// calendar's series; Repeat's own item stays "Every working day".
+  String describe(DateTime start) => repeatFrom(start).describe();
+
+  /// This repeat, for a series whose first meeting is on [start], as the
+  /// sheet reads one from a calendar.
+  MeetingRepeat repeatFrom(DateTime start) {
+    final weekdays = daysFrom(start);
+    final (every, step) = switch (kind) {
+      RepeatKind.daily => (RepeatUnit.day, interval),
+      RepeatKind.workDays => (RepeatUnit.week, 1),
+      RepeatKind.weekly => (RepeatUnit.week, interval),
+      RepeatKind.monthlyOnDate ||
       RepeatKind.monthlyOnWeekday =>
-        '${every('month')} on the ${_ordinals[weekOfMonth(start)]} '
-            '${_weekdayNames[start.weekday - 1]}',
-      RepeatKind.yearly =>
-        'Every year on ${start.day} ${_monthNames[start.month - 1]}',
+        (RepeatUnit.month, interval),
+      RepeatKind.yearly => (RepeatUnit.year, 1),
     };
-    final last = until;
-    final end = last != null
-        ? ', until ${last.day} ${_monthNames[last.month - 1]} ${last.year}'
-        : count != null
-            ? ', $count times'
-            : '';
-    return '$how$end';
+    return MeetingRepeat(
+      every,
+      interval: step,
+      weekdays: switch (kind) {
+        RepeatKind.workDays || RepeatKind.weekly => weekdays,
+        RepeatKind.monthlyOnWeekday => {start.weekday},
+        _ => const {},
+      },
+      dayOfMonth: kind == RepeatKind.monthlyOnDate || kind == RepeatKind.yearly
+          ? start.day
+          : null,
+      week: kind == RepeatKind.monthlyOnWeekday ? weekOfMonth(start) : null,
+      month: kind == RepeatKind.yearly ? start.month : null,
+      until: until,
+      count: count,
+    );
   }
 
   @override

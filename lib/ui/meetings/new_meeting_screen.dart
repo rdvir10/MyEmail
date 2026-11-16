@@ -52,6 +52,7 @@ Future<void> openNewMeeting(
   String title = '',
   String notes = '',
   List<MailAddress> attendees = const [],
+  Set<String> optional = const {},
   DateTime? start,
   String location = '',
   Duration? length,
@@ -81,6 +82,7 @@ Future<void> openNewMeeting(
         title: title,
         notes: notes,
         attendees: attendees,
+        optional: optional,
         start: start,
         location: location,
         length: length,
@@ -190,6 +192,7 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
     this.title = '',
     this.notes = '',
     this.attendees = const [],
+    this.optional = const {},
     this.start,
     this.location = '',
     this.length,
@@ -205,6 +208,10 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
 
   /// Who is asked, to begin with: everyone on the message it was made from.
   final List<MailAddress> attendees;
+
+  /// Who of [attendees] is asked as optional to begin with, by address:
+  /// a meeting duplicated keeps those its original had (#56).
+  final Set<String> optional;
 
   /// When it starts. The next whole hour when null; the end is [length]
   /// on, or where that is null as long as Settings say a new meeting lasts
@@ -336,9 +343,12 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// those still on the field at Send or Save count.
   late final ValueNotifier<Set<String>> _optional =
       ValueNotifier(_written?.optional ?? _optionalToBegin);
-  late final Set<String> _optionalToBegin = {
-    for (final a in _editing?.event.attendees ?? const <EventAttendee>[])
-      if (a.optional) a.address.email.trim().toLowerCase(),
+  late final Set<String> _optionalToBegin = switch (_editing) {
+    final edit? => {
+        for (final a in edit.event.attendees)
+          if (a.optional) a.address.email.trim().toLowerCase(),
+      },
+    null => {for (final o in widget.optional) o.trim().toLowerCase()},
   };
 
   /// Who of [people] is optional now.
@@ -424,12 +434,26 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// Whether More offers Repeat: on a new meeting; on a meeting on its own
   /// being changed, to make it a series; and on every meeting of a series
   /// whose repeat New meeting has words for. Never on one meeting of a
-  /// series, which repeats as its series does.
+  /// series, which repeats as its series does; nor on a timed meeting
+  /// whose zone its calendar does not name, as a repeat is written in the
+  /// zone it was set in (see [forSeries]).
   bool get _canRepeat => switch (_editing) {
         null => true,
+        final e when !_zoneKnown(e.event) => false,
         final e when e.wholeSeries => _series?.repeat != null,
         final e => e.event.seriesId == null,
       };
+
+  /// Whether a repeat can be written for [event] on its own clock: its
+  /// zone known, or a whole day, which no zone moves.
+  static bool _zoneKnown(CalendarEvent event) =>
+      event.allDay || ownZoneOf(event) != null;
+
+  /// The day the account's calendar counts a series' weeks from: Sunday
+  /// for Outlook, Monday for Google, as each writes every other week.
+  int get _weekStart => _account?.provider == MailProvider.gmail
+      ? DateTime.monday
+      : DateTime.sunday;
 
   /// The series' repeat as Repeat starts: as read, and Every working day
   /// where it is the work week's days every week, which is how New meeting
@@ -459,9 +483,40 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     final from = _series?.firstDay;
     final repeat = _options.repeat;
     if (from == null || repeat == null) return shown;
-    final day = firstDayOf(repeat, from);
+    final day = firstDayOf(repeat, from, weekStart: _weekStart);
     return DateTime(day.year, day.month, day.day, shown.hour, shown.minute);
   }
+
+  /// The day of the last meeting the repeat, as now chosen, makes, where
+  /// it ends; null where it goes on.
+  DateTime? get _lastMeeting {
+    final repeat = _options.repeat;
+    if (repeat == null) return null;
+    return lastMeetingOf(repeat, _repeatStart, weekStart: _weekStart);
+  }
+
+  /// Whether that last meeting is already past: every meeting after it
+  /// would come off everyone's calendar, which Save asks about first.
+  bool get _endsInThePast {
+    if (!_repeatChanged) return false;
+    final last = _lastMeeting;
+    final now = DateTime.now();
+    return last != null &&
+        last.isBefore(DateTime(now.year, now.month, now.day));
+  }
+
+  /// Whether anyone besides the account is on the meeting, as the screen
+  /// has it, or was: who a change is sent to.
+  bool get _anyoneOn =>
+      parseAddresses(_attendees.text).isNotEmpty ||
+      (_editing?.event.attendees.any(
+              (a) => a.response != EventResponse.organizer) ??
+          false);
+
+  /// The sentence that says the last meeting is already past.
+  String _pastWords(DateTime last) =>
+      "The series' last meeting is then ${dayInWords(last)}, already past: "
+      "every meeting after it comes off everyone's calendar.";
 
   /// What saving a new repeat does, said before Save (#55), or null where
   /// Repeat is as it was.
@@ -472,23 +527,45 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// when a series' pattern changes, in its own app at least, and Google
   /// keeps a change to a meeting whose day is still in the series. Neither
   /// was seen on a live account, so the screen says "may".
+  ///
+  /// The last meeting is named where the repeat ends, and an end already
+  /// past says what it does: the series is stopped there, and every
+  /// meeting after it comes off everyone's calendar. Nobody is said to be
+  /// sent anything where nobody else is on it.
   String? get _repeatNote {
     final edit = _editing;
     if (edit == null || !_repeatChanged) return null;
+    final told = _anyoneOn ? ', and everyone on it is sent the change' : '';
+    final last = _lastMeeting;
+    final past = _endsInThePast && last != null;
     if (!edit.wholeSeries) {
-      return 'It becomes a series from this meeting on, and everyone on it '
-          'is sent the change.';
+      final ends = last == null
+          ? ''
+          : past
+              ? ' ${_pastWords(last)}'
+              : ' Its last meeting is then ${dayInWords(last)}.';
+      return 'It becomes a series from this meeting on$told.$ends';
     }
     final before = _optionsToBegin.repeat;
     final now = _options.repeat;
     final endOnly = before != null &&
         now != null &&
         before.ending(day: now.until, times: now.count) == now;
-    final what = endOnly
-        ? 'The series now ends as set, and everyone on it is sent the '
-            'change.'
-        : 'Every meeting in the series follows the new repeat, past ones '
-            'too, and everyone on it is sent the change.';
+    final String what;
+    if (past) {
+      what = endOnly
+          ? _pastWords(last)
+          : 'Every meeting in the series follows the new repeat, past ones '
+              'too$told. ${_pastWords(last)}';
+    } else if (endOnly) {
+      what = last == null
+          ? 'The series now goes on with no end$told.'
+          : "The series' last meeting is then ${dayInWords(last)}$told.";
+    } else {
+      what = 'Every meeting in the series follows the new repeat, past ones '
+          'too$told.${last == null ? '' : ' Its last meeting is then '
+              '${dayInWords(last)}.'}';
+    }
     final own = _account?.provider == MailProvider.outlook
         ? ' Any meeting you changed on its own, or deleted, may go back to '
             'how the series has it.'
@@ -496,6 +573,33 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             ? ''
             : ' Any meeting you changed on its own may stay where it was.';
     return '$what$own';
+  }
+
+  /// Asked before Save sends a repeat whose last meeting is already past
+  /// (#55): true to send it.
+  Future<bool> _endInThePastAsked() async {
+    final last = _lastMeeting;
+    if (!_endsInThePast || last == null) return true;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('End the series in the past?'),
+        content: Text(_pastWords(last)),
+        actions: [
+          TextButton(
+            key: const ValueKey('repeat-past-keep'),
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Keep editing'),
+          ),
+          FilledButton(
+            key: const ValueKey('repeat-past-save'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    return go ?? false;
   }
 
   /// More, in its sheet.
@@ -509,6 +613,8 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
         freeOrBusy: _account?.provider == MailProvider.gmail,
         repeats: _canRepeat,
         seriesFrom: _canRepeat ? _series?.firstDay : null,
+        seriesWeekStart: _weekStart,
+        seriesCount: _optionsToBegin.repeat?.count,
         onChanged: (o) => setState(() => _options = o),
       );
 
@@ -537,27 +643,26 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   List<OnlineMeetingKind> _onlineKinds = const [];
 
   /// Which of them, where there is a choice: a Microsoft account with
-  /// Teams and, through the Gmail account, Google Meet. The first unless
-  /// one was chosen, and the choice kept through a change of From where
-  /// the account now can hold it too.
+  /// Teams and, through the Gmail account, Google Meet. The one picked
+  /// from the menu ([_pickedKind]) wherever the account in From offers it,
+  /// and the account's own first otherwise.
   late OnlineMeetingKind? _onlineKind = _written?.onlineKind;
 
-  /// Whether [_onlineKind] was chosen from the menu, rather than being the
-  /// first of an account's: only a choice is kept through From. Without
-  /// one, Hadco's Teams, on by default (#61), came back as Meet once From
-  /// had been the Gmail account, whose only kind it is.
-  late bool _kindChosen = _written?.onlineKind != null;
+  /// The kind picked from the menu, kept in a field of its own, never
+  /// overwritten by another account's: Teams picked on Hadco is Teams
+  /// again after a visit to Gmail, whose only kind is Meet.
+  late OnlineMeetingKind? _pickedKind = _written?.onlineKind;
 
   /// Whether a link was asked for. Honoured only where the account's
   /// calendar holds meetings online: the switch keeps its setting through
   /// a change of From, and a meeting from an account with nowhere to hold
   /// one goes without.
   ///
-  /// On to begin with for an account Settings start online (#61), and
-  /// following From's own setting until the switch, a kind or a meeting
-  /// link is chosen here ([_onlineChosen]).
-  late bool _online = _written?.online ??
-      (_editing == null && _defaults.onlineFor(_accountId));
+  /// Settings start an account online (#61) as it answers, on its own kind
+  /// of link alone (see [_ownKind]), and the switch follows From's own
+  /// setting until it, a kind or a meeting link is chosen here
+  /// ([_onlineChosen]).
+  late bool _online = _written?.online ?? false;
 
   /// Whether the switch was set here, by hand, rather than by Settings: it
   /// then stays as set whatever From becomes.
@@ -701,6 +806,12 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     _container = ProviderScope.containerOf(context, listen: false);
     // A meeting being changed keeps the link it has: there is no switch.
     if (_editing == null) _askOnline();
+    // Said, so that Edit offering no Repeat on a device can be told apart
+    // from a series not read (#55).
+    if (_editing case final edit? when !_zoneKnown(edit.event)) {
+      debugPrint('[myemail] no Repeat on Edit: the calendar names no time '
+          'zone for this meeting');
+    }
     // Opened again after a Send or Save that failed once it was left: why,
     // as it would have been said had the screen stayed.
     if (widget.failure case final failure?) {
@@ -717,13 +828,32 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     final ask = ++_onlineAsk;
     final kinds =
         await ref.read(mailEngineProvider).onlineMeetingsFor(_accountId);
+    // Which kind is the account's own needs the account, which may not
+    // have been read yet as the screen opens.
+    List<Account> accounts;
+    try {
+      accounts = await ref.read(accountsProvider.future);
+    } catch (_) {
+      accounts = const [];
+    }
     if (!mounted || ask != _onlineAsk) return;
+    final account = accounts.where((a) => a.id == _accountId).firstOrNull;
     setState(() {
       _onlineKinds = kinds;
       _onlineAnswered = true;
-      _onlineKind = _kindChosen && kinds.contains(_onlineKind)
-          ? _onlineKind
-          : kinds.firstOrNull;
+      final own = _ownKind(kinds, account?.provider);
+      final picked = _pickedKind;
+      _onlineKind = picked != null && kinds.contains(picked)
+          ? picked
+          : own ?? kinds.firstOrNull;
+      // On, where Settings say so, only with the account's own kind: a
+      // Hadco whose calendar could not be asked (no signal, no consent
+      // yet) offers Meet through Gmail alone, and stays off rather than
+      // send a work meeting on Ron's personal Meet. A later answer, From
+      // changed and back, can still turn it on.
+      if (!_onlineChosen && _editing == null && _written == null) {
+        _online = own != null && _defaults.onlineFor(_accountId);
+      }
     });
     // From changed with the switch on: this account's link, and its text.
     if (_online && _prepared == null && _preparing == null) {
@@ -852,6 +982,29 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       ?.where((a) => a.id == _accountId)
       .firstOrNull;
 
+  /// Whether the link under the notes was copied.
+  bool _linkCopied = false;
+
+  void _copied() => _linkCopied = true;
+
+  /// An account's own kind of link among [kinds], by its [provider]:
+  /// Teams (or Skype) on a Microsoft account, Meet on a Google one; null
+  /// where it is not offered, as when Hadco's calendar could not be asked
+  /// and only the Gmail account's Meet is.
+  static OnlineMeetingKind? _ownKind(
+    List<OnlineMeetingKind> kinds,
+    MailProvider? provider,
+  ) =>
+      switch (provider) {
+        MailProvider.outlook => kinds
+            .where((k) => k != OnlineMeetingKind.googleMeet)
+            .firstOrNull,
+        MailProvider.gmail => kinds.contains(OnlineMeetingKind.googleMeet)
+            ? OnlineMeetingKind.googleMeet
+            : null,
+        null => null,
+      };
+
   /// Whether leaving loses nothing: the screen is as it opened, and what it
   /// opened with can be had again.
   ///
@@ -862,8 +1015,11 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// made again as easily.
   ///
   /// Opened again after a Send that failed, what it holds is nowhere else.
+  /// A link copied counts (#61, review): pasted into another app, it would
+  /// stop working once the screen was put away and its meeting undone.
   bool get _untouched =>
       _written == null &&
+      !_linkCopied &&
       _accountId == (_editing?.event.accountId ?? widget.accountId) &&
       _start == _startToBegin &&
       _end == _endToBegin &&
@@ -1098,6 +1254,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
           'The repeat has to end on the first meeting or after it.');
       return;
     }
+    // An end already past stops the series there, for everyone: asked
+    // once (#55).
+    if (!await _endInThePastAsked() || !mounted) return;
     _messenger = ScaffoldMessenger.maybeOf(context);
     _navigator = Navigator.of(context);
     setState(() {
@@ -1549,7 +1708,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     setState(() {
       _pickedLink = null;
       _onlineKind = kind;
-      _kindChosen = true;
+      _pickedKind = kind;
       _online = true;
       _onlineChosen = true;
     });
@@ -1605,6 +1764,40 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     );
   }
 
+  /// The labels down the left of the screen.
+  static const _labels = [
+    'From',
+    'Calendar',
+    'Title',
+    'Attendees',
+    'Start',
+    'End',
+    'All day',
+    'Online',
+    'Location',
+  ];
+
+  /// How wide their column is: the longest of them in [style] at the text
+  /// size in use, and a little room after it, never less than the 64 it
+  /// was. In 64, "Attendees" broke to "Attendee / s" on the phone, and
+  /// "Location" at text 1.3. The message composer keeps its 64.
+  static double _labelWidth(BuildContext context, TextStyle? style) {
+    final scaler = MediaQuery.textScalerOf(context);
+    var widest = 0.0;
+    for (final label in _labels) {
+      final painter = TextPainter(
+        text: TextSpan(text: label, style: style),
+        textDirection: TextDirection.ltr,
+        textScaler: scaler,
+        maxLines: 1,
+      )..layout();
+      if (painter.width > widest) widest = painter.width;
+      painter.dispose();
+    }
+    final width = (widest + 8).ceilToDouble();
+    return width < 64 ? 64 : width;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1615,6 +1808,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
     final room = _online ? _linkChoice : null;
     final muted = theme.textTheme.bodyMedium
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final labelWidth = _labelWidth(context, muted);
 
     return PopScope(
       canPop: false,
@@ -1674,7 +1868,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                 padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
                 child: Row(
                   children: [
-                    SizedBox(width: 64, child: Text('From', style: muted)),
+                    SizedBox(
+                        width: labelWidth,
+                        child: Text('From', style: muted)),
                     Expanded(
                       child: DropdownButton<String>(
                         key: const ValueKey('meeting-from-account'),
@@ -1710,9 +1906,8 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                                   _onlineAnswered = false;
                                   // Online as Settings start this account,
                                   // unless the switch was set here (#61).
-                                  if (!_onlineChosen) {
-                                    _online = _defaults.onlineFor(id);
-                                  }
+                                  // (on its own kind, once it answers).
+                                  if (!_onlineChosen) _online = false;
                                 });
                                 _askOnline();
                               },
@@ -1743,6 +1938,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                 accountId: _accountId,
                 chosen: _calendarId,
                 muted: muted,
+                labelWidth: labelWidth,
                 onChanged: _sending
                     ? null
                     : (id) {
@@ -1757,6 +1953,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             HeaderField(
               key: const ValueKey('meeting-title'),
               label: 'Title',
+              labelWidth: labelWidth,
               controller: _title,
               enabled: !_sending,
               // A meeting from a message has its title; the cursor is
@@ -1766,6 +1963,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             RecipientField(
               key: const ValueKey('meeting-attendees'),
               label: 'Attendees',
+              labelWidth: labelWidth,
               controller: _attendees,
               optional: _optional,
               enabled: !_sending,
@@ -1773,6 +1971,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             ),
             _WhenRow(
               label: 'Start',
+              labelWidth: labelWidth,
               at: _shown(_start),
               allDay: _allDay,
               enabled: !_sending,
@@ -1785,6 +1984,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             ),
             _WhenRow(
               label: 'End',
+              labelWidth: labelWidth,
               at: _shown(_end),
               allDay: _allDay,
               enabled: !_sending,
@@ -1797,7 +1997,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             ),
             if (_options.zone case final zone? when !_allDay)
               Padding(
-                padding: const EdgeInsets.fromLTRB(80, 0, 16, 4),
+                padding: EdgeInsets.fromLTRB(16 + labelWidth, 0, 16, 4),
                 child: Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
@@ -1813,7 +2013,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
               padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
               child: Row(
                 children: [
-                  SizedBox(width: 64, child: Text('All day', style: muted)),
+                  SizedBox(
+                      width: labelWidth,
+                      child: Text('All day', style: muted)),
                   Switch(
                     key: const ValueKey('meeting-all-day'),
                     value: _allDay,
@@ -1871,7 +2073,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                 padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
                 child: Row(
                   children: [
-                    SizedBox(width: 64, child: Text('Online', style: muted)),
+                    SizedBox(
+                        width: labelWidth,
+                        child: Text('Online', style: muted)),
                     Switch(
                       key: const ValueKey('meeting-online'),
                       value: _online,
@@ -1926,6 +2130,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
             HeaderField(
               key: const ValueKey('meeting-location'),
               label: 'Location',
+              labelWidth: labelWidth,
               controller: _location,
               enabled: !_sending,
             ),
@@ -2045,8 +2250,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                         constraints:
                             BoxConstraints(maxHeight: box.maxHeight / 2),
                         child: room != null
-                            ? _InviteText.room(room)
+                            ? _InviteText.room(room, onCopied: _copied)
                             : _InviteText(
+                                onCopied: _copied,
                                 kind: _onlineKind!,
                                 prepared: _prepared,
                                 making: _preparing != null,
@@ -2073,6 +2279,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
 /// be copied, to paste somewhere the invitation does not go.
 class _InviteText extends StatelessWidget {
   const _InviteText({
+    required this.onCopied,
     required OnlineMeetingKind this.kind,
     required this.prepared,
     required this.making,
@@ -2082,7 +2289,7 @@ class _InviteText extends StatelessWidget {
   /// A meeting link of Ron's own: the line the notes end with as the
   /// meeting goes, with nothing made for it. Kept out of the notes field
   /// so that nothing Ron wrote is ever taken out with it.
-  const _InviteText.room(MeetingLink this.room)
+  const _InviteText.room(MeetingLink this.room, {required this.onCopied})
       : kind = null,
         prepared = null,
         making = false,
@@ -2093,6 +2300,9 @@ class _InviteText extends StatelessWidget {
   final bool making;
   final bool failed;
   final MeetingLink? room;
+
+  /// Told once the link is copied: the screen is then something to keep.
+  final VoidCallback onCopied;
 
   @override
   Widget build(BuildContext context) {
@@ -2156,6 +2366,7 @@ class _InviteText extends StatelessWidget {
                           key: const ValueKey('meeting-copy-link'),
                           onPressed: () async {
                             final messenger = ScaffoldMessenger.of(context);
+                            onCopied();
                             await Clipboard.setData(
                               ClipboardData(text: joinUrl),
                             );
@@ -2192,6 +2403,7 @@ class _InviteText extends StatelessWidget {
 class _WhenRow extends StatelessWidget {
   const _WhenRow({
     required this.label,
+    required this.labelWidth,
     required this.at,
     required this.allDay,
     required this.enabled,
@@ -2202,6 +2414,7 @@ class _WhenRow extends StatelessWidget {
   });
 
   final String label;
+  final double labelWidth;
   final DateTime at;
   final bool allDay;
   final bool enabled;
@@ -2220,27 +2433,41 @@ class _WhenRow extends StatelessWidget {
       child: Row(
         children: [
           SizedBox(
-            width: 64,
+            width: labelWidth,
             child: Text(
               label,
               style: theme.textTheme.bodyMedium
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),
           ),
-          TextButton(
-            key: ValueKey('$keyPrefix-date'),
-            onPressed: enabled && dateEnabled ? onDate : null,
-            child: Text(formatDay(at)),
-          ),
-          if (!allDay)
-            TextButton(
-              key: ValueKey('$keyPrefix-time'),
-              onPressed: enabled ? onTime : null,
-              child: Text(formatClock(
-                at,
-                use24h: MediaQuery.alwaysUse24HourFormatOf(context),
-              )),
+          // Drawn smaller rather than cut off where the labels' column and
+          // the text size leave them too little room; as they were
+          // otherwise.
+          Flexible(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: AlignmentDirectional.centerStart,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton(
+                    key: ValueKey('$keyPrefix-date'),
+                    onPressed: enabled && dateEnabled ? onDate : null,
+                    child: Text(formatDay(at)),
+                  ),
+                  if (!allDay)
+                    TextButton(
+                      key: ValueKey('$keyPrefix-time'),
+                      onPressed: enabled ? onTime : null,
+                      child: Text(formatClock(
+                        at,
+                        use24h: MediaQuery.alwaysUse24HourFormatOf(context),
+                      )),
+                    ),
+                ],
+              ),
             ),
+          ),
         ],
       ),
     );
@@ -2335,12 +2562,14 @@ class _CalendarChoice extends ConsumerWidget {
     required this.accountId,
     required this.chosen,
     required this.muted,
+    required this.labelWidth,
     required this.onChanged,
   });
 
   final String accountId;
   final String chosen;
   final TextStyle? muted;
+  final double labelWidth;
   final void Function(String calendarId)? onChanged;
 
   @override
@@ -2359,7 +2588,8 @@ class _CalendarChoice extends ConsumerWidget {
       padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
       child: Row(
         children: [
-          SizedBox(width: 64, child: Text('Calendar', style: muted)),
+          SizedBox(
+              width: labelWidth, child: Text('Calendar', style: muted)),
           Expanded(
             child: DropdownButton<String>(
               key: const ValueKey('meeting-calendar'),

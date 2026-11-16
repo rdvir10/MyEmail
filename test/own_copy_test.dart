@@ -174,6 +174,14 @@ void main() {
         authMethod: AuthMethod.oauth,
         colorValue: 0xFF0F6CBD,
       );
+      const gmail = Account(
+        id: 'g',
+        displayName: 'Gmail',
+        emailAddress: 'ron@gmail.example',
+        provider: MailProvider.gmail,
+        authMethod: AuthMethod.oauth,
+        colorValue: 0xFF007258,
+      );
       const withPassword = Account(
         id: 'p',
         displayName: 'Gmail',
@@ -186,7 +194,7 @@ void main() {
             accessToken: (id,
                     {bool force = false, List<String>? scopes}) async =>
                 'token',
-            accounts: () => const [microsoft],
+            accounts: () => const [microsoft, gmail],
             httpClient: client(),
             sleep: (_) async {},
           );
@@ -223,6 +231,37 @@ void main() {
                 showAs: EventShowAs.free),
             throwsA(isA<CalendarUnavailable>()));
         expect(sent, isEmpty);
+      });
+
+      // A calendar shared to Ron that he may change is someone else's:
+      // on Google the change would land on their copy, on Microsoft on a
+      // meeting /me/events does not have (the review's must-fix).
+      test('only on the main calendar: one beside it, even one the account '
+          'may change, is refused before anything is sent', () async {
+        final c = calendar();
+        for (final (account, id) in [
+          (microsoft, 'a'),
+          (gmail, 'g'),
+        ]) {
+          await expectLater(
+              c.changeOwnCopy(
+                  account, invited(id, calendarId: 'alice@example.com'),
+                  reminder: const Reminder.before(30)),
+              throwsA(isA<ArgumentError>()),
+              reason: account.displayName);
+          await expectLater(
+              c.changeOwnCopy(
+                  account, invited(id, calendarId: 'alice@example.com'),
+                  showAs: EventShowAs.free),
+              throwsA(isA<ArgumentError>()),
+              reason: account.displayName);
+        }
+        expect(sent, isEmpty);
+        await c.changeOwnCopy(gmail, invited('g'),
+            reminder: const Reminder.before(30));
+        expect(sent.single.url.path,
+            '/calendar/v3/calendars/primary/events/m',
+            reason: 'the main calendar, as before');
       });
     });
   });
@@ -444,6 +483,19 @@ void main() {
         expect(items, isNot(contains('Show me as')));
       }
 
+      // A calendar beside the main one that the account may change: a
+      // colleague's shared to Ron. Neither entry, on either kind.
+      for (final provider in [MailProvider.outlook, MailProvider.gmail]) {
+        await pump(tester,
+            (a) => invited(a.id, calendarId: 'alice@example.com'),
+            provider: provider);
+        final items = await menu(tester);
+        expect(items, isNot(contains('My reminder')), reason: '$provider');
+        expect(items, isNot(contains('Show me as')), reason: '$provider');
+        expect(items, contains('Duplicate'),
+            reason: 'the rest of the menu is as it was');
+      }
+
       await pump(tester, (a) => invited(a.id, readOnly: true));
       expect(await menu(tester), ['Copy details', 'Share', 'Share the day']);
     });
@@ -564,6 +616,44 @@ void main() {
       final offered = choices(tester, 'show-me-as');
       expect(offered.all, ['Busy', 'Free']);
       expect(offered.now, 'Busy');
+    });
+
+    testWidgets('the choice already ticked, chosen again, changes nothing '
+        'and says nothing', (tester) async {
+      await pump(tester, (a) => invited(a.id));
+      await menu(tester);
+      await tapKey(tester, 'event-my-reminder');
+      await tapKey(tester, 'my-reminder:15');
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions, isEmpty);
+      expect(said(tester), isNull);
+      expect(find.byKey(const ValueKey('series-all')), findsNothing);
+
+      await tapKey(tester, 'open-sheet');
+      await menu(tester);
+      await tapKey(tester, 'event-show-me-as');
+      await tapKey(tester, 'show-me-as:busy');
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions, isEmpty);
+      expect(said(tester), isNull);
+    });
+
+    testWidgets('on a Google meeting My reminder says the choice becomes its '
+        'only reminder; not on a Microsoft one', (tester) async {
+      const note = "On Google this becomes the meeting's only reminder.";
+      await pump(tester, (a) => invited(a.id), provider: MailProvider.gmail);
+      await menu(tester);
+      await tapKey(tester, 'event-my-reminder');
+      expect(find.text(note), findsOneWidget);
+      final theme = Theme.of(tester.element(find.text(note)));
+      expect(tester.widget<Text>(find.text(note)).style?.color,
+          theme.colorScheme.onSurfaceVariant,
+          reason: 'quiet, as the line above it');
+
+      await pump(tester, (a) => invited(a.id));
+      await menu(tester);
+      await tapKey(tester, 'event-my-reminder');
+      expect(find.text(note), findsNothing);
     });
 
     testWidgets('backed out of, nothing is changed', (tester) async {

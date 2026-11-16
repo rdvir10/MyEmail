@@ -18,7 +18,9 @@ import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/domain/mail_message.dart' show MailAddress;
+import 'package:myemail/domain/meeting.dart' show Reminder;
 import 'package:myemail/domain/meeting_repeat.dart';
+import 'package:myemail/domain/recurrence.dart';
 import 'package:myemail/state/calendar_providers.dart'
     show deviceCalendarProvider;
 import 'package:myemail/state/meeting_alert_providers.dart'
@@ -28,6 +30,7 @@ import 'package:myemail/theme/app_theme.dart' show buildTheme;
 import 'package:myemail/ui/calendar/calendar_screen.dart'
     show showEventDetails;
 import 'package:myemail/ui/calendar/meeting_facts.dart';
+import 'package:myemail/ui/meetings/meeting_options.dart' show MeetingOptions;
 
 import 'fakes/fake_webview.dart';
 import 'helpers/real_fonts.dart';
@@ -161,6 +164,56 @@ void main() {
           isNull,
           reason: 'an end it cannot read is not left out as though none');
     });
+
+    test('odd values are not said', () {
+      expect(graph({'type': 'daily', 'interval': 1}, {'type': 'someday'}),
+          isNull,
+          reason: 'a range of a kind not known could be any end');
+      expect(MeetingRepeat.fromGraph({
+        'pattern': {'type': 'daily', 'interval': 1},
+      }), isNull, reason: 'no range, no end known');
+      expect(
+          MeetingRepeat.fromGraph({
+            'pattern': {'type': 'daily', 'interval': 1},
+            'range': 'soon',
+          }),
+          isNull);
+      for (final interval in <Object>[0, -3, 1000000, '2', 2.5]) {
+        expect(
+            graph({
+              'type': 'weekly',
+              'interval': interval,
+              'daysOfWeek': ['tuesday'],
+            }),
+            isNull,
+            reason: '$interval');
+      }
+      expect(
+          graph({
+            'type': 'weekly',
+            'interval': 1000,
+            'daysOfWeek': ['tuesday'],
+          })?.describe(),
+          'Every 1000 weeks on Tuesday',
+          reason: "capped where the rule's is");
+      expect(
+          graph({'type': 'absoluteYearly', 'dayOfMonth': 31, 'month': 2}),
+          isNull,
+          reason: 'there is no 31 February');
+      expect(
+          graph({'type': 'absoluteYearly', 'dayOfMonth': 29, 'month': 2})
+              ?.describe(),
+          'Every year on 29 February');
+      expect(
+          graph({'type': 'daily', 'interval': 1},
+              {'type': 'endDate', 'endDate': '2027-02-30'}),
+          isNull);
+      expect(
+          graph({'type': 'daily', 'interval': 1},
+              {'type': 'numbered', 'numberOfOccurrences': 1})?.describe(),
+          'Every day, once',
+          reason: 'not "1 times"');
+    });
   });
 
   group('how a series repeats, as Google keeps it', () {
@@ -191,6 +244,12 @@ void main() {
           reason: 'in any case of letters');
     });
 
+    test('a series of one is said once', () {
+      expect(said(['RRULE:FREQ=DAILY;COUNT=1']), 'Every day, once');
+      expect(said(['RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=2']),
+          'Every week on Tuesday, 2 times');
+    });
+
     test("what the rule leaves to the series' first day is taken from it",
         () {
       final tuesday = DateTime(2026, 10, 6);
@@ -215,6 +274,10 @@ void main() {
 
     test('what it cannot say exactly, it does not say at all', () {
       for (final rule in [
+        // A day that does not exist, and an hour past the day's last.
+        'RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20270231',
+        'RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20270630T990000Z',
+        'RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=31',
         'RRULE:FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1',
         'RRULE:FREQ=HOURLY',
         'RRULE:FREQ=MONTHLY;BYDAY=MO',
@@ -239,6 +302,47 @@ void main() {
       expect(said(const []), isNull);
     });
 
+    // Google writes a timed series' UNTIL as the end of its last day in the
+    // series' own zone, in UTC. Each of these ends on Monday 28 June 2027
+    // where it was set; read on a phone east of it, the 29th (the review,
+    // from Dallas and Los Angeles on an Eastern phone).
+    test("its last day on the series' own clock, wherever the phone is", () {
+      for (final (zone, until, offset) in [
+        ('America/New_York', '20270629T035959Z', '-04:00'),
+        ('America/Chicago', '20270629T045959Z', '-05:00'),
+        ('America/Los_Angeles', '20270629T065959Z', '-07:00'),
+        ('Asia/Jerusalem', '20270628T205959Z', '+03:00'),
+        ('Pacific/Auckland', '20270628T115959Z', '+12:00'),
+      ]) {
+        expect(
+            MeetingRepeat.fromGoogle({
+              'recurrence': ['RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=$until'],
+              'start': {
+                'dateTime': '2026-10-05T10:00:00$offset',
+                'timeZone': zone,
+              },
+            })?.describe(),
+            'Every week on Monday, until 28 June 2027',
+            reason: zone);
+      }
+      // A zone by Windows' name is read too, as the sheet's other zone line
+      // reads one.
+      expect(
+          MeetingRepeat.fromRule(
+            const ['RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20270629T045959Z'],
+            zone: 'Central Standard Time',
+          )?.describe(),
+          'Every week on Monday, until 28 June 2027');
+      // With no zone known, the phone's clock, as before.
+      final onThePhone = DateTime.utc(2027, 6, 29, 4, 59, 59).toLocal();
+      expect(
+          MeetingRepeat.fromRule(
+            const ['RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20270629T045959Z'],
+            zone: 'Nowhere/Atlantis',
+          )?.until,
+          DateTime(onThePhone.year, onThePhone.month, onThePhone.day));
+    });
+
     test("from the series as Google gives it: its rule, and its first day "
         'in its own zone', () {
       final repeat = MeetingRepeat.fromGoogle({
@@ -258,6 +362,206 @@ void main() {
           })?.describe(),
           'Every year on 3 March');
       expect(MeetingRepeat.fromGoogle({'id': 'x'}), isNull);
+    });
+  });
+
+  // The sheet's repeat line and New meeting's (and Edit's) summary say a
+  // series the same way: the review found them saying one series two ways.
+  group('one way of saying a series', () {
+    final tuesday = DateTime(2026, 10, 6);
+    final monday = DateTime(2026, 10, 5);
+    final sunday = DateTime(2026, 10, 4);
+    MeetingRepeat graph(Map<String, Object?> pattern,
+            [Map<String, Object?> range = const {'type': 'noEnd'}]) =>
+        MeetingRepeat.fromGraph({'pattern': pattern, 'range': range})!;
+    MeetingRepeat rule(String line) => MeetingRepeat.fromRule([line])!;
+
+    test('New meeting and the sheet say each series in the same words', () {
+      final table = <(Recurrence, DateTime, MeetingRepeat, String)>[
+        (
+          const Recurrence(RepeatKind.weekly),
+          tuesday,
+          graph({'type': 'weekly', 'interval': 1, 'daysOfWeek': ['tuesday']}),
+          'Every week on Tuesday',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly, days: {DateTime.thursday}),
+          tuesday,
+          rule('RRULE:FREQ=WEEKLY;BYDAY=TU,TH'),
+          'Every week on Tuesday and Thursday',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly, days: {DateTime.sunday}),
+          tuesday,
+          rule('RRULE:FREQ=WEEKLY;BYDAY=SU,TU'),
+          'Every week on Sunday and Tuesday',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly, days: {DateTime.saturday}),
+          sunday,
+          rule('RRULE:FREQ=WEEKLY;BYDAY=SA,SU'),
+          'Every week on Saturday and Sunday',
+        ),
+        (
+          const Recurrence(RepeatKind.workDays),
+          monday,
+          graph({
+            'type': 'weekly',
+            'interval': 1,
+            'daysOfWeek': [
+              'monday', 'tuesday', 'wednesday', 'thursday', 'friday',
+            ],
+          }),
+          'Every week, Monday to Friday',
+        ),
+        (
+          const Recurrence(RepeatKind.workDays, days: {7, 1, 2, 3, 4}),
+          sunday,
+          rule('RRULE:FREQ=WEEKLY;BYDAY=SU,MO,TU,WE,TH'),
+          'Every week, Sunday to Thursday',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly, days: {5, 6}),
+          sunday,
+          rule('RRULE:FREQ=WEEKLY;BYDAY=FR,SA,SU'),
+          'Every week, Friday to Sunday',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly, days: {1, 2, 3, 4, 5, 6, 7}),
+          tuesday,
+          rule('RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU'),
+          'Every day',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly, interval: 2),
+          tuesday,
+          graph({'type': 'weekly', 'interval': 2, 'daysOfWeek': ['tuesday']}),
+          'Every 2 weeks on Tuesday',
+        ),
+        (
+          const Recurrence(RepeatKind.monthlyOnDate),
+          DateTime(2026, 10, 15),
+          graph({'type': 'absoluteMonthly', 'interval': 1, 'dayOfMonth': 15}),
+          'Every month on day 15',
+        ),
+        (
+          const Recurrence(RepeatKind.monthlyOnWeekday),
+          DateTime(2026, 10, 30),
+          rule('RRULE:FREQ=MONTHLY;BYDAY=-1FR'),
+          'Every month on the last Friday',
+        ),
+        (
+          const Recurrence(RepeatKind.yearly),
+          DateTime(2027, 3, 3),
+          graph({
+            'type': 'absoluteYearly',
+            'interval': 1,
+            'dayOfMonth': 3,
+            'month': 3,
+          }),
+          'Every year on 3 March',
+        ),
+        (
+          const Recurrence(RepeatKind.daily, interval: 3).ending(times: 6),
+          tuesday,
+          rule('RRULE:FREQ=DAILY;INTERVAL=3;COUNT=6'),
+          'Every 3 days, 6 times',
+        ),
+        (
+          const Recurrence(RepeatKind.weekly)
+              .ending(day: DateTime(2026, 11, 30)),
+          tuesday,
+          graph({'type': 'weekly', 'interval': 1, 'daysOfWeek': ['tuesday']},
+              {'type': 'endDate', 'endDate': '2026-11-30'}),
+          'Every week on Tuesday, until 30 November 2026',
+        ),
+        (
+          const Recurrence(RepeatKind.daily).ending(times: 1),
+          tuesday,
+          rule('RRULE:FREQ=DAILY;COUNT=1'),
+          'Every day, once',
+        ),
+      ];
+      for (final (made, start, read, said) in table) {
+        expect(made.describe(start), said, reason: 'New meeting: $said');
+        expect(read.describe(), said, reason: 'the sheet: $said');
+      }
+    });
+
+    test("a week's days: Monday first, but Sunday leads where Saturday is "
+        'not among them; three or more in a row, over the week\'s end too, '
+        'as a run', () {
+      String days(Set<int> days) =>
+          MeetingRepeat(RepeatUnit.week, weekdays: days).describe();
+      expect(days({2, 4}), 'Every week on Tuesday and Thursday');
+      expect(days({7, 2}), 'Every week on Sunday and Tuesday');
+      expect(days({6, 7}), 'Every week on Saturday and Sunday');
+      expect(days({7, 1, 3}), 'Every week on Sunday, Monday and Wednesday');
+      expect(days({2, 6, 7}), 'Every week on Tuesday, Saturday and Sunday');
+      expect(days({1, 2, 3}), 'Every week, Monday to Wednesday');
+      expect(days({5, 6, 7}), 'Every week, Friday to Sunday');
+      expect(days({6, 7, 1}), 'Every week, Saturday to Monday');
+      expect(days({7, 1, 2, 3, 4}), 'Every week, Sunday to Thursday');
+      // Six days: a run that reads from one end of the week to the other,
+      // or, where the day left out is in the middle of the week, that day.
+      expect(days({1, 2, 3, 4, 5, 6}), 'Every week, Monday to Saturday');
+      expect(days({2, 3, 4, 5, 6, 7}), 'Every week, Tuesday to Sunday');
+      expect(days({7, 1, 2, 3, 4, 5}), 'Every week, Sunday to Friday');
+      expect(days({1, 2, 4, 5, 6, 7}), 'Every week on every day but Wednesday');
+      expect(days({1, 3, 4, 5, 6, 7}), 'Every week on every day but Tuesday');
+      expect(days({1, 2, 3, 4, 6, 7}), 'Every week on every day but Friday');
+      expect(days({1, 2, 3, 4, 5, 6, 7}), 'Every day');
+      expect(
+          MeetingRepeat(RepeatUnit.week,
+                  interval: 2, weekdays: const {1, 2, 3, 4, 5, 6, 7})
+              .describe(),
+          'Every 2 weeks, Monday to Sunday');
+    });
+
+    test('a reminder is said in the same words in New meeting and on the '
+        'sheet', () {
+      for (final (minutes, words) in [
+        (1, '1 minute before'),
+        (5, '5 minutes before'),
+        (60, '1 hour before'),
+        (90, '90 minutes before'),
+        (120, '2 hours before'),
+        (1080, '18 hours before'),
+        (1440, '1 day before'),
+        (2880, '2 days before'),
+        (10080, '1 week before'),
+      ]) {
+        expect(Reminder.before(minutes).label, words);
+        expect(reminderSaid(minutes), 'Reminder $words');
+      }
+      expect(const Reminder.before(0).label, 'At the start');
+      expect(reminderSaid(0), 'Reminder at the start');
+      expect(const Reminder.none().label, 'None');
+    });
+
+    test("New meeting's and Edit's line under More says the same", () {
+      expect(
+        const MeetingOptions(
+          repeat: Recurrence(RepeatKind.workDays),
+          reminder: Reminder.before(120),
+        ).summary(monday),
+        'Every week, Monday to Friday · 2 hours before',
+      );
+    });
+
+    test("the first day of a series' week is kept, for every 2 weeks", () {
+      expect(
+          graph({
+            'type': 'weekly',
+            'interval': 2,
+            'daysOfWeek': ['tuesday'],
+            'firstDayOfWeek': 'sunday',
+          }).weekStart,
+          DateTime.sunday);
+      expect(rule('RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TU;WKST=MO').weekStart,
+          DateTime.monday);
+      expect(rule('RRULE:FREQ=WEEKLY;BYDAY=TU').weekStart, isNull,
+          reason: 'not said, not made up');
     });
   });
 
@@ -325,11 +629,15 @@ void main() {
           reason: "Outlook's own tentative is said");
     });
 
-    test('a meeting declined or cancelled takes no time: how it would show '
-        'is not said', () {
-      expect(meetingFacts(meeting(response: EventResponse.declined)),
-          'Reminder 15 minutes before');
-      expect(meetingFacts(meeting(cancelled: true, reminder: null)), '');
+    test('a meeting declined or cancelled takes no time: neither how it '
+        'would show nor its reminder is said, since MyEmail does not remind '
+        'of it', () {
+      expect(meetingFacts(meeting(response: EventResponse.declined)), '');
+      expect(meetingFacts(meeting(cancelled: true)), '');
+      expect(
+          meetingFacts(
+              meeting(cancelled: true, private: true, categories: ['Sales'])),
+          'Private · Sales');
     });
   });
 
@@ -380,6 +688,84 @@ void main() {
       expect(await api.seriesRepeat('s1'), isNull);
     });
 
+    /// What [work] printed, as `debugPrint` lines.
+    Future<List<String>> printed(Future<void> Function() work) async {
+      final lines = <String>[];
+      final was = debugPrint;
+      debugPrint = (String? m, {int? wrapWidth}) {
+        if (m != null) lines.add(m);
+      };
+      try {
+        await work();
+      } finally {
+        debugPrint = was;
+      }
+      return lines;
+    }
+
+    test('why the sheet says only "Repeats" is printed, by the kinds of '
+        'what was found and nothing of the meeting', () async {
+      GraphCalendarApi graph(http.Response answer) => GraphCalendarApi(
+            accessToken: ({bool force = false}) async => 'token',
+            httpClient: client((_) => answer),
+            sleep: (_) async {},
+          );
+      expect(
+          await printed(() => graph(json({}, 404)).seriesRepeat('s1')),
+          ['[myemail] series not found for its repeat']);
+      expect(
+          await printed(() => graph(json({
+                'subject': 'Secret board meeting',
+                'recurrence': {
+                  'pattern': {
+                    'type': 'relativeMonthly',
+                    'interval': 1,
+                    'daysOfWeek': ['monday', 'tuesday'],
+                    'index': 'first',
+                  },
+                  'range': {'type': 'noEnd'},
+                },
+              })).seriesRepeat('s1')),
+          [
+            '[myemail] a series repeats in a way the sheet does not say: '
+                'relativeMonthly, noEnd',
+          ]);
+      expect(
+          await printed(() => graph(json({
+                'recurrence': {
+                  'pattern': {
+                    'type': 'weekly',
+                    'interval': 1,
+                    'daysOfWeek': ['tuesday'],
+                  },
+                  'range': {'type': 'noEnd'},
+                },
+              })).seriesRepeat('s1')),
+          isEmpty,
+          reason: 'one that is read says nothing');
+
+      GoogleCalendarApi google(http.Response answer) => GoogleCalendarApi(
+            accessToken: ({bool force = false}) async => 'token',
+            httpClient: client((_) => answer),
+            sleep: (_) async {},
+          );
+      expect(await printed(() => google(json({}, 410)).seriesRepeat('s1')),
+          ['[myemail] series not found for its repeat']);
+      expect(
+          await printed(() => google(json({
+                'id': 's1',
+                'summary': 'Secret board meeting',
+                'recurrence': [
+                  'RRULE:FREQ=MONTHLY;BYDAY=MO,TU;BYSETPOS=1;COUNT=4',
+                ],
+                'start': {'date': '2026-10-05'},
+              })).seriesRepeat('s1')),
+          [
+            '[myemail] a series repeats in a way the sheet does not say: '
+                'MONTHLY BYDAY BYSETPOS, COUNT',
+          ]);
+    });
+
     test('Google: the series on the calendar the meeting is on', () async {
       final api = GoogleCalendarApi(
         accessToken: ({bool force = false}) async => 'token',
@@ -410,12 +796,14 @@ void main() {
         colorValue: 0xFF0F6CBD,
       );
       final calendar = AccountCalendar(
-        accessToken: (id, {bool force = false, List<String>? scopes}) async =>
+        accessToken: (id,
+                {bool force = false, List<String>? scopes}) async =>
             'token',
         accounts: () => const [microsoft],
         httpClient: client((_) => json({
               'recurrence': {
                 'pattern': {'type': 'daily', 'interval': 1},
+                'range': {'type': 'noEnd', 'startDate': '2026-10-06'},
               },
             })),
         sleep: (_) async {},

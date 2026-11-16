@@ -3058,6 +3058,14 @@ class _EventDetails extends StatelessWidget {
         account != null && AccountCalendar.canRead(account) && !e.readOnly;
     final microsoft = account?.provider == MailProvider.outlook;
     final invited = !own && e.organizer != null && !e.cancelled;
+    // An answer is the account's own, and its own invitations are on its
+    // main calendar. On a calendar beside it that the account may change
+    // (a colleague's, shared to it) the invitation is the calendar's
+    // owner's, and an answer from here would go in their name: none is
+    // offered, as the list of meetings waiting for an answer leaves
+    // those out.
+    final answerable =
+        invited && reachable && e.calendarId == CalendarEvent.mainCalendar;
     final now = DateTime.now();
     final soon = !e.allDay &&
         others &&
@@ -3223,16 +3231,19 @@ class _EventDetails extends StatelessWidget {
                           value: 'invite',
                           child: Text(own ? 'Invite people' : 'Forward'),
                         ),
-                      if (invited && microsoft)
+                      if (answerable && microsoft)
                         const PopupMenuItem(
                           key: ValueKey('event-propose'),
                           value: 'propose',
                           child: Text('Propose a new time'),
                         ),
                       // Your own copy of it (#45): when you are reminded,
-                      // and how it shows you, told to nobody.
+                      // and how it shows you, told to nobody. Only on the
+                      // account's main calendar, where its own copy is: on
+                      // one shared to it, the copy is its owner's.
                       if (invited &&
                           !e.declined &&
+                          e.calendarId == CalendarEvent.mainCalendar &&
                           canChangeOwnCopy(hostRef)) ...[
                         const PopupMenuItem(
                           key: ValueKey('event-my-reminder'),
@@ -3269,7 +3280,9 @@ class _EventDetails extends StatelessWidget {
                       value: 'share-day',
                       child: Text('Share the day'),
                     ),
-                    if (reachable)
+                    // Decline and remove is an answer too: not on a
+                    // calendar whose invitations are its owner's.
+                    if (reachable && (own || e.cancelled || answerable))
                       PopupMenuItem(
                         key: const ValueKey('event-remove'),
                         value: 'remove',
@@ -3400,7 +3413,7 @@ class _EventDetails extends StatelessWidget {
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (invited && reachable) ...[
+                  if (answerable) ...[
                     // Each button 48 to tap (#90), 4 more above and below
                     // than the 40 it had: drawn where it was, and rows of
                     // them as far apart to the eye.
@@ -3419,7 +3432,7 @@ class _EventDetails extends StatelessWidget {
                     ),
                   ],
                   if (actions.isNotEmpty) ...[
-                    SizedBox(height: invited && reachable ? 8 : 12),
+                    SizedBox(height: answerable ? 8 : 12),
                     Wrap(spacing: 8, children: actions),
                   ],
                 ],

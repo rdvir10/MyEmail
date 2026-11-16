@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/account_store.dart';
@@ -22,8 +23,10 @@ import 'package:myemail/state/calendar_view_providers.dart'
     show phoneCalendarProvider;
 import 'package:myemail/state/meeting_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/put_away_providers.dart';
 import 'package:myemail/ui/meetings/new_meeting_screen.dart';
 import 'package:myemail/ui/settings/calendar_settings_screen.dart';
+import 'package:myemail/ui/shell/put_away.dart';
 
 import 'fakes/fake_webview.dart';
 
@@ -45,11 +48,15 @@ void main() {
       expect(NewMeetingDefaults.tryParse('not json'), isNull);
     });
 
-    test('ending early takes the minutes off: a half hour ends at 25 past', () {
+    test('ending early takes the minutes off: a half hour ends at 25 past; '
+        'never below ten minutes', () {
       expect(const NewMeetingDefaults(minutes: 30, endEarly: 5).length,
           const Duration(minutes: 25));
+      expect(const NewMeetingDefaults(minutes: 15, endEarly: 5).length,
+          const Duration(minutes: 10));
       expect(const NewMeetingDefaults(minutes: 15, endEarly: 10).length,
-          const Duration(minutes: 5));
+          const Duration(minutes: 10),
+          reason: 'five minutes is too short a meeting: five are taken');
     });
 
     test('kept as text and read back; anything out of range is the default',
@@ -68,6 +75,9 @@ void main() {
         }),
         const NewMeetingDefaults(online: {'acct-ms'}),
       );
+      // A number written as 60.0 equals 60, and is not a whole number.
+      expect(NewMeetingDefaults.tryParse('{"minutes":60.0,"endEarly":5.0}'),
+          const NewMeetingDefaults());
     });
   });
 
@@ -117,6 +127,7 @@ void main() {
       await reach(tester, find.text('New meetings'));
       expect(find.text('1 hour'), findsOneWidget, reason: 'as it always was');
 
+      expect(find.text('Off: it ends when the length is up'), findsOneWidget);
       await choose(tester, 'new-meeting-length', '30 minutes');
       await choose(tester, 'new-meeting-end-early', '5 minutes');
       expect(find.textContaining('ends at 9:25 AM'), findsOneWidget,
@@ -203,6 +214,13 @@ void main() {
 
     final online = find.byKey(const ValueKey('meeting-online'));
 
+    Future<void> from(WidgetTester tester, String address) async {
+      await tester.tap(find.byKey(const ValueKey('meeting-from-account')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(address).last);
+      await tester.pumpAndSettle();
+    }
+
     Future<void> send(WidgetTester tester) async {
       await tester.enterText(
           find.descendant(
@@ -268,6 +286,81 @@ void main() {
 
       await send(tester);
       expect(engine.meetings.single.online, OnlineMeetingKind.teams);
+    });
+
+    testWidgets("online by default is the account's own kind of link only: "
+        'Hadco not yet saying Teams starts off, never on Meet from Gmail',
+        (tester) async {
+      final teamsLater = _TeamsLater();
+      engine = teamsLater;
+      await pumpScreen(tester,
+          defaults: const NewMeetingDefaults(online: {'acct-ms', 'acct-g'}));
+      expect(tester.widget<Switch>(online).value, isFalse);
+      expect(engine.preparedMeetings, isEmpty);
+
+      // To Gmail, whose own is Meet: on.
+      await from(tester, 'ron@gmail.com');
+      expect(tester.widget<Switch>(online).value, isTrue);
+      expect(engine.preparedMeetings.last.kind, OnlineMeetingKind.googleMeet);
+
+      // Back to Hadco, which now says Teams: on, with Teams.
+      await from(tester, 'ron@contoso.com');
+      expect(tester.widget<Switch>(online).value, isTrue);
+      await send(tester);
+      expect(engine.meetings.single.online, OnlineMeetingKind.teams);
+    });
+
+    testWidgets('the same Hadco, Settings asking for it, sends no Meet link '
+        'when it never says Teams', (tester) async {
+      engine = _NoTeamsYet();
+      await pumpScreen(tester,
+          defaults: const NewMeetingDefaults(online: {'acct-ms'}));
+      expect(tester.widget<Switch>(online).value, isFalse);
+      await send(tester);
+      expect(engine.meetings.single.online, isNull);
+      expect(engine.preparedMeetings, isEmpty);
+    });
+
+    testWidgets('a kind picked from the menu is kept, whatever another '
+        'account in From falls back to', (tester) async {
+      await pumpScreen(tester);
+      final kind = find.byKey(const ValueKey('meeting-online-kind'));
+      await tester.tap(kind);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Teams meeting').last);
+      await tester.pumpAndSettle();
+      await from(tester, 'ron@gmail.com');
+      await from(tester, 'ron@contoso.com');
+      expect(
+        tester.widget<DropdownButton<OnlineMeetingKind>>(kind).value,
+        OnlineMeetingKind.teams,
+      );
+    });
+
+    testWidgets('a link copied keeps the screen and its link when the app is '
+        'put away', (tester) async {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform, (call) async => null);
+      addTearDown(() => tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null));
+      final c = await pumpScreen(tester,
+          defaults: const NewMeetingDefaults(online: {'acct-ms'}));
+      Future<bool> putAway() async {
+        bool? all;
+        unawaited(closeForPutAway(
+          tester.state<NavigatorState>(find.byType(Navigator)),
+          c.read(putAwayGuardsProvider),
+        ).then((a) => all = a));
+        await tester.pumpAndSettle();
+        return all!;
+      }
+
+      await tester.tap(find.byKey(const ValueKey('meeting-copy-link')));
+      await tester.pumpAndSettle();
+      expect(await putAway(), isFalse);
+      expect(find.byType(NewMeetingScreen), findsOneWidget);
+      expect(engine.discardedMeetings, isEmpty,
+          reason: 'the link pasted elsewhere still works');
     });
 
     testWidgets('the switch, once set by hand, stays as set through a change '
@@ -430,4 +523,26 @@ class _EachKind extends SampleMailEngine {
 
   @override
   Future<List<Account>> loadAccounts() async => accounts;
+}
+
+/// As the account calendar answers for a Microsoft account whose calendar
+/// could not be asked (no signal, no consent yet): Meet through the Gmail
+/// account alone (the reviewer's engine).
+class _NoTeamsYet extends _EachKind {
+  @override
+  Future<List<OnlineMeetingKind>> onlineMeetingsFor(String accountId) async =>
+      accountId == 'acct-ms'
+          ? const [OnlineMeetingKind.googleMeet]
+          : super.onlineMeetingsFor(accountId);
+}
+
+/// The same, the first time only: asked again, Hadco says Teams.
+class _TeamsLater extends _EachKind {
+  var _asked = 0;
+
+  @override
+  Future<List<OnlineMeetingKind>> onlineMeetingsFor(String accountId) async =>
+      accountId == 'acct-ms' && _asked++ == 0
+          ? const [OnlineMeetingKind.googleMeet]
+          : super.onlineMeetingsFor(accountId);
 }

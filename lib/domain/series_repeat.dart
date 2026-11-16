@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
 
+import 'calendar_event.dart';
 import 'recurrence.dart';
+import 'time_zones.dart';
 
 /// How a series repeats, as its calendar has it, read for Edit (calendar
 /// idea #55): the repeat in New meeting's own terms, where it can be put
@@ -10,6 +12,9 @@ import 'recurrence.dart';
 /// over: a series made elsewhere may repeat in ways New meeting has no
 /// words for (the second Tuesday of every other month, a day added by
 /// hand), and then [repeat] is null and Edit leaves the repeat as it is.
+/// Only what Repeat's menu has an item for is read as a repeat: every day,
+/// every week or every 2 weeks, every month, every year. A series every 3
+/// weeks shown as Every week would be made every week by one tap.
 @immutable
 class SeriesRepeat {
   const SeriesRepeat({required this.repeat, required this.firstDay});
@@ -66,9 +71,10 @@ class SeriesRepeat {
   }
 
   static Recurrence? _graphRepeat(Map pattern, Map range, DateTime first) {
+    // A whole number, as Graph writes it: anything else is not known.
     final given = pattern['interval'];
-    final interval = given is int ? given : 1;
-    if (interval < 1) return null;
+    if (given is! int || given < 1) return null;
+    final interval = given;
     final names = pattern['daysOfWeek'];
     final days = <int>{};
     if (names is List) {
@@ -79,21 +85,25 @@ class SeriesRepeat {
       }
     }
     final Recurrence? how = switch (pattern['type']) {
-      'daily' => Recurrence(RepeatKind.daily, interval: interval),
+      'daily' when interval == 1 => const Recurrence(RepeatKind.daily),
       // The week New meeting counts from is Sunday's; every other week
       // counted from another day is not the same meetings.
       'weekly' when days.isNotEmpty &&
               (interval == 1 ||
-                  '${pattern['firstDayOfWeek'] ?? 'sunday'}'.toLowerCase() ==
-                      'sunday') =>
+                  (interval == 2 &&
+                      '${pattern['firstDayOfWeek'] ?? 'sunday'}'
+                              .toLowerCase() ==
+                          'sunday')) =>
         Recurrence(RepeatKind.weekly, interval: interval, days: days),
-      'absoluteMonthly' when pattern['dayOfMonth'] == first.day =>
-        Recurrence(RepeatKind.monthlyOnDate, interval: interval),
-      'relativeMonthly' when days.length == 1 &&
+      'absoluteMonthly' when interval == 1 &&
+              pattern['dayOfMonth'] == first.day =>
+        const Recurrence(RepeatKind.monthlyOnDate),
+      'relativeMonthly' when interval == 1 &&
+              days.length == 1 &&
               days.single == first.weekday &&
               _graphWeeks['${pattern['index'] ?? 'first'}'.toLowerCase()] ==
                   Recurrence.weekOfMonth(first) =>
-        Recurrence(RepeatKind.monthlyOnWeekday, interval: interval),
+        const Recurrence(RepeatKind.monthlyOnWeekday),
       'absoluteYearly' when interval == 1 &&
               pattern['dayOfMonth'] == first.day &&
               pattern['month'] == first.month =>
@@ -130,11 +140,19 @@ class SeriesRepeat {
       for (final l in lines)
         if ('$l'.toUpperCase().startsWith('RRULE:')) '$l'.substring(6),
     ];
-    // A day added by hand (RDATE) is more than New meeting shows; a day
-    // taken out (EXDATE) is not the repeat's to say.
-    final added = lines.any((l) => '$l'.toUpperCase().startsWith('RDATE'));
-    final repeat =
-        rules.length == 1 && !added ? _rule(rules.single, first) : null;
+    // A day added by hand (RDATE), or a rule taking days out (EXRULE), is
+    // more than New meeting shows; a day taken out (EXDATE) is not the
+    // repeat's to say.
+    final added = lines.any((l) {
+      final line = '$l'.toUpperCase();
+      return line.startsWith('RDATE') || line.startsWith('EXRULE');
+    });
+    // Its own zone, to read a timed end on its own clock.
+    final named = start['timeZone'];
+    final zone = named is String ? ianaZoneOf(named) : null;
+    final repeat = rules.length == 1 && !added
+        ? _rule(rules.single, first, zone: zone)
+        : null;
     if (repeat == null) {
       // As for Graph's: the rules' kinds alone.
       debugPrint('[myemail] a series repeats in a way Edit cannot show: '
@@ -144,7 +162,7 @@ class SeriesRepeat {
     return SeriesRepeat(repeat: repeat, firstDay: first);
   }
 
-  static Recurrence? _rule(String rule, DateTime first) {
+  static Recurrence? _rule(String rule, DateTime first, {String? zone}) {
     final parts = <String, String>{};
     for (final p in rule.split(';')) {
       final eq = p.indexOf('=');
@@ -157,6 +175,7 @@ class SeriesRepeat {
       'WKST',
     };
     if (parts.keys.any((k) => !known.contains(k))) return null;
+    // A whole number, one where the rule says none, as the rule has it.
     final interval = int.tryParse(parts['INTERVAL'] ?? '1');
     if (interval == null || interval < 1) return null;
     // Each day, and the week of the month before it where there is one:
@@ -172,29 +191,35 @@ class SeriesRepeat {
     final monthDay = parts['BYMONTHDAY'];
     final month = parts['BYMONTH'];
     final Recurrence? how = switch (parts['FREQ']) {
-      'DAILY' when byDay.isEmpty && monthDay == null && month == null =>
-        Recurrence(RepeatKind.daily, interval: interval),
+      'DAILY' when interval == 1 &&
+              byDay.isEmpty &&
+              monthDay == null &&
+              month == null =>
+        const Recurrence(RepeatKind.daily),
       // Every other week counted from Monday, as the rule's own default,
       // is what New meeting writes.
       'WEEKLY' when monthDay == null &&
               month == null &&
               byDay.every((d) => d.week == null) &&
-              (interval == 1 || (parts['WKST'] ?? 'MO') == 'MO') =>
+              (interval == 1 ||
+                  (interval == 2 && (parts['WKST'] ?? 'MO') == 'MO')) =>
         Recurrence(RepeatKind.weekly,
             interval: interval,
             days: byDay.isEmpty
                 ? {first.weekday}
                 : {for (final d in byDay) d.day}),
-      'MONTHLY' when month == null &&
+      'MONTHLY' when interval == 1 &&
+              month == null &&
               byDay.isEmpty &&
               (monthDay == null || monthDay == '${first.day}') =>
-        Recurrence(RepeatKind.monthlyOnDate, interval: interval),
-      'MONTHLY' when month == null &&
+        const Recurrence(RepeatKind.monthlyOnDate),
+      'MONTHLY' when interval == 1 &&
+              month == null &&
               monthDay == null &&
               byDay.length == 1 &&
               byDay.single.day == first.weekday &&
               byDay.single.week == Recurrence.weekOfMonth(first) =>
-        Recurrence(RepeatKind.monthlyOnWeekday, interval: interval),
+        const Recurrence(RepeatKind.monthlyOnWeekday),
       'YEARLY' when interval == 1 &&
               byDay.isEmpty &&
               (month == null || month == '${first.month}') &&
@@ -210,15 +235,17 @@ class SeriesRepeat {
       return n == null || n < 1 ? null : how.ending(times: n);
     }
     if (until != null) {
-      final day = _untilDay(until);
+      final day = _untilDay(until, zone);
       return day == null ? null : how.ending(day: day);
     }
     return how;
   }
 
-  /// UNTIL's day: a date as it is, and a time in UTC on the phone's clock,
-  /// which is how a rule ending at the end of a day here writes it.
-  static DateTime? _untilDay(String until) {
+  /// UNTIL's day: a date as it is, and a time in UTC on the series' own
+  /// clock ([zone]), which is how a rule ending at the end of its last day
+  /// writes it: a series set in Los Angeles ends at 07:59:59 UTC the next
+  /// day. On the phone's clock where the series names no zone.
+  static DateTime? _untilDay(String until, String? zone) {
     final m = RegExp(r'^(\d{8})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$')
         .firstMatch(until);
     if (m == null) return null;
@@ -228,7 +255,9 @@ class SeriesRepeat {
         int.parse(m[3]!), int.parse(m[4]!));
     final here = m[5] == null
         ? DateTime(day.year, day.month, day.day)
-        : at.toLocal();
+        : zone == null
+            ? at.toLocal()
+            : wallClockIn(at, zone);
     return DateTime(here.year, here.month, here.day);
   }
 
@@ -245,7 +274,14 @@ class SeriesRepeat {
 /// The first day on or after [from] that [repeat] falls on: where a series
 /// given [repeat] starts, its first meeting moved there from its own day.
 /// The weekly repeats by their days picked, the others from [from] itself.
-DateTime firstDayOf(Recurrence repeat, DateTime from) {
+///
+/// Every other week, the first day is looked for inside the week [from]
+/// is in, counted from [weekStart] (Sunday for Outlook, Monday for Google,
+/// as each counts a series' weeks), so the meetings stay in the weeks they
+/// were in: every 2 weeks on Tuesday moved to Monday starts the day before
+/// the first Tuesday, not six days after it, in a week that had none.
+DateTime firstDayOf(Recurrence repeat, DateTime from,
+    {int weekStart = DateTime.sunday}) {
   final day = DateTime(from.year, from.month, from.day);
   final days = switch (repeat.kind) {
     RepeatKind.weekly => repeat.days,
@@ -253,9 +289,115 @@ DateTime firstDayOf(Recurrence repeat, DateTime from) {
     _ => const <int>{},
   };
   if (days.isEmpty) return day;
+  final week = repeat.kind == RepeatKind.weekly && repeat.interval > 1
+      ? _weekOf(day, weekStart)
+      : day;
   for (var i = 0; i < 7; i++) {
-    final next = DateTime(day.year, day.month, day.day + i);
+    final next = DateTime(week.year, week.month, week.day + i);
     if (days.contains(next.weekday)) return next;
   }
   return day;
+}
+
+/// The first day of the week [day] is in, the week starting on [weekStart].
+DateTime _weekOf(DateTime day, int weekStart) =>
+    DateTime(day.year, day.month, day.day - (day.weekday - weekStart) % 7);
+
+/// The days of the meetings [repeat] makes from [first], the first
+/// meeting's day, in order, without end: for [lastMeetingOf].
+Iterable<DateTime> _meetingDays(
+  Recurrence repeat,
+  DateTime first,
+  int weekStart,
+) sync* {
+  final from = DateTime(first.year, first.month, first.day);
+  final every = repeat.interval < 1 ? 1 : repeat.interval;
+  switch (repeat.kind) {
+    case RepeatKind.daily:
+      for (var i = 0;; i += every) {
+        yield DateTime(from.year, from.month, from.day + i);
+      }
+    case RepeatKind.weekly || RepeatKind.workDays:
+      final days = repeat.daysFrom(from);
+      final weeks = repeat.kind == RepeatKind.weekly ? every : 1;
+      final week = _weekOf(from, weekStart);
+      for (var w = 0;; w += weeks) {
+        for (var i = 0; i < 7; i++) {
+          final d = DateTime(week.year, week.month, week.day + 7 * w + i);
+          if (days.contains(d.weekday) && !d.isBefore(from)) yield d;
+        }
+      }
+    case RepeatKind.monthlyOnDate:
+      for (var m = 0;; m += every) {
+        final d = DateTime(from.year, from.month + m, from.day);
+        // A month without the day (the 31st) has no meeting.
+        if (d.day == from.day) yield d;
+      }
+    case RepeatKind.monthlyOnWeekday:
+      final n = Recurrence.weekOfMonth(from);
+      for (var m = 0;; m += every) {
+        final d = _weekdayOfMonth(
+            DateTime(from.year, from.month + m), from.weekday, n);
+        if (!d.isBefore(from)) yield d;
+      }
+    case RepeatKind.yearly:
+      for (var y = 0;; y++) {
+        final d = DateTime(from.year + y, from.month, from.day);
+        if (d.day == from.day) yield d;
+      }
+  }
+}
+
+/// The [n]th [weekday] of [month]'s month, or its last for -1.
+DateTime _weekdayOfMonth(DateTime month, int weekday, int n) {
+  if (n == -1) {
+    final last = DateTime(month.year, month.month + 1, 0);
+    return DateTime(
+        last.year, last.month, last.day - (last.weekday - weekday) % 7);
+  }
+  final first = DateTime(month.year, month.month);
+  return DateTime(first.year, first.month,
+      1 + (weekday - first.weekday) % 7 + 7 * (n - 1));
+}
+
+/// The day of the last meeting [repeat] makes from [first], the first
+/// meeting's day: by its end day or its number of meetings. Null for one
+/// that goes on without end.
+DateTime? lastMeetingOf(
+  Recurrence repeat,
+  DateTime first, {
+  int weekStart = DateTime.sunday,
+}) {
+  final until = repeat.until;
+  final count = repeat.count;
+  if (until == null && count == null) return null;
+  DateTime? last;
+  var n = 0;
+  for (final day in _meetingDays(repeat, first, weekStart)) {
+    if (until != null && day.isAfter(until)) break;
+    last = day;
+    n++;
+    // Outlook takes up to 999 meetings; the search is never longer than
+    // a long series, and never without end.
+    if ((count != null && n >= count) || n >= 100000) break;
+  }
+  return last;
+}
+
+const _monthNames = [
+  'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
+  'September', 'October', 'November', 'December',
+];
+
+/// [day] as the screen says a date in a sentence: "3 November 2026".
+String dayInWords(DateTime day) =>
+    '${day.day} ${_monthNames[day.month - 1]} ${day.year}';
+
+/// The IANA zone [event] was set in, from what its calendar names it (a
+/// Windows name from Exchange, Google's own): what a change to it is
+/// written in, so a meeting set in Jerusalem stays Jerusalem's whatever
+/// the phone's zone. Null where it names none, or one not known.
+String? ownZoneOf(CalendarEvent event) {
+  final name = event.timeZone?.trim();
+  return name == null || name.isEmpty ? null : ianaZoneOf(name);
 }

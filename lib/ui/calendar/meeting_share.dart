@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/calendar_event.dart';
 import '../../domain/meeting_links.dart'
-    show placeLine, placeLinkToOpen, placeNamed;
+    show placeLine, placeLinkToOpen, placeNamed, throughSafeLinks;
 import '../../domain/text_direction.dart' show firstStrongDirection;
 import '../../state/attachment_providers.dart' show fileBridgeProvider;
 import '../../state/calendar_view_providers.dart';
@@ -37,13 +37,11 @@ String meetingWhen(CalendarEvent e, {required bool use24h}) {
 /// [e]'s details for one meeting shared on purpose: its title, when, where,
 /// and the link to join it, whole, a line each, nothing for what it has
 /// none of. Its place as the sheet shows it, a link in it named; a place
-/// that is nothing but a link to somewhere (a map's) is that link, since
-/// it is all there is to say where.
+/// that is nothing but links is the one to somewhere (a map's) that it
+/// holds, since that is all there is to say where: see [_placeToSend].
 String meetingText(CalendarEvent e, {required bool use24h}) {
   final title = e.title.trim();
-  final place = placeLinkToOpen(e.location) != null
-      ? e.location.trim()
-      : placeNamed(e.location);
+  final place = _placeToSend(e.location);
   return [
     title.isEmpty ? '(No title)' : title,
     meetingWhen(e, use24h: use24h),
@@ -52,13 +50,31 @@ String meetingText(CalendarEvent e, {required bool use24h}) {
   ].join('\n');
 }
 
+/// What Copy details and Share say of [location]: as the sheet shows it,
+/// a link in it named; or, for a place that is nothing but links, the one
+/// to somewhere ([placeLinkToOpen]) alone, not a meeting's link beside it
+/// with its passcode. One inside Microsoft's Safe Links goes as the link
+/// it holds: the wrapper's address carries Ron's own address and his
+/// organisation's. One that holds no single link to go by is named.
+String _placeToSend(String location) {
+  final open = placeLinkToOpen(location);
+  if (open == null) return placeNamed(location);
+  final host = open.host.toLowerCase();
+  final wrapped = host == _safeLinks || host.endsWith('.$_safeLinks');
+  final link = wrapped ? throughSafeLinks(open) : open;
+  return link == null ? placeNamed(location) : '$link';
+}
+
+const _safeLinks = 'safelinks.protection.outlook.com';
+
 /// [day]'s meetings among [events] as a few lines of plain text: the day,
 /// then a line for each meeting, the whole days first, with when and
-/// where. A link in a place is named, never written out (a Zoom link's
-/// passcode stays on the phone); a meeting held online with no place says
-/// Online. What Ron will not be at, declined or cancelled, is left out, a
-/// meeting on two calendars is said once, and a private one says only that
-/// the time is taken, as its calendar shows it to others.
+/// where. A link in a place or a title is named, never written out (a Zoom
+/// link's passcode stays on the phone); a meeting held online with no
+/// place says Online. What Ron will not be at, declined or cancelled, is
+/// left out, a meeting on two calendars is said once (see [_sameMeeting]),
+/// and a private one says only that the time is taken, as its calendar
+/// shows it to others: one private on either calendar too.
 String dayText(
   DateTime day,
   Iterable<CalendarEvent> events, {
@@ -67,7 +83,8 @@ String dayText(
   final from = DateTime(day.year, day.month, day.day);
   final to = DateTime(day.year, day.month, day.day + 1);
   String clock(DateTime t) => formatClock(t, use24h: use24h);
-  String line(CalendarEvent e) {
+  String line(_DayLine l) {
+    final e = l.first;
     final before = e.start.isBefore(from), after = e.end.isAfter(to);
     final when = e.allDay || (before && after)
         ? 'All day'
@@ -76,24 +93,57 @@ String dayText(
             : after
                 ? 'From ${clock(e.start)}'
                 : '${clock(e.start)}–${clock(e.end)}';
-    if (e.isPrivate) return '$when  Private';
-    final title = e.title.trim();
+    if (l.private) return '$when  Private';
+    // A title may hold a link too, a Zoom one with its passcode: named.
+    final title = placeNamed(e.title);
     return [
       '$when  ${title.isEmpty ? '(No title)' : title}',
       ?placeLine(e),
     ].join(' · ');
   }
 
-  final said = <String>{};
-  final lines = [
-    for (final e in eventsOn(from, events))
-      if (!e.declined &&
-          !e.cancelled &&
-          said.add('${e.title.trim().toLowerCase()}|${e.start}|${e.end}'))
-        line(e),
-  ];
+  final folded = <_DayLine>[];
+  for (final e in eventsOn(from, events)) {
+    if (e.declined || e.cancelled) continue;
+    final same = folded.where((l) => _sameMeeting(l, e)).firstOrNull;
+    if (same == null) {
+      folded.add(_DayLine(e));
+    } else {
+      same.calendars.add(_calendarOf(e));
+      same.private = same.private || e.isPrivate;
+    }
+  }
+  final lines = [for (final l in folded) line(l)];
   return [formatDay(from), if (lines.isEmpty) 'Nothing on.', ...lines]
       .join('\n');
+}
+
+/// One line of a day's list: a meeting, and the calendars it is on.
+class _DayLine {
+  _DayLine(this.first)
+      : calendars = {_calendarOf(first)},
+        private = first.isPrivate;
+
+  final CalendarEvent first;
+  final Set<String> calendars;
+
+  /// Private on any of them.
+  bool private;
+}
+
+String _calendarOf(CalendarEvent e) => '${e.accountId}\u0000${e.calendarId}';
+
+/// Whether [e] is [line]'s meeting on another calendar: Hadco's copy of an
+/// invitation Gmail has too, say. The events carry no id of the meeting's
+/// own across calendars, so it is the same title and the same times, on a
+/// calendar the line does not have yet. Two meetings on one calendar are
+/// two, whatever they share.
+bool _sameMeeting(_DayLine line, CalendarEvent e) {
+  final first = line.first;
+  return !line.calendars.contains(_calendarOf(e)) &&
+      first.start == e.start &&
+      first.end == e.end &&
+      first.title.trim().toLowerCase() == e.title.trim().toLowerCase();
 }
 
 void _say(ScaffoldMessengerState messenger, String text) => messenger
@@ -184,33 +234,45 @@ class _DayToShare extends ConsumerWidget {
         ? null
         : dayText(day, shownEvents(withPending(events, pending), prefs),
             use24h: use24h);
+    // Copy and Share wait for the calendars to have read the day: what the
+    // device kept may lack an account's meetings until then.
+    final reading = load.value?.reading ?? true;
+    final ready = text != null && !reading;
+    final lines = [
+      for (final line in (text ?? '').split('\n').skip(1))
+        // "Nothing on." is not said until it is known.
+        if (!reading || line != 'Nothing on.') line,
+    ];
+    final theme = Theme.of(context);
     final navigator = Navigator.of(context);
     // Had now: the box is gone by the time the share sheet is asked for.
     final bridge = ref.read(fileBridgeProvider);
     return AlertDialog(
       title: Text(formatDay(day)),
-      content: text == null
-          ? const SizedBox(
-              height: 48,
-              child: Center(child: CircularProgressIndicator()),
-            )
-          : SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Each line read the way the app it goes to will read
-                  // it: by its first letter, a Hebrew one from the right.
-                  for (final line in text.split('\n').skip(1))
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 6),
-                      child: Text(
-                        line,
-                        textDirection: firstStrongDirection(line),
-                      ),
-                    ),
-                ],
+      content: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Each line read the way the app it goes to will read it: by
+            // its first letter, a Hebrew one from the right.
+            for (final line in lines)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text(
+                  line,
+                  textDirection: firstStrongDirection(line),
+                ),
               ),
-            ),
+            if (reading)
+              Text(
+                'Reading…',
+                key: const ValueKey('day-reading'),
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+          ],
+        ),
+      ),
       actions: [
         TextButton(
           onPressed: () => navigator.pop(),
@@ -218,7 +280,7 @@ class _DayToShare extends ConsumerWidget {
         ),
         TextButton(
           key: const ValueKey('day-copy'),
-          onPressed: text == null
+          onPressed: !ready
               ? null
               : () async {
                   navigator.pop();
@@ -229,7 +291,7 @@ class _DayToShare extends ConsumerWidget {
         ),
         FilledButton(
           key: const ValueKey('day-share'),
-          onPressed: text == null
+          onPressed: !ready
               ? null
               : () async {
                   navigator.pop();

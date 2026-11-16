@@ -31,6 +31,7 @@ class HeaderField extends StatelessWidget {
     this.keyboardType = TextInputType.text,
     this.focusNode,
     this.onNext,
+    this.labelWidth = 64,
   });
 
   final String label;
@@ -38,6 +39,10 @@ class HeaderField extends StatelessWidget {
   final bool enabled;
   final bool autofocus;
   final TextInputType keyboardType;
+
+  /// How wide the label's column is: 64, the message's, unless a screen
+  /// with longer labels says (New meeting's "Attendees").
+  final double labelWidth;
 
   /// The field's own, for a screen that moves the cursor itself.
   final FocusNode? focusNode;
@@ -55,7 +60,7 @@ class HeaderField extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           SizedBox(
-            width: 64,
+            width: labelWidth,
             child: Text(
               label,
               style: theme.textTheme.bodyMedium
@@ -186,6 +191,7 @@ class RecipientField extends ConsumerStatefulWidget {
     this.lines,
     this.folds = true,
     this.optional,
+    this.labelWidth = 64,
   });
 
   final String label;
@@ -201,6 +207,9 @@ class RecipientField extends ConsumerStatefulWidget {
   /// required again should they come back. Null for a message's lines,
   /// which have no such thing.
   final ValueNotifier<Set<String>>? optional;
+
+  /// How wide the label's column is: see [HeaderField.labelWidth].
+  final double labelWidth;
 
   /// The field's own, for a screen that moves the cursor itself. Left to
   /// whoever made it to dispose.
@@ -887,7 +896,7 @@ class _RecipientFieldState extends ConsumerState<RecipientField> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 64,
+            width: widget.labelWidth,
             height: look.row,
             child: Align(
               alignment: AlignmentDirectional.centerStart,

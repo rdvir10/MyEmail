@@ -760,9 +760,22 @@ class GraphCalendarApi {
   /// How series [seriesId] repeats, as its own recurrence says: the one
   /// thing asked of it. Null where the series is gone, or repeats in a way
   /// [MeetingRepeat] does not say.
+  ///
+  /// Why the sheet then says only "Repeats" is printed, by the kinds of
+  /// what was found and nothing of the meeting (the review).
   Future<MeetingRepeat?> seriesRepeat(String seriesId) async {
     final json = await _event(seriesId, select: 'recurrence');
-    return json == null ? null : MeetingRepeat.fromGraph(json['recurrence']);
+    if (json == null) {
+      debugPrint('[myemail] series not found for its repeat');
+      return null;
+    }
+    final recurrence = json['recurrence'];
+    final repeat = MeetingRepeat.fromGraph(recurrence);
+    if (repeat == null) {
+      debugPrint('[myemail] a series repeats in a way the sheet does not '
+          'say: ${MeetingRepeat.graphKinds(recurrence)}');
+    }
+    return repeat;
   }
 
   // --- the account's own copy of a meeting (calendar idea #45) --------------

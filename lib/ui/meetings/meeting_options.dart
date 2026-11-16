@@ -117,6 +117,8 @@ Future<void> showMeetingOptions(
   bool freeOrBusy = false,
   bool? repeats,
   DateTime? seriesFrom,
+  int seriesWeekStart = DateTime.sunday,
+  int? seriesCount,
 }) {
   var shown = options;
   return showModalBottomSheet<void>(
@@ -140,6 +142,8 @@ Future<void> showMeetingOptions(
               freeOrBusy: freeOrBusy,
               repeats: repeats,
               seriesFrom: seriesFrom,
+              seriesWeekStart: seriesWeekStart,
+              seriesCount: seriesCount,
               onChanged: (o) {
                 setState(() => shown = o);
                 onChanged(o);
@@ -166,6 +170,8 @@ class MeetingOptionsPanel extends StatefulWidget {
     this.freeOrBusy = false,
     this.repeats,
     this.seriesFrom,
+    this.seriesWeekStart = DateTime.sunday,
+    this.seriesCount,
   });
 
   final MeetingOptions options;
@@ -191,6 +197,17 @@ class MeetingOptionsPanel extends StatefulWidget {
   /// falls on.
   final DateTime? seriesFrom;
 
+  /// The day a series' weeks are counted from by its calendar: Sunday for
+  /// Outlook, Monday for Google. Every other week, a series' new first day
+  /// is looked for inside its first week (see `firstDayOf`).
+  final int seriesWeekStart;
+
+  /// For a series that ends after a number of meetings: that number, as
+  /// read. A series ends on a day or never otherwise: a number of meetings
+  /// counts from its first, months ago perhaps, and would end it in the
+  /// past.
+  final int? seriesCount;
+
   @override
   State<MeetingOptionsPanel> createState() => _MeetingOptionsPanelState();
 }
@@ -213,7 +230,9 @@ class _MeetingOptionsPanelState extends State<MeetingOptionsPanel> {
     final from = widget.seriesFrom;
     final repeat = o.repeat;
     if (from == null) return widget.start;
-    return _at(repeat == null ? from : firstDayOf(repeat, from));
+    return _at(repeat == null
+        ? from
+        : firstDayOf(repeat, from, weekStart: widget.seriesWeekStart));
   }
 
   /// The day a month's or a year's repeat is named from: a series' own
@@ -282,9 +301,12 @@ class _MeetingOptionsPanelState extends State<MeetingOptionsPanel> {
 
   Future<void> _pickUntil() async {
     final from = _start;
-    final first = DateTime(from.year, from.month, from.day);
-    final last = DateTime(from.year + 10);
     final now = DateTime.now();
+    final first = DateTime(from.year, from.month, from.day);
+    // Ten years on, from the first meeting or from today, whichever is
+    // later: a series begun ten years ago can still be given an end ahead.
+    final last = DateTime(
+        (from.year > now.year ? from.year : now.year) + 10, 12, 31);
     var initial = o.repeat?.until ??
         DateTime(from.year, from.month + 3, from.day);
     // A series begun long ago (#55) is ended from now on, not from three
@@ -433,15 +455,23 @@ class _MeetingOptionsPanelState extends State<MeetingOptionsPanel> {
                       child: dropdown<String>(
                         key: const ValueKey('meeting-repeat-ends'),
                         value: ends,
-                        items: const [
+                        items: [
                           ('never', 'Never'),
                           ('day', 'On a day'),
-                          ('count', 'After a number of times'),
+                          // On a series only where it ends so already
+                          // (#55): see seriesCount.
+                          if (!_series ||
+                              widget.seriesCount != null ||
+                              ends == 'count')
+                            ('count', 'After a number of times'),
                         ],
                         onChanged: (v) => switch (v) {
                           'day' => _pickUntil(),
-                          'count' => widget.onChanged(
-                              o.copyWith(repeat: repeat.ending(times: 10))),
+                          'count' => widget.onChanged(o.copyWith(
+                              repeat: repeat.ending(
+                                  times: _series
+                                      ? widget.seriesCount ?? 10
+                                      : 10))),
                           _ => widget.onChanged(
                               o.copyWith(repeat: repeat.ending())),
                         },
@@ -455,12 +485,19 @@ class _MeetingOptionsPanelState extends State<MeetingOptionsPanel> {
                       ),
                     if (repeat.count case final count?)
                       SizedBox(
-                        width: 72,
+                        width: 104,
                         child: dropdown<int>(
                           key: const ValueKey('meeting-repeat-count'),
                           value: count,
+                          // 2 to 52, and a series' own number where it is
+                          // another, 1 or 60 say: Outlook takes up to 999.
                           items: [
-                            for (var n = 2; n <= 52; n++) (n, '$n times'),
+                            for (final n in {
+                              for (var n = 2; n <= 52; n++) n,
+                              count,
+                            }.toList()
+                              ..sort())
+                              (n, n == 1 ? '1 time' : '$n times'),
                           ],
                           onChanged: (n) => widget.onChanged(
                               o.copyWith(repeat: repeat.ending(times: n))),

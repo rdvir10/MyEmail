@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/calendar/sheet_calendar.dart';
 import '../../domain/calendar_event.dart';
+import '../../domain/meeting.dart' show Reminder;
 import '../../domain/meeting_repeat.dart';
 import '../../state/providers.dart';
 import '../meetings/meeting_options.dart' show showAsLabel;
@@ -13,40 +14,26 @@ import '../meetings/meeting_options.dart' show showAsLabel;
 /// and nothing for what a meeting has none of.
 
 /// A reminder [minutes] before a meeting, in plain words: "Reminder 15
-/// minutes before", "Reminder 1 hour before", "Reminder at the start".
+/// minutes before", "Reminder 1 hour before", "Reminder at the start". The
+/// length in New meeting's words ([Reminder.labelFor]).
 String reminderSaid(int minutes) => minutes <= 0
     ? 'Reminder at the start'
-    : 'Reminder ${reminderChoice(minutes)}';
-
-/// A reminder as My reminder lists it (calendar idea #45): "None", "At
-/// the start", "15 minutes before", "2 hours before", "1 day before".
-String reminderChoice(int? minutes) {
-  if (minutes == null) return 'None';
-  if (minutes <= 0) return 'At the start';
-  String n(int count, String unit) =>
-      count == 1 ? '1 $unit' : '$count ${unit}s';
-  final how = minutes % 10080 == 0
-      ? n(minutes ~/ 10080, 'week')
-      : minutes % 1440 == 0
-          ? n(minutes ~/ 1440, 'day')
-          : minutes % 60 == 0
-              ? n(minutes ~/ 60, 'hour')
-              : n(minutes, 'minute');
-  return '$how before';
-}
+    : 'Reminder ${Reminder.labelFor(minutes)}';
 
 /// [e]'s reminder, how it shows, private and its categories, in one line:
 /// "Reminder 15 minutes before · Busy · Private · Sales". Each is left out
 /// where it has none. [freeOrBusy] is a Google calendar's, which keeps
 /// only whether the time is taken: a meeting answered maybe is busy there,
-/// whatever the app draws it as. How it would show is not said of one
-/// declined or cancelled, which takes no time.
+/// whatever the app draws it as. Neither the reminder nor how it would
+/// show is said of one declined or cancelled, which takes no time and
+/// which MyEmail does not remind of.
 String meetingFacts(CalendarEvent e, {bool freeOrBusy = false}) => [
-      if (e.reminderMinutes case final m? when m >= 0) reminderSaid(m),
-      if (!e.declined && !e.cancelled)
+      if (!e.declined && !e.cancelled) ...[
+        if (e.reminderMinutes case final m? when m >= 0) reminderSaid(m),
         showAsLabel(freeOrBusy && e.showAs != EventShowAs.free
             ? EventShowAs.busy
             : e.showAs),
+      ],
       if (e.isPrivate) 'Private',
       for (final c in e.categories)
         if (c.trim().isNotEmpty) c.trim(),
