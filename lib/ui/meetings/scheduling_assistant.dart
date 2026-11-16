@@ -10,6 +10,7 @@ import '../../domain/mail_message.dart';
 import '../../state/compose_providers.dart' show addressesLookValid, parseAddresses;
 import '../../state/meeting_providers.dart' show workWeekProvider;
 import '../../state/providers.dart';
+import '../calendar/hour_scale.dart' show hourLabel;
 import '../common/tap_target.dart';
 
 /// Outlook's Scheduling Assistant, on New meeting. A button beside All day
@@ -472,11 +473,8 @@ class _HourScale extends StatelessWidget {
   /// The least room between two hours' labels.
   static const _apart = 4.0;
 
-  String _label(int hour) {
-    final h = hour % 24;
-    if (use24h) return '${h.toString().padLeft(2, '0')}:00';
-    return '${h % 12 == 0 ? 12 : h % 12} ${h < 12 ? 'AM' : 'PM'}';
-  }
+  String _label(int hour) =>
+      hourLabel(DateTime(2000, 1, 1, hour), use24h: use24h);
 
   @override
   Widget build(BuildContext context) {

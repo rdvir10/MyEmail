@@ -384,23 +384,41 @@ List<CalendarEvent> eventsOn(DateTime day, Iterable<CalendarEvent> events) =>
 typedef DaySlot = ({CalendarEvent event, int column, int columns});
 
 /// [events] (timed, on one day) laid out as Outlook's day view does: those
-/// that overlap side by side, each group as wide as it needs to be.
-List<DaySlot> layOutDay(List<CalendarEvent> events) {
+/// that overlap side by side, each group as wide as it needs to be. A
+/// meeting shorter than [shortest] is drawn that long, and laid out so:
+/// one starting as it ends goes beside it rather than under it. Where
+/// that would run past [dayEnd], the day's midnight, it is drawn ending
+/// there instead, and laid out from where it is drawn.
+List<DaySlot> layOutDay(
+  List<CalendarEvent> events, {
+  Duration shortest = const Duration(minutes: 15),
+  DateTime? dayEnd,
+}) {
+  // A short event still takes a block on screen: [shortest] at least,
+  // inside the day.
+  DateTime startOf(CalendarEvent e) {
+    if (dayEnd == null) return e.start;
+    final latest = dayEnd.subtract(shortest);
+    return e.start.isAfter(latest) && e.start.isBefore(dayEnd)
+        ? latest
+        : e.start;
+  }
+
+  DateTime endOf(CalendarEvent e) {
+    final drawnTo = startOf(e).add(shortest);
+    return e.end.isAfter(drawnTo) ? e.end : drawnTo;
+  }
+
   final timed = [
     for (final e in events)
       if (!e.allDay) e,
   ]..sort((a, b) {
-      final byStart = a.start.compareTo(b.start);
+      final byStart = startOf(a).compareTo(startOf(b));
       return byStart != 0 ? byStart : b.end.compareTo(a.end);
     });
   final slots = <DaySlot>[];
   var group = <({CalendarEvent event, int column})>[];
   var groupEnd = DateTime.fromMillisecondsSinceEpoch(0);
-  // A short event still takes a short block on screen: a quarter hour.
-  DateTime endOf(CalendarEvent e) {
-    final shortest = e.start.add(const Duration(minutes: 15));
-    return e.end.isAfter(shortest) ? e.end : shortest;
-  }
 
   void close() {
     final columns = group.fold(0, (n, g) => g.column + 1 > n ? g.column + 1 : n);
@@ -412,11 +430,12 @@ List<DaySlot> layOutDay(List<CalendarEvent> events) {
 
   final columnEnds = <DateTime>[];
   for (final e in timed) {
-    if (group.isNotEmpty && !e.start.isBefore(groupEnd)) {
+    final start = startOf(e);
+    if (group.isNotEmpty && !start.isBefore(groupEnd)) {
       close();
       columnEnds.clear();
     }
-    var column = columnEnds.indexWhere((end) => !e.start.isBefore(end));
+    var column = columnEnds.indexWhere((end) => !start.isBefore(end));
     if (column < 0) {
       column = columnEnds.length;
       columnEnds.add(endOf(e));

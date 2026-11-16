@@ -33,15 +33,20 @@ import '../messages/date_format.dart';
 import '../messages/invite_answers.dart' show askHowToAnswer;
 import '../../state/date_providers.dart' show deviceZoneProvider;
 import 'agenda_row_parts.dart';
+import 'block_look.dart';
+import 'block_text.dart';
+import 'button_corner.dart';
 import 'calendar_keys.dart';
 import 'calendar_search_screen.dart';
 import 'calendar_title.dart';
 import 'event_actions.dart';
 import 'event_colours.dart';
 import 'event_notes.dart';
+import 'hour_scale.dart';
 import 'invitation_clearing.dart' show InvitationClearing;
 import 'meeting_mail.dart';
 import 'meeting_ticker.dart';
+import 'now_line.dart';
 import 'place_link.dart';
 import 'waiting_answers.dart';
 
@@ -449,6 +454,7 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
         identity: '${mode.name}-${span.name}-$_layouts',
         onTurned: (offset) => _turned(mode, span, offset),
         locked: _pinching,
+        clock: mode != CalendarViewMode.month,
         page: (offset) {
           final p = _page(mode, span, offset);
           return _CalendarPageView(
@@ -900,6 +906,7 @@ class _Pager extends StatefulWidget {
     required this.page,
     required this.onTurned,
     required this.locked,
+    this.clock = false,
   });
 
   /// Which layout of the pages this is: another starts again at the page
@@ -912,6 +919,10 @@ class _Pager extends StatefulWidget {
 
   /// Held still, while the hours are pinched.
   final bool locked;
+
+  /// The hours' one clock over every page kept built, for the line at the
+  /// present time (Day and Week; the month has none).
+  final bool clock;
 
   @override
   State<_Pager> createState() => _PagerState();
@@ -952,18 +963,21 @@ class _PagerState extends State<_Pager> {
   }
 
   @override
-  Widget build(BuildContext context) => PageView.builder(
-        key: ValueKey('pager-${widget.identity}'),
-        controller: _controller,
-        allowImplicitScrolling: true,
-        physics: widget.locked ? const NeverScrollableScrollPhysics() : null,
-        onPageChanged: (index) {
-          // A swipe too: the page left stays built, off screen.
-          releaseFocusWithin(context);
-          widget.onTurned(index - _home);
-        },
-        itemBuilder: (context, index) => widget.page(index - _home),
-      );
+  Widget build(BuildContext context) {
+    final pages = PageView.builder(
+      key: ValueKey('pager-${widget.identity}'),
+      controller: _controller,
+      allowImplicitScrolling: true,
+      physics: widget.locked ? const NeverScrollableScrollPhysics() : null,
+      onPageChanged: (index) {
+        // A swipe too: the page left stays built, off screen.
+        releaseFocusWithin(context);
+        widget.onTurned(index - _home);
+      },
+      itemBuilder: (context, index) => widget.page(index - _home),
+    );
+    return widget.clock ? NowClock(child: pages) : pages;
+  }
 }
 
 /// One page: its events read, then drawn as Day and Week draw them or as
@@ -1545,6 +1559,9 @@ class _MonthGrid extends StatelessWidget {
     final weeks = [
       for (var w = 0; w < days.length ~/ 7; w++) days.sublist(w * 7, w * 7 + 7),
     ];
+    // With titles, the grid fills the page to its foot, and the + button
+    // stands over the last box's corner.
+    final corner = titles ? plusButtonCorner(context) : null;
     Widget week(List<DateTime> row) => Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -1559,6 +1576,7 @@ class _MonthGrid extends StatelessWidget {
                   titles: titles,
                   onTap: () => onDay(d),
                   onEvent: onEvent,
+                  button: identical(d, days.last) ? corner : null,
                 ),
               ),
           ],
@@ -1601,6 +1619,7 @@ class _MonthDay extends StatelessWidget {
     required this.titles,
     required this.onTap,
     required this.onEvent,
+    this.button,
   });
 
   final DateTime day;
@@ -1611,6 +1630,10 @@ class _MonthDay extends StatelessWidget {
   final bool titles;
   final VoidCallback onTap;
   final void Function(CalendarEvent)? onEvent;
+
+  /// The corner of this box the + button stands over, from its bottom
+  /// right, for the last box of the month on a tablet.
+  final ({double width, double height})? button;
 
   @override
   Widget build(BuildContext context) {
@@ -1669,13 +1692,46 @@ class _MonthDay extends StatelessWidget {
         ],
       );
     } else {
+      final moreStyle = theme.textTheme.labelSmall
+          ?.copyWith(color: scheme.onSurfaceVariant);
       body = LayoutBuilder(
         builder: (context, constraints) {
-          const line = 17.0;
-          final room = ((constraints.maxHeight - 30) / line).floor();
-          final shown = events.length <= room
+          // Each line as it is drawn, at the text size in force: its words,
+          // the 1 dp above and below them, and the 1 under it.
+          final scaler = MediaQuery.textScalerOf(context);
+          final base = DefaultTextStyle.of(context).style;
+          double heightOf(TextStyle? style) {
+            final painter = TextPainter(
+              text: TextSpan(text: 'Ag', style: base.merge(style)),
+              textDirection: TextDirection.ltr,
+              textScaler: scaler,
+            )..layout();
+            final height = painter.height;
+            painter.dispose();
+            return height;
+          }
+
+          final line = heightOf(_MonthEvent.textStyle) + 3;
+          final moreLine = heightOf(moreStyle);
+          // Under the + button, the lines stop short of it: beside it
+          // where the box is wide enough to leave them readable, above it
+          // where it is not.
+          var height = constraints.maxHeight;
+          var inset = 0.0;
+          if (button case final corner?) {
+            if (constraints.maxWidth - corner.width >= 64) {
+              inset = corner.width;
+            } else {
+              height -= corner.height;
+            }
+          }
+          final room = height - 28;
+          final all = events.length * line <= room + 0.01;
+          final shown = all
               ? events
-              : events.take(math.max(0, room - 1)).toList();
+              : events
+                  .take(math.max(0, ((room - moreLine) / line + 0.01).floor()))
+                  .toList();
           final more = events.length - shown.length;
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1683,18 +1739,21 @@ class _MonthDay extends StatelessWidget {
               Align(alignment: Alignment.topLeft, child: number),
               const SizedBox(height: 2),
               for (final e in shown)
-                _MonthEvent(
-                  event: e,
-                  colour: colourOf(e),
-                  onTap: onEvent == null ? null : () => onEvent!(e),
-                ),
-              if (more > 0)
                 Padding(
-                  padding: const EdgeInsets.only(left: 4),
+                  padding: EdgeInsets.only(right: inset),
+                  child: _MonthEvent(
+                    event: e,
+                    colour: colourOf(e),
+                    onTap: onEvent == null ? null : () => onEvent!(e),
+                  ),
+                ),
+              if (more > 0 && room - shown.length * line >= moreLine - 0.01)
+                Padding(
+                  padding: EdgeInsets.only(left: 4, right: inset),
                   child: Text(
                     '+$more more',
-                    style: theme.textTheme.labelSmall
-                        ?.copyWith(color: scheme.onSurfaceVariant),
+                    style: moreStyle,
+                    maxLines: 1,
                   ),
                 ),
             ],
@@ -1728,37 +1787,59 @@ class _MonthEvent extends StatelessWidget {
   final Color colour;
   final VoidCallback? onTap;
 
+  /// A line's letters.
+  static const textStyle = TextStyle(fontSize: 11);
+
   @override
   Widget build(BuildContext context) {
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
     final e = event;
-    final faint = e.declined ||
-        e.showAs == EventShowAs.free ||
-        e.response == EventResponse.tentative ||
-        e.response == EventResponse.notResponded;
+    // As a block on the hours is drawn: see MeetingLook.
+    final look = MeetingLook.of(
+      e,
+      colour,
+      Theme.of(context).colorScheme,
+      declinedTint: 40,
+    );
+    // A Hebrew title reads from the right, by its first letter as the
+    // place link decides it, and the line still starts with its time: the
+    // time kept whole in its own order (an isolate), at the right.
+    final direction = firstStrongDirection(e.title);
+    final time = formatClock(e.start, use24h: use24h);
     final text = e.allDay
         ? e.title
-        : '${formatClock(e.start, use24h: use24h)} ${e.title}';
+        : direction == TextDirection.rtl
+            ? '\u2066$time\u2069 ${e.title}'
+            : '$time ${e.title}';
     return Padding(
       padding: const EdgeInsets.only(bottom: 1),
-      child: Material(
-        color: faint ? colour.withAlpha(40) : colour,
-        borderRadius: BorderRadius.circular(3),
-        child: InkWell(
-          key: ValueKey('month-event:${e.id}'),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
-            child: Text(
-              text.isEmpty ? '(No title)' : text,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 11,
-                color: faint ? colour : Colors.white,
-                decoration: e.cancelled || e.declined
-                    ? TextDecoration.lineThrough
-                    : null,
+      child: CustomPaint(
+        foregroundPainter:
+            look.dashed ? DashedOutline(colour: colour, radius: 3) : null,
+        child: Material(
+          color: look.fill,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(3),
+            side: look.edge == null
+                ? BorderSide.none
+                : BorderSide(color: look.edge!),
+          ),
+          child: InkWell(
+            key: ValueKey('month-event:${e.id}'),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+              child: Text(
+                text.isEmpty ? '(No title)' : text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textDirection: direction,
+                style: textStyle.copyWith(
+                  color: look.ink,
+                  decoration: e.cancelled || e.declined
+                      ? TextDecoration.lineThrough
+                      : null,
+                ),
               ),
             ),
           ),
@@ -1992,8 +2073,32 @@ class _Drag {
 
 class _TimelineState extends ConsumerState<_Timeline> {
   /// The hours down the side: the phone's own, and a second zone's beside
-  /// them where Settings, Calendar names one.
-  double get gutter => widget.prefs.secondZone == null ? 48.0 : 92.0;
+  /// them where Settings, Calendar names one. As wide as the labels need
+  /// at the text size and clock in force, measured as the page is built.
+  double get gutter => _scale?.width ?? 48.0;
+  HourScale? _scale;
+  Object? _scaleFor;
+
+  HourScale _hourScale(TextStyle style, bool use24h) {
+    final scaler = MediaQuery.textScalerOf(context);
+    final zone = widget.prefs.secondZone;
+    final day = widget.days.first;
+    final key = (style, scaler, use24h, zone, day);
+    final kept = _scale;
+    if (kept != null && _scaleFor == key) return kept;
+    _scaleFor = key;
+    return _scale = HourScale.measure(
+      style: style,
+      scaler: scaler,
+      use24h: use24h,
+      day: day,
+      zone: zone,
+    );
+  }
+
+  /// How far the hours sit below the top of their scroll, so the label at
+  /// the top shows whole: [HourScale.inset].
+  double get _inset => _scale?.inset ?? 0;
 
   late final ScrollController _scroll = ScrollController(
     initialScrollOffset: widget.topHour.value * ref.read(calendarHourHeightProvider),
@@ -2059,7 +2164,7 @@ class _TimelineState extends ConsumerState<_Timeline> {
     _heightFrom = _height;
     final points = _pointers.values.toList();
     _focusY = (points[0].dy + points[1].dy) / 2;
-    _focusHour = (_scroll.offset + _focusY) / _heightFrom;
+    _focusHour = (_scroll.offset + _focusY - _inset) / _heightFrom;
     setState(() => _pinched = _heightFrom);
     widget.onPinching(true);
   }
@@ -2073,7 +2178,7 @@ class _TimelineState extends ConsumerState<_Timeline> {
     setState(() => _pinched = height);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scroll.hasClients) return;
-      final at = (_focusHour * height - _focusY)
+      final at = (_focusHour * height + _inset - _focusY)
           .clamp(0.0, _scroll.position.maxScrollExtent);
       _following = true;
       _scroll.jumpTo(at);
@@ -2122,7 +2227,10 @@ class _TimelineState extends ConsumerState<_Timeline> {
     final d = _drag;
     final at = _pointAt(global);
     if (d == null || at == null) return;
-    final minutes = ((at.$2 - d.fromMinute) / 15).round() * 15;
+    final minutes = _keptInDay(
+      d,
+      ((at.$2 - d.fromMinute) / 15).round() * 15,
+    );
     final days = at.$1 - d.fromDay;
     setState(() {
       // Not moved at all: as it was, to the second, so a wobble under a
@@ -2150,6 +2258,47 @@ class _TimelineState extends ConsumerState<_Timeline> {
     });
   }
 
+  /// [minutes] for [d], kept inside the day by the clock, in quarter hours
+  /// from where it was: the room over midnight and under it, where the
+  /// hours end, is not hours, and a meeting dragged into it stops at
+  /// midnight, or the last quarter hour short of it. The day is that of
+  /// the column the meeting was taken in. A meeting within that day stops
+  /// with its start at the midnight before and its end at the midnight
+  /// after; one across midnight moves as it did, its start kept by 23:45
+  /// of that day (and, where it starts on it, after its midnight). Its foot
+  /// stops at the midnight after the day it ends on. To another day a
+  /// meeting goes across the columns.
+  int _keptInDay(_Drag d, int minutes) {
+    // Whole quarter hours, toward none.
+    int quarters(int m) => m ~/ 15 * 15;
+    int wall(DateTime t) => t.hour * 60 + t.minute;
+    final s = d.event.start.toLocal();
+    final e = d.event.end.toLocal();
+    if (d.resize) {
+      // Its end on the day it ends, one ending at midnight counted at the
+      // end of the day before.
+      final endWall = e.hour == 0 && e.minute == 0 ? 24 * 60 : wall(e);
+      return math.min(minutes, quarters(24 * 60 - endWall));
+    }
+    final column = widget.days[d.fromDay];
+    // By the clock, from the column's midnight.
+    int fromColumn(DateTime t) =>
+        DateTime.utc(t.year, t.month, t.day)
+                .difference(DateTime.utc(column.year, column.month, column.day))
+                .inDays *
+            24 *
+            60 +
+        wall(t);
+    final from = fromColumn(s);
+    final to = fromColumn(e);
+    if (from >= 0 && to <= 24 * 60) {
+      return minutes.clamp(-quarters(from), quarters(24 * 60 - to));
+    }
+    final earliest = -quarters(from >= 0 ? from : wall(s));
+    final latest = quarters(24 * 60 - 15 - from);
+    return minutes.clamp(earliest, math.max(earliest, latest));
+  }
+
   void _drop() {
     final d = _drag;
     if (d == null) return;
@@ -2169,6 +2318,11 @@ class _TimelineState extends ConsumerState<_Timeline> {
     final now = DateTime.now();
     final muted = theme.textTheme.labelSmall
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final scale = _hourScale(
+      DefaultTextStyle.of(context).style.merge(muted),
+      use24h,
+    );
+    final button = plusButtonCorner(context);
     final allDay = {
       for (final d in widget.days)
         d: [
@@ -2179,6 +2333,12 @@ class _TimelineState extends ConsumerState<_Timeline> {
     final anyAllDay = allDay.values.any((l) => l.isNotEmpty);
     final folded = ref.watch(calendarAllDayFoldedProvider);
     final fold = ref.read(calendarAllDayFoldedProvider.notifier).toggle;
+    Widget words() => Text(
+          HourScale.allDay,
+          style: muted,
+          maxLines: 1,
+          softWrap: false,
+        );
     Widget block(CalendarEvent e) => _Block(
           event: e,
           colour: widget.colours[e] ?? theme.colorScheme.primary,
@@ -2242,6 +2402,8 @@ class _TimelineState extends ConsumerState<_Timeline> {
               children: [
                 // The group bars' arrow before the words: a tap folds every
                 // day's all-day events to one line, and opens them again.
+                // The words on one line, and the arrow under them where the
+                // hours' column is too narrow for it beside them.
                 SizedBox(
                   width: gutter,
                   child: Tooltip(
@@ -2253,25 +2415,28 @@ class _TimelineState extends ConsumerState<_Timeline> {
                       onTap: fold,
                       child: Padding(
                         padding: const EdgeInsets.fromLTRB(2, 4, 2, 2),
-                        child: Row(
+                        child: Flex(
+                          direction: scale.arrowBeside
+                              ? Axis.horizontal
+                              : Axis.vertical,
+                          crossAxisAlignment: scale.arrowBeside
+                              ? CrossAxisAlignment.center
+                              : CrossAxisAlignment.start,
                           children: [
+                            if (!scale.arrowBeside) words(),
                             AnimatedRotation(
                               turns: folded ? -0.25 : 0,
                               duration: const Duration(milliseconds: 150),
                               child: Icon(
                                 Icons.expand_more,
-                                size: 14,
+                                size: HourScale.arrow,
                                 color: theme.colorScheme.onSurfaceVariant,
                               ),
                             ),
-                            const SizedBox(width: 2),
-                            Flexible(
-                              child: Text(
-                                'All day',
-                                style: muted,
-                                maxLines: 2,
-                              ),
-                            ),
+                            if (scale.arrowBeside) ...[
+                              const SizedBox(width: HourScale.arrowGap),
+                              words(),
+                            ],
                           ],
                         ),
                       ),
@@ -2328,70 +2493,85 @@ class _TimelineState extends ConsumerState<_Timeline> {
               physics: _pinched != null
                   ? const NeverScrollableScrollPhysics()
                   : null,
+              // Room over midnight for half a label, so the hour opened at
+              // shows its label whole under the all-day row; and under
+              // midnight to scroll the last hours clear of the + button.
+              padding: EdgeInsets.only(
+                top: scale.inset,
+                bottom: button.height == 0
+                    ? 0
+                    : button.height + kFloatingActionButtonMargin,
+              ),
               child: SizedBox(
                 key: _hours,
                 height: 24 * hourHeight,
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: Stack(
                   children: [
-                    SizedBox(
-                      width: gutter,
-                      child: Stack(
+                    Positioned.fill(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          for (var h = 1; h < 24; h++) ...[
-                            if (widget.prefs.secondZone case final zone?)
-                              Positioned(
-                                top: h * hourHeight - 7,
-                                left: 4,
-                                child: Text(
-                                  formatClock(
-                                    wallClockIn(
-                                      DateTime(widget.days.first.year,
-                                          widget.days.first.month,
-                                          widget.days.first.day, h),
-                                      zone,
+                          SizedBox(
+                            width: gutter,
+                            child: Stack(
+                              children: [
+                                // Each label centred on its hour's line.
+                                for (var h = 1; h < 24; h++) ...[
+                                  if (scale.second.isNotEmpty)
+                                    Positioned(
+                                      top: h * hourHeight -
+                                          scale.lineHeight / 2,
+                                      left: HourScale.start,
+                                      child: Text(
+                                        scale.second[h - 1],
+                                        key: ValueKey('second-zone-hour:$h'),
+                                        style: muted?.copyWith(
+                                          color: muted.color?.withAlpha(150),
+                                        ),
+                                      ),
                                     ),
-                                    use24h: use24h,
+                                  Positioned(
+                                    top: h * hourHeight - scale.lineHeight / 2,
+                                    right: HourScale.end,
+                                    child: Text(
+                                      scale.own[h - 1],
+                                      key: ValueKey('hour:$h'),
+                                      style: muted,
+                                    ),
                                   ),
-                                  key: ValueKey('second-zone-hour:$h'),
-                                  style: muted?.copyWith(
-                                    color: muted.color?.withAlpha(150),
-                                  ),
-                                ),
-                              ),
-                            Positioned(
-                              top: h * hourHeight - 7,
-                              right: 6,
-                              child: Text(
-                                formatClock(DateTime(2000, 1, 1, h),
-                                    use24h: use24h),
-                                style: muted,
+                                ],
+                              ],
+                            ),
+                          ),
+                          for (final d in widget.days)
+                            Expanded(
+                              child: _DayColumn(
+                                day: d,
+                                events: [
+                                  for (final e in eventsOn(d, widget.events))
+                                    if (!e.allDay) e,
+                                ],
+                                colours: widget.colours,
+                                hourHeight: hourHeight,
+                                prefs: widget.prefs,
+                                onTap: widget.onTap,
+                                onSlot: widget.onSlot,
+                                dragged: _drag?.event,
+                                ghost: _drag?.moved,
+                                onTake: widget.onMove == null ? null : _take,
+                                onDrag: _dragTo,
+                                onDrop: _drop,
                               ),
                             ),
-                          ],
                         ],
                       ),
                     ),
-                    for (final d in widget.days)
-                      Expanded(
-                        child: _DayColumn(
-                          day: d,
-                          events: [
-                            for (final e in eventsOn(d, widget.events))
-                              if (!e.allDay) e,
-                          ],
-                          colours: widget.colours,
-                          hourHeight: hourHeight,
-                          prefs: widget.prefs,
-                          onTap: widget.onTap,
-                          onSlot: widget.onSlot,
-                          dragged: _drag?.event,
-                          ghost: _drag?.moved,
-                          onTake: widget.onMove == null ? null : _take,
-                          onDrag: _dragTo,
-                          onDrop: _drop,
-                        ),
-                      ),
+                    // The present time's mark, over the meetings.
+                    NowMark(
+                      days: widget.days,
+                      hourHeight: hourHeight,
+                      left: gutter,
+                    ),
                   ],
                 ),
               ),
@@ -2449,7 +2629,6 @@ class _DayColumn extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final dayEnd = _plus(day, 1);
-    final now = DateTime.now();
     // By the clock, as the hours down the side are: on the days the clocks
     // change, the time since midnight is an hour more or less than that.
     // This phone's clock: a calendar from a link hands over times in UTC.
@@ -2461,6 +2640,28 @@ class _DayColumn extends StatelessWidget {
     }
 
     final offHours = theme.colorScheme.surfaceContainerHighest.withAlpha(110);
+    // However short a meeting, its block is drawn tall enough to read a
+    // line and to tap, and laid out by that height: one starting as a
+    // short one ends sits beside it, not under it. Never past half an
+    // hour's height, though, so with the hours pinched small an ordinary
+    // day of half hours stays one under the other, full width.
+    final shortest = math.min(
+      BlockText.minHeight(context, _Block.textStyle),
+      hourHeight / 2,
+    );
+    final drawn = Duration(
+      minutes: math.min(30, (shortest / hourHeight * 60).ceil()),
+    );
+    // Where a meeting's block goes: from its start, as tall as its time or
+    // the least height, and inside the day: one drawn taller than its time
+    // just before midnight is lifted to end there, not cut through.
+    ({double top, double height}) blockAt(CalendarEvent e) {
+      final height = math.max(shortest, y(e.end) - y(e.start));
+      return (
+        top: math.min(y(e.start), 24 * hourHeight - height),
+        height: height,
+      );
+    }
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
@@ -2504,13 +2705,13 @@ class _DayColumn extends StatelessWidget {
                     ),
                   ),
                 ),
-              for (final slot in layOutDay(events))
+              // The present time, under the meetings: it moves on its own.
+              NowLine(day: day, hourHeight: hourHeight),
+              for (final slot
+                  in layOutDay(events, shortest: drawn, dayEnd: dayEnd))
                 Positioned(
-                  top: y(slot.event.start),
-                  height: math.max(
-                    hourHeight / 4,
-                    y(slot.event.end) - y(slot.event.start),
-                  ),
+                  top: blockAt(slot.event).top,
+                  height: blockAt(slot.event).height,
                   left: width * slot.column / slot.columns + 1,
                   width: width / slot.columns - 2,
                   child: Opacity(
@@ -2552,8 +2753,8 @@ class _DayColumn extends StatelessWidget {
                 ),
               if (ghost case final g? when g.fallsOn(day))
                 Positioned(
-                  top: y(g.start),
-                  height: math.max(hourHeight / 4, y(g.end) - y(g.start)),
+                  top: blockAt(g).top,
+                  height: blockAt(g).height,
                   left: 1,
                   right: 1,
                   child: IgnorePointer(
@@ -2578,13 +2779,6 @@ class _DayColumn extends StatelessWidget {
                       ),
                     ),
                   ),
-                ),
-              if (_sameDay(day, now))
-                Positioned(
-                  top: y(now),
-                  left: 0,
-                  right: 0,
-                  child: Container(height: 2, color: theme.colorScheme.error),
                 ),
             ],
           ),
@@ -2617,50 +2811,67 @@ class _Block extends StatelessWidget {
   /// or its calendar's.
   final Color? edge;
 
+  /// A block's letters.
+  static const textStyle = TextStyle(fontSize: 12);
+
   @override
   Widget build(BuildContext context) {
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
-    final faint = event.showAs == EventShowAs.free ||
-        event.response == EventResponse.tentative ||
-        event.response == EventResponse.notResponded ||
-        event.declined;
-    final style = TextStyle(
-      color: faint ? colour : Colors.white,
-      fontSize: 12,
+    // Black or white words on a solid block, the page's own on a faint one
+    // (tentative, not answered, free, declined), which is opaque and edged
+    // in the meeting's colour: dashed while the answer is open.
+    final look = MeetingLook.of(event, colour, Theme.of(context).colorScheme);
+    final style = textStyle.copyWith(
+      color: look.ink,
       decoration: event.cancelled || event.declined
           ? TextDecoration.lineThrough
           : null,
     );
     return Padding(
       padding: EdgeInsets.only(bottom: compact ? 2 : 0),
-      child: Material(
-        color: faint ? colour.withAlpha(event.declined ? 20 : 40) : colour,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(4),
-          side: faint ? BorderSide(color: colour) : BorderSide.none,
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          key: ValueKey('calendar-event:${event.id}'),
-          onTap: onTap,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              border: edge == null
-                  ? null
-                  : Border(left: BorderSide(color: edge!, width: 3)),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-              child: SizedBox(
-                width: double.infinity,
-                child: Text(
-                  compact || event.allDay
-                      ? event.title
-                      : '${event.title}\n${formatClock(event.start, use24h: use24h)}',
-                  maxLines: compact ? 1 : 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: style,
-                ),
+      child: CustomPaint(
+        foregroundPainter: look.dashed ? DashedOutline(colour: colour) : null,
+        child: Material(
+          color: look.fill,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(4),
+            side: look.edge == null
+                ? BorderSide.none
+                : BorderSide(color: look.edge!),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            key: ValueKey('calendar-event:${event.id}'),
+            onTap: onTap,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                border: edge == null
+                    ? null
+                    : Border(left: BorderSide(color: edge!, width: 3)),
+              ),
+              child: Padding(
+                padding: BlockText.padding,
+                child: compact || event.allDay
+                    ? SizedBox(
+                        width: double.infinity,
+                        child: Text(
+                          event.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: style,
+                          textDirection: firstStrongDirection(event.title),
+                        ),
+                      )
+                    : BlockText(
+                        title: event.title,
+                        place: event.location.trim().isNotEmpty
+                            ? event.location.trim()
+                            : event.joinUrl != null
+                                ? 'Online'
+                                : null,
+                        time: formatClock(event.start, use24h: use24h),
+                        style: style,
+                      ),
               ),
             ),
           ),
