@@ -874,6 +874,7 @@ void main() {
       Widget? home,
       bool withCalendar = true,
       bool withHadco = true,
+      bool settle = true,
       void Function(_Engine engine, String hadco, String gmail)? prepare,
     }) async {
       tester.view.physicalSize = size;
@@ -928,7 +929,13 @@ void main() {
           ),
         ),
       ));
-      await tester.pumpAndSettle();
+      if (settle) {
+        await tester.pumpAndSettle();
+      } else {
+        for (var i = 0; i < 5; i++) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+      }
       return (c, engine);
     }
 
@@ -1548,6 +1555,55 @@ void main() {
       expect(find.text('92 days: three months at most'), findsOneWidget);
     });
 
+    testWidgets('Go ahead? says the note goes with a Microsoft '
+        "cancellation; Google's carries none", (tester) async {
+      final (_, engine) = await pump(tester);
+      await scrollTo(tester, rowOf(engine, 'spin-19'));
+      await tester.tap(rowOf(engine, 'spin-19'));
+      await scrollTo(tester, find.byKey(const ValueKey('away-note')));
+      await tester.enterText(find.byKey(const ValueKey('away-note')), 'Away');
+      await tester.tap(find.byKey(const ValueKey('away-go')));
+      await tester.pumpAndSettle();
+      expect(find.text('1 meeting of your own cancelled. Everyone on it is '
+          'told.'), findsOneWidget, reason: "Gmail's: no note goes");
+      await tester.tap(find.byKey(const ValueKey('away-go-back')));
+      await tester.pumpAndSettle();
+
+      await scrollTo(tester, rowOf(engine, 'q4'));
+      await tester.tap(rowOf(engine, 'q4'));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('away-go')));
+      await tester.pumpAndSettle();
+      expect(find.text('2 meetings of your own cancelled. Everyone on them '
+          'is told, with your note.'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('away-go-back')));
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions, isEmpty);
+    });
+
+    testWidgets('on a tablet lying down, no wider than 640, in the middle',
+        (tester) async {
+      await pump(tester, size: const Size(1493, 934));
+      final list = tester.getRect(find.byKey(const ValueKey('away-list')));
+      final go = tester.getRect(find.byKey(const ValueKey('away-go')));
+      expect(list.width, lessThanOrEqualTo(640));
+      expect(list.center.dx, closeTo(1493 / 2, 1));
+      expect(go.width, lessThanOrEqualTo(640));
+      expect(go.center.dx, closeTo(1493 / 2, 1));
+      expect(go.bottom, greaterThan(800), reason: 'still at the foot');
+    });
+
+    testWidgets('the reading bar is said to a screen reader', (tester) async {
+      final semantics = tester.ensureSemantics();
+      final engine = _Engine()..holdReads = Completer<void>();
+      await pump(tester, with_: engine, settle: false);
+      expect(find.bySemanticsLabel('Reading the calendars'), findsOneWidget);
+      engine.holdReads!.complete();
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('Reading the calendars'), findsNothing);
+      semantics.dispose();
+    });
+
     testWidgets('a screen reader hears each row as one: its tick, what it is, '
         'and how it went', (tester) async {
       final semantics = tester.ensureSemantics();
@@ -1735,6 +1791,9 @@ class _Engine extends SampleMailEngine {
   /// What a look at a meeting throws instead, for a test.
   Exception? notesFail;
 
+  /// Each read of a calendar waits for this, where a test holds them.
+  Completer<void>? holdReads;
+
   /// Meetings a look finds gone, though a read listed them.
   final Set<String> notesGone = {};
 
@@ -1759,8 +1818,9 @@ class _Engine extends SampleMailEngine {
     String accountId,
     DateTime start,
     DateTime end,
-  ) {
+  ) async {
     reads++;
+    await holdReads?.future;
     return super.calendarEvents(accountId, start, end);
   }
 

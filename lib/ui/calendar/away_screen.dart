@@ -19,6 +19,7 @@ import '../common/bottom_message.dart';
 import '../messages/date_format.dart';
 import '../settings/auto_replies_screen.dart';
 import '../shell/put_away.dart' show GuardsPutAway;
+import 'away_invitations.dart';
 import 'meeting_share.dart' show meetingWhen;
 
 /// I am away (calendar idea #53), from the calendar's ⋮: the days asked
@@ -292,15 +293,29 @@ class _AwayScreenState extends ConsumerState<AwayScreen>
           cancels: cancels,
           tell: press.tell,
           note: press.note.trim().isNotEmpty,
+          // A Microsoft cancellation carries the note; Google's, none.
+          cancelNote: press.note.trim().isNotEmpty &&
+              todo.any((i) =>
+                  i.action == AwayAction.cancel &&
+                  _account(i.accountId)?.provider == MailProvider.outlook),
           words: _words(todo)!,
         ),
       );
       _asking = false;
       if (sure != true || !mounted) return;
     }
+    // The declined meetings' invitations, as Decline clears one: looked
+    // for before anything goes, cleared once it has.
+    final invitations = context.mounted
+        ? AwayInvitations.before(context, ref)
+        : null;
     // Held by the app, not the screen: it goes on to its end, and reads
     // the views and the reminders again then, whatever becomes of this.
-    await ref.read(awayPressProvider.notifier).go(press);
+    await ref.read(awayPressProvider.notifier).go(
+          press,
+          before: invitations?.lookUp,
+          after: invitations?.clear,
+        );
   }
 
   /// The button's words for [todo]; again where an earlier press left
@@ -466,7 +481,10 @@ class _AwayScreenState extends ConsumerState<AwayScreen>
       key: const ValueKey('away-list'),
       padding: const EdgeInsets.only(bottom: 16),
       children: [
-        if (reading) const LinearProgressIndicator(),
+        if (reading)
+          const LinearProgressIndicator(
+            semanticsLabel: 'Reading the calendars',
+          ),
         ListTile(
           key: const ValueKey('away-days'),
           leading: const Icon(Icons.date_range_outlined),
@@ -590,47 +608,53 @@ class _AwayScreenState extends ConsumerState<AwayScreen>
       },
       child: Scaffold(
         appBar: AppBar(title: const Text('I am away'), centerTitle: false),
-        body: body,
+        // No wider than a phone's two: on a tablet lying down the button
+        // was one pill 1,500 wide, and Change far from its dates.
+        body: _Narrow(child: body),
         bottomNavigationBar: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (summary != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(
-                      summary,
-                      key: const ValueKey('away-summary'),
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: press.leftUndone
-                            ? theme.colorScheme.error
-                            : null,
+          child: _Narrow(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (summary != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        summary,
+                        key: const ValueKey('away-summary'),
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: press.leftUndone
+                              ? theme.colorScheme.error
+                              : null,
+                        ),
+                      ),
+                    ),
+                  FilledButton(
+                    key: const ValueKey('away-go'),
+                    onPressed: done
+                        ? () => Navigator.of(context).maybePop()
+                        : (reading || locked || words == null ? null : _go),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Text(
+                        press.looking
+                            ? 'Looking for the invitations…'
+                            : running
+                                ? 'Sending: ${press.through} of ${press.of}'
+                                : reading
+                                    ? 'Reading the calendars…'
+                                    : done
+                                        ? 'Close'
+                                        : words ?? 'Nothing ticked',
+                        textAlign: TextAlign.center,
                       ),
                     ),
                   ),
-                FilledButton(
-                  key: const ValueKey('away-go'),
-                  onPressed: done
-                      ? () => Navigator.of(context).maybePop()
-                      : (reading || locked || words == null ? null : _go),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Text(
-                      running
-                          ? 'Sending: ${press.through} of ${press.of}'
-                          : reading
-                              ? 'Reading the calendars…'
-                              : done
-                                  ? 'Close'
-                                  : words ?? 'Nothing ticked',
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -648,6 +672,26 @@ String _why(Object e) => switch (e) {
 
 /// Asked once more before anything that tells anyone goes: what will go,
 /// in words, and that it cannot be taken back.
+/// [child] no wider than [width], in the middle.
+class _Narrow extends StatelessWidget {
+  const _Narrow({required this.child});
+
+  static const width = 640.0;
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Align(
+        alignment: Alignment.topCenter,
+        // As tall as what it holds: the bar at the foot stays a bar.
+        heightFactor: 1,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: width),
+          child: child,
+        ),
+      );
+}
+
 class _SureDialog extends StatelessWidget {
   const _SureDialog({
     required this.blocks,
@@ -656,8 +700,12 @@ class _SureDialog extends StatelessWidget {
     required this.cancels,
     required this.tell,
     required this.note,
+    required this.cancelNote,
     required this.words,
   });
+
+  /// The note goes with a cancellation too: one on a Microsoft account.
+  final bool cancelNote;
 
   final List<String> blocks;
   final String days;
@@ -694,7 +742,8 @@ class _SureDialog extends StatelessWidget {
                         '${declines == 1 ? 'organiser' : 'organisers'}.',
               if (cancels > 0)
                 '${meetings(cancels)} of your own cancelled. Everyone on '
-                    '${cancels == 1 ? 'it' : 'them'} is told.',
+                    '${cancels == 1 ? 'it' : 'them'} is told'
+                    '${cancelNote ? ', with your note' : ''}.',
               'An answer or a cancellation cannot be taken back.',
             ])
               Padding(

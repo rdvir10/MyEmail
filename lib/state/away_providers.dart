@@ -1,4 +1,6 @@
-import 'package:flutter/foundation.dart' show ChangeNotifier;
+import 'dart:async' show unawaited;
+
+import 'package:flutter/foundation.dart' show ChangeNotifier, debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/calendar/away_run.dart';
@@ -24,6 +26,10 @@ class AwayPress extends ChangeNotifier {
   bool reading = true;
   bool running = false;
   bool pressed = false;
+
+  /// A press looking for the declined meetings' invitations, before it
+  /// sends anything.
+  bool looking = false;
 
   /// How far a press has got: [through] of [of].
   int through = 0;
@@ -84,8 +90,15 @@ class AwayPresses extends Notifier<AwayPress?> {
   AwayPress? build() => null;
 
   /// [press]'s ticked ones, each once (see [AwayRun]), unless a press is
-  /// going already: then nothing, and false.
-  Future<bool> go(AwayPress press) async {
+  /// going already: then nothing, and false. [before] is waited for
+  /// before anything is sent, with what will go; [after] runs once it is
+  /// all over, whatever became of the screen: the invitations of what was
+  /// declined looked for, then cleared (see `AwayInvitations`).
+  Future<bool> go(
+    AwayPress press, {
+    Future<void> Function(List<AwayItem> todo)? before,
+    Future<void> Function()? after,
+  }) async {
     if (state != null || press.running) return false;
     final todo = press.toDo;
     if (todo.isEmpty) return false;
@@ -97,6 +110,18 @@ class AwayPresses extends Notifier<AwayPress?> {
       ..of = todo.length
       ..changed();
     try {
+      if (before != null) {
+        press
+          ..looking = true
+          ..changed();
+        try {
+          await before(todo);
+        } finally {
+          press
+            ..looking = false
+            ..changed();
+        }
+      }
       await AwayRun(ref.read(mailEngineProvider)).go(
         todo,
         first: press.first,
@@ -121,6 +146,11 @@ class AwayPresses extends Notifier<AwayPress?> {
       state = null;
       // The views and the reminders, from the calendars as they now are.
       ref.read(calendarRefreshProvider.notifier).now();
+      if (after != null) {
+        unawaited(after().catchError((Object e) {
+          debugPrint('[myemail] away: after the press: $e');
+        }));
+      }
     }
     return true;
   }
