@@ -34,6 +34,7 @@ import 'package:myemail/state/away_providers.dart' show awayPressProvider;
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/put_away_providers.dart'
     show putAwayGuardsProvider;
+import 'package:myemail/state/window_providers.dart' show inAWindowProvider;
 import 'package:myemail/theme/app_theme.dart' show buildTheme;
 import 'package:myemail/ui/calendar/away_screen.dart';
 import 'package:myemail/ui/calendar/calendar_screen.dart';
@@ -1785,6 +1786,26 @@ void main() {
           isFalse);
       expect(button(tester), 'Block the days, decline 4',
           reason: "Hadco's four: Gmail's two are not listed");
+    });
+
+    testWidgets("in a window of its own, a whole copy of the app with a "
+        "press of its own, no I am away: one at a time holds only in one "
+        'copy', (tester) async {
+      final (c, _) = await pump(tester, home: const CalendarScreen());
+      await tester.tap(find.byKey(const ValueKey('calendar-menu')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('calendar-away')), findsOneWidget,
+          reason: 'in the main window');
+      await tester.tapAt(Offset.zero);
+      await tester.pumpAndSettle();
+
+      c.read(inAWindowProvider.notifier).mark();
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('calendar-menu')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('calendar-away')), findsNothing);
+      expect(find.byKey(const ValueKey('calendar-share-day')), findsOneWidget,
+          reason: 'which only reads');
     });
 
     testWidgets('no calendar, no I am away in the menu', (tester) async {
