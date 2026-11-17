@@ -235,6 +235,28 @@ void main() {
         findsOneWidget);
   });
 
+  testWidgets('a move that stops part way says how many moved, and Undo '
+      'puts those back', (tester) async {
+    late Account hadco;
+    final (engine, _) = await pump(tester, prepare: (engine, a) {
+      hadco = a;
+      fill(engine, a);
+      // Review's invitation will not move; Budget's and Supplier's will.
+      engine.deleteRefusedFor = {engine.inboxOf(a)[3].id};
+    });
+    expect(engine.inboxOf(hadco)[3].subject, 'Review');
+    await press(tester);
+    expect(engine.inboxOf(hadco).map((m) => m.subject).toSet(),
+        {'Review', 'Planning', 'Weekly'});
+    expect(
+        find.text('2 of 3 invitations moved to Deleted Items; the rest are '
+            'still in the Inbox.'),
+        findsOneWidget);
+    await tester.tap(find.text('Undo'));
+    await tester.pumpAndSettle();
+    expect(engine.inboxOf(hadco), hasLength(5));
+  });
+
   testWidgets('a look that fails leaves them, and says so; the declines '
       'still go', (tester) async {
     late Account hadco;
@@ -268,6 +290,10 @@ class _AwayInbox extends SampleMailEngine {
   final Set<String> refuse = {};
   Exception? searchFails;
   Exception? deleteFails;
+
+  /// Messages the server will not move, by id, for a test: a delete of
+  /// several stops at the first of them, with what went before it moved.
+  Set<String> deleteRefusedFor = {};
 
   /// What reading the account's folders throws, for a test: the look for
   /// invitations fails whole.
@@ -433,6 +459,15 @@ class _AwayInbox extends SampleMailEngine {
     final moves = <MessageMove>[];
     final rest = <String>[];
     for (final id in messageIds) {
+      if (deleteRefusedFor.contains(id)) {
+        final cause = const ConnectionFailed('The server would not move it.');
+        if (moves.isEmpty) throw cause;
+        throw PartialMove(
+          done: moves,
+          moved: [for (final m in moves) ...m.movedIds],
+          cause: cause,
+        );
+      }
       final message = _held(id);
       if (message == null) {
         rest.add(id);

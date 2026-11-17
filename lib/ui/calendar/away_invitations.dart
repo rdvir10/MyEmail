@@ -100,26 +100,43 @@ class AwayInvitations {
     final messages = found.values.toList();
     final listId = _container.read(effectiveSelectedFolderIdProvider) ??
         messages.first.folderId;
-    final List<MessageMove> moves;
-    try {
-      moves = await MessageActions.within(_container, listId)
-          .deleteQuietly(messages);
-    } catch (e) {
-      debugPrint('[myemail] away: invitations not deleted: $e');
+    // One at a time: a delete of several that stops part way would leave
+    // those already moved unsaid (the list's own go first, then the
+    // rest), and they could not be put back.
+    final actions = MessageActions.within(_container, listId);
+    final moves = <MessageMove>[];
+    var moved = 0;
+    for (final m in messages) {
+      try {
+        moves.addAll(await actions.deleteQuietly([m]));
+        moved++;
+      } on PartialMove catch (e) {
+        debugPrint('[myemail] away: an invitation moved part way: $e');
+        moves.addAll(e.done);
+        moved += e.moved.length;
+      } catch (e) {
+        debugPrint('[myemail] away: an invitation not deleted: $e');
+      }
+    }
+    final n = messages.length;
+    if (moved == 0) {
       _say('The invitations could not be moved to Deleted Items: they are '
           'still in the Inbox.');
       return;
     }
-    final n = messages.length;
     _say(
       [
-        n == 1
-            ? '1 invitation moved to Deleted Items.'
-            : '$n invitations moved to Deleted Items.',
+        if (moved < n)
+          '$moved of $n invitations moved to Deleted Items; the rest are '
+              'still in the Inbox.'
+        else if (n == 1)
+          '1 invitation moved to Deleted Items.'
+        else
+          '$n invitations moved to Deleted Items.',
         if (unsure) left,
         if (moves.any((m) => m.isWaiting)) waitingToSync,
       ].join(' '),
-      moves: canUndoAll(moves, n) ? moves : null,
+      moves: canUndoAll(moves, moved) ? moves : null,
       listId: listId,
     );
   }
