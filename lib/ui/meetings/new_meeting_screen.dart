@@ -1292,6 +1292,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
         opened: edit.event.start,
         picked: _start,
         repeat: _options.repeat,
+        weekStart: _weekStart,
       );
       if (problem != null) {
         setState(() => _invalid = problem);
