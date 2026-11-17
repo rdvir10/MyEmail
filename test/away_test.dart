@@ -510,12 +510,49 @@ void main() {
         ..add('g1');
       await run.go([item], first: wed, last: fri);
       expect(engine.calendarActions, ['respond h1 declined']);
-      expect(item.shown, AwayState.failed);
-      expect(item.open, isTrue);
+      expect(item.shown, AwayState.done,
+          reason: 'its organiser has the decline: it went');
+      expect(item.open, isTrue, reason: 'the copy is left to do');
       engine.refuse.clear();
       await run.go([item], first: wed, last: fri);
       expect(engine.calendarActions,
           ['respond h1 declined', 'respond g1 declined quietly']);
+      expect(item.shown, AwayState.done);
+    });
+
+    test('the first copy gone before anything was sent: the next is the '
+        'one declined as Ron chose, its organiser told', () async {
+      final h1 = invited('h', 'h1', at(19, 15), title: 'Board review');
+      final g1 = invited('g', 'g1', at(19, 15), title: 'Board review');
+      engine.events['h']!.add(h1);
+      engine.events['g'] = [g1];
+      engine.gone.add('h1');
+      final item = AwayItem.decline(h1, copies: [g1]);
+      await AwayRun(engine)
+          .go([item], first: wed, last: fri, note: 'Away', tell: true);
+      expect(engine.calendarActions, ['respond g1 declined note=Away']);
+      expect(item.shown, AwayState.done);
+      expect(item.open, isFalse);
+    });
+
+    test('the first gone, the next refused: tried again, the next is still '
+        'the one declined as chosen', () async {
+      final h1 = invited('h', 'h1', at(19, 15), title: 'Board review');
+      final g1 = invited('g', 'g1', at(19, 15), title: 'Board review');
+      engine.events['h']!.add(h1);
+      engine.events['g'] = [g1];
+      engine
+        ..gone.add('h1')
+        ..refuse.add('g1');
+      final item = AwayItem.decline(h1, copies: [g1]);
+      final run = AwayRun(engine);
+      await run.go([item], first: wed, last: fri, tell: true);
+      expect(engine.calendarActions, isEmpty);
+      expect(item.shown, AwayState.failed);
+      expect(item.open, isTrue);
+      engine.refuse.clear();
+      await run.go([item], first: wed, last: fri, tell: true);
+      expect(engine.calendarActions, ['respond g1 declined']);
       expect(item.shown, AwayState.done);
     });
 
@@ -1509,7 +1546,8 @@ void main() {
         'still ticked; gone since, it was never "sent once"', (tester) async {
       const why = 'Microsoft refused the meeting (ErrorInvalidRequest): Your '
           'request cannot be completed.';
-      final engine = _Engine()..refuseWith['webinar'] = const CalendarNotTaken(why);
+      final engine = _Engine()
+        ..refuseWith['webinar'] = const CalendarNotTaken(why);
       await pump(tester, with_: engine);
       final row = rowOf(engine, 'webinar');
       await press(tester);
@@ -1610,6 +1648,86 @@ void main() {
       expect(
           engine.calendarActions.where((a) => a.startsWith('respond board')),
           hasLength(2));
+    });
+
+    testWidgets('declined on Hadco, the Gmail copy refused: the row went, '
+        'and says what is left; Try again asks only for the copy, without a '
+        'word', (tester) async {
+      final (_, engine) = await pump(tester, prepare: (engine, hadco, gmail) {
+        engine.events[hadco]!.add(invited(hadco, 'board-h', at(19, 15),
+            title: 'Board review'));
+        engine.events[gmail]!.add(invited(gmail, 'board-g', at(19, 15),
+            title: 'Board review', me: ronG));
+        engine.refuseWith['board-g'] =
+            const CalendarNotTaken('Google refused the meeting (HTTP 400)');
+      });
+      final row = rowOf(engine, 'board-h');
+      await press(tester);
+      await scrollTo(tester, row);
+      expect(
+          find.descendant(
+              of: row,
+              matching: find.text('Declined on Hadco, not yet on Gmail: '
+                  'Google refused the meeting (HTTP 400)')),
+          findsOneWidget);
+      expect(
+          tester
+              .widget<Text>(find.byKey(const ValueKey('away-summary')))
+              .data,
+          '8 went. 1 of them is not yet declined on every account it is on '
+          '(marked in red). Those that went are not sent again. Pressing '
+          'again does only the 1, each once it is found still on its '
+          'calendar as it was.');
+      expect(button(tester), 'Try again: decline 1');
+
+      engine.refuseWith.clear();
+      await tester.tap(find.byKey(const ValueKey('away-go')));
+      await tester.pumpAndSettle();
+      expect(find.text('The copy on Gmail is declined, without a word.'),
+          findsOneWidget);
+      expect(
+          find.descendant(
+              of: find.byType(AlertDialog),
+              matching: find.textContaining('organiser')),
+          findsNothing);
+      await tester.tap(find.byKey(const ValueKey('away-go-sure')));
+      await tester.pumpAndSettle();
+      expect(
+          engine.calendarActions.where((a) => a.startsWith('respond board')),
+          ['respond board-h declined', 'respond board-g declined quietly']);
+      await scrollTo(tester, row);
+      expect(
+          find.descendant(
+              of: row, matching: find.text('Declined on Hadco and Gmail')),
+          findsOneWidget);
+    });
+
+    testWidgets("the Hadco copy gone before anything was sent: Gmail's is "
+        'declined as chosen, and the row says so', (tester) async {
+      final (_, engine) = await pump(tester, prepare: (engine, hadco, gmail) {
+        engine.events[hadco]!.add(invited(hadco, 'board-h', at(19, 15),
+            title: 'Board review'));
+        engine.events[gmail]!.add(invited(gmail, 'board-g', at(19, 15),
+            title: 'Board review', me: ronG));
+        engine.gone.add('board-h');
+      });
+      final row = rowOf(engine, 'board-h');
+      await press(tester);
+      expect(engine.calendarActions, contains('respond board-g declined'));
+      expect(engine.calendarActions,
+          isNot(contains('respond board-g declined quietly')));
+      await scrollTo(tester, row);
+      expect(
+          find.descendant(
+              of: row,
+              matching: find.text('Gone from Hadco: nothing was sent there. '
+                  'Declined on Gmail')),
+          findsOneWidget);
+      expect(
+          tester
+              .widget<Text>(find.byKey(const ValueKey('away-summary')))
+              .data,
+          'Done: 8 went.');
     });
 
     testWidgets('an account hidden in the calendar: its block and its '
