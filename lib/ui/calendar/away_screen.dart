@@ -277,6 +277,12 @@ class _AwayScreenState extends ConsumerState<AwayScreen>
     if (todo.isEmpty) return;
     final declines = _count(todo, AwayAction.decline);
     final cancels = _count(todo, AwayAction.cancel);
+    // A meeting declined already on one account, its copy on another not
+    // yet: tried again, only the copy goes, telling nobody.
+    final copiesOnly = [
+      for (final i in todo)
+        if (i.action == AwayAction.decline && i.onlyCopiesLeft) i,
+    ];
     // Whoever is told is told for good: asked once more, in words.
     if (declines + cancels > 0) {
       _asking = true;
@@ -289,7 +295,14 @@ class _AwayScreenState extends ConsumerState<AwayScreen>
                 _account(b.accountId)?.displayName ?? '',
           ],
           days: _daysText(),
-          declines: declines,
+          declines: declines - copiesOnly.length,
+          copies: [
+            for (final i in copiesOnly)
+              for (final c in i.copies)
+                if (c.state == AwayState.failed ||
+                    c.state == AwayState.waiting)
+                  _account(c.accountId)?.displayName ?? '',
+          ],
           cancels: cancels,
           tell: press.tell,
           note: press.note.trim().isNotEmpty,
@@ -324,7 +337,8 @@ class _AwayScreenState extends ConsumerState<AwayScreen>
         blocks: _count(todo, AwayAction.block),
         declines: _count(todo, AwayAction.decline),
         cancels: _count(todo, AwayAction.cancel),
-        again: todo.any((i) => i.shown == AwayState.failed),
+        again: todo.any(
+            (i) => [i, ...i.copies].any((m) => m.state == AwayState.failed)),
       );
 
   String _daysText() => _press.first == _press.last
@@ -342,13 +356,21 @@ class _AwayScreenState extends ConsumerState<AwayScreen>
     final failed = count(AwayState.failed) - maybe;
     final gone = count(AwayState.gone);
     final sentGone = count(AwayState.sentGone);
+    // Declined on one account, its copy on another not yet: it went (its
+    // organiser has the decline), with the copy left.
+    final partly = all.where((i) => i.notYet.isNotEmpty).length;
+    final left = failed + partly;
     return [
-      if (failed == 0 && maybe == 0)
+      if (left == 0 && maybe == 0)
         went == 0 ? 'Nothing more to send.' : 'Done: $went went.'
       else if (failed == 0)
         '$went went.'
       else
         '$went went, $failed did not (marked in red).',
+      if (partly > 0)
+        '$partly of them ${partly == 1 ? 'is' : 'are'} not yet declined on '
+            'every account ${partly == 1 ? 'it is' : 'they are'} on (marked '
+            'in red).',
       if (maybe > 0)
         '$maybe may have gone: no answer came, so ${maybe == 1 ? 'it is' : ''
             'they are'} left unticked.',
@@ -358,35 +380,74 @@ class _AwayScreenState extends ConsumerState<AwayScreen>
       if (gone > 0)
         '$gone ${gone == 1 ? 'was' : 'were'} no longer on the calendar, so '
             'nothing was sent for ${gone == 1 ? 'it' : 'them'}.',
-      if (failed > 0)
+      if (left > 0)
         'Those that went are not sent again. Pressing again does only the '
-            '$failed, each once it is found still on its calendar as it was.',
+            '$left, each once it is found still on its calendar as it was.',
     ].join(' ');
   }
 
-  /// What a row that did not go says.
-  String? _failedWords(AwayItem item) {
-    if (item.shown != AwayState.failed) return null;
+  /// What a row says where the row's own words would not do: one that
+  /// did not go, and one meeting on two or more accounts, where each copy
+  /// may have got somewhere else. Null for the row's own.
+  String? _said(AwayItem item) {
     String name(AwayItem i) => _account(i.accountId)?.displayName ?? '';
-    if (item.copyLeft case final copy?) {
-      return 'Declined on ${name(item)}. Not on ${name(copy)}: '
-          '${copy.unanswered ? 'no answer came' : copy.problem}';
+    String failure(AwayItem m) {
+      if (m.unanswered) {
+        final held = m.problem ?? '';
+        final then = held.startsWith('Not tried again')
+            ? held
+            : 'Tick it to send again.';
+        return 'May have gone: no answer came. $then';
+      }
+      return 'Did not go: ${m.problem ?? 'no answer came'}';
     }
-    if (_mayHaveGone(item)) {
-      final held = item.problem ?? '';
-      final then = held.startsWith('Not tried again')
-          ? held
-          : 'Tick it to send again.';
-      return 'May have gone: no answer came. $then';
+
+    String reason(AwayItem m) =>
+        m.unanswered ? 'no answer came' : m.problem ?? 'no answer came';
+
+    if (item.copies.isEmpty) {
+      return item.shown == AwayState.failed ? failure(item) : null;
     }
-    return 'Did not go: ${item.problem ?? 'no answer came'}';
+    final members = [item, ...item.copies];
+    final lead = item.lead;
+    final at = members.indexOf(lead);
+    final goneFirst = [
+      for (final m in members.take(at)) name(m),
+    ];
+    final after = members.skip(at + 1);
+    final now = switch (lead.state) {
+      AwayState.done || AwayState.sentGone => [
+          lead.state == AwayState.sentGone
+              ? 'Sent once on ${name(lead)}; no answer came back, and it is '
+                  'no longer on that calendar, so it is not sent again'
+              : 'Declined on ${[
+                  name(lead),
+                  for (final m in after)
+                    if (m.state == AwayState.done ||
+                        m.state == AwayState.sentGone)
+                      name(m),
+                ].join(' and ')}',
+          if (item.notYet case final left when left.isNotEmpty)
+            'not yet on ${[for (final m in left) name(m)].join(' and ')}: '
+                '${reason(left.first)}',
+        ].join(', '),
+      AwayState.failed => failure(lead),
+      AwayState.gone => 'No longer on your calendar: nothing was sent',
+      _ => null,
+    };
+    if (now == null && goneFirst.isEmpty) return null;
+    return [
+      if (goneFirst.isNotEmpty && lead.state != AwayState.gone)
+        'Gone from ${goneFirst.join(' and ')}: nothing was sent there',
+      ?now,
+    ].join('. ');
   }
 
   /// [i] tried, and no answer came: it may have gone. Not ticked again by
-  /// itself: a second decline is Ron's to choose. A copy, declined telling
-  /// nobody, may go again.
+  /// itself: a second decline is Ron's to choose. A copy after the one
+  /// declined as chosen, telling nobody, may go again.
   static bool _mayHaveGone(AwayItem i) =>
-      i.state == AwayState.failed && i.unanswered && !i.quiet;
+      i.shown == AwayState.failed && i.lead.unanswered;
 
   @override
   Widget build(BuildContext context) {
@@ -420,7 +481,7 @@ class _AwayScreenState extends ConsumerState<AwayScreen>
               theme.colorScheme.primary.toARGB32()),
           title: title,
           lines: lines,
-          failed: _failedWords(item),
+          said: _said(item),
           onTick: (on) {
             on ? press.ticked.add(item) : press.ticked.remove(item);
             press.changed();
@@ -702,7 +763,12 @@ class _SureDialog extends StatelessWidget {
     required this.note,
     required this.cancelNote,
     required this.words,
+    this.copies = const [],
   });
+
+  /// The accounts of copies to be declined without a word, a meeting
+  /// declined already on another: each named once.
+  final List<String> copies;
 
   /// The note goes with a cancellation too: one on a Microsoft account.
   final bool cancelNote;
@@ -740,6 +806,11 @@ class _SureDialog extends StatelessWidget {
                     : '${meetings(declines)} declined, without a word to '
                         '${declines == 1 ? 'its' : 'their'} '
                         '${declines == 1 ? 'organiser' : 'organisers'}.',
+              if (copies.length == 1)
+                'The copy on ${copies.single} is declined, without a word.'
+              else if (copies.length > 1)
+                '${copies.length} copies on your other accounts are '
+                    'declined, without a word.',
               if (cancels > 0)
                 '${meetings(cancels)} of your own cancelled. Everyone on '
                     '${cancels == 1 ? 'it' : 'them'} is told'
@@ -781,13 +852,13 @@ class _AwayRow extends StatelessWidget {
     required this.title,
     required this.lines,
     required this.onTick,
-    this.failed,
+    this.said,
   });
 
   final AwayItem item;
 
-  /// What it says where it did not go.
-  final String? failed;
+  /// What it says where its own words would not do (see `_said`).
+  final String? said;
   final bool ticked;
   final bool enabled;
   final Color colour;
@@ -801,23 +872,28 @@ class _AwayRow extends StatelessWidget {
     final scheme = theme.colorScheme;
     final small = theme.textTheme.bodySmall
         ?.copyWith(color: scheme.onSurfaceVariant);
-    // Done or gone: never again, so no tick to give it.
+    // Done or gone: never again, so no tick to give it. A meeting declined
+    // on one account and not yet on another keeps one, for its copy.
     final tickable = enabled && item.open;
-    final Widget lead = switch (item.shown) {
-      AwayState.going => const SizedBox.square(
-          dimension: 20,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-      AwayState.done || AwayState.sentGone =>
-        Icon(Icons.check_circle, color: scheme.primary),
-      AwayState.gone =>
-        Icon(Icons.remove_circle_outline, color: scheme.onSurfaceVariant),
-      AwayState.waiting || AwayState.failed => Checkbox(
-          value: ticked,
-          onChanged: tickable ? (on) => onTick(on ?? false) : null,
-        ),
-    };
-    final said = switch (item.shown) {
+    final going =
+        [item, ...item.copies].any((m) => m.state == AwayState.going);
+    final trouble = item.shown == AwayState.failed || item.notYet.isNotEmpty;
+    final Widget lead = going
+        ? const SizedBox.square(
+            dimension: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : item.open
+            ? Checkbox(
+                value: ticked,
+                onChanged: tickable ? (on) => onTick(on ?? false) : null,
+              )
+            : switch (item.shown) {
+                AwayState.gone => Icon(Icons.remove_circle_outline,
+                    color: scheme.onSurfaceVariant),
+                _ => Icon(Icons.check_circle, color: scheme.primary),
+              };
+    final said = this.said ?? switch (item.shown) {
       AwayState.done => switch (item.action) {
           AwayAction.block => 'Blocked',
           AwayAction.decline => 'Declined',
@@ -831,8 +907,7 @@ class _AwayRow extends StatelessWidget {
       // It went once; what came back was lost.
       AwayState.sentGone => 'Sent once; no answer came back, and it is no '
           'longer on your calendar, so it is not sent again',
-      AwayState.failed => failed,
-      AwayState.going || AwayState.waiting => null,
+      AwayState.failed || AwayState.going || AwayState.waiting => null,
     };
     // One thing to a screen reader: its tick, what it is, and how it went.
     return MergeSemantics(
@@ -882,7 +957,7 @@ class _AwayRow extends StatelessWidget {
                         Text(
                           said,
                           style: theme.textTheme.bodySmall?.copyWith(
-                            color: item.shown == AwayState.failed
+                            color: trouble
                                 ? scheme.error
                                 : item.shown == AwayState.done ||
                                         item.shown == AwayState.sentGone

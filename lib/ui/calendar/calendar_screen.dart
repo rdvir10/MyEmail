@@ -26,6 +26,7 @@ import '../../domain/time_zones.dart';
 import '../../state/calendar_view_providers.dart';
 import '../../state/meeting_providers.dart' show workWeekProvider;
 import '../../state/providers.dart';
+import '../../state/window_providers.dart' show inAWindowProvider;
 import '../accounts/google_sign_in_screen.dart';
 import '../accounts/microsoft_sign_in_screen.dart';
 import '../common/bottom_message.dart';
@@ -624,14 +625,17 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
                 child: Text('Refresh'),
               ),
               // Going away: the days blocked, and the meetings in them
-              // declined or cancelled as ticked (#53).
+              // declined or cancelled as ticked (#53). Not in a window of
+              // its own, a whole copy of the app whose press another
+              // copy's "one at a time" cannot see.
               if (accounts.isNotEmpty) ...[
                 const PopupMenuDivider(),
-                const PopupMenuItem(
-                  key: ValueKey('calendar-away'),
-                  value: 'away',
-                  child: Text('I am away'),
-                ),
+                if (!ref.read(inAWindowProvider))
+                  const PopupMenuItem(
+                    key: ValueKey('calendar-away'),
+                    value: 'away',
+                    child: Text('I am away'),
+                  ),
                 // The day the view is on, as a few lines to copy or to
                 // share, as a meeting's sheet shares its own day (#48).
                 const PopupMenuItem(
