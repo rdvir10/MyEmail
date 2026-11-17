@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -69,9 +70,10 @@ class _Target {
 }
 
 class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
-  /// Read after the first frame, which shows that it is being read.
-  late final Future<_Read> _reading =
-      Future<_Read>.delayed(Duration.zero, () => _read(widget.file));
+  /// Read off the UI's own isolate: a file of thousands of events, or one
+  /// written to be slow, would otherwise hold the screen still until
+  /// Android offered to close MyEmail.
+  late final Future<_Read> _reading = _readOff(widget.file.path);
 
   /// The target picked, by its key; the first offered until one is.
   String? _picked;
@@ -80,15 +82,26 @@ class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
   final _added = <int, String>{};
   final _busy = <int>{};
 
-  /// One key for each event's Add however often it is tried: see
-  /// [FileEvent.draftFor].
-  final _transactions = <int, String>{};
+  /// One key for each event's Add to each calendar, however often it is
+  /// tried there: see [FileEvent.draftFor]. Another calendar is another
+  /// meeting, and never the first one answered again.
+  final _transactions = <String, String>{};
 
-  /// [file] read, all at once: a calendar is small, and one past
-  /// [CalendarFile.largest] is not read at all.
-  static _Read _read(IncomingFile file) {
+  static Future<_Read> _readOff(String path) async {
     try {
-      final f = File(file.path);
+      return await Isolate.run(() => _read(path));
+    } catch (e) {
+      debugPrint('[myemail] a calendar file could not be read apart: '
+          '${e.runtimeType}');
+      return (calendar: null, problem: 'This file could not be read.');
+    }
+  }
+
+  /// The file at [path] read, all at once: a calendar is small, and one
+  /// past [CalendarFile.largest] is not read at all.
+  static _Read _read(String path) {
+    try {
+      final f = File(path);
       if (f.lengthSync() > CalendarFile.largest) {
         return (calendar: null, problem: 'This file is too large for a '
             'calendar, so MyEmail has not read it.');
@@ -171,7 +184,7 @@ class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
           calendarId: target.calendarId!,
           timeZone: zone,
           transactionId: _transactions.putIfAbsent(
-              index, MeetingDraft.newTransactionId),
+              '$index ${target.key}', MeetingDraft.newTransactionId),
         ));
         // A window of its own waits for it before it ends.
         inFlight.add(work);
@@ -302,20 +315,57 @@ class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
             ),
         ],
     );
+    // Opened at the first event from today on, those before it above: a
+    // school's or a country's calendar can go back years. Where every one
+    // has gone by, at the last.
+    final events = calendar.events;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final upcoming = events.indexWhere(
+        (e) => !DateTime(e.end.year, e.end.month, e.end.day).isBefore(today));
+    final first = upcoming < 0 ? events.length - 1 : upcoming;
     // Built as they come into view: a published calendar can hold
     // thousands. No wider than a page reads on a tablet, the margins
-    // scrolling with it.
+    // scrolling with it. Where they go stays in sight above them.
     return SafeArea(
       top: false,
       child: LayoutBuilder(
         builder: (context, box) {
           final side = math.max(16.0, (box.maxWidth - _widest) / 2);
-          return ListView.builder(
-            padding: EdgeInsets.fromLTRB(side, 12, side, 24),
-            itemCount: calendar.events.length + 1,
-            itemBuilder: (context, i) => i == 0
-                ? header
-                : _event(context, i - 1, calendar.events[i - 1], target),
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: EdgeInsets.fromLTRB(side, 12, side, 4),
+                child: header,
+              ),
+              Expanded(
+                child: CustomScrollView(
+                  center: first > 0 ? _fromToday : null,
+                  slivers: [
+                    if (first > 0)
+                      SliverPadding(
+                        padding: EdgeInsets.symmetric(horizontal: side),
+                        sliver: SliverList.builder(
+                          itemCount: first,
+                          // Nearest first, upwards.
+                          itemBuilder: (context, i) => _event(context,
+                              first - 1 - i, events[first - 1 - i], target),
+                        ),
+                      ),
+                    SliverPadding(
+                      key: _fromToday,
+                      padding: EdgeInsets.fromLTRB(side, 0, side, 24),
+                      sliver: SliverList.builder(
+                        itemCount: events.length - first,
+                        itemBuilder: (context, i) => _event(
+                            context, first + i, events[first + i], target),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           );
         },
       ),
@@ -355,6 +405,13 @@ class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
             if (place.isNotEmpty) _line(theme, Icons.place_outlined, place),
             if (repeats)
               _line(theme, Icons.repeat, event.repeatWords ?? 'Repeats'),
+            if (event.zoneUnknown)
+              _line(
+                theme,
+                Icons.info_outline,
+                'Its time zone is one MyEmail does not know: the time is as '
+                "the file writes it, on this phone's clock.",
+              ),
             if (repeats && !kept && added == null)
               _line(
                 theme,
@@ -417,6 +474,9 @@ class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
 
   /// The widest the list goes, its margins aside.
   static const _widest = 720.0;
+
+  /// The list's part from today on, where it opens.
+  static const _fromToday = ValueKey('calendar-file-from-today');
 
   /// "Wed 2 Dec 2026, 14:00–15:00", or for whole days the first and the
   /// last.

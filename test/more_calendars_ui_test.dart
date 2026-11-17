@@ -312,6 +312,8 @@ void main() {
       final (c, _, _) = await pump(tester, (_) => const CalendarSettingsScreen());
       final holidays = find.byKey(const ValueKey('internet-calendar-holidays'));
       await tester.scrollUntilVisible(holidays, 200);
+      await tester.ensureVisible(holidays);
+      await tester.pumpAndSettle();
       await tester.tap(holidays);
       await tester.pumpAndSettle();
       final israel = find.byKey(const ValueKey('holidays:en.jewish'));

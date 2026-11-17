@@ -6,7 +6,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/calendar/device_calendar.dart';
 import 'package:myemail/data/calendar/internet_calendars.dart';
+import 'package:myemail/data/calendar/google_calendar_api.dart';
 import 'package:myemail/data/files/file_bridge.dart';
+import 'package:myemail/data/graph/graph_calendar_api.dart';
+import 'package:myemail/data/mail_engine.dart' show ConnectionFailed;
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
@@ -14,6 +17,7 @@ import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/domain/calendar_files.dart';
 import 'package:myemail/domain/calendar_invite.dart';
 import 'package:myemail/domain/mail_message.dart';
+import 'package:myemail/domain/meeting.dart';
 import 'package:myemail/domain/recurrence.dart';
 import 'package:myemail/state/attachment_providers.dart';
 import 'package:myemail/state/calendar_providers.dart';
@@ -492,6 +496,225 @@ void main() {
     });
   });
 
+  // What the review of #67 found in the reading (calendar-ideas-2,
+  // reviews/h3.json), each pinned here.
+  group('reading a calendar file', () {
+    FileEvent only(String text) => CalendarFile.read(text)!.events.single;
+
+    String london(String day, {String rule = 'FREQ=WEEKLY;BYDAY=TH'}) =>
+        'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:$day\r\nSUMMARY:London\r\n'
+        'DTSTART;TZID=Europe/London:${day}T100000\r\n'
+        'DTEND;TZID=Europe/London:${day}T110000\r\n'
+        '${rule.isEmpty ? '' : 'RRULE:$rule\r\n'}'
+        'END:VEVENT\r\nEND:VCALENDAR';
+
+    test('a series set in a zone the phone knows goes on that zone\'s clock, '
+        'to a Microsoft and to a Google calendar', () {
+      final series = only(london('20261203'));
+      final draft = series.draftFor(
+        accountId: 'a',
+        calendarId: CalendarEvent.mainCalendar,
+        timeZone: 'America/New_York',
+      );
+      expect(draft.start, DateTime(2026, 12, 3, 10));
+      expect(draft.end, DateTime(2026, 12, 3, 11));
+      expect(draft.timeZone, 'Europe/London');
+      expect(draft.recurrence?.kind, RepeatKind.weekly);
+      expect(draft.recurrence?.days, {DateTime.thursday});
+      final graph = GraphCalendarApi.eventJson(draft);
+      expect(graph['start'],
+          {'dateTime': '2026-12-03T10:00:00', 'timeZone': 'Europe/London'});
+      expect(graph['end'],
+          {'dateTime': '2026-12-03T11:00:00', 'timeZone': 'Europe/London'});
+      final google = GoogleCalendarApi.eventJson(draft);
+      expect((google['start'] as Map)['dateTime'], startsWith('2026-12-03T10:00'));
+      expect((google['start'] as Map)['timeZone'], 'Europe/London');
+    });
+
+    test('one on its own goes at its instant on the phone\'s clock, as '
+        'before', () {
+      final single = only(london('20261203', rule: ''));
+      final draft = single.draftFor(
+        accountId: 'a',
+        calendarId: CalendarEvent.mainCalendar,
+        timeZone: 'Asia/Jerusalem',
+      );
+      expect(draft.start, DateTime.utc(2026, 12, 3, 10).toLocal());
+      expect(draft.timeZone, 'Asia/Jerusalem');
+    });
+
+    test("a zone the phone does not know is read from the file's own "
+        'definition of it (Q3)', () {
+      const text = 'BEGIN:VCALENDAR\r\n'
+          'BEGIN:VTIMEZONE\r\nTZID:Customized Time Zone\r\n'
+          'BEGIN:STANDARD\r\nDTSTART:16011028T020000\r\n'
+          'RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\r\n'
+          'TZOFFSETFROM:+0300\r\nTZOFFSETTO:+0200\r\nEND:STANDARD\r\n'
+          'BEGIN:DAYLIGHT\r\nDTSTART:16010325T020000\r\n'
+          'RRULE:FREQ=YEARLY;BYDAY=-1FR;BYMONTH=3\r\n'
+          'TZOFFSETFROM:+0200\r\nTZOFFSETTO:+0300\r\nEND:DAYLIGHT\r\n'
+          'END:VTIMEZONE\r\n'
+          'BEGIN:VEVENT\r\nUID:x\r\nSUMMARY:Board\r\n'
+          'DTSTART;TZID="Customized Time Zone":20261203T100000\r\n'
+          'DTEND;TZID="Customized Time Zone":20261203T110000\r\n'
+          'END:VEVENT\r\nEND:VCALENDAR\r\n';
+      final e = only(text);
+      expect(e.event.start.toUtc(), DateTime.utc(2026, 12, 3, 8));
+      expect(e.event.start.add(e.event.length).toUtc(),
+          DateTime.utc(2026, 12, 3, 9));
+      expect(e.zoneUnknown, isFalse);
+      // In summer, by the same definition: 10:00 at +03:00.
+      expect(only(text.replaceAll('20261203', '20260702')).event.start.toUtc(),
+          DateTime.utc(2026, 7, 2, 7));
+    });
+
+    test('one it does not define either is read as written, and says so',
+        () {
+      final e = only('BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:x\r\n'
+          'SUMMARY:Board\r\nDTSTART;TZID=Somewhere Else:20261203T100000\r\n'
+          'END:VEVENT\r\nEND:VCALENDAR');
+      expect(e.zoneUnknown, isTrue);
+      expect(e.start, DateTime(2026, 12, 3, 10));
+    });
+
+    testWidgets('its row says so before Add', (tester) async {
+      await pumpOpened(tester, SharedContent(
+        calendarFile: aFile('elsewhere.ics',
+            text: 'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:x\r\n'
+                'SUMMARY:Board\r\n'
+                'DTSTART;TZID=Somewhere Else:20261203T100000\r\n'
+                'END:VEVENT\r\nEND:VCALENDAR'),
+        calendarOpened: true,
+      ));
+      expect(find.textContaining('time zone is one MyEmail does not know'),
+          findsOneWidget);
+    });
+
+    test('folded lines are put back together, and quickly however many',
+        () {
+      final long = StringBuffer('BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\n'
+          'UID:f\r\nSUMMARY:Folded\r\nDTSTART:20261203T120000Z\r\n'
+          'DESCRIPTION:x');
+      for (var i = 0; i < 300; i++) {
+        long.write('\r\n y$i');
+      }
+      long.write('\r\nEND:VEVENT\r\nEND:VCALENDAR');
+      final description = only(long.toString()).event.description;
+      expect(description, startsWith('xy0y1y2'));
+      expect(description, endsWith('y298y299'));
+
+      final huge = StringBuffer('BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\n'
+          'UID:h\r\nDTSTART:20261203T120000Z\r\nDESCRIPTION:x');
+      while (huge.length < 1024 * 1024) {
+        huge.write('\r\n y');
+      }
+      huge.write('\r\nEND:VEVENT\r\nEND:VCALENDAR');
+      final took = Stopwatch()..start();
+      expect(CalendarFile.read(huge.toString()), isNotNull);
+      took.stop();
+      // 7.8 s on this PC before (each line added to a growing string).
+      expect(took.elapsed, lessThan(const Duration(seconds: 2)));
+    });
+
+    test('a count past 999 cannot be copied, to a calendar or the phone',
+        () {
+      FileEvent counted(int n) => only('BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\n'
+          'UID:c\r\nSUMMARY:Daily\r\nDTSTART:20261203T120000Z\r\n'
+          'RRULE:FREQ=DAILY;COUNT=$n\r\nEND:VEVENT\r\nEND:VCALENDAR');
+      expect(counted(999).repeatKept, isTrue);
+      expect(counted(999).phoneRuleKept, isTrue);
+      expect(counted(1000).repeatKept, isFalse);
+      expect(counted(1000).phoneRuleKept, isFalse);
+      expect(counted(100000).repeat, isNull);
+    });
+
+    test('an hour past 23, or a day that is none, is not read', () {
+      for (final at in ['20261203T990000Z', '20261203T246000', '20261340']) {
+        expect(
+          CalendarFile.read('BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:b\r\n'
+              'SUMMARY:Odd\r\nDTSTART:$at\r\nEND:VEVENT\r\nEND:VCALENDAR'),
+          isNull,
+          reason: at,
+        );
+      }
+    });
+
+    testWidgets('an Add tried again on another calendar is a new meeting, '
+        'not the first answered again', (tester) async {
+      final failing = _FailingOnce();
+      engine = failing;
+      final (c, hadco) = await pumpOpened(tester, SharedContent(
+        calendarFile: aFile('school.ics', text: school),
+        calendarOpened: true,
+      ));
+      await tester.runAsync(() => engine.addOAuthAccount(
+            displayName: 'Gmail',
+            emailAddress: 'ron@gmail.example',
+            provider: MailProvider.gmail,
+            token: OAuthToken(
+              accessToken: 'a',
+              refreshToken: 'r',
+              expiresAt: DateTime.utc(2030),
+            ),
+          ));
+      c.invalidate(accountsProvider);
+      await settle(tester);
+
+      await tapAdd(tester, "Parents' evening");
+      failing.failNext = true;
+      await tapAdd(tester, "Parents' evening");
+      expect(failing.tried, hasLength(2));
+      expect(failing.tried.map((d) => d.accountId), [hadco.id, hadco.id]);
+      expect(failing.tried[1].transactionId, failing.tried[0].transactionId,
+          reason: 'tried again on the same calendar: the same key, so a '
+              'meeting made after all is not made twice');
+
+      await tester.tap(find.byKey(const ValueKey('calendar-file-target')));
+      await settle(tester);
+      await tester.tap(find.text('Gmail').last);
+      await settle(tester);
+      await tapAdd(tester, "Parents' evening");
+      expect(failing.tried, hasLength(3));
+      expect(failing.tried[2].accountId, isNot(hadco.id));
+      expect(failing.tried[2].transactionId,
+          isNot(failing.tried[0].transactionId));
+      expect(find.text('Added to Gmail'), findsOneWidget);
+    });
+
+    testWidgets('the list opens at the first event from today on, the ones '
+        'before it above', (tester) async {
+      final today = DateTime.now();
+      String day(int fromToday) {
+        final d = DateTime(today.year, today.month, today.day + fromToday);
+        return '${d.year}${d.month.toString().padLeft(2, '0')}'
+            '${d.day.toString().padLeft(2, '0')}';
+      }
+
+      final text = StringBuffer('BEGIN:VCALENDAR\r\n');
+      for (var i = 40; i >= 1; i--) {
+        text.write('BEGIN:VEVENT\r\nUID:p$i\r\nSUMMARY:Past $i\r\n'
+            'DTSTART;VALUE=DATE:${day(-i)}\r\nEND:VEVENT\r\n');
+      }
+      for (final i in [1, 2]) {
+        text.write('BEGIN:VEVENT\r\nUID:n$i\r\nSUMMARY:Next $i\r\n'
+            'DTSTART;VALUE=DATE:${day(i)}\r\nEND:VEVENT\r\n');
+      }
+      text.write('END:VCALENDAR\r\n');
+      await pumpOpened(tester, SharedContent(
+        calendarFile: aFile('long.ics', text: text.toString()),
+        calendarOpened: true,
+      ));
+
+      expect(find.text('Next 1').hitTestable(), findsOneWidget);
+      expect(find.text('Past 40').hitTestable(), findsNothing);
+      expect(find.byKey(const ValueKey('calendar-file-target')).hitTestable(),
+          findsOneWidget, reason: 'where they go stays in sight');
+      await tester.drag(find.text('Next 1'), const Offset(0, 400));
+      await settle(tester);
+      expect(find.text('Past 1').hitTestable(), findsOneWidget);
+    });
+  });
+
   // Android's half, which no Dart test runs: the filters that offer the
   // app for a calendar, and what is taken from what it is opened with.
   group('the Android half', () {
@@ -556,7 +779,32 @@ Future<void> settle(WidgetTester tester) async {
         () => Future<void>.delayed(const Duration(milliseconds: 60)));
     await tester.pump(const Duration(milliseconds: 100));
   }
+  // A file is read off the UI's isolate, in real time.
+  for (var i = 0;
+      i < 100 && find.byType(CircularProgressIndicator).evaluate().isNotEmpty;
+      i++) {
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pump(const Duration(milliseconds: 50));
+  }
   await tester.pumpAndSettle();
+}
+
+/// The sample engine whose next create fails as an answer that never
+/// came does, with each create asked kept.
+class _FailingOnce extends SampleMailEngine {
+  final List<MeetingDraft> tried = [];
+  bool failNext = true;
+
+  @override
+  Future<CreatedMeeting> createMeeting(MeetingDraft meeting) async {
+    tried.add(meeting);
+    if (failNext) {
+      failNext = false;
+      throw const ConnectionFailed('The answer never came.');
+    }
+    return super.createMeeting(meeting);
+  }
 }
 
 /// Add pressed on the event called [title].

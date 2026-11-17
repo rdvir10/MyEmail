@@ -87,6 +87,32 @@ class FileEvent {
 
   bool get allDay => event.allDay;
 
+  /// Its time names a zone neither the phone knows nor the file defines:
+  /// read as written, on the phone's clock, which its row says.
+  bool get zoneUnknown => event.zoneUnknown;
+
+  /// The zone a series is set in, where it repeats and names one the phone
+  /// knows: it goes on that zone's clock, as it is kept in the file, so it
+  /// does not slip an hour in the weeks the two zones change their clocks
+  /// apart. Null for anything else, which goes on the phone's clock.
+  String? get seriesZone =>
+      rule != null && !allDay && !event.floating ? event.zone : null;
+
+  /// [start] and [end] as a calendar is given them: on [seriesZone]'s
+  /// clock where there is one, the phone's otherwise.
+  ({DateTime start, DateTime end}) get _sent {
+    final zone = seriesZone;
+    if (zone == null) return (start: start, end: end);
+    try {
+      return (
+        start: wallClockIn(event.start, zone),
+        end: wallClockIn(event.start.add(end.difference(start)), zone),
+      );
+    } catch (_) {
+      return (start: start, end: end);
+    }
+  }
+
   /// On the phone's clock, the way New meeting has a meeting: for a whole
   /// day, its first day and its last, both at midnight.
   DateTime get start => allDay ? event.start : event.start.toLocal();
@@ -143,17 +169,28 @@ class FileEvent {
 
   /// Its repeat in New meeting's terms, for an account's calendar; null
   /// where it does not repeat, and where New meeting could not make it so
-  /// (see [repeatKept]).
+  /// (see [repeatKept]): more than 999 meetings is one of those. Read on
+  /// the clock it goes on: the series' own zone's, or the phone's, where
+  /// its days must then be the phone's days.
   Recurrence? get repeat {
     final text = rule;
-    if (text == null || !_sameDay(text)) return null;
-    final first = phoneDay;
+    if (text == null) return null;
+    if (_tooMany(_partsOf(text))) return null;
+    final zone = seriesZone;
+    if (zone == null && !_sameDay(text)) return null;
+    final first = _sent.start;
+    String two(int n) => n.toString().padLeft(2, '0');
     final date = '${first.year.toString().padLeft(4, '0')}-'
-        '${first.month.toString().padLeft(2, '0')}-'
-        '${first.day.toString().padLeft(2, '0')}';
+        '${two(first.month)}-${two(first.day)}';
     return SeriesRepeat.fromGoogle({
       'recurrence': ['RRULE:$text'],
-      'start': {'date': date},
+      'start': allDay
+          ? {'date': date}
+          : {
+              'dateTime': '${date}T${two(first.hour)}:${two(first.minute)}:'
+                  '${two(first.second)}',
+              'timeZone': ?zone,
+            },
     })?.repeat;
   }
 
@@ -188,12 +225,14 @@ class FileEvent {
         accountId: accountId,
         calendarId: calendarId,
         title: title,
-        start: start,
-        end: end,
+        start: _sent.start,
+        end: _sent.end,
         allDay: allDay,
         location: event.location.trim(),
         notes: event.description.trim(),
-        timeZone: timeZone,
+        // A series in a zone of its own goes on that zone's clock: see
+        // [seriesZone]. [timeZone] is the phone's.
+        timeZone: seriesZone ?? timeZone,
         recurrence: repeat,
         transactionId: transactionId,
       );
@@ -206,7 +245,9 @@ DateTime _day(DateTime at) => DateTime(at.year, at.month, at.day);
 final _phoneParts = <String, RegExp>{
   'FREQ': RegExp(r'^(DAILY|WEEKLY|MONTHLY|YEARLY)$'),
   'INTERVAL': RegExp(r'^[1-9]\d{0,2}$'),
-  'COUNT': RegExp(r'^[1-9]\d{0,3}$'),
+  // No more than New meeting makes: a count of 100000 failed only at the
+  // calendar, after Add.
+  'COUNT': RegExp(r'^[1-9]\d{0,2}$'),
   'UNTIL': RegExp(r'^\d{8}(T\d{6}Z?)?$'),
   'WKST': RegExp(r'^(MO|TU|WE|TH|FR|SA|SU)$'),
   'BYDAY': RegExp(
@@ -228,6 +269,14 @@ Map<String, String> _partsOf(String text) {
         part.substring(at + 1).trim().toUpperCase();
   }
   return parts;
+}
+
+/// Whether [parts] count more meetings than New meeting makes, 999.
+bool _tooMany(Map<String, String> parts) {
+  final count = parts['COUNT'];
+  if (count == null) return false;
+  final n = int.tryParse(count);
+  return n == null || n > 999;
 }
 
 /// Whether a repeat's meetings fall on days it names, or on its first

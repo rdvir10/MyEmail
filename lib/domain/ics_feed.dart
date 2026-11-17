@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'calendar_event.dart';
+import 'ics_zones.dart';
 import 'meeting_links.dart';
 import 'time_zones.dart' show ianaZoneOf, instantIn, wallClockIn;
 
@@ -24,18 +25,26 @@ class IcsFeed {
   final List<IcsEvent> events;
 
   /// The text read; never throws, a line it cannot read passed over.
+  ///
+  /// A zone named by a name the phone does not know ("Customized Time
+  /// Zone", as Outlook exports one) is read from the text's own definition
+  /// of it (VTIMEZONE), as an invitation's is; where it has none, its
+  /// times are read as written, on the phone's clock, and the event says
+  /// so ([IcsEvent.zoneUnknown]).
   static IcsFeed parse(String text) {
     String? name;
     final events = <IcsEvent>[];
     _EventBuilder? current;
     var depth = 0;
-    for (final raw in _unfold(text)) {
-      final line = _IcsLine.parse(raw);
-      if (line == null) continue;
+    final lines = [for (final raw in _unfold(text)) ?_IcsLine.parse(raw)];
+    final zones = IcsZone.all([
+      for (final l in lines) (name: l.name, value: l.value),
+    ]);
+    for (final line in lines) {
       final value = line.value.trim().toUpperCase();
       if (line.name == 'BEGIN') {
         if (value == 'VEVENT' && current == null) {
-          current = _EventBuilder();
+          current = _EventBuilder(zones);
           depth = 0;
         } else if (current != null) {
           // A reminder (VALARM) inside the event, with lines of its own.
@@ -158,7 +167,12 @@ class IcsEvent {
     this.recurrenceId,
     this.transparent = false,
     this.cancelled = false,
+    this.zoneUnknown = false,
   });
+
+  /// Its times name a zone that is neither one the phone knows nor one the
+  /// text defines: they are read as written, on the phone's clock.
+  final bool zoneUnknown;
 
   final String uid;
 
@@ -283,7 +297,7 @@ class IcsEvent {
 
   DateTime? _untilOf(String? text) {
     if (text == null) return null;
-    final value = _IcsDate.parse(text, const {});
+    final value = _IcsDate.parse(text, const {}, const {});
     if (value == null) return null;
     // A date alone is to the end of that day.
     if (value.dateOnly) {
@@ -409,6 +423,11 @@ class IcsEvent {
 
 /// What the lines of one VEVENT said, until its END.
 class _EventBuilder {
+  _EventBuilder(this.zones);
+
+  /// The zones the text defines, by the name it gives each.
+  final Map<String, IcsZone> zones;
+
   String? uid;
   _IcsDate? start;
   _IcsDate? end;
@@ -428,9 +447,9 @@ class _EventBuilder {
       case 'UID':
         uid = line.value.trim();
       case 'DTSTART':
-        start = _IcsDate.parse(line.value, line.params);
+        start = _IcsDate.parse(line.value, line.params, zones);
       case 'DTEND':
-        end = _IcsDate.parse(line.value, line.params);
+        end = _IcsDate.parse(line.value, line.params, zones);
       case 'DURATION':
         duration = _duration(line.value.trim());
       case 'SUMMARY':
@@ -448,11 +467,11 @@ class _EventBuilder {
         };
       case 'EXDATE':
         for (final v in line.value.split(',')) {
-          final d = _IcsDate.parse(v, line.params);
+          final d = _IcsDate.parse(v, line.params, zones);
           if (d != null) exdates.add(d);
         }
       case 'RECURRENCE-ID':
-        recurrenceId = _IcsDate.parse(line.value, line.params);
+        recurrenceId = _IcsDate.parse(line.value, line.params, zones);
       case 'TRANSP':
         transparent = line.value.trim().toUpperCase() == 'TRANSPARENT';
       case 'STATUS':
@@ -514,6 +533,7 @@ class _EventBuilder {
       recurrenceId: id == null ? null : instant(id),
       transparent: transparent,
       cancelled: cancelled,
+      zoneUnknown: first.zoneUnknown,
     );
   }
 
@@ -534,7 +554,16 @@ class _EventBuilder {
 
 /// A date or a date-time as a line writes it, with the zone it names.
 class _IcsDate {
-  _IcsDate(this.at, {this.dateOnly = false, this.utc = false, this.zone});
+  _IcsDate(
+    this.at, {
+    this.dateOnly = false,
+    this.utc = false,
+    this.zone,
+    this.zoneUnknown = false,
+  });
+
+  /// It names a zone neither known nor defined: read as written.
+  final bool zoneUnknown;
 
   /// Its figures; an instant where [utc].
   final DateTime at;
@@ -544,21 +573,37 @@ class _IcsDate {
   /// The IANA zone named (TZID), where it is one the phone knows.
   final String? zone;
 
-  static _IcsDate? parse(String text, Map<String, String> params) {
+  /// Null for a value not in the form, or a day or a time there is not:
+  /// read as given, an hour of 99 was three days later.
+  static _IcsDate? parse(
+    String text,
+    Map<String, String> params,
+    Map<String, IcsZone> zones,
+  ) {
     final v = text.trim();
     final m = RegExp(r'^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?(Z)?)?$')
         .firstMatch(v.toUpperCase());
     if (m == null) return null;
     final y = int.parse(m[1]!), mo = int.parse(m[2]!), d = int.parse(m[3]!);
+    if (mo < 1 || mo > 12 || d < 1 || d > DateTime(y, mo + 1, 0).day) {
+      return null;
+    }
     if (m[4] == null) return _IcsDate(DateTime(y, mo, d), dateOnly: true);
     final h = int.parse(m[4]!), mi = int.parse(m[5]!);
     final s = int.parse(m[6] ?? '0');
+    if (h > 23 || mi > 59 || s > 60) return null;
     if (m[7] != null) {
       return _IcsDate(DateTime.utc(y, mo, d, h, mi, s), utc: true);
     }
     final named = params['TZID'];
-    final zone = named == null ? null : ianaZoneOf(named);
-    return _IcsDate(DateTime(y, mo, d, h, mi, s), zone: zone);
+    final wall = DateTime(y, mo, d, h, mi, s);
+    if (named == null) return _IcsDate(wall);
+    final zone = ianaZoneOf(named);
+    if (zone != null) return _IcsDate(wall, zone: zone);
+    // A zone of the text's own, by its offsets.
+    final instant = zones[named]?.instantOf(wall);
+    if (instant != null) return _IcsDate(instant, utc: true);
+    return _IcsDate(wall, zoneUnknown: true);
   }
 }
 
@@ -597,17 +642,22 @@ class _IcsLine {
 }
 
 /// The text's lines, each folded one put back together: a line that starts
-/// with a space or a tab carries on the one before.
+/// with a space or a tab carries on the one before. Each line is built in
+/// a buffer: added to a string piece by piece, a line folded thousands of
+/// times took seconds, and a file of them minutes.
 List<String> _unfold(String text) {
   final lines = <String>[];
+  StringBuffer? line;
   for (final raw in text.split(RegExp(r'\r\n|\n|\r'))) {
     if (raw.isEmpty) continue;
-    if ((raw.startsWith(' ') || raw.startsWith('\t')) && lines.isNotEmpty) {
-      lines[lines.length - 1] += raw.substring(1);
+    if ((raw.startsWith(' ') || raw.startsWith('\t')) && line != null) {
+      line.write(raw.substring(1));
     } else {
-      lines.add(raw);
+      if (line != null) lines.add(line.toString());
+      line = StringBuffer(raw);
     }
   }
+  if (line != null) lines.add(line.toString());
   return lines;
 }
 
