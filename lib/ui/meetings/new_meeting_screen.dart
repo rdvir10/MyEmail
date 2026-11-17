@@ -1708,7 +1708,10 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                   ? 'Discard this meeting?'
                   : 'Discard these changes?',
               words: _editing == null
-                  ? 'Nothing has been sent.'
+                  ? _linkCopied
+                      ? 'Nothing has been sent. The link you copied will '
+                          'stop working.'
+                      : 'Nothing has been sent.'
                   : 'The meeting stays as it was.',
               stay: 'Keep writing',
               leave: 'Discard',
