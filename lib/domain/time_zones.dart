@@ -1,10 +1,13 @@
-import 'package:timezone/data/latest_10y.dart' as tzdata;
+import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 
 /// The world's time zones, by their IANA names, for a meeting set in
 /// another zone and the calendar's second clock. The database is read
-/// once, the first time a zone is asked about: ten years of it, which is
-/// what a meeting can be set across.
+/// once, the first time a zone is asked about: all of its years. The ten
+/// years once read here (2021 to 2030) read a winter date before them
+/// with the summer offset, and a series begun in January 2019 went back
+/// an hour late when its end was changed (#55). The same zones; about
+/// 190 KB more in the app, and a few milliseconds more to read.
 
 var _loaded = false;
 
@@ -25,6 +28,13 @@ bool isTimeZone(String name) {
   }
 }
 
+/// [zone]'s place in the database: "UTC", as both calendars write UTC, is
+/// the database's Etc/UTC.
+tz.Location _location(String zone) {
+  _load();
+  return zone == 'UTC' ? tz.UTC : tz.getLocation(zone);
+}
+
 /// Every zone the database knows, by name, in order.
 List<String> allTimeZones() {
   _load();
@@ -37,16 +47,14 @@ List<String> allTimeZones() {
 /// What the clock in [zone] reads at [instant], as a DateTime holding those
 /// figures: not an instant of its own.
 DateTime wallClockIn(DateTime instant, String zone) {
-  _load();
-  final t = tz.TZDateTime.from(instant, tz.getLocation(zone));
+  final t = tz.TZDateTime.from(instant, _location(zone));
   return DateTime(t.year, t.month, t.day, t.hour, t.minute, t.second);
 }
 
 /// The instant at which the clock in [zone] reads [wallClock]'s figures.
 DateTime instantIn(DateTime wallClock, String zone) {
-  _load();
   final t = tz.TZDateTime(
-    tz.getLocation(zone),
+    _location(zone),
     wallClock.year,
     wallClock.month,
     wallClock.day,

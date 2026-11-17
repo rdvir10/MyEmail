@@ -275,11 +275,15 @@ class SeriesRepeat {
 /// given [repeat] starts, its first meeting moved there from its own day.
 /// The weekly repeats by their days picked, the others from [from] itself.
 ///
-/// Every other week, the first day is looked for inside the week [from]
-/// is in, counted from [weekStart] (Sunday for Outlook, Monday for Google,
-/// as each counts a series' weeks), so the meetings stay in the weeks they
-/// were in: every 2 weeks on Tuesday moved to Monday starts the day before
-/// the first Tuesday, not six days after it, in a week that had none.
+/// Every other week, the meetings stay in the weeks they were in, counted
+/// from [weekStart] (Sunday for Outlook, Monday for Google, as each counts
+/// a series' weeks): the first day is looked for inside the week [from] is
+/// in, on or after [from], and where the new day falls before it there,
+/// in the series' next week (an interval on). Never before [from]: a
+/// series starting tomorrow moved to Sunday gets no meeting yesterday,
+/// sent to everyone. Every 2 weeks on Tuesday moved to Monday starts on
+/// the Monday of its next week, not six days after its first Tuesday, in a
+/// week that had no meeting.
 DateTime firstDayOf(Recurrence repeat, DateTime from,
     {int weekStart = DateTime.sunday}) {
   final day = DateTime(from.year, from.month, from.day);
@@ -289,11 +293,22 @@ DateTime firstDayOf(Recurrence repeat, DateTime from,
     _ => const <int>{},
   };
   if (days.isEmpty) return day;
-  final week = repeat.kind == RepeatKind.weekly && repeat.interval > 1
-      ? _weekOf(day, weekStart)
-      : day;
+  if (repeat.kind == RepeatKind.weekly && repeat.interval > 1) {
+    final week = _weekOf(day, weekStart);
+    for (var i = 0; i < 7; i++) {
+      final next = DateTime(week.year, week.month, week.day + i);
+      if (days.contains(next.weekday) && !next.isBefore(day)) return next;
+    }
+    final later = DateTime(
+        week.year, week.month, week.day + 7 * repeat.interval);
+    for (var i = 0; i < 7; i++) {
+      final next = DateTime(later.year, later.month, later.day + i);
+      if (days.contains(next.weekday)) return next;
+    }
+    return day;
+  }
   for (var i = 0; i < 7; i++) {
-    final next = DateTime(week.year, week.month, week.day + i);
+    final next = DateTime(day.year, day.month, day.day + i);
     if (days.contains(next.weekday)) return next;
   }
   return day;

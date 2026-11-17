@@ -714,7 +714,8 @@ class AccountCalendar {
       if (series && (change.movesIt || change.repeat != null)) {
         final read = await times();
         if (read == null) throw const EventGone();
-        return forSeries(change, read, zone: zone, weekStart: weekStart);
+        return forSeries(change, read,
+            zone: zone, weekStart: weekStart, opened: event.start);
       }
       if (change.repeat != null && zone != null) {
         return inOwnZone(change, event, zone);

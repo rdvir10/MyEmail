@@ -361,6 +361,13 @@ void main() {
       expect(find.byType(NewMeetingScreen), findsOneWidget);
       expect(engine.discardedMeetings, isEmpty,
           reason: 'the link pasted elsewhere still works');
+
+      // Back asks, and says what Discard does to the link.
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.text('Discard this meeting?'), findsOneWidget);
+      expect(find.textContaining('The link you copied will stop working.'),
+          findsOneWidget);
     });
 
     testWidgets('the switch, once set by hand, stays as set through a change '

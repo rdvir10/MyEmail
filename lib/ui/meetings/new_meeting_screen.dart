@@ -449,6 +449,41 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   static bool _zoneKnown(CalendarEvent event) =>
       event.allDay || ownZoneOf(event) != null;
 
+  /// The zone of the series every meeting of which is being changed, by
+  /// its IANA name, where its calendar names one: the clock it keeps.
+  String? get _seriesZone {
+    final edit = _editing;
+    if (edit == null || !edit.wholeSeries || edit.event.allDay) return null;
+    return ownZoneOf(edit.event);
+  }
+
+  /// The series' own clock beside the phone's, where they differ: "Tokyo
+  /// time: Wed 18 Nov, 00:30–01:30. Yours: 16:30–17:30". New meeting's
+  /// own zone line says the other way round.
+  String? _seriesClockLine(BuildContext context) {
+    final zone = _seriesZone;
+    if (zone == null || _allDay) return null;
+    final there = wallClockIn(_start, zone);
+    final thereEnd = wallClockIn(_end, zone);
+    if (there.year == _start.year &&
+        there.month == _start.month &&
+        there.day == _start.day &&
+        there.hour == _start.hour &&
+        there.minute == _start.minute) {
+      return null;
+    }
+    final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
+    final sameDay = there.year == _start.year &&
+        there.month == _start.month &&
+        there.day == _start.day;
+    return '${placeOf(zone)} time: '
+        '${sameDay ? '' : '${formatDay(there)}, '}'
+        '${formatClock(there, use24h: use24h)}–'
+        '${formatClock(thereEnd, use24h: use24h)}. '
+        'Yours: ${formatClock(_start, use24h: use24h)}–'
+        '${formatClock(_end, use24h: use24h)}';
+  }
+
   /// The day the account's calendar counts a series' weeks from: Sunday
   /// for Outlook, Monday for Google, as each writes every other week.
   int get _weekStart => _account?.provider == MailProvider.gmail
@@ -1246,9 +1281,29 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
           : 'The meeting has to end after it starts.');
       return;
     }
-    // A repeat changed here, as New meeting asks of one.
-    final repeat = _repeatChanged ? _options.repeat : null;
-    final last = repeat?.until;
+    // A new time for every meeting of a series set in another zone that
+    // falls on another day on its clock moves the series' days with it,
+    // which needs its repeat; one repeating by its dates cannot (#55).
+    final seriesZone = _seriesZone;
+    var dayMoves = false;
+    if (seriesZone != null && !_allDay && _start != edit.event.start) {
+      final problem = seriesTimeProblem(
+        zone: seriesZone,
+        opened: edit.event.start,
+        picked: _start,
+        repeat: _options.repeat,
+      );
+      if (problem != null) {
+        setState(() => _invalid = problem);
+        return;
+      }
+      dayMoves = dayShiftOn(seriesZone, edit.event.start, _start) != 0;
+    }
+    // A repeat changed here, as New meeting asks of one; or the series'
+    // own, handed on for its days to move with the time.
+    final repeat =
+        _repeatChanged || dayMoves ? _options.repeat : null;
+    final last = _repeatChanged ? repeat?.until : null;
     if (last != null && last.isBefore(day(_repeatStart))) {
       setState(() => _invalid =
           'The repeat has to end on the first meeting or after it.');
@@ -1653,7 +1708,10 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                   ? 'Discard this meeting?'
                   : 'Discard these changes?',
               words: _editing == null
-                  ? 'Nothing has been sent.'
+                  ? _linkCopied
+                      ? 'Nothing has been sent. The link you copied will '
+                          'stop working.'
+                      : 'Nothing has been sent.'
                   : 'The meeting stays as it was.',
               stay: 'Keep writing',
               leave: 'Discard',
@@ -1995,6 +2053,20 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
               onTime: () => _pickTime(_shown(_end),
                   (at) => setState(() => _end = _unshown(at))),
             ),
+            // Every meeting of a series set in another zone: the clock it
+            // keeps, beside the phone's, while a time is picked (#55).
+            if (_seriesClockLine(context) case final words?)
+              Padding(
+                padding: EdgeInsets.fromLTRB(16 + labelWidth, 0, 16, 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    words,
+                    key: const ValueKey('meeting-series-time'),
+                    style: muted,
+                  ),
+                ),
+              ),
             if (_options.zone case final zone? when !_allDay)
               Padding(
                 padding: EdgeInsets.fromLTRB(16 + labelWidth, 0, 16, 4),
