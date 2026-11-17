@@ -83,7 +83,7 @@ void main() {
     // own provider reached the mail database and the stored sign-ins.
     test('are checked before anything is read', () {
       final copyIn = RegExp(
-        r'private fun copyIn\(uris: List<Uri>\)[\s\S]*?openInputStream',
+        r'private fun copyIn\(uris: List<Uri>[^)]*\)[\s\S]*?openInputStream',
       ).firstMatch(bridge)?.group(0);
       expect(copyIn, isNotNull);
       expect(copyIn, contains('if (!mayCopyIn(uri))'));
@@ -128,7 +128,7 @@ void main() {
     // Scan.pdf overwrote the first, and both attachments held it.
     test('each is copied into a folder of its own', () {
       final copyIn = RegExp(
-        r'private fun copyIn\(uris: List<Uri>\)[\s\S]*?openInputStream',
+        r'private fun copyIn\(uris: List<Uri>[^)]*\)[\s\S]*?openInputStream',
       ).firstMatch(bridge)!.group(0)!;
       expect(copyIn,
           contains('File(incoming, UUID.randomUUID().toString())'));
@@ -156,7 +156,7 @@ void main() {
         r'private fun copyInBackground\([\s\S]*?\n    }',
       ).firstMatch(bridge)!.group(0)!;
       expect(background, contains('copier.execute {'));
-      expect(background, contains('copyIn(uris)'));
+      expect(background, contains('copyIn(uris'));
       expect(background, contains('main.post { done(incoming) }'));
       expect(bridge, contains('Executors.newSingleThreadExecutor()'));
       // A drop's read permission is held until the copy is done.
