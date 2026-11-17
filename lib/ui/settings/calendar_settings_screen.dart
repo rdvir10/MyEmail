@@ -560,9 +560,12 @@ class _AddLinkDialogState extends State<_AddLinkDialog> {
             if (_from != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
-                child: Text(
-                  'From $_from',
-                  style: Theme.of(context).textTheme.titleSmall,
+                child: Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: Text(
+                    'From $_from',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
                 ),
               ),
             // Where it goes, for a link from elsewhere: Ron has not been to
