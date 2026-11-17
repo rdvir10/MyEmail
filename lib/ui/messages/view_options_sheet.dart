@@ -13,15 +13,22 @@ import '../settings/view_settings_screen.dart';
 /// row of densities, and a popup menu of radio items reads as a list of
 /// commands that do not look like they belong together. Everything here
 /// is also under Settings, View — this is the short way.
-Future<void> showViewOptions(BuildContext context) => showModalBottomSheet<void>(
+///
+/// On the phone it opens with [myDay] (calendar idea #76): today's and
+/// tomorrow's meetings over the mail, where it can be seen, as well as by
+/// holding the calendar button. Null for none.
+Future<void> showViewOptions(BuildContext context, {VoidCallback? myDay}) =>
+    showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (_) => const _ViewOptions(),
+      builder: (_) => _ViewOptions(myDay: myDay),
     );
 
 class _ViewOptions extends ConsumerWidget {
-  const _ViewOptions();
+  const _ViewOptions({this.myDay});
+
+  final VoidCallback? myDay;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -35,6 +42,19 @@ class _ViewOptions extends ConsumerWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (myDay case final open?) ...[
+              ListTile(
+                key: const ValueKey('view-my-day'),
+                leading: const Icon(Icons.view_agenda_outlined),
+                title: const Text('My Day'),
+                subtitle: const Text("Today's and tomorrow's meetings"),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  open();
+                },
+              ),
+              const Divider(height: 1),
+            ],
             _Heading('Sort by', theme: theme),
             for (final sort in MessageSort.values)
               RadioListTile<MessageSort>(

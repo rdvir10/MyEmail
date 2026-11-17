@@ -208,7 +208,9 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-              onPressed: () => joinMeeting(url),
+              // From a sheet, the sheet closes first: back from Teams,
+              // the mail.
+              onPressed: () => then((_, _) => joinMeeting(url)),
             ),
           ),
         const Divider(height: 1),

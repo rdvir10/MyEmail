@@ -727,6 +727,15 @@ class _NarrowLayout extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // My Day over the mail (#76), from the shell's own context and ref:
+    // the phone turned on its side lays the mail out anew, and this one
+    // goes, with My Day still up and its taps to act somewhere.
+    final shell = context.findAncestorStateOfType<_AppShellState>();
+    void myDay() =>
+        showMyDaySheet(shell?.context ?? context, shell?.ref ?? ref);
+    // Where no account has a calendar there is nothing to show.
+    final hasCalendar =
+        !ref.watch(calendarAccountsProvider.select((l) => l.isEmpty));
     return Scaffold(
       appBar: AppBar(
         // Whose folder this is, under its name: with four Inboxes and the
@@ -759,20 +768,17 @@ class _NarrowLayout extends ConsumerWidget {
           // drawer (calendar idea #98). Held, today's and tomorrow's
           // meetings over the mail, as a tablet has them in its folder
           // pane (#76): the bar has no room for a button more, and a row
-          // over the list would be a row of mail lost for good. Where no
-          // account has a calendar there is nothing to show.
-          MailCalendarButton(
-            onHold: ref.watch(calendarAccountsProvider).isEmpty
-                ? null
-                : () => showMyDaySheet(context, ref),
-          ),
+          // over the list would be a row of mail lost for good. View and
+          // sort, beside it, has it too, where it can be seen.
+          MailCalendarButton(onHold: hasCalendar ? myDay : null),
           // Sorting and what a row looks like, a tap from the list rather
           // than four taps into Settings. On screen while searching too,
           // because that is when the order matters most.
           IconButton(
             tooltip: 'View and sort',
             icon: const Icon(Icons.more_vert),
-            onPressed: () => showViewOptions(context),
+            onPressed: () =>
+                showViewOptions(context, myDay: hasCalendar ? myDay : null),
           ),
         ],
       ),

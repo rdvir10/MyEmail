@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/auth/oauth_token.dart';
@@ -175,6 +176,82 @@ void main() {
     final drawn = tester.getRect(find.byType(BottomSheet));
     expect(drawn.top, greaterThan(100));
     expect(drawn.bottom, 915);
+  });
+
+  testWidgets('turned on its side with My Day up, its taps still open what '
+      'they open', (tester) async {
+    await pump(tester);
+    await hold(tester);
+    // The phone on its side: the mail is laid out for a wider screen.
+    tester.view.physicalSize = const Size(915, 412);
+    await tester.pumpAndSettle();
+    expect(sheet, findsOneWidget);
+    final row = find.byKey(const ValueKey('my-day-event:c'));
+    await tester.ensureVisible(row);
+    await tester.pumpAndSettle();
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+    expect(sheet, findsNothing);
+    expect(find.byKey(const ValueKey('event-accept')), findsOneWidget,
+        reason: "the meeting's own sheet");
+    Navigator.of(tester.element(find.byKey(const ValueKey('event-accept'))))
+        .pop();
+    await tester.pumpAndSettle();
+
+    tester.view.physicalSize = const Size(412, 915);
+    await tester.pumpAndSettle();
+    await hold(tester);
+    tester.view.physicalSize = const Size(915, 412);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('my-day-date')));
+    await tester.pumpAndSettle();
+    expect(find.byType(CalendarScreen), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('My Day can be seen too: first in the top bar\'s View and sort',
+      (tester) async {
+    await pump(tester);
+    await tester.tap(find.byTooltip('View and sort'));
+    await tester.pumpAndSettle();
+    final entry = find.byKey(const ValueKey('view-my-day'));
+    expect(entry, findsOneWidget);
+    expect(find.descendant(of: entry, matching: find.text('My Day')),
+        findsOneWidget);
+    // First: above the sorting.
+    expect(tester.getRect(entry).bottom,
+        lessThanOrEqualTo(tester.getRect(find.text('Sort by')).top));
+    await tester.tap(entry);
+    await tester.pumpAndSettle();
+    expect(find.text('Sort by'), findsNothing, reason: 'that sheet closed');
+    expect(sheet, findsOneWidget);
+  });
+
+  testWidgets('with no account that has a calendar, View and sort has no '
+      'My Day', (tester) async {
+    await pump(tester, calendar: false);
+    await tester.tap(find.byTooltip('View and sort'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('view-my-day')), findsNothing);
+    expect(find.text('Sort by'), findsOneWidget);
+  });
+
+  testWidgets('Join closes My Day as it opens the meeting', (tester) async {
+    final opened = <String>[];
+    const launcher = MethodChannel('plugins.flutter.io/url_launcher');
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(launcher, (call) async {
+      opened.add('${(call.arguments as Map)['url']}');
+      return true;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(launcher, null));
+    await pump(tester);
+    await hold(tester);
+    await tester.tap(find.byKey(const ValueKey('my-day-join')));
+    await tester.pumpAndSettle();
+    expect(sheet, findsNothing);
+    expect(opened, ['https://teams.microsoft.com/l/meetup-join/x']);
   });
 
   testWidgets('a tap is still the calendar, on today (#98)', (tester) async {
