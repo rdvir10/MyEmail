@@ -17,17 +17,35 @@ class AwayItem {
   AwayItem.block(MeetingDraft this.draft)
       : action = AwayAction.block,
         accountId = draft.accountId,
-        event = null;
+        event = null,
+        quiet = false,
+        copies = const [];
 
-  AwayItem.decline(CalendarEvent this.event)
+  /// [event] declined as Ron chooses, and the same meeting on his other
+  /// accounts, [copies], each declined without a word once it has gone:
+  /// its organiser gets one decline (see `awaySameMeetings`).
+  AwayItem.decline(
+    CalendarEvent this.event, {
+    List<CalendarEvent> copies = const [],
+  })  : action = AwayAction.decline,
+        accountId = event.accountId,
+        draft = null,
+        quiet = false,
+        copies = [for (final c in copies) AwayItem._copy(c)];
+
+  AwayItem._copy(CalendarEvent this.event)
       : action = AwayAction.decline,
         accountId = event.accountId,
-        draft = null;
+        draft = null,
+        quiet = true,
+        copies = const [];
 
   AwayItem.cancel(CalendarEvent this.event)
       : action = AwayAction.cancel,
         accountId = event.accountId,
-        draft = null;
+        draft = null,
+        quiet = false,
+        copies = const [];
 
   final AwayAction action;
   final String accountId;
@@ -38,6 +56,13 @@ class AwayItem {
 
   /// The event that blocks the days, for a block.
   final MeetingDraft? draft;
+
+  /// The same meeting on Ron's other accounts, declined after this one
+  /// without a word to its organiser.
+  final List<AwayItem> copies;
+
+  /// One of [copies]: declined telling nobody, whatever Ron chose.
+  final bool quiet;
 
   AwayState state = AwayState.waiting;
 
@@ -55,8 +80,25 @@ class AwayItem {
         _ => awayKey(event!),
       };
 
-  /// Whether a press would do it: not done, and not gone.
-  bool get open => state == AwayState.waiting || state == AwayState.failed;
+  /// Whether a press would do it: not done, and not gone; or, done, one
+  /// of its [copies] is not.
+  bool get open => _open || (_went && copies.any((c) => c._open));
+
+  bool get _open => state == AwayState.waiting || state == AwayState.failed;
+
+  bool get _went => state == AwayState.done || state == AwayState.sentGone;
+
+  /// Where it has got to as its row says it: its own, or, gone itself
+  /// where a copy of it on another account did not, that copy's failure.
+  AwayState get shown => _went &&
+          copies.any((c) => c.state == AwayState.failed)
+      ? AwayState.failed
+      : state;
+
+  /// The copy that did not go, where one did not.
+  AwayItem? get copyLeft =>
+      _went ? copies.where((c) => c.state == AwayState.failed).firstOrNull
+          : null;
 }
 
 /// Doing what Away's list has ticked, one thing at a time, through the
@@ -97,40 +139,22 @@ class AwayRun {
     final held = await _lookAgain(
       [
         for (final i in todo)
-          if (i.state == AwayState.failed && i.action != AwayAction.block) i,
+          for (final one in [i, ...i.copies])
+            if (one.state == AwayState.failed && one.action != AwayAction.block)
+              one,
       ],
       first: first,
       last: last,
     );
     changed?.call(through);
     for (final item in todo) {
-      if (!item.open || held.contains(item)) {
-        changed?.call(++through);
-        continue;
-      }
-      item
-        ..state = AwayState.going
-        ..problem = null;
-      changed?.call(through);
-      try {
-        await _do(item, note: note, tell: tell);
-        item.state = AwayState.done;
-      } on EventGone {
-        // Before anything went: a decline Exchange answers 404, or a
-        // cancellation whose meeting the look first found gone.
-        item.state = AwayState.gone;
-      } on _NothingSent catch (e) {
-        debugPrint('[myemail] away: ${item.action.name} not sent: ${e.cause}');
-        item
-          ..state = AwayState.failed
-          ..unanswered = false
-          ..problem = _why(e.cause);
-      } catch (e) {
-        debugPrint('[myemail] away: ${item.action.name} did not go: $e');
-        item
-          ..state = AwayState.failed
-          ..unanswered = _noAnswer(e)
-          ..problem = _why(e);
+      for (final one in [item, ...item.copies]) {
+        // A copy goes once the meeting it is a copy of has.
+        if (one.quiet && !item._went) break;
+        if (!one._open || held.contains(one)) continue;
+        await _try(one, note: note, tell: tell, changed: () {
+          changed?.call(through);
+        });
       }
       changed?.call(++through);
     }
@@ -139,6 +163,40 @@ class AwayRun {
     debugPrint('[myemail] away: ${count(AwayState.done)} went, '
         '${count(AwayState.failed)} did not, ${count(AwayState.gone)} gone, '
         '${count(AwayState.sentGone)} sent with no answer and now gone');
+  }
+
+  /// [item] tried once, where it has got to kept on it.
+  Future<void> _try(
+    AwayItem item, {
+    required String note,
+    required bool tell,
+    required void Function() changed,
+  }) async {
+    item
+      ..state = AwayState.going
+      ..problem = null;
+    changed();
+    try {
+      await _do(item, note: note, tell: tell);
+      item.state = AwayState.done;
+    } on EventGone {
+      // Before anything went: a decline Exchange answers 404, or a
+      // cancellation whose meeting the look first found gone.
+      item.state = AwayState.gone;
+    } on _NothingSent catch (e) {
+      debugPrint('[myemail] away: ${item.action.name} not sent: ${e.cause}');
+      item
+        ..state = AwayState.failed
+        ..unanswered = false
+        ..problem = _why(e.cause);
+    } catch (e) {
+      debugPrint('[myemail] away: ${item.action.name} did not go: $e');
+      item
+        ..state = AwayState.failed
+        ..unanswered = _noAnswer(e)
+        ..problem = _why(e);
+    }
+    changed();
   }
 
   /// Whether [e] leaves it open that the request was carried out: no
@@ -161,11 +219,13 @@ class AwayRun {
         await _engine.createMeeting(item.draft!);
       case AwayAction.decline:
         final event = _oneMeeting(item.event!);
+        // A copy is declined telling nobody: its organiser has had one.
+        final told = tell && !item.quiet;
         await _engine.respondToEvent(
           event,
           InviteResponse.declined,
-          note: tell ? note.trim() : '',
-          send: tell,
+          note: told ? note.trim() : '',
+          send: told,
           wholeSeries: false,
         );
       case AwayAction.cancel:

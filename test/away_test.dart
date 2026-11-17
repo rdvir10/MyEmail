@@ -13,6 +13,7 @@ import 'package:myemail/data/calendar/account_calendar.dart';
 import 'package:myemail/data/calendar/away_run.dart';
 import 'package:myemail/data/calendar/device_calendar.dart'
     show FakeDeviceCalendar;
+import 'package:myemail/data/calendar/google_calendar_api.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
@@ -293,6 +294,130 @@ void main() {
       expect(draft.problem, isNull);
     });
 
+    test('an invitation shown as free, or begun before the first day, is '
+        'listed unticked, saying why', () {
+      final listed = awayMeetings([
+        invited('h', 'dana-ooo', DateTime(2026, 11, 19),
+            length: const Duration(days: 1), title: 'Dana out of office'),
+        invited('h', 'fyi-week', DateTime(2026, 11, 16),
+            length: const Duration(days: 7), title: 'Office move week'),
+        invited('h', 'eve-before', at(17, 23, 30), title: 'Late call'),
+        invited('h', 'design', at(18, 11)),
+      ].map((e) => switch (e.id) {
+            'dana-ooo' || 'fyi-week' => _free(e),
+            _ => e,
+          }), first: wed, last: fri, now: now, ownEmails: emails);
+      String why(String id) => awayHeldBack(
+            listed.invited.firstWhere((e) => e.id == id),
+            ownEmails: emails.values,
+            first: wed,
+          ).join(' / ');
+      expect(why('dana-ooo'), 'Shown as free: probably for information');
+      expect(why('fyi-week'), 'Shown as free: probably for information / '
+          'Began before your first day away');
+      expect(why('eve-before'), 'Began before your first day away');
+      expect(why('design'), isEmpty);
+      expect(
+          {
+            for (final e in listed.invited)
+              if (awayStartsTicked(e, emails.values, first: wed)) e.id,
+          },
+          {'design'});
+    });
+
+    test("Ron's own addresses are every account's, one without a calendar "
+        'too', () {
+      const old = MailAddress(email: 'Ron@Old-ISP.example', name: 'Ron');
+      final e = invited('h', 'from-old', at(19, 17), organizer: old);
+      expect(awayStartsTicked(e, emails.values), isTrue,
+          reason: 'with only the calendar accounts known');
+      final all = [...emails.values, 'ron@old-isp.example'];
+      expect(awayStartsTicked(e, all), isFalse);
+      expect(awayHeldBack(e, ownEmails: all),
+          ['You organised it, from Ron@Old-ISP.example']);
+      // His own meeting with only himself on it, at another address: an
+      // appointment, not listed for cancelling.
+      final own0 = own('h', 'dentist', at(19, 8), others: [old]);
+      expect(
+          awayMeetings([own0],
+                  first: wed,
+                  last: fri,
+                  now: now,
+                  ownEmails: emails,
+                  alsoMine: all)
+              .own,
+          isEmpty);
+      expect(
+          awayMeetings([own0],
+                  first: wed, last: fri, now: now, ownEmails: emails)
+              .own,
+          hasLength(1));
+    });
+
+    test('an account hidden in the calendar is said, and starts unticked',
+        () {
+      final e = invited('g', 'webinar', at(19, 13), organizer: steel);
+      expect(awayHeldBack(e, ownEmails: emails.values, hidden: true),
+          ['Hidden in the calendar']);
+      expect(awayStartsTicked(e, emails.values, hidden: true), isFalse);
+    });
+
+    test('one meeting on two of his accounts is one: the first account '
+        "Ron has declines it, the other's copy goes without a word", () {
+      final h1 = invited('h', 'h1', at(19, 15), title: 'Board review');
+      final g1 = invited('g', 'g1', at(19, 15),
+          title: '  board   REVIEW ', me: ronG);
+      final other = invited('g', 'g2', at(19, 15),
+          title: 'Board review', organizer: tom, me: ronG);
+      final later = invited('g', 'g3', at(19, 16),
+          title: 'Board review', me: ronG);
+      final meetings = awaySameMeetings([g1, h1, other, later], ['h', 'g']);
+      expect([for (final m in meetings) m.first.id], ['h1', 'g2', 'g3']);
+      expect([for (final c in meetings.first.copies) c.id], ['g1']);
+      expect(meetings[1].copies, isEmpty, reason: 'another organiser');
+      expect(meetings[2].copies, isEmpty, reason: 'another start');
+      expect(
+          [
+            for (final m in awaySameMeetings([g1, h1], ['g', 'h'])) m.first.id,
+          ],
+          ['g1'],
+          reason: 'by the order of his accounts');
+    });
+
+    test("Away's own block on Google, which keeps it busy, is known again",
+        () {
+      final draft = awayBlock(
+          accountId: 'g',
+          first: wed,
+          last: fri,
+          transactionId: 'abcdef0123456789abcdef0123456789',
+          timeZone: 'Asia/Jerusalem');
+      final made = GoogleCalendarApi.eventFrom({
+        ...GoogleCalendarApi.eventJson(draft),
+        'id': 'abcdef0123456789abcdef0123456789',
+        'status': 'confirmed',
+        'organizer': {'email': ronG.email, 'self': true},
+      }, 'g')!;
+      expect(made.showAs, isNot(EventShowAs.outOfOffice));
+      expect(awayBlockOn([made], 'g', first: wed, last: fri), made);
+      // A meeting of that name with people on it is not a block.
+      final meeting = CalendarEvent(
+        id: 'm',
+        accountId: 'g',
+        title: 'Out of office',
+        start: wed,
+        end: DateTime(2026, 11, 21),
+        allDay: true,
+        attendees: const [EventAttendee(tom)],
+      );
+      expect(awayBlockOn([meeting], 'g', first: wed, last: fri), isNull);
+    });
+
+    test('three months at most', () {
+      expect(awayLastAllowed(wed), DateTime(2027, 2, 17));
+      expect(awayLastAllowed(DateTime(2026, 11, 30)), DateTime(2027, 2, 27));
+    });
+
     test('the button says in numbers what it will do', () {
       expect(awayButtonWords(blocks: 1, declines: 5, cancels: 2),
           'Block the days, decline 5, cancel 2');
@@ -350,6 +475,46 @@ void main() {
       ], first: wed, last: fri, note: 'Away', tell: false);
       expect(engine.calendarActions,
           ['respond design declined quietly', 'cancel q4 note=Away']);
+    });
+
+    test('one meeting on two accounts: one decline to its organiser, the '
+        'other copy without a word', () async {
+      final h1 = invited('h', 'h1', at(19, 15), title: 'Board review');
+      final g1 = invited('g', 'g1', at(19, 15), title: 'Board review');
+      engine.events['h']!.add(h1);
+      engine.events['g'] = [g1];
+      final item = AwayItem.decline(h1, copies: [g1]);
+      await AwayRun(engine)
+          .go([item], first: wed, last: fri, note: 'Away', tell: true);
+      expect(engine.calendarActions,
+          ['respond h1 declined note=Away', 'respond g1 declined quietly']);
+      expect(item.state, AwayState.done);
+      expect(item.open, isFalse);
+    });
+
+    test('a copy waits for its meeting; one that failed is the only one '
+        'tried again', () async {
+      final h1 = invited('h', 'h1', at(19, 15), title: 'Board review');
+      final g1 = invited('g', 'g1', at(19, 15), title: 'Board review');
+      engine.events['h']!.add(h1);
+      engine.events['g'] = [g1];
+      final item = AwayItem.decline(h1, copies: [g1]);
+      final run = AwayRun(engine);
+      engine.refuse.add('h1');
+      await run.go([item], first: wed, last: fri);
+      expect(engine.calendarActions, isEmpty, reason: 'nor the copy');
+      engine.refuse
+        ..clear()
+        ..add('g1');
+      await run.go([item], first: wed, last: fri);
+      expect(engine.calendarActions, ['respond h1 declined']);
+      expect(item.shown, AwayState.failed);
+      expect(item.open, isTrue);
+      engine.refuse.clear();
+      await run.go([item], first: wed, last: fri);
+      expect(engine.calendarActions,
+          ['respond h1 declined', 'respond g1 declined quietly']);
+      expect(item.shown, AwayState.done);
     });
 
     test('a series itself is refused, should one ever reach it', () async {
@@ -708,6 +873,7 @@ void main() {
       bool use24h = true,
       Widget? home,
       bool withCalendar = true,
+      bool withHadco = true,
       void Function(_Engine engine, String hadco, String gmail)? prepare,
     }) async {
       tester.view.physicalSize = size;
@@ -722,22 +888,23 @@ void main() {
           refreshToken: 'r',
           expiresAt: DateTime.utc(2030),
         );
-        final h = (await tester.runAsync(() => engine.addOAuthAccount(
-              displayName: 'Hadco',
-              emailAddress: ron.email,
-              provider: MailProvider.outlook,
-              token: token,
-            )))!;
+        final h = withHadco
+            ? (await tester.runAsync(() => engine.addOAuthAccount(
+                  displayName: 'Hadco',
+                  emailAddress: ron.email,
+                  provider: MailProvider.outlook,
+                  token: token,
+                )))!
+            : null;
         final g = (await tester.runAsync(() => engine.addOAuthAccount(
               displayName: 'Gmail',
               emailAddress: ronG.email,
               provider: MailProvider.gmail,
               token: token,
             )))!;
-        engine
-          ..events[h.id] = hadcoWeek(h.id)
-          ..events[g.id] = gmailWeek(g.id);
-        prepare?.call(engine, h.id, g.id);
+        if (h != null) engine.events[h.id] = hadcoWeek(h.id);
+        engine.events[g.id] = gmailWeek(g.id);
+        prepare?.call(engine, h?.id ?? '', g.id);
       }
       final c = ProviderContainer(overrides: [
         uiStateStoreProvider.overrideWithValue(ui),
@@ -844,14 +1011,22 @@ void main() {
       expect(find.byType(CalendarScreen), findsOneWidget);
     });
 
-    testWidgets('the list as it starts: both calendars to block, invitations '
-        'ticked, his own not, and the button says so in numbers',
-        (tester) async {
+    testWidgets('the list as it starts: the Microsoft calendar to block, '
+        'Google offered, invitations ticked, his own not, and the button says '
+        'so in numbers', (tester) async {
       final (_, engine) = await pump(tester);
-      for (final b in engine.events.keys) {
-        final row = find.byKey(ValueKey('away-block:$b'));
-        expect(ticked(tester, row), isTrue);
-      }
+      final hadcoBlock =
+          find.byKey(ValueKey('away-block:${idOf(engine, 'design')}'));
+      final gmailBlock =
+          find.byKey(ValueKey('away-block:${idOf(engine, 'webinar')}'));
+      expect(ticked(tester, hadcoBlock), isTrue);
+      expect(ticked(tester, gmailBlock), isFalse);
+      expect(
+          find.descendant(
+              of: gmailBlock,
+              matching:
+                  find.text('Google shows it as busy, not out of office')),
+          findsOneWidget);
       for (final id in ['design', 'standup-18', 'standup-19', 'standup-20']) {
         await scrollTo(tester, rowOf(engine, id));
         expect(ticked(tester, rowOf(engine, id)), isTrue, reason: id);
@@ -879,7 +1054,7 @@ void main() {
             findsNothing,
             reason: out);
       }
-      expect(button(tester), 'Block on 2 calendars, decline 6');
+      expect(button(tester), 'Block the days, decline 6');
       expect(engine.calendarActions, isEmpty);
     });
 
@@ -887,6 +1062,9 @@ void main() {
       final (_, engine) = await pump(tester);
       final hadcoId = idOf(engine, 'design');
       final gmailId = idOf(engine, 'webinar');
+      await tester.tap(find.byKey(ValueKey('away-block:$gmailId')));
+      await tester.pump();
+      expect(button(tester), 'Block on 2 calendars, decline 6');
       await tester.tap(find.byKey(ValueKey('away-block:$gmailId')));
       await tester.pump();
       expect(button(tester), 'Block the days, decline 6');
@@ -913,7 +1091,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Go ahead?'), findsOneWidget);
       expect(find.text('Wed 18 Nov – Fri 20 Nov blocked as out of office on '
-          'Hadco and Gmail.'), findsOneWidget);
+          'Hadco.'), findsOneWidget);
       expect(find.text('6 meetings declined. Their organisers are told.'),
           findsOneWidget);
       expect(find.text('1 meeting of your own cancelled. Everyone on it is '
@@ -931,6 +1109,9 @@ void main() {
         (tester) async {
       final (c, engine) = await pump(tester);
       final refreshed = c.read(calendarRefreshProvider);
+      // Gmail's block too, offered unticked.
+      await tester.tap(
+          find.byKey(ValueKey('away-block:${idOf(engine, 'webinar')}')));
       await scrollTo(tester, rowOf(engine, 'spin-19'));
       await tester.tap(rowOf(engine, 'spin-19'));
       await scrollTo(tester, rowOf(engine, 'dinner'));
@@ -1005,7 +1186,7 @@ void main() {
       expect(engine.calendarActions, hasLength(5));
       expect(engine.calendarActions,
           isNot(contains(startsWith('respond webinar'))));
-      expect(find.text('7 went, 1 did not (marked in red). Those that went '
+      expect(find.text('6 went, 1 did not (marked in red). Those that went '
           'are not sent again. Pressing again does only the 1, each once it '
           'is found still on its calendar as it was.'), findsOneWidget);
       expect(button(tester), 'Try again: decline 1');
@@ -1034,7 +1215,7 @@ void main() {
       await press(tester);
       expect(engine.calendarActions, ['respond webinar declined']);
       expect(engine.meetings, hasLength(made), reason: 'no second block');
-      expect(find.text('Done: 8 went.'), findsOneWidget);
+      expect(find.text('Done: 7 went.'), findsOneWidget);
     });
 
     testWidgets('pressed twice at once, it goes once', (tester) async {
@@ -1049,7 +1230,7 @@ void main() {
           warnIfMissed: false);
       await tester.pumpAndSettle();
       expect(engine.calendarActions, hasLength(6));
-      expect(engine.meetings, hasLength(2));
+      expect(engine.meetings, hasLength(1));
     });
 
     testWidgets('while it sends, Back waits for it', (tester) async {
@@ -1070,7 +1251,7 @@ void main() {
       expect(button(tester), startsWith('Sending: '));
       engine.hold!.complete();
       await tester.pumpAndSettle();
-      expect(find.text('Done: 8 went.'), findsOneWidget);
+      expect(find.text('Done: 7 went.'), findsOneWidget);
     });
 
     Future<void> spin(WidgetTester tester) async {
@@ -1108,7 +1289,7 @@ void main() {
       expect(engine.calendarActions, hasLength(6));
       expect(engine.calendarActions.toSet(), hasLength(6),
           reason: 'each once');
-      expect(find.text('Done: 8 went.'), findsOneWidget);
+      expect(find.text('Done: 7 went.'), findsOneWidget);
     });
 
     testWidgets('put away with some left that did not go: the report stays',
@@ -1150,10 +1331,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(engine.calendarActions, hasLength(6));
       expect(engine.calendarActions.toSet(), hasLength(6));
-      expect(engine.meetings, hasLength(2));
+      expect(engine.meetings, hasLength(1));
       expect(engine.reads, readsBefore, reason: 'nothing read for it');
       expect(words(), 'Close');
-      expect(find.descendant(of: second, matching: find.text('Done: 8 went.')),
+      expect(find.descendant(of: second, matching: find.text('Done: 7 went.')),
           findsOneWidget);
     });
 
@@ -1237,6 +1418,134 @@ void main() {
               matching: find
                   .text('Already gone from your calendar: nothing was sent')),
           findsOneWidget);
+    });
+
+    testWidgets('no answer came: it may have gone, so it is left unticked; '
+        'ticked again by Ron, it is looked for first', (tester) async {
+      final engine = _Engine()..loseAnswer.add('webinar');
+      await pump(tester, with_: engine);
+      final row = rowOf(engine, 'webinar');
+      await press(tester);
+      await scrollTo(tester, row);
+      expect(ticked(tester, row), isFalse);
+      expect(
+          find.descendant(
+              of: row,
+              matching: find.text(
+                  'May have gone: no answer came. Tick it to send again.')),
+          findsOneWidget);
+      expect(
+          tester
+              .widget<Text>(find.byKey(const ValueKey('away-summary')))
+              .data,
+          '6 went. 1 may have gone: no answer came, so it is left '
+              'unticked.');
+      expect(button(tester), 'Close');
+
+      // Google kept the decline that went: ticked and pressed again, it is
+      // found declined, and nothing more is sent.
+      engine.loseAnswer.clear();
+      await tester.tap(row);
+      await tester.pump();
+      expect(button(tester), 'Try again: decline 1');
+      await press(tester);
+      expect(
+          engine.calendarActions.where((a) => a.startsWith('respond webinar')),
+          hasLength(1));
+      await scrollTo(tester, row);
+      expect(find.descendant(of: row, matching: find.text('Declined')),
+          findsOneWidget);
+    });
+
+    testWidgets('one meeting on Hadco and Gmail is one row, and its '
+        'organiser gets one decline', (tester) async {
+      final (_, engine) = await pump(tester, prepare: (engine, hadco, gmail) {
+        engine.events[hadco]!.add(invited(hadco, 'board-h', at(19, 15),
+            title: 'Board review'));
+        engine.events[gmail]!.add(invited(gmail, 'board-g', at(19, 15),
+            title: 'Board Review', me: ronG));
+      });
+      await scrollTo(tester, rowOf(engine, 'board-h'));
+      expect(find.byKey(ValueKey('away:${idOf(engine, 'webinar')}:board-g')),
+          findsNothing);
+      expect(
+          find.descendant(
+              of: rowOf(engine, 'board-h'),
+              matching: find.text('On Hadco and Gmail')),
+          findsOneWidget);
+      expect(ticked(tester, rowOf(engine, 'board-h')), isTrue);
+      expect(button(tester), 'Block the days, decline 7');
+      await press(tester);
+      expect(engine.calendarActions, contains('respond board-h declined'));
+      expect(engine.calendarActions,
+          contains('respond board-g declined quietly'));
+      expect(
+          engine.calendarActions.where((a) => a.startsWith('respond board')),
+          hasLength(2));
+    });
+
+    testWidgets('an account hidden in the calendar: its block and its '
+        'meetings start unticked, and say so', (tester) async {
+      final (_, engine) = await pump(tester,
+          prepare: (engine, _, gmail) =>
+              ui.writeIds(UiStateKeys.hiddenCalendars, {gmail}));
+      final gmailBlock =
+          find.byKey(ValueKey('away-block:${idOf(engine, 'webinar')}'));
+      expect(ticked(tester, gmailBlock), isFalse);
+      expect(find.descendant(
+              of: gmailBlock, matching: find.text('Hidden in the calendar')),
+          findsOneWidget);
+      for (final id in ['webinar', 'dinner']) {
+        await scrollTo(tester, rowOf(engine, id));
+        expect(ticked(tester, rowOf(engine, id)), isFalse, reason: id);
+        expect(
+            find.descendant(
+                of: rowOf(engine, id),
+                matching: find.text('Hidden in the calendar')),
+            findsOneWidget);
+      }
+      expect(button(tester), 'Block the days, decline 4');
+    });
+
+    testWidgets('where Google is the only calendar, its block starts ticked',
+        (tester) async {
+      final (_, engine) = await pump(tester, withHadco: false);
+      expect(
+          ticked(tester,
+              find.byKey(ValueKey('away-block:${idOf(engine, 'webinar')}'))),
+          isTrue);
+      expect(button(tester), 'Block the days, decline 2');
+    });
+
+    testWidgets("Away's block made before on Google is known: unticked, "
+        'out of office already', (tester) async {
+      final (_, engine) = await pump(tester,
+          prepare: (engine, _, gmail) => engine.events[gmail]!.add(
+                CalendarEvent(
+                  id: 'made-before',
+                  accountId: gmail,
+                  title: 'Out of office',
+                  start: wed,
+                  end: DateTime(2026, 11, 21),
+                  allDay: true,
+                ),
+              ));
+      final gmailBlock =
+          find.byKey(ValueKey('away-block:${idOf(engine, 'webinar')}'));
+      expect(ticked(tester, gmailBlock), isFalse);
+      expect(
+          find.descendant(
+              of: gmailBlock,
+              matching: find.text('Out of office already: Out of office')),
+          findsOneWidget);
+    });
+
+    testWidgets('days running past three months are cut there, and it says '
+        'so', (tester) async {
+      await pump(tester,
+          home: _Opens(AwayScreen(first: wed, last: DateTime(2027, 6, 1))));
+      expect(find.text('Wed 18 Nov – Wed 17 Feb 2027'), findsOneWidget);
+      expect(find.text('92 days: three months at most'), findsOneWidget);
     });
 
     testWidgets('a screen reader hears each row as one: its tick, what it is, '
@@ -1392,6 +1701,12 @@ class _OpensState extends State<_Opens> {
   @override
   Widget build(BuildContext context) => const Scaffold();
 }
+
+/// [e], shown as free.
+CalendarEvent _free(CalendarEvent e) => CalendarEvent.fromJson({
+      ...e.toJson(),
+      'showAs': EventShowAs.free.name,
+    })!;
 
 CalendarEvent _busy(CalendarEvent e) => CalendarEvent(
       id: '${e.id}-busy',

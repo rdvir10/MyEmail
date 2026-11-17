@@ -1,4 +1,4 @@
-import 'calendar_change.dart' show hasOthers, isOwnEvent;
+import 'calendar_change.dart' show everyoneOn, isOwnEvent;
 import 'calendar_event.dart';
 import 'meeting.dart';
 
@@ -54,14 +54,21 @@ DateTime _dayAfter(DateTime day) => DateTime(day.year, day.month, day.day + 1);
 /// where a calendar shared with Ron to look after (a family's, a
 /// manager's) has meetings that are its owner's to answer, and a decline
 /// would go in their name. [ownEmails] is each account's own address, by
-/// account id. Earliest first.
+/// account id; [alsoMine], every address of Ron's (an account without a
+/// calendar here too): one of his own meetings with nobody on it but him
+/// is an appointment, and a cancellation would tell only himself.
+/// Earliest first.
 ({List<CalendarEvent> invited, List<CalendarEvent> own}) awayMeetings(
   Iterable<CalendarEvent> events, {
   required DateTime first,
   required DateTime last,
   required DateTime now,
   required Map<String, String> ownEmails,
+  Iterable<String> alsoMine = const [],
 }) {
+  final mine = {
+    for (final m in [...ownEmails.values, ...alsoMine]) m.trim().toLowerCase(),
+  };
   final from = DateTime(first.year, first.month, first.day);
   final to = _dayAfter(last);
   final invited = <CalendarEvent>[];
@@ -78,7 +85,10 @@ DateTime _dayAfter(DateTime day) => DateTime(day.year, day.month, day.day + 1);
     if (e.cancelled || e.declined) continue;
     if (!seen.add(awayKey(e))) continue;
     if (isOwnEvent(e)) {
-      if (hasOthers(e, email)) own.add(e);
+      if (everyoneOn(e, email)
+          .any((a) => !mine.contains(a.email.trim().toLowerCase()))) {
+        own.add(e);
+      }
     } else if (e.organizer != null) {
       invited.add(e);
     }
@@ -96,20 +106,119 @@ DateTime _dayAfter(DateTime day) => DateTime(day.year, day.month, day.day + 1);
 String awayKey(CalendarEvent e) =>
     '${e.accountId}\u0000${e.calendarId}\u0000${e.id}';
 
-/// Whether [event], listed by [awayMeetings], starts ticked: one Ron was
-/// invited to, unless one of his own addresses ([ownEmails]) organised it
-/// (the same meeting on another of his accounts, which a decline would
-/// tell only himself); his own meetings never.
-bool awayStartsTicked(CalendarEvent event, Iterable<String> ownEmails) {
-  if (isOwnEvent(event)) return false;
+/// Why [event], an invitation listed by [awayMeetings], starts unticked,
+/// each reason as its row says it; none where it starts ticked. A decline
+/// writes to its organiser, so one that may not want one waits for Ron:
+/// - one of his own addresses ([ownEmails], every account's) organised
+///   it: the same meeting on another of his accounts, which a decline
+///   would tell only himself;
+/// - its account is [hidden] in the calendar's Calendars shown;
+/// - it is shown as free: a notice more than a meeting (a colleague's
+///   out-of-office, an office closed), probably for information;
+/// - it began before [first], the first day away: a meeting from the
+///   evening before, a week-long notice already running.
+List<String> awayHeldBack(
+  CalendarEvent event, {
+  required Iterable<String> ownEmails,
+  DateTime? first,
+  bool hidden = false,
+}) {
   final organiser = event.organizer?.email.trim().toLowerCase();
-  return !ownEmails.any((e) => e.trim().toLowerCase() == organiser);
+  return [
+    if (organiser != null &&
+        ownEmails.any((e) => e.trim().toLowerCase() == organiser))
+      'You organised it, from ${event.organizer!.email}',
+    if (hidden) 'Hidden in the calendar',
+    if (event.showAs == EventShowAs.free)
+      'Shown as free: probably for information',
+    if (first != null &&
+        event.start.isBefore(DateTime(first.year, first.month, first.day)))
+      'Began before your first day away',
+  ];
+}
+
+/// Whether [event], listed by [awayMeetings], starts ticked: one Ron was
+/// invited to, unless [awayHeldBack] gives a reason; his own meetings
+/// never.
+bool awayStartsTicked(
+  CalendarEvent event,
+  Iterable<String> ownEmails, {
+  DateTime? first,
+  bool hidden = false,
+}) =>
+    !isOwnEvent(event) &&
+    awayHeldBack(event, ownEmails: ownEmails, first: first, hidden: hidden)
+        .isEmpty;
+
+/// [invited] as meetings: one meeting on two or more of Ron's accounts (an
+/// organiser who invited each, or a meeting sent on from one to the
+/// other) is one, known by its title (its letter case and spaces aside),
+/// its start and its organiser, as the reminders know one meeting on two
+/// calendars. Its organiser is to get one decline: [AwayMeeting.first], on
+/// the account first in [accountOrder], is declined as Ron chooses, and
+/// each of [AwayMeeting.copies] without a word. In [invited]'s order.
+List<AwayMeeting> awaySameMeetings(
+  List<CalendarEvent> invited,
+  List<String> accountOrder,
+) {
+  String keyOf(CalendarEvent e) => [
+        e.title.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' '),
+        e.start.toUtc().toIso8601String(),
+        e.organizer?.email.trim().toLowerCase() ?? '',
+      ].join('\u0000');
+  int order(CalendarEvent e) {
+    final at = accountOrder.indexOf(e.accountId);
+    return at < 0 ? accountOrder.length : at;
+  }
+
+  final groups = <String, List<CalendarEvent>>{};
+  for (final e in invited) {
+    groups.putIfAbsent(keyOf(e), () => []).add(e);
+  }
+  final meetings = <AwayMeeting>[];
+  for (final group in groups.values) {
+    final byAccount = <String, CalendarEvent>{};
+    for (final e in group) {
+      if (byAccount.containsKey(e.accountId)) {
+        // A second on the same account is a meeting of its own.
+        meetings.add((first: e, copies: const <CalendarEvent>[]));
+      } else {
+        byAccount[e.accountId] = e;
+      }
+    }
+    final copies = byAccount.values.toList()
+      ..sort((a, b) => order(a).compareTo(order(b)));
+    meetings.add((first: copies.first, copies: copies.skip(1).toList()));
+  }
+  // Where [invited] has the first of each.
+  int at(AwayMeeting m) => [
+        for (final e in [m.first, ...m.copies]) invited.indexOf(e),
+      ].reduce((a, b) => a < b ? a : b);
+  return meetings..sort((a, b) => at(a).compareTo(at(b)));
+}
+
+/// One meeting Ron was invited to: [first], declined as he chooses, and
+/// the same meeting on his other accounts, declined without a word.
+typedef AwayMeeting = ({CalendarEvent first, List<CalendarEvent> copies});
+
+/// The last day Away takes from [first]: three months on, a day short.
+/// A longer absence is more than a calendar's read gives whole, and more
+/// than one look at a list can check.
+DateTime awayLastAllowed(DateTime first) {
+  // The same day three months on, or that month's last where it is short
+  // (30 November: 28 February), then a day back.
+  final month = DateTime(first.year, first.month + 3);
+  final days = DateTime(month.year, month.month + 1, 0).day;
+  return DateTime(
+      month.year, month.month, (first.day < days ? first.day : days) - 1);
 }
 
 /// The out-of-office event on [accountId]'s main calendar among [events]
 /// that already covers every day from [first] to [last]: one made by Away
-/// before, or by hand. Null where there is none, and the days are blocked
-/// there only if Ron ticks it.
+/// before, or by hand. Google keeps only busy or free, so Away's own block
+/// comes back from it busy: an all-day event titled as Away titles it
+/// ([awayTitle]), with nobody on it, counts too. Null where there is none,
+/// and the days are blocked there only if Ron ticks it.
 CalendarEvent? awayBlockOn(
   Iterable<CalendarEvent> events,
   String accountId, {
@@ -119,9 +228,12 @@ CalendarEvent? awayBlockOn(
   final from = DateTime(first.year, first.month, first.day);
   final to = _dayAfter(last);
   for (final e in events) {
+    final awaysOwn = e.allDay &&
+        e.attendees.isEmpty &&
+        e.title.trim().toLowerCase() == awayTitle.toLowerCase();
     if (e.accountId == accountId &&
         e.calendarId == CalendarEvent.mainCalendar &&
-        e.showAs == EventShowAs.outOfOffice &&
+        (e.showAs == EventShowAs.outOfOffice || awaysOwn) &&
         !e.cancelled &&
         !e.start.isAfter(from) &&
         !e.end.isBefore(to)) {

@@ -31,6 +31,15 @@ class AwayPress extends ChangeNotifier {
 
   /// The calendar accounts, in Ron's order.
   List<Account> accounts = const [];
+
+  /// Every address of Ron's, an account without a calendar here too.
+  List<String> mine = const [];
+
+  /// The accounts hidden in the calendar's Calendars shown.
+  Set<String> hidden = const {};
+
+  /// The days asked for ran past three months, and were cut there.
+  bool cut = false;
   List<AwayItem> blocks = const [];
   List<AwayItem> invited = const [];
   List<AwayItem> own = const [];
@@ -63,7 +72,7 @@ class AwayPress extends ChangeNotifier {
       ];
 
   /// A press has left some that did not go: the screen keeps them shown.
-  bool get leftUndone => all.any((i) => i.state == AwayState.failed);
+  bool get leftUndone => all.any((i) => i.shown == AwayState.failed);
 }
 
 /// The press going now, one at a time (#53). Away opened while it goes
@@ -101,6 +110,11 @@ class AwayPresses extends Notifier<AwayPress?> {
         },
       );
     } finally {
+      // One that may have gone is not offered again by itself: a second
+      // decline, or cancellation, is Ron's to choose.
+      for (final i in todo) {
+        if (i.state == AwayState.failed && i.unanswered) press.ticked.remove(i);
+      }
       press
         ..running = false
         ..changed();
