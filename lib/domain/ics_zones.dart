@@ -51,6 +51,21 @@ class IcsZone {
     return zones;
   }
 
+  /// What the clock in this zone reads at [instant], as a DateTime holding
+  /// those figures; null where its rules are not ones this reads. The one
+  /// of its offsets whose wall clock comes back to [instant].
+  DateTime? wallClockOf(DateTime instant) {
+    final utc = instant.toUtc();
+    for (final o in _observances) {
+      final offset = o.offsetTo;
+      if (offset == null) continue;
+      final w = utc.add(offset);
+      final wall = DateTime(w.year, w.month, w.day, w.hour, w.minute, w.second);
+      if (instantOf(wall)?.isAtSameMomentAs(utc) ?? false) return wall;
+    }
+    return null;
+  }
+
   /// The instant a wall-clock time in this zone is, or null if the zone's
   /// rules are not ones this reads.
   DateTime? instantOf(DateTime local) {

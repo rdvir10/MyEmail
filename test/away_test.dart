@@ -11,6 +11,7 @@ import 'package:http/testing.dart' as http_testing;
 import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/calendar/account_calendar.dart';
 import 'package:myemail/data/calendar/away_run.dart';
+import 'package:myemail/data/calendar/calendar_not_taken.dart';
 import 'package:myemail/data/calendar/device_calendar.dart'
     show FakeDeviceCalendar;
 import 'package:myemail/data/calendar/google_calendar_api.dart';
@@ -33,6 +34,7 @@ import 'package:myemail/state/away_providers.dart' show awayPressProvider;
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/put_away_providers.dart'
     show putAwayGuardsProvider;
+import 'package:myemail/state/window_providers.dart' show inAWindowProvider;
 import 'package:myemail/theme/app_theme.dart' show buildTheme;
 import 'package:myemail/ui/calendar/away_screen.dart';
 import 'package:myemail/ui/calendar/calendar_screen.dart';
@@ -508,12 +510,49 @@ void main() {
         ..add('g1');
       await run.go([item], first: wed, last: fri);
       expect(engine.calendarActions, ['respond h1 declined']);
-      expect(item.shown, AwayState.failed);
-      expect(item.open, isTrue);
+      expect(item.shown, AwayState.done,
+          reason: 'its organiser has the decline: it went');
+      expect(item.open, isTrue, reason: 'the copy is left to do');
       engine.refuse.clear();
       await run.go([item], first: wed, last: fri);
       expect(engine.calendarActions,
           ['respond h1 declined', 'respond g1 declined quietly']);
+      expect(item.shown, AwayState.done);
+    });
+
+    test('the first copy gone before anything was sent: the next is the '
+        'one declined as Ron chose, its organiser told', () async {
+      final h1 = invited('h', 'h1', at(19, 15), title: 'Board review');
+      final g1 = invited('g', 'g1', at(19, 15), title: 'Board review');
+      engine.events['h']!.add(h1);
+      engine.events['g'] = [g1];
+      engine.gone.add('h1');
+      final item = AwayItem.decline(h1, copies: [g1]);
+      await AwayRun(engine)
+          .go([item], first: wed, last: fri, note: 'Away', tell: true);
+      expect(engine.calendarActions, ['respond g1 declined note=Away']);
+      expect(item.shown, AwayState.done);
+      expect(item.open, isFalse);
+    });
+
+    test('the first gone, the next refused: tried again, the next is still '
+        'the one declined as chosen', () async {
+      final h1 = invited('h', 'h1', at(19, 15), title: 'Board review');
+      final g1 = invited('g', 'g1', at(19, 15), title: 'Board review');
+      engine.events['h']!.add(h1);
+      engine.events['g'] = [g1];
+      engine
+        ..gone.add('h1')
+        ..refuse.add('g1');
+      final item = AwayItem.decline(h1, copies: [g1]);
+      final run = AwayRun(engine);
+      await run.go([item], first: wed, last: fri, tell: true);
+      expect(engine.calendarActions, isEmpty);
+      expect(item.shown, AwayState.failed);
+      expect(item.open, isTrue);
+      engine.refuse.clear();
+      await run.go([item], first: wed, last: fri, tell: true);
+      expect(engine.calendarActions, ['respond g1 declined']);
       expect(item.shown, AwayState.done);
     });
 
@@ -723,7 +762,9 @@ void main() {
       colorValue: 0xFFC239B3,
     );
 
-    _WireEngine wire() {
+    /// The calendars on the wire; [answer], where it gives one, answers
+    /// an answer to a meeting (Graph's decline, Google's PATCH).
+    _WireEngine wire({http.Response Function(http.Request)? answer}) {
       sent = [];
       final calendar = AccountCalendar(
         accessToken: (id, {bool force = false, List<String>? scopes}) async =>
@@ -731,6 +772,10 @@ void main() {
         accounts: () => const [microsoft, google],
         httpClient: http_testing.MockClient((r) async {
           sent.add(r);
+          if (answer != null &&
+              (r.url.path.endsWith('/decline') || r.method == 'PATCH')) {
+            return answer(r);
+          }
           if (r.url.host == 'www.googleapis.com' && r.method == 'GET') {
             return json({
               'id': r.url.pathSegments.last,
@@ -842,6 +887,76 @@ void main() {
       expect(sent[2].url.queryParameters['sendUpdates'], 'all');
       expect(sent[3].url.queryParameters['sendUpdates'], 'all');
     });
+
+    // What came back to a decline, and what Away makes of it: a refusal
+    // (an answer that was no, or "not now") certainly did not go; a server
+    // in trouble or no answer at all may have.
+    for (final (kind, id, me) in [
+      ('Microsoft', 'h', ron),
+      ('Google', 'g', ronG),
+    ]) {
+      for (final (what, answer, refused, said) in [
+        (
+          'a 400',
+          (http.Request r) => json({
+                'error': kind == 'Microsoft'
+                    ? {
+                        'code': 'ErrorInvalidRequest',
+                        'message': 'Your request cannot be completed.',
+                      }
+                    : {
+                        'code': 400,
+                        'message': 'Bad Request',
+                        'errors': [
+                          {'reason': 'invalid'},
+                        ],
+                      },
+              }, 400),
+          true,
+          'refused the meeting',
+        ),
+        (
+          'a 429',
+          (http.Request r) => http.Response('', 429),
+          true,
+          'rate limiting',
+        ),
+        (
+          'a 500',
+          (http.Request r) => http.Response('', 500),
+          false,
+          'having trouble',
+        ),
+        (
+          'no answer in time',
+          (http.Request r) => throw TimeoutException('no answer'),
+          false,
+          'Could not reach',
+        ),
+      ]) {
+        test('$kind: $what to a decline is '
+            '${refused ? 'a refusal: it did not go, and is never "sent '
+                'once"' : 'no answer: it may have gone'}', () async {
+          final engine = wire(answer: answer);
+          final meeting = invited(id, '${id}1_20261119T090000Z', at(19, 9),
+              organizer: tom, me: me, seriesId: '${id}1');
+          engine.events[id] = [meeting];
+          final item = AwayItem.decline(meeting);
+          final run = AwayRun(engine);
+          await run.go([item], first: wed, last: fri);
+          expect(item.state, AwayState.failed);
+          expect(item.unanswered, !refused);
+          expect(item.problem, contains(said));
+
+          // Gone from the calendar since, and tried again: after a refusal
+          // nothing was ever sent; after no answer, it went.
+          engine.events[id] = [];
+          await run.go([item], first: wed, last: fri);
+          expect(item.state,
+              refused ? AwayState.gone : AwayState.sentGone);
+        });
+      }
+    }
 
     test('Google: not told, the decline goes with no update sent', () async {
       final engine = wire();
@@ -1427,6 +1542,50 @@ void main() {
           findsOneWidget);
     });
 
+    testWidgets('refused by the calendar: "Did not go" with its reason, '
+        'still ticked; gone since, it was never "sent once"', (tester) async {
+      const why = 'Microsoft refused the meeting (ErrorInvalidRequest): Your '
+          'request cannot be completed.';
+      final engine = _Engine()
+        ..refuseWith['webinar'] = const CalendarNotTaken(why);
+      await pump(tester, with_: engine);
+      final row = rowOf(engine, 'webinar');
+      await press(tester);
+      await scrollTo(tester, row);
+      expect(find.descendant(of: row, matching: find.text('Did not go: $why')),
+          findsOneWidget);
+      expect(ticked(tester, row), isTrue);
+      expect(
+          tester
+              .widget<Text>(find.byKey(const ValueKey('away-summary')))
+              .data,
+          startsWith('6 went, 1 did not (marked in red).'));
+      expect(button(tester), 'Try again: decline 1');
+
+      // The organiser cancelled it since: tried again, it is gone, and
+      // nothing was ever sent for it.
+      engine
+        ..refuseWith.clear()
+        ..events[idOf(engine, 'webinar')]!
+            .removeWhere((e) => e.id == 'webinar');
+      await press(tester);
+      expect(
+          engine.calendarActions.where((a) => a.startsWith('respond webinar')),
+          isEmpty);
+      await scrollTo(tester, row);
+      expect(
+          find.descendant(
+              of: row,
+              matching:
+                  find.text('No longer on your calendar: nothing was sent')),
+          findsOneWidget);
+      expect(
+          tester
+              .widget<Text>(find.byKey(const ValueKey('away-summary')))
+              .data,
+          isNot(contains('sent once')));
+    });
+
     testWidgets('no answer came: it may have gone, so it is left unticked; '
         'ticked again by Ron, it is looked for first', (tester) async {
       final engine = _Engine()..loseAnswer.add('webinar');
@@ -1489,6 +1648,86 @@ void main() {
       expect(
           engine.calendarActions.where((a) => a.startsWith('respond board')),
           hasLength(2));
+    });
+
+    testWidgets('declined on Hadco, the Gmail copy refused: the row went, '
+        'and says what is left; Try again asks only for the copy, without a '
+        'word', (tester) async {
+      final (_, engine) = await pump(tester, prepare: (engine, hadco, gmail) {
+        engine.events[hadco]!.add(invited(hadco, 'board-h', at(19, 15),
+            title: 'Board review'));
+        engine.events[gmail]!.add(invited(gmail, 'board-g', at(19, 15),
+            title: 'Board review', me: ronG));
+        engine.refuseWith['board-g'] =
+            const CalendarNotTaken('Google refused the meeting (HTTP 400)');
+      });
+      final row = rowOf(engine, 'board-h');
+      await press(tester);
+      await scrollTo(tester, row);
+      expect(
+          find.descendant(
+              of: row,
+              matching: find.text('Declined on Hadco, not yet on Gmail: '
+                  'Google refused the meeting (HTTP 400)')),
+          findsOneWidget);
+      expect(
+          tester
+              .widget<Text>(find.byKey(const ValueKey('away-summary')))
+              .data,
+          '8 went. 1 of them is not yet declined on every account it is on '
+          '(marked in red). Those that went are not sent again. Pressing '
+          'again does only the 1, each once it is found still on its '
+          'calendar as it was.');
+      expect(button(tester), 'Try again: decline 1');
+
+      engine.refuseWith.clear();
+      await tester.tap(find.byKey(const ValueKey('away-go')));
+      await tester.pumpAndSettle();
+      expect(find.text('The copy on Gmail is declined, without a word.'),
+          findsOneWidget);
+      expect(
+          find.descendant(
+              of: find.byType(AlertDialog),
+              matching: find.textContaining('organiser')),
+          findsNothing);
+      await tester.tap(find.byKey(const ValueKey('away-go-sure')));
+      await tester.pumpAndSettle();
+      expect(
+          engine.calendarActions.where((a) => a.startsWith('respond board')),
+          ['respond board-h declined', 'respond board-g declined quietly']);
+      await scrollTo(tester, row);
+      expect(
+          find.descendant(
+              of: row, matching: find.text('Declined on Hadco and Gmail')),
+          findsOneWidget);
+    });
+
+    testWidgets("the Hadco copy gone before anything was sent: Gmail's is "
+        'declined as chosen, and the row says so', (tester) async {
+      final (_, engine) = await pump(tester, prepare: (engine, hadco, gmail) {
+        engine.events[hadco]!.add(invited(hadco, 'board-h', at(19, 15),
+            title: 'Board review'));
+        engine.events[gmail]!.add(invited(gmail, 'board-g', at(19, 15),
+            title: 'Board review', me: ronG));
+        engine.gone.add('board-h');
+      });
+      final row = rowOf(engine, 'board-h');
+      await press(tester);
+      expect(engine.calendarActions, contains('respond board-g declined'));
+      expect(engine.calendarActions,
+          isNot(contains('respond board-g declined quietly')));
+      await scrollTo(tester, row);
+      expect(
+          find.descendant(
+              of: row,
+              matching: find.text('Gone from Hadco: nothing was sent there. '
+                  'Declined on Gmail')),
+          findsOneWidget);
+      expect(
+          tester
+              .widget<Text>(find.byKey(const ValueKey('away-summary')))
+              .data,
+          'Done: 8 went.');
     });
 
     testWidgets('an account hidden in the calendar: its block and its '
@@ -1667,6 +1906,26 @@ void main() {
           reason: "Hadco's four: Gmail's two are not listed");
     });
 
+    testWidgets("in a window of its own, a whole copy of the app with a "
+        "press of its own, no I am away: one at a time holds only in one "
+        'copy', (tester) async {
+      final (c, _) = await pump(tester, home: const CalendarScreen());
+      await tester.tap(find.byKey(const ValueKey('calendar-menu')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('calendar-away')), findsOneWidget,
+          reason: 'in the main window');
+      await tester.tapAt(Offset.zero);
+      await tester.pumpAndSettle();
+
+      c.read(inAWindowProvider.notifier).mark();
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('calendar-menu')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('calendar-away')), findsNothing);
+      expect(find.byKey(const ValueKey('calendar-share-day')), findsOneWidget,
+          reason: 'which only reads');
+    });
+
     testWidgets('no calendar, no I am away in the menu', (tester) async {
       await pump(tester, home: const CalendarScreen(), withCalendar: false);
       await tester.tap(find.byKey(const ValueKey('calendar-menu')));
@@ -1788,6 +2047,10 @@ class _Engine extends SampleMailEngine {
   /// Each answer waits for this, where a test holds them.
   Completer<void>? hold;
 
+  /// What an answer to a meeting throws instead, by its id, for a test:
+  /// as the calendars throw their refusals.
+  final Map<String, Exception> refuseWith = {};
+
   /// What a look at a meeting throws instead, for a test.
   Exception? notesFail;
 
@@ -1837,6 +2100,7 @@ class _Engine extends SampleMailEngine {
     if (refuse.contains(event.id)) {
       throw const CalendarRefused('Exchange said no.');
     }
+    if (refuseWith[event.id] case final refusal?) throw refusal;
     if (gone.contains(event.id)) throw const EventGone();
     await super.respondToEvent(event, response,
         note: note, send: send, proposal: proposal, wholeSeries: wholeSeries);

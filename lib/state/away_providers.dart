@@ -78,7 +78,8 @@ class AwayPress extends ChangeNotifier {
       ];
 
   /// A press has left some that did not go: the screen keeps them shown.
-  bool get leftUndone => all.any((i) => i.shown == AwayState.failed);
+  bool get leftUndone => all.any(
+      (i) => [i, ...i.copies].any((m) => m.state == AwayState.failed));
 }
 
 /// The press going now, one at a time (#53). Away opened while it goes
@@ -138,7 +139,9 @@ class AwayPresses extends Notifier<AwayPress?> {
       // One that may have gone is not offered again by itself: a second
       // decline, or cancellation, is Ron's to choose.
       for (final i in todo) {
-        if (i.state == AwayState.failed && i.unanswered) press.ticked.remove(i);
+        if (i.shown == AwayState.failed && i.lead.unanswered) {
+          press.ticked.remove(i);
+        }
       }
       press
         ..running = false

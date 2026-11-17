@@ -20,6 +20,7 @@ import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
 import '../imap/imap_mapping.dart' show htmlToText;
 import '../mail_engine.dart';
+import 'calendar_not_taken.dart';
 
 /// A thin client over the Google Calendar API: one call, to put a meeting
 /// on the account's calendar with its attendees invited, and a Meet link
@@ -1373,7 +1374,8 @@ class GoogleCalendarApi {
         reason.contains('ratelimit') ||
         reason.contains('quota');
     if (throttled) {
-      return const ConnectionFailed(
+      // Turned away, not done (#53).
+      return const CalendarNotTaken(
         'Google is rate limiting this account. Try again shortly.',
       );
     }
@@ -1389,7 +1391,8 @@ class GoogleCalendarApi {
       );
     }
     // Google's own sentence, kept: it is what says which field it refused.
-    return ConnectionFailed(
+    // An answer came, and it was no: nothing was done (#53).
+    return CalendarNotTaken(
       'Google refused the meeting (HTTP $status)'
       '${detail == null || detail.isEmpty ? '' : ': $detail'}',
     );

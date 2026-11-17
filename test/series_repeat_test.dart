@@ -1097,6 +1097,145 @@ void main() {
       });
     });
 
+    group('every other week on two days, a new time across midnight', () {
+      /// A series at 23:00 Jerusalem time since [first], its times in UTC.
+      Map<String, Object?> masterOn(DateTime first) {
+        String utc(DateTime wall) {
+          final u = instantIn(wall, jerusalem).toUtc();
+          return '${u.toIso8601String().substring(0, 19)}Z';
+        }
+
+        final at = DateTime(first.year, first.month, first.day, 23);
+        return {
+          'id': 'series-1',
+          'status': 'confirmed',
+          'start': {'dateTime': utc(at), 'timeZone': 'UTC'},
+          'end': {
+            'dateTime': utc(at.add(const Duration(hours: 1))),
+            'timeZone': 'UTC',
+          },
+          'isAllDay': false,
+          'type': 'seriesMaster',
+          'recurrence': ['RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=FR,SA'],
+        };
+      }
+
+      /// Its meeting on [day] at 23:00 Jerusalem time (16:00 in New York),
+      /// moved to 18:00 in New York: 01:00 the next day in Jerusalem.
+      Future<Map<String, Object?>> carried(
+        Account account,
+        DateTime first,
+        DateTime day,
+        Recurrence repeat,
+      ) async {
+        final c = calendar(masterOn(first));
+        final at = instantIn(DateTime(day.year, day.month, day.day, 23),
+            jerusalem);
+        final picked =
+            instantIn(DateTime(day.year, day.month, day.day, 18), newYork);
+        await c.updateEvent(
+          account,
+          CalendarEvent(
+            id: 'occurrence-13',
+            accountId: account.id,
+            title: 'Fortnightly',
+            start: at,
+            end: at.add(const Duration(hours: 1)),
+            isOrganizer: true,
+            response: EventResponse.organizer,
+            seriesId: 'series-1',
+            timeZone: 'Israel Standard Time',
+          ),
+          EventChange(
+            start: picked,
+            end: picked.add(const Duration(hours: 1)),
+            allDay: false,
+            timeZone: newYork,
+            repeat: repeat,
+          ),
+          wholeSeries: true,
+        );
+        return bodyOf(sent.last);
+      }
+
+      test('one of its days carried across the start of the counting week '
+          "(Sunday for Outlook, Monday for Google) is refused, nothing sent",
+          () async {
+        // Friday and Saturday since Friday 4 September: Saturday would
+        // become Sunday, the start of Outlook's next week.
+        // Saturday and Sunday since Saturday 5 September: Sunday would
+        // become Monday, the start of Google's next week.
+        for (final (account, first, day, repeat) in [
+          (
+            microsoft,
+            DateTime(2026, 9, 4),
+            DateTime(2026, 11, 13),
+            const Recurrence(RepeatKind.weekly, interval: 2, days: {5, 6}),
+          ),
+          (
+            gmail,
+            DateTime(2026, 9, 5),
+            DateTime(2026, 11, 14),
+            const Recurrence(RepeatKind.weekly, interval: 2, days: {6, 7}),
+          ),
+        ]) {
+          await expectLater(carried(account, first, day, repeat),
+              throwsA(isA<SeriesDayMoved>()),
+              reason: account.id);
+          expect(sent.where((r) => r.method == 'PATCH'), isEmpty);
+        }
+        // The screen says the same before Save.
+        expect(
+          seriesTimeProblem(
+            zone: jerusalem,
+            opened: instantIn(DateTime(2026, 11, 13, 23), jerusalem),
+            picked: instantIn(DateTime(2026, 11, 13, 18), newYork),
+            repeat: const Recurrence(RepeatKind.weekly,
+                interval: 2, days: {5, 6}),
+          ),
+          contains('falls on another day'),
+        );
+      });
+
+      test('inside the week, or on one day, it is carried, and right',
+          () async {
+        // Google: Friday and Saturday become Saturday and Sunday, both in
+        // Google's week of Monday 31 August.
+        var body = await carried(
+          gmail,
+          DateTime(2026, 9, 4),
+          DateTime(2026, 11, 13),
+          const Recurrence(RepeatKind.weekly, interval: 2, days: {5, 6}),
+        );
+        expect((body['start']! as Map)['dateTime'], '2026-09-05T01:00:00');
+        expect(body['recurrence'],
+            ['RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=SA,SU']);
+
+        // Outlook: Tuesday and Thursday become Wednesday and Friday.
+        body = await carried(
+          microsoft,
+          DateTime(2026, 9, 1),
+          DateTime(2026, 11, 17),
+          const Recurrence(RepeatKind.weekly, interval: 2, days: {2, 4}),
+        );
+        expect((body['start']! as Map)['dateTime'], '2026-09-02T01:00:00');
+        var pattern = (body['recurrence']! as Map)['pattern'] as Map;
+        expect(pattern['daysOfWeek'], ['wednesday', 'friday']);
+        expect(pattern['interval'], 2);
+
+        // Outlook, one day: Saturday becomes Sunday 6 September.
+        body = await carried(
+          microsoft,
+          DateTime(2026, 9, 5),
+          DateTime(2026, 11, 14),
+          const Recurrence(RepeatKind.weekly, interval: 2, days: {6}),
+        );
+        expect((body['start']! as Map)['dateTime'], '2026-09-06T01:00:00');
+        pattern = (body['recurrence']! as Map)['pattern'] as Map;
+        expect(pattern['daysOfWeek'], ['sunday']);
+      });
+    });
+
     test('a timed meeting whose zone is not known is not given a repeat',
         () async {
       final c = calendar(graphMaster());
