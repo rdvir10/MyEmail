@@ -362,16 +362,28 @@ class BackgroundSync {
     // new mail is announced first, as it would have been: the reads may
     // take a while on a poor link, and must not hold it (#52's review).
     if (filing != null && meetings.isNotEmpty) {
+      // What is announced is chosen as it always was, the first
+      // [maxPerFolder] of the new mail in its order, meeting mail among it;
+      // only then is its other mail posted first, and its meeting mail,
+      // less what was filed, after the filing. Ordinary mail taking every
+      // place first left an invitation among seven new unannounced.
+      final chosen = fresh.take(maxPerFolder).toList();
       final ordinary = [
-        for (final m in fresh)
+        for (final m in chosen)
           if (!m.isMeeting) m,
       ];
+      fresh
+        ..clear()
+        ..addAll([
+          for (final m in chosen)
+            if (m.isMeeting) m,
+        ]);
       if (announce && ordinary.isNotEmpty) {
         try {
           posted = await _post(
             account,
             folder,
-            ordinary.take(maxPerFolder).toList(),
+            ordinary,
             silently: silently,
             bodies: bodies,
             kinds: kinds,
@@ -389,7 +401,7 @@ class BackgroundSync {
         filing: filing.as,
         bodies: bodies,
       );
-      fresh.removeWhere((m) => !m.isMeeting || filed.contains(m.id));
+      fresh.removeWhere((m) => filed.contains(m.id));
       meetings.removeWhere((m) => filed.contains(m.id));
     }
 

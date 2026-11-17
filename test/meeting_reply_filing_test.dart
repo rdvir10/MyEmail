@@ -629,6 +629,44 @@ void main() {
       expect(notifier.posted, isEmpty, reason: 'filed all the same');
     });
 
+    test('what is announced is chosen as it always was, the newest of the '
+        'new mail, meeting mail among it', () async {
+      await pass();
+      for (var uid = 2; uid <= 6; uid++) {
+        engine.arrive(uid, text: 'Ordinary $uid');
+      }
+      engine.arrive(7, calendar: reply(method: 'REQUEST'), text: 'Come');
+      engine.arrive(8, text: 'Ordinary 8');
+
+      await pass();
+
+      expect([for (final n in notifier.posted) n.payload]..sort(), [
+        'h:Inbox#4', 'h:Inbox#5', 'h:Inbox#6', 'h:Inbox#7', 'h:Inbox#8',
+      ]);
+      expect(
+        notifier.posted.singleWhere((n) => n.payload == 'h:Inbox#7')
+            .invitation,
+        isTrue,
+        reason: 'an invitation second among seven is announced, as one',
+      );
+    });
+
+    test('and a reply filed from among them leaves its place empty', () async {
+      await pass();
+      for (var uid = 2; uid <= 6; uid++) {
+        engine.arrive(uid, text: 'Ordinary $uid');
+      }
+      engine.arrive(7, calendar: empty, text: '');
+      engine.arrive(8, text: 'Ordinary 8');
+
+      await pass();
+
+      expect(engine.moved.single.ids, ['h:Inbox#7']);
+      expect([for (final n in notifier.posted) n.payload]..sort(), [
+        'h:Inbox#4', 'h:Inbox#5', 'h:Inbox#6', 'h:Inbox#8',
+      ]);
+    });
+
     test('the mail that is not meeting mail is announced before any meeting '
         'mail is read', () async {
       await pass();
