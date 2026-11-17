@@ -312,8 +312,9 @@ EventChange forSeries(
         ? dayShiftOn(zone, opened, change.start!)
         : 0;
     if (shift != 0) {
-      final moved =
-          repeat == null ? null : shiftedRepeat(repeat, shift, own);
+      final moved = repeat == null
+          ? null
+          : shiftedRepeat(repeat, shift, own, weekStart: weekStart);
       if (moved == null) throw SeriesDayMoved(zone);
       repeat = moved;
     }
@@ -383,10 +384,30 @@ int dayShiftOn(String zone, DateTime opened, DateTime picked) {
 /// [repeat], of a series whose first meeting is on [first], with its days
 /// moved [days] on (or back): a week's days, and its last day. Null for
 /// one that repeats by its dates, monthly or yearly, where a day on would
-/// be another date of the month.
-Recurrence? shiftedRepeat(Recurrence repeat, int days, DateTime first) {
+/// be another date of the month; and for one every other week on two days
+/// or more, where a day moved crosses the start of the calendar's counting
+/// week ([weekStart]: Sunday for Outlook, Monday for Google). Friday and
+/// Saturday every 2 weeks become Saturday and Sunday, and Outlook counts
+/// that Sunday in the next week: no one pattern holds the meetings as they
+/// were. One day alone moves whole, and is carried.
+Recurrence? shiftedRepeat(
+  Recurrence repeat,
+  int days,
+  DateTime first, {
+  int weekStart = DateTime.sunday,
+}) {
   if (days == 0) return repeat;
   int move(int weekday) => (weekday - 1 + days) % 7 + 1;
+  if (repeat.kind == RepeatKind.weekly && repeat.interval > 1) {
+    final week = repeat.daysFrom(first);
+    // Where each day sits in its counting week, 0 to 6: moved outside it,
+    // it is in another week.
+    final crosses = week.any((d) {
+      final at = (d - weekStart) % 7 + days;
+      return at < 0 || at > 6;
+    });
+    if (week.length > 1 && crosses) return null;
+  }
   final until = repeat.until;
   final last = until == null
       ? null
@@ -412,10 +433,14 @@ String? seriesTimeProblem({
   required DateTime opened,
   required DateTime picked,
   required Recurrence? repeat,
+  int weekStart = DateTime.sunday,
 }) {
   final shift = dayShiftOn(zone, opened, picked);
   if (shift == 0) return null;
-  if (repeat != null && shiftedRepeat(repeat, shift, opened) != null) {
+  if (repeat != null &&
+      shiftedRepeat(repeat, shift, wallClockIn(opened, zone),
+              weekStart: weekStart) !=
+          null) {
     return null;
   }
   return SeriesDayMoved(zone).message;
