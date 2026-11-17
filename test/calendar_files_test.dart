@@ -753,6 +753,72 @@ void main() {
       await settle(tester);
       expect(find.text('Past 1').hitTestable(), findsOneWidget);
     });
+
+    testWidgets('a series still running counts as from today, however long '
+        'ago it began', (tester) async {
+      final today = DateTime.now();
+      String day(int fromToday) {
+        final d = DateTime(today.year, today.month, today.day + fromToday);
+        return '${d.year}${d.month.toString().padLeft(2, '0')}'
+            '${d.day.toString().padLeft(2, '0')}';
+      }
+
+      final text = StringBuffer('BEGIN:VCALENDAR\r\n')
+        ..write('BEGIN:VEVENT\r\nUID:w\r\nSUMMARY:Weekly class\r\n'
+            'DTSTART;VALUE=DATE:${day(-70)}\r\nRRULE:FREQ=WEEKLY\r\n'
+            'END:VEVENT\r\n')
+        ..write('BEGIN:VEVENT\r\nUID:t\r\nSUMMARY:Term club\r\n'
+            'DTSTART;VALUE=DATE:${day(-60)}\r\n'
+            'RRULE:FREQ=WEEKLY;UNTIL=${day(20)}\r\nEND:VEVENT\r\n')
+        ..write('BEGIN:VEVENT\r\nUID:e\r\nSUMMARY:Ended club\r\n'
+            'DTSTART;VALUE=DATE:${day(-65)}\r\n'
+            'RRULE:FREQ=WEEKLY;COUNT=3\r\nEND:VEVENT\r\n');
+      for (var i = 40; i >= 1; i--) {
+        text.write('BEGIN:VEVENT\r\nUID:p$i\r\nSUMMARY:Past $i\r\n'
+            'DTSTART;VALUE=DATE:${day(-i)}\r\nEND:VEVENT\r\n');
+      }
+      text.write('BEGIN:VEVENT\r\nUID:n\r\nSUMMARY:Next 1\r\n'
+          'DTSTART;VALUE=DATE:${day(2)}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n');
+      await pumpOpened(tester, SharedContent(
+        calendarFile: aFile('club.ics', text: text.toString()),
+        calendarOpened: true,
+      ));
+
+      expect(find.text('Weekly class').hitTestable(), findsOneWidget,
+          reason: 'no end: still running');
+      expect(find.text('Term club').hitTestable(), findsOneWidget,
+          reason: 'its end is still to come');
+      expect(find.text('Next 1').hitTestable(), findsOneWidget);
+      expect(find.text('Ended club').hitTestable(), findsNothing,
+          reason: 'its three meetings are over');
+      expect(find.text('Past 1').hitTestable(), findsNothing);
+      expect(
+        tester.getTopLeft(find.text('Weekly class')).dy,
+        lessThan(tester.getTopLeft(find.text('Next 1')).dy),
+        reason: 'from today, in the order they began',
+      );
+    });
+
+    test('whether a series still runs on a day', () {
+      FileEvent one(String rule) => CalendarFile.read(
+              'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a\r\nSUMMARY:A\r\n'
+              'DTSTART:20260901T090000Z\r\nDTEND:20260901T100000Z\r\n'
+              '${rule.isEmpty ? '' : 'RRULE:$rule\r\n'}'
+              'END:VEVENT\r\nEND:VCALENDAR')!
+          .events
+          .single;
+      final day = DateTime(2026, 12, 1);
+      expect(one('').runsOnOrAfter(day), isFalse);
+      expect(one('FREQ=WEEKLY').runsOnOrAfter(day), isTrue);
+      expect(one('FREQ=WEEKLY;UNTIL=20261215T000000Z').runsOnOrAfter(day),
+          isTrue);
+      expect(one('FREQ=WEEKLY;UNTIL=20261110T000000Z').runsOnOrAfter(day),
+          isFalse);
+      expect(one('FREQ=DAILY;COUNT=200').runsOnOrAfter(day), isTrue);
+      expect(one('FREQ=DAILY;COUNT=20').runsOnOrAfter(day), isFalse);
+      expect(one('FREQ=HOURLY').runsOnOrAfter(day), isFalse,
+          reason: 'a rule not read is its first meeting alone');
+    });
   });
 
   // What comes in from outside, after the review of #67.

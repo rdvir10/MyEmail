@@ -87,6 +87,30 @@ class FileEvent {
 
   bool get allDay => event.allDay;
 
+  /// Whether it has a meeting on [day] or after, or one running into it:
+  /// a series begun long before still runs while its rule has meetings
+  /// left (no end, an end from [day] on, a count not yet used up). For the
+  /// list to open at what is still to come.
+  bool runsOnOrAfter(DateTime day) {
+    final from = _day(day);
+    final length = allDay ? Duration(days: event.days) : event.length;
+    bool reaches(DateTime at) {
+      final ends = at.add(length);
+      return !_day(allDay ? ends.subtract(const Duration(days: 1)) : ends)
+          .isBefore(from);
+    }
+
+    if (reaches(event.start)) return true;
+    if (event.rule == null) return false;
+    try {
+      return event
+          .occurrences(DateTime(from.year + 100), from: from)
+          .any(reaches);
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Its time names a zone neither the phone knows nor the file defines:
   /// read as written, on the phone's clock, which its row says.
   bool get zoneUnknown => event.zoneUnknown;
@@ -143,6 +167,8 @@ class FileEvent {
   DateTime get ownDay {
     final at = event.start;
     if (event.allDay || event.floating) return _day(at);
+    final own = event.ownZone?.wallClockOf(at);
+    if (own != null) return _day(own);
     final zone = event.zone;
     if (zone != null) {
       try {
