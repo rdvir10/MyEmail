@@ -497,6 +497,43 @@ void main() {
       expect(phone.inserted.single.title, 'Weekly sync');
       expect(phone.inserted.single.rule, isNull);
     });
+
+    testWidgets('a series says nothing more where it goes whole',
+        (tester) async {
+      await pumpCard(tester, weekly);
+      expect(find.textContaining('not copied'), findsNothing);
+      expect(find.textContaining('Only the first'), findsNothing);
+    });
+
+    testWidgets('before Add to calendar, it says the dates it leaves out or '
+        'moves are not copied', (tester) async {
+      for (final ics in [
+        weekly.replaceFirst(
+            'END:VEVENT', 'EXDATE:20261223T120000Z\r\nEND:VEVENT'),
+        weekly.replaceFirst(
+          'END:VCALENDAR',
+          'BEGIN:VEVENT\r\nUID:sync@example.com\r\n'
+              'RECURRENCE-ID:20261209T120000Z\r\nSUMMARY:Weekly sync\r\n'
+              'DTSTART:20261210T120000Z\r\nDTEND:20261210T123000Z\r\n'
+              'END:VEVENT\r\nEND:VCALENDAR',
+        ),
+      ]) {
+        await pumpCard(tester, ics);
+        expect(find.textContaining('not copied'), findsOneWidget);
+        expect(tester.getTopLeft(find.textContaining('not copied')).dy,
+            lessThan(tester.getTopLeft(find.text('Add to calendar')).dy));
+      }
+    });
+
+    testWidgets('and where the phone cannot be given its repeat, that only '
+        'the first meeting goes', (tester) async {
+      await pumpCard(
+          tester, weekly.replaceFirst('BYDAY=WE;', 'BYDAY=WE;BYHOUR=12;'));
+      expect(find.textContaining('Only the first meeting'), findsOneWidget);
+      await tester.tap(find.text('Add to calendar'));
+      await tester.pumpAndSettle();
+      expect(phone.inserted.single.rule, isNull);
+    });
   });
 
   // What the review of #67 found in the reading (calendar-ideas-2,

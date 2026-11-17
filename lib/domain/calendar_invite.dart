@@ -40,7 +40,14 @@ class CalendarInvite {
     this.responderNote,
     this.attendeeNoted = false,
     this.rule,
+    this.datesChanged = false,
   });
+
+  /// Whether a series' invitation leaves out some of its dates (EXDATE),
+  /// or moves some (another event in it, the single meeting changed):
+  /// neither goes with [rule] to the phone's calendar app (calendar idea
+  /// #67's review).
+  final bool datesChanged;
 
   /// How the meeting repeats, as the event's own RRULE has it, without its
   /// name: "FREQ=WEEKLY;BYDAY=WE;UNTIL=20270630T000000Z". Null for one
@@ -188,6 +195,7 @@ class CalendarInvite {
     String? responderComment;
     var attendeeNoted = false;
     String? rule;
+    var datesChanged = false;
 
     for (final line in lines) {
       final name = line.name;
@@ -198,7 +206,12 @@ class CalendarInvite {
         if (name == 'METHOD') method = value.trim().toUpperCase();
         if (name == 'PRODID') productId = value.trim();
         if (name == 'BEGIN' && value.trim().toUpperCase() == 'VEVENT') {
-          if (seen) break; // The first event is the invitation.
+          // The first event is the invitation; one after it is a single
+          // meeting of its series, moved or changed.
+          if (seen) {
+            datesChanged = true;
+            break;
+          }
           inEvent = true;
           seen = true;
         }
@@ -256,6 +269,8 @@ class CalendarInvite {
           if (_unescape(value).trim().isNotEmpty) comment ??= _unescape(value);
         case 'RRULE':
           rule = value.trim();
+        case 'EXDATE':
+          datesChanged = true;
         case 'SEQUENCE':
           sequence = int.tryParse(value.trim()) ?? 0;
         case 'DTSTAMP':
@@ -337,6 +352,7 @@ class CalendarInvite {
           meetingLinkIn(description),
       productId: productId == null || productId.isEmpty ? null : productId,
       rule: rule == null || rule.isEmpty ? null : rule,
+      datesChanged: datesChanged,
       attendeeNoted: attendeeNoted,
       responderNote: _noteOf(
         method == 'REPLY' || method == 'COUNTER'

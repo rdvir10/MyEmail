@@ -346,6 +346,9 @@ class _InviteCardState extends ConsumerState<InviteCard> {
     final who = proposerOf(widget.message, i);
     // Not on an answer, which is about the meeting the organiser has.
     final repeats = i.isReply || i.isDeclineCounter ? null : repeatWordsOf(i);
+    // How it repeats as the phone's calendar app is told it: see the lines
+    // under [repeats].
+    final phoneRule = repeats == null ? null : ruleForPhoneOf(i);
     final (IconData icon, String heading) = switch (i.method) {
       'CANCEL' => (Icons.event_busy, 'Cancelled'),
       'REQUEST' => (
@@ -534,6 +537,23 @@ class _InviteCardState extends ConsumerState<InviteCard> {
             // How a series repeats, as its sheet says it (#44), so Add to
             // calendar is seen to add them all (#67).
             if (repeats != null) _line(theme, Icons.repeat, repeats),
+            // What Add to calendar does not carry, said before it is
+            // pressed (#67's review): the phone's calendar app is given
+            // the repeat and nothing else of the series.
+            if (repeats != null && canAdd && i.datesChanged)
+              _line(
+                theme,
+                Icons.info_outline,
+                'Dates the invitation leaves out or moves are not copied to '
+                'your calendar app: change them there.',
+              ),
+            if (repeats != null && canAdd && phoneRule == null)
+              _line(
+                theme,
+                Icons.info_outline,
+                'Only the first meeting goes to your calendar app: it '
+                "can't be given how this one repeats.",
+              ),
             // What else is on then, on any of the calendars.
             if (i.isRequest && done == null && answered == null)
               InviteClashes(invite: i),
