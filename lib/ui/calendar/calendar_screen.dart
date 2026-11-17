@@ -36,6 +36,7 @@ import '../messages/date_format.dart';
 import '../messages/invite_answers.dart' show askHowToAnswer;
 import '../../state/date_providers.dart' show deviceZoneProvider;
 import 'agenda_row_parts.dart';
+import 'away_screen.dart' show openAway;
 import 'block_look.dart';
 import 'block_text.dart';
 import 'button_corner.dart';
@@ -555,6 +556,20 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
                       prefs.copyWith(showDeclined: !prefs.showDeclined));
                 case 'refresh':
                   ref.read(calendarRefreshProvider.notifier).now();
+                case 'away':
+                  openAway(context, ref);
+                case 'share-day':
+                  // In Week, today where it is among the days on screen, else
+                  // the first of them: a swipe on and back leaves the view
+                  // on the week's first day. The view's own day otherwise.
+                  final now = DateTime.now();
+                  showDayToShare(
+                    context,
+                    mode == CalendarViewMode.week
+                        ? page.days.firstWhere((d) => _sameDay(d, now),
+                            orElse: () => page.days.first)
+                        : _day,
+                  );
                 default:
                   final chosen = WeekSpan.values
                       .where((s) => 'span:${s.name}' == choice)
@@ -608,6 +623,23 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
                 value: 'refresh',
                 child: Text('Refresh'),
               ),
+              // Going away: the days blocked, and the meetings in them
+              // declined or cancelled as ticked (#53).
+              if (accounts.isNotEmpty) ...[
+                const PopupMenuDivider(),
+                const PopupMenuItem(
+                  key: ValueKey('calendar-away'),
+                  value: 'away',
+                  child: Text('I am away'),
+                ),
+                // The day the view is on, as a few lines to copy or to
+                // share, as a meeting's sheet shares its own day (#48).
+                const PopupMenuItem(
+                  key: ValueKey('calendar-share-day'),
+                  value: 'share-day',
+                  child: Text('Share my day'),
+                ),
+              ],
             ],
           ),
         ],
