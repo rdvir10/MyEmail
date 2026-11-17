@@ -500,6 +500,11 @@ class _AddLinkDialog extends StatefulWidget {
 
 class _AddLinkDialogState extends State<_AddLinkDialog> {
   late final _link = TextEditingController(text: widget.link);
+
+  /// The host a link from elsewhere is read from.
+  late final String? _from = widget.link == null
+      ? null
+      : Uri.tryParse(feedUrlOf(widget.link!) ?? '')?.host;
   final _name = TextEditingController();
   String? _problem;
   bool _busy = false;
@@ -550,6 +555,16 @@ class _AddLinkDialogState extends State<_AddLinkDialog> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // Where it is from, for a link from elsewhere, on a line of its
+            // own: the field cuts a long one short at the right.
+            if (_from != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  'From $_from',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
             // Where it goes, for a link from elsewhere: Ron has not been to
             // Settings to see.
             if (widget.link != null)

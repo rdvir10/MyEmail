@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart' as http_testing;
 import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/calendar/device_calendar.dart';
 import 'package:myemail/data/calendar/internet_calendars.dart';
@@ -16,6 +18,7 @@ import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/domain/calendar_files.dart';
 import 'package:myemail/domain/calendar_invite.dart';
+import 'package:myemail/domain/internet_calendar.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/domain/meeting.dart';
 import 'package:myemail/domain/recurrence.dart';
@@ -715,6 +718,134 @@ void main() {
     });
   });
 
+  // What comes in from outside, after the review of #67.
+  group('what comes in from outside', () {
+    testWidgets('a file too large is said to be, and not read',
+        (tester) async {
+      await pumpOpened(
+        tester,
+        SharedContent.fromMap({'calendarOpened': true, 'calendarTooLarge': true}),
+      );
+      expect(find.text('That calendar file is too large for MyEmail to read.'),
+          findsOneWidget);
+      expect(find.byType(CalendarFileScreen), findsNothing);
+    });
+
+    testWidgets("Android's copy of a file is let go once it has been read",
+        (tester) async {
+      final copy = Directory('${temp.path}/incoming/1f2e3d')
+        ..createSync(recursive: true);
+      final file = File('${copy.path}/school.ics')..writeAsStringSync(school);
+      await pumpOpened(tester, SharedContent(
+        calendarFile: IncomingFile(
+          path: file.path,
+          name: 'school.ics',
+          mimeType: 'text/calendar',
+          sizeBytes: file.lengthSync(),
+        ),
+        calendarOpened: true,
+      ));
+      expect(find.text('Swimming'), findsOneWidget);
+      expect(copy.existsSync(), isFalse);
+    });
+
+    test('a link with a user part before its host is no calendar link', () {
+      for (final link in [
+        'webcal://calendar.google.com@evil.example/feed.ics',
+        'webcal://user:secret@example.com/feed.ics',
+      ]) {
+        expect(calendarLinkIn(link), isNull, reason: link);
+        expect(feedUrlOf(link), isNull, reason: link);
+      }
+      expect(feedUrlOf('webcal://example.com/feed.ics'),
+          'https://example.com/feed.ics');
+    });
+
+    testWidgets('and one handed in says where it is from, above the link',
+        (tester) async {
+      await pumpOpened(
+        tester,
+        SharedContent.fromMap({
+          'calendarLink': 'webcal://calendar.example.org/school/'
+              'a-very-long-path/that-goes-on/terms.ics',
+          'calendarOpened': true,
+        }),
+      );
+      expect(find.text('From calendar.example.org'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('From calendar.example.org')).dy,
+        lessThan(tester
+            .getTopLeft(find.byKey(const ValueKey('internet-calendar-link')))
+            .dy),
+      );
+    });
+
+    testWidgets('one refused is said to be', (tester) async {
+      await pumpOpened(
+        tester,
+        SharedContent.fromMap({
+          'calendarLink': 'webcal://calendar.google.com@evil.example/f.ics',
+          'calendarOpened': true,
+        }),
+      );
+      expect(find.text('Add from a link'), findsNothing);
+      expect(find.textContaining('does not open that link'), findsOneWidget);
+    });
+  });
+
+  group('the reader of calendars from links', () {
+    late Directory kept;
+
+    setUp(() => kept = Directory.systemTemp.createTempSync('myemail-links'));
+    tearDown(() => kept.deleteSync(recursive: true));
+
+    const calendar = InternetCalendar(
+      id: 'c1',
+      name: 'Team',
+      url: 'https://example.com/team.ics',
+      colour: 0xFF8E24AA,
+    );
+
+    test('stops reading past 4 MB, and says so', () async {
+      var given = 0;
+      final client = http_testing.MockClient.streaming((request, _) async {
+        Stream<List<int>> endless() async* {
+          final chunk = List.filled(64 * 1024, 0x41);
+          yield 'BEGIN:VCALENDAR\r\n'.codeUnits;
+          while (true) {
+            given += chunk.length;
+            yield chunk;
+          }
+        }
+
+        return http.StreamedResponse(endless(), 200);
+      });
+      final reader =
+          FileInternetCalendars(client: client, folder: () async => kept);
+      await expectLater(
+        reader.read(calendar),
+        throwsA(isA<FeedUnreadable>()
+            .having((e) => e.message, 'message', contains('too large'))),
+      );
+      expect(given, lessThan(6 * 1024 * 1024),
+          reason: 'not read to the end, which there is none of');
+      expect(await reader.kept(calendar), isNull);
+    });
+
+    test('reads one of a fair size, off the UI isolate, and keeps it',
+        () async {
+      final client = http_testing.MockClient(
+          (request) async => http.Response(school, 200));
+      final reader =
+          FileInternetCalendars(client: client, folder: () async => kept);
+      final feed = await reader.read(calendar);
+      expect(feed.name, "Ella's school");
+      expect(feed.events, hasLength(3));
+      final again = FileInternetCalendars(folder: () async => kept);
+      expect((await again.kept(calendar))?.feed.events, hasLength(3));
+    });
+  });
+
   // Android's half, which no Dart test runs: the filters that offer the
   // app for a calendar, and what is taken from what it is opened with.
   group('the Android half', () {
@@ -735,6 +866,9 @@ void main() {
           f.contains('android.intent.action.VIEW') &&
           f.contains('android:mimeType="text/calendar"'));
       expect(files, hasLength(1));
+      expect(files.single, contains('android:mimeType="application/ics"'));
+      expect(files.single, contains('android:mimeType="text/x-vcalendar"'),
+          reason: 'how some apps hand an .ics over');
       expect(files.single, contains('android:scheme="content"'),
           reason: 'a file another app grants, never a path');
       expect(files.single, isNot(contains('android:scheme="file"')));
@@ -759,9 +893,17 @@ void main() {
           ?.group(0);
       expect(take, isNotNull);
       expect(take, contains('Intent.ACTION_VIEW'));
-      expect(take, contains('copyInBackground(listOf(data))'),
+      expect(take, contains('copyInBackground(listOf(data), CALENDAR_LARGEST)'),
           reason: 'copyIn, and mayCopyIn before it, as for any share');
       expect(take, contains('"calendarFile"'));
+      expect(take, contains('"calendarTooLarge"'));
+      expect(bridge, contains('private fun copyAtMost('),
+          reason: 'a calendar is copied no further than 4 MB');
+      expect(
+        RegExp(r'CALENDAR_TYPES = setOf\(([^)]*)\)').firstMatch(bridge)?[1],
+        allOf(contains('"text/calendar"'), contains('"application/ics"'),
+            contains('"text/x-vcalendar"')),
+      );
       expect(take, contains('"calendarLink"'));
       expect(take, isNot(contains('openInputStream')));
       final share = RegExp(r'fun takeShare\([\s\S]*?\n    }')

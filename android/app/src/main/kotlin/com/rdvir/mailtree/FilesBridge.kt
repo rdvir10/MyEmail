@@ -35,6 +35,8 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.Executors
 
@@ -192,11 +194,15 @@ class FilesBridge(
         if (type != null && type !in CALENDAR_TYPES) return false
         intent.action = null
         if (!pushNow) shareCopying = true
-        copyInBackground(listOf(data)) { incoming ->
+        // No further than a calendar goes: this activity is exported, and
+        // what it is handed may be a file of gigabytes, or a stream with no
+        // end, written into the cache until the disk was full.
+        copyInBackground(listOf(data), CALENDAR_LARGEST) { incoming ->
             deliverCalendar(
                 mapOf(
                     "calendarOpened" to true,
                     "calendarFile" to incoming.files.firstOrNull(),
+                    "calendarTooLarge" to (incoming.tooLarge > 0),
                     "skipped" to incoming.skipped,
                 ),
                 pushNow,
@@ -799,8 +805,15 @@ class FilesBridge(
     private fun uris(clip: ClipData): List<Uri> =
         (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
 
-    /** Files copied in, and how many of those offered could not be. */
-    private class Incoming(val files: List<Map<String, Any?>>, val skipped: Int)
+    /**
+     * Files copied in, how many of those offered could not be, and how
+     * many of those were past the size asked for.
+     */
+    private class Incoming(
+        val files: List<Map<String, Any?>>,
+        val skipped: Int,
+        val tooLarge: Int = 0,
+    )
 
     /**
      * Copy [uris] in off the main thread, then hand what came of it to
@@ -810,11 +823,16 @@ class FilesBridge(
      * only in Google Photos or Drive is downloaded as it is read. On the
      * main thread either froze the window, or the splash screen on a share,
      * until Android offered to close the app; and closing it lost the share.
+     * Each file no larger than [limit] bytes, where one is given.
      */
-    private fun copyInBackground(uris: List<Uri>, done: (Incoming) -> Unit) {
+    private fun copyInBackground(
+        uris: List<Uri>,
+        limit: Long? = null,
+        done: (Incoming) -> Unit,
+    ) {
         copier.execute {
             val incoming = try {
-                copyIn(uris)
+                copyIn(uris, limit)
             } catch (e: Exception) {
                 android.util.Log.e("MyEmail", "could not copy files in", e)
                 Incoming(emptyList(), uris.size)
@@ -868,10 +886,15 @@ class FilesBridge(
         }
     }
 
-    private fun copyIn(uris: List<Uri>): Incoming {
+    /**
+     * [uris] copied in, each no larger than [limit] bytes where one is
+     * given: one past it is not kept, and counted as too large.
+     */
+    private fun copyIn(uris: List<Uri>, limit: Long? = null): Incoming {
         val incoming = File(activity.cacheDir, "incoming")
         val taken = mutableListOf<Map<String, Any?>>()
         var skipped = 0
+        var tooLarge = 0
         for ((i, uri) in uris.withIndex()) {
             if (!mayCopyIn(uri)) {
                 android.util.Log.w("MyEmail", "refused to copy in $uri")
@@ -884,13 +907,27 @@ class FilesBridge(
             // attachments held the second.
             val folder = File(incoming, UUID.randomUUID().toString()).apply { mkdirs() }
             val target = File(folder, fileNameFor(name))
+            var over = false
             try {
                 activity.contentResolver.openInputStream(uri).use { input ->
                     if (input == null) return@use
-                    target.outputStream().use { output -> input.copyTo(output) }
+                    target.outputStream().use { output ->
+                        if (limit == null) {
+                            input.copyTo(output)
+                        } else {
+                            over = !copyAtMost(input, output, limit)
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 android.util.Log.e("MyEmail", "could not copy $uri", e)
+            }
+            if (over) {
+                android.util.Log.w("MyEmail", "past $limit bytes, not copied in: $uri")
+                folder.deleteRecursively()
+                skipped++
+                tooLarge++
+                continue
             }
             if (!target.exists() || target.length() == 0L) {
                 folder.deleteRecursively()
@@ -906,7 +943,23 @@ class FilesBridge(
                 ),
             )
         }
-        return Incoming(taken, skipped)
+        return Incoming(taken, skipped, tooLarge)
+    }
+
+    /**
+     * [input] into [output], stopping once it is past [limit] bytes: false
+     * where it went past, and what was written is then not whole.
+     */
+    private fun copyAtMost(input: InputStream, output: OutputStream, limit: Long): Boolean {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) return true
+            total += read
+            if (total > limit) return false
+            output.write(buffer, 0, read)
+        }
     }
 
     /**
@@ -1034,7 +1087,10 @@ class FilesBridge(
 
     companion object {
         /** The types a calendar file is opened as: the manifest's. */
-        val CALENDAR_TYPES = setOf("text/calendar", "application/ics")
+        val CALENDAR_TYPES = setOf("text/calendar", "application/ics", "text/x-vcalendar")
+
+        /** The most of a calendar file copied in: Dart reads no more. */
+        const val CALENDAR_LARGEST = 4L * 1024 * 1024
 
         const val CHANNEL = "mailtree/files"
 

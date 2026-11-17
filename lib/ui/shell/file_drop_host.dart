@@ -108,9 +108,14 @@ class _FileDropHostState extends ConsumerState<FileDropHost> {
     } else {
       ScaffoldMessenger.maybeOf(context)
         ?..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(
+        ..showSnackBar(SnackBar(
           duration: kBottomMessage,
-          content: Text('That calendar file could not be read.'),
+          content: Text(content.calendarTooLarge
+              ? 'That calendar file is too large for MyEmail to read.'
+              : content.calendarLinkRefused
+                  ? 'MyEmail does not open that link: it is not a '
+                      "calendar's as calendars hand them out."
+                  : 'That calendar file could not be read.'),
         ));
     }
   }

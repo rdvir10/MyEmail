@@ -98,10 +98,36 @@ class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
   }
 
   /// The file at [path] read, all at once: a calendar is small, and one
-  /// past [CalendarFile.largest] is not read at all.
+  /// past [CalendarFile.largest] is not read at all. Android's copy of it
+  /// is let go once it has been: a stranger's file is not kept.
   static _Read _read(String path) {
+    final f = File(path);
     try {
-      final f = File(path);
+      return _readFile(f);
+    } finally {
+      _letGo(f);
+    }
+  }
+
+  /// The copy FilesBridge made (`incoming/<a folder of its own>/<name>`
+  /// in the cache), deleted with its folder; nothing anywhere else.
+  static void _letGo(File f) {
+    try {
+      final folder = f.parent;
+      if (folder.parent.uri.pathSegments
+              .where((s) => s.isNotEmpty)
+              .lastOrNull ==
+          'incoming') {
+        folder.deleteSync(recursive: true);
+      }
+    } catch (e) {
+      debugPrint('[myemail] a calendar file copied in was not let go: '
+          '${e.runtimeType}');
+    }
+  }
+
+  static _Read _readFile(File f) {
+    try {
       if (f.lengthSync() > CalendarFile.largest) {
         return (calendar: null, problem: 'This file is too large for a '
             'calendar, so MyEmail has not read it.');

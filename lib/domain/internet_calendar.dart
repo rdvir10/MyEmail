@@ -88,7 +88,9 @@ bool isInternetAccount(String accountId) =>
 
 /// A link as pasted, as it can be read: webcal:// is https:// under
 /// another name, the way calendar apps hand them out. Null for anything
-/// that is not a web link.
+/// that is not a web link, and for one with a user part before its host
+/// (calendar.google.com@evil.example is evil.example's), which a link
+/// handed in from a web page could be (calendar idea #67's review).
 String? feedUrlOf(String pasted) {
   var text = pasted.trim();
   if (text.toLowerCase().startsWith('webcals://')) {
@@ -100,7 +102,7 @@ String? feedUrlOf(String pasted) {
   if (uri == null || !(uri.isScheme('https') || uri.isScheme('http'))) {
     return null;
   }
-  return uri.host.isEmpty ? null : uri.toString();
+  return uri.host.isEmpty || uri.userInfo.isNotEmpty ? null : uri.toString();
 }
 
 /// The colours a new calendar from a link is given in turn.

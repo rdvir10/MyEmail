@@ -1,4 +1,6 @@
 import 'dart:io';
+import 'dart:isolate';
+import 'dart:typed_data' show BytesBuilder;
 
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
@@ -106,7 +108,7 @@ class FileInternetCalendars implements InternetCalendars {
       if (known != null && known.modified == modified) {
         return (feed: known.feed, readAt: modified);
       }
-      final feed = IcsFeed.parse(await file.readAsString());
+      final feed = await _parse(await file.readAsString());
       _parsed[calendar.id] = (modified: modified, feed: feed);
       return (feed: feed, readAt: modified);
     } catch (e) {
@@ -115,14 +117,21 @@ class FileInternetCalendars implements InternetCalendars {
     }
   }
 
+  /// The most of a calendar read from a link: a year of a busy calendar,
+  /// or decades of a country's holidays, is well under it. Since a web
+  /// page can hand MyEmail a link in one tap (calendar idea #67), what it
+  /// answers is read no further.
+  static const largest = 4 * 1024 * 1024;
+
   @override
   Future<IcsFeed> read(InternetCalendar calendar) async {
     final client = this.client ?? http.Client();
     final http.Response response;
     try {
-      response = await client
-          .get(Uri.parse(calendar.url))
+      response = await _get(client, Uri.parse(calendar.url), calendar.name)
           .timeout(const Duration(seconds: 30));
+    } on FeedUnreadable {
+      rethrow;
     } catch (e) {
       throw ConnectionFailed('Could not reach ${calendar.name}. ($e)');
     } finally {
@@ -137,7 +146,7 @@ class FileInternetCalendars implements InternetCalendars {
     if (!text.contains('BEGIN:VCALENDAR')) {
       throw FeedUnreadable('${calendar.name} is not a calendar.');
     }
-    final feed = IcsFeed.parse(text);
+    final feed = await _parse(text);
     try {
       final file = await _fileOf(calendar);
       if (file != null) {
@@ -149,6 +158,45 @@ class FileInternetCalendars implements InternetCalendars {
       debugPrint('[myemail] calendar ${calendar.name} not kept: $e');
     }
     return feed;
+  }
+
+  /// [uri]'s answer, read as it comes and no further than [largest]:
+  /// throws [FeedUnreadable] past it, the rest unread. Decoded as
+  /// `http.Response` decodes a body, by the charset it names.
+  static Future<http.Response> _get(
+    http.Client client,
+    Uri uri,
+    String name,
+  ) async {
+    final answer = await client.send(http.Request('GET', uri));
+    final bytes = BytesBuilder(copy: false);
+    await for (final chunk in answer.stream) {
+      bytes.add(chunk);
+      if (bytes.length > largest) {
+        // Leaving the loop cancels the rest.
+        throw FeedUnreadable('$name is too large for a calendar, so '
+            'MyEmail has not read it.');
+      }
+    }
+    return http.Response.bytes(
+      bytes.takeBytes(),
+      answer.statusCode,
+      headers: answer.headers,
+      request: answer.request,
+    );
+  }
+
+  /// [text] read into its events off the UI's own isolate: a calendar of
+  /// thousands of events took seconds, and the screen was still meanwhile.
+  /// Here where that cannot be had.
+  static Future<IcsFeed> _parse(String text) async {
+    try {
+      return await Isolate.run(() => IcsFeed.parse(text));
+    } catch (e) {
+      debugPrint('[myemail] a calendar from a link read here: '
+          '${e.runtimeType}');
+      return IcsFeed.parse(text);
+    }
   }
 
   @override

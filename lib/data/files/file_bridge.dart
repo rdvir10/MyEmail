@@ -45,7 +45,17 @@ class SharedContent {
     this.calendarFile,
     this.calendarLink,
     this.calendarOpened = false,
+    this.calendarTooLarge = false,
+    this.calendarLinkRefused = false,
   });
+
+  /// Opened with a calendar file past [CalendarFile.largest]: Android
+  /// stopped copying it, and it is not read.
+  final bool calendarTooLarge;
+
+  /// Opened with a link that is not a calendar's as one is handed out
+  /// (see [calendarLinkIn]): it is not offered.
+  final bool calendarLinkRefused;
 
   /// The app opened with a calendar rather than shared to (calendar idea
   /// #67): an .ics file from another app, copied in as a share's files
@@ -88,10 +98,13 @@ class SharedContent {
         ?IncomingFile.fromMap(item),
     ];
     if (value['calendarOpened'] == true) {
+      final link = calendarLinkIn(value['calendarLink']);
       return SharedContent(
         calendarFile: IncomingFile.fromMap(value['calendarFile']),
-        calendarLink: calendarLinkIn(value['calendarLink']),
+        calendarLink: link,
         calendarOpened: true,
+        calendarTooLarge: value['calendarTooLarge'] == true,
+        calendarLinkRefused: value['calendarLink'] != null && link == null,
         skipped: skippedFiles(value),
       );
     }
@@ -189,13 +202,16 @@ class MailtoLink {
 
 /// [value] where it is a calendar link as a calendar app hands one out,
 /// webcal:// or webcals:// to a host; null for anything else, which is no
-/// calendar's.
+/// calendar's. Nor one with a user part before its host: shown cut short,
+/// webcal://calendar.google.com@evil.example/… reads as Google's and is
+/// read from evil.example.
 String? calendarLinkIn(Object? value) {
   if (value is! String) return null;
   final uri = Uri.tryParse(value.trim());
   if (uri == null ||
       !(uri.isScheme('webcal') || uri.isScheme('webcals')) ||
-      uri.host.isEmpty) {
+      uri.host.isEmpty ||
+      uri.userInfo.isNotEmpty) {
     return null;
   }
   return value.trim();
