@@ -559,7 +559,17 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
                 case 'away':
                   openAway(context, ref);
                 case 'share-day':
-                  showDayToShare(context, _day);
+                  // In Week, today where it is among the days on screen, else
+                  // the first of them: a swipe on and back leaves the view
+                  // on the week's first day. The view's own day otherwise.
+                  final now = DateTime.now();
+                  showDayToShare(
+                    context,
+                    mode == CalendarViewMode.week
+                        ? page.days.firstWhere((d) => _sameDay(d, now),
+                            orElse: () => page.days.first)
+                        : _day,
+                  );
                 default:
                   final chosen = WeekSpan.values
                       .where((s) => 'span:${s.name}' == choice)

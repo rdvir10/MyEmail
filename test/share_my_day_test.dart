@@ -9,6 +9,7 @@ import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/calendar_event.dart';
+import 'package:myemail/domain/search_refinement.dart' show weekStartFor;
 import 'package:myemail/state/attachment_providers.dart'
     show fileBridgeProvider;
 import 'package:myemail/state/calendar_providers.dart'
@@ -17,6 +18,7 @@ import 'package:myemail/state/meeting_alert_providers.dart'
     show meetingClockProvider;
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/calendar/calendar_screen.dart';
+import 'package:myemail/ui/messages/date_format.dart' show formatDay;
 
 import 'fakes/fake_webview.dart';
 
@@ -41,7 +43,11 @@ void main() {
 
   late FakeFileBridge files;
 
-  Future<void> pump(WidgetTester tester, {bool calendar = true}) async {
+  Future<void> pump(
+    WidgetTester tester, {
+    bool calendar = true,
+    Set<int>? workWeek,
+  }) async {
     tester.view.physicalSize = const Size(412, 915);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
@@ -71,8 +77,13 @@ void main() {
         meeting('b', 'Plant tour', on(1, 9)),
       ];
     }
+    final store = MemoryUiStateStore();
+    if (workWeek != null) {
+      await store.writeIds(
+          UiStateKeys.workWeek, {for (final d in workWeek) '$d'});
+    }
     final c = ProviderContainer(overrides: [
-      uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+      uiStateStoreProvider.overrideWithValue(store),
       mailEngineProvider.overrideWithValue(engine),
       fileBridgeProvider.overrideWithValue(files),
       deviceCalendarProvider
@@ -134,6 +145,43 @@ void main() {
     expect(find.text('09:00–10:00  Plant tour'), findsOneWidget);
     expect(find.text('14:00–15:00  Supplier call'), findsNothing);
     expect(files.sharedTexts, isEmpty, reason: 'nothing until Share');
+  });
+
+  testWidgets('in Week, today where it is among the days shown, even after '
+      'a swipe on and back; else the first day shown', (tester) async {
+    // A working week that starts the day after today, whatever today is:
+    // the week on screen starts six days back, with today its last.
+    final workWeek = {
+      for (var i = 1; i <= 5; i++) (today.weekday - 1 + i) % 7 + 1,
+    };
+    await pump(tester, workWeek: workWeek);
+    await tester.tap(find.byKey(const ValueKey('calendar-view-week')));
+    await tester.pumpAndSettle();
+    await menu(tester);
+    await tester.tap(find.byKey(const ValueKey('calendar-span:sevenDays')));
+    await tester.pumpAndSettle();
+    Future<void> menuTap(String key) async {
+      await menu(tester);
+      await tester.tap(find.byKey(ValueKey(key)));
+      await tester.pumpAndSettle();
+    }
+
+    await menuTap('calendar-next');
+    await menuTap('calendar-previous');
+    await menuTap('calendar-share-day');
+    expect(find.text(day(0)), findsWidgets, reason: "today's, as its title");
+    expect(find.text('14:00–15:00  Supplier call'), findsOneWidget);
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+
+    // A week without today: its first day.
+    await menuTap('calendar-next');
+    await menuTap('calendar-share-day');
+    final start = weekStartFor(DateTime.now(), workWeek: workWeek);
+    expect(start, isNot(DateTime(today.year, today.month, today.day)));
+    final first = DateTime(start.year, start.month, start.day + 7);
+    expect(find.text(formatDay(first)), findsWidgets);
+    expect(find.text('14:00–15:00  Supplier call'), findsNothing);
   });
 
   testWidgets('no calendar, no Share my day', (tester) async {
