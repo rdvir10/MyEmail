@@ -1,4 +1,5 @@
 import 'mail_message.dart';
+import 'ics_zones.dart';
 import 'meeting_links.dart';
 
 /// A meeting request, as it travels inside a message: the `text/calendar`
@@ -35,7 +36,43 @@ class CalendarInvite {
     this.originalStart,
     this.originalEnd,
     this.joinUrl,
+    this.productId,
+    this.responderNote,
+    this.attendeeNoted = false,
+    this.rule,
+    this.datesChanged = false,
   });
+
+  /// Whether a series' invitation leaves out some of its dates (EXDATE),
+  /// or moves some (another event in it, the single meeting changed):
+  /// neither goes with [rule] to the phone's calendar app (calendar idea
+  /// #67's review).
+  final bool datesChanged;
+
+  /// How the meeting repeats, as the event's own RRULE has it, without its
+  /// name: "FREQ=WEEKLY;BYDAY=WE;UNTIL=20270630T000000Z". Null for one
+  /// that does not. Not a zone's rule, which sits outside the event.
+  /// Written by whoever sent it: see `ruleForPhone` before handing it on
+  /// (calendar idea #67).
+  final String? rule;
+
+  /// What made it, as its PRODID says: "Microsoft Exchange Server 2010",
+  /// "-//Google Inc//Google Calendar 70.9054//EN". Null where it says
+  /// nothing.
+  final String? productId;
+
+  /// The words [responder] wrote with an answer, where the calendar part
+  /// carries them: Exchange's COMMENT, Google's X-RESPONSE-COMMENT on the
+  /// answering attendee's line. Null for none, or only spaces (calendar
+  /// idea #52).
+  final String? responderNote;
+
+  /// Whether an attendee's line carries a note at all: an
+  /// X-RESPONSE-COMMENT with anything in it but an empty pair of quotes,
+  /// looked for in the line as written. The parameters are split without
+  /// regard to quotes, so a note beginning ";)" read as none; this does
+  /// not depend on that (calendar idea #52, after its review).
+  final bool attendeeNoted;
 
   /// Where to join the meeting online, from the invitation itself (#39):
   /// Teams' own line (X-MICROSOFT-SKYPETEAMSMEETINGURL), Meet's
@@ -123,7 +160,9 @@ class CalendarInvite {
   /// Parse the part, or null if there is no VEVENT in it.
   static CalendarInvite? parse(String ics) {
     final lines = [for (final l in _unfold(ics)) ?_Line.parse(l)];
-    final zones = _Zone.all(lines);
+    final zones = IcsZone.all([
+      for (final l in lines) (name: l.name, value: l.value),
+    ]);
     var method = 'PUBLISH';
     var inEvent = false;
     // How deep inside the event: its own properties are at 0. A reminder
@@ -151,6 +190,12 @@ class CalendarInvite {
     String? responderStat;
     var sequence = 0;
     DateTime? stamp;
+    String? productId;
+    String? comment;
+    String? responderComment;
+    var attendeeNoted = false;
+    String? rule;
+    var datesChanged = false;
 
     for (final line in lines) {
       final name = line.name;
@@ -159,8 +204,14 @@ class CalendarInvite {
 
       if (!inEvent) {
         if (name == 'METHOD') method = value.trim().toUpperCase();
+        if (name == 'PRODID') productId = value.trim();
         if (name == 'BEGIN' && value.trim().toUpperCase() == 'VEVENT') {
-          if (seen) break; // The first event is the invitation.
+          // The first event is the invitation; one after it is a single
+          // meeting of its series, moved or changed.
+          if (seen) {
+            datesChanged = true;
+            break;
+          }
           inEvent = true;
           seen = true;
         }
@@ -209,7 +260,17 @@ class CalendarInvite {
           if (a != null && responder == null && stat != null) {
             responder = a;
             responderStat = stat;
+            responderComment = params['X-RESPONSE-COMMENT'];
           }
+          if (_carriesNote(line.raw)) attendeeNoted = true;
+        case 'COMMENT':
+          // The first with words in it: an empty one after it, as Exchange
+          // writes one, does not hide it.
+          if (_unescape(value).trim().isNotEmpty) comment ??= _unescape(value);
+        case 'RRULE':
+          rule = value.trim();
+        case 'EXDATE':
+          datesChanged = true;
         case 'SEQUENCE':
           sequence = int.tryParse(value.trim()) ?? 0;
         case 'DTSTAMP':
@@ -289,8 +350,46 @@ class CalendarInvite {
           meetingLinkIn(location) ??
           meetingLinkIn(url) ??
           meetingLinkIn(description),
+      productId: productId == null || productId.isEmpty ? null : productId,
+      rule: rule == null || rule.isEmpty ? null : rule,
+      datesChanged: datesChanged,
+      attendeeNoted: attendeeNoted,
+      responderNote: _noteOf(
+        method == 'REPLY' || method == 'COUNTER'
+            ? [comment, responderComment]
+            : const [],
+      ),
     );
   }
+}
+
+/// Whether [raw], an ATTENDEE line as written, has an X-RESPONSE-COMMENT
+/// with anything in it: not where the parameter is followed at once by the
+/// next or by the value, nor by an empty pair of quotes. Anything else is
+/// a note, however it is quoted.
+bool _carriesNote(String raw) {
+  // Matched in the line itself: upper-cased, a letter such as ß is two,
+  // and a place found there is not the same place here.
+  final found = RegExp('X-RESPONSE-COMMENT=', caseSensitive: false)
+      .firstMatch(raw);
+  if (found == null) return false;
+  var rest = raw.substring(found.end);
+  if (rest.startsWith('""')) {
+    rest = rest.substring(2);
+  } else if (rest.startsWith('"')) {
+    return true;
+  }
+  return !(rest.isEmpty || rest.startsWith(';') || rest.startsWith(':'));
+}
+
+/// The first of [notes] with something in it besides spaces, as written;
+/// null for none.
+String? _noteOf(List<String?> notes) {
+  for (final note in notes) {
+    final words = note?.trim() ?? '';
+    if (words.isNotEmpty) return words;
+  }
+  return null;
 }
 
 /// A DATE-TIME value's wall clock, with no zone applied; null for one not in
@@ -332,193 +431,13 @@ class _Line {
 
 /// A date-time line as a reply should carry it: in UTC where the zone was
 /// worked out, which needs no VTIMEZONE beside it; as written otherwise.
-String _asReplyLine(_Line line, Map<String, _Zone> zones) {
+String _asReplyLine(_Line line, Map<String, IcsZone> zones) {
   final read = _date(line.value, line.params, zones);
   if (read == null) return line.raw;
   final (at, wholeDay) = read;
   if (wholeDay) return '${line.name};VALUE=DATE:${_dateOnly(at)}';
   if (at.isUtc) return '${line.name}:${_stamp(at)}';
   return line.raw;
-}
-
-/// A VTIMEZONE: the offsets a named zone keeps, and when it changes them.
-///
-/// Every calendar that sends invitations defines, beside the event, each
-/// zone the event names. Exchange names them the Windows way ("Eastern
-/// Standard Time"), which nothing on a phone knows, so the definition is
-/// what is read. The rules in them are yearly: a month and the nth or last
-/// weekday of it.
-class _Zone {
-  _Zone(this.observances);
-
-  final List<_Observance> observances;
-
-  static Map<String, _Zone> all(List<_Line> lines) {
-    final zones = <String, _Zone>{};
-    String? id;
-    List<_Observance>? observances;
-    _Observance? current;
-    for (final line in lines) {
-      final value = line.value.trim().toUpperCase();
-      if (line.name == 'BEGIN' && value == 'VTIMEZONE') {
-        id = null;
-        observances = [];
-      } else if (observances == null) {
-        continue;
-      } else if (line.name == 'END' && value == 'VTIMEZONE') {
-        if (id != null) zones[id] = _Zone(observances);
-        observances = null;
-      } else if (line.name == 'BEGIN' &&
-          (value == 'STANDARD' || value == 'DAYLIGHT')) {
-        current = _Observance();
-      } else if (line.name == 'END' &&
-          (value == 'STANDARD' || value == 'DAYLIGHT')) {
-        if (current != null && current.isComplete) observances.add(current);
-        current = null;
-      } else if (line.name == 'TZID' && current == null) {
-        id = line.value.trim();
-      } else if (current != null) {
-        current.read(line);
-      }
-    }
-    return zones;
-  }
-
-  /// The instant a wall-clock time in this zone is, or null if the zone's
-  /// rules are not ones this reads.
-  DateTime? instantOf(DateTime local) {
-    _Observance? inForce;
-    DateTime? since;
-    for (final o in observances) {
-      final onset = o.lastOnsetAtOrBefore(local);
-      if (onset == null) continue;
-      if (since == null || onset.isAfter(since)) {
-        since = onset;
-        inForce = o;
-      }
-    }
-    final offset = inForce?.offsetTo;
-    if (offset == null) return null;
-    return DateTime.utc(local.year, local.month, local.day, local.hour,
-            local.minute, local.second)
-        .subtract(offset);
-  }
-}
-
-/// A STANDARD or DAYLIGHT part of a zone: the offset from its onset on, and
-/// the rule for when that onset comes round again.
-class _Observance {
-  DateTime? start;
-  Duration? offsetTo;
-  int? month;
-  int? ordinal;
-  int? weekday;
-  int? monthDay;
-  DateTime? until;
-  bool unreadable = false;
-  final List<DateTime> extra = [];
-
-  bool get isComplete => start != null && offsetTo != null && !unreadable;
-
-  void read(_Line line) {
-    switch (line.name) {
-      case 'DTSTART':
-        start = _wallClock(line.value.trim());
-      case 'TZOFFSETTO':
-        offsetTo = _offset(line.value.trim());
-      case 'RDATE':
-        for (final v in line.value.split(',')) {
-          final at = _wallClock(v.trim());
-          if (at != null) extra.add(at);
-        }
-      case 'RRULE':
-        final rule = {
-          for (final part in line.value.split(';'))
-            if (part.contains('='))
-              part.substring(0, part.indexOf('=')).toUpperCase():
-                  part.substring(part.indexOf('=') + 1).toUpperCase(),
-        };
-        if (rule['FREQ'] != 'YEARLY') {
-          unreadable = true;
-          return;
-        }
-        month = int.tryParse(rule['BYMONTH'] ?? '');
-        monthDay = int.tryParse(rule['BYMONTHDAY'] ?? '');
-        final byDay = RegExp(r'^([+-]?\d)?(MO|TU|WE|TH|FR|SA|SU)$')
-            .firstMatch(rule['BYDAY'] ?? '');
-        if (byDay != null) {
-          ordinal = int.tryParse(byDay[1] ?? '1');
-          weekday = const ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU']
-                  .indexOf(byDay[2]!) +
-              1;
-        }
-        final untilText = rule['UNTIL'];
-        if (untilText != null) until = _wallClock(untilText);
-        if (month == null || (weekday == null && monthDay == null)) {
-          unreadable = true;
-        }
-    }
-  }
-
-  /// When this last took effect at or before [local], wall clock to wall
-  /// clock; null if not yet.
-  DateTime? lastOnsetAtOrBefore(DateTime local) {
-    final first = start;
-    if (first == null || first.isAfter(local)) return null;
-    DateTime? best;
-    void consider(DateTime at) {
-      if (at.isAfter(local) || at.isBefore(first)) return;
-      if (until != null && at.isAfter(until!)) return;
-      if (best == null || at.isAfter(best!)) best = at;
-    }
-
-    if (month == null) {
-      consider(first);
-    } else {
-      for (final year in [local.year, local.year - 1]) {
-        final day = _dayIn(year);
-        if (day == null) continue;
-        consider(DateTime(year, month!, day, first.hour, first.minute,
-            first.second));
-      }
-    }
-    extra.forEach(consider);
-    return best;
-  }
-
-  int? _dayIn(int year) {
-    if (monthDay != null) return monthDay;
-    final n = ordinal ?? 1;
-    if (n > 0) {
-      final firstOfMonth = DateTime(year, month!);
-      final shift = (weekday! - firstOfMonth.weekday + 7) % 7;
-      final day = 1 + shift + (n - 1) * 7;
-      return day <= DateTime(year, month! + 1, 0).day ? day : null;
-    }
-    final last = DateTime(year, month! + 1, 0);
-    final shift = (last.weekday - weekday! + 7) % 7;
-    final day = last.day - shift - (-n - 1) * 7;
-    return day >= 1 ? day : null;
-  }
-
-  static DateTime? _wallClock(String v) {
-    final m = RegExp(r'^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?')
-        .firstMatch(v);
-    if (m == null) return null;
-    return DateTime(int.parse(m[1]!), int.parse(m[2]!), int.parse(m[3]!),
-        int.parse(m[4]!), int.parse(m[5]!), int.parse(m[6] ?? '0'));
-  }
-
-  static Duration? _offset(String v) {
-    final m = RegExp(r'^([+-])(\d{2})(\d{2})(\d{2})?$').firstMatch(v);
-    if (m == null) return null;
-    final size = Duration(
-      hours: int.parse(m[2]!),
-      minutes: int.parse(m[3]!),
-      seconds: int.parse(m[4] ?? '0'),
-    );
-    return m[1] == '-' ? -size : size;
-  }
 }
 
 /// How an attendee answers.
@@ -609,15 +528,21 @@ String inviteReplySubject(CalendarInvite invite, InviteResponse response) =>
 
 // --- the text form ----------------------------------------------------------
 
+/// Each folded line put back together, in a buffer: added to a string
+/// piece by piece, a line folded thousands of times took seconds, and the
+/// invitation is a stranger's (calendar idea #67's review).
 List<String> _unfold(String ics) {
   final out = <String>[];
+  StringBuffer? line;
   for (final raw in ics.split(RegExp(r'\r\n|\n|\r'))) {
-    if ((raw.startsWith(' ') || raw.startsWith('\t')) && out.isNotEmpty) {
-      out[out.length - 1] += raw.substring(1);
+    if ((raw.startsWith(' ') || raw.startsWith('\t')) && line != null) {
+      line.write(raw.substring(1));
     } else if (raw.isNotEmpty) {
-      out.add(raw);
+      if (line != null) out.add(line.toString());
+      line = StringBuffer(raw);
     }
   }
+  if (line != null) out.add(line.toString());
   return out;
 }
 
@@ -642,7 +567,7 @@ int _valueStart(String line) {
 (DateTime, bool)? _date(
   String value,
   Map<String, String> params, [
-  Map<String, _Zone> zones = const {},
+  Map<String, IcsZone> zones = const {},
 ]) {
   final v = value.trim();
   if (params['VALUE'] == 'DATE' || (v.length == 8 && !v.contains('T'))) {

@@ -600,6 +600,8 @@ void main() {
       final (c, hadco) =
           await pump(tester, const CalendarSettingsScreen(), phone: phone);
       final row = find.byKey(ValueKey('phone-calendar:${hadco.id}'));
+      await tester.scrollUntilVisible(row, 200,
+          scrollable: find.byType(Scrollable).first);
       expect(row, findsOneWidget);
       expect(find.byKey(const ValueKey('phone-calendar:acct-personal')),
           findsNothing, reason: "a Gmail account's is there through Google");
@@ -625,6 +627,8 @@ void main() {
       final (c, hadco) =
           await pump(tester, const CalendarSettingsScreen(), phone: phone);
       final row = find.byKey(ValueKey('phone-calendar:${hadco.id}'));
+      await tester.scrollUntilVisible(row, 200,
+          scrollable: find.byType(Scrollable).first);
       await tester.ensureVisible(row);
       await tester.pumpAndSettle();
       await tester.tap(row);

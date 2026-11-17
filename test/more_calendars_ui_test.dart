@@ -185,13 +185,72 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('agenda-event:h')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('event-accept')), findsNothing);
-    expect(find.byKey(const ValueKey('event-more')), findsNothing);
+    // Its ⋮ only copies and shares it (#48): nothing there changes it.
+    await tester.tap(find.byKey(const ValueKey('event-more')));
+    await tester.pumpAndSettle();
+    expect(
+      [
+        for (final item in tester.widgetList<PopupMenuItem<String>>(
+            find.byType(PopupMenuItem<String>)))
+          item.value,
+      ],
+      ['copy', 'share', 'share-day'],
+    );
+    await tester.tapAt(const Offset(4, 4));
+    await tester.pumpAndSettle();
     Navigator.of(tester.element(find.text('Holiday').last)).pop();
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('agenda-event:m')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('event-accept')), findsOneWidget,
         reason: 'one on a calendar of its own still answers');
+  });
+
+  testWidgets(
+      'a meeting on a calendar beside the main one, shared to the account '
+      "to change, offers no answer: it would go in its owner's name",
+      (tester) async {
+    await ui.writeString(UiStateKeys.calendarView, 'agenda');
+    await pump(tester, (_) => const CalendarScreen(),
+        prepare: (engine, hadco) async {
+      engine.events[hadco.id] = [
+        // Dana's calendar, which the account may change: the invitation
+        // on it is hers, and so would an answer from here be.
+        meeting(hadco, 'hers', 'Supplier visit', calendarId: 'dana'),
+        meeting(hadco, 'm', 'Weekly sync', hour: 14),
+      ];
+    });
+    await tester.tap(find.byKey(const ValueKey('agenda-event:hers')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('event-accept')), findsNothing);
+    expect(find.byKey(const ValueKey('event-tentative')), findsNothing);
+    expect(find.byKey(const ValueKey('event-decline')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('event-more')));
+    await tester.pumpAndSettle();
+    final entries = [
+      for (final item in tester.widgetList<PopupMenuItem<String>>(
+          find.byType(PopupMenuItem<String>)))
+        item.value,
+    ];
+    expect(entries, isNot(contains('propose')),
+        reason: 'a new time proposed is an answer too');
+    expect(entries, isNot(contains('remove')),
+        reason: 'Decline and remove declines');
+    expect(entries, containsAll(['duplicate', 'copy', 'share', 'share-day']));
+    await tester.tapAt(const Offset(4, 4));
+    await tester.pumpAndSettle();
+    Navigator.of(tester.element(find.text('Supplier visit').last)).pop();
+    await tester.pumpAndSettle();
+    // The account's own invitation, on its own calendar, as before.
+    await tester.tap(find.byKey(const ValueKey('agenda-event:m')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('event-accept')), findsOneWidget);
+    expect(find.byKey(const ValueKey('event-tentative')), findsOneWidget);
+    expect(find.byKey(const ValueKey('event-decline')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('event-more')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('event-propose')), findsOneWidget);
+    expect(find.text('Decline and remove'), findsOneWidget);
   });
 
   testWidgets('New meeting asks which calendar when there is a choice',
@@ -253,6 +312,8 @@ void main() {
       final (c, _, _) = await pump(tester, (_) => const CalendarSettingsScreen());
       final holidays = find.byKey(const ValueKey('internet-calendar-holidays'));
       await tester.scrollUntilVisible(holidays, 200);
+      await tester.ensureVisible(holidays);
+      await tester.pumpAndSettle();
       await tester.tap(holidays);
       await tester.pumpAndSettle();
       final israel = find.byKey(const ValueKey('holidays:en.jewish'));

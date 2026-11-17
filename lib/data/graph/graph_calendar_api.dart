@@ -12,6 +12,8 @@ import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
 import '../../domain/meeting_links.dart';
+import '../../domain/meeting_repeat.dart';
+import '../../domain/series_repeat.dart';
 import '../../domain/text_direction.dart';
 import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
@@ -533,9 +535,11 @@ class GraphCalendarApi {
 
   /// [eventId]'s notes, for changing them: its body as text, and on a
   /// Teams meeting the block Exchange wrote, which goes back under any new
-  /// notes as it is.
+  /// notes as it is. A series' repeat comes in the same ask, for Edit's
+  /// Repeat (#55).
   Future<EventNotes> notes(String eventId) async {
-    final json = await _event(eventId);
+    final json = await _event(eventId,
+        select: 'id,body,isOnlineMeeting,onlineMeeting,attendees,recurrence');
     if (json == null) throw const EventGone();
     final html = _bodyIn(json) ?? '';
     final split =
@@ -550,6 +554,7 @@ class GraphCalendarApi {
       // For the meeting's sheet, which shows a link written as words a tap
       // from its address (#43).
       html: page ? split?.notes ?? html : null,
+      repeat: SeriesRepeat.fromGraph(json['recurrence']),
     );
   }
 
@@ -611,10 +616,13 @@ class GraphCalendarApi {
         : zone == null
             ? {'dateTime': _stamp(t.toUtc()), 'timeZone': 'UTC'}
             : {'dateTime': _stamp(t), 'timeZone': zone};
-    final optional = {
-      for (final a in before.attendees)
-        if (a.optional) a.address.email.trim().toLowerCase(),
-    };
+    // Who is optional: as Edit had them (#56), or where a change does not
+    // say, Invite people's, each as they were, and anyone new required.
+    final optional = change.optional ??
+        {
+          for (final a in before.attendees)
+            if (a.optional) a.address.email.trim().toLowerCase(),
+        };
     final notes = change.notes;
     final kept = change.keptBelow;
     return {
@@ -632,6 +640,12 @@ class GraphCalendarApi {
       if (change.showAs case final showAs?) 'showAs': graphShowAs(showAs),
       if (change.isPrivate case final private?)
         'sensitivity': private ? 'private' : 'normal',
+      // How it repeats from now on (#55), from its first day: a series'
+      // as forSeries moved it, a meeting's own otherwise. Graph wants the
+      // range to start on the day the event does.
+      if (change.repeat case final r?)
+        'recurrence':
+            r.toGraph(change.start ?? before.start, timeZone: zone ?? 'UTC'),
       if (notes != null)
         'body': kept == null
             ? {'contentType': 'text', 'content': notes}
@@ -740,6 +754,63 @@ class GraphCalendarApi {
     if (start == null || end == null) return null;
     return (start: start, end: end, allDay: allDay);
   }
+
+  // --- what a meeting's sheet reads (calendar idea #44) ----------------------
+
+  /// How series [seriesId] repeats, as its own recurrence says: the one
+  /// thing asked of it. Null where the series is gone, or repeats in a way
+  /// [MeetingRepeat] does not say.
+  ///
+  /// Why the sheet then says only "Repeats" is printed, by the kinds of
+  /// what was found and nothing of the meeting (the review).
+  Future<MeetingRepeat?> seriesRepeat(String seriesId) async {
+    final json = await _event(seriesId, select: 'recurrence');
+    if (json == null) {
+      debugPrint('[myemail] series not found for its repeat');
+      return null;
+    }
+    final recurrence = json['recurrence'];
+    final repeat = MeetingRepeat.fromGraph(recurrence);
+    if (repeat == null) {
+      debugPrint('[myemail] a series repeats in a way the sheet does not '
+          'say: ${MeetingRepeat.graphKinds(recurrence)}');
+    }
+    return repeat;
+  }
+
+  // --- the account's own copy of a meeting (calendar idea #45) --------------
+
+  /// Change [eventId], the account's copy of someone else's meeting: when
+  /// it reminds of it, and how it shows the account. Exchange keeps both
+  /// for each person on a meeting and tells nobody of a change to them;
+  /// nothing else of the meeting is sent. One gone meanwhile is
+  /// [EventGone].
+  Future<void> changeOwnCopy(
+    String eventId, {
+    Reminder? reminder,
+    EventShowAs? showAs,
+  }) async {
+    final fields = ownCopyJson(reminder: reminder, showAs: showAs);
+    if (fields.isEmpty) return;
+    final body = jsonEncode(fields);
+    final response = await _exchange(() => _patch(eventId, body));
+    if (response.statusCode == 404) throw const EventGone();
+    if (response.statusCode >= 400) throw _failureFor(response);
+  }
+
+  /// What [changeOwnCopy] patches: the reminder and the show as, and only
+  /// those given.
+  static Map<String, Object?> ownCopyJson({
+    Reminder? reminder,
+    EventShowAs? showAs,
+  }) =>
+      {
+        if (reminder != null) ...{
+          'isReminderOn': reminder.isOn,
+          if (reminder.isOn) 'reminderMinutesBeforeStart': reminder.minutes,
+        },
+        if (showAs != null) 'showAs': graphShowAs(showAs),
+      };
 
   /// A meeting as Graph gives it, asked for with [meetingFields] in UTC; null
   /// for one with no id or no start.
@@ -885,11 +956,10 @@ class GraphCalendarApi {
   /// The times are wall-clock values with the zone named beside them, which
   /// is Graph's own shape. A whole day ends at the next day's midnight,
   /// because Graph counts the end as exclusive and refuses one on the same
-  /// day. Every attendee is required: the screen has no optional list, and
-  /// Graph wants each one typed. A link made elsewhere goes where a person
-  /// pasting one would put it: the body's last line, and the location
-  /// where none was given, so every client shows it and Outlook's Join
-  /// finds it.
+  /// day. Each attendee is typed, required or optional, as Graph wants. A
+  /// link made elsewhere goes where a person pasting one would put it: the
+  /// body's last line, and the location where none was given, so every
+  /// client shows it and Outlook's Join finds it.
   static Map<String, Object?> eventJson(
     MeetingDraft meeting, {
     String? onlineMeetingProvider,
@@ -972,8 +1042,8 @@ class GraphCalendarApi {
     };
   }
 
-  /// Every attendee, required: the screen has no optional list, and Graph
-  /// wants each one typed.
+  /// Every attendee, typed as Graph wants each: optional where the screen
+  /// made them so (calendar idea #56), required otherwise.
   static List<Map<String, Object?>> _attendees(MeetingDraft meeting) => [
         for (final a in meeting.attendees)
           {
@@ -981,7 +1051,7 @@ class GraphCalendarApi {
               'address': a.email,
               if (a.name?.trim().isNotEmpty ?? false) 'name': a.name!.trim(),
             },
-            'type': 'required',
+            'type': meeting.isOptional(a) ? 'optional' : 'required',
           },
       ];
 

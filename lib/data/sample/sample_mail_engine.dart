@@ -18,11 +18,14 @@ import '../../domain/mail_attachment.dart';
 import '../../domain/mail_folder.dart';
 import '../../domain/mail_message.dart';
 import '../../domain/meeting.dart';
+import '../../domain/meeting_repeat.dart';
 import '../../domain/message_move.dart';
+import '../../domain/series_repeat.dart' show firstDayOf;
 import '../cache/cache_store.dart' show MemoryCalendarKeep;
 import '../compose/quote_builder.dart';
 import '../imap/imap_mapping.dart';
 import '../auth/oauth_token.dart';
+import '../calendar/sheet_calendar.dart';
 import '../contacts/account_people.dart' show AccountPeople;
 import '../mail_engine.dart';
 import '../mailbox_settings/server_settings.dart';
@@ -38,7 +41,12 @@ import 'sample_messages.dart';
 /// Behaviour also mirrors IMAP where it matters for the UI: renaming or moving
 /// a folder rewrites the path (and therefore the id) of its whole subtree, and
 /// a name that collides with a sibling is refused.
-class SampleMailEngine implements MailEngine, SaysMeetingMailArrived {
+class SampleMailEngine
+    implements
+        MailEngine,
+        SaysMeetingMailArrived,
+        ReadsMeetingRepeat,
+        ChangesOwnCopy {
   SampleMailEngine() {
     for (final account in _accounts) {
       _folders[account.id] = _buildFolders(account.id, _specsFor(account.id));
@@ -1100,11 +1108,27 @@ class SampleMailEngine implements MailEngine, SaysMeetingMailArrived {
       if (change.notes != null) 'notes=${change.notes}',
       if (change.attendees case final people?)
         'attendees=${[for (final a in people) a.email].join(',')}',
+      if (change.optional case final optional? when optional.isNotEmpty)
+        'optional=${(optional.toList()..sort()).join(',')}',
+      // Said from the first day it falls on, as the real calendars start a
+      // series changed so (#55).
+      if (change.repeat case final r?)
+        'repeat=${r.describe(firstDayOf(r, change.start ?? event.start))}',
       if (wholeSeries) 'series',
     ].join(' '));
     final had = {
       for (final a in event.attendees) a.address.email.toLowerCase(): a,
     };
+    // Who is optional, where the change says (#56); as they were where not.
+    EventAttendee asked(EventAttendee a) => switch (change.optional) {
+          final optional? => EventAttendee(
+              a.address,
+              response: a.response,
+              optional:
+                  optional.contains(a.address.email.trim().toLowerCase()),
+            ),
+          null => a,
+        };
     _changeEvent(
       event,
       event.copyWith(
@@ -1117,8 +1141,8 @@ class SampleMailEngine implements MailEngine, SaysMeetingMailArrived {
             ? null
             : [
                 for (final a in change.attendees!)
-                  had[a.email.toLowerCase()] ??
-                      EventAttendee(a, response: EventResponse.notResponded),
+                  asked(had[a.email.toLowerCase()] ??
+                      EventAttendee(a, response: EventResponse.notResponded)),
               ],
       ),
     );
@@ -1167,6 +1191,51 @@ class SampleMailEngine implements MailEngine, SaysMeetingMailArrived {
       'forward ${event.id} to=${[for (final a in to) a.email].join(',')}',
       if (note.isNotEmpty) 'note=$note',
     ].join(' '));
+  }
+
+  // What a meeting's sheet asks (calendar ideas #44, #45): see
+  // sheet_calendar.dart.
+
+  /// How each series repeats, by its id, for a test to fill: what
+  /// [meetingRepeat] answers. A series not in it is not known.
+  final Map<String, MeetingRepeat> repeats = {};
+
+  @override
+  Future<MeetingRepeat?> meetingRepeat(CalendarEvent event) async {
+    await _calendarCall(event.accountId);
+    return repeats[event.seriesId];
+  }
+
+  /// Written down as "own e1 reminder=30 showAs=free series", and the
+  /// event changed where a test gave it, as the calendar would have it.
+  @override
+  Future<void> changeOwnCopy(
+    CalendarEvent event, {
+    Reminder? reminder,
+    EventShowAs? showAs,
+    bool wholeSeries = false,
+  }) async {
+    await _calendarCall(event.accountId);
+    if (isOwnEvent(event)) {
+      throw ArgumentError('This is your own meeting: Edit changes it.');
+    }
+    if (event.calendarId != CalendarEvent.mainCalendar) {
+      throw ArgumentError('This meeting is on a calendar shared to you, not '
+          'your own copy of it.');
+    }
+    calendarActions.add([
+      'own ${event.id}',
+      if (reminder != null) 'reminder=${reminder.minutes ?? 'none'}',
+      if (showAs != null) 'showAs=${showAs.name}',
+      if (wholeSeries) 'series',
+    ].join(' '));
+    // Through what the event keeps, so every field it has comes along.
+    final changed = CalendarEvent.fromJson({
+      ...event.toJson(),
+      if (reminder != null) 'reminderMinutes': reminder.minutes,
+      if (showAs != null) 'showAs': showAs.name,
+    });
+    if (changed != null) _changeEvent(event, changed);
   }
 
   /// A working week of meetings, the same each week: a stand-up each

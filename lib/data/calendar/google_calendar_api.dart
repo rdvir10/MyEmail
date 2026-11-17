@@ -11,7 +11,11 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/calendar_meeting.dart';
 import '../../domain/mail_message.dart' show MailAddress;
 import '../../domain/meeting.dart';
+import '../../domain/recurrence.dart';
+import '../../domain/series_repeat.dart';
+import '../../domain/time_zones.dart' show instantIn;
 import '../../domain/meeting_links.dart';
+import '../../domain/meeting_repeat.dart';
 import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
 import '../imap/imap_mapping.dart' show htmlToText;
@@ -813,6 +817,8 @@ class GoogleCalendarApi {
       // For the meeting's sheet, which shows a link written as words a tap
       // from its address (#43).
       html: page ? description : null,
+      // A series' repeat, for Edit's Repeat (#55).
+      repeat: SeriesRepeat.fromGoogle(event),
     );
   }
 
@@ -828,13 +834,25 @@ class GoogleCalendarApi {
   }) async {
     final fields = changeJson(change, before: before);
     final people = change.attendees;
-    if (people != null) {
+    if (people != null || change.repeat != null) {
       final event = await _event(eventId, calendarId: calendarId);
       if (event == null || event['status'] == 'cancelled') {
         throw const EventGone();
       }
-      fields['attendees'] =
-          mergedAttendees(event['attendees'], people, before: before);
+      if (people != null) {
+        fields['attendees'] = mergedAttendees(event['attendees'], people,
+            before: before, optional: change.optional);
+      }
+      // A new rule in the old one's place (#55); the days taken out of
+      // the series by hand (EXDATE) stay out.
+      final had = event['recurrence'];
+      if (change.repeat != null && had is List) {
+        fields['recurrence'] = [
+          ...fields['recurrence']! as List,
+          for (final line in had)
+            if (!'$line'.toUpperCase().startsWith('RRULE')) '$line',
+        ];
+      }
     }
     if (fields.isEmpty) return;
     await _patchEvent(eventId, fields, calendarId: calendarId);
@@ -843,23 +861,37 @@ class GoogleCalendarApi {
   /// [change] as Google's patch takes it, less the people: see [update].
   /// The other way of giving a time is emptied, or an event moved between
   /// a time and a whole day would hold both.
+  ///
+  /// A new repeat (#55) goes as its rule, from the first day: a series'
+  /// as forSeries moved it, a meeting's own otherwise. Google wants a
+  /// series' times with a zone to work its days out in, so they go with
+  /// it, UTC where the phone named none; a meeting made a series sends
+  /// its own times as they are.
   static Map<String, Object?> changeJson(
     EventChange change, {
     required CalendarEvent before,
   }) {
     final allDay = change.allDay ?? before.allDay;
     final zone = change.timeZone;
+    final repeat = change.repeat;
     Map<String, Object?> at(DateTime t) => allDay
         ? {'date': _date(t), 'dateTime': null, 'timeZone': null}
-        : zone == null
-            ? {'dateTime': _utc(t), 'timeZone': null, 'date': null}
-            : {'dateTime': _stamp(t), 'timeZone': zone, 'date': null};
+        : zone != null
+            ? {'dateTime': _stamp(t), 'timeZone': zone, 'date': null}
+            : repeat != null
+                ? {'dateTime': _utc(t), 'timeZone': 'UTC', 'date': null}
+                : {'dateTime': _utc(t), 'timeZone': null, 'date': null};
     return {
       if (change.title != null) 'summary': change.title,
-      if (change.movesIt) ...{
-        'start': at(change.start!),
-        'end': at(change.end!),
+      if (change.movesIt || repeat != null) ...{
+        'start': at(change.start ?? before.start),
+        'end': at(change.end ?? before.end),
       },
+      if (repeat != null)
+        'recurrence': [
+          ruleIn(repeat, change.start ?? before.start,
+              allDay: allDay, zone: zone),
+        ],
       if (change.location != null) 'location': change.location,
       if (change.notes != null) 'description': change.notes,
       if (change.reminder case final r?) 'reminders': remindersJson(r),
@@ -876,19 +908,40 @@ class GoogleCalendarApi {
   /// added. Its rooms stay too, which the calendar does not show as
   /// people, and anyone on it that [before] did not have, added elsewhere
   /// since, whom nobody here could have meant to take off.
+  ///
+  /// [optional] is who of [now] is optional, as Edit had them (#56): the
+  /// entry of each whose flag Ron changed there is marked or unmarked,
+  /// answers kept, and the rest left as the event has them; anyone new is
+  /// marked as Edit had them. Null where a change does not say (Invite
+  /// people): each entry as it was, and anyone new required.
   static List<Map<String, Object?>> mergedAttendees(
     Object? had,
     List<MailAddress> now, {
     required CalendarEvent before,
+    Set<String>? optional,
   }) {
     String key(Object? email) => '${email ?? ''}'.trim().toLowerCase();
     final wanted = {for (final a in now) key(a.email)};
     final shown = {for (final a in before.attendees) key(a.address.email)};
+    // Who the screen started with as optional: the phone's copy. Only
+    // those whose flag Ron changed there are marked or unmarked, so one
+    // made optional in Google Calendar since it was read is not set back.
+    final wasOptional = {
+      for (final a in before.attendees)
+        if (a.optional) key(a.address.email),
+    };
     final kept = <String, Map<String, Object?>>{};
     for (final a in had is List ? had.whereType<Map>() : const <Map>[]) {
       final entry = a.cast<String, Object?>();
       final email = key(entry['email']);
-      if (entry['organizer'] == true ||
+      if (optional != null &&
+          wanted.contains(email) &&
+          shown.contains(email) &&
+          entry['organizer'] != true &&
+          entry['resource'] != true &&
+          wasOptional.contains(email) != optional.contains(email)) {
+        kept[email] = {...entry, 'optional': optional.contains(email)};
+      } else if (entry['organizer'] == true ||
           entry['resource'] == true ||
           wanted.contains(email) ||
           !shown.contains(email)) {
@@ -902,6 +955,7 @@ class GoogleCalendarApi {
           {
             'email': a.email.trim(),
             if (a.name?.trim().isNotEmpty ?? false) 'displayName': a.name!.trim(),
+            if (optional?.contains(key(a.email)) ?? false) 'optional': true,
           },
     ];
   }
@@ -958,6 +1012,51 @@ class GoogleCalendarApi {
       end: to,
       allDay: start is Map && start['date'] is String,
     );
+  }
+
+  // --- what a meeting's sheet reads (calendar idea #44) ----------------------
+
+  /// How series [seriesId], on [calendarId], repeats, as its rule says:
+  /// read from the series itself, since a meeting of it carries only the
+  /// series' id. Null where it is gone, or repeats in a way [MeetingRepeat]
+  /// does not say. Why the sheet then says only "Repeats" is printed, by
+  /// the kinds of what was found and nothing of the meeting (the review).
+  Future<MeetingRepeat?> seriesRepeat(
+    String seriesId, {
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async {
+    final event = await _event(seriesId, calendarId: calendarId);
+    if (event == null || event['status'] == 'cancelled') {
+      debugPrint('[myemail] series not found for its repeat');
+      return null;
+    }
+    final repeat = MeetingRepeat.fromGoogle(event);
+    if (repeat == null) {
+      debugPrint('[myemail] a series repeats in a way the sheet does not '
+          'say: ${MeetingRepeat.ruleKinds(event['recurrence'])}');
+    }
+    return repeat;
+  }
+
+  // --- the account's own copy of a meeting (calendar idea #45) --------------
+
+  /// Change [eventId], the account's copy of someone else's meeting on
+  /// [calendarId]: its reminder, and whether it shows the time as taken,
+  /// which Google keeps for each guest. Nothing else of the meeting is
+  /// sent, and Google is told to write to nobody.
+  Future<void> changeOwnCopy(
+    String eventId, {
+    Reminder? reminder,
+    EventShowAs? showAs,
+    String calendarId = CalendarEvent.mainCalendar,
+  }) async {
+    final fields = {
+      if (reminder != null) 'reminders': remindersJson(reminder),
+      if (showAs != null) 'transparency': googleTransparency(showAs),
+    };
+    if (fields.isEmpty) return;
+    await _patchEvent(eventId, fields,
+        calendarId: calendarId, sendUpdates: 'none');
   }
 
   /// A patch to [eventId] with [fields], Google told to write to everyone
@@ -1069,6 +1168,8 @@ class GoogleCalendarApi {
             'email': a.email,
             if (a.name?.trim().isNotEmpty ?? false)
               'displayName': a.name!.trim(),
+            // Asked as optional (#56); Google's default is required.
+            if (meeting.isOptional(a)) 'optional': true,
           },
       ],
       if (meeting.isOnline)
@@ -1085,6 +1186,29 @@ class GoogleCalendarApi {
         'transparency': googleTransparency(showAs),
       if (meeting.isPrivate) 'visibility': 'private',
     };
+  }
+
+  /// [repeat]'s rule from [start], its UNTIL the end of its last day on
+  /// [zone]'s clock where one is given (#55): a series set in Jerusalem
+  /// ends at Jerusalem's midnight, whatever the phone's zone. The rule is
+  /// otherwise `Recurrence.toRule`'s, whose UNTIL is the phone's midnight.
+  static String ruleIn(
+    Recurrence repeat,
+    DateTime start, {
+    required bool allDay,
+    String? zone,
+  }) {
+    final rule = repeat.toRule(start, allDay: allDay);
+    final last = repeat.until;
+    if (allDay || zone == null || last == null) return rule;
+    final end = instantIn(
+            DateTime(last.year, last.month, last.day, 23, 59, 59), zone)
+        .toUtc();
+    final stamp = '${end.year.toString().padLeft(4, '0')}'
+        '${_two(end.month)}${_two(end.day)}T${_two(end.hour)}'
+        '${_two(end.minute)}${_two(end.second)}Z';
+    return rule.replaceFirst(
+        RegExp(r'UNTIL=\d{8}T\d{6}Z'), 'UNTIL=$stamp');
   }
 
   /// A reminder as Google keeps one: on the phone, so many minutes before,

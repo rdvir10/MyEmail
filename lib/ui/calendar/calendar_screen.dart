@@ -36,6 +36,7 @@ import '../messages/date_format.dart';
 import '../messages/invite_answers.dart' show askHowToAnswer;
 import '../../state/date_providers.dart' show deviceZoneProvider;
 import 'agenda_row_parts.dart';
+import 'away_screen.dart' show openAway;
 import 'block_look.dart';
 import 'block_text.dart';
 import 'button_corner.dart';
@@ -47,8 +48,10 @@ import 'event_colours.dart';
 import 'event_notes.dart';
 import 'hour_scale.dart';
 import 'invitation_clearing.dart' show InvitationClearing;
+import 'meeting_facts.dart';
 import 'meeting_mail.dart';
 import 'meeting_people.dart';
+import 'meeting_share.dart';
 import 'meeting_ticker.dart';
 import 'now_line.dart';
 import 'place_link.dart';
@@ -553,6 +556,20 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
                       prefs.copyWith(showDeclined: !prefs.showDeclined));
                 case 'refresh':
                   ref.read(calendarRefreshProvider.notifier).now();
+                case 'away':
+                  openAway(context, ref);
+                case 'share-day':
+                  // In Week, today where it is among the days on screen, else
+                  // the first of them: a swipe on and back leaves the view
+                  // on the week's first day. The view's own day otherwise.
+                  final now = DateTime.now();
+                  showDayToShare(
+                    context,
+                    mode == CalendarViewMode.week
+                        ? page.days.firstWhere((d) => _sameDay(d, now),
+                            orElse: () => page.days.first)
+                        : _day,
+                  );
                 default:
                   final chosen = WeekSpan.values
                       .where((s) => 'span:${s.name}' == choice)
@@ -606,6 +623,23 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
                 value: 'refresh',
                 child: Text('Refresh'),
               ),
+              // Going away: the days blocked, and the meetings in them
+              // declined or cancelled as ticked (#53).
+              if (accounts.isNotEmpty) ...[
+                const PopupMenuDivider(),
+                const PopupMenuItem(
+                  key: ValueKey('calendar-away'),
+                  value: 'away',
+                  child: Text('I am away'),
+                ),
+                // The day the view is on, as a few lines to copy or to
+                // share, as a meeting's sheet shares its own day (#48).
+                const PopupMenuItem(
+                  key: ValueKey('calendar-share-day'),
+                  value: 'share-day',
+                  child: Text('Share my day'),
+                ),
+              ],
             ],
           ),
         ],
@@ -3044,7 +3078,6 @@ class _EventDetails extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
-    String clock(DateTime t) => formatClock(t, use24h: use24h);
     final e = event;
     final account = this.account;
     final email = account?.emailAddress ?? '';
@@ -3057,20 +3090,21 @@ class _EventDetails extends StatelessWidget {
         account != null && AccountCalendar.canRead(account) && !e.readOnly;
     final microsoft = account?.provider == MailProvider.outlook;
     final invited = !own && e.organizer != null && !e.cancelled;
+    // An answer is the account's own, and its own invitations are on its
+    // main calendar. On a calendar beside it that the account may change
+    // (a colleague's, shared to it) the invitation is the calendar's
+    // owner's, and an answer from here would go in their name: none is
+    // offered, as the list of meetings waiting for an answer leaves
+    // those out.
+    final answerable =
+        invited && reachable && e.calendarId == CalendarEvent.mainCalendar;
     final now = DateTime.now();
     final soon = !e.allDay &&
         others &&
         now.isAfter(e.start.subtract(const Duration(hours: 1))) &&
         now.isBefore(e.end);
-    final lastDay = _plus(e.end, -1);
-    final when = e.allDay
-        ? (_sameDay(e.start, lastDay) || !lastDay.isAfter(e.start)
-            ? 'All day, ${formatDay(e.start)}'
-            : 'All day, ${formatDay(e.start)} to ${formatDay(lastDay)}')
-        : _sameDay(e.start, e.end)
-            ? '${formatDay(e.start)}, ${clock(e.start)}–${clock(e.end)}'
-            : '${formatDay(e.start)}, ${clock(e.start)} to '
-                '${formatDay(e.end)}, ${clock(e.end)}';
+    // As Copy details and Share write it (#48).
+    final when = meetingWhen(e, use24h: use24h);
     final answer = switch (e.response) {
       EventResponse.organizer => 'You organised it',
       EventResponse.accepted => 'You accepted',
@@ -3195,68 +3229,114 @@ class _EventDetails extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (reachable || e.webLink != null)
-                  PopupMenuButton<String>(
-                    key: const ValueKey('event-more'),
-                    tooltip: 'More',
-                    onSelected: (choice) => switch (choice) {
-                      'email' => then(emailEveryone),
-                      'invite' => then(invitePeople),
-                      'propose' => then(proposeForEvent),
-                      'duplicate' => then(duplicateEvent),
-                      'remove' => then(cancelOrDeleteEvent),
-                      // The sheet stays, as it did for the button.
-                      'web' => open(e.webLink!),
-                      _ => null,
-                    },
-                    itemBuilder: (context) => [
-                      if (reachable) ...[
-                        if (others)
-                          const PopupMenuItem(
-                            key: ValueKey('event-email'),
-                            value: 'email',
-                            child: Text('Email everyone'),
-                          ),
-                        if (own || microsoft)
-                          PopupMenuItem(
-                            key: const ValueKey('event-invite'),
-                            value: 'invite',
-                            child: Text(own ? 'Invite people' : 'Forward'),
-                          ),
-                        if (invited && microsoft)
-                          const PopupMenuItem(
-                            key: ValueKey('event-propose'),
-                            value: 'propose',
-                            child: Text('Propose a new time'),
-                          ),
+                // On every meeting since it can be copied and shared (#48):
+                // before, only on one with something to change or open.
+                PopupMenuButton<String>(
+                  key: const ValueKey('event-more'),
+                  tooltip: 'More',
+                  onSelected: (choice) => switch (choice) {
+                    'email' => then(emailEveryone),
+                    'invite' => then(invitePeople),
+                    'propose' => then(proposeForEvent),
+                    'my-reminder' => then(changeMyReminder),
+                    'show-me-as' => then(changeHowIShow),
+                    'duplicate' => then(duplicateEvent),
+                    'copy' => then(copyMeeting),
+                    'share' => then(shareMeeting),
+                    'share-day' => then(shareMeetingsDay),
+                    'remove' => then(cancelOrDeleteEvent),
+                    // The sheet stays, as it did for the button.
+                    'web' => open(e.webLink!),
+                    _ => null,
+                  },
+                  itemBuilder: (context) => [
+                    if (reachable) ...[
+                      if (others)
                         const PopupMenuItem(
-                          key: ValueKey('event-duplicate'),
-                          value: 'duplicate',
-                          child: Text('Duplicate'),
+                          key: ValueKey('event-email'),
+                          value: 'email',
+                          child: Text('Email everyone'),
                         ),
+                      if (own || microsoft)
                         PopupMenuItem(
-                          key: const ValueKey('event-remove'),
-                          value: 'remove',
-                          child: Text(own
-                              ? (others ? 'Cancel meeting' : 'Delete')
-                              : e.cancelled
-                                  ? 'Remove from calendar'
-                                  : 'Decline and remove'),
+                          key: const ValueKey('event-invite'),
+                          value: 'invite',
+                          child: Text(own ? 'Invite people' : 'Forward'),
+                        ),
+                      if (answerable && microsoft)
+                        const PopupMenuItem(
+                          key: ValueKey('event-propose'),
+                          value: 'propose',
+                          child: Text('Propose a new time'),
+                        ),
+                      // Your own copy of it (#45): when you are reminded,
+                      // and how it shows you, told to nobody. Only on the
+                      // account's main calendar, where its own copy is: on
+                      // one shared to it, the copy is its owner's.
+                      if (invited &&
+                          !e.declined &&
+                          e.calendarId == CalendarEvent.mainCalendar &&
+                          canChangeOwnCopy(hostRef)) ...[
+                        const PopupMenuItem(
+                          key: ValueKey('event-my-reminder'),
+                          value: 'my-reminder',
+                          child: Text('My reminder'),
+                        ),
+                        const PopupMenuItem(
+                          key: ValueKey('event-show-me-as'),
+                          value: 'show-me-as',
+                          child: Text('Show me as'),
                         ),
                       ],
-                      // Last, for every meeting that has it, one on a
-                      // calendar only read too: a row of buttons of its own
-                      // on the sheet until #93.
-                      if (e.webLink != null)
-                        PopupMenuItem(
-                          key: const ValueKey('event-web'),
-                          value: 'web',
-                          child: Text(account?.provider == MailProvider.gmail
-                              ? 'Open in Google Calendar'
-                              : 'Open in Outlook'),
-                        ),
+                      const PopupMenuItem(
+                        key: ValueKey('event-duplicate'),
+                        value: 'duplicate',
+                        child: Text('Duplicate'),
+                      ),
                     ],
-                  ),
+                    // Its details, or its day's meetings, as text to copy
+                    // or to share (#48): on every meeting, one on a
+                    // calendar only read too, since they change nothing.
+                    const PopupMenuItem(
+                      key: ValueKey('event-copy'),
+                      value: 'copy',
+                      child: Text('Copy details'),
+                    ),
+                    const PopupMenuItem(
+                      key: ValueKey('event-share'),
+                      value: 'share',
+                      child: Text('Share'),
+                    ),
+                    const PopupMenuItem(
+                      key: ValueKey('event-share-day'),
+                      value: 'share-day',
+                      child: Text('Share the day'),
+                    ),
+                    // Decline and remove is an answer too: not on a
+                    // calendar whose invitations are its owner's.
+                    if (reachable && (own || e.cancelled || answerable))
+                      PopupMenuItem(
+                        key: const ValueKey('event-remove'),
+                        value: 'remove',
+                        child: Text(own
+                            ? (others ? 'Cancel meeting' : 'Delete')
+                            : e.cancelled
+                                ? 'Remove from calendar'
+                                : 'Decline and remove'),
+                      ),
+                    // Last, for every meeting that has it, one on a
+                    // calendar only read too: a row of buttons of its own
+                    // on the sheet until #93.
+                    if (e.webLink != null)
+                      PopupMenuItem(
+                        key: const ValueKey('event-web'),
+                        value: 'web',
+                        child: Text(account?.provider == MailProvider.gmail
+                            ? 'Open in Google Calendar'
+                            : 'Open in Outlook'),
+                      ),
+                  ],
+                ),
               ],
             ),
             if (e.cancelled)
@@ -3283,6 +3363,18 @@ class _EventDetails extends StatelessWidget {
                     use24h: use24h)
                 case final setIn?)
               Text(setIn, key: const ValueKey('event-set-in'), style: muted),
+            // How it repeats, then its reminder, how it shows, private and
+            // its categories (#44): quiet, under the time, and nothing for
+            // what it has none of.
+            MeetingRepeatLine(
+              event: e,
+              asks: account != null && AccountCalendar.canRead(account),
+              style: muted,
+            ),
+            if (meetingFacts(e,
+                    freeOrBusy: account?.provider == MailProvider.gmail)
+                case final facts when facts.isNotEmpty)
+              Text(facts, key: const ValueKey('event-facts'), style: muted),
             if (e.location.isNotEmpty) ...[
               const SizedBox(height: 4),
               // A tap from directions, where it is somewhere (#40).
@@ -3353,7 +3445,7 @@ class _EventDetails extends StatelessWidget {
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (invited && reachable) ...[
+                  if (answerable) ...[
                     // Each button 48 to tap (#90), 4 more above and below
                     // than the 40 it had: drawn where it was, and rows of
                     // them as far apart to the eye.
@@ -3372,7 +3464,7 @@ class _EventDetails extends StatelessWidget {
                     ),
                   ],
                   if (actions.isNotEmpty) ...[
-                    SizedBox(height: invited && reachable ? 8 : 12),
+                    SizedBox(height: answerable ? 8 : 12),
                     Wrap(spacing: 8, children: actions),
                   ],
                 ],

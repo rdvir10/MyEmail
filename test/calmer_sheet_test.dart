@@ -399,7 +399,14 @@ void main() {
         'Email everyone',
         'Forward',
         'Propose a new time',
+        // Your own copy of someone else's meeting (#45).
+        'My reminder',
+        'Show me as',
         'Duplicate',
+        // Copy and share it, or its day (#48).
+        'Copy details',
+        'Share',
+        'Share the day',
         'Decline and remove',
         'Open in Outlook',
       ]);
@@ -430,26 +437,37 @@ void main() {
           provider: MailProvider.gmail);
       await tester.tap(find.byKey(const ValueKey('event-more')));
       await tester.pumpAndSettle();
-      expect(menu(tester),
-          ['Invite people', 'Duplicate', 'Delete', 'Open in Google Calendar']);
+      expect(menu(tester), [
+        'Invite people',
+        'Duplicate',
+        'Copy details',
+        'Share',
+        'Share the day',
+        'Delete',
+        'Open in Google Calendar',
+      ]);
     });
 
-    testWidgets('a calendar the account only reads keeps it, alone under ⋮; '
-        'one with no link has no ⋮, as before', (tester) async {
+    testWidgets('a calendar the account only reads keeps it under ⋮, with '
+        'nothing that would change the meeting', (tester) async {
       await pump(tester,
           (a) => invited(a,
               start: at(10, 0, 7), webLink: outlook, readOnly: true));
       expect(find.byKey(const ValueKey('event-accept')), findsNothing);
       await tester.tap(find.byKey(const ValueKey('event-more')));
       await tester.pumpAndSettle();
-      expect(menu(tester), ['Open in Outlook']);
+      // Copy and share it, or its day (#48), which change nothing.
+      expect(menu(tester),
+          ['Copy details', 'Share', 'Share the day', 'Open in Outlook']);
     });
 
-    testWidgets('a calendar the account only reads, with no link: no ⋮',
-        (tester) async {
+    testWidgets('a calendar the account only reads, with no link: ⋮ has '
+        'only what copies and shares (#48)', (tester) async {
       await pump(tester,
           (a) => invited(a, start: at(10, 0, 7), readOnly: true));
-      expect(find.byKey(const ValueKey('event-more')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('event-more')));
+      await tester.pumpAndSettle();
+      expect(menu(tester), ['Copy details', 'Share', 'Share the day']);
     });
   });
 

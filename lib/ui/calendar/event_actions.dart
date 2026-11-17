@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/calendar/running_late.dart';
+import '../../data/calendar/sheet_calendar.dart' show ChangesOwnCopy;
 import '../../data/mail_engine.dart' show MailEngine;
 import '../../domain/account.dart';
 import '../../domain/calendar_change.dart';
@@ -12,6 +13,7 @@ import '../../domain/calendar_invite.dart';
 import '../../domain/draft.dart';
 import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/mail_message.dart';
+import '../../domain/meeting.dart' show Reminder;
 import '../../state/calendar_providers.dart' show deviceCalendarProvider;
 import '../../state/calendar_view_providers.dart';
 import '../../state/compose_providers.dart'
@@ -19,6 +21,7 @@ import '../../state/compose_providers.dart'
 import '../../state/providers.dart';
 import '../common/bottom_message.dart';
 import '../compose/open_compose.dart';
+import '../meetings/meeting_options.dart' show showAsLabel;
 import '../meetings/new_meeting_screen.dart';
 import '../messages/date_format.dart';
 import '../messages/invite_answers.dart';
@@ -631,10 +634,206 @@ Future<void> duplicateEvent(
     notes: notes,
     location: event.location,
     attendees: everyoneOn(event, own),
+    // Those asked as optional on the original are on the copy (#56).
+    optional: {
+      for (final a in event.attendees)
+        if (a.optional) a.address.email.trim().toLowerCase(),
+    },
     start: start,
     length: event.end.difference(event.start),
     allDay: event.allDay,
   );
+}
+
+// --- your own copy of someone else's meeting (calendar idea #45) -------------
+
+/// Whether the engine can change the account's own copy of a meeting:
+/// when it reminds of it, and how it shows the account.
+bool canChangeOwnCopy(WidgetRef ref) =>
+    ref.read(mailEngineProvider) is ChangesOwnCopy;
+
+/// My reminder, on [event], someone else's meeting: when the account is
+/// reminded of it, on its own copy alone, told to nobody. MyEmail's own
+/// reminder of it follows as the calendar is read again after it
+/// ([settleCalendar]), as after any change made here.
+Future<void> changeMyReminder(
+  BuildContext context,
+  WidgetRef ref,
+  CalendarEvent event,
+) async {
+  final engine = ref.read(mailEngineProvider);
+  final account = accountOf(ref, event);
+  if (engine is! ChangesOwnCopy || account == null) return;
+  final messenger = ScaffoldMessenger.of(context);
+  final prefs = ref.read(calendarPrefsProvider);
+  final inPhone = ref.read(phoneCalendarsProvider).contains(account.id);
+  final now = event.reminderMinutes;
+  final current =
+      now == null || now < 0 ? const Reminder.none() : Reminder.before(now);
+  final offered = [...Reminder.choices];
+  if (!offered.contains(current)) {
+    // As it is, among the rest by how long before it reminds.
+    final at = offered.indexWhere((r) => r.isOn && r.minutes! > now!);
+    offered.insert(at < 0 ? offered.length : at, current);
+  }
+  final chosen = await showDialog<Reminder>(
+    context: context,
+    builder: (_) => _OwnCopyDialog<Reminder>(
+      title: 'My reminder',
+      // Google's copy may keep several reminders, or its calendar's own:
+      // the one chosen takes the place of them all.
+      note: account.provider == MailProvider.gmail
+          ? "On Google this becomes the meeting's only reminder."
+          : null,
+      current: current,
+      choices: [
+        for (final r in offered)
+          (
+            value: r,
+            label: r.label,
+            key: 'my-reminder:${r.minutes ?? 'none'}',
+          ),
+      ],
+    ),
+  );
+  // The one ticked, chosen again: nothing to change, and on Google a
+  // change would still replace the reminders the copy has.
+  if (chosen == null || chosen == current || !context.mounted) return;
+  final series = await askWholeSeries(context, event, doing: 'My reminder');
+  if (series == null || !context.mounted) return;
+  try {
+    await (engine as ChangesOwnCopy)
+        .changeOwnCopy(event, reminder: chosen, wholeSeries: series);
+  } catch (e) {
+    _tell(messenger, 'Could not change your reminder: ${_why(e)}');
+    return;
+  }
+  // A meeting with no reminder of its own is still reminded of where
+  // Settings say so (#68): the calendars cannot tell none chosen from
+  // none ever given.
+  final ifNone = prefs.reminderIfNone;
+  _tell(
+    messenger,
+    chosen.isOn
+        ? 'Your reminder: ${chosen.label}. Nobody is told.'
+        : ifNone != null && prefs.remindsFor(account, inPhoneCalendar: inPhone)
+            ? 'No reminder from the calendar. MyEmail still reminds you '
+                '${Reminder.labelFor(ifNone)}, as Settings say. Nobody is told.'
+            : 'No reminder. Nobody is told.',
+  );
+  unawaited(settleCalendar(ref, event));
+}
+
+/// Show me as, on [event], someone else's meeting: how it shows the
+/// account to those who look at its calendar, on its own copy alone, told
+/// to nobody. A Google calendar keeps only busy or free.
+Future<void> changeHowIShow(
+  BuildContext context,
+  WidgetRef ref,
+  CalendarEvent event,
+) async {
+  final engine = ref.read(mailEngineProvider);
+  final account = accountOf(ref, event);
+  if (engine is! ChangesOwnCopy || account == null) return;
+  final messenger = ScaffoldMessenger.of(context);
+  final google = account.provider == MailProvider.gmail;
+  final current = google && event.showAs != EventShowAs.free
+      ? EventShowAs.busy
+      : event.showAs;
+  final chosen = await showDialog<EventShowAs>(
+    context: context,
+    builder: (_) => _OwnCopyDialog<EventShowAs>(
+      title: 'Show me as',
+      current: current,
+      choices: [
+        for (final s in google
+            ? const [EventShowAs.busy, EventShowAs.free]
+            : const [
+                EventShowAs.busy,
+                EventShowAs.free,
+                EventShowAs.tentative,
+                EventShowAs.outOfOffice,
+                EventShowAs.workingElsewhere,
+              ])
+          (value: s, label: showAsLabel(s), key: 'show-me-as:${s.name}'),
+      ],
+    ),
+  );
+  if (chosen == null || chosen == current || !context.mounted) return;
+  final series = await askWholeSeries(context, event, doing: 'Show me as');
+  if (series == null || !context.mounted) return;
+  try {
+    await (engine as ChangesOwnCopy)
+        .changeOwnCopy(event, showAs: chosen, wholeSeries: series);
+  } catch (e) {
+    _tell(messenger, 'Could not change how you show: ${_why(e)}');
+    return;
+  }
+  _tell(messenger,
+      'You show as ${showAsLabel(chosen).toLowerCase()}. Nobody is told.');
+  unawaited(settleCalendar(ref, event));
+}
+
+/// One of [choices] for the account's own copy of a meeting, [current]
+/// marked, as a screen reader is told too; null if backed out of.
+class _OwnCopyDialog<T> extends StatelessWidget {
+  const _OwnCopyDialog({
+    required this.title,
+    required this.current,
+    required this.choices,
+    this.note,
+  });
+
+  final String title;
+
+  /// A quiet line more under the first, where the choice does more than
+  /// it seems to.
+  final String? note;
+  final T current;
+  final List<({T value, String label, String key})> choices;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final quiet = theme.textTheme.bodyMedium
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    return SimpleDialog(
+      title: Text(title),
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+          child: Text('Only your calendar changes. Nobody is told.',
+              style: quiet),
+        ),
+        if (note case final note?)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+            child: Text(note, style: quiet),
+          ),
+        for (final c in choices)
+          Semantics(
+            container: true,
+            selected: c.value == current,
+            inMutuallyExclusiveGroup: true,
+            child: SimpleDialogOption(
+              key: ValueKey(c.key),
+              onPressed: () => Navigator.of(context).pop(c.value),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 32,
+                    child: c.value == current
+                        ? const Icon(Icons.check, size: 20)
+                        : null,
+                  ),
+                  Expanded(child: Text(c.label)),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
 }
 
 /// [work], with a spinner over the screen while it runs.

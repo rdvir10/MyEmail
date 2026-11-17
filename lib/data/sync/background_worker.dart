@@ -739,6 +739,8 @@ Future<bool> _runLive(Map<String, dynamic>? inputData) async {
       // From the settings as reloaded each pass: see prefs.reloadCache.
       inMeeting: (now) =>
           inMeetingFromKept(liveEngine, PrefsUiStateStore(prefs), now),
+      // Replies to your meetings filed (#52), read the same way.
+      replyFiling: () => replyFilingIn(PrefsUiStateStore(prefs)),
     );
 
     final widgets = MailboxWidgets(
@@ -961,6 +963,7 @@ Future<bool> _runOnePass() async {
       state: PrefsSyncStateStore(),
       inMeeting: (now) =>
           inMeetingFromKept(passEngine, PrefsUiStateStore(prefs), now),
+      replyFiling: () => replyFilingIn(PrefsUiStateStore(prefs)),
     ).run();
     announceBackgroundPassDone();
 

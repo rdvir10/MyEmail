@@ -16,6 +16,8 @@ import '../../domain/time_zones.dart' show placeOf;
 import '../calendar/time_zone_picker.dart';
 import '../messages/date_format.dart' show formatClock;
 import 'meeting_links_section.dart';
+import 'meeting_replies_section.dart';
+import 'new_meeting_defaults_section.dart';
 
 /// Settings, Calendar: how MyEmail's calendar shows the day, its reminders
 /// and the morning's agenda, and Microsoft accounts' calendars in the
@@ -155,6 +157,7 @@ class CalendarSettingsScreen extends ConsumerWidget {
             onChanged: (on) =>
                 setPrefs(prefs.copyWith(deleteAnsweredInvites: on)),
           ),
+          const MeetingRepliesSection(),
           SwitchListTile(
             key: const ValueKey('calendar-dates-in-mail'),
             title: const Text('Find dates in mail'),
@@ -386,6 +389,8 @@ class CalendarSettingsScreen extends ConsumerWidget {
             ),
           ),
           const Divider(),
+          const NewMeetingDefaultsSection(),
+          const Divider(),
           const MeetingLinksSection(),
         ],
       ),
@@ -394,18 +399,49 @@ class CalendarSettingsScreen extends ConsumerWidget {
 }
 
 /// A new calendar from a link, read once to see that it is one, and named
-/// as it names itself unless a name is given.
-Future<void> _addFromLink(BuildContext context, WidgetRef ref) async {
+/// as it names itself unless a name is given. [link], where it came from
+/// elsewhere, is filled in. The calendar added, or null.
+Future<InternetCalendar?> _addFromLink(
+  BuildContext context,
+  WidgetRef ref, {
+  String? link,
+}) async {
   final added = await showDialog<InternetCalendar>(
     context: context,
     builder: (_) => _AddLinkDialog(
       colour: _nextColour(ref.read(internetCalendarsProvider)),
       reader: ref.read(internetCalendarReaderProvider),
+      link: link,
     ),
   );
-  if (added == null) return;
+  if (added == null) return null;
   ref.read(internetCalendarsProvider.notifier).add(added);
   ref.read(calendarRefreshProvider.notifier).now();
+  return added;
+}
+
+/// A calendar link opened with MyEmail from another app, a webcal: link
+/// tapped in a browser or a message (calendar idea #67): Add from a link,
+/// with the link in it, so Ron sees what and where before anything is
+/// read, and nothing is added until he presses Add. Said once it is.
+Future<void> addCalendarFromLink(
+  BuildContext context,
+  WidgetRef ref,
+  String link,
+) async {
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  void say(String text) => messenger
+    ?..hideCurrentSnackBar()
+    ..showSnackBar(SnackBar(duration: kBottomMessage, content: Text(text)));
+  final url = feedUrlOf(link);
+  if (url != null &&
+      ref.read(internetCalendarsProvider).any((c) => c.url == url)) {
+    say('That calendar is under Calendars from links already.');
+    return;
+  }
+  final added = await _addFromLink(context, ref, link: link);
+  if (added == null) return;
+  say('${added.name} is beside your own now, under Calendars from links.');
 }
 
 /// A country's public holidays, picked from Google's.
@@ -446,17 +482,29 @@ int _nextColour(List<InternetCalendar> have) =>
     internetCalendarColours[have.length % internetCalendarColours.length];
 
 class _AddLinkDialog extends StatefulWidget {
-  const _AddLinkDialog({required this.colour, required this.reader});
+  const _AddLinkDialog({
+    required this.colour,
+    required this.reader,
+    this.link,
+  });
 
   final int colour;
   final InternetCalendars reader;
+
+  /// The link to fill in, where it came from elsewhere.
+  final String? link;
 
   @override
   State<_AddLinkDialog> createState() => _AddLinkDialogState();
 }
 
 class _AddLinkDialogState extends State<_AddLinkDialog> {
-  final _link = TextEditingController();
+  late final _link = TextEditingController(text: widget.link);
+
+  /// The host a link from elsewhere is read from.
+  late final String? _from = widget.link == null
+      ? null
+      : Uri.tryParse(feedUrlOf(widget.link!) ?? '')?.host;
   final _name = TextEditingController();
   String? _problem;
   bool _busy = false;
@@ -507,10 +555,36 @@ class _AddLinkDialogState extends State<_AddLinkDialog> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // Where it is from, for a link from elsewhere, on a line of its
+            // own: the field cuts a long one short at the right.
+            if (_from != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: Text(
+                    'From $_from',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+              ),
+            // Where it goes, for a link from elsewhere: Ron has not been to
+            // Settings to see.
+            if (widget.link != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  'A calendar others publish, shown beside your own, read '
+                  'only, in its own colour. MyEmail reads it every few '
+                  'hours.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
+                ),
+              ),
             TextField(
               key: const ValueKey('internet-calendar-link'),
               controller: _link,
-              autofocus: true,
+              autofocus: widget.link == null,
               keyboardType: TextInputType.url,
               decoration: const InputDecoration(
                 labelText: 'Link',

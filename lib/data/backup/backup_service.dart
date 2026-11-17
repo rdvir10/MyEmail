@@ -5,6 +5,7 @@ import '../../domain/calendar_prefs.dart';
 import '../../domain/display_settings.dart';
 import '../../domain/internet_calendar.dart';
 import '../../domain/meeting_link.dart';
+import '../../domain/new_meeting_defaults.dart';
 import '../../domain/quick_step.dart';
 import '../../domain/settings_backup.dart';
 import '../../domain/signature.dart';
@@ -70,6 +71,7 @@ class BackupService {
     UiStateKeys.internetCalendars: _Shape.text,
     // Never in the clear: see [export].
     UiStateKeys.meetingLinks: _Shape.text,
+    UiStateKeys.newMeetingDefaults: _Shape.text,
     // Deliberately absent: UiStateKeys.selected, which is where you happened
     // to be standing, and UiStateKeys.recentMoves, which is a short history
     // rather than a setting. Neither is worth carrying and both would be odd
@@ -399,6 +401,8 @@ bool _readable(String key, String value) {
             .every((v) => v is int);
       case UiStateKeys.calendarPrefs:
         return CalendarPrefs.tryParse(value) != null;
+      case UiStateKeys.newMeetingDefaults:
+        return NewMeetingDefaults.tryParse(value) != null;
       default:
         return true;
     }

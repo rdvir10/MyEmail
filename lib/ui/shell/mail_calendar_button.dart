@@ -8,26 +8,40 @@ import '../calendar/meeting_ticker.dart';
 /// (calendar idea #98). A calendar with today's date in it, as the phone's
 /// own calendar app has, beside Search. It opens the calendar as the folder
 /// list's Calendar does, which stays, and Back comes back to the mail as it
-/// was.
+/// was. On the phone, held, it opens My Day over the mail instead (#76).
 ///
 /// The date is the time as the meetings see it, looked at again with the
 /// next meeting's "in 13 min" ([MeetingTicker]), so it turns over within
 /// one of those after midnight, and at once on coming back to the app.
 class MailCalendarButton extends StatelessWidget {
-  const MailCalendarButton({super.key, this.compact = false});
+  const MailCalendarButton({super.key, this.compact = false, this.onHold});
 
   /// The smaller buttons of the bar over a tablet's list.
   final bool compact;
 
+  /// Held rather than tapped, on the phone: My Day over the mail (calendar
+  /// idea #76). A tap stays the calendar. Null for nothing but the tap.
+  final VoidCallback? onHold;
+
   @override
   Widget build(BuildContext context) => MeetingTicker(
-        builder: (context, ref, now) => IconButton(
-          key: const ValueKey('mail-calendar'),
-          tooltip: 'Calendar',
-          visualDensity: compact ? VisualDensity.compact : null,
-          icon: _DayIcon(day: now.day, size: compact ? 20 : 24),
-          onPressed: () => CalendarScreen.open(context),
-        ),
+        builder: (context, ref, now) {
+          final hold = onHold;
+          final button = IconButton(
+            key: const ValueKey('mail-calendar'),
+            tooltip: 'Calendar',
+            visualDensity: compact ? VisualDensity.compact : null,
+            icon: _DayIcon(day: now.day, size: compact ? 20 : 24),
+            onPressed: () => CalendarScreen.open(context),
+            onLongPress: hold,
+          );
+          if (hold == null) return button;
+          // What holding it does, said by a screen reader with the button
+          // itself: "double-tap and hold for My Day".
+          return MergeSemantics(
+            child: Semantics(onLongPressHint: 'My Day', child: button),
+          );
+        },
       );
 }
 

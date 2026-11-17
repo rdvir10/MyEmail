@@ -35,6 +35,8 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.Executors
 
@@ -99,6 +101,7 @@ class FilesBridge(
      */
     fun takeShare(intent: Intent?, pushNow: Boolean) {
         if (intent == null) return
+        if (takeCalendar(intent, pushNow)) return
         val action = intent.action
         // VIEW only on a mailto: link. The sign-in's way back is a VIEW as
         // well, on a scheme of its own, and is MainActivity's.
@@ -156,6 +159,69 @@ class FilesBridge(
                 if (asked != null) asked.success(share) else pendingShare = share
             }
         }
+    }
+
+    /**
+     * A calendar the app was opened with (calendar idea #67): an .ics file
+     * viewed in Files, a browser's downloads or another app, or a webcal:
+     * link tapped anywhere. True where the intent was one, and is taken.
+     *
+     * Only on VIEW. The file is copied in as a share's files are, with
+     * copyIn's checks, while the grant that came with the intent holds;
+     * nothing of it is read here. The link is handed over as written, and
+     * nothing is fetched. Dart shows what either holds and adds nothing
+     * until Ron says where.
+     *
+     * This activity is exported, so any app can name it with any data.
+     * A content: URI of another type, or none, is copied in all the same,
+     * and Dart reads it as a calendar or says it is none; a scheme other
+     * than these is not a calendar's.
+     */
+    private fun takeCalendar(intent: Intent, pushNow: Boolean): Boolean {
+        if (intent.action != Intent.ACTION_VIEW) return false
+        val data = intent.data ?: return false
+        val scheme = data.scheme?.lowercase()
+        if (scheme == "webcal" || scheme == "webcals") {
+            intent.action = null
+            deliverCalendar(
+                mapOf("calendarOpened" to true, "calendarLink" to data.toString()),
+                pushNow,
+            )
+            return true
+        }
+        if (scheme != ContentResolver.SCHEME_CONTENT) return false
+        val type = intent.type?.substringBefore(";")?.trim()?.lowercase()
+        if (type != null && type !in CALENDAR_TYPES) return false
+        intent.action = null
+        if (!pushNow) shareCopying = true
+        // No further than a calendar goes: this activity is exported, and
+        // what it is handed may be a file of gigabytes, or a stream with no
+        // end, written into the cache until the disk was full.
+        copyInBackground(listOf(data), CALENDAR_LARGEST) { incoming ->
+            deliverCalendar(
+                mapOf(
+                    "calendarOpened" to true,
+                    "calendarFile" to incoming.files.firstOrNull(),
+                    "calendarTooLarge" to (incoming.tooLarge > 0),
+                    "skipped" to incoming.skipped,
+                ),
+                pushNow,
+            )
+        }
+        return true
+    }
+
+    /// A calendar opened with the app, to Dart: pushed now, or kept to be
+    /// asked for, as a share is.
+    private fun deliverCalendar(calendar: Map<String, Any?>, pushNow: Boolean) {
+        if (pushNow) {
+            channel.invokeMethod("shared", calendar)
+            return
+        }
+        shareCopying = false
+        val asked = shareAsked
+        shareAsked = null
+        if (asked != null) asked.success(calendar) else pendingShare = calendar
     }
 
     /// The addresses under [name]: an array of them, as Android documents
@@ -299,6 +365,10 @@ class FilesBridge(
                 }
                 "share" -> {
                     share(call.argument<String>("path")!!, call.argument<String>("mime"))
+                    result.success(null)
+                }
+                "shareText" -> {
+                    shareText(call.argument<String>("text")!!, call.argument<String>("subject"))
                     result.success(null)
                 }
                 "copy" -> {
@@ -682,6 +752,20 @@ class FilesBridge(
         activity.startActivity(Intent.createChooser(intent, null))
     }
 
+    /**
+     * Plain text to whichever app is chosen, with a subject for one that
+     * takes it (an email's): a meeting's details, or a day's meetings
+     * (calendar idea #48). No file and no permission to grant.
+     */
+    private fun shareText(text: String, subject: String?) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+            if (!subject.isNullOrEmpty()) putExtra(Intent.EXTRA_SUBJECT, subject)
+        }
+        activity.startActivity(Intent.createChooser(intent, null))
+    }
+
     private fun copy(path: String, mime: String?, name: String) {
         val clipboard =
             activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -721,8 +805,15 @@ class FilesBridge(
     private fun uris(clip: ClipData): List<Uri> =
         (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
 
-    /** Files copied in, and how many of those offered could not be. */
-    private class Incoming(val files: List<Map<String, Any?>>, val skipped: Int)
+    /**
+     * Files copied in, how many of those offered could not be, and how
+     * many of those were past the size asked for.
+     */
+    private class Incoming(
+        val files: List<Map<String, Any?>>,
+        val skipped: Int,
+        val tooLarge: Int = 0,
+    )
 
     /**
      * Copy [uris] in off the main thread, then hand what came of it to
@@ -732,11 +823,16 @@ class FilesBridge(
      * only in Google Photos or Drive is downloaded as it is read. On the
      * main thread either froze the window, or the splash screen on a share,
      * until Android offered to close the app; and closing it lost the share.
+     * Each file no larger than [limit] bytes, where one is given.
      */
-    private fun copyInBackground(uris: List<Uri>, done: (Incoming) -> Unit) {
+    private fun copyInBackground(
+        uris: List<Uri>,
+        limit: Long? = null,
+        done: (Incoming) -> Unit,
+    ) {
         copier.execute {
             val incoming = try {
-                copyIn(uris)
+                copyIn(uris, limit)
             } catch (e: Exception) {
                 android.util.Log.e("MyEmail", "could not copy files in", e)
                 Incoming(emptyList(), uris.size)
@@ -790,10 +886,15 @@ class FilesBridge(
         }
     }
 
-    private fun copyIn(uris: List<Uri>): Incoming {
+    /**
+     * [uris] copied in, each no larger than [limit] bytes where one is
+     * given: one past it is not kept, and counted as too large.
+     */
+    private fun copyIn(uris: List<Uri>, limit: Long? = null): Incoming {
         val incoming = File(activity.cacheDir, "incoming")
         val taken = mutableListOf<Map<String, Any?>>()
         var skipped = 0
+        var tooLarge = 0
         for ((i, uri) in uris.withIndex()) {
             if (!mayCopyIn(uri)) {
                 android.util.Log.w("MyEmail", "refused to copy in $uri")
@@ -806,13 +907,27 @@ class FilesBridge(
             // attachments held the second.
             val folder = File(incoming, UUID.randomUUID().toString()).apply { mkdirs() }
             val target = File(folder, fileNameFor(name))
+            var over = false
             try {
                 activity.contentResolver.openInputStream(uri).use { input ->
                     if (input == null) return@use
-                    target.outputStream().use { output -> input.copyTo(output) }
+                    target.outputStream().use { output ->
+                        if (limit == null) {
+                            input.copyTo(output)
+                        } else {
+                            over = !copyAtMost(input, output, limit)
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 android.util.Log.e("MyEmail", "could not copy $uri", e)
+            }
+            if (over) {
+                android.util.Log.w("MyEmail", "past $limit bytes, not copied in: $uri")
+                folder.deleteRecursively()
+                skipped++
+                tooLarge++
+                continue
             }
             if (!target.exists() || target.length() == 0L) {
                 folder.deleteRecursively()
@@ -828,7 +943,23 @@ class FilesBridge(
                 ),
             )
         }
-        return Incoming(taken, skipped)
+        return Incoming(taken, skipped, tooLarge)
+    }
+
+    /**
+     * [input] into [output], stopping once it is past [limit] bytes: false
+     * where it went past, and what was written is then not whole.
+     */
+    private fun copyAtMost(input: InputStream, output: OutputStream, limit: Long): Boolean {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) return true
+            total += read
+            if (total > limit) return false
+            output.write(buffer, 0, read)
+        }
     }
 
     /**
@@ -955,6 +1086,12 @@ class FilesBridge(
     }
 
     companion object {
+        /** The types a calendar file is opened as: the manifest's. */
+        val CALENDAR_TYPES = setOf("text/calendar", "application/ics", "text/x-vcalendar")
+
+        /** The most of a calendar file copied in: Dart reads no more. */
+        const val CALENDAR_LARGEST = 4L * 1024 * 1024
+
         const val CHANNEL = "mailtree/files"
 
         const val ANDROID_PACKAGE = "application/vnd.android.package-archive"
