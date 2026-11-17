@@ -168,7 +168,14 @@ class IcsEvent {
     this.transparent = false,
     this.cancelled = false,
     this.zoneUnknown = false,
+    this.ownZone,
   });
+
+  /// The zone its times are on the clock of where the file defines it
+  /// itself (VTIMEZONE) under a name the phone does not know: its series
+  /// laid out on that clock, by that zone's own rules, as [zone]'s is by
+  /// the phone's database. Null otherwise.
+  final IcsZone? ownZone;
 
   /// Its times name a zone that is neither one the phone knows nor one the
   /// text defines: they are read as written, on the phone's clock.
@@ -216,6 +223,11 @@ class IcsEvent {
       return DateTime.utc(at.year, at.month, at.day, at.hour, at.minute,
           at.second);
     }
+    final own = ownZone?.wallClockOf(at);
+    if (own != null) {
+      return DateTime.utc(
+          own.year, own.month, own.day, own.hour, own.minute, own.second);
+    }
     final z = zone;
     if (z == null) return at.toUtc();
     final local = wallClockIn(at, z);
@@ -230,6 +242,10 @@ class IcsEvent {
       return DateTime(wall.year, wall.month, wall.day, wall.hour, wall.minute,
           wall.second);
     }
+    final local = DateTime(
+        wall.year, wall.month, wall.day, wall.hour, wall.minute, wall.second);
+    final own = ownZone;
+    if (own != null) return own.instantOf(local) ?? local;
     final z = zone;
     if (z == null) return wall;
     return instantIn(
@@ -297,7 +313,9 @@ class IcsEvent {
 
   DateTime? _untilOf(String? text) {
     if (text == null) return null;
-    final value = _IcsDate.parse(text, const {}, const {});
+    // Read as it always was: an end that is no day (31 June) ends the
+    // series near it, where one refused would make it endless.
+    final value = _IcsDate.parse(text, const {}, const {}, lenient: true);
     if (value == null) return null;
     // A date alone is to the end of that day.
     if (value.dateOnly) {
@@ -487,6 +505,12 @@ class _EventBuilder {
     DateTime instant(_IcsDate d) {
       if (d.dateOnly) return DateTime(d.at.year, d.at.month, d.at.day);
       if (d.utc) return d.at;
+      final own = d.ownZone;
+      if (own != null) {
+        final local = DateTime(d.at.year, d.at.month, d.at.day, d.at.hour,
+            d.at.minute, d.at.second);
+        return own.instantOf(local) ?? local;
+      }
       final z = d.zone;
       if (z != null) {
         return instantIn(
@@ -527,13 +551,15 @@ class _EventBuilder {
       length: length,
       days: days,
       zone: zone,
-      floating: !allDay && !first.utc && zone == null,
+      floating:
+          !allDay && !first.utc && zone == null && first.ownZone == null,
       rule: rule,
       excluded: {for (final d in exdates) instant(d).millisecondsSinceEpoch},
       recurrenceId: id == null ? null : instant(id),
       transparent: transparent,
       cancelled: cancelled,
       zoneUnknown: first.zoneUnknown,
+      ownZone: first.ownZone,
     );
   }
 
@@ -560,10 +586,14 @@ class _IcsDate {
     this.utc = false,
     this.zone,
     this.zoneUnknown = false,
+    this.ownZone,
   });
 
   /// It names a zone neither known nor defined: read as written.
   final bool zoneUnknown;
+
+  /// The zone the text defines that [at]'s figures are on the clock of.
+  final IcsZone? ownZone;
 
   /// Its figures; an instant where [utc].
   final DateTime at;
@@ -575,23 +605,28 @@ class _IcsDate {
 
   /// Null for a value not in the form, or a day or a time there is not:
   /// read as given, an hour of 99 was three days later.
+  ///
+  /// [lenient] for a rule's end, read as it always was: figures out of
+  /// range roll over (31 June is 1 July).
   static _IcsDate? parse(
     String text,
     Map<String, String> params,
-    Map<String, IcsZone> zones,
-  ) {
+    Map<String, IcsZone> zones, {
+    bool lenient = false,
+  }) {
     final v = text.trim();
     final m = RegExp(r'^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?(Z)?)?$')
         .firstMatch(v.toUpperCase());
     if (m == null) return null;
     final y = int.parse(m[1]!), mo = int.parse(m[2]!), d = int.parse(m[3]!);
-    if (mo < 1 || mo > 12 || d < 1 || d > DateTime(y, mo + 1, 0).day) {
+    if (!lenient &&
+        (mo < 1 || mo > 12 || d < 1 || d > DateTime(y, mo + 1, 0).day)) {
       return null;
     }
     if (m[4] == null) return _IcsDate(DateTime(y, mo, d), dateOnly: true);
     final h = int.parse(m[4]!), mi = int.parse(m[5]!);
     final s = int.parse(m[6] ?? '0');
-    if (h > 23 || mi > 59 || s > 60) return null;
+    if (!lenient && (h > 23 || mi > 59 || s > 60)) return null;
     if (m[7] != null) {
       return _IcsDate(DateTime.utc(y, mo, d, h, mi, s), utc: true);
     }
@@ -600,9 +635,13 @@ class _IcsDate {
     if (named == null) return _IcsDate(wall);
     final zone = ianaZoneOf(named);
     if (zone != null) return _IcsDate(wall, zone: zone);
-    // A zone of the text's own, by its offsets.
-    final instant = zones[named]?.instantOf(wall);
-    if (instant != null) return _IcsDate(instant, utc: true);
+    // A zone of the text's own, by its offsets: kept on its wall clock,
+    // so a series is laid out on that clock and turned into instants by
+    // the zone's own rules, each in its season.
+    final own = zones[named];
+    if (own != null && own.instantOf(wall) != null) {
+      return _IcsDate(wall, ownZone: own);
+    }
     return _IcsDate(wall, zoneUnknown: true);
   }
 }

@@ -48,7 +48,10 @@ class CalendarFileScreen extends ConsumerStatefulWidget {
 }
 
 /// What the file turned out to hold: its events, or why there are none.
-typedef _Read = ({CalendarFile? calendar, String? problem});
+/// With them, which are still to come on the day it was read: a meeting
+/// that day or after, a series that still has meetings left (see
+/// [FileEvent.runsOnOrAfter]).
+typedef _Read = ({CalendarFile? calendar, String? problem, Set<int> running});
 
 /// Where an event goes: one of an account's calendars, or with neither,
 /// the phone's calendar app.
@@ -93,7 +96,11 @@ class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
     } catch (e) {
       debugPrint('[myemail] a calendar file could not be read apart: '
           '${e.runtimeType}');
-      return (calendar: null, problem: 'This file could not be read.');
+      return (
+        calendar: null,
+        problem: 'This file could not be read.',
+        running: const <int>{},
+      );
     }
   }
 
@@ -129,21 +136,43 @@ class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
   static _Read _readFile(File f) {
     try {
       if (f.lengthSync() > CalendarFile.largest) {
-        return (calendar: null, problem: 'This file is too large for a '
-            'calendar, so MyEmail has not read it.');
+        return (
+          calendar: null,
+          problem: 'This file is too large for a calendar, so MyEmail has '
+              'not read it.',
+          running: const <int>{},
+        );
       }
       final text = utf8.decode(f.readAsBytesSync(), allowMalformed: true);
       final calendar = CalendarFile.read(text);
       debugPrint('[myemail] calendar file: '
           '${calendar?.events.length ?? 0} events read');
-      return calendar == null
-          ? (calendar: null, problem: 'This file has no events MyEmail can '
-              'read.')
-          : (calendar: calendar, problem: null);
+      if (calendar == null) {
+        return (
+          calendar: null,
+          problem: 'This file has no events MyEmail can read.',
+          running: const <int>{},
+        );
+      }
+      // Worked out here, off the UI's isolate: a series is walked to today.
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      return (
+        calendar: calendar,
+        problem: null,
+        running: {
+          for (final (i, e) in calendar.events.indexed)
+            if (e.runsOnOrAfter(today)) i,
+        },
+      );
     } catch (e) {
       debugPrint('[myemail] a calendar file could not be opened: '
           '${e.runtimeType}');
-      return (calendar: null, problem: 'This file could not be read.');
+      return (
+        calendar: null,
+        problem: 'This file could not be read.',
+        running: const <int>{},
+      );
     }
   }
 
@@ -247,7 +276,7 @@ class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
           }
           final calendar = read.calendar;
           if (calendar == null) return _problem(context, read.problem!);
-          return _events(context, calendar);
+          return _events(context, calendar, read.running);
         },
       ),
     );
@@ -278,7 +307,11 @@ class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
     );
   }
 
-  Widget _events(BuildContext context, CalendarFile calendar) {
+  Widget _events(
+    BuildContext context,
+    CalendarFile calendar,
+    Set<int> running,
+  ) {
     final theme = Theme.of(context);
     final muted = theme.textTheme.bodySmall
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
@@ -341,15 +374,23 @@ class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
             ),
         ],
     );
-    // Opened at the first event from today on, those before it above: a
-    // school's or a country's calendar can go back years. Where every one
-    // has gone by, at the last.
+    // Opened at what is still to come, in the order each began, those that
+    // have gone by above: a school's or a country's calendar can go back
+    // years, and a weekly class begun in September still runs. Where every
+    // one has gone by, at the last.
     final events = calendar.events;
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final upcoming = events.indexWhere(
-        (e) => !DateTime(e.end.year, e.end.month, e.end.day).isBefore(today));
-    final first = upcoming < 0 ? events.length - 1 : upcoming;
+    var ahead = [
+      for (var i = 0; i < events.length; i++)
+        if (running.contains(i)) i,
+    ];
+    var gone = [
+      for (var i = 0; i < events.length; i++)
+        if (!running.contains(i)) i,
+    ];
+    if (ahead.isEmpty) {
+      ahead = [gone.last];
+      gone = gone.sublist(0, gone.length - 1);
+    }
     // Built as they come into view: a published calendar can hold
     // thousands. No wider than a page reads on a tablet, the margins
     // scrolling with it. Where they go stays in sight above them.
@@ -367,25 +408,27 @@ class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
               ),
               Expanded(
                 child: CustomScrollView(
-                  center: first > 0 ? _fromToday : null,
+                  center: gone.isNotEmpty ? _fromToday : null,
                   slivers: [
-                    if (first > 0)
+                    if (gone.isNotEmpty)
                       SliverPadding(
                         padding: EdgeInsets.symmetric(horizontal: side),
                         sliver: SliverList.builder(
-                          itemCount: first,
+                          itemCount: gone.length,
                           // Nearest first, upwards.
-                          itemBuilder: (context, i) => _event(context,
-                              first - 1 - i, events[first - 1 - i], target),
+                          itemBuilder: (context, i) {
+                            final at = gone[gone.length - 1 - i];
+                            return _event(context, at, events[at], target);
+                          },
                         ),
                       ),
                     SliverPadding(
                       key: _fromToday,
                       padding: EdgeInsets.fromLTRB(side, 0, side, 24),
                       sliver: SliverList.builder(
-                        itemCount: events.length - first,
+                        itemCount: ahead.length,
                         itemBuilder: (context, i) => _event(
-                            context, first + i, events[first + i], target),
+                            context, ahead[i], events[ahead[i]], target),
                       ),
                     ),
                   ],
