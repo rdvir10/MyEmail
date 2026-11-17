@@ -8,6 +8,7 @@ import '../../domain/calendar_invite.dart' show InviteResponse;
 import '../../domain/error_report.dart' show ReadableError;
 import '../../domain/meeting.dart' show MeetingDraft;
 import '../mail_engine.dart';
+import 'calendar_not_taken.dart';
 
 /// One thing on Away's list (calendar idea #53): the days blocked on one
 /// account's calendar, or one meeting declined or cancelled. Where it has
@@ -70,10 +71,13 @@ class AwayItem {
   String? problem;
 
   /// Its last try had no answer (the connection, or the server, gave
-  /// none), as against a refusal: it may have gone. Found gone from its
-  /// calendar after that, it was sent ([AwayState.sentGone]); after a
-  /// refusal, nothing was ([AwayState.gone]).
+  /// none), as against a refusal: it may have gone.
   bool unanswered = false;
+
+  /// Some try of it had no answer, and may have gone: found gone from its
+  /// calendar after that, it was sent ([AwayState.sentGone]). Never set by
+  /// a refusal, after which nothing was ([AwayState.gone]).
+  bool mayHaveGone = false;
 
   String get key => switch (action) {
         AwayAction.block => 'block\u0000$accountId',
@@ -191,9 +195,11 @@ class AwayRun {
         ..problem = _why(e.cause);
     } catch (e) {
       debugPrint('[myemail] away: ${item.action.name} did not go: $e');
+      final none = _noAnswer(e);
       item
         ..state = AwayState.failed
-        ..unanswered = _noAnswer(e)
+        ..unanswered = none
+        ..mayHaveGone = item.mayHaveGone || none
         ..problem = _why(e);
     }
     changed();
@@ -203,6 +209,8 @@ class AwayRun {
   /// answer came (a connection lost, a timeout, a server in trouble), as
   /// against a refusal, after which nothing was done.
   static bool _noAnswer(Object e) => switch (e) {
+        // An answer came, and it was no (or "not now"): nothing was done.
+        CalendarNotTaken() => false,
         ConnectionFailed() || TimeoutException() => true,
         ReadableError() || ArgumentError() || StateError() => false,
         // Anything else came from below the engine's own words: the socket.
@@ -296,7 +304,8 @@ class AwayRun {
       if (now == null || now.cancelled) {
         // Gone after a try with no answer: that try went. After a refusal,
         // nothing did.
-        item.state = item.unanswered ? AwayState.sentGone : AwayState.gone;
+        item.state =
+            item.mayHaveGone ? AwayState.sentGone : AwayState.gone;
       } else if (item.action == AwayAction.decline && now.declined) {
         item.state = AwayState.done;
       } else {

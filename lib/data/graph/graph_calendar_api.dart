@@ -17,6 +17,7 @@ import '../../domain/series_repeat.dart';
 import '../../domain/text_direction.dart';
 import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart' show SignInUnreachable;
+import '../calendar/calendar_not_taken.dart';
 import '../imap/imap_mapping.dart' show htmlToText;
 import '../mail_engine.dart';
 
@@ -1574,17 +1575,20 @@ class GraphCalendarApi {
         'the app for your organisation.',
       );
     }
-    if (status == 429 || status >= 500) {
+    if (status == 429) {
       // Worth retrying, so it reads as a connection problem rather than as
-      // something the person did.
+      // something the person did; but turned away, not done (#53).
+      return const CalendarNotTaken(
+          'Microsoft is rate limiting this account. Try again shortly.');
+    }
+    if (status >= 500) {
+      // A server in trouble may have done it all the same.
       return ConnectionFailed(
-        status == 429
-            ? 'Microsoft is rate limiting this account. Try again shortly.'
-            : 'Microsoft is having trouble (HTTP $status). Try again shortly.',
-      );
+          'Microsoft is having trouble (HTTP $status). Try again shortly.');
     }
     // Graph's own sentence, kept: it is what says which field it refused.
-    return ConnectionFailed(
+    // An answer came, and it was no: nothing was done (#53).
+    return CalendarNotTaken(
       'Microsoft refused the meeting (${code ?? 'HTTP $status'})'
       '${detail == null || detail.isEmpty ? '' : ': $detail'}',
     );
