@@ -25,6 +25,7 @@ import 'package:myemail/state/contact_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/ui/meetings/meeting_options.dart';
 import 'package:myemail/ui/meetings/new_meeting_screen.dart';
+import 'package:myemail/ui/messages/date_format.dart' show formatClock;
 
 import 'fakes/fake_webview.dart';
 
@@ -326,24 +327,35 @@ void main() {
           firstTuesday);
     });
 
-    test('every other week: inside the series\' first counting week, so it '
-        'stays in the weeks it was in', () {
+    test('every other week: in the weeks it was in, counted from its first, '
+        'and never before its first meeting', () {
       // The week of 1 September starts on Sunday 30 August for Outlook,
-      // Monday 31 August for Google.
-      DateTime moved(Set<int> days, int weekStart) => firstDayOf(
-          Recurrence(RepeatKind.weekly, interval: 2, days: days),
-          firstTuesday,
-          weekStart: weekStart);
+      // Monday 31 August for Google; the series meets in it, and in every
+      // other week after.
+      DateTime moved(Set<int> days, int weekStart, [DateTime? from]) =>
+          firstDayOf(Recurrence(RepeatKind.weekly, interval: 2, days: days),
+              from ?? firstTuesday,
+              weekStart: weekStart);
       for (final weekStart in [DateTime.sunday, DateTime.monday]) {
-        expect(moved({1}, weekStart), DateTime(2026, 8, 31),
-            reason: 'Tuesday to Monday, the day before, not the week after');
+        expect(moved({1}, weekStart), DateTime(2026, 9, 14),
+            reason: 'Tuesday to Monday: the Monday of its next week, not '
+                'the day before it began, nor the week between');
         expect(moved({4}, weekStart), DateTime(2026, 9, 3),
-            reason: 'Tuesday to Thursday');
+            reason: 'Tuesday to Thursday, in its first week');
       }
-      expect(moved({7}, DateTime.sunday), DateTime(2026, 8, 30),
-          reason: "Sunday opens Outlook's week");
+      expect(moved({7}, DateTime.sunday), DateTime(2026, 9, 13),
+          reason: "Sunday opens Outlook's week: the first is before the "
+              'series began, so the next one');
       expect(moved({7}, DateTime.monday), DateTime(2026, 9, 6),
           reason: "Sunday closes Google's");
+
+      // A series starting tomorrow (17 November 2026 is a Tuesday) gets no
+      // meeting yesterday.
+      final tomorrow = DateTime(2026, 11, 17);
+      expect(moved({7}, DateTime.sunday, tomorrow), DateTime(2026, 11, 29));
+      expect(moved({7}, DateTime.monday, tomorrow), DateTime(2026, 11, 22));
+      expect(moved({1}, DateTime.sunday, tomorrow), DateTime(2026, 11, 30));
+      expect(moved({1}, DateTime.monday, tomorrow), DateTime(2026, 11, 30));
     });
 
     test('a series set in Jerusalem, changed on a phone in New York, stays '
@@ -808,8 +820,8 @@ void main() {
       expect(body['recurrence'], ['RRULE:FREQ=WEEKLY;BYDAY=WE']);
     });
 
-    test('every other week moved to Sunday: the week before for Outlook, '
-        'whose week starts on Sunday; the week after for Google', () async {
+    test('every other week moved to Sunday: never before the series began; '
+        "Outlook's week starts on Sunday, Google's on Monday", () async {
       const sundays = Recurrence(RepeatKind.weekly, interval: 2, days: {7});
       var c = calendar(graphMaster());
       await c.updateEvent(
@@ -819,7 +831,7 @@ void main() {
         wholeSeries: true,
       );
       expect((bodyOf(sent.last)['start'] as Map)['dateTime'],
-          '2026-08-30T09:00:00');
+          '2026-09-13T09:00:00');
       c = calendar(googleMaster);
       await c.updateEvent(
         gmail,
@@ -853,6 +865,238 @@ void main() {
       });
     });
 
+    test('a series begun before 2021, its end changed, goes back at its own '
+        'time: 09:00 in New York and in Jerusalem, on both calendars',
+        () async {
+      // 15 January 2019, a Tuesday: 09:00 in New York is 14:00 UTC, and in
+      // Jerusalem 07:00 UTC, both on winter time. Written out here, not
+      // worked out with the app's zone data, which is what is tested.
+      for (final (zone, windows, utc) in [
+        (newYork, 'Eastern Standard Time', DateTime.utc(2019, 1, 15, 14)),
+        (jerusalem, 'Israel Standard Time', DateTime.utc(2019, 1, 15, 7)),
+      ]) {
+        String graphTime(DateTime u) =>
+            '${u.toIso8601String().substring(0, 19)}.0000000';
+        final graph = calendar({
+          'id': 'series-1',
+          'start': {'dateTime': graphTime(utc), 'timeZone': 'UTC'},
+          'end': {
+            'dateTime': graphTime(utc.add(const Duration(hours: 1))),
+            'timeZone': 'UTC',
+          },
+          'isAllDay': false,
+          'type': 'seriesMaster',
+        });
+        final ends = EventChange(
+          repeat: Recurrence(RepeatKind.weekly,
+              days: const {2}, until: DateTime(2027, 6, 29)),
+          timeZone: newYork,
+        );
+        await graph.updateEvent(
+            microsoft, occurrence('a', windows), ends,
+            wholeSeries: true);
+        expect(bodyOf(sent.last)['start'],
+            {'dateTime': '2019-01-15T09:00:00', 'timeZone': zone},
+            reason: zone);
+
+        final offset = zone == newYork ? '-05:00' : '+02:00';
+        final google = calendar({
+          'id': 'series-1',
+          'status': 'confirmed',
+          'start': {'dateTime': '2019-01-15T09:00:00$offset', 'timeZone': zone},
+          'end': {'dateTime': '2019-01-15T10:00:00$offset', 'timeZone': zone},
+          'recurrence': ['RRULE:FREQ=WEEKLY;BYDAY=TU'],
+        });
+        await google.updateEvent(gmail, occurrence('g', zone), ends,
+            wholeSeries: true);
+        expect(bodyOf(sent.last)['start'],
+            {'dateTime': '2019-01-15T09:00:00', 'timeZone': zone, 'date': null},
+            reason: zone);
+      }
+    });
+
+    test('a last day after 2030, in summer, ends at its own midnight',
+        () async {
+      // Jerusalem on summer time on 13 July 2032: 23:59:59 is 20:59:59 UTC.
+      final c = calendar(googleMaster);
+      await c.updateEvent(
+        gmail,
+        occurrence('g', jerusalem),
+        EventChange(
+          repeat: Recurrence(RepeatKind.weekly,
+              days: const {2}, until: DateTime(2032, 7, 13)),
+          timeZone: newYork,
+        ),
+        wholeSeries: true,
+      );
+      expect(bodyOf(sent.last)['recurrence'],
+          ['RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20320713T205959Z']);
+    });
+
+    test('a series kept in UTC is written "UTC" to both calendars', () async {
+      final utcMaster = {
+        'id': 'series-1',
+        'start': {'dateTime': '2026-09-01T09:00:00.0000000', 'timeZone': 'UTC'},
+        'end': {'dateTime': '2026-09-01T10:00:00.0000000', 'timeZone': 'UTC'},
+        'isAllDay': false,
+        'type': 'seriesMaster',
+      };
+      final ends = EventChange(
+        repeat: Recurrence(RepeatKind.weekly,
+            days: const {2}, until: DateTime(2027, 6, 29)),
+        timeZone: newYork,
+      );
+      var c = calendar(utcMaster);
+      await c.updateEvent(microsoft, occurrence('a', 'UTC'), ends,
+          wholeSeries: true);
+      var body = bodyOf(sent.last);
+      expect(body['start'],
+          {'dateTime': '2026-09-01T09:00:00', 'timeZone': 'UTC'});
+      final range = (body['recurrence']! as Map)['range'] as Map;
+      expect(range['recurrenceTimeZone'], 'UTC');
+      c = calendar({
+        'id': 'series-1',
+        'status': 'confirmed',
+        'start': {'dateTime': '2026-09-01T09:00:00Z', 'timeZone': 'UTC'},
+        'end': {'dateTime': '2026-09-01T10:00:00Z', 'timeZone': 'UTC'},
+        'recurrence': ['RRULE:FREQ=WEEKLY;BYDAY=TU'],
+      });
+      await c.updateEvent(gmail, occurrence('g', 'UTC'), ends,
+          wholeSeries: true);
+      body = bodyOf(sent.last);
+      expect(body['start'], {
+        'dateTime': '2026-09-01T09:00:00',
+        'timeZone': 'UTC',
+        'date': null,
+      });
+      expect(body['recurrence'],
+          ['RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20270629T235959Z']);
+    });
+
+    group('a new time that falls on another day on the series\' clock', () {
+      /// Tuesdays at [hour]:[minute] Jerusalem time since 1 September, as
+      /// either calendar gives the series: its times in UTC.
+      Map<String, Object?> lateMaster(int hour, int minute) {
+        String utc(DateTime wall) {
+          final u = instantIn(wall, jerusalem).toUtc();
+          return '${u.toIso8601String().substring(0, 19)}Z';
+        }
+
+        return {
+          'id': 'series-1',
+          'status': 'confirmed',
+          'start': {
+            'dateTime': utc(DateTime(2026, 9, 1, hour, minute)),
+            'timeZone': 'UTC',
+          },
+          'end': {
+            'dateTime': utc(DateTime(2026, 9, 1, hour + 1, minute)),
+            'timeZone': 'UTC',
+          },
+          'isAllDay': false,
+          'type': 'seriesMaster',
+          'recurrence': ['RRULE:FREQ=WEEKLY;BYDAY=TU'],
+        };
+      }
+
+      CalendarEvent opened(DateTime jerusalemWall) => CalendarEvent(
+            id: 'occurrence-12',
+            accountId: 'a',
+            title: 'Late sync',
+            start: instantIn(jerusalemWall, jerusalem),
+            end: instantIn(jerusalemWall, jerusalem)
+                .add(const Duration(hours: 1)),
+            isOrganizer: true,
+            response: EventResponse.organizer,
+            seriesId: 'series-1',
+            timeZone: 'Israel Standard Time',
+          );
+
+      /// The change Edit sends: the time picked on New York's clock, with
+      /// the series' repeat, which Edit hands on so its days can move.
+      EventChange picked(DateTime newYorkWall, Recurrence repeat) =>
+          EventChange(
+            start: instantIn(newYorkWall, newYork),
+            end: instantIn(newYorkWall, newYork).add(const Duration(hours: 1)),
+            allDay: false,
+            timeZone: newYork,
+            repeat: repeat,
+          );
+
+      const tuesdays = Recurrence(RepeatKind.weekly, days: {2});
+
+      test('Tuesday 23:00 in Jerusalem, 16:00 in New York, moved to 18:00: '
+          "Wednesday 01:00 on Jerusalem's clock, Tuesday 18:00 for Ron",
+          () async {
+        for (final (account, weekStart) in [
+          (microsoft, DateTime.sunday),
+          (gmail, DateTime.monday),
+        ]) {
+          final c = calendar(lateMaster(23, 0));
+          await c.updateEvent(
+            account,
+            opened(DateTime(2026, 11, 17, 23)),
+            picked(DateTime(2026, 11, 17, 18), tuesdays),
+            wholeSeries: true,
+          );
+          final body = bodyOf(sent.last);
+          expect(sent.last.method, 'PATCH');
+          final start = body['start']! as Map;
+          expect(start['dateTime'], '2026-09-02T01:00:00',
+              reason: '$weekStart');
+          expect(start['timeZone'], jerusalem);
+          if (account == microsoft) {
+            final pattern =
+                (body['recurrence']! as Map)['pattern'] as Map;
+            expect(pattern['daysOfWeek'], ['wednesday']);
+          } else {
+            expect(body['recurrence'], ['RRULE:FREQ=WEEKLY;BYDAY=WE']);
+          }
+          // The meeting of the week of 24 November.
+          final wed = instantIn(DateTime(2026, 11, 25, 1), jerusalem);
+          expect(wallClockIn(wed, newYork), DateTime(2026, 11, 24, 18));
+          expect(wallClockIn(wed, jerusalem).weekday, DateTime.wednesday);
+        }
+      });
+
+      test('the other way: Tuesday 00:30 in Jerusalem, Monday 17:30 in New '
+          "York, moved to 16:00: Monday 23:00 on Jerusalem's clock", () async {
+        final c = calendar(lateMaster(0, 30));
+        await c.updateEvent(
+          microsoft,
+          opened(DateTime(2026, 11, 17, 0, 30)),
+          picked(DateTime(2026, 11, 16, 16), tuesdays),
+          wholeSeries: true,
+        );
+        final body = bodyOf(sent.last);
+        expect((body['start']! as Map)['dateTime'], '2026-08-31T23:00:00');
+        expect(((body['recurrence']! as Map)['pattern'] as Map)['daysOfWeek'],
+            ['monday']);
+        final mon = instantIn(DateTime(2026, 11, 23, 23), jerusalem);
+        expect(wallClockIn(mon, newYork), DateTime(2026, 11, 23, 16));
+      });
+
+      test('a monthly series is refused, and nothing sent', () async {
+        for (final monthly in const [
+          Recurrence(RepeatKind.monthlyOnDate),
+          Recurrence(RepeatKind.monthlyOnWeekday),
+          Recurrence(RepeatKind.yearly),
+        ]) {
+          final c = calendar(lateMaster(23, 0));
+          await expectLater(
+            c.updateEvent(
+              microsoft,
+              opened(DateTime(2026, 11, 17, 23)),
+              picked(DateTime(2026, 11, 17, 18), monthly),
+              wholeSeries: true,
+            ),
+            throwsA(isA<SeriesDayMoved>()),
+          );
+          expect(sent.where((r) => r.method == 'PATCH'), isEmpty);
+        }
+      });
+    });
+
     test('a timed meeting whose zone is not known is not given a repeat',
         () async {
       final c = calendar(graphMaster());
@@ -877,7 +1121,11 @@ void main() {
 
     setUp(() => engine = _Microsoft());
 
-    Future<void> pumpScreen(WidgetTester tester, EventEdit editing) async {
+    Future<void> pumpScreen(
+      WidgetTester tester,
+      EventEdit editing, {
+      bool use24h = false,
+    }) async {
       tester.view.physicalSize = const Size(1000, 1800);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
@@ -893,6 +1141,13 @@ void main() {
       await tester.pumpWidget(UncontrolledProviderScope(
         container: c,
         child: MaterialApp(
+          builder: use24h
+              ? (context, child) => MediaQuery(
+                    data: MediaQuery.of(context)
+                        .copyWith(alwaysUse24HourFormat: true),
+                    child: child!,
+                  )
+              : null,
           home: Scaffold(
             body: Builder(
               builder: (context) => TextButton(
@@ -1198,6 +1453,97 @@ void main() {
         expect(find.byKey(const ValueKey('meeting-repeat')), findsNothing);
         await closeMore(tester);
       }
+    });
+
+    /// One meeting of a series set in Tokyo's time, at 00:30 there on
+    /// Wednesday 18 November: its repeat [repeat], first on [firstDay].
+    EventEdit tokyo(Recurrence repeat, DateTime firstDay) {
+      final start = instantIn(DateTime(2026, 11, 18, 0, 30), 'Asia/Tokyo');
+      return EventEdit(
+        event: CalendarEvent(
+          id: 'occurrence-9',
+          accountId: 'acct-ms',
+          title: 'Tokyo sync',
+          start: start,
+          end: start.add(const Duration(hours: 1)),
+          isOrganizer: true,
+          response: EventResponse.organizer,
+          seriesId: 'series-1',
+          timeZone: 'Asia/Tokyo',
+          attendees: const [
+            EventAttendee(MailAddress(email: 'dana@example.com')),
+          ],
+        ),
+        notes: EventNotes(
+          text: '',
+          repeat: SeriesRepeat(repeat: repeat, firstDay: firstDay),
+        ),
+        wholeSeries: true,
+      );
+    }
+
+    /// The start set an hour earlier on the phone's clock, through the
+    /// time picker typed into: 23:30 on Tuesday, on Tokyo's clock.
+    Future<void> anHourEarlier(WidgetTester tester, DateTime start) async {
+      final at = start.subtract(const Duration(hours: 1));
+      await tester.tap(find.byKey(const ValueKey('start-time')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Switch to text input mode'));
+      await tester.pumpAndSettle();
+      final fields = find.descendant(
+          of: find.byType(TimePickerDialog), matching: find.byType(TextField));
+      await tester.enterText(fields.at(0), '${at.hour}'.padLeft(2, '0'));
+      await tester.enterText(fields.at(1), '${at.minute}'.padLeft(2, '0'));
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets("a series set in another zone says its own clock beside the "
+        'phone\'s', (tester) async {
+      final edit = tokyo(const Recurrence(RepeatKind.weekly, days: {3}),
+          DateTime(2026, 9, 2));
+      await pumpScreen(tester, edit);
+      final start = edit.event.start;
+      final there = wallClockIn(start, 'Asia/Tokyo');
+      final line = find.byKey(const ValueKey('meeting-series-time'));
+      if (there.hour == start.hour && there.day == start.day) {
+        // This PC keeps Tokyo's time: there is nothing to tell apart.
+        expect(line, findsNothing);
+        return;
+      }
+      expect(line, findsOneWidget);
+      final words = tester.widget<Text>(line).data!;
+      expect(words, startsWith('Tokyo time: '));
+      expect(words, contains(formatClock(there, use24h: false)));
+      expect(words, contains('Yours: ${formatClock(start, use24h: false)}'));
+    });
+
+    testWidgets('a time that falls on another day on a monthly series\' own '
+        'clock is refused before Save, with nothing sent', (tester) async {
+      final edit = tokyo(const Recurrence(RepeatKind.monthlyOnDate),
+          DateTime(2026, 9, 18));
+      await pumpScreen(tester, edit, use24h: true);
+      await anHourEarlier(tester, edit.event.start);
+      await tester.tap(find.byTooltip('Save'));
+      await tester.pumpAndSettle();
+      expect(
+          find.textContaining('falls on another day on the series\' own '
+              'clock'),
+          findsOneWidget);
+      expect(engine.calendarActions, isEmpty);
+      expect(find.byType(NewMeetingScreen), findsOneWidget);
+    });
+
+    testWidgets('on a weekly series it is saved, its days handed on to move '
+        'with it', (tester) async {
+      final edit = tokyo(const Recurrence(RepeatKind.weekly, days: {3}),
+          DateTime(2026, 9, 2));
+      await pumpScreen(tester, edit, use24h: true);
+      await anHourEarlier(tester, edit.event.start);
+      await tester.tap(find.byTooltip('Save'));
+      await tester.pumpAndSettle();
+      expect(engine.calendarActions.single, contains('repeat='));
+      expect(engine.calendarActions.single, contains('series'));
     });
 
     testWidgets('one meeting of a series cannot be made to repeat on its own',

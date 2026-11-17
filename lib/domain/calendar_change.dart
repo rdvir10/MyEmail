@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'calendar_event.dart';
 import 'calendar_invite.dart' show InviteResponse;
+import 'error_report.dart' show ReadableError;
 import 'mail_message.dart' show MailAddress;
 import 'meeting.dart' show Reminder;
 import 'recurrence.dart';
@@ -110,6 +111,7 @@ class EventChange {
     DateTime? end,
     bool? allDay,
     String? timeZone,
+    Recurrence? repeat,
   }) =>
       EventChange(
         title: title,
@@ -125,7 +127,7 @@ class EventChange {
         reminder: reminder,
         showAs: showAs,
         isPrivate: isPrivate,
-        repeat: repeat,
+        repeat: repeat ?? this.repeat,
       );
 
   /// What changes between [before] and the screen's [title], [start] and
@@ -276,13 +278,22 @@ typedef SeriesTimes = ({DateTime start, DateTime end, bool allDay});
 /// is the moment picked, on the meeting opened, read on the series' clock
 /// (03:00 in New York on 17 November is 10:00 in Jerusalem, every week).
 /// Where the zone is not known, the phone's, as it always was.
+///
+/// A time picked that falls on another day on the series' clock than the
+/// meeting [opened] did (Tuesday 23:00 in Jerusalem is 16:00 in New York;
+/// 18:00 there is Wednesday 01:00 in Jerusalem) moves the day with it: the
+/// series' first day, and a week's days, one on or back, so the meetings
+/// stay on the day Ron sees them. That needs the series' repeat, which
+/// Edit hands on in [change]; a series that repeats by its dates (monthly,
+/// yearly), or whose repeat is not known, is refused ([SeriesDayMoved]).
 EventChange forSeries(
   EventChange change,
   SeriesTimes series, {
   String? zone,
   int weekStart = DateTime.sunday,
+  DateTime? opened,
 }) {
-  final repeat = change.repeat;
+  var repeat = change.repeat;
   if (!change.movesIt && repeat == null) return change;
   final timed = !(change.allDay ?? series.allDay);
   if (zone != null && timed) {
@@ -297,7 +308,16 @@ EventChange forSeries(
         : series.allDay
             ? const Duration(hours: 1)
             : series.end.difference(series.start);
-    final firstDay = DateTime(own.year, own.month, own.day);
+    final shift = change.movesIt && opened != null
+        ? dayShiftOn(zone, opened, change.start!)
+        : 0;
+    if (shift != 0) {
+      final moved =
+          repeat == null ? null : shiftedRepeat(repeat, shift, own);
+      if (moved == null) throw SeriesDayMoved(zone);
+      repeat = moved;
+    }
+    final firstDay = DateTime(own.year, own.month, own.day + shift);
     final day = repeat == null
         ? firstDay
         : firstDayOf(repeat, firstDay, weekStart: weekStart);
@@ -306,7 +326,8 @@ EventChange forSeries(
       start: from,
       end: _wallPlus(from, length),
       allDay: false,
-      timeZone: zone,
+      timeZone: writtenZone(zone),
+      repeat: repeat,
     );
   }
   final first = series.allDay
@@ -331,7 +352,7 @@ EventChange forSeries(
       end: DateTime(day.year, day.month, day.day + (days < 1 ? 1 : days)),
       allDay: allDay,
       // Dates, which no zone moves; named as the series' own where known.
-      timeZone: zone,
+      timeZone: zone == null ? null : writtenZone(zone),
     );
   }
   final from =
@@ -341,6 +362,82 @@ EventChange forSeries(
     end: from.add(end.difference(start)),
     allDay: allDay,
   );
+}
+
+/// [zone] as a calendar is sent it: UTC as "UTC", which both Graph and
+/// Google take (the app has always sent it so where the phone named no
+/// zone), rather than the database's own Etc/UTC.
+String writtenZone(String zone) =>
+    zone == 'Etc/UTC' || zone == 'Etc/UCT' || zone == 'UCT' ? 'UTC' : zone;
+
+/// How many days [picked], a time picked on the phone's clock for the
+/// meeting at [opened], moves that meeting on [zone]'s clock: one back,
+/// none, or one on, as midnight there falls between them.
+int dayShiftOn(String zone, DateTime opened, DateTime picked) {
+  final a = wallClockIn(opened, zone), b = wallClockIn(picked, zone);
+  return DateTime.utc(b.year, b.month, b.day)
+      .difference(DateTime.utc(a.year, a.month, a.day))
+      .inDays;
+}
+
+/// [repeat], of a series whose first meeting is on [first], with its days
+/// moved [days] on (or back): a week's days, and its last day. Null for
+/// one that repeats by its dates, monthly or yearly, where a day on would
+/// be another date of the month.
+Recurrence? shiftedRepeat(Recurrence repeat, int days, DateTime first) {
+  if (days == 0) return repeat;
+  int move(int weekday) => (weekday - 1 + days) % 7 + 1;
+  final until = repeat.until;
+  final last = until == null
+      ? null
+      : DateTime(until.year, until.month, until.day + days);
+  return switch (repeat.kind) {
+    RepeatKind.daily => Recurrence(RepeatKind.daily,
+        interval: repeat.interval, until: last, count: repeat.count),
+    RepeatKind.weekly || RepeatKind.workDays => Recurrence(repeat.kind,
+        interval: repeat.interval,
+        days: {for (final d in repeat.daysFrom(first)) move(d)},
+        until: last,
+        count: repeat.count),
+    _ => null,
+  };
+}
+
+/// What stops a time picked for every meeting of a series being saved, in
+/// a sentence, or null: it falls on another day on the series' own clock
+/// ([zone]'s) than the meeting [opened] did, and [repeat], the series',
+/// cannot move with it (see [forSeries]).
+String? seriesTimeProblem({
+  required String zone,
+  required DateTime opened,
+  required DateTime picked,
+  required Recurrence? repeat,
+}) {
+  final shift = dayShiftOn(zone, opened, picked);
+  if (shift == 0) return null;
+  if (repeat != null && shiftedRepeat(repeat, shift, opened) != null) {
+    return null;
+  }
+  return SeriesDayMoved(zone).message;
+}
+
+/// A time picked for every meeting of a series that falls on another day
+/// on the series' own clock, where the series repeats by its dates or its
+/// repeat is not known: refused, with what to do instead.
+class SeriesDayMoved implements Exception, ReadableError {
+  const SeriesDayMoved(this.zone);
+
+  /// The series' zone, by its IANA name.
+  final String zone;
+
+  @override
+  String get message =>
+      'The time you picked falls on another day on the series\' own clock '
+      '(${placeOf(zone)} time). Pick a time that does not, or change one '
+      'meeting.';
+
+  @override
+  String toString() => message;
 }
 
 /// [wall], a wall clock, [length] on, as a wall clock: worked out in UTC,
@@ -361,14 +458,16 @@ EventChange inOwnZone(
   CalendarEvent before,
   String zone,
 ) {
-  if (change.allDay ?? before.allDay) return change.copyWith(timeZone: zone);
+  if (change.allDay ?? before.allDay) {
+    return change.copyWith(timeZone: writtenZone(zone));
+  }
   final start = change.start ?? before.start;
   final end = change.end ?? before.end;
   return change.copyWith(
     start: wallClockIn(start, zone),
     end: wallClockIn(end, zone),
     allDay: false,
-    timeZone: zone,
+    timeZone: writtenZone(zone),
   );
 }
 
@@ -417,3 +516,4 @@ List<MailAddress> notAnswered(CalendarEvent event, String ownEmail) {
         a.address,
   ];
 }
+
