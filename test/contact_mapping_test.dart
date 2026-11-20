@@ -27,6 +27,21 @@ void main() {
   };
 
   final norm = ContactNormaliser(region: 'US');
+  GooglePersonUpdate rebuild(
+    Map<String, Object?> person,
+    SyncedContact target,
+    Set<ContactField> fields, {
+    Map<ContactField, Map<String, String>> replaced = const {},
+    ContactNormaliser? normaliser,
+    SyncedContact? seen,
+  }) => googlePersonUpdate(
+    person,
+    target,
+    fields,
+    replaced: replaced,
+    normaliser: normaliser ?? norm,
+    seen: seen,
+  );
 
   group('reading a Gmail contact', () {
     final person = <String, Object?>{
@@ -315,6 +330,51 @@ void main() {
       expect(d.name, ContactName.of(display: 'The Plumber'));
     });
 
+    test('a display name that is an email or the company is no name', () {
+      final byEmail = syncedFromGraph({
+        'displayName': 'Ann@X.example',
+        'emailAddresses': [
+          {'address': 'ann@x.example'},
+        ],
+      });
+      expect(byEmail.name, isNull);
+      final byCompany = syncedFromGraph({
+        'displayName': 'HADCO',
+        'companyName': 'Hadco',
+      });
+      expect(byCompany.name, isNull);
+      final google = syncedFromPerson({
+        'names': [
+          contact({'displayName': 'ann@x.example'}),
+        ],
+        'emailAddresses': [
+          contact({'value': 'ann@x.example'}),
+        ],
+      });
+      expect(google.name, isNull);
+    });
+
+    test('a removed or sparse delta item says so', () {
+      final removed = GraphContact.fromJson({
+        'id': 'AAMk1=',
+        '@removed': {'reason': 'deleted'},
+      });
+      expect(removed.removed, isTrue);
+      final sparse = GraphContact.fromJson({
+        'id': 'AAMk1=',
+        'givenName': 'Ann',
+      });
+      expect(sparse.readWhole, isFalse);
+      expect(sparse.missing, contains('surname'));
+      expect(sparse.missing, contains('emailAddresses'));
+      final whole = GraphContact.fromJson({
+        'id': 'AAMk1=',
+        for (final p in graphSyncedProperties) p: null,
+      });
+      expect(whole.readWhole, isTrue);
+      expect(whole.removed, isFalse);
+    });
+
     test('birthdays from midnight UTC, 11:59 UTC and local midnights', () {
       const day = ContactBirthday(year: 1990, month: 5, day: 5);
       expect(birthdayFromGraph('1990-05-05T00:00:00Z'), day);
@@ -433,7 +493,7 @@ void main() {
         'a4@x.example',
         'new@x.example',
       ]);
-      final update = googlePersonUpdate(person, target, {ContactField.emails});
+      final update = rebuild(person, target, {ContactField.emails});
       expect(update.updatePersonFields, ['emailAddresses']);
       expect(update.person['etag'], 'etag-1');
       expect(update.person['names'], person['names'], reason: 'untouched');
@@ -451,7 +511,7 @@ void main() {
         'a3@x.example',
         'a4@x.example',
       ]);
-      final update = googlePersonUpdate(
+      final update = rebuild(
         person,
         target,
         {ContactField.emails},
@@ -477,7 +537,7 @@ void main() {
         'a3@x.example',
         'a4@x.example',
       ]);
-      final emails = (googlePersonUpdate(
+      final emails = (rebuild(
         person,
         target,
         {ContactField.emails},
@@ -489,12 +549,61 @@ void main() {
       ]);
     });
 
+    test('a value added since the plan read Gmail survives the write', () {
+      // The plan read e1-e3 and adds e5 from Outlook; meanwhile Ron added
+      // e4 in Gmail, which the fresh Person has.
+      final fresh = {
+        'emailAddresses': [
+          for (final e in ['e1@x', 'e2@x', 'e3@x', 'e4@x'])
+            contact({'value': e}),
+        ],
+      };
+      final seen = SyncedContact({
+        ContactField.emails: ['e1@x', 'e2@x', 'e3@x'],
+      });
+      final target = seen.withValue(ContactField.emails, [
+        'e1@x',
+        'e2@x',
+        'e3@x',
+        'e5@x',
+      ]);
+      final emails = (rebuild(
+        fresh,
+        target,
+        {ContactField.emails},
+        seen: seen,
+      ).person['emailAddresses'] as List).map((e) => (e as Map)['value']);
+      expect(emails, ['e1@x', 'e2@x', 'e3@x', 'e4@x', 'e5@x']);
+      // A value the plan saw and dropped still goes.
+      final dropped = (rebuild(
+        fresh,
+        seen.withValue(ContactField.emails, ['e1@x', 'e3@x']),
+        {ContactField.emails},
+        seen: seen,
+      ).person['emailAddresses'] as List).map((e) => (e as Map)['value']);
+      expect(dropped, ['e1@x', 'e3@x', 'e4@x']);
+    });
+
+    test('a phone with no digits is never removed', () {
+      final phones = (rebuild(
+        {
+          'phoneNumbers': [
+            contact({'value': 'ask reception', 'type': 'home'}),
+            contact({'value': '555 0102', 'type': 'home'}),
+          ],
+        },
+        SyncedContact({ContactField.homePhones: ['555 0102']}),
+        {ContactField.homePhones},
+      ).person['phoneNumbers'] as List).map((e) => (e as Map)['value']);
+      expect(phones, ['ask reception', '555 0102']);
+    });
+
     test('phones: other types stay where they are', () {
       final person = base();
       final target = syncedFromPerson(person)
           .withValue(ContactField.homePhones, ['555 0102', '555 0199'])
           .withValue(ContactField.mobile, '555 0300');
-      final update = googlePersonUpdate(
+      final update = rebuild(
         person,
         target,
         {ContactField.homePhones, ContactField.mobile},
@@ -515,7 +624,7 @@ void main() {
       final target = SyncedContact({
         ContactField.name: ContactName.of(given: 'Ann', family: 'Smith'),
       });
-      final names = (googlePersonUpdate(
+      final names = (rebuild(
         person,
         target,
         {ContactField.name},
@@ -527,7 +636,7 @@ void main() {
     });
 
     test('a name with no parts is written as the unstructured name', () {
-      final names = (googlePersonUpdate(
+      final names = (rebuild(
         base(),
         SyncedContact({
           ContactField.name: ContactName.of(display: 'The Plumber'),
@@ -548,7 +657,7 @@ void main() {
         ),
       });
       final address =
-          ((googlePersonUpdate(person, target, {ContactField.homeAddress})
+          ((rebuild(person, target, {ContactField.homeAddress})
                       .person['addresses']
                   as List)
               .single as Map);
@@ -569,7 +678,7 @@ void main() {
         ),
       });
       final address =
-          ((googlePersonUpdate(person, target, {ContactField.homeAddress})
+          ((rebuild(person, target, {ContactField.homeAddress})
                       .person['addresses']
                   as List)
               .single as Map);
@@ -585,7 +694,7 @@ void main() {
         ),
       });
       final plain =
-          ((googlePersonUpdate(person, single, {ContactField.homeAddress})
+          ((rebuild(person, single, {ContactField.homeAddress})
                       .person['addresses']
                   as List)
               .single as Map);
@@ -594,7 +703,7 @@ void main() {
     });
 
     test('notes are written as plain text', () {
-      final bios = (googlePersonUpdate(
+      final bios = (rebuild(
         base(),
         SyncedContact({ContactField.notes: const ContactNotes('New\r\nnote')}),
         {ContactField.notes},
@@ -604,7 +713,7 @@ void main() {
     });
 
     test('Outlook\'s year is added to a year-less birthday', () {
-      final bdays = (googlePersonUpdate(
+      final bdays = (rebuild(
         base(),
         SyncedContact({
           ContactField.birthday: const ContactBirthday(
@@ -619,7 +728,7 @@ void main() {
     });
 
     test('a birthday without a year is never written, and never clears', () {
-      final bdays = (googlePersonUpdate(
+      final bdays = (rebuild(
         base(),
         SyncedContact({
           ContactField.birthday: const ContactBirthday(month: 1, day: 2),
@@ -631,7 +740,7 @@ void main() {
 
     test('an organisation keeps what Outlook cannot hold', () {
       final person = base();
-      final update = googlePersonUpdate(
+      final update = rebuild(
         person,
         SyncedContact({ContactField.department: 'Ops'}),
         {ContactField.company, ContactField.jobTitle, ContactField.department},
@@ -642,7 +751,7 @@ void main() {
       expect(org['department'], 'Ops');
       expect(org['startDate'], {'year': 2020});
 
-      final emptied = googlePersonUpdate(
+      final emptied = rebuild(
         {
           'organizations': [
             contact({'name': 'Hadco'}),
@@ -655,7 +764,7 @@ void main() {
     });
 
     test('a nickname with no type is the one changed', () {
-      final nicks = (googlePersonUpdate(
+      final nicks = (rebuild(
         base(),
         SyncedContact({ContactField.nickname: 'Nan'}),
         {ContactField.nickname},
@@ -664,7 +773,7 @@ void main() {
     });
 
     test('a web page from Outlook joins as work, or keeps the type', () {
-      final urls = (googlePersonUpdate(
+      final urls = (rebuild(
         base(),
         SyncedContact({ContactField.webPage: 'https://new.example'}),
         {ContactField.webPage},
@@ -672,7 +781,7 @@ void main() {
       expect(urls.single['value'], 'https://new.example');
       expect(urls.single['type'], 'blog');
 
-      final added = (googlePersonUpdate(
+      final added = (rebuild(
         {'resourceName': 'people/c2'},
         SyncedContact({ContactField.webPage: 'https://new.example'}),
         {ContactField.webPage},
@@ -681,7 +790,7 @@ void main() {
     });
 
     test('several details of one Person field are one field to name', () {
-      final update = googlePersonUpdate(
+      final update = rebuild(
         base(),
         SyncedContact({
           ContactField.spouse: 'Bob',
@@ -699,7 +808,7 @@ void main() {
       ]);
     });
 
-    test('a create carries the tag and goes into My Contacts', () {
+    test('a create goes into My Contacts, its tag left to the client', () {
       final body = googleCreateBody(
         SyncedContact({
           ContactField.name: ContactName.of(given: 'Ann', family: 'Cole'),
@@ -710,11 +819,8 @@ void main() {
           ContactField.jobTitle: 'Lead',
           ContactField.notes: const ContactNotes('Hi'),
         }),
-        tag: 'AAMk1=',
       );
-      expect(body['clientData'], [
-        {'key': googleLinkKey, 'value': 'AAMk1='},
-      ]);
+      expect(body.containsKey('clientData'), isFalse);
       expect(body['memberships'], [
         {
           'contactGroupMembership': {
@@ -787,7 +893,6 @@ void main() {
           ],
         },
         labelsThatExist: {'contactGroups/friends'},
-        tag: 'new-partner',
       );
       expect(body['events'], [
         {
@@ -809,8 +914,7 @@ void main() {
       );
       expect(body['clientData'], [
         {'key': 'other.app', 'value': 'kept'},
-        {'key': googleLinkKey, 'value': 'new-partner'},
-      ]);
+      ], reason: 'the old tag goes; the client adds the new one');
       final name = (body['names'] as List).single as Map;
       expect(name.containsKey('displayName'), isFalse);
       expect(name.containsKey('metadata'), isFalse);
@@ -966,7 +1070,7 @@ void main() {
       expect(body.containsKey('birthday'), isFalse);
     });
 
-    test('a create carries the tag and a composed display name', () {
+    test('a create has a composed display name and no tag', () {
       final body = graphCreateBody(
         SyncedContact({
           ContactField.name: ContactName.of(
@@ -988,16 +1092,8 @@ void main() {
           ),
           ContactField.homeAddress: ContactAddress.of(city: 'Leeds'),
         }),
-        tag: 'people/c1',
       );
-      expect(body['singleValueExtendedProperties'], [
-        {
-          'id':
-              'String {5c4fe138-bb06-4b4c-a644-962bf97c63ee} '
-              'Name MyEmailLink',
-          'value': 'people/c1',
-        },
-      ]);
+      expect(body.containsKey('singleValueExtendedProperties'), isFalse);
       expect(body['displayName'], 'Ann B Cole');
       expect((body['emailAddresses'] as List), hasLength(3));
       expect(body['imAddresses'], ['1', '2', '3']);
@@ -1024,6 +1120,18 @@ void main() {
       });
     });
 
+    test('the two extended properties, by batch C\'s one GUID', () {
+      expect(
+        graphLinkPropertyId,
+        'String {958f81ac-dee9-4f9e-a713-9043484f5b0f} Name MyEmailLink',
+      );
+      expect(
+        graphDevicePropertyId,
+        'String {958f81ac-dee9-4f9e-a713-9043484f5b0f} Name MyEmailSyncDevice',
+      );
+      expect(googleLinkKey, 'myemail.link');
+    });
+
     test('a Restore brings back every writable property', () {
       final body = graphRestoreBody(
         {
@@ -1034,15 +1142,16 @@ void main() {
           'fileAs': 'Cole, Ann',
           'profession': 'Vet',
           'parentFolderId': 'f',
+          'singleValueExtendedProperties': [
+            {'id': graphLinkPropertyId, 'value': 'old'},
+          ],
         },
-        tag: 'people/c1',
       );
       expect(body.keys, unorderedEquals([
         'displayName',
         'categories',
         'fileAs',
         'profession',
-        'singleValueExtendedProperties',
       ]));
     });
   });
@@ -1236,6 +1345,20 @@ void main() {
       );
     });
 
+    test('a region is required, and an unknown one refused', () {
+      expect(() => ContactNormaliser(region: 'ZZ'), throwsArgumentError);
+      expect(ContactNormaliser.isRegion('us'), isTrue);
+      expect(ContactNormaliser.isRegion('Narnia'), isFalse);
+    });
+
+    test('a year written over the same day without one is a change', () {
+      const yearless = ContactBirthday(month: 7, day: 4);
+      const full = ContactBirthday(year: 1980, month: 7, day: 4);
+      expect(norm.equivalent(ContactField.birthday, full, yearless), isFalse);
+      expect(norm.equivalent(ContactField.birthday, yearless, full), isTrue);
+      expect(norm.equivalent(ContactField.birthday, full, full), isTrue);
+    });
+
     test('family names agree when equal, or when one side has none', () {
       expect(
         ContactNormaliser.namesAgree(
@@ -1259,6 +1382,20 @@ void main() {
         isFalse,
       );
     });
+  });
+
+  test('no value shows in a toString, for the logs', () {
+    final printed = [
+      ContactName.of(given: 'Zebedee', family: 'Quorn'),
+      ContactName.of(display: 'Zebedee Quorn'),
+      ContactAddress.of(street: '9 Quorn Lane', city: 'Zebton'),
+      const ContactBirthday(year: 1977, month: 11, day: 23),
+      const ContactNotes('Zebedee'),
+      SyncedContact({ContactField.mobile: '555 0199'}),
+    ].map((v) => v.toString()).join(' ');
+    for (final secret in ['Zebedee', 'Quorn', 'Zebton', '1977', '23', '0199']) {
+      expect(printed, isNot(contains(secret)));
+    }
   });
 
   test('a base round-trips through JSON', () {

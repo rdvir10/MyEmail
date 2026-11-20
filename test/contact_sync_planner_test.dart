@@ -328,10 +328,10 @@ void main() {
       final plan = run(google: [g('people/c1', ann)]);
       final copy = byGoogle(plan, 'people/c1')!;
       expect(copy.create!.side, ContactSide.graph);
-      expect(copy.create!.tag, 'people/c1');
+      expect(copy.create!.tag, 'people/c1', reason: 'for the wire client');
       expect(
-        (copy.create!.body['singleValueExtendedProperties'] as List).single,
-        {'id': graphLinkPropertyId, 'value': 'people/c1'},
+        copy.create!.body.containsKey('singleValueExtendedProperties'),
+        isFalse,
       );
       expect(copy.googleBase, ann, reason: 'the source taken in');
       expect(plan.counts.addToGraph, 1);
@@ -481,10 +481,10 @@ void main() {
       expect(pair.googleWrite, isNull);
       expect(pair.graphWrite!.fields, {ContactField.jobTitle});
       expect(pair.graphWrite!.target.text(ContactField.jobTitle), 'Director');
-      expect(pair.graphPatchFor({'displayName': 'Ann Cole'}), {
-        'jobTitle': 'Director',
-        'displayName': 'Ann Cole',
-      });
+      expect(
+        pair.graphPatchFor({'displayName': 'Ann Cole', 'changeKey': 'key-H1'}),
+        {'jobTitle': 'Director', 'displayName': 'Ann Cole'},
+      );
       expect(pair.removes, isTrue, reason: 'a detail replaced');
       expect(pair.googleEtag, 'etag-2');
       // Until the write is answered, Gmail's base for the job title stays
@@ -692,6 +692,57 @@ void main() {
       final both = pair.basesAfter(googleAnswer: merged, graphAnswer: merged);
       expect(both.google.list(ContactField.emails), hasLength(3));
       expect(both.graph.list(ContactField.emails), hasLength(3));
+    });
+
+    test('a write is built only on the version the plan read', () {
+      // The feed did not bring the Gmail side: the plan is made from the
+      // base, so from the row's etag.
+      final plan = run(
+        graph: [
+          h('H1', base.withValue(ContactField.emails, [
+            'ann@x.example',
+            'e5@x',
+          ]), key: 'key-2'),
+        ],
+        links: [link(1, 'people/c1', 'H1', base: base, etag: 'etag-1')],
+      );
+      final write = byLink(plan, 1)!.googleWrite!;
+      expect(write.version, 'etag-1');
+      Map<String, Object?> person(String etag) => {
+        'resourceName': 'people/c1',
+        'etag': etag,
+        'emailAddresses': [
+          {'value': 'ann@x.example'},
+          {'value': 'e4@x'},
+        ],
+      };
+      expect(
+        () => write.googleUpdate(person('etag-9'), normaliser: norm),
+        throwsA(isA<ContactReadStale>()),
+      );
+      final update = write.googleUpdate(person('etag-1'), normaliser: norm);
+      expect(
+        (update.person['emailAddresses'] as List).map(
+          (e) => (e as Map)['value'],
+        ),
+        ['ann@x.example', 'e4@x', 'e5@x'],
+        reason: 'a value the plan never saw survives',
+      );
+      final graph = byLink(
+        run(
+          google: [g('people/c1', base.withValue(ContactField.office, 'B2'))],
+          links: [link(1, 'people/c1', 'H1', base: base, key: 'key-1')],
+        ),
+        1,
+      )!.graphWrite!;
+      expect(
+        () => graph.graphPatch({'changeKey': 'key-2'}),
+        throwsA(isA<ContactReadStale>()),
+      );
+      expect(
+        graph.graphPatch({'changeKey': 'key-1'}),
+        contains('officeLocation'),
+      );
     });
 
     test('a pair neither feed mentions is left alone', () {

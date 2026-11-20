@@ -271,7 +271,7 @@ class ContactSyncInput {
     this.answers = const [],
     this.expectedGoogle,
     this.expectedGraph,
-    this.phoneRegion,
+    required this.phoneRegion,
     required this.now,
   });
 
@@ -316,14 +316,30 @@ class ContactSyncInput {
   final int? expectedGoogle;
   final int? expectedGraph;
 
-  /// The pair's phone region, an ISO code.
-  final String? phoneRegion;
+  /// The pair's phone region, an ISO code such as `US`: the phone's
+  /// country when the first sync started, stored on the pair. Required:
+  /// without it "+1 212 …" and "212 …" are not the same number. An
+  /// unknown code is an [ArgumentError] (`ContactNormaliser.isRegion`).
+  final String phoneRegion;
 
   final DateTime now;
 }
 
 // ---------------------------------------------------------------------------
 // Output.
+
+/// The contact changed after the plan read it: its etag or `changeKey`
+/// is no longer the one the plan was made from. Nothing was built. The
+/// runner plans that pair again ([planPairedContact]) from what it has
+/// just read, and writes that instead.
+class ContactReadStale implements Exception {
+  const ContactReadStale(this.side);
+
+  final ContactSide side;
+
+  @override
+  String toString() => 'ContactReadStale(${side.name})';
+}
 
 /// A write of some details into one side of a pair.
 @immutable
@@ -333,6 +349,8 @@ class ContactWrite {
     required this.fields,
     required this.target,
     this.replaced = const {},
+    this.version,
+    this.seen,
   });
 
   /// The side written.
@@ -345,25 +363,50 @@ class ContactWrite {
   /// Gmail list values Outlook replaced in a slot: see [googlePersonUpdate].
   final Map<ContactField, Map<String, String>> replaced;
 
-  /// The `updateContact` request, from the Person as last read.
+  /// The side's etag or `changeKey` the plan was made from: the listed
+  /// one, or the row's when the feed did not bring the contact. Null when
+  /// none is known, and then not checked.
+  final String? version;
+
+  /// The side's details the plan was made from.
+  final SyncedContact? seen;
+
+  /// The `updateContact` request, from the Person just read. Throws
+  /// [ContactReadStale] when its etag is not [version]: a Person changed
+  /// since the plan read it would otherwise be written over with Google's
+  /// blessing, its etag matching. List values the plan never saw survive
+  /// even so (see [googlePersonUpdate]).
   GooglePersonUpdate googleUpdate(
     Map<String, Object?> person, {
-    ContactNormaliser? normaliser,
-  }) => googlePersonUpdate(
-    person,
-    target,
-    fields,
-    replaced: replaced,
-    normaliser: normaliser,
-  );
+    required ContactNormaliser normaliser,
+  }) {
+    if (version != null && person['etag'] != version) {
+      throw ContactReadStale(side);
+    }
+    return googlePersonUpdate(
+      person,
+      target,
+      fields,
+      replaced: replaced,
+      normaliser: normaliser,
+      seen: seen,
+    );
+  }
 
-  /// The `PATCH` body, from the contact as read just before it.
-  Map<String, Object?> graphPatch(Map<String, Object?> current) =>
-      graphContactPatch(current, target, fields);
+  /// The `PATCH` body, from the contact as read just before it (Graph has
+  /// no conditional `PATCH` for contacts). Throws [ContactReadStale] when
+  /// its `changeKey` is not [version].
+  Map<String, Object?> graphPatch(Map<String, Object?> current) {
+    if (version != null && current['changeKey'] != version) {
+      throw ContactReadStale(side);
+    }
+    return graphContactPatch(current, target, fields);
+  }
 }
 
 /// A contact copied to the other side. The new contact carries the
-/// hidden tag naming its source.
+/// hidden tag naming its source: the wire client writes [tag], given it
+/// beside [body].
 @immutable
 class ContactCreate {
   const ContactCreate({
@@ -383,8 +426,8 @@ class ContactCreate {
   String get tag => sourceId;
 
   Map<String, Object?> get body => side == ContactSide.google
-      ? googleCreateBody(details, tag: tag)
-      : graphCreateBody(details, tag: tag);
+      ? googleCreateBody(details)
+      : graphCreateBody(details);
 }
 
 /// Why a contact is deleted.
@@ -997,11 +1040,17 @@ class ContactPairPlan {
     required this.graphTarget,
     required this.googleBase,
     required this.graphBase,
+    required this.googleSeen,
+    required this.graphSeen,
     this.googleReplaced = const {},
     this.differing = const [],
     this.clashes = const [],
     this.removes = false,
   });
+
+  /// Each side's details as compared: what the writes are built on.
+  final SyncedContact googleSeen;
+  final SyncedContact graphSeen;
 
   final Set<ContactField> toGoogle;
   final Set<ContactField> toGraph;
@@ -1023,21 +1072,29 @@ class ContactPairPlan {
 
   bool get writes => toGoogle.isNotEmpty || toGraph.isNotEmpty;
 
-  ContactWrite? get googleWrite => toGoogle.isEmpty
+  /// The write into Gmail, if any, built only on [version]: the etag of
+  /// the Person compared (see [ContactWrite.googleUpdate]).
+  ContactWrite? googleWrite({String? version}) => toGoogle.isEmpty
       ? null
       : ContactWrite(
           side: ContactSide.google,
           fields: toGoogle,
           target: googleTarget,
           replaced: googleReplaced,
+          version: version,
+          seen: googleSeen,
         );
 
-  ContactWrite? get graphWrite => toGraph.isEmpty
+  /// The write into Outlook, if any, built only on [version]: the
+  /// `changeKey` of the contact compared.
+  ContactWrite? graphWrite({String? version}) => toGraph.isEmpty
       ? null
       : ContactWrite(
           side: ContactSide.graph,
           fields: toGraph,
           target: graphTarget,
+          version: version,
+          seen: graphSeen,
         );
 }
 
@@ -1248,6 +1305,8 @@ ContactPairPlan planPairedContact({
     graphTarget: hTarget,
     googleBase: gTaken,
     graphBase: hTaken,
+    googleSeen: googleNow,
+    graphSeen: graphNow,
     googleReplaced: replaced,
     differing: differing,
     clashes: clashes,
@@ -2163,19 +2222,21 @@ class _Planner {
       useValues: useValues,
     );
     final title = googleNow.title.isNotEmpty ? googleNow.title : graphNow.title;
+    final googleEtag = gc?.etag ?? row.input.googleEtag;
+    final graphChangeKey = hc?.changeKey ?? row.input.graphChangeKey;
     _add(
       ContactLinkPlan(
         linkId: row.id,
         googleName: g,
         graphId: h,
-        googleEtag: gc?.etag ?? row.input.googleEtag,
-        graphChangeKey: hc?.changeKey ?? row.input.graphChangeKey,
+        googleEtag: googleEtag,
+        graphChangeKey: graphChangeKey,
         googleBase: pair.googleBase,
         graphBase: pair.graphBase,
         googleNow: googleNow,
         graphNow: graphNow,
-        googleWrite: pair.googleWrite,
-        graphWrite: pair.graphWrite,
+        googleWrite: pair.googleWrite(version: googleEtag),
+        graphWrite: pair.graphWrite(version: graphChangeKey),
         fromAnswer: fromAnswer,
         removes: pair.removes,
         title: title,
@@ -2247,20 +2308,22 @@ class _Planner {
     _backFromBin(ContactSide.google, g);
     _backFromBin(ContactSide.graph, h);
     final title = googleNow.title.isNotEmpty ? googleNow.title : graphNow.title;
+    final googleEtag = gc?.etag ?? googleRow[g]?.input.googleEtag;
+    final graphChangeKey = hc?.changeKey ?? graphRow[h]?.input.graphChangeKey;
     _add(
       ContactLinkPlan(
         linkId: linkId,
         alsoRemove: alsoRemove,
         googleName: g,
         graphId: h,
-        googleEtag: gc?.etag ?? googleRow[g]?.input.googleEtag,
-        graphChangeKey: hc?.changeKey ?? graphRow[h]?.input.graphChangeKey,
+        googleEtag: googleEtag,
+        graphChangeKey: graphChangeKey,
         googleBase: pair.googleBase,
         graphBase: pair.graphBase,
         googleNow: googleNow,
         graphNow: graphNow,
-        googleWrite: pair.googleWrite,
-        graphWrite: pair.graphWrite,
+        googleWrite: pair.googleWrite(version: googleEtag),
+        graphWrite: pair.graphWrite(version: graphChangeKey),
         newPair: true,
         fromAnswer: fromAnswer,
         title: title,

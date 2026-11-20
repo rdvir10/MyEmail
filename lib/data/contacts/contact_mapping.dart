@@ -37,7 +37,7 @@ const googleLinkKey = 'myemail.link';
 /// Outlook contacts and the Contacts folder. Fixed for ever: each named
 /// property uses up a slot in the mailbox, so the names below never
 /// change either.
-const myEmailPropertySet = '{5c4fe138-bb06-4b4c-a644-962bf97c63ee}';
+const myEmailPropertySet = '{958f81ac-dee9-4f9e-a713-9043484f5b0f}';
 
 /// The hidden tag on an Outlook contact the sync made: the resource name
 /// of the Gmail contact it copies.
@@ -122,10 +122,24 @@ class GraphContact {
     this.folderId,
     this.tag,
     this.json = const {},
+    this.removed = false,
+    this.missing = const {},
   });
 
   /// Its immutable id.
   final String id;
+
+  /// A delta's `@removed` entry: only a reason to look the contact up.
+  final bool removed;
+
+  /// Synced properties ([graphSyncedProperties]) the read left out. A
+  /// delta item can be sparse, and a property it leaves out is not one
+  /// that was cleared: such an item is read whole by id before it is
+  /// used, and the planner passes over any that still lacks one.
+  final Set<String> missing;
+
+  /// Every synced property was in the read.
+  bool get readWhole => missing.isEmpty;
   final String? changeKey;
 
   /// `lastModifiedDateTime`.
@@ -151,8 +165,20 @@ class GraphContact {
     tag: graphTag(json),
     details: syncedFromGraph(json),
     json: json,
+    removed: json.containsKey('@removed'),
+    missing: {
+      for (final p in graphSyncedProperties)
+        if (!json.containsKey(p)) p,
+    },
   );
 }
+
+/// The properties of [graphContactSelect] that hold synced details: a
+/// read that lacks one is not a read of the whole contact.
+final graphSyncedProperties = [
+  'displayName',
+  for (final f in ContactField.values) ...graphProperties(f),
+];
 
 /// The hidden tag in a Person's `clientData`, if it has one.
 String? googleTag(Map<String, Object?> person) => _contactEntries(
@@ -211,9 +237,15 @@ SyncedContact syncedFromPerson(Map<String, Object?> person) {
             suffix: _string(name['honorificSuffix']),
             phoneticGiven: _string(name['phoneticGivenName']),
             phoneticFamily: _string(name['phoneticFamilyName']),
-            display:
-                _string(name['unstructuredName']) ??
-                _string(name['displayName']),
+            display: _ownDisplay(
+              _string(name['unstructuredName']) ??
+                  _string(name['displayName']),
+              [
+                for (final e in _contactEntries(person, 'emailAddresses'))
+                  ?_string(e['value']),
+                ?_string(organization?['name']),
+              ],
+            ),
           ),
     ContactField.nickname: _string(nickname?['value']),
     ContactField.emails: _primaryFirst(
@@ -277,6 +309,10 @@ SyncedContact syncedFromGraph(Map<String, Object?> contact) {
     );
   }
 
+  final emails = [
+    for (final e in _list(contact['emailAddresses']).map(_map))
+      ?_string(e['address']),
+  ];
   return SyncedContact({
     ContactField.name: ContactName.of(
       given: s('givenName'),
@@ -286,13 +322,10 @@ SyncedContact syncedFromGraph(Map<String, Object?> contact) {
       suffix: s('generation'),
       phoneticGiven: s('yomiGivenName'),
       phoneticFamily: s('yomiSurname'),
-      display: s('displayName'),
+      display: _ownDisplay(s('displayName'), [...emails, ?s('companyName')]),
     ),
     ContactField.nickname: s('nickName'),
-    ContactField.emails: [
-      for (final e in _list(contact['emailAddresses']).map(_map))
-        ?_string(e['address']),
-    ],
+    ContactField.emails: emails,
     ContactField.mobile: s('mobilePhone'),
     ContactField.homePhones: strings('homePhones'),
     ContactField.workPhones: strings('businessPhones'),
@@ -314,6 +347,18 @@ SyncedContact syncedFromGraph(Map<String, Object?> contact) {
     ContactField.webPage: s('businessHomePage'),
     ContactField.im: strings('imAddresses'),
   });
+}
+
+/// A display name that is a name: not one of the contact's own emails or
+/// its company, which Outlook (and Google) show when there is no name, and
+/// which would otherwise travel as the other side's name.
+String? _ownDisplay(String? display, List<String> notNames) {
+  final key = ContactNormaliser.textKey(display);
+  if (key == null) return null;
+  for (final other in notNames) {
+    if (ContactNormaliser.textKey(other) == key) return null;
+  }
+  return display;
 }
 
 /// Outlook's birthday as the day it falls on: the UTC date of the value
@@ -522,14 +567,21 @@ String googlePersonField(ContactField field) => switch (field) {
 /// A rewritten name leaves out `unstructuredName` so Google rebuilds it; a
 /// rewritten address leaves out `formattedValue` for the same reason, and
 /// keeps its `poBox`. A rewritten note is plain text.
+///
+/// [seen] is Gmail's side as the plan read it. A list value in [person]
+/// that the plan never saw (neither there nor in [target]) was added
+/// since, and is kept: only values the plan saw are ever removed. The
+/// runner refuses a Person whose etag moved anyway (see
+/// `ContactWrite.googleUpdate`); this is the second line.
 GooglePersonUpdate googlePersonUpdate(
   Map<String, Object?> person,
   SyncedContact target,
   Iterable<ContactField> fields, {
   Map<ContactField, Map<String, String>> replaced = const {},
-  ContactNormaliser? normaliser,
+  required ContactNormaliser normaliser,
+  SyncedContact? seen,
 }) {
-  final norm = normaliser ?? ContactNormaliser();
+  final norm = normaliser;
   final wanted = fields.toSet();
   final personFields = wanted.map(googlePersonField).toSet();
   final rebuilt = <String, Object?>{...person};
@@ -548,6 +600,11 @@ GooglePersonUpdate googlePersonUpdate(
         target[field],
         replaced[field] ?? const {},
         norm,
+        seen: seen == null
+            ? null
+            : {
+                for (final v in seen.list(field)) ?norm.itemKey(field, v),
+              },
       );
     }
     rebuilt[personField] = entries;
@@ -558,10 +615,11 @@ GooglePersonUpdate googlePersonUpdate(
   );
 }
 
-/// A Person for `people.createContact`, carrying [details] and the hidden
-/// tag naming the Outlook contact it copies, in My Contacts.
-Map<String, Object?> googleCreateBody(SyncedContact details, {String? tag}) {
-  final norm = ContactNormaliser();
+/// A Person for `people.createContact`, carrying [details], in My
+/// Contacts. The hidden tag is the wire client's to add (it adds it to
+/// every create, and a batch needs one per contact).
+Map<String, Object?> googleCreateBody(SyncedContact details) {
+  final norm = ContactNormaliser.oneContact();
   final body = <String, Object?>{};
   for (final field in ContactField.values) {
     final value = details[field];
@@ -575,10 +633,6 @@ Map<String, Object?> googleCreateBody(SyncedContact details, {String? tag}) {
   body.removeWhere((_, v) => v is List && v.isEmpty);
   return {
     ...body,
-    if (tag != null)
-      'clientData': [
-        {'key': googleLinkKey, 'value': tag},
-      ],
     'memberships': [
       {
         'contactGroupMembership': {
@@ -601,12 +655,12 @@ const googleWritableFields = [
 /// A Person for `people.createContact` that brings back [person], a full
 /// copy read before the sync deleted it: every field `updateContact`
 /// accepts, and its memberships of labels that still exist
-/// ([labelsThatExist], resource names), with [tag] in place of any old
-/// one. Photos do not come back this way.
+/// ([labelsThatExist], resource names). Other apps' `clientData` is kept;
+/// the old hidden tag is not, since the wire client adds the new one.
+/// Photos do not come back this way.
 Map<String, Object?> googleRestoreBody(
   Map<String, Object?> person, {
   Set<String> labelsThatExist = const {},
-  String? tag,
 }) {
   const outputOnly = {
     'metadata', 'formattedType', 'canonicalForm', 'displayName',
@@ -629,7 +683,6 @@ Map<String, Object?> googleRestoreBody(
   final clientData = [
     for (final e in _contactEntries(person, 'clientData'))
       if (e['key'] != googleLinkKey) clean(e),
-    if (tag != null) {'key': googleLinkKey, 'value': tag},
   ];
   if (clientData.isNotEmpty) body['clientData'] = clientData;
   final labels = <String>{
@@ -653,8 +706,9 @@ List<Map<String, Object?>> _rebuildGoogle(
   List<Map<String, Object?>> entries,
   Object? value,
   Map<String, String> replaced,
-  ContactNormaliser norm,
-) {
+  ContactNormaliser norm, {
+  Set<String>? seen,
+}) {
   switch (field) {
     case ContactField.name:
       return _single(
@@ -679,6 +733,7 @@ List<Map<String, Object?>> _rebuildGoogle(
         replaced,
         (v) => norm.itemKey(field, v),
         (v) => {'value': v, 'type': 'other'},
+        seen: seen,
       );
     case ContactField.mobile:
       return _single(
@@ -699,6 +754,7 @@ List<Map<String, Object?>> _rebuildGoogle(
         (v) => norm.itemKey(field, v),
         (v) => {'value': v, 'type': type},
         rewrite: (entry, v) => {...entry, 'value': v}..remove('canonicalForm'),
+        seen: seen,
       );
     case ContactField.homeAddress ||
         ContactField.workAddress ||
@@ -801,6 +857,7 @@ List<Map<String, Object?>> _rebuildGoogle(
         replaced,
         (v) => norm.itemKey(field, v),
         (v) => {'person': v, 'type': 'child'},
+        seen: seen,
       );
     case ContactField.webPage:
       final chosen = _chosenUrl(entries);
@@ -820,6 +877,7 @@ List<Map<String, Object?>> _rebuildGoogle(
         replaced,
         (v) => norm.itemKey(field, v),
         (v) => {'username': v},
+        seen: seen,
       );
   }
 }
@@ -859,6 +917,7 @@ List<Map<String, Object?>> _rebuildList(
   Map<String, Object?> Function(String value) newEntry, {
   Map<String, Object?> Function(Map<String, Object?> entry, String value)?
   rewrite,
+  Set<String>? seen,
 }) {
   final wanted = {for (final v in target) ?key(v): v};
   final replacedByKey = {
@@ -872,13 +931,21 @@ List<Map<String, Object?>> _rebuildList(
       continue;
     }
     final k = key(_string(entry[valueKey]) ?? '');
-    if (k != null && wanted.containsKey(k)) {
+    // A value with no key (a phone with no digits) cannot be compared, so
+    // it is never removed; nor is one the plan never saw.
+    if (k == null ||
+        (seen != null && !seen.contains(k) && !replacedByKey.containsKey(k))) {
+      result.add(entry);
+      if (k != null) placed.add(k);
+      continue;
+    }
+    if (wanted.containsKey(k)) {
       // Already there, or there twice: either way not Outlook's to remove.
       result.add(entry);
       placed.add(k);
       continue;
     }
-    final replacement = k == null ? null : replacedByKey[k];
+    final replacement = replacedByKey[k];
     final replacementKey = replacement == null ? null : key(replacement);
     if (replacement != null &&
         replacementKey != null &&
@@ -1030,9 +1097,9 @@ Map<String, Object?> graphContactPatch(
   return body;
 }
 
-/// The body of a Graph `POST` making a contact with [details] and the
-/// hidden tag naming the Gmail contact it copies.
-Map<String, Object?> graphCreateBody(SyncedContact details, {String? tag}) {
+/// The body of a Graph `POST` making a contact with [details]. The hidden
+/// tag is the wire client's to add.
+Map<String, Object?> graphCreateBody(SyncedContact details) {
   final body = <String, Object?>{};
   for (final field in ContactField.values) {
     if (details[field] == null) continue;
@@ -1046,11 +1113,6 @@ Map<String, Object?> graphCreateBody(SyncedContact details, {String? tag}) {
   }
   final shown = graphDisplayName(const {}, details.name, nameChanged: true);
   if (shown != null) body['displayName'] = shown;
-  if (tag != null) {
-    body['singleValueExtendedProperties'] = [
-      {'id': graphLinkPropertyId, 'value': tag},
-    ];
-  }
   return body;
 }
 
@@ -1075,19 +1137,12 @@ const graphWritableProperties = [
 ];
 
 /// A Graph `POST` body that brings back [contact], a full copy read
-/// before the sync deleted it: every writable v1.0 property, with [tag]
-/// as its hidden tag. Fax, pager and anniversary do not come back this
-/// way.
-Map<String, Object?> graphRestoreBody(
-  Map<String, Object?> contact, {
-  String? tag,
-}) => {
+/// before the sync deleted it: every writable v1.0 property. The hidden
+/// tag is the wire client's to add. Fax, pager and anniversary do not
+/// come back this way.
+Map<String, Object?> graphRestoreBody(Map<String, Object?> contact) => {
   for (final key in graphWritableProperties)
     if (contact[key] != null) key: contact[key],
-  if (tag != null)
-    'singleValueExtendedProperties': [
-      {'id': graphLinkPropertyId, 'value': tag},
-    ],
 };
 
 /// The display name to send with a `PATCH` or `POST`.

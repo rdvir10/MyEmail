@@ -221,8 +221,10 @@ class ContactName {
     display,
   );
 
+  // Never the values themselves, here or below: logs get no names,
+  // addresses or dates (the plan's Privacy).
   @override
-  String toString() => 'ContactName(${toJson()})';
+  String toString() => 'ContactName(${hasParts ? 'parts' : 'shown'})';
 }
 
 /// A postal address. [street] may run to several lines: to Outlook it is
@@ -314,7 +316,7 @@ class ContactAddress {
   int get hashCode => Object.hash(street, city, region, postalCode, country);
 
   @override
-  String toString() => 'ContactAddress(${toJson()})';
+  String toString() => 'ContactAddress(${toJson().length} parts)';
 }
 
 /// A birthday as the date it falls on. Outlook keeps a time with it,
@@ -367,7 +369,8 @@ class ContactBirthday {
   int get hashCode => Object.hash(year, month, day);
 
   @override
-  String toString() => 'ContactBirthday($shown)';
+  String toString() =>
+      'ContactBirthday(${hasYear ? 'with a year' : 'without a year'})';
 }
 
 /// A contact's notes. Gmail may keep them as HTML ([html]); Outlook's are
@@ -594,14 +597,26 @@ const contactNormaliserVersion = 1;
 /// host lower-cased and no trailing slash. Empty is the same as missing:
 /// every key of an empty value is null.
 class ContactNormaliser {
-  ContactNormaliser({String? region}) : region = _isoCode(region);
+  /// [region] is the pair's phone region, an ISO code such as `US`: the
+  /// phone's country when the first sync started. Without one the parser
+  /// guesses each number's country from its first digits, and "+1 212 …"
+  /// and "212 …" stop being the same number, so it is required; an
+  /// unknown code is an [ArgumentError] (see [isRegion]).
+  ContactNormaliser({required String region})
+    : region = _isoCode(region) ?? (throw ArgumentError.value(region));
 
-  /// The pair's phone region: the phone's country when the first sync
-  /// started. Numbers written without a country code are read as in it.
+  /// For one contact's own lists only, where nothing is compared with the
+  /// other side: a create's lists, de-duplicated. Never for matching or
+  /// for comparing a Gmail value with an Outlook one.
+  ContactNormaliser.oneContact() : region = null;
+
+  /// Numbers written without a country code are read as in it.
   final IsoCode? region;
 
-  static IsoCode? _isoCode(String? region) {
-    if (region == null) return null;
+  /// Whether [code] is a region the parser knows.
+  static bool isRegion(String code) => _isoCode(code) != null;
+
+  static IsoCode? _isoCode(String region) {
     final upper = region.trim().toUpperCase();
     return IsoCode.values.firstWhereOrNull((c) => c.name == upper);
   }
@@ -773,11 +788,18 @@ class ContactNormaliser {
   /// give or take spaces at the ends and runs of spaces, with capitals
   /// counting, so a fix to them is still copied; phones by their E.164
   /// keys, web pages and countries by their keys, notes as text (so an
-  /// HTML note is not replaced by the same words), and a birthday without
-  /// a year as the same day. Lists as in [same].
+  /// HTML note is not replaced by the same words). A birthday with a year
+  /// written over the same day without one is a change, since it adds the
+  /// year; one without a year over the same day with a year is not (it
+  /// never travels anyway). Lists as in [same].
   bool equivalent(ContactField field, Object? a, Object? b) {
     if (a == null || b == null) return a == null && b == null;
     switch (field.kind) {
+      case ContactValueKind.birthday:
+        final x = a as ContactBirthday;
+        final y = b as ContactBirthday;
+        if (x.hasYear && !y.hasYear) return false;
+        return same(field, x, y);
       case ContactValueKind.name:
         final x = a as ContactName;
         final y = b as ContactName;
