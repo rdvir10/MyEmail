@@ -465,6 +465,43 @@ void main() {
 
           expect(await store.links(pair.pairId), [saved.last]);
         });
+
+        test('one whose row has gone is not brought back', () async {
+          // A link read before its delete finished, or before its pair
+          // was dropped, and saved again: it would come back with a new id,
+          // a stray row naming contacts that are gone.
+          final pair = await pairOf();
+          final link =
+              await store.saveLink(paired(pair.pairId, 'people/c1', 'AAMk-1'));
+          final binned = await store.addToBin(ContactBinEntry(
+            pairId: pair.pairId,
+            side: ContactSide.graph,
+            contactId: 'AAMk-1',
+            raw: '{}',
+            title: 'Dana',
+          ));
+          await store.markBinDone(binned.binId!, dropLinkId: link.linkId);
+
+          await expectLater(
+            store.saveLink(link.copyWith(googleEtag: 'later')),
+            throwsStateError,
+          );
+          await expectLater(
+            store.saveLinks([
+              paired(pair.pairId, 'people/c2', 'AAMk-2'),
+              link,
+            ]),
+            throwsStateError,
+          );
+          expect(await store.links(pair.pairId), isEmpty);
+
+          final other = await pairOf(google: 'g-2', googleAddress: 'b@x.com');
+          final kept =
+              await store.saveLink(paired(other.pairId, 'people/c1', 'AAMk-1'));
+          await store.dropPair(other.pairId);
+          await expectLater(store.saveLink(kept), throwsStateError);
+          expect(await store.links(other.pairId), isEmpty);
+        });
       });
 
       group('creates in flight', () {
@@ -827,6 +864,150 @@ void main() {
           expect((await store.reviews(pair.pairId)).single.googleName,
               'people/c1');
           expect((await store.bin(pair.pairId)).single.contactId, 'people/c1');
+        });
+
+        test('onto a contact a create in flight copies changes nothing',
+            () async {
+          // Two creates journalled and cut short, then Ron merges the two
+          // sources in Gmail. Moved onto the other's, the ops would be two
+          // for one source: in the database a broken index on every run,
+          // since Google names the old one again and again.
+          final pair = await pairOf();
+          final ops = await store.journalCreates(
+              pair.pairId, ContactSide.graph, [
+            (sourceKey: 'people/c1', tag: 'people/c1'),
+            (sourceKey: 'people/c2', tag: 'people/c2'),
+          ]);
+          await store.saveReview(ContactReview(
+            pairId: pair.pairId,
+            kind: 'clash',
+            googleName: 'people/c1',
+            data: '{}',
+          ));
+
+          await expectLater(
+            store.rekey(
+                pair.pairId, ContactSide.google, 'people/c1', 'people/c2'),
+            throwsStateError,
+          );
+
+          expect(await store.ops(pair.pairId), ops);
+          expect((await store.reviews(pair.pairId)).single.googleName,
+              'people/c1');
+        });
+
+        test('onto a source journalled on the same side is no clash',
+            () async {
+          // A create on the Google side copies a Hadco contact; a Google
+          // re-key does not touch it.
+          final pair = await pairOf();
+          await store.saveLink(ContactLink(
+            pairId: pair.pairId,
+            googleName: 'people/c1',
+            state: ContactLinkState.held,
+            reason: ContactHoldReason.waiting,
+          ));
+          await store.journalCreates(pair.pairId, ContactSide.google, [
+            (sourceKey: 'people/c2', tag: 'people/c2'),
+          ]);
+
+          await store.rekey(
+              pair.pairId, ContactSide.google, 'people/c1', 'people/c2');
+
+          expect((await store.links(pair.pairId)).single.googleName,
+              'people/c2');
+        });
+      });
+
+      group('a transaction', () {
+        test('that throws leaves everything as it was', () async {
+          // The brake's case: the links held and the question on the pair
+          // land together, or a crash between them leaves contacts held
+          // with nothing on screen to say why.
+          final pair = await pairOf();
+          final link =
+              await store.saveLink(paired(pair.pairId, 'people/c1', 'AAMk-1'));
+          final review = await store.saveReview(ContactReview(
+            pairId: pair.pairId,
+            kind: 'clash',
+            googleName: 'people/c1',
+            data: '{}',
+          ));
+          final before = (
+            await store.pairs(),
+            await store.links(pair.pairId),
+            await store.reviews(pair.pairId),
+          );
+
+          await expectLater(
+            store.transaction(() async {
+              await store.saveLinks([
+                link.copyWith(
+                  state: ContactLinkState.held,
+                  reason: ContactHoldReason.brake,
+                ),
+                paired(pair.pairId, 'people/c2', 'AAMk-2'),
+              ]);
+              await store.updatePair(
+                  pair.pairId, (p) => p.copyWith(held: '{"deletions":6}'));
+              await store.dropReviews([review.reviewId!]);
+              await store.journalCreates(pair.pairId, ContactSide.graph, [
+                (sourceKey: 'people/c3', tag: 'people/c3'),
+              ]);
+              await store.addToBin(ContactBinEntry(
+                pairId: pair.pairId,
+                side: ContactSide.google,
+                contactId: 'people/c4',
+                raw: '{}',
+                title: 'Noa',
+              ));
+              await pairOf(google: 'g-2', googleAddress: 'b@x.com');
+              throw StateError('the app was put away');
+            }),
+            throwsStateError,
+          );
+
+          expect(await store.pairs(), before.$1);
+          expect(await store.links(pair.pairId), before.$2);
+          expect(await store.reviews(pair.pairId), before.$3);
+          expect(await store.ops(pair.pairId), isEmpty);
+          expect(await store.bin(pair.pairId), isEmpty);
+        });
+
+        test('that ends lands every write, the store\'s own steps among them',
+            () async {
+          final pair = await pairOf();
+          final ops = await store.journalCreates(
+              pair.pairId, ContactSide.graph, [
+            (sourceKey: 'people/c1', tag: 'people/c1'),
+          ]);
+
+          final result = await store.transaction(() async {
+            await store.completeCreates({
+              ops.single.opId: paired(pair.pairId, 'people/c1', 'AAMk-1'),
+            });
+            await store.updatePair(
+                pair.pairId, (p) => p.copyWith(graphCount: 1));
+            // One inside that fails and is caught undoes only itself.
+            try {
+              await store.transaction(() async {
+                await store.saveLink(
+                    paired(pair.pairId, 'people/c2', 'AAMk-2'));
+                throw StateError('refused');
+              });
+            } on StateError {
+              // Passed by, as a refused contact is.
+            }
+            return 'done';
+          });
+
+          expect(result, 'done');
+          expect(await store.ops(pair.pairId), isEmpty);
+          expect(
+            (await store.links(pair.pairId)).map((l) => l.googleName),
+            ['people/c1'],
+          );
+          expect((await store.pair(pair.pairId))!.graphCount, 1);
         });
       });
     });

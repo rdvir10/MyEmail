@@ -593,7 +593,8 @@ typedef ContactCreate = ({String sourceKey, String tag});
 /// clock where the store writes them (a link saved, a create journalled, a
 /// review raised or answered, a contact binned); the run's own times are
 /// the runner's, set through [updatePair]. Every method that writes more
-/// than one row writes all of them or none.
+/// than one row writes all of them or none; writes of several methods that
+/// must land together go in one [transaction].
 abstract class ContactSyncStore {
   /// How long Recently deleted keeps a contact.
   static const keptFor = Duration(days: 30);
@@ -601,6 +602,15 @@ abstract class ContactSyncStore {
   /// How long a pair whose account was removed is kept for that account to
   /// be added again.
   static const detachedFor = Duration(days: 30);
+
+  /// Run [body], whose calls to this store land together or not at all: if
+  /// it throws, everything it wrote is undone and the error passes on.
+  /// For writes that must not be parted by a crash, such as links held by
+  /// a brake and its question on the pair, or an answer's links saved and
+  /// its review dropped. Calls inside may be any of this store's, a
+  /// [transaction] among them; one that throws and is caught inside
+  /// [body] undoes only its own writes.
+  Future<T> transaction<T>(Future<T> Function() body);
 
   // --- pairs ----------------------------------------------------------------
 
@@ -663,7 +673,10 @@ abstract class ContactSyncStore {
 
   /// Save a link, adding it when it has no id yet. Throws [ArgumentError]
   /// for a link that breaks [ContactLink]'s rules, and [StateError] when
-  /// another link of the pair already names one of its contacts.
+  /// another link of the pair already names one of its contacts, or when
+  /// it has an id whose row has gone since it was read (dropped with its
+  /// pair, or by a finished delete): saved again it would come back as a
+  /// stray row with a new id.
   Future<ContactLink> saveLink(ContactLink link);
 
   /// Save several, as [saveLink], together.
@@ -743,7 +756,8 @@ abstract class ContactSyncStore {
   /// reviews, the source of creates on the other side, and the bin, where
   /// it is the contact or a partner. Throws [StateError], changing nothing,
   /// when a link or a bin entry of the pair already names [newId] on that
-  /// side.
+  /// side, or a create on the other side already copies [newId] (two
+  /// creates in flight whose sources Ron then merged).
   Future<void> rekey(
     int pairId,
     ContactSide side,
@@ -761,6 +775,10 @@ class DriftContactSyncStore implements ContactSyncStore {
   final DateTime Function() _clock;
 
   DateTime _now() => _kept(_clock())!;
+
+  @override
+  Future<T> transaction<T>(Future<T> Function() body) =>
+      db.transaction(body);
 
   // --- pairs ----------------------------------------------------------------
 
@@ -1019,10 +1037,9 @@ class DriftContactSyncStore implements ContactSyncStore {
       final changed = await (db.update(db.contactLinks)
             ..where((t) => t.linkId.equals(linkId)))
           .write(row);
-      if (changed > 0) return link._saved(linkId, at);
+      if (changed == 0) throw _linkGone();
+      return link._saved(linkId, at);
     }
-    // A link with no id, or one whose row has gone since it was read,
-    // which is written again rather than lost.
     final id = await db.into(db.contactLinks).insert(row);
     return link._saved(id, at);
   }
@@ -1352,11 +1369,16 @@ class DriftContactSyncStore implements ContactSyncStore {
   ) =>
       db.transaction(() async {
         if (oldId == newId) return;
+        final copied = await (db.select(db.contactSyncOps)
+              ..where((t) =>
+                  t.pairId.equals(pairId) &
+                  t.side.equals(side.other.name) &
+                  t.sourceKey.equals(newId)))
+            .get();
         if (await linkFor(pairId, side, newId) != null ||
-            await binEntry(pairId, side, newId) != null) {
-          throw StateError(
-            'A re-key landed on a ${side.name} contact the pair already has.',
-          );
+            await binEntry(pairId, side, newId) != null ||
+            copied.isNotEmpty) {
+          throw _rekeyClash(side);
         }
         final google = side == ContactSide.google;
         await (db.update(db.contactLinks)
@@ -1513,6 +1535,34 @@ class MemoryContactSyncStore implements ContactSyncStore {
   int _lastId = 0;
 
   int _nextId() => ++_lastId;
+
+  /// Everything is put back as it was before [body] if it throws, nested
+  /// ones each to their own start. Writes made meanwhile by a caller
+  /// outside [body] are undone with it: unlike the database, nothing
+  /// here makes them wait. The tests that use this store do not race it.
+  @override
+  Future<T> transaction<T>(Future<T> Function() body) async {
+    final pairs = Map.of(_pairs);
+    final links = Map.of(_links);
+    final ops = Map.of(_ops);
+    final reviews = Map.of(_reviews);
+    final bin = Map.of(_bin);
+    final lastId = _lastId;
+    try {
+      return await body();
+    } catch (_) {
+      void restore<V>(Map<int, V> into, Map<int, V> from) => into
+        ..clear()
+        ..addAll(from);
+      restore(_pairs, pairs);
+      restore(_links, links);
+      restore(_ops, ops);
+      restore(_reviews, reviews);
+      restore(_bin, bin);
+      _lastId = lastId;
+      rethrow;
+    }
+  }
 
   // --- pairs ----------------------------------------------------------------
 
@@ -1690,7 +1740,8 @@ class MemoryContactSyncStore implements ContactSyncStore {
       }
     }
     final known = link.linkId;
-    final id = known != null && links.containsKey(known) ? known : _nextId();
+    if (known != null && !links.containsKey(known)) throw _linkGone();
+    final id = known ?? _nextId();
     return links[id] = link._saved(id, at);
   }
 
@@ -1911,10 +1962,12 @@ class MemoryContactSyncStore implements ContactSyncStore {
   ) async {
     if (oldId == newId) return;
     if (_linkFor(_links, pairId, side, newId) != null ||
-        _binEntry(pairId, side, newId) != null) {
-      throw StateError(
-        'A re-key landed on a ${side.name} contact the pair already has.',
-      );
+        _binEntry(pairId, side, newId) != null ||
+        _ops.values.any((o) =>
+            o.pairId == pairId &&
+            o.side == side.other &&
+            o.sourceKey == newId)) {
+      throw _rekeyClash(side);
     }
     final google = side == ContactSide.google;
     for (final l in _links.values.toList()) {
@@ -2042,6 +2095,13 @@ ContactLink _linkRead({
     updatedAt: updatedAt,
   );
 }
+
+StateError _linkGone() =>
+    StateError('This contact link has gone since it was read.');
+
+StateError _rekeyClash(ContactSide side) => StateError(
+      'A re-key landed on a ${side.name} contact the pair already has.',
+    );
 
 DateTime? _time(int? ms) =>
     ms == null ? null : DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true);
