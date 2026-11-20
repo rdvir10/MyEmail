@@ -4,7 +4,9 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart' as http_testing;
+import 'package:myemail/data/auth/google_oauth.dart';
 import 'package:myemail/data/auth/microsoft_oauth.dart';
+import 'package:myemail/data/auth/oauth_refresher.dart';
 import 'package:myemail/data/auth/oauth_token.dart';
 import 'package:myemail/data/auth/oauth_token_repository.dart';
 import 'package:myemail/data/credential_store.dart';
@@ -480,6 +482,276 @@ void main() {
           reason: 'the new sign-in is found and refreshed, not refused again');
     });
   });
+
+  // The race contact sync's Allow sets up. The person signs in again in
+  // the app, for a permission the old sign-in lacked, while the live
+  // worker in the other isolate holds the old sign-in for an hour. Google
+  // hands the same refresh token back on every refresh, so a refresh of
+  // what the worker holds would write the old sign-in back over the new
+  // one; and a scoped ask that is refused must look for the new sign-in
+  // and refresh that for its own scopes. Run against both providers,
+  // because they differ in exactly the respect that matters: Microsoft
+  // turns the refresh token over on every refresh, Google never does.
+  for (final provider in _Provider.values) {
+    group('a newer sign-in with ${provider.name}', () {
+      /// The refresh tokens whose sign-in allowed contacts.
+      late Set<String> allowsContacts;
+
+      /// The refresh tokens the provider no longer takes.
+      late Set<String> revoked;
+
+      /// Every request to the token endpoint, as its form.
+      late List<Map<String, String>> asked;
+
+      setUp(() {
+        allowsContacts = {'refresh-new'};
+        revoked = {};
+        asked = [];
+      });
+
+      Future<http.Response> endpoint(http.Request request) async {
+        final form = Uri.splitQueryString(request.body);
+        asked.add(form);
+        final spent = form['refresh_token']!;
+        if (revoked.contains(spent)) {
+          return _json({
+            'error': 'invalid_grant',
+            'error_description': provider == _Provider.microsoft
+                ? 'AADSTS50173: The provided grant has expired.'
+                : 'Bad Request',
+          }, status: 400);
+        }
+        switch (provider) {
+          case _Provider.microsoft:
+            final asks = '${form['scope']}';
+            if (asks.contains('Contacts.ReadWrite') &&
+                !allowsContacts.contains(spent)) {
+              return _json({
+                'error': 'invalid_grant',
+                'error_description': 'AADSTS65001: The user or administrator '
+                    'has not consented to use the application.',
+              }, status: 400);
+            }
+            return _json({
+              'access_token': 'access-after-$spent',
+              'refresh_token': 'turned-$spent',
+              'expires_in': 3599,
+            });
+          case _Provider.google:
+            return _json({
+              'access_token': 'access-after-$spent',
+              'expires_in': 3599,
+              'scope': [
+                'https://mail.google.com/',
+                'https://www.googleapis.com/auth/calendar.events',
+                if (allowsContacts.contains(spent)) ...provider.contacts,
+                'openid',
+                'email',
+              ].join(' '),
+            });
+        }
+      }
+
+      OAuthTokenRepository repository() => OAuthTokenRepository(
+            credentialStore: secrets,
+            clock: () => now,
+            oauthClient: (_) => provider.refresher(
+              () => now,
+              http_testing.MockClient(endpoint),
+            ),
+          );
+
+      Future<void> signIn(String refresh, {required Duration good}) =>
+          secrets.writeSecret(
+            'acct-1',
+            OAuthToken(
+              accessToken: 'access-of-$refresh',
+              refreshToken: refresh,
+              expiresAt: now.add(good),
+            ).toStoredJson(),
+          );
+
+      Future<OAuthToken> storedNow() async =>
+          OAuthToken.fromStoredJson(await secrets.readSecret('acct-1'))!;
+
+      test('a refresh of the old one writes nothing over it', () async {
+        await signIn('refresh-old', good: const Duration(hours: 1));
+        final worker = repository();
+        expect(await worker.accessToken('acct-1'), 'access-of-refresh-old',
+            reason: 'the worker reads the old sign-in and holds it');
+
+        await signIn('refresh-new', good: const Duration(hours: 3));
+        now = now.add(const Duration(minutes: 58));
+        final token = await worker.accessToken('acct-1');
+
+        expect(asked.single['refresh_token'], 'refresh-old',
+            reason: 'what the worker held was what it refreshed');
+        expect((await storedNow()).refreshToken, 'refresh-new',
+            reason: 'the new sign-in is kept, not the one from before it');
+        expect(token, 'access-of-refresh-new',
+            reason: 'and its access token, still good, is used');
+
+        now = now.add(const Duration(hours: 3));
+        await worker.accessToken('acct-1');
+        expect(asked.last['refresh_token'], 'refresh-new',
+            reason: 'from then on the worker holds the new sign-in');
+      });
+
+      test('nor does a refresh for another resource', () async {
+        await signIn('refresh-old', good: const Duration(hours: 1));
+        final worker = repository();
+        await worker.accessToken('acct-1');
+
+        await signIn('refresh-new', good: const Duration(hours: 3));
+        final token =
+            await worker.accessToken('acct-1', scopes: provider.calendar);
+
+        expect(token, 'access-after-refresh-old');
+        expect((await storedNow()).refreshToken, 'refresh-new');
+        expect((await storedNow()).accessToken, 'access-of-refresh-new');
+      });
+
+      test('a refresh of the sign-in still stored is written back', () async {
+        // The counterpart: with nothing newer in the store, the newest
+        // refresh token and access token go there as before.
+        await signIn('refresh-old', good: const Duration(minutes: 4));
+        final repo = repository();
+
+        await repo.accessToken('acct-1', scopes: provider.calendar);
+        await repo.accessToken('acct-1');
+
+        final stored = await storedNow();
+        expect(stored.refreshToken,
+            provider.afterRefresh(provider.afterRefresh('refresh-old')));
+        expect(stored.accessToken, startsWith('access-after-'));
+      });
+
+      test('a scoped ask refused for consent takes up the newer sign-in, '
+          'refreshed for its own scopes', () async {
+        await signIn('refresh-old', good: const Duration(hours: 1));
+        final worker = repository();
+        await worker.accessToken('acct-1');
+        await expectLater(
+          worker.accessToken('acct-1', scopes: provider.contacts),
+          throwsA(isA<SignInNeedsConsent>()),
+        );
+
+        // Allow: a sign-in that grants contacts, its access token for the
+        // default scopes still good.
+        await signIn('refresh-new', good: const Duration(hours: 1));
+        asked.clear();
+        final token =
+            await worker.accessToken('acct-1', scopes: provider.contacts);
+
+        expect(token, 'access-after-refresh-new',
+            reason: 'refreshed for contacts, not handed the stored access '
+                'token, which is for the default scopes');
+        expect(asked.map((f) => f['refresh_token']),
+            ['refresh-old', 'refresh-new']);
+        if (provider == _Provider.microsoft) {
+          expect(asked.last['scope'], provider.contacts.join(' '));
+        }
+        expect((await storedNow()).refreshToken,
+            provider.afterRefresh('refresh-new'));
+        expect(await worker.accessToken('acct-1'), 'access-of-refresh-new',
+            reason: 'the default path holds the new sign-in too');
+      });
+
+      test('a newer sign-in that still lacks the scopes is still refused',
+          () async {
+        // Google's granular consent starts the new box unticked: a sign-in
+        // that left it so must not pass for one that allowed it.
+        allowsContacts = {};
+        await signIn('refresh-old', good: const Duration(hours: 1));
+        final worker = repository();
+        await worker.accessToken('acct-1');
+        await signIn('refresh-new', good: const Duration(hours: 1));
+
+        await expectLater(
+          worker.accessToken('acct-1', scopes: provider.contacts),
+          throwsA(isA<SignInNeedsConsent>()),
+        );
+      });
+
+      test('a scoped ask refused as expired takes up the newer sign-in',
+          () async {
+        await signIn('refresh-old', good: const Duration(hours: 1));
+        final worker = repository();
+        await worker.accessToken('acct-1');
+        revoked = {'refresh-old'};
+        await signIn('refresh-new', good: const Duration(hours: 1));
+
+        expect(
+          await worker.accessToken('acct-1', scopes: provider.calendar),
+          'access-after-refresh-new',
+        );
+      });
+
+      test('a scoped ask refused as expired with nothing newer is a sign-out',
+          () async {
+        await signIn('refresh-old', good: const Duration(hours: 1));
+        final worker = repository();
+        revoked = {'refresh-old'};
+
+        await expectLater(
+          worker.accessToken('acct-1', scopes: provider.calendar),
+          throwsA(isA<SignInExpired>()),
+        );
+        expect(asked, hasLength(1), reason: 'nothing newer to refresh');
+      });
+    });
+  }
+}
+
+http.Response _json(Map<String, Object?> body, {int status = 200}) =>
+    http.Response(
+      jsonEncode(body),
+      status,
+      headers: const {'content-type': 'application/json'},
+    );
+
+/// The two sign-in providers, as the repository meets them.
+enum _Provider {
+  microsoft,
+  google;
+
+  OAuthRefresher refresher(DateTime Function() clock, http.Client client) =>
+      switch (this) {
+        _Provider.microsoft => MicrosoftOAuth(
+            clientId: 'test-client-id',
+            clock: clock,
+            authority: 'https://login.example/consumers/oauth2/v2.0',
+            httpClient: client,
+          ),
+        _Provider.google => GoogleOAuth(
+            clientId: 'test-client-id.apps.googleusercontent.com',
+            clock: clock,
+            httpClient: client,
+          ),
+      };
+
+  /// What contact sync asks for.
+  List<String> get contacts => switch (this) {
+        _Provider.microsoft => const [
+            'https://graph.microsoft.com/Contacts.ReadWrite',
+          ],
+        _Provider.google => GoogleOAuth.contactsScopes,
+      };
+
+  /// A resource every sign-in here allows.
+  List<String> get calendar => switch (this) {
+        _Provider.microsoft => MicrosoftOAuth.calendarScopes,
+        _Provider.google => const [
+            'https://www.googleapis.com/auth/calendar.events',
+          ],
+      };
+
+  /// The refresh token kept after spending [spent]: Microsoft's new one,
+  /// or Google's same one.
+  String afterRefresh(String spent) => switch (this) {
+        _Provider.microsoft => 'turned-$spent',
+        _Provider.google => spent,
+      };
 }
 
 /// A credential store that counts how often it is asked.

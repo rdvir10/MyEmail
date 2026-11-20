@@ -97,8 +97,27 @@ class OAuthTokenRepository {
       if (!force && cached != null && cached.isUsableAt(_clock())) {
         return cached.accessToken;
       }
-      final refreshed = await _refreshOnce(accountId, stored, scopes);
-      return refreshed.accessToken;
+      try {
+        final refreshed = await _refreshOnce(accountId, stored, scopes);
+        return refreshed.accessToken;
+      } on SignInExpired {
+        // As on the default path below, and for the same two reasons: the
+        // other isolate may have spent this refresh token first, or the
+        // person may have signed in again since this sign-in was read. The
+        // newer one is refreshed for these scopes, not the default ones: a
+        // sign-in made to allow contacts is no use asked only for mail.
+        final newer = await _newerSignIn(accountId, stored, scopes: scopes);
+        if (newer != null) return newer;
+        _stored.remove(accountId);
+        rethrow;
+      } on SignInNeedsConsent {
+        // The case "Allow" exists for. The sign-in that grants these scopes
+        // is in the store, while what is held here is the one from before
+        // it, which goes on being refused for as long as it is held.
+        final newer = await _newerSignIn(accountId, stored, scopes: scopes);
+        if (newer != null) return newer;
+        rethrow;
+      }
     }
 
     if (!force && stored.isUsableAt(_clock())) return stored.accessToken;
@@ -131,10 +150,16 @@ class OAuthTokenRepository {
     }
   }
 
-  /// A token from a sign-in newer than [held], if the store has one: its
-  /// access token if still good, otherwise a refresh of it. Null when the
-  /// store holds the same sign-in as [held], or none.
-  Future<String?> _newerSignIn(String accountId, OAuthToken held) async {
+  /// A token from a sign-in newer than [held], if the store has one: for the
+  /// default scopes its access token if still good, otherwise a refresh of
+  /// it; for any other [scopes] always a refresh of it for those, since the
+  /// stored access token is for the default ones. Null when the store holds
+  /// the same sign-in as [held], or none.
+  Future<String?> _newerSignIn(
+    String accountId,
+    OAuthToken held, {
+    List<String>? scopes,
+  }) async {
     final latest = OAuthToken.fromStoredJson(
       await credentialStore.readSecret(accountId),
     );
@@ -142,8 +167,10 @@ class OAuthTokenRepository {
       return null;
     }
     _stored[accountId] = latest;
-    if (latest.isUsableAt(_clock())) return latest.accessToken;
-    return (await _refreshOnce(accountId, latest, null)).accessToken;
+    if (scopes == null && latest.isUsableAt(_clock())) {
+      return latest.accessToken;
+    }
+    return (await _refreshOnce(accountId, latest, scopes)).accessToken;
   }
 
   /// Save the token a fresh sign-in produced.
@@ -207,8 +234,30 @@ class OAuthTokenRepository {
       // generation check comes after the read and straight before the
       // write, with no wait in between, so a removal that lands later has
       // its delete queued behind this write rather than ahead of it.
-      if (await credentialStore.readSecret(accountId) == null ||
-          (_forgotten[accountId] ?? 0) != generation) {
+      final raw = await credentialStore.readSecret(accountId);
+      if (raw == null || (_forgotten[accountId] ?? 0) != generation) {
+        return refreshed;
+      }
+
+      // Written back only while the store still holds the sign-in this
+      // refresh spent. The live worker reads the record once and holds it
+      // for an hour, and Google hands the same refresh token back on every
+      // refresh: without this check, a refresh of the record it started
+      // with would write the sign-in from before a "Sign in again" back
+      // over the new one, and whatever the new one was for (contacts,
+      // say) would be asked for again. Microsoft turns its refresh token
+      // over on every refresh, so there a record that moved on was
+      // usually the other isolate's own refresh; keeping that is as good.
+      // Nothing waits between this read and the write below, so a record
+      // written later is queued behind the write rather than ahead of it.
+      final current = OAuthToken.fromStoredJson(raw);
+      if (current == null || current.refreshToken != stored.refreshToken) {
+        if (current != null) _stored[accountId] = current;
+        if (scopes != null) {
+          _byResource[_key(accountId, scopes)] = refreshed;
+        } else if (current != null && current.isUsableAt(_clock())) {
+          return current;
+        }
         return refreshed;
       }
 
@@ -220,8 +269,14 @@ class OAuthTokenRepository {
         // does not: every exchange hands back a new one, and the newest is
         // the one to keep. The spent one stays valid, but only until its own
         // expiry, so keeping it would sign the account out in the end
-        // however often the account was used in between.
-        await store(accountId, stored.withRefreshToken(refreshed.refreshToken));
+        // however often the account was used in between. The rest comes
+        // from the record as stored now, which may hold a newer access
+        // token for the default scopes than the one this refresh started
+        // from.
+        await store(
+          accountId,
+          current.withRefreshToken(refreshed.refreshToken),
+        );
       }
       return refreshed;
     } finally {
