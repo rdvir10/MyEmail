@@ -155,18 +155,48 @@ void main() {
             ],
           }),
         ]));
-        return lines
-            .where((l) => l.startsWith('BDAY'))
-            .map((l) => l.substring(5))
-            .firstOrNull;
+        return lines.where((l) => l.startsWith('BDAY')).firstOrNull;
       }
 
-      expect(birthday({'year': 1980, 'month': 5, 'day': 17}), '1980-05-17');
-      expect(birthday({'month': 5, 'day': 7}), '--05-07',
-          reason: "a birthday without a year is kept, as Google's export "
-              'writes it');
-      expect(birthday({'year': 0, 'month': 12, 'day': 31}), '--12-31');
+      expect(birthday({'year': 1980, 'month': 5, 'day': 17}),
+          'BDAY:1980-05-17');
+      expect(birthday({'month': 5, 'day': 7}),
+          'BDAY;X-APPLE-OMIT-YEAR=1604:1604-05-07',
+          reason: "Apple's form: Google is reported to drop vCard's own "
+              '--05-07 without a word (Mozilla bug 1820356)');
+      expect(birthday({'year': 0, 'month': 12, 'day': 31}),
+          'BDAY;X-APPLE-OMIT-YEAR=1604:1604-12-31');
       expect(birthday(null), isNull, reason: 'text alone is not a date');
+    });
+
+    test('keeps a birthday known only as text, to be read', () {
+      final lines = unfold(ContactBackup.vCard([
+        person({
+          'birthdays': [
+            {'text': 'Spring, around Pesach; ask'},
+          ],
+        }),
+      ]));
+
+      expect(lines.where((l) => l.startsWith('BDAY')), isEmpty);
+      expect(lines, contains(r'X-BIRTHDAY-TEXT:Spring\, around Pesach\; ask'));
+    });
+
+    test('one with a date goes as BDAY, and the text beside it is not '
+        'written twice', () {
+      final lines = unfold(ContactBackup.vCard([
+        person({
+          'birthdays': [
+            {
+              'date': {'year': 1980, 'month': 5, 'day': 17},
+              'text': '17 May 1980',
+            },
+          ],
+        }),
+      ]));
+
+      expect(lines, contains('BDAY:1980-05-17'));
+      expect(lines.where((l) => l.startsWith('X-BIRTHDAY-TEXT')), isEmpty);
     });
 
     test('writes emails, phones and addresses with their types', () {
@@ -288,7 +318,7 @@ void main() {
         'item1.TITLE:Chair',
         'item2.X-ABDATE:2010-06-01',
         r'item2.X-ABLabel:_$!<Anniversary>!$_',
-        'item3.X-ABDATE:--09-02',
+        'item3.X-ABDATE;X-APPLE-OMIT-YEAR=1604:1604-09-02',
         'item3.X-ABLabel:Aliyah',
         'item4.X-ABRELATEDNAMES:Noa',
         r'item4.X-ABLabel:_$!<Spouse>!$_',

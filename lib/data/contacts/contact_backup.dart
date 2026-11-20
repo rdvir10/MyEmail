@@ -284,20 +284,31 @@ abstract final class ContactBackup {
       if (value.isNotEmpty) lines.add('ROLE:${_text(value)}');
     }
 
+    // One BDAY, the first birthday with a date. One kept only as text has
+    // no vCard form; it goes as an X- property, so that the file, which is
+    // Ron's record to read as well as to import, still says it.
+    var dated = false;
     for (final b in _entries(person, 'birthdays')) {
-      final date = _date(b['date']);
-      if (date != null) {
-        lines.add('BDAY:$date');
-        break;
+      final line = _dated('BDAY', b['date']);
+      if (line == null) {
+        final text = _str(b['text']);
+        if (text.isNotEmpty) lines.add('X-BIRTHDAY-TEXT:${_text(text)}');
+      } else if (!dated) {
+        lines.add(line);
+        dated = true;
       }
     }
 
     for (final e in _entries(person, 'events')) {
-      final date = _date(e['date']);
-      if (date == null) continue;
+      final line = _dated('X-ABDATE', e['date']);
+      if (line == null) continue;
       final type = _str(e['type']);
-      labelled('X-ABDATE', date,
-          type == 'anniversary' ? r'_$!<Anniversary>!$_' : _label(e, type));
+      final label =
+          type == 'anniversary' ? r'_$!<Anniversary>!$_' : _label(e, type);
+      group++;
+      lines
+        ..add('item$group.$line')
+        ..add('item$group.X-ABLabel:${_text(label)}');
     }
 
     for (final r in _entries(person, 'relations')) {
@@ -472,16 +483,21 @@ abstract final class ContactBackup {
     return type.isEmpty ? 'Other' : type;
   }
 
-  /// A date as vCard writes it: `1980-05-17`, or `--05-17` with no year.
-  static String? _date(Object? date) {
+  /// [property] with a People API date: `BDAY:1980-05-17`, or with no
+  /// year Apple's form, `BDAY;X-APPLE-OMIT-YEAR=1604:1604-05-17`. Google
+  /// is reported to drop vCard's own `--05-17` without a word, and keeps
+  /// Apple's: Thunderbird writes it for that reason (Mozilla bug 1820356).
+  /// Null for no date, or one without a month and day.
+  static String? _dated(String property, Object? date) {
     if (date is! Map) return null;
     final month = date['month'], day = date['day'], year = date['year'];
     if (month is! int || day is! int || month == 0 || day == 0) return null;
     String two(int n) => n.toString().padLeft(2, '0');
     if (year is int && year > 0) {
-      return '${year.toString().padLeft(4, '0')}-${two(month)}-${two(day)}';
+      return '$property:${year.toString().padLeft(4, '0')}-${two(month)}-'
+          '${two(day)}';
     }
-    return '--${two(month)}-${two(day)}';
+    return '$property;X-APPLE-OMIT-YEAR=1604:1604-${two(month)}-${two(day)}';
   }
 
   /// A text value escaped as RFC 2426 asks: backslash, comma, semicolon
