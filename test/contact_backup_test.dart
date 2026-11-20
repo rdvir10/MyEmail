@@ -199,6 +199,34 @@ void main() {
       expect(lines.where((l) => l.startsWith('X-BIRTHDAY-TEXT')), isEmpty);
     });
 
+    test('writes numbers and links as they are, not escaped as text', () {
+      // RFC 2426 types TEL as phone-number and URL as uri. A comma in a
+      // number is a pause, and escaped it is a different number.
+      final lines = unfold(ContactBackup.vCard([
+        person({
+          'phoneNumbers': [
+            {'value': '+1 555 1234,,99#', 'type': 'work'},
+            {'value': '03-555\r\n-0101', 'type': 'mobile'},
+          ],
+          'urls': [
+            {'value': 'https://x.example/a,b;c?d=1,2', 'type': 'work'},
+            {'value': 'https://x.example/blog', 'type': 'blog'},
+          ],
+          'calendarUrls': [
+            {'url': 'https://cal.example/a,b'},
+          ],
+        }),
+      ]));
+
+      expect(lines, containsAllInOrder([
+        'TEL;TYPE=WORK:+1 555 1234,,99#',
+        'TEL;TYPE=CELL:03-555-0101',
+        'URL;TYPE=WORK:https://x.example/a,b;c?d=1,2',
+        'item1.URL:https://x.example/blog',
+        'CALURI:https://cal.example/a,b',
+      ]));
+    });
+
     test('writes emails, phones and addresses with their types', () {
       final lines = unfold(ContactBackup.vCard([
         person({

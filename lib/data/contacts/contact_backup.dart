@@ -225,9 +225,9 @@ abstract final class ContactBackup {
       final type = _str(p['type']);
       final types = _phoneTypes[type];
       if (types == null) {
-        labelled('TEL', _text(value), _label(p, type));
+        labelled('TEL', _plain(value), _label(p, type));
       } else {
-        lines.add('TEL${types.map((t) => ';TYPE=$t').join()}:${_text(value)}');
+        lines.add('TEL${types.map((t) => ';TYPE=$t').join()}:${_plain(value)}');
       }
     }
 
@@ -327,13 +327,13 @@ abstract final class ContactBackup {
       final type = _str(u['type']);
       switch (type) {
         case 'home' || 'work':
-          lines.add('URL;TYPE=${type.toUpperCase()}:${_text(value)}');
+          lines.add('URL;TYPE=${type.toUpperCase()}:${_plain(value)}');
         case '' || 'other':
-          lines.add('URL:${_text(value)}');
+          lines.add('URL:${_plain(value)}');
         case 'homePage':
-          labelled('URL', _text(value), r'_$!<HomePage>!$_');
+          labelled('URL', _plain(value), r'_$!<HomePage>!$_');
         default:
-          labelled('URL', _text(value), _label(u, type));
+          labelled('URL', _plain(value), _label(u, type));
       }
     }
 
@@ -358,7 +358,7 @@ abstract final class ContactBackup {
 
     for (final c in _entries(person, 'calendarUrls')) {
       final value = _str(c['url']);
-      if (value.isNotEmpty) lines.add('CALURI:${_text(value)}');
+      if (value.isNotEmpty) lines.add('CALURI:${_plain(value)}');
     }
 
     for (final field in _entries(person, 'userDefined')) {
@@ -526,8 +526,9 @@ abstract final class ContactBackup {
       node.nodes.forEach(walk);
       if (tag == 'a') {
         final href = (node.attributes['href'] ?? '').trim();
+        const mailto = 'mailto:';
         final target =
-            href.startsWith('mailto:') ? href.substring('mailto:'.length) : href;
+            href.startsWith(mailto) ? href.substring(mailto.length) : href;
         if (target.isNotEmpty && target != node.text.trim()) {
           out.write(' ($target)');
         }
@@ -558,6 +559,12 @@ abstract final class ContactBackup {
       .replaceAll('\n', r'\n')
       .replaceAll(',', r'\,')
       .replaceAll(';', r'\;');
+
+  /// A phone number or a URI as it is: RFC 2426 types TEL as
+  /// phone-number and URL as uri, not text, so nothing in them is escaped
+  /// (a pause in a number is a comma, and a URL may well have one). Only
+  /// line breaks go, which neither can hold and which would end the line.
+  static String _plain(String value) => value.replaceAll(RegExp(r'[\r\n]'), '');
 
   /// [line] folded so that no line is longer than 75 octets, each
   /// continuation starting with a space, and never inside a character.
