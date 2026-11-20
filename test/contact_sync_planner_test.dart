@@ -687,6 +687,8 @@ void main() {
       ]);
       final half = pair.basesAfter(googleAnswer: merged);
       expect(half.google.list(ContactField.emails), ['ann@x.example']);
+      final otherHalf = pair.basesAfter(graphAnswer: merged);
+      expect(otherHalf.graph.list(ContactField.emails), ['ann@x.example']);
       final both = pair.basesAfter(googleAnswer: merged, graphAnswer: merged);
       expect(both.google.list(ContactField.emails), hasLength(3));
       expect(both.graph.list(ContactField.emails), hasLength(3));
@@ -869,6 +871,7 @@ void main() {
       expect(review.graphId, 'H-a');
       expect(review.googleName, 'people/m');
       expect(plan.reKeys, {'people/a': 'people/m', 'people/b': 'people/m'});
+      expect(plan.googleGone, isEmpty, reason: 'merged, not deleted');
       expect(plan.graphTagMoves, {'H-b': 'people/m'});
     });
 
@@ -976,6 +979,19 @@ void main() {
       );
       expect(plan.binAlreadyBack, [4]);
       expect(plan.binNotDue, [5]);
+      // Brought back with no partner left: copied, and back all the same.
+      final copied = run(
+        graph: [h('H1', ann)],
+        bin: [
+          const ContactBinInput(
+            binId: 4,
+            side: ContactSide.graph,
+            contactId: 'H1',
+          ),
+        ],
+      );
+      expect(byGraph(copied, 'H1')!.create, isNotNull);
+      expect(copied.binAlreadyBack, [4]);
     });
   });
 

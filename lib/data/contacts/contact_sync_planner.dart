@@ -1882,7 +1882,7 @@ class _Planner {
             final row = _rowOf(side, id);
             if (row == null || row.done) continue;
             if (row.reason != ContactHeldReason.refused) continue;
-            _retry(row);
+            _retry(row, fromAnswer: true);
           }
         case ContactAnswerKind.carryOn:
           break;
@@ -1895,9 +1895,9 @@ class _Planner {
     if (h != null && _graphAlive(h)) (ContactSide.graph, h),
   ];
 
-  void _retry(_Row row) {
+  void _retry(_Row row, {bool fromAnswer = false}) {
     if (row.googleName != null && row.graphId != null) {
-      _pairSync(row, fromAnswer: true);
+      _pairSync(row, fromAnswer: fromAnswer);
     } else {
       row.reopened = true;
       final id = row.googleName ?? row.graphId!;
@@ -2244,12 +2244,8 @@ class _Planner {
     graphRow[h]?.done = true;
     pairUp++;
     if (pair.differing.isNotEmpty) differingPairs++;
-    for (final b in input.bin) {
-      if ((b.side == ContactSide.google && b.contactId == g) ||
-          (b.side == ContactSide.graph && b.contactId == h)) {
-        binAlreadyBack.add(b.binId);
-      }
-    }
+    _backFromBin(ContactSide.google, g);
+    _backFromBin(ContactSide.graph, h);
     final title = googleNow.title.isNotEmpty ? googleNow.title : graphNow.title;
     _add(
       ContactLinkPlan(
@@ -2273,6 +2269,14 @@ class _Planner {
     );
   }
 
+  /// A contact the sync deleted that Ron brought back himself, now being
+  /// paired again: its bin row is Already back.
+  void _backFromBin(ContactSide side, String id) {
+    for (final b in input.bin) {
+      if (b.side == side && b.contactId == id) binAlreadyBack.add(b.binId);
+    }
+  }
+
   /// A contact copied to the other side.
   void _copy(
     ContactSide side,
@@ -2282,6 +2286,7 @@ class _Planner {
   }) {
     final details = _detailsOf(side, id);
     _setStatus(side, id, _Status.paired);
+    _backFromBin(side, id);
     _add(
       ContactLinkPlan(
         linkId: linkId,
