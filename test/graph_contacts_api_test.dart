@@ -675,6 +675,43 @@ void main() {
     });
   });
 
+  group('the fake keeps to the contact resource', () {
+    test('a property a contact does not have is refused, made or changed',
+        () async {
+      final client = api();
+      await expectLater(
+        client.create({...contact('Ann', 'Lee', 'a@x.com'), 'faxNumber': '1'}),
+        throwsA(isA<ContactRefused>()),
+      );
+      final made = await client.create(contact('Ann', 'Lee', 'a@x.com'));
+      await expectLater(
+        client.update(made['id']! as String, {'anniversary': '2001-01-01'}),
+        throwsA(isA<ContactRefused>()),
+      );
+      expect(
+        () => graph.seed({'givenName': 'Ann', 'gender': 'f'}),
+        throwsArgumentError,
+      );
+    });
+
+    test('a whole read shows the three email slots', () async {
+      final ann = graph.seed({
+        'givenName': 'Ann',
+        'emailAddresses': [
+          {'address': 'a1@x.com'},
+          {'address': 'a2@x.com'},
+        ],
+      });
+
+      final whole = (await api().get(ann, whole: true))!;
+
+      expect(whole['primaryEmailAddress'], {'address': 'a1@x.com'});
+      expect(whole['secondaryEmailAddress'], {'address': 'a2@x.com'});
+      expect(whole.containsKey('tertiaryEmailAddress'), isTrue);
+      expect(whole['tertiaryEmailAddress'], isNull);
+    });
+  });
+
   group('the device claim', () {
     test('is read and written on the folder', () async {
       final client = api();

@@ -107,8 +107,11 @@ class FakeGraphContacts {
     String? folderId,
     String? tag,
   }) {
-    final c = _Contact(_newId(), folderId ?? mainFolderId, _newKey(), now)
-      ..fields.addAll(_writable(fields));
+    if (_unknownIn(fields) case final name?) {
+      throw ArgumentError.value(name, 'fields', 'not a contact property');
+    }
+    final c = _Contact(_newId(), folderId ?? mainFolderId, _newKey(), now);
+    _store(c.fields, _writable(fields));
     c.fields['displayName'] ??= _composed(c.fields);
     if (tag != null) c.properties[_tagProperty] = tag;
     _contacts[c.id] = c;
@@ -125,6 +128,9 @@ class FakeGraphContacts {
   /// does; a null value clears one. The display name is made again from
   /// the name parts unless it is among the changes.
   void editFromOutlook(String id, Map<String, Object?> changes) {
+    if (_unknownIn(changes) case final name?) {
+      throw ArgumentError.value(name, 'changes', 'not a contact property');
+    }
     final c = _there(id);
     _apply(c, changes);
   }
@@ -448,9 +454,10 @@ class FakeGraphContacts {
 
   http.Response _create(String body) {
     final json = _decode(body);
+    _known(json);
     _refused(json);
-    final c = _Contact(_newId(), mainFolderId, _newKey(), now)
-      ..fields.addAll(_writable(json));
+    final c = _Contact(_newId(), mainFolderId, _newKey(), now);
+    _store(c.fields, _writable(json));
     c.fields['displayName'] ??= _composed(c.fields);
     final props = json['singleValueExtendedProperties'];
     for (final p in props is List ? props : const []) {
@@ -467,6 +474,7 @@ class FakeGraphContacts {
     final c = _contacts[id];
     if (c == null) return _notFound();
     final json = _decode(body);
+    _known(json);
     _refused(json);
     _apply(c, json);
     return _ok(_json(c, null));
@@ -578,14 +586,7 @@ class FakeGraphContacts {
 
   void _apply(_Contact c, Map<String, Object?> changes) {
     final writable = _writable(changes);
-    for (final MapEntry(:key, :value) in writable.entries) {
-      if (value == null) {
-        c.fields.remove(key);
-      } else {
-        c.fields[key] = value;
-      }
-    }
-    final changed = writable.keys.toSet();
+    final changed = _store(c.fields, writable);
     const parts = {
       'givenName',
       'middleName',
@@ -638,6 +639,77 @@ class FakeGraphContacts {
       if (!_readOnly.contains(key) && !key.startsWith('@'))
         key: jsonDecode(jsonEncode(value)),
   };
+
+  /// The three email slots Graph shows beside `emailAddresses`, which are
+  /// its first three entries.
+  static const _emailSlots = [
+    'primaryEmailAddress',
+    'secondaryEmailAddress',
+    'tertiaryEmailAddress',
+  ];
+
+  /// [writable] written into [fields], a null clearing a property, and an
+  /// email slot changing that entry of `emailAddresses`; the names of the
+  /// properties changed.
+  static Set<String> _store(
+    Map<String, Object?> fields,
+    Map<String, Object?> writable,
+  ) {
+    final changed = <String>{};
+    for (final MapEntry(:key, :value) in writable.entries) {
+      if (_emailSlots.contains(key)) continue;
+      if (value == null) {
+        fields.remove(key);
+      } else {
+        fields[key] = value;
+      }
+      changed.add(key);
+    }
+    for (var i = 0; i < _emailSlots.length; i++) {
+      if (!writable.containsKey(_emailSlots[i])) continue;
+      final value = writable[_emailSlots[i]];
+      final emails = [...(fields['emailAddresses'] as List?) ?? const []];
+      if (value == null) {
+        if (i < emails.length) emails.removeAt(i);
+      } else if (i < emails.length) {
+        emails[i] = value;
+      } else {
+        emails.add(value);
+      }
+      fields['emailAddresses'] = emails;
+      changed.add('emailAddresses');
+    }
+    return changed;
+  }
+
+  /// The first name in [json] that is no property of a v1.0 contact, if
+  /// one is.
+  static String? _unknownIn(Map<String, Object?> json) {
+    for (final key in json.keys) {
+      if (key.startsWith('@') ||
+          _readOnly.contains(key) ||
+          _properties.contains(key)) {
+        continue;
+      }
+      return key;
+    }
+    return null;
+  }
+
+  /// A write naming a property a contact does not have is refused, as
+  /// Graph refuses it.
+  static void _known(Map<String, Object?> json) {
+    if (_unknownIn(json) case final name?) {
+      throw _Refusal(
+        _error(
+          400,
+          'RequestBodyRead',
+          "The property '$name' does not exist on type "
+              "'microsoft.graph.contact'.",
+        ),
+      );
+    }
+  }
 
   void _refused(Map<String, Object?> json) {
     if (refuse?.call(json) ?? false) {
@@ -716,6 +788,9 @@ class FakeGraphContacts {
     'homeAddress',
     'businessAddress',
     'otherAddress',
+    'primaryEmailAddress',
+    'secondaryEmailAddress',
+    'tertiaryEmailAddress',
   ];
 
   /// [c] as Graph answers with it: [select]'s properties (every v1.0
@@ -729,6 +804,11 @@ class FakeGraphContacts {
       'lastModifiedDateTime' => c.modified.toUtc().toIso8601String(),
       _ when _collections.contains(p) => c.fields[p] ?? const [],
       _ when _addresses.contains(p) => c.fields[p] ?? const {},
+      _ when _emailSlots.contains(p) => switch (c.fields['emailAddresses']) {
+        final List emails when emails.length > _emailSlots.indexOf(p) =>
+          emails[_emailSlots.indexOf(p)],
+        _ => null,
+      },
       _ => c.fields[p],
     };
     return {

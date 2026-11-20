@@ -533,11 +533,9 @@ class FakeGooglePeople {
     // Google makes none of a batch it refuses, and names the ones why.
     final errors = <String, Object?>{};
     for (var i = 0; i < people.length; i++) {
-      if (refuse?.call(people[i]) ?? false) {
-        errors['$i'] = {
-          'code': 3,
-          'message': 'Invalid person: ${_quote(people[i])}',
-        };
+      final problem = _problem(people[i]);
+      if (problem != null) {
+        errors['$i'] = {'code': 3, 'message': problem};
       }
     }
     if (errors.isNotEmpty) {
@@ -582,6 +580,13 @@ class FakeGooglePeople {
     if (updating.isEmpty) {
       return _error(400, 'INVALID_ARGUMENT', 'updatePersonFields is empty.');
     }
+    if (!_writableFields.containsAll(updating)) {
+      return _error(
+        400,
+        'INVALID_ARGUMENT',
+        'Invalid updatePersonFields mask path.',
+      );
+    }
     final p = _current[name];
     if (p == null || p.deleted) {
       return _error(404, 'NOT_FOUND', 'Requested entity was not found.');
@@ -596,15 +601,16 @@ class FakeGooglePeople {
         sourceEtag = s['etag'] as String;
       }
     }
-    if (etag == null && sourceEtag == null) {
+    // Google checks the contact source's etag, and wants it there.
+    if (sourceEtag == null) {
       return _error(
         400,
         'INVALID_ARGUMENT',
-        'Request person.metadata.sources must be set.',
+        'Request person.metadata.sources must be set with the contact '
+            'source.',
       );
     }
-    if ((etag != null && etag != p.etag) ||
-        (sourceEtag != null && sourceEtag != p.sourceEtag)) {
+    if (sourceEtag != p.sourceEtag || (etag != null && etag != p.etag)) {
       return _error(
         400,
         'FAILED_PRECONDITION',
@@ -612,6 +618,18 @@ class FakeGooglePeople {
             'Clear local cache and get the latest person.',
         reason: 'failedPrecondition',
       );
+    }
+    if (updating.contains('memberships')) {
+      final groups = person['memberships'];
+      final inOne = groups is List &&
+          groups.any((m) => m is Map && m['contactGroupMembership'] is Map);
+      if (!inOne) {
+        return _error(
+          400,
+          'INVALID_ARGUMENT',
+          'Person must have at least one contact group membership.',
+        );
+      }
     }
     _refused(person);
     final given = _stored(person);
@@ -693,16 +711,38 @@ class FakeGooglePeople {
   }
 
   void _refused(Map<String, Object?> person) {
-    if (refuse?.call(person) ?? false) {
-      throw _Refusal(
-        _error(
-          400,
-          'INVALID_ARGUMENT',
-          'Invalid value in person: ${_quote(person)}',
-        ),
-      );
+    final problem = _problem(person);
+    if (problem != null) {
+      throw _Refusal(_error(400, 'INVALID_ARGUMENT', problem));
     }
   }
+
+  /// Why Google would not take [person], in its words, or null: a test's
+  /// [refuse], or more than one value on a field that holds one.
+  String? _problem(Map<String, Object?> person) {
+    if (refuse?.call(person) ?? false) {
+      return 'Invalid value in person: ${_quote(person)}';
+    }
+    for (final f in _singletons) {
+      final value = person[f];
+      if (value is List && value.length > 1) {
+        return 'Only one value is allowed for $f: ${_quote(person)}';
+      }
+    }
+    return null;
+  }
+
+  /// Fields a contact holds one of.
+  static const _singletons = {'names', 'birthdays', 'biographies', 'genders'};
+
+  /// What `updatePersonFields` may name.
+  static const _writableFields = {
+    'addresses', 'biographies', 'birthdays', 'calendarUrls', 'clientData',
+    'emailAddresses', 'events', 'externalIds', 'genders', 'imClients',
+    'interests', 'locales', 'locations', 'memberships', 'miscKeywords',
+    'names', 'nicknames', 'occupations', 'organizations', 'phoneNumbers',
+    'relations', 'sipAddresses', 'urls', 'userDefined',
+  };
 
   /// What a refusal quotes, as Google's do: the contact's own details.
   static String _quote(Map<String, Object?> person) => jsonEncode({

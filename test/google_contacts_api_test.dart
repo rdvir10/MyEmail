@@ -659,6 +659,91 @@ void main() {
     });
   });
 
+  group('the fake refuses what Google refuses', () {
+    late GoogleContactsApi client;
+    late String ann;
+    late Map<String, Object?> read;
+
+    setUp(() async {
+      client = api();
+      ann = google.seed(person('Ann', 'Lee', 'ann@example.com'));
+      read = (await client.get(ann))!;
+    });
+
+    test('an update without the contact source, or with its etag stale',
+        () async {
+      await expectLater(
+        client.update(ann, {'etag': read['etag']}, fields: ['nicknames']),
+        throwsA(isA<ContactRefused>()),
+      );
+      google.editFromGmail(ann, {
+        'nicknames': [
+          {'value': 'A'},
+        ],
+      });
+      final now = (await client.get(ann))!;
+      await expectLater(
+        client.update(
+          ann,
+          {'etag': now['etag'], 'metadata': read['metadata']},
+          fields: ['nicknames'],
+        ),
+        throwsA(isA<ContactChangedMeanwhile>()),
+      );
+    });
+
+    test('two values on a field that holds one, made or written', () async {
+      final twoNames = {
+        'names': [
+          {'givenName': 'Ann'},
+          {'givenName': 'Anne'},
+        ],
+      };
+      await expectLater(
+        client.create(twoNames),
+        throwsA(isA<ContactRefused>()),
+      );
+      await expectLater(
+        client.update(
+          ann,
+          {...read, ...twoNames},
+          fields: ['names'],
+        ),
+        throwsA(isA<ContactRefused>()),
+      );
+      final answers = await client.createBatch([(person: twoNames, tag: 't')]);
+      expect(answers.single.failure, isA<ContactRefused>());
+    });
+
+    test('a field updatePersonFields cannot name', () async {
+      for (final field in ['metadata', 'photos']) {
+        await expectLater(
+          client.update(ann, read, fields: [field]),
+          throwsA(isA<ContactRefused>()),
+          reason: field,
+        );
+      }
+    });
+
+    test('contact groups written with no contact group in them', () async {
+      await expectLater(
+        client.update(
+          ann,
+          {
+            ...read,
+            'memberships': [
+              {
+                'domainMembership': {'inViewerDomain': true},
+              },
+            ],
+          },
+          fields: ['memberships'],
+        ),
+        throwsA(isA<ContactRefused>()),
+      );
+    });
+  });
+
   group('refusals', () {
     test('a token without contacts is SignInNeedsConsent', () async {
       google.consentMissing = true;
