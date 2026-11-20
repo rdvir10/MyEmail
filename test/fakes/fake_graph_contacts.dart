@@ -289,14 +289,17 @@ class FakeGraphContacts {
 
     final s = request.url.pathSegments;
     final q = request.url.queryParameters;
-    // Outlook's lists page by $top where it is given, by the header where
-    // it is not, and never by more than this fake's largest page.
+    // Outlook pages a list by its $top, ten to a page without one, and a
+    // delta by the header; never by more than this fake's largest page.
+    final listPage = (int.tryParse(q[r'$top'] ?? '') ?? 10).clamp(
+      1,
+      maxPageSize,
+    );
     final asked = RegExp(r'odata\.maxpagesize=(\d+)').firstMatch(prefer);
-    final page =
-        (int.tryParse(request.url.queryParameters[r'$top'] ?? '') ??
-                int.tryParse(asked?[1] ?? '') ??
-                maxPageSize)
-            .clamp(1, maxPageSize);
+    final deltaPage = (int.tryParse(asked?[1] ?? '') ?? maxPageSize).clamp(
+      1,
+      maxPageSize,
+    );
     try {
       if (s.length < 2 || s[0] != 'v1.0') return _notFound();
       final m = request.method;
@@ -308,7 +311,7 @@ class FakeGraphContacts {
       final rest = s.sublist(2);
       switch (rest) {
         case ['contacts'] when m == 'GET':
-          return _list(mainFolderId, q, page);
+          return _list(mainFolderId, q, listPage);
         case ['contacts'] when m == 'POST':
           return _create(request.body);
         case ['contacts', final id] when m == 'GET':
@@ -319,9 +322,9 @@ class FakeGraphContacts {
           return _delete(id);
         case ['contactFolders', final f, 'contacts'] when m == 'GET':
           if (!_folders.contains(f)) return _notFound();
-          return _list(f, q, page);
+          return _list(f, q, listPage);
         case ['contactFolders', final f, 'contacts', 'delta'] when m == 'GET':
-          return _delta(f, q, page);
+          return _delta(f, q, deltaPage);
         case ['contactFolders', final f] when m == 'GET':
           return _folder(f, q);
         case ['contactFolders', final f] when m == 'PATCH':
@@ -362,7 +365,7 @@ class FakeGraphContacts {
               if (expand != null) ..._expanded(c.properties, expand),
             },
       ];
-      pages = _Pages(items, path: 'me/contacts');
+      pages = _Pages(items, path: 'me/contacts', size: page);
     }
     return _ok(_pageOf(pages, page, 'value'));
   }
@@ -874,7 +877,10 @@ class FakeGraphContacts {
   }
 
   /// One page of [pages], with the link to the next, or the delta link.
-  Map<String, Object?> _pageOf(_Pages pages, int size, String key) {
+  Map<String, Object?> _pageOf(_Pages pages, int asked, String key) {
+    // A list's later pages are the size its first asked for: its $top is
+    // in the link, as Graph's are.
+    final size = pages.size ?? asked;
     final end = (pages.offset + size).clamp(0, pages.items.length);
     final body = <String, Object?>{
       key: pages.items.sublist(pages.offset, end),
@@ -972,11 +978,15 @@ class _Pages {
     this.deltaToken,
     this.number = 0,
     this.offset = 0,
+    this.size,
   });
 
   final List<Map<String, Object?>> items;
   final String path;
   final String? deltaToken;
+
+  /// The page size a list's first page was asked for with.
+  final int? size;
 
   /// Which delta round these are pages of, for expiry.
   final int number;
@@ -988,6 +998,7 @@ class _Pages {
     deltaToken: deltaToken,
     number: number,
     offset: offset,
+    size: size,
   );
 }
 

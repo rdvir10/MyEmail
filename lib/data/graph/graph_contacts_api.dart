@@ -169,26 +169,40 @@ class GraphContactsApi {
     final at = folderId == null
         ? '$base/me/contacts'
         : '$base/me/contactFolders/${_id(folderId)}/contacts';
-    Uri? next = Uri.parse(at).replace(
-      queryParameters: {
-        r'$top': '$pageSize',
-        if (!whole) r'$select': select,
-      },
+    final (:items, :pages) = await _allPages(
+      Uri.parse(at).replace(
+        queryParameters: {
+          r'$top': '$pageSize',
+          if (!whole) r'$select': select,
+        },
+      ),
+      'list',
     );
-    final contacts = <Map<String, Object?>>[];
+    debugPrint('[myemail] contacts: Microsoft listed ${items.length} '
+        'contacts, $pages pages, ${watch.elapsedMilliseconds} ms');
+    return items;
+  }
+
+  /// Every page of the list [first] asks for, following Graph's links to
+  /// the end. Outlook pages a list by its `$top`, ten to a page without
+  /// one, so a list read for what is in it is read to its last page.
+  Future<({List<Map<String, Object?>> items, int pages})> _allPages(
+    Uri first,
+    String doing,
+  ) async {
+    Uri? next = first;
+    final items = <Map<String, Object?>>[];
     final seen = <Uri>{};
     var pages = 0;
     while (next != null) {
       if (!seen.add(next)) throw _pagesLoop;
-      final json = await _get(next, 'list');
+      final json = await _get(next, doing);
       pages++;
-      contacts.addAll(_valueOf(json));
+      items.addAll(_valueOf(json));
       final link = json['@odata.nextLink'];
       next = link is String ? _graphLink(link) : null;
     }
-    debugPrint('[myemail] contacts: Microsoft listed ${contacts.length} '
-        'contacts, $pages pages, ${watch.elapsedMilliseconds} ms');
-    return contacts;
+    return (items: items, pages: pages);
   }
 
   /// The changes in the Contacts folder [folderId] since [deltaLink], or,
@@ -302,20 +316,23 @@ class GraphContactsApi {
 
   /// The contacts in the main Contacts folder with [address] among their
   /// email addresses, each with its tag: how a create whose answer was lost
-  /// is found again where the delta did not show it.
+  /// is found again where the delta did not show it. Every page of them:
+  /// an address many contacts share (a family's, an office's) can put the
+  /// tagged one past the first.
   Future<List<Map<String, Object?>>> findByEmail(String address) async {
     final quoted = address.replaceAll("'", "''");
-    final json = await _get(
+    final (:items, pages: _) = await _allPages(
       Uri.parse('$base/me/contacts').replace(
         queryParameters: {
           r'$filter': "emailAddresses/any(a:a/address eq '$quoted')",
+          r'$top': '$pageSize',
           r'$select': select,
           r'$expand': _expandOf(tagProperty),
         },
       ),
       'find',
     );
-    return _valueOf(json);
+    return items;
   }
 
   /// The id of the mailbox's Deleted Items folder, where a contact Outlook

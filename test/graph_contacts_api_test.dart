@@ -485,6 +485,30 @@ void main() {
         "emailAddresses/any(a:a/address eq 'O''Neil@example.com')",
       );
     });
+
+    test('findByEmail reads every page: the tagged copy of an address '
+        'many contacts share can be past the first', () async {
+      for (var i = 0; i < 11; i++) {
+        graph.seed(contact('Family$i', 'Lee', 'home@lee.example'));
+      }
+      graph.seed(
+        contact('Ann', 'Lee', 'home@lee.example'),
+        tag: 'people/c42',
+      );
+
+      final found = await api().findByEmail('home@lee.example');
+
+      expect(found, hasLength(12));
+      expect(found.map(GraphContactsApi.tagOf), contains('people/c42'));
+      expect(graph.requests.first.url.queryParameters[r'$top'], '200');
+
+      // And past Graph's largest page too.
+      graph
+        ..requests.clear()
+        ..maxPageSize = 5;
+      expect(await api().findByEmail('home@lee.example'), hasLength(12));
+      expect(graph.requests, hasLength(3));
+    });
   });
 
   group('writing', () {
