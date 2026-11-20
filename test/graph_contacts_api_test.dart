@@ -67,6 +67,14 @@ void main() {
       GraphContactsApi.prefer,
       'IdType="ImmutableId", odata.maxpagesize=200',
     );
+    expect(GraphContactsApi.selectVersion, 1);
+  });
+
+  test('the tag and the claim are fixed for ever', () {
+    // Contacts already tagged in Hadco are found again only under these
+    // exact ids, and each name takes a slot in the mailbox: never change
+    // them, and never add another.
+    expect(GraphContactsApi.appGuid, '958f81ac-dee9-4f9e-a713-9043484f5b0f');
     expect(
       GraphContactsApi.tagProperty,
       'String {958f81ac-dee9-4f9e-a713-9043484f5b0f} Name MyEmailLink',
@@ -75,7 +83,34 @@ void main() {
       GraphContactsApi.claimProperty,
       'String {958f81ac-dee9-4f9e-a713-9043484f5b0f} Name MyEmailSyncDevice',
     );
-    expect(GraphContactsApi.selectVersion, 1);
+  });
+
+  test('the tag replaces one the contact carries under the same id in '
+      'other letters, and keeps every other property', () {
+    const other = {
+      'id': 'String {00000000-0000-0000-0000-000000000001} Name MyEmailLink',
+      'value': 'another app',
+    };
+    final tagged = GraphContactsApi.withTag({
+      'givenName': 'Ann',
+      'singleValueExtendedProperties': [
+        other,
+        {
+          'id': 'String {958F81AC-DEE9-4F9E-A713-9043484F5B0F} Name '
+              'MyEmailLink',
+          'value': 'people/old',
+        },
+      ],
+    }, 'people/new');
+
+    expect(tagged['givenName'], 'Ann');
+    expect(tagged['singleValueExtendedProperties'], [
+      other,
+      {'id': GraphContactsApi.tagProperty, 'value': 'people/new'},
+    ]);
+    expect(GraphContactsApi.tagOf(tagged), 'people/new');
+    final untouched = {'givenName': 'Ann'};
+    expect(GraphContactsApi.withTag(untouched, null), same(untouched));
   });
 
   test('every request, and every request inside a batch, carries the one '
