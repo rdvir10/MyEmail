@@ -225,10 +225,16 @@ class FakeGooglePeople {
   }
 
   /// Answer the next [count] requests 429, with [retryAfter] seconds where
-  /// given, and naming a daily quota with [daily].
-  void throttle(int count, {int? retryAfter, bool daily = false}) {
+  /// given, and naming a daily quota with [daily]. With [asForbidden], in
+  /// Google's older way: a 403 whose reason is rateLimitExceeded.
+  void throttle(
+    int count, {
+    int? retryAfter,
+    bool daily = false,
+    bool asForbidden = false,
+  }) {
     for (var i = 0; i < count; i++) {
-      _throttles.add(_Throttle(retryAfter, daily));
+      _throttles.add(_Throttle(retryAfter, daily, asForbidden));
     }
   }
 
@@ -897,6 +903,20 @@ class FakeGooglePeople {
   };
 
   http.Response _throttled(_Throttle t) {
+    if (t.asForbidden) {
+      return _envelope(403, {
+        'code': 403,
+        'message': 'Rate Limit Exceeded',
+        'errors': [
+          {
+            'message': 'Rate Limit Exceeded',
+            'domain': 'usageLimits',
+            'reason': 'rateLimitExceeded',
+          },
+        ],
+        'status': 'PERMISSION_DENIED',
+      });
+    }
     final limit = t.daily
         ? 'Daily Contact Writes per day per user'
         : 'Critical read requests (Contact and Profile Reads) per minute '
@@ -1016,9 +1036,10 @@ class _Listing {
 }
 
 class _Throttle {
-  _Throttle(this.retryAfter, this.daily);
+  _Throttle(this.retryAfter, this.daily, this.asForbidden);
   final int? retryAfter;
   final bool daily;
+  final bool asForbidden;
 }
 
 class _Refusal implements Exception {

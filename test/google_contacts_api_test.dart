@@ -627,12 +627,48 @@ void main() {
       expect(failure, isA<ConnectionFailed>());
       expect(failure, isA<Retryable>());
       expect(slept, [
-        for (final s in [1, 2, 4, 8, 16]) Duration(seconds: s),
+        for (final s in [1, 2, 4, 8, 16, 29]) Duration(seconds: s),
       ]);
       expect(
         slept.fold(Duration.zero, (a, b) => a + b),
-        lessThanOrEqualTo(GoogleContactsApi.longestBackoff),
+        GoogleContactsApi.longestBackoff,
       );
+    });
+
+    test('a Retry-After longer than is left of the minute is not waited',
+        () async {
+      google
+        ..throttle(1, retryAfter: 50)
+        ..throttle(1, retryAfter: 20);
+
+      await expectLater(api().listAll(), throwsA(isA<ConnectionFailed>()));
+      expect(slept, [const Duration(seconds: 50)]);
+    });
+
+    test("Google's older 403 rateLimitExceeded is a throttle too", () async {
+      google.throttle(1, asForbidden: true);
+
+      final read = await api().listAll();
+
+      expect(read.people, isEmpty);
+      expect(slept, [const Duration(seconds: 1)]);
+      expect(google.requestsTo('/connections'), hasLength(2));
+    });
+
+    test('a server in trouble is not asked again: the run is', () async {
+      google.fail(1, status: 503);
+
+      Object? failure;
+      try {
+        await api().listAll();
+      } catch (e) {
+        failure = e;
+      }
+
+      expect(failure, isA<ConnectionFailed>());
+      expect(failure, isA<Retryable>());
+      expect(google.requests, hasLength(1));
+      expect(slept, isEmpty);
     });
 
     test('a daily quota is not waited for: nothing goes until 08:00 UTC',
@@ -652,10 +688,39 @@ void main() {
         ),
       );
       expect(slept, isEmpty);
-      expect(
-        GoogleContactsApi.nextQuotaDay(DateTime.utc(2026, 11, 20, 7, 59)),
-        DateTime.utc(2026, 11, 20, 8),
-      );
+    });
+
+    test('the quota day starts at Pacific midnight, in both seasons and '
+        'around each change of the clocks', () {
+      DateTime next(DateTime now) => GoogleContactsApi.nextQuotaDay(now);
+      final cases = {
+        // Winter, standard time: midnight is 08:00 UTC.
+        DateTime.utc(2026, 1, 15, 7, 59): DateTime.utc(2026, 1, 15, 8),
+        DateTime.utc(2026, 1, 15, 8): DateTime.utc(2026, 1, 16, 8),
+        DateTime.utc(2026, 11, 20, 9, 30): DateTime.utc(2026, 11, 21, 8),
+        // Summer time: midnight is 07:00 UTC, and 07:30 is past it.
+        DateTime.utc(2026, 7, 15, 6, 59): DateTime.utc(2026, 7, 15, 7),
+        DateTime.utc(2026, 7, 15, 7, 30): DateTime.utc(2026, 7, 16, 7),
+        // Summer time starts on Sunday 8 March 2026 at 10:00 UTC.
+        DateTime.utc(2026, 3, 8, 7, 30): DateTime.utc(2026, 3, 8, 8),
+        DateTime.utc(2026, 3, 8, 9, 30): DateTime.utc(2026, 3, 9, 7),
+        DateTime.utc(2026, 3, 8, 10, 30): DateTime.utc(2026, 3, 9, 7),
+        DateTime.utc(2026, 3, 9, 6, 30): DateTime.utc(2026, 3, 9, 7),
+        // And ends on Sunday 1 November 2026 at 09:00 UTC.
+        DateTime.utc(2026, 11, 1, 6, 30): DateTime.utc(2026, 11, 1, 7),
+        DateTime.utc(2026, 11, 1, 7, 30): DateTime.utc(2026, 11, 2, 8),
+        DateTime.utc(2026, 11, 1, 8, 30): DateTime.utc(2026, 11, 2, 8),
+        DateTime.utc(2026, 11, 1, 9, 30): DateTime.utc(2026, 11, 2, 8),
+        DateTime.utc(2026, 11, 2, 7, 30): DateTime.utc(2026, 11, 2, 8),
+        // A year whose change falls on other dates: 2027, 14 March and
+        // 7 November.
+        DateTime.utc(2027, 3, 14, 9, 59): DateTime.utc(2027, 3, 15, 7),
+        DateTime.utc(2027, 11, 7, 7, 30): DateTime.utc(2027, 11, 8, 8),
+        DateTime.utc(2027, 11, 6, 7, 30): DateTime.utc(2027, 11, 7, 7),
+      };
+      for (final MapEntry(key: now, value: renewed) in cases.entries) {
+        expect(next(now), renewed, reason: 'after $now');
+      }
     });
   });
 

@@ -546,9 +546,11 @@ class GoogleContactsApi {
 
   /// Send what [build] makes, waiting out Google's throttling: for as long
   /// as it asks where it says (`Retry-After`), otherwise twice as long
-  /// each time from a second, and no more than [longestBackoff] in all,
-  /// after which the run stops and is tried again later. A daily quota is
-  /// not waited for: nothing changes until the next day.
+  /// each time from a second, the last wait cut to what is left of
+  /// [longestBackoff], which is the most waited in all. After that, or
+  /// when Google asks for longer than is left, the run stops and is tried
+  /// again later. A daily quota is not waited for: nothing changes until
+  /// the next day.
   Future<http.Response> _exchange(http.Request Function() build) async {
     var waited = Duration.zero;
     var next = const Duration(seconds: 1);
@@ -561,9 +563,15 @@ class GoogleContactsApi {
             '(HTTP ${response.statusCode})');
         throw ContactQuotaSpent(until);
       }
-      final asked = _retryAfter(response);
-      final wait = asked ?? next;
-      if (waited + wait > longestBackoff) {
+      // A Retry-After of nothing is no answer: asked again at once, it
+      // would be asked for ever.
+      final asked = switch (_retryAfter(response)) {
+        final d? when d > Duration.zero => d,
+        _ => null,
+      };
+      final left = longestBackoff - waited;
+      final wait = asked ?? (next < left ? next : left);
+      if (left <= Duration.zero || wait > left) {
         debugPrint('[myemail] contacts: Google still throttling after '
             '${waited.inSeconds} s (HTTP ${response.statusCode})');
         throw const ConnectionFailed(
@@ -580,13 +588,35 @@ class GoogleContactsApi {
   }
 
   /// When Google's daily quotas start again after [now]: they are renewed
-  /// at midnight Pacific time, which is 08:00 UTC in winter and 07:00 in
-  /// summer. The later of the two is never early.
+  /// at midnight Pacific time, which is 08:00 UTC while California keeps
+  /// standard time and 07:00 UTC in its summer time.
   static DateTime nextQuotaDay(DateTime now) {
     final utc = now.toUtc();
-    var at = DateTime.utc(utc.year, utc.month, utc.day, 8);
-    if (!at.isAfter(utc)) at = at.add(const Duration(days: 1));
-    return at;
+    final local = utc.subtract(Duration(hours: _pacificSummer(utc) ? 7 : 8));
+    // The next Pacific midnight, as a date, and how far behind UTC
+    // California is then: summer time starts and ends at 2 a.m., so a
+    // midnight is on the clock of the day before it changes.
+    final day = DateTime.utc(local.year, local.month, local.day + 1);
+    final summer =
+        day.isAfter(_sunday(day.year, 3, 2)) &&
+        !day.isAfter(_sunday(day.year, 11, 1));
+    return day.add(Duration(hours: summer ? 7 : 8));
+  }
+
+  /// Whether California keeps summer time at the instant [utc]: from 2 a.m.
+  /// standard time (10:00 UTC) on the second Sunday of March to 2 a.m.
+  /// summer time (09:00 UTC) on the first Sunday of November.
+  static bool _pacificSummer(DateTime utc) {
+    final starts = _sunday(utc.year, 3, 2).add(const Duration(hours: 10));
+    final ends = _sunday(utc.year, 11, 1).add(const Duration(hours: 9));
+    return !utc.isBefore(starts) && utc.isBefore(ends);
+  }
+
+  /// The [nth] Sunday of [month] in [year], as a UTC date.
+  static DateTime _sunday(int year, int month, int nth) {
+    final first = DateTime.utc(year, month);
+    final toSunday = (DateTime.sunday - first.weekday) % 7;
+    return DateTime.utc(year, month, 1 + toSunday + 7 * (nth - 1));
   }
 
   /// With the account's token, and once more with a freshly refreshed one
