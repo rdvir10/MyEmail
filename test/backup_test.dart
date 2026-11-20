@@ -682,6 +682,8 @@ void main() {
 
       expect(files.saved, isNotNull);
       expect(files.savedName, endsWith('.json'));
+      expect(files.savedType, 'application/json',
+          reason: 'Android names a saved file by its type');
       expect(find.textContaining('2 accounts'), findsOneWidget);
     });
 
@@ -1371,16 +1373,22 @@ class _FakeBackupFiles implements BackupFiles {
   final bool accept;
   String? saved;
   String? savedName;
+  String? savedType;
+  String? savedTitle;
   String? toPick;
 
   @override
   Future<bool> save({
     required String fileName,
     required String contents,
+    String mimeType = 'application/json',
+    String dialogTitle = 'Save MyEmail settings',
   }) async {
     if (!accept) return false;
     saved = contents;
     savedName = fileName;
+    savedType = mimeType;
+    savedTitle = dialogTitle;
     return true;
   }
 
