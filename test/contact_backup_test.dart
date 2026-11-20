@@ -338,6 +338,31 @@ void main() {
       ]));
     });
 
+    test('reads an HTML note as text, keeping links and decoding entities',
+        () {
+      String note(String html) => unfold(ContactBackup.vCard([
+            person({
+              'biographies': [
+                {'value': html, 'contentType': 'TEXT_HTML'},
+              ],
+            }),
+          ])).singleWhere((l) => l.startsWith('NOTE:')).substring(5);
+
+      expect(note('See <a href="https://x.example/p">site</a> first'),
+          'See site (https://x.example/p) first',
+          reason: 'the link is the point of the note');
+      expect(note('<a href="https://x.example">https://x.example</a>'),
+          'https://x.example',
+          reason: 'not twice when the words are the link');
+      expect(note('<a href="mailto:dana@x.example">dana@x.example</a>'),
+          'dana@x.example');
+      expect(note('Shalom &#1488;&#1489; &amp; it&#8217;s&nbsp;fine'),
+          'Shalom \u05D0\u05D1 & it\u2019s fine');
+      expect(note('<div>One\n  line</div><div>Two<br>Three</div>'
+              '<script>x()</script>'),
+          r'One line\nTwo\nThree');
+    });
+
     test("leaves out what came from a Google profile, not Ron's contact", () {
       final lines = unfold(ContactBackup.vCard([
         person({

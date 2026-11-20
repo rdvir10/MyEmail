@@ -1,6 +1,7 @@
 import 'dart:convert';
 
-import '../imap/imap_mapping.dart' show htmlToText;
+import 'package:html/dom.dart' as dom;
+import 'package:html/parser.dart' as html_parser;
 
 /// The two files contact sync's backup is saved as, before the first sync
 /// changes anything: the Google account's contacts as a vCard file, which
@@ -385,9 +386,8 @@ abstract final class ContactBackup {
     final bio = _entries(person, 'biographies').firstOrNull;
     if (bio != null) {
       final raw = _str(bio['value']);
-      final note = _str(bio['contentType']) == 'TEXT_HTML'
-          ? htmlToText(raw)
-          : raw;
+      final note =
+          _str(bio['contentType']) == 'TEXT_HTML' ? _noteText(raw) : raw;
       if (note.isNotEmpty) lines.add('NOTE:${_text(note)}');
     }
 
@@ -499,6 +499,55 @@ abstract final class ContactBackup {
     }
     return '$property;X-APPLE-OMIT-YEAR=1604:1604-${two(month)}-${two(day)}';
   }
+
+  /// An HTML note as the text it shows, read with package:html: every
+  /// entity decoded (`&#1488;`, `&#8217;` and the named ones alike), a
+  /// line break for `<br>` and after each block, and a link's target kept
+  /// after its words, "site (https://...)", unless the words are the
+  /// target already. Scripts and styles are left out.
+  static String _noteText(String html) {
+    final out = StringBuffer();
+    void walk(dom.Node node) {
+      if (node is dom.Text) {
+        // White space in HTML source is a space wherever it falls.
+        out.write(node.data.replaceAll(RegExp(r'\s+'), ' '));
+        return;
+      }
+      if (node is! dom.Element) {
+        node.nodes.forEach(walk);
+        return;
+      }
+      final tag = node.localName;
+      if (tag == 'script' || tag == 'style') return;
+      if (tag == 'br') {
+        out.write('\n');
+        return;
+      }
+      node.nodes.forEach(walk);
+      if (tag == 'a') {
+        final href = (node.attributes['href'] ?? '').trim();
+        final target =
+            href.startsWith('mailto:') ? href.substring('mailto:'.length) : href;
+        if (target.isNotEmpty && target != node.text.trim()) {
+          out.write(' ($target)');
+        }
+      }
+      if (_blocks.contains(tag)) out.write('\n');
+    }
+
+    walk(html_parser.parseFragment(html));
+    return out
+        .toString()
+        .replaceAll(RegExp(r' *\n *'), '\n')
+        .replaceAll(RegExp(r'\n{3,}'), '\n\n')
+        .trim();
+  }
+
+  /// The elements a line break follows.
+  static const _blocks = {
+    'p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', //
+    'blockquote', 'pre', 'table', 'ul', 'ol',
+  };
 
   /// A text value escaped as RFC 2426 asks: backslash, comma, semicolon
   /// and line breaks.
