@@ -732,10 +732,8 @@ enum _Provider {
 
   /// What contact sync asks for.
   List<String> get contacts => switch (this) {
-        _Provider.microsoft => const [
-            'https://graph.microsoft.com/Contacts.ReadWrite',
-          ],
-        _Provider.google => GoogleOAuth.contactsScopes,
+        _Provider.microsoft => MicrosoftOAuth.contactSyncScopes,
+        _Provider.google => GoogleOAuth.contactSyncScopes,
       };
 
   /// A resource every sign-in here allows.

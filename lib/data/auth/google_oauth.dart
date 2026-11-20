@@ -67,6 +67,7 @@ class GoogleOAuth implements OAuthRefresher {
   /// work there. `calendar.events` is for meetings created in the app.
   /// [meetScopes] is for Meet links made for other accounts' meetings,
   /// [contactsScopes] for suggesting recipients from Google's contacts,
+  /// [contactSyncScopes] for contact sync with a Microsoft account,
   /// [gmailSettingsScopes] for the vacation responder and filters, and
   /// [calendarListScopes] for the calendars beside the primary one.
   /// `openid` and `email` bring back an ID token naming the account.
@@ -75,6 +76,7 @@ class GoogleOAuth implements OAuthRefresher {
     'https://www.googleapis.com/auth/calendar.events',
     ...meetScopes,
     ...contactsScopes,
+    ...contactSyncScopes,
     ...gmailSettingsScopes,
     ...calendarListScopes,
     'openid',
@@ -89,6 +91,18 @@ class GoogleOAuth implements OAuthRefresher {
   static const contactsScopes = [
     'https://www.googleapis.com/auth/contacts.readonly',
     'https://www.googleapis.com/auth/contacts.other.readonly',
+  ];
+
+  /// The account's contacts, read and changed, for contact sync with a
+  /// Microsoft account. Sensitive rather than restricted, so nothing more
+  /// is needed from Google. In [scopes] because an installed app cannot add
+  /// a scope to a sign-in it already has: allowing it is a whole Google
+  /// sign-in again. Named on its own when a token is asked for it, as
+  /// [meetScopes] is. It covers `contacts.readonly` (Google may report only
+  /// the broader one), but not `contacts.other.readonly`, which stays
+  /// asked for beside it.
+  static const contactSyncScopes = [
+    'https://www.googleapis.com/auth/contacts',
   ];
 
   /// The Meet REST API, for a link made with no event on the Google
@@ -263,12 +277,13 @@ class GoogleOAuth implements OAuthRefresher {
       final granted = '${json['scope'] ?? ''}'.split(' ').toSet();
       final missing = [
         for (final s in scopes)
-          if (!granted.contains(s)) s,
+          if (!_covered(s, granted)) s,
       ];
       if (missing.isNotEmpty) {
         final wanted = missing.any(meetScopes.contains)
             ? 'Google Meet'
-            : missing.any(contactsScopes.contains)
+            : missing.any(contactsScopes.contains) ||
+                    missing.any(contactSyncScopes.contains)
                 ? 'your contacts'
                 : missing.any(gmailSettingsScopes.contains)
                     ? "Gmail's settings"
@@ -293,6 +308,17 @@ class GoogleOAuth implements OAuthRefresher {
 
   @override
   void close() => _http.close();
+
+  /// Whether [granted] covers [scope]: by naming it, or for
+  /// `contacts.readonly` by naming `contacts`, which reads everything it
+  /// reads. Google may list only the broader scope once both are granted,
+  /// and recipient search must not then read as needing consent. "Other
+  /// contacts" are not covered by it, so `contacts.other.readonly` must be
+  /// named.
+  static bool _covered(String scope, Set<String> granted) =>
+      granted.contains(scope) ||
+      (scope == 'https://www.googleapis.com/auth/contacts.readonly' &&
+          granted.contains(contactSyncScopes.single));
 
   // --- plumbing --------------------------------------------------------------
 

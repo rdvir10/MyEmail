@@ -132,6 +132,14 @@ class MicrosoftOAuth implements OAuthRefresher {
     'https://graph.microsoft.com/User.Read',
   ];
 
+  /// The mailbox's contacts, read and changed, for contact sync with a
+  /// Google account. On its own for the same reason as [calendarScopes],
+  /// and never inside [scopes]: an organisation that refuses this must
+  /// never be able to stop the mail with it.
+  static const contactSyncScopes = [
+    'https://graph.microsoft.com/Contacts.ReadWrite',
+  ];
+
   static Future<void> _realSleep(Duration d) => Future<void>.delayed(d);
 
   /// Where the redirect lands after a successful sign-in.

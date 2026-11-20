@@ -90,6 +90,15 @@ void main() {
       expect(prompt.expiresAt, now.add(const Duration(seconds: 900)));
     });
 
+    test('never asks for contacts with the mail', () {
+      // An organisation that refuses contact sync must never be able to
+      // stop the mail with it: the refresh for mail asks for these alone.
+      expect(MicrosoftOAuth.contactSyncScopes,
+          ['https://graph.microsoft.com/Contacts.ReadWrite']);
+      expect(MicrosoftOAuth.scopes,
+          isNot(contains(MicrosoftOAuth.contactSyncScopes.single)));
+    });
+
     test('a response missing the codes is an error, not a blank screen',
         () async {
       final oauth = oauthWith((_) async => json({'expires_in': 900}));
