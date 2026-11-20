@@ -147,6 +147,45 @@ void main() {
       expect(entries.containsKey(UiStateKeys.recentMoves), isFalse);
     });
 
+    test("contact sync's switch and this device's id are left out",
+        () async {
+      // Each device keeps its own record of what it paired and deleted,
+      // so only one may sync. A switch carried to a new device would start
+      // a second there, working against the first; an id carried with it
+      // would let each take the other's claim for its own.
+      await uiState.writeString(UiStateKeys.contactSyncDevice, 'on');
+      await uiState.writeString(UiStateKeys.contactSyncDeviceId, 'dev-1');
+      final creds = MemoryCredentialStore();
+      final sealing = BackupService(
+        accountStore: accounts,
+        uiState: uiState,
+        credentialStore: creds,
+      );
+
+      for (final backup in [
+        await service.export(),
+        await sealing.export(passphrase: 'correct horse'),
+      ]) {
+        final file = backup.toJsonString();
+        expect(file, isNot(contains(UiStateKeys.contactSyncDevice)));
+        expect(file, isNot(contains(UiStateKeys.contactSyncDeviceId)));
+        expect(file, isNot(contains('dev-1')));
+      }
+      expect(BackupService.exported.keys, isNot(contains(
+          UiStateKeys.contactSyncDevice)));
+
+      // Nor does a file that carries them, which no build writes, switch
+      // it on.
+      final to = MemoryUiStateStore();
+      await BackupService(accountStore: MemoryAccountStore(), uiState: to)
+          .import(SettingsBackup(accounts: const [], entries: const {
+        UiStateKeys.contactSyncDevice: 'on',
+        UiStateKeys.contactSyncDeviceId: 'dev-1',
+      }));
+      expect(to.readString(UiStateKeys.contactSyncDevice), isNull);
+      expect(to.readString(UiStateKeys.contactSyncDeviceId), isNull);
+    });
+
     test('meetings made ahead of Send are left out', () async {
       // Events this device made on the calendar and will delete itself.
       // Restored elsewhere, that device's next start would delete one it
