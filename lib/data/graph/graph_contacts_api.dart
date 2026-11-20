@@ -72,6 +72,10 @@ class GraphContactsApi {
   /// would read as a deletion and a new contact), and pages of 200.
   static const prefer = 'IdType="ImmutableId", odata.maxpagesize=200';
 
+  /// The page a listing asks for with `$top`, as the calendar's listings
+  /// do: Outlook's lists page by it, whatever the header says.
+  static const pageSize = 200;
+
   /// How many requests one `$batch` may carry. Graph takes no more.
   static const batchLimit = 20;
 
@@ -166,7 +170,10 @@ class GraphContactsApi {
         ? '$base/me/contacts'
         : '$base/me/contactFolders/${_id(folderId)}/contacts';
     Uri? next = Uri.parse(at).replace(
-      queryParameters: {if (!whole) r'$select': select},
+      queryParameters: {
+        r'$top': '$pageSize',
+        if (!whole) r'$select': select,
+      },
     );
     final contacts = <Map<String, Object?>>[];
     final seen = <Uri>{};
@@ -189,9 +196,14 @@ class GraphContactsApi {
   /// Every page is read before it returns; its [GraphContactsDelta.deltaLink]
   /// is where the next round starts.
   ///
-  /// Throws [ContactFeedExpired] when the link is no good any more (410,
-  /// or a 40X such as `syncStateNotFound`): then a new delta, without a
-  /// link, is the answer.
+  /// Throws [ContactFeedExpired] when the link is no good any more: then a
+  /// new delta, without a link, is the answer. Graph says so with a 410, or
+  /// a 40X "such as `syncStateNotFound`", a list it does not close; so on a
+  /// round that started from a stored link any 400 or 410 is read as that,
+  /// and so are the codes that name the sync state on any round. A fresh
+  /// delta costs a full listing, which is reconciled against the rows. A
+  /// folder that is not there is a [ContactGone], on a fresh round at the
+  /// latest.
   Future<GraphContactsDelta> delta({
     required String folderId,
     String? deltaLink,
@@ -216,7 +228,7 @@ class GraphContactsApi {
     while (next != null) {
       if (!seen.add(next)) throw _pagesLoop;
       final response = await _exchange(() => http.Request('GET', next!));
-      if (_deltaExpired(response)) {
+      if (_deltaExpired(response, stored: deltaLink != null)) {
         debugPrint('[myemail] contacts: Microsoft delta expired '
             '(HTTP ${response.statusCode})');
         throw ContactFeedExpired(response.statusCode);
@@ -742,11 +754,11 @@ class GraphContactsApi {
     return const Duration(seconds: 2);
   }
 
-  /// A delta link past its time: 410, or a 40X whose code says the sync
-  /// state is gone.
-  static bool _deltaExpired(http.Response response) {
+  /// A delta link past its time: 410; a 40X whose code says the sync state
+  /// is gone; and on a round that started from a [stored] link, any 400.
+  static bool _deltaExpired(http.Response response, {required bool stored}) {
     final status = response.statusCode;
-    if (status == 410) return true;
+    if (status == 410 || (stored && status == 400)) return true;
     if (status < 400 || status >= 500) return false;
     final code = _codeOf(_errorOf(response))?.toLowerCase();
     return code == 'syncstatenotfound' ||

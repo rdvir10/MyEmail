@@ -165,6 +165,15 @@ class FakeGraphContacts {
     return id;
   }
 
+  /// Delete the folder [id] and the contacts in it, as Outlook does.
+  void removeFolder(String id) {
+    if (id == mainFolderId) throw ArgumentError('The main folder stays.');
+    _folders.remove(id);
+    for (final c in _contacts.values.toList()) {
+      if (c.folder == id) purgeFromOutlook(c.id);
+    }
+  }
+
   /// Make every delta link issued so far expire: answered [status] with
   /// [code].
   void expireDeltaLinks({
@@ -280,11 +289,14 @@ class FakeGraphContacts {
 
     final s = request.url.pathSegments;
     final q = request.url.queryParameters;
+    // Outlook's lists page by $top where it is given, by the header where
+    // it is not, and never by more than this fake's largest page.
     final asked = RegExp(r'odata\.maxpagesize=(\d+)').firstMatch(prefer);
-    final page = (int.tryParse(asked?[1] ?? '') ?? maxPageSize).clamp(
-      1,
-      maxPageSize,
-    );
+    final page =
+        (int.tryParse(request.url.queryParameters[r'$top'] ?? '') ??
+                int.tryParse(asked?[1] ?? '') ??
+                maxPageSize)
+            .clamp(1, maxPageSize);
     try {
       if (s.length < 2 || s[0] != 'v1.0') return _notFound();
       final m = request.method;
@@ -342,8 +354,7 @@ class FakeGraphContacts {
         email = f[1]!.replaceAll("''", "'");
       }
       final expand = _expandOf(q);
-      final top = int.tryParse(q[r'$top'] ?? '');
-      var items = [
+      final items = [
         for (final c in _contacts.values)
           if (c.folder == folder && (email == null || _hasEmail(c, email)))
             {
@@ -351,7 +362,6 @@ class FakeGraphContacts {
               if (expand != null) ..._expanded(c.properties, expand),
             },
       ];
-      if (top != null && top < items.length) items = items.sublist(0, top);
       pages = _Pages(items, path: 'me/contacts');
     }
     return _ok(_pageOf(pages, page, 'value'));

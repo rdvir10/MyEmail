@@ -189,6 +189,7 @@ void main() {
         graph.requests.first.url.queryParameters[r'$select'],
         GraphContactsApi.select,
       );
+      expect(graph.requests.first.url.queryParameters[r'$top'], '200');
       expect(graph.requests, hasLength(3));
 
       final whole = await client.listAll(folderId: main, whole: true);
@@ -323,6 +324,77 @@ void main() {
     test('a folder not there is ContactGone, not expiry', () async {
       await expectLater(
         api().delta(folderId: 'AAMkADnoSuchFolder'),
+        throwsA(isA<ContactGone>()),
+      );
+    });
+
+    test('a stored link answered 400, whatever the code, has expired',
+        () async {
+      graph.seed(contact('Ann', 'Lee', 'ann@example.com'));
+      final client = api();
+      final first = await client.delta(folderId: main);
+      graph.expireDeltaLinks(status: 400, code: 'ErrorInvalidRequest');
+
+      await expectLater(
+        client.delta(folderId: main, deltaLink: first.deltaLink),
+        throwsA(isA<ContactFeedExpired>()),
+      );
+    });
+
+    test('a fresh delta answered 400 is a refusal, not expiry: a fresh one '
+        'again would meet it again', () async {
+      final client = api(
+        client: MockClient(
+          (_) async => http.Response(
+            jsonEncode({
+              'error': {'code': 'ErrorInvalidRequest', 'message': 'No.'},
+            }),
+            400,
+          ),
+        ),
+      );
+
+      await expectLater(
+        client.delta(folderId: main),
+        throwsA(isA<ContactRefused>()),
+      );
+    });
+
+    test('a folder gone is ContactGone, at the latest after one fresh try',
+        () async {
+      final folder = graph.addFolder();
+      graph.seed(contact('Ann', 'Lee', 'ann@example.com'), folderId: folder);
+      final first = await api().delta(folderId: folder);
+      graph.removeFolder(folder);
+
+      // Answered 404, it is gone at once.
+      await expectLater(
+        api().delta(folderId: folder, deltaLink: first.deltaLink),
+        throwsA(isA<ContactGone>()),
+      );
+
+      // Answered 400, the link is let go of, and the fresh delta finds the
+      // folder gone.
+      var calls = 0;
+      final client = api(
+        client: MockClient((r) async {
+          if (++calls == 1) {
+            return http.Response(
+              jsonEncode({
+                'error': {'code': 'ErrorInvalidIdMalformed'},
+              }),
+              400,
+            );
+          }
+          return graph.handle(r);
+        }),
+      );
+      await expectLater(
+        client.delta(folderId: folder, deltaLink: first.deltaLink),
+        throwsA(isA<ContactFeedExpired>()),
+      );
+      await expectLater(
+        client.delta(folderId: folder),
         throwsA(isA<ContactGone>()),
       );
     });
