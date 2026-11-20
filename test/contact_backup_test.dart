@@ -442,7 +442,8 @@ void main() {
       expect(file.substring(1), '$header\r\n');
     });
 
-    test("the header is Outlook on the web's, then the desktop's extras", () {
+    test("the header is Outlook on the web's, then the desktop's extras, "
+        "then the file's own", () {
       expect(ContactBackup.outlookHeader, [
         'First Name', 'Middle Name', 'Last Name', 'Title', 'Suffix', //
         'Nickname', 'Given Yomi', 'Surname Yomi', 'E-mail Address',
@@ -460,6 +461,8 @@ void main() {
         'Other Country/Region', 'Personal Web Page', 'Spouse', 'Schools',
         'Hobby', 'Location', 'Web Page', 'Birthday', 'Anniversary', 'Notes',
         'Initials', 'Profession', 'Children', 'Categories',
+        'E-mail Display Name', 'E-mail 2 Display Name',
+        'E-mail 3 Display Name', 'Display Name', 'File As',
       ]);
     });
 
@@ -467,6 +470,8 @@ void main() {
       final row = only(ContactBackup.outlookCsv([
         {
           'id': 'AAMk-1',
+          'displayName': 'Dana Levi',
+          'fileAs': 'Levi, Dana',
           'givenName': dana,
           'middleName': 'J',
           'surname': levi,
@@ -521,6 +526,9 @@ void main() {
       expect(row['E-mail Address'], 'dana@home.example');
       expect(row['E-mail 2 Address'], 'dana@work.example');
       expect(row['E-mail 3 Address'], 'dana@third.example');
+      expect(row['E-mail Display Name'], 'Dana');
+      expect(row['E-mail 2 Display Name'], 'Dana');
+      expect(row['E-mail 3 Display Name'], '');
       expect(row['Mobile Phone'], '+972 50-123-4567');
       expect(row['Home Phone'], '03-555-0101');
       expect(row['Home Phone 2'], '03-555-0102');
@@ -547,6 +555,41 @@ void main() {
       expect(row['Initials'], 'D.L.');
       expect(row['Profession'], 'Engineer');
       expect(row['Categories'], 'Family;VIP');
+      expect(row['Display Name'], 'Dana Levi');
+      expect(row['File As'], 'Levi, Dana');
+    });
+
+    test('a contact with only a display name has it as its name', () {
+      // Saved from a sender, imported with nothing but a name, or a
+      // company: with no parts, a row without the display name would come
+      // back with no name at all.
+      final row = only(ContactBackup.outlookCsv([
+        {
+          'displayName': 'Hadco Supplies',
+          'emailAddresses': [
+            {'name': 'Hadco Supplies', 'address': 'orders@hadco.example'},
+          ],
+        },
+      ]));
+
+      expect(row['First Name'], 'Hadco Supplies');
+      expect(row['Last Name'], '');
+      expect(row['Display Name'], 'Hadco Supplies');
+    });
+
+    test('a display name of its own is kept beside the parts', () {
+      final row = only(ContactBackup.outlookCsv([
+        {
+          'displayName': 'Dana from accounts',
+          'givenName': 'Dana',
+          'surname': 'Levi',
+        },
+      ]));
+
+      expect(row['First Name'], 'Dana',
+          reason: 'the parts are the name where there are any');
+      expect(row['Last Name'], 'Levi');
+      expect(row['Display Name'], 'Dana from accounts');
     });
 
     test('quotes every field, doubling quotes, so commas and line breaks '

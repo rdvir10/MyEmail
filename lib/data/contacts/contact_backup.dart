@@ -56,13 +56,18 @@ abstract final class ContactBackup {
 
   /// Outlook's contacts CSV, one row per Graph contact in [contacts].
   ///
-  /// The header is Outlook on the web's own export's, followed by the four
+  /// The header is Outlook on the web's own export's, followed by the
   /// columns of Outlook's desktop export that hold the rest of what Graph
   /// reads (initials, profession, children and categories, the last two
-  /// separated by semicolons). Every field is quoted, as Outlook quotes
-  /// them; rows end in CRLF; the text starts with a byte
-  /// order mark, without which Outlook and Excel read UTF-8 as the PC's
-  /// own code page and every accent and Hebrew letter comes out wrong.
+  /// separated by semicolons, and each email's name), then two of this
+  /// file's own, Display Name and File As, so that neither is lost even
+  /// where Outlook's import has no place for it. A contact with no name
+  /// parts at all (one saved from a sender, or a company) has its display
+  /// name as its first name too, or its row would carry no name. Every
+  /// field is quoted, as Outlook quotes them; rows end in CRLF; the text
+  /// starts with a byte order mark, without which Outlook and Excel read
+  /// UTF-8 as the PC's own code page and every accent and Hebrew letter
+  /// comes out wrong.
   static String outlookCsv(Iterable<Map<String, Object?>> contacts) {
     final out = StringBuffer('\u{FEFF}');
     out
@@ -146,6 +151,11 @@ abstract final class ContactBackup {
     'Profession',
     'Children',
     'Categories',
+    'E-mail Display Name',
+    'E-mail 2 Display Name',
+    'E-mail 3 Display Name',
+    'Display Name',
+    'File As',
   ];
 
   // --- vCard ----------------------------------------------------------------
@@ -528,10 +538,16 @@ abstract final class ContactBackup {
   // --- Outlook's CSV --------------------------------------------------------
 
   static Map<String, String> _row(Map<String, Object?> c) {
+    final given = _str(c['givenName']);
+    final middle = _str(c['middleName']);
+    final surname = _str(c['surname']);
+    final displayName = _str(c['displayName']);
     final row = <String, String>{
-      'First Name': _str(c['givenName']),
-      'Middle Name': _str(c['middleName']),
-      'Last Name': _str(c['surname']),
+      'First Name': given.isEmpty && middle.isEmpty && surname.isEmpty
+          ? displayName
+          : given,
+      'Middle Name': middle,
+      'Last Name': surname,
       'Title': _str(c['title']),
       'Suffix': _str(c['generation']),
       'Nickname': _str(c['nickName']),
@@ -556,18 +572,22 @@ abstract final class ContactBackup {
       'Profession': _str(c['profession']),
       'Children': _strings(c['children']).join(';'),
       'Categories': _strings(c['categories']).join(';'),
+      'Display Name': displayName,
+      'File As': _str(c['fileAs']),
     };
     final emails = [
       if (c['emailAddresses'] case final List list)
         for (final e in list)
-          if (e is Map && _str(e['address']).isNotEmpty) _str(e['address']),
+          if (e is Map && _str(e['address']).isNotEmpty) e,
     ];
-    for (final (i, column) in const [
-      'E-mail Address',
-      'E-mail 2 Address',
-      'E-mail 3 Address',
+    for (final (i, (address, name)) in const [
+      ('E-mail Address', 'E-mail Display Name'),
+      ('E-mail 2 Address', 'E-mail 2 Display Name'),
+      ('E-mail 3 Address', 'E-mail 3 Display Name'),
     ].indexed) {
-      if (i < emails.length) row[column] = emails[i];
+      if (i >= emails.length) break;
+      row[address] = _str(emails[i]['address']);
+      row[name] = _str(emails[i]['name']);
     }
     final home = _strings(c['homePhones']);
     final business = _strings(c['businessPhones']);
