@@ -410,14 +410,16 @@ void main() {
         (person: person('Cat', 'Fox', 'c@x.com'), tag: 'g-2'),
       ];
 
-      final result = await api().createBatch(asked);
+      final answers = await api().createBatch(asked);
 
-      expect(result.refused.keys, [1]);
-      expect(result.refused[1]!.status, 400);
+      expect(answers[1].contact, isNull);
       expect(
-        result.created.map(GoogleContactsApi.tagOf),
-        unorderedEquals(['g-0', 'g-2']),
+        answers[1].failure,
+        isA<ContactRefused>().having((e) => e.status, 'status', 400),
       );
+      expect(GoogleContactsApi.tagOf(answers[0].contact!), 'g-0');
+      expect(GoogleContactsApi.tagOf(answers[2].contact!), 'g-2');
+      expect(answers[0].failure, isNull);
       expect(google.count, 2);
       final sent = google.requestsTo('people:batchCreateContacts');
       expect(sent, hasLength(2));
@@ -427,21 +429,93 @@ void main() {
       expect(second['sources'], ['READ_SOURCE_TYPE_CONTACT']);
     });
 
-    test('a batch create goes 200 at a time', () async {
+    test('a batch create goes 200 at a time, each answer in its place '
+        'whatever order Google answers in', () async {
       final asked = [
         for (var i = 0; i < 201; i++)
           (person: person('P$i', 'F', 'p$i@x.com'), tag: 'g-$i'),
       ];
 
-      final result = await api().createBatch(asked);
+      final answers = await api().createBatch(asked);
 
-      expect(result.created, hasLength(201));
+      expect(answers, hasLength(201));
+      for (var i = 0; i < 201; i++) {
+        expect(GoogleContactsApi.tagOf(answers[i].contact!), 'g-$i');
+      }
       expect(
         google.requestsTo('people:batchCreateContacts').map(
           (r) => ((jsonDecode(r.body) as Map)['contacts'] as List).length,
         ),
         [200, 1],
       );
+    });
+
+    test('a batch that fails part way keeps what the batches before it '
+        'made, and sends none after it', () async {
+      var batches = 0;
+      final client = api(
+        client: MockClient((r) async {
+          if (r.url.path.endsWith(':batchCreateContacts') && ++batches == 2) {
+            google.fail(1, status: 502);
+          }
+          return google.handle(r);
+        }),
+      );
+      final asked = [
+        for (var i = 0; i < 450; i++)
+          (person: person('P$i', 'F', 'p$i@x.com'), tag: 'g-$i'),
+      ];
+
+      final answers = await client.createBatch(asked);
+
+      expect(answers, hasLength(450));
+      for (var i = 0; i < 200; i++) {
+        expect(GoogleContactsApi.tagOf(answers[i].contact!), 'g-$i');
+      }
+      for (var i = 200; i < 450; i++) {
+        expect(answers[i].contact, isNull);
+        expect(answers[i].failure, isA<ConnectionFailed>());
+        expect(answers[i].failure, isA<Retryable>());
+      }
+      expect(google.requestsTo('people:batchCreateContacts'), hasLength(2));
+      expect(google.count, 200);
+    });
+
+    test('a batch refused without a contact named is the batch\'s failure, '
+        'not its contacts\', and the next batch goes on', () async {
+      final logged = captureLog();
+      google.refuseBatchesWhole = 1;
+      final asked = [
+        (person: person('Zebediah', 'Quill', 'zeb@x.com'), tag: 'g-0'),
+        for (var i = 1; i < 250; i++)
+          (person: person('P$i', 'F', 'p$i@x.com'), tag: 'g-$i'),
+      ];
+
+      final answers = await api().createBatch(asked);
+
+      for (var i = 0; i < 200; i++) {
+        expect(answers[i].contact, isNull);
+        expect(answers[i].failure, isA<ContactBatchRefused>());
+        expect(answers[i].failure, isNot(isA<ContactRefused>()));
+      }
+      for (var i = 200; i < 250; i++) {
+        expect(GoogleContactsApi.tagOf(answers[i].contact!), 'g-$i');
+      }
+      expect(google.count, 50);
+      final said = ['${answers.first.failure}', ...logged].join('\n');
+      expect(said, isNot(contains('Zebediah')));
+      expect(said, contains('HTTP 400'));
+    });
+
+    test('a batch create needs a tag of its own for each contact', () async {
+      await expectLater(
+        api().createBatch([
+          (person: person('Ann', 'Lee', 'a@x.com'), tag: 'same'),
+          (person: person('Bob', 'Day', 'b@x.com'), tag: 'same'),
+        ]),
+        throwsArgumentError,
+      );
+      expect(google.requests, isEmpty);
     });
 
     test('update writes the fields named with the etag read, and a stale '
@@ -663,12 +737,13 @@ void main() {
       final logged = captureLog();
       google.refuse = (p) => jsonEncode(p).contains('Zebediah');
 
-      final result = await api().createBatch([
+      final answers = await api().createBatch([
         (person: person('Zebediah', 'Quill', 'zeb@x.com'), tag: 't'),
       ]);
 
+      expect(answers.single.failure, isA<ContactRefused>());
       final said = [
-        for (final r in result.refused.values) '$r',
+        for (final a in answers) '${a.failure}',
         ...logged,
       ].join('\n');
       expect(said, isNot(contains('Zebediah')));

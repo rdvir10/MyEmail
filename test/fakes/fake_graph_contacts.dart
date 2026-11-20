@@ -262,7 +262,11 @@ class FakeGraphContacts {
       final t = throttles.removeAt(0);
       return _error(
         t.status,
-        t.status == 429 ? 'TooManyRequests' : 'ServiceUnavailable',
+        switch (t.status) {
+          429 => 'TooManyRequests',
+          503 => 'ServiceUnavailable',
+          _ => 'InternalServerError',
+        },
         'Too many requests.',
         headers: {'retry-after': '${t.retryAfter}'},
       );

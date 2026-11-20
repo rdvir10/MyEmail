@@ -78,6 +78,10 @@ class FakeGooglePeople {
   /// with a 400 whose message quotes it, as Google's do.
   bool Function(Map<String, Object?> person)? refuse;
 
+  /// How many batch creates to come are refused as a whole with a 400 that
+  /// names no contact, making none of them.
+  int refuseBatchesWhole = 0;
+
   /// The contacts as they are, by resource name, deleted ones kept marked.
   final Map<String, _Person> _current = {};
 
@@ -228,6 +232,15 @@ class FakeGooglePeople {
     }
   }
 
+  /// Answer the next [count] requests with [status], a server in trouble.
+  void fail(int count, {int status = 503}) {
+    for (var i = 0; i < count; i++) {
+      _failures.add(status);
+    }
+  }
+
+  final List<int> _failures = [];
+
   /// The contact [name] as it is now, every field, as Google would answer;
   /// null once deleted. Under its new name where it was re-keyed.
   Map<String, Object?>? person(String name) {
@@ -305,6 +318,10 @@ class FakeGooglePeople {
     if (_throttles.isNotEmpty) {
       final t = _throttles.removeAt(0);
       return _throttled(t);
+    }
+    if (_failures.isNotEmpty) {
+      final status = _failures.removeAt(0);
+      return _error(status, 'UNAVAILABLE', 'The service is unavailable.');
     }
 
     final path = request.url.path;
@@ -505,6 +522,14 @@ class FakeGooglePeople {
             ? (c['contactPerson'] as Map).cast<String, Object?>()
             : <String, Object?>{},
     ];
+    if (refuseBatchesWhole > 0) {
+      refuseBatchesWhole--;
+      return _error(
+        400,
+        'INVALID_ARGUMENT',
+        'Request contains an invalid argument: ${_quote(people.first)}',
+      );
+    }
     // Google makes none of a batch it refuses, and names the ones why.
     final errors = <String, Object?>{};
     for (var i = 0; i < people.length; i++) {

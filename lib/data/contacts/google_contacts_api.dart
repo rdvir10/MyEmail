@@ -211,20 +211,31 @@ class GoogleContactsApi {
     return _personOf(response);
   }
 
-  /// Create [people], [batchLimit] to a request, each with its tag.
+  /// Create [people], [batchLimit] to a request, each with its tag, and
+  /// answer with what became of each, in the order given. Never throws for
+  /// a failure: what was made before it is kept, and handed back.
   ///
-  /// The answer's order is not documented, so the people made are handed
-  /// back as a list, to be matched to what was asked by their tags. When
-  /// Google refuses a batch it names the contacts it would not take
-  /// (`contactErrors`, by their place in the request) and makes none: those
-  /// are kept as refused, by their place in [people], and the rest sent
-  /// again. A refusal that names none throws, and so does any other
-  /// failure, with the batches before it made.
-  Future<GoogleBatchCreate> createBatch(
-    List<({Map<String, Object?> person, String? tag})> people,
+  /// The order of Google's answer is not documented, so each contact made
+  /// is matched to what was asked by its tag, which must be there and be
+  /// different for each. When Google refuses a batch it names the contacts
+  /// it would not take (`contactErrors`, by their place in the request) and
+  /// makes none: those are refused ([ContactRefused]) and the rest sent
+  /// again. A refusal that names none is the batch's ([ContactBatchRefused])
+  /// and the next batch goes on. Any other failure (no connection, a
+  /// server in trouble, a throttle past its waits, a quota or a sign-in)
+  /// is the answer for every contact not yet answered, this batch's and
+  /// the ones after it, which are not sent.
+  Future<List<ContactCreateAnswer>> createBatch(
+    List<({Map<String, Object?> person, String tag})> people,
   ) async {
-    final created = <Map<String, Object?>>[];
-    final refused = <int, ContactRefused>{};
+    final places = <String, int>{};
+    for (var i = 0; i < people.length; i++) {
+      final tag = people[i].tag;
+      if (tag.isEmpty || places.putIfAbsent(tag, () => i) != i) {
+        throw ArgumentError.value(tag, 'people', 'each needs a tag of its own');
+      }
+    }
+    final answers = List<ContactCreateAnswer?>.filled(people.length, null);
     final uri = Uri.parse('$base/people:batchCreateContacts');
     for (var start = 0; start < people.length; start += batchLimit) {
       var pending = [
@@ -233,49 +244,85 @@ class GoogleContactsApi {
             i++)
           i,
       ];
-      while (pending.isNotEmpty) {
-        final body = jsonEncode({
-          'contacts': [
-            for (final i in pending)
-              {'contactPerson': withTag(people[i].person, people[i].tag)},
-          ],
-          'readMask': syncFields,
-          'sources': [contactSource],
-        });
-        final response = await _exchange(
-          () => http.Request('POST', uri)
-            ..headers['Content-Type'] = 'application/json'
-            ..body = body,
-        );
-        if (response.statusCode < 400) {
-          final made = _jsonOf(response)['createdPeople'];
-          for (final r in made is List ? made : const []) {
-            if (r is Map && r['person'] is Map) {
-              created.add((r['person'] as Map).cast<String, Object?>());
+      try {
+        while (pending.isNotEmpty) {
+          final body = jsonEncode({
+            'contacts': [
+              for (final i in pending)
+                {'contactPerson': withTag(people[i].person, people[i].tag)},
+            ],
+            'readMask': syncFields,
+            'sources': [contactSource],
+          });
+          final response = await _exchange(
+            () => http.Request('POST', uri)
+              ..headers['Content-Type'] = 'application/json'
+              ..body = body,
+          );
+          if (response.statusCode < 400) {
+            final made = _jsonOf(response)['createdPeople'];
+            for (final r in made is List ? made : const []) {
+              if (r is! Map || r['person'] is! Map) continue;
+              final person = (r['person'] as Map).cast<String, Object?>();
+              final i = places[tagOf(person)];
+              if (i != null && pending.contains(i)) {
+                answers[i] = (contact: person, failure: null);
+              }
             }
+            for (final i in pending) {
+              answers[i] ??= (
+                contact: null,
+                failure: const ConnectionFailed(
+                  'Google made the new contacts but did not hand this one '
+                  'back. It is looked for by its tag.',
+                ),
+              );
+            }
+            break;
           }
-          break;
+          final named = response.statusCode == 400
+              ? _contactErrors(response)
+              : const <int, String?>{};
+          final refused = {
+            for (final k in named.keys)
+              if (k >= 0 && k < pending.length) k,
+          };
+          if (refused.isEmpty) {
+            final failure = _failureFor(response, 'batchCreate');
+            throw failure is ContactRefused
+                ? ContactBatchRefused.from('Google', failure)
+                : failure;
+          }
+          for (final k in refused) {
+            answers[pending[k]] = (
+              contact: null,
+              failure: ContactRefused.by('Google', 400, named[k]),
+            );
+          }
+          debugPrint(
+            '[myemail] contacts: Google refused ${refused.length} of a '
+            'batch of ${pending.length} new contacts',
+          );
+          pending = [
+            for (var k = 0; k < pending.length; k++)
+              if (!refused.contains(k)) pending[k],
+          ];
         }
-        final named = response.statusCode == 400
-            ? _contactErrors(response)
-            : const <int, String?>{};
-        final places = named.keys.where((k) => k >= 0 && k < pending.length);
-        if (places.isEmpty) throw _failureFor(response, 'batchCreate');
-        for (final k in places) {
-          refused[pending[k]] = ContactRefused.by('Google', 400, named[k]);
+      } on ContactBatchRefused catch (e) {
+        for (final i in pending) {
+          answers[i] = (contact: null, failure: e);
         }
-        debugPrint(
-          '[myemail] contacts: Google refused ${places.length} of a batch '
-          'of ${pending.length} new contacts',
-        );
-        final out = places.toSet();
-        pending = [
-          for (var k = 0; k < pending.length; k++)
-            if (!out.contains(k)) pending[k],
-        ];
+      } on Exception catch (e) {
+        for (var i = start; i < people.length; i++) {
+          answers[i] ??= (contact: null, failure: e);
+        }
+        break;
       }
     }
-    return GoogleBatchCreate(created: created, refused: refused);
+    final made = answers.where((a) => a?.contact != null).length;
+    debugPrint('[myemail] contacts: Google batch made $made of '
+        '${people.length}');
+    return [for (final a in answers) a!];
   }
 
   /// Write [fields] (Google's `updatePersonFields`) of [person], which
@@ -866,16 +913,3 @@ class GoogleBatchRead {
   };
 }
 
-/// What a batch create made, and what it would not.
-@immutable
-class GoogleBatchCreate {
-  const GoogleBatchCreate({required this.created, required this.refused});
-
-  /// The contacts made, in no documented order: matched to what was asked
-  /// by their tags ([GoogleContactsApi.tagOf]).
-  final List<Map<String, Object?>> created;
-
-  /// The place in the list asked for, of each contact Google would not
-  /// take, and why.
-  final Map<int, ContactRefused> refused;
-}

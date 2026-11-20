@@ -330,7 +330,9 @@ class GraphContactsApi {
   /// tag where given, and answer with it as Graph made it, its
   /// `parentFolderId` included.
   ///
-  /// A refusal of this contact is a [ContactRefused].
+  /// A refusal of this contact is a [ContactRefused]. A 503 is not sent
+  /// again, as it is for a read: whatever answered it may have made the
+  /// contact first, and a second would double it. Its tag settles it.
   Future<Map<String, Object?>> create(
     Map<String, Object?> contact, {
     String? tag,
@@ -340,97 +342,141 @@ class GraphContactsApi {
       () => http.Request('POST', Uri.parse('$base/me/contacts'))
         ..headers['Content-Type'] = 'application/json'
         ..body = body,
+      making: true,
     );
     return _json(response, 'create');
   }
 
   /// Create [contacts], [batchLimit] to a `$batch`, and answer with what
   /// became of each, in the order given: the contact made, or why not.
+  /// Never throws for a failure: what was made before it is kept, and
+  /// handed back.
   ///
   /// A batch answers 200 whatever happened inside it, so each create is
-  /// read by its own status. One throttled (429, or 503) is sent again
-  /// after the longest wait any asked for, as a request alone would be;
-  /// one that failed otherwise is left as the failure it is, because a
-  /// server in trouble may have made it all the same, and its tag finds it.
-  /// A batch that could not be sent at all throws.
-  Future<List<GraphCreateAnswer>> createBatch(
+  /// read by its own status. One throttled (429, or 503: Outlook did not
+  /// take it) is sent again after the longest wait any asked for, as a
+  /// request alone would be; one that failed otherwise is left as the
+  /// failure it is, because a server in trouble may have made it all the
+  /// same, and its tag finds it. For that reason a `$batch` answered 503
+  /// as a whole is not sent again: its parts may have been made. A batch
+  /// refused as a whole is [ContactBatchRefused] for each in it, and the
+  /// next batch goes on; any other failure of a whole batch is the answer
+  /// for every contact not yet answered, its own and the ones after it,
+  /// which are not sent.
+  Future<List<ContactCreateAnswer>> createBatch(
     List<({Map<String, Object?> contact, String? tag})> contacts,
   ) async {
-    final answers = List<GraphCreateAnswer?>.filled(contacts.length, null);
+    final answers = List<ContactCreateAnswer?>.filled(contacts.length, null);
     for (var start = 0; start < contacts.length; start += batchLimit) {
       var asking = [
         for (var i = start; i < contacts.length && i < start + batchLimit; i++)
           i,
       ];
-      for (var attempt = 0; asking.isNotEmpty; attempt++) {
-        final body = jsonEncode({
-          'requests': [
-            for (final i in asking)
-              {
-                'id': '$i',
-                'method': 'POST',
-                'url': '/me/contacts',
-                'headers': {
-                  'Content-Type': 'application/json',
-                  'Prefer': prefer,
-                },
-                'body': withTag(contacts[i].contact, contacts[i].tag),
-              },
-          ],
-        });
-        final response = await _exchange(
-          () => http.Request('POST', Uri.parse('$base/\$batch'))
-            ..headers['Content-Type'] = 'application/json'
-            ..body = body,
-        );
-        final json = _json(response, 'batch');
-        final responses = json['responses'];
-        final byId = {
-          for (final r in responses is List ? responses : const [])
-            if (r is Map) '${r['id']}': r,
-        };
-        final again = <int>[];
-        var wait = Duration.zero;
-        for (final i in asking) {
-          final r = byId['$i'];
-          final status = r?['status'];
-          final rBody = r?['body'] is Map
-              ? (r!['body'] as Map).cast<String, Object?>()
-              : const <String, Object?>{};
-          if (status is! int) {
-            answers[i] = (
-              contact: null,
-              failure: const ConnectionFailed(
-                'Microsoft left part of the request unanswered. Try again.',
-              ),
-            );
-          } else if (status >= 200 && status < 300) {
-            answers[i] = (contact: rBody, failure: null);
-            continue;
-          } else {
-            answers[i] = (contact: null, failure: _failureFor(status, rBody));
-          }
-          if (status == 429 || status == 503) {
-            again.add(i);
-            final asked = _innerRetryAfter(r?['headers']);
-            if (asked > wait) wait = asked;
-          }
+      try {
+        await _batchOf(contacts, asking, answers);
+      } on ContactBatchRefused catch (e) {
+        for (var i = start; i < start + asking.length; i++) {
+          answers[i] = (contact: null, failure: e);
         }
-        if (again.isEmpty ||
-            attempt >= maxThrottleRetries ||
-            wait > maxThrottleWait) {
-          break;
+      } on _BatchFailed catch (failed) {
+        for (final i in failed.asking) {
+          answers[i] = (contact: null, failure: failed.cause);
         }
-        debugPrint('[myemail] contacts: Microsoft throttled ${again.length} '
-            'of a batch, waiting ${wait.inSeconds} s');
-        await (sleep ?? _realSleep)(wait);
-        asking = again;
+        for (var i = start; i < contacts.length; i++) {
+          answers[i] ??= (contact: null, failure: failed.cause);
+        }
+        break;
       }
     }
     final made = answers.where((a) => a?.contact != null).length;
     debugPrint('[myemail] contacts: Microsoft batch made $made of '
         '${contacts.length}');
     return [for (final a in answers) a!];
+  }
+
+  /// One `$batch` of the creates [numbered], their answers put in
+  /// [answers], and those throttled asked again. A whole batch that fails
+  /// throws: [ContactBatchRefused] when refused on the first asking, and
+  /// otherwise [_BatchFailed] with the ones it was asking.
+  Future<void> _batchOf(
+    List<({Map<String, Object?> contact, String? tag})> contacts,
+    List<int> numbered,
+    List<ContactCreateAnswer?> answers,
+  ) async {
+    var asking = numbered;
+    for (var attempt = 0; asking.isNotEmpty; attempt++) {
+      final body = jsonEncode({
+        'requests': [
+          for (final i in asking)
+            {
+              'id': '$i',
+              'method': 'POST',
+              'url': '/me/contacts',
+              'headers': {
+                'Content-Type': 'application/json',
+                'Prefer': prefer,
+              },
+              'body': withTag(contacts[i].contact, contacts[i].tag),
+            },
+        ],
+      });
+      final Map<String, Object?> json;
+      try {
+        final response = await _exchange(
+          () => http.Request('POST', Uri.parse('$base/\$batch'))
+            ..headers['Content-Type'] = 'application/json'
+            ..body = body,
+          making: true,
+        );
+        json = _json(response, 'batch');
+      } on ContactRefused catch (e) {
+        if (attempt == 0) throw ContactBatchRefused.from('Microsoft', e);
+        throw _BatchFailed(asking, ContactBatchRefused.from('Microsoft', e));
+      } on Exception catch (e) {
+        throw _BatchFailed(asking, e);
+      }
+      final responses = json['responses'];
+      final byId = {
+        for (final r in responses is List ? responses : const [])
+          if (r is Map) '${r['id']}': r,
+      };
+      final again = <int>[];
+      var wait = Duration.zero;
+      for (final i in asking) {
+        final r = byId['$i'];
+        final status = r?['status'];
+        final rBody = r?['body'] is Map
+            ? (r!['body'] as Map).cast<String, Object?>()
+            : const <String, Object?>{};
+        if (status is! int) {
+          answers[i] = (
+            contact: null,
+            failure: const ConnectionFailed(
+              'Microsoft left part of the request unanswered. Try again.',
+            ),
+          );
+        } else if (status >= 200 && status < 300) {
+          answers[i] = (contact: rBody, failure: null);
+          continue;
+        } else {
+          answers[i] = (contact: null, failure: _failureFor(status, rBody));
+        }
+        if (status == 429 || status == 503) {
+          again.add(i);
+          final asked = _innerRetryAfter(r?['headers']);
+          if (asked > wait) wait = asked;
+        }
+      }
+      if (again.isEmpty ||
+          attempt >= maxThrottleRetries ||
+          wait > maxThrottleWait) {
+        return;
+      }
+      debugPrint('[myemail] contacts: Microsoft throttled ${again.length} '
+          'of a batch, waiting ${wait.inSeconds} s');
+      await (sleep ?? _realSleep)(wait);
+      asking = again;
+    }
   }
 
   /// Write [changes], the properties that changed (collections and
@@ -610,13 +656,20 @@ class GraphContactsApi {
   /// Send what [build] makes, waiting out any throttling Graph asks for:
   /// a 429 or a 503 with how long in `Retry-After`. [build] is called per
   /// try because a request cannot be sent twice.
+  ///
+  /// With [making], a request that creates: only a 429 is sent again, which
+  /// is Graph turning it away unread. A 503 may come from in front of a
+  /// server that made the contact all the same.
   Future<http.Response> _exchange(
     http.Request Function() build, {
     Future<String> Function({bool force})? token,
+    bool making = false,
   }) async {
     for (var attempt = 0;; attempt++) {
       final response = await _authorised(build, token ?? accessToken);
-      final wait = _retryAfter(response);
+      final wait = making && response.statusCode != 429
+          ? null
+          : _retryAfter(response);
       if (wait == null || attempt >= maxThrottleRetries) return response;
       debugPrint('[myemail] contacts: Microsoft throttled '
           '(HTTP ${response.statusCode}), waiting ${wait.inSeconds} s');
@@ -785,12 +838,13 @@ class GraphContactsApi {
   }
 }
 
-/// What became of one contact of a batch create: the contact made, or why
-/// not.
-typedef GraphCreateAnswer = ({
-  Map<String, Object?>? contact,
-  Exception? failure,
-});
+/// A whole `$batch` failed after some of it may have been answered: the
+/// creates it was asking for, and why.
+class _BatchFailed implements Exception {
+  _BatchFailed(this.asking, this.cause);
+  final List<int> asking;
+  final Exception cause;
+}
 
 /// One round of a delta, every page of it.
 @immutable

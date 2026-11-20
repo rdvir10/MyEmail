@@ -525,6 +525,154 @@ void main() {
       expect(graph.contact(ann), isNull);
       expect(await client.delete(ann), isFalse);
     });
+
+    test('a batch that fails part way keeps what the batches before it '
+        'made, and sends none after it', () async {
+      var batches = 0;
+      final client = api(
+        client: MockClient((r) async {
+          if (r.url.path.endsWith(r'$batch') && ++batches == 2) {
+            graph.throttle(1, status: 500);
+          }
+          return graph.handle(r);
+        }),
+      );
+      final asked = [
+        for (var i = 0; i < 45; i++)
+          (contact: contact('P$i', 'F', 'p$i@x.com'), tag: 'people/c$i'),
+      ];
+
+      final answers = await client.createBatch(asked);
+
+      expect(answers, hasLength(45));
+      for (var i = 0; i < 20; i++) {
+        expect(answers[i].contact!['givenName'], 'P$i');
+      }
+      for (var i = 20; i < 45; i++) {
+        expect(answers[i].contact, isNull);
+        expect(answers[i].failure, isA<ConnectionFailed>());
+      }
+      expect(graph.requestsTo(r'$batch'), hasLength(2));
+      expect(graph.count, 20);
+    });
+
+    test('a batch refused as a whole is the batch\'s failure, not its '
+        'contacts\', and the next batch goes on', () async {
+      var batches = 0;
+      final client = api(
+        client: MockClient((r) async {
+          if (r.url.path.endsWith(r'$batch') && ++batches == 1) {
+            return http.Response(
+              jsonEncode({
+                'error': {'code': 'BadRequest', 'message': 'Zebediah'},
+              }),
+              400,
+            );
+          }
+          return graph.handle(r);
+        }),
+      );
+      final asked = [
+        for (var i = 0; i < 25; i++)
+          (contact: contact('P$i', 'F', 'p$i@x.com'), tag: 'people/c$i'),
+      ];
+
+      final answers = await client.createBatch(asked);
+
+      for (var i = 0; i < 20; i++) {
+        expect(answers[i].failure, isA<ContactBatchRefused>());
+        expect(answers[i].failure, isNot(isA<ContactRefused>()));
+        expect('${answers[i].failure}', isNot(contains('Zebediah')));
+      }
+      for (var i = 20; i < 25; i++) {
+        expect(answers[i].contact!['givenName'], 'P$i');
+      }
+      expect(graph.count, 5);
+    });
+
+    test('a batch answered 503 as a whole is not sent again: its parts may '
+        'have been made', () async {
+      graph.throttle(1, status: 503, retryAfter: 1);
+
+      final answers = await api().createBatch([
+        (contact: contact('Ann', 'Lee', 'a@x.com'), tag: 'people/c1'),
+        (contact: contact('Bob', 'Day', 'b@x.com'), tag: 'people/c2'),
+      ]);
+
+      expect(slept, isEmpty);
+      expect(graph.requestsTo(r'$batch'), hasLength(1));
+      for (final a in answers) {
+        expect(a.contact, isNull);
+        expect(a.failure, isA<ConnectionFailed>());
+        expect(a.failure, isA<Retryable>());
+      }
+    });
+
+    test('nor is one create answered 503; a 429 is', () async {
+      graph.throttle(1, status: 503, retryAfter: 1);
+      await expectLater(
+        api().create(contact('Ann', 'Lee', 'a@x.com')),
+        throwsA(isA<ConnectionFailed>()),
+      );
+      expect(slept, isEmpty);
+      expect(graph.requests, hasLength(1));
+
+      graph.throttle(1, retryAfter: 2);
+      final made = await api().create(contact('Ann', 'Lee', 'a@x.com'));
+      expect(made['id'], isNotNull);
+      expect(slept, [const Duration(seconds: 2)]);
+    });
+
+    test('a batch answered 429 as a whole is sent again after its wait',
+        () async {
+      graph.throttle(1, retryAfter: 2);
+
+      final answers = await api().createBatch([
+        (contact: contact('Ann', 'Lee', 'a@x.com'), tag: 'people/c1'),
+      ]);
+
+      expect(answers.single.contact, isNotNull);
+      expect(slept, [const Duration(seconds: 2)]);
+    });
+
+    test('a part answered 500 is not sent again; one answered 503 is',
+        () async {
+      graph
+        ..throttleInBatch(1, status: 500, retryAfter: 1)
+        ..throttleInBatch(1, status: 503, retryAfter: 2);
+
+      final answers = await api().createBatch([
+        (contact: contact('Ann', 'Lee', 'a@x.com'), tag: 'people/c1'),
+        (contact: contact('Bob', 'Day', 'b@x.com'), tag: 'people/c2'),
+        (contact: contact('Cat', 'Fox', 'c@x.com'), tag: 'people/c3'),
+      ]);
+
+      expect(answers[0].contact, isNull);
+      expect(answers[0].failure, isA<ConnectionFailed>());
+      expect(answers[1].contact!['givenName'], 'Bob');
+      expect(answers[2].contact!['givenName'], 'Cat');
+      expect(slept, [const Duration(seconds: 2)]);
+      final batches = graph.requestsTo(r'$batch');
+      expect(batches, hasLength(2));
+      final again = (jsonDecode(batches.last.body) as Map)['requests'] as List;
+      expect(again.map((r) => (r as Map)['id']), ['1']);
+      expect(graph.count, 2);
+    });
+
+    test('a part asking for a wait over 30 s is not waited for', () async {
+      graph.throttleInBatch(1, retryAfter: 45);
+
+      final answers = await api().createBatch([
+        (contact: contact('Ann', 'Lee', 'a@x.com'), tag: 'people/c1'),
+        (contact: contact('Bob', 'Day', 'b@x.com'), tag: 'people/c2'),
+      ]);
+
+      expect(slept, isEmpty);
+      expect(graph.requestsTo(r'$batch'), hasLength(1));
+      expect(answers[0].failure, isA<ConnectionFailed>());
+      expect(answers[0].failure, isA<Retryable>());
+      expect(answers[1].contact, isNotNull);
+    });
   });
 
   group('the device claim', () {

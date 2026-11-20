@@ -57,6 +57,44 @@ class ContactRefused implements Exception, ReadableError {
   String toString() => message;
 }
 
+/// A server refused a batch of new contacts as a whole and named none of
+/// them: nothing in it was made. Each is sent alone, which finds the one it
+/// would not take; until then none of them is held as refused.
+@immutable
+class ContactBatchRefused implements Exception, ReadableError {
+  const ContactBatchRefused(this.server, {required this.status, this.reason});
+
+  /// The refusal of the batch [refused] stood for.
+  factory ContactBatchRefused.from(String server, ContactRefused refused) =>
+      ContactBatchRefused(
+        server,
+        status: refused.status,
+        reason: refused.reason,
+      );
+
+  final String server;
+  final int status;
+  final String? reason;
+
+  @override
+  String get message =>
+      '$server would not take the new contacts together '
+      '(HTTP $status${reason == null ? '' : ', $reason'}).';
+
+  @override
+  String toString() => message;
+}
+
+/// What became of one contact a batch create asked for: the contact as the
+/// server made it, or why it was not made. A [ContactRefused] is that
+/// contact's own failure, a [ContactBatchRefused] its batch's; anything
+/// else (no connection, a server in trouble, a throttle that outlasted the
+/// waits) leaves it not known whether it was made, which its tag settles.
+typedef ContactCreateAnswer = ({
+  Map<String, Object?>? contact,
+  Exception? failure,
+});
+
 /// Google's etag clash: the contact changed since it was read, so the write
 /// was not made. Read it again, merge again and try once more.
 @immutable
