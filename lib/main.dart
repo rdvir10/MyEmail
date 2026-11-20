@@ -26,6 +26,7 @@ import 'data/updates/update_service.dart';
 import 'data/ui_state_store.dart';
 import 'domain/sender_blocks.dart';
 import 'data/widget/home_screen_surface.dart';
+import 'data/contacts/contact_sync_store.dart';
 import 'data/contacts/device_contacts.dart';
 import 'data/files/attachment_files.dart';
 import 'data/files/draft_files.dart';
@@ -112,6 +113,9 @@ Future<void> main() async {
           // cache it exists to key, and two connections to one file would be
           // two views of the same rows.
           graphIdMap: DriftGraphIdMap(database),
+          // Contact sync's records, in the same file for the same reason:
+          // without it they would be forgotten at every restart.
+          contactSyncStore: DriftContactSyncStore(database),
           folderLists: PrefsFolderListStore(prefs),
           // Mail read, filed or deleted here takes its notification with it.
           onMessagesHandled: (handled) => unawaited(notifier.withdraw(handled)),
