@@ -382,16 +382,16 @@ class GraphContactsApi {
   /// handed back.
   ///
   /// A batch answers 200 whatever happened inside it, so each create is
-  /// read by its own status. One throttled (429, or 503: Outlook did not
-  /// take it) is sent again after the longest wait any asked for, as a
-  /// request alone would be; one that failed otherwise is left as the
+  /// read by its own status. One throttled (429: turned away unread) is
+  /// sent again after the longest wait any asked for, as a request alone
+  /// would be; one that failed otherwise, a 503 among them, is left as the
   /// failure it is, because a server in trouble may have made it all the
   /// same, and its tag finds it. For that reason a `$batch` answered 503
-  /// as a whole is not sent again: its parts may have been made. A batch
-  /// refused as a whole is [ContactBatchRefused] for each in it, and the
-  /// next batch goes on; any other failure of a whole batch is the answer
-  /// for every contact not yet answered, its own and the ones after it,
-  /// which are not sent.
+  /// as a whole is not sent again either: its parts may have been made. A
+  /// batch refused as a whole is [ContactBatchRefused] for each in it, and
+  /// the next batch goes on; any other failure of a whole batch is the
+  /// answer for every contact not yet answered, its own and the ones after
+  /// it, which are not sent.
   Future<List<ContactCreateAnswer>> createBatch(
     List<({Map<String, Object?> contact, String? tag})> contacts,
   ) async {
@@ -490,7 +490,7 @@ class GraphContactsApi {
         } else {
           answers[i] = (contact: null, failure: _failureFor(status, rBody));
         }
-        if (status == 429 || status == 503) {
+        if (status == 429) {
           again.add(i);
           final asked = _innerRetryAfter(r?['headers']);
           if (asked > wait) wait = asked;

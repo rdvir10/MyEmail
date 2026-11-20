@@ -731,11 +731,12 @@ void main() {
       expect(slept, [const Duration(seconds: 2)]);
     });
 
-    test('a part answered 500 is not sent again; one answered 503 is',
-        () async {
+    test('a part answered 500 or 503 is not sent again, since it may have '
+        'been made; one answered 429 is', () async {
       graph
         ..throttleInBatch(1, status: 500, retryAfter: 1)
-        ..throttleInBatch(1, status: 503, retryAfter: 2);
+        ..throttleInBatch(1, status: 503, retryAfter: 1)
+        ..throttleInBatch(1, retryAfter: 2);
 
       final answers = await api().createBatch([
         (contact: contact('Ann', 'Lee', 'a@x.com'), tag: 'people/c1'),
@@ -743,16 +744,18 @@ void main() {
         (contact: contact('Cat', 'Fox', 'c@x.com'), tag: 'people/c3'),
       ]);
 
-      expect(answers[0].contact, isNull);
-      expect(answers[0].failure, isA<ConnectionFailed>());
-      expect(answers[1].contact!['givenName'], 'Bob');
+      for (final i in [0, 1]) {
+        expect(answers[i].contact, isNull);
+        expect(answers[i].failure, isA<ConnectionFailed>());
+        expect(answers[i].failure, isA<Retryable>());
+      }
       expect(answers[2].contact!['givenName'], 'Cat');
       expect(slept, [const Duration(seconds: 2)]);
       final batches = graph.requestsTo(r'$batch');
       expect(batches, hasLength(2));
       final again = (jsonDecode(batches.last.body) as Map)['requests'] as List;
-      expect(again.map((r) => (r as Map)['id']), ['1']);
-      expect(graph.count, 2);
+      expect(again.map((r) => (r as Map)['id']), ['2']);
+      expect(graph.count, 1);
     });
 
     test('a part asking for a wait over 30 s is not waited for', () async {
