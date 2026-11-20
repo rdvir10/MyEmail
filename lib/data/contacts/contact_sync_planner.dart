@@ -43,6 +43,13 @@ enum ContactHeldReason {
   /// Under Needs a look, not yet answered.
   waiting('waiting'),
 
+  /// New, and held only as a candidate under another contact's Needs a
+  /// look item, with no item of its own. Each run it goes through the
+  /// new-contact rules again: it stays as it is while every contact it
+  /// could be is still waiting for Ron, and is placed (paired, copied or
+  /// given its own item) once that item is answered or dropped.
+  candidate('candidate'),
+
   /// A delete that was not done: the other copy changed since, it came in
   /// the first sync, or Ron said Don't delete them. One id: the copy kept.
   kept('kept'),
@@ -252,6 +259,19 @@ class ContactAnswer {
   final ContactSide? side;
 }
 
+/// What became of a queued answer in this run.
+enum ContactAnswerOutcome {
+  /// Planned: its Needs a look item or brake question is done with.
+  applied,
+
+  /// A contact it acts on was not read this run: it stays queued. See
+  /// [contactsToRead].
+  waiting,
+
+  /// Its contact has gone, or it no longer applies: the item is dropped.
+  dropped,
+}
+
 /// Everything one run plans from.
 @immutable
 class ContactSyncInput {
@@ -276,13 +296,16 @@ class ContactSyncInput {
   });
 
   /// Gmail contacts this run read: every page of a full listing, or a
-  /// sync-token listing's changes (deleted entries included). The runner
-  /// adds, read by name, every contact a queued answer, Restore or
-  /// journal entry names that the feed did not bring.
+  /// sync-token listing's changes (deleted entries included), and every
+  /// contact [contactsToRead] named, read by name. An entry with no
+  /// synced details at all is passed over, as if not read.
   final List<GoogleContact> google;
 
   /// Outlook contacts this run read, the same way (tags expanded for
-  /// contacts without a row).
+  /// contacts without a row). An `@removed` entry, one that lacks a
+  /// synced property ([GraphContact.readWhole]) or one with no synced
+  /// details is passed over, as if not read: a missing property is never
+  /// read as cleared.
   final List<GraphContact> graph;
 
   /// Whether [google] / [graph] is a full listing.
@@ -296,7 +319,8 @@ class ContactSyncInput {
   final bool firstSync;
 
   /// Contacts confirmed gone: by getBatchGet's NOT_FOUND for Gmail, by a
-  /// GET that found nothing, or found it in Deleted Items, for Outlook.
+  /// GET that found nothing, or found it in Deleted Items, for Outlook,
+  /// whether looked up for [contactsToConfirm] or [contactsToRead].
   /// Gmail's own deleted entries in [google] count too.
   final Set<String> googleGone;
   final Set<String> graphGone;
@@ -805,6 +829,8 @@ class ContactRestorePlan {
   const ContactRestorePlan({
     required this.binId,
     this.alreadyBack = false,
+    this.linkId,
+    this.alsoRemove = const [],
     this.googleName,
     this.graphId,
     this.googleRaw,
@@ -818,6 +844,12 @@ class ContactRestorePlan {
 
   /// Already back and paired: the bin row is dropped.
   final bool alreadyBack;
+
+  /// The row of a contact found back but held, which the restored pair
+  /// takes over, so no second row names it; and any other such row,
+  /// removed.
+  final int? linkId;
+  final List<int> alsoRemove;
 
   /// Contacts already there, to pair rather than make.
   final String? googleName;
@@ -912,6 +944,7 @@ class ContactSyncPlan {
     this.graphCount = 0,
     this.googleGone = const {},
     this.graphGone = const {},
+    this.answers = const [],
   });
 
   /// The empty-answers brake: when set, nothing else is planned.
@@ -957,6 +990,10 @@ class ContactSyncPlan {
   final Set<String> googleGone;
   final Set<String> graphGone;
 
+  /// What became of each of the input's answers, in the same order. Empty
+  /// when the run stopped.
+  final List<ContactAnswerOutcome> answers;
+
   /// The normaliser this plan compared with, for the pair to store.
   int get normaliserVersion => contactNormaliserVersion;
 }
@@ -964,7 +1001,8 @@ class ContactSyncPlan {
 // ---------------------------------------------------------------------------
 // Absences.
 
-/// Contacts the runner must look up before planning.
+/// Contacts the runner must look up by id before planning: see
+/// [contactsToConfirm] and [contactsToRead].
 @immutable
 class ContactChecks {
   const ContactChecks({this.google = const [], this.graph = const []});
@@ -1014,6 +1052,76 @@ ContactChecks contactsToConfirm({
     }
   }
   return ContactChecks(google: checkGoogle, graph: checkGraph.toList());
+}
+
+/// Contacts the runner must read by id before planning, because the plan
+/// acts on them and a feed brings only what changed: the contacts of
+/// queued answers (both sides of a pair, and of every pair the change
+/// brake holds when it is answered), every contact held as a candidate,
+/// the source of every journal entry, and both sides of every Restore.
+/// Found, each goes into the listing; not found (Gmail's NOT_FOUND; for
+/// Outlook a 404 or Deleted Items), into the gone sets; elsewhere, as a
+/// move or a re-key. An answer whose contacts were not read stays queued
+/// ([ContactAnswerOutcome.waiting]).
+ContactChecks contactsToRead({
+  required Iterable<ContactLinkInput> links,
+  Iterable<ContactAnswer> answers = const [],
+  Iterable<ContactJournalEntry> journal = const [],
+  Iterable<ContactBinInput> bin = const [],
+}) {
+  final google = <String>{};
+  final graph = <String>{};
+  void both(ContactLinkInput? link) {
+    if (link == null) return;
+    if (link.googleName case final String n) google.add(n);
+    if (link.graphId case final String id) graph.add(id);
+  }
+
+  ContactLinkInput? linkOf(String? g, String? h) => links.firstWhereOrNull(
+    (l) =>
+        (g != null && l.googleName == g) || (h != null && l.graphId == h),
+  );
+
+  for (final answer in answers) {
+    final g = answer.googleName;
+    final h = answer.graphId;
+    switch (answer.kind) {
+      case ContactAnswerKind.samePerson ||
+          ContactAnswerKind.copyAnyway ||
+          ContactAnswerKind.copyBack:
+        if (g != null) google.add(g);
+        if (h != null) graph.add(h);
+      case ContactAnswerKind.useGoogle ||
+          ContactAnswerKind.useGraph ||
+          ContactAnswerKind.useValue ||
+          ContactAnswerKind.retry:
+        if (g != null) google.add(g);
+        if (h != null) graph.add(h);
+        both(linkOf(g, h));
+      case ContactAnswerKind.applyHeld || ContactAnswerKind.copyHeldBack:
+        for (final link in links) {
+          if (link.reason == ContactHeldReason.changeBrake) both(link);
+        }
+      default:
+        break;
+    }
+  }
+  for (final entry in journal) {
+    (entry.side == ContactSide.google ? graph : google).add(entry.sourceId);
+  }
+  // Contacts held as candidates are placed again each run, which needs
+  // them read (see ContactHeldReason.candidate).
+  for (final link in links) {
+    if (link.reason == ContactHeldReason.candidate) both(link);
+  }
+  for (final b in bin) {
+    if (!b.restore) continue;
+    (b.side == ContactSide.google ? google : graph).add(b.contactId);
+    if (b.partnerId case final String partner) {
+      (b.side == ContactSide.google ? graph : google).add(partner);
+    }
+  }
+  return ContactChecks(google: google.toList(), graph: graph.toList());
 }
 
 // ---------------------------------------------------------------------------
@@ -1180,15 +1288,23 @@ ContactPairPlan planPairedContact({
       if (!norm.equivalent(f, v, hN) && canTravel(f, v)) writeGraph(f, v);
       continue;
     }
-    if (useSide[f] case final ContactSide from) {
-      final v = from == ContactSide.google ? gN : hN;
+    // Use Gmail's or Use Hadco's: only a single detail that is there and
+    // can travel. A list is never replaced whole (it would drop what
+    // Outlook cannot hold), and an empty one never clears the other side;
+    // those follow the usual rules.
+    final from = useSide[f];
+    final fromValue = from == ContactSide.google ? gN : hN;
+    if (from != null &&
+        !f.isList &&
+        fromValue != null &&
+        canTravel(f, fromValue)) {
       final other = from == ContactSide.google ? hN : gN;
-      if (norm.equivalent(f, v, other) || !canTravel(f, v)) {
+      if (norm.equivalent(f, fromValue, other)) {
         adopt(f);
       } else if (from == ContactSide.google) {
-        writeGraph(f, v);
+        writeGraph(f, fromValue);
       } else {
-        writeGoogle(f, v);
+        writeGoogle(f, fromValue);
       }
       continue;
     }
@@ -1198,6 +1314,20 @@ ContactPairPlan planPairedContact({
     if (!newPair && !gChanged && !hChanged) continue;
 
     if (f.isList) {
+      if (firstSync && !newPair && !copyBack) {
+        // A value gone from one side would go from the other: the first
+        // sync never removes, nor puts back what Ron took out, so the
+        // whole list waits, its bases as they were, until it is done.
+        final trial = mergeContactList(
+          f,
+          google: (gN as List<String>?) ?? const [],
+          googleBase: gBase.list(f),
+          graph: (hN as List<String>?) ?? const [],
+          graphBase: hBase.list(f),
+          normaliser: norm,
+        );
+        if (trial.removes) continue;
+      }
       final merge = mergeContactList(
         f,
         google: (gN as List<String>?) ?? const [],
@@ -1205,7 +1335,7 @@ ContactPairPlan planPairedContact({
         graph: (hN as List<String>?) ?? const [],
         graphBase: hBase.list(f),
         normaliser: norm,
-        removals: !newPair && !firstSync && !copyBack,
+        removals: !newPair && !copyBack,
       );
       final gList = gN ?? const <String>[];
       final hList = hN ?? const <String>[];
@@ -1266,7 +1396,12 @@ ContactPairPlan planPairedContact({
         adopt(f);
       } else {
         fromGoogle ? writeGraph(f, v) : writeGoogle(f, v);
-        if (other != null) removes = true;
+        final addsYear =
+            v is ContactBirthday &&
+            other is ContactBirthday &&
+            !other.hasYear &&
+            v.sameDay(other);
+        if (other != null && !addsYear) removes = true;
       }
       continue;
     }
@@ -1398,6 +1533,11 @@ class _Planner {
   final journalSettled = <int>[];
   final binAlreadyBack = <int>{};
   final restores = <ContactRestorePlan>[];
+  final answerOutcomes = <ContactAnswerOutcome>[];
+
+  /// Contacts under a Needs a look item of their own still waiting for
+  /// Ron.
+  final waitingSubjects = <(ContactSide, String)>{};
   var pairUp = 0;
   var differingPairs = 0;
 
@@ -1433,12 +1573,18 @@ class _Planner {
         deleted.add(c.resourceName);
         continue;
       }
-      googleListed[c.resourceName] = c;
       for (final p in c.previousNames) {
         if (p != c.resourceName) previous[p] = c.resourceName;
       }
+      // Nothing synced at all is no read of a contact: taken as one, it
+      // would clear every detail of its partner.
+      if (c.details.isEmpty) continue;
+      googleListed[c.resourceName] = c;
     }
     for (final c in input.graph) {
+      // An @removed entry is only a reason to look the contact up, and a
+      // sparse one is read whole first: neither is read as cleared.
+      if (c.removed || !c.readWhole || c.details.isEmpty) continue;
       graphListed[c.id] = c;
     }
     final googleBin = {
@@ -1498,17 +1644,20 @@ class _Planner {
       return null;
     }
 
+    // With no count stored yet, the rows naming that side stand in for it.
     return check(
           ContactSide.google,
           input.googleComplete,
           googleListed.length,
-          input.expectedGoogle,
+          input.expectedGoogle ??
+              input.links.where((l) => l.googleName != null).length,
         ) ??
         check(
           ContactSide.graph,
           input.graphComplete,
           graphListed.length,
-          input.expectedGraph,
+          input.expectedGraph ??
+              input.links.where((l) => l.graphId != null).length,
         );
   }
 
@@ -1624,6 +1773,15 @@ class _Planner {
           : _Status.held;
       if (row.googleName case final String name) googleStatus[name] = status;
       if (row.graphId case final String id) graphStatus[id] = status;
+      if (row.state == ContactLinkState.held &&
+          row.reason == ContactHeldReason.waiting) {
+        if (row.googleName case final String name) {
+          waitingSubjects.add((ContactSide.google, name));
+        }
+        if (row.graphId case final String id) {
+          waitingSubjects.add((ContactSide.graph, id));
+        }
+      }
     }
   }
 
@@ -1661,6 +1819,22 @@ class _Planner {
         graphRow[id]?.input.graphDetails ??
         SyncedContact.empty;
   }
+
+  bool _alive(ContactSide side, String? id) =>
+      side == ContactSide.google ? _googleAlive(id) : _graphAlive(id);
+
+  /// Read this run, and not gone.
+  bool _wasRead(ContactSide side, String? id) =>
+      id != null &&
+      (side == ContactSide.google
+          ? googleListed.containsKey(id) && !googleGone.contains(id)
+          : graphListed.containsKey(id) && !graphGone.contains(id));
+
+  bool _isGone(ContactSide side, String? id) =>
+      id != null &&
+      (side == ContactSide.google
+          ? googleGone.contains(id)
+          : graphGone.contains(id));
 
   _Status? _status(ContactSide side, String id) =>
       side == ContactSide.google ? googleStatus[id] : graphStatus[id];
@@ -1711,26 +1885,36 @@ class _Planner {
             )
             ?.id;
       }
-      final sourceAlive = sourceSide == ContactSide.google
-          ? _googleAlive(source)
-          : _graphAlive(source);
+      // Only a source confirmed gone is gone: one merely not read this
+      // run is still there, and its copy is not to be deleted.
+      final sourceGone = _isGone(sourceSide, source);
+      final sourceAlive = _alive(sourceSide, source);
       if (copy != null) {
-        journalSettled.add(entry.opId);
-        if (sourceAlive) {
+        if (sourceGone) {
+          journalSettled.add(entry.opId);
+          _strayCopy(entry.side, copy, source);
+        } else if (sourceAlive) {
+          journalSettled.add(entry.opId);
           final g = entry.side == ContactSide.google ? copy : source;
           final h = entry.side == ContactSide.google ? source : copy;
           final row = _rowOf(sourceSide, source);
           _pairNew(g, h, linkId: row?.id);
           row?.done = true;
         } else {
-          _strayCopy(entry.side, copy, source);
+          // The source was not read: both wait for a run that reads it.
+          _setStatus(entry.side, copy, _Status.leftAlone);
         }
         continue;
       }
-      if (sourceAlive &&
+      if (sourceGone) {
+        journalSettled.add(entry.opId);
+        continue;
+      }
+      if (!sourceAlive ||
           input.now.difference(entry.startedAt) < contactGrace) {
-        // Not in the listing yet, which may only be Google's lag: the
-        // source waits rather than be copied twice.
+        // Not in the listing yet, which may only be Google's lag, or the
+        // source was not read: the source waits rather than be copied
+        // twice.
         _setStatus(sourceSide, source, _Status.leftAlone);
         _rowOf(sourceSide, source)?.done = true;
         continue;
@@ -1792,167 +1976,239 @@ class _Planner {
 
   void _answer() {
     for (final answer in input.answers) {
-      final g = answer.googleName == null ? null : _newName(answer.googleName!);
-      final h = answer.graphId;
-      switch (answer.kind) {
-        case ContactAnswerKind.samePerson:
-          if (!_googleAlive(g) || !_graphAlive(h)) continue;
-          final rg = googleRow[g];
-          final rh = graphRow[h];
-          bool pairedElsewhere(_Row? r) =>
-              r != null &&
-              r.state == ContactLinkState.paired &&
-              (r.googleName != g || r.graphId != h);
-          if (pairedElsewhere(rg) || pairedElsewhere(rh)) continue;
-          if (rg?.done == true || rh?.done == true) continue;
-          final keep = rg ?? rh;
-          final other = rg != null && rh != null && rg != rh ? rh : null;
-          _pairNew(
-            g!,
-            h!,
-            linkId: keep?.id,
-            alsoRemove: [?other?.id],
-            fromAnswer: true,
-          );
-          rg?.done = true;
-          rh?.done = true;
-        case ContactAnswerKind.copyAnyway:
-          for (final (side, id) in _named(g, h)) {
-            final row = _rowOf(side, id);
-            if (row?.done == true || row?.state == ContactLinkState.paired) {
-              continue;
-            }
-            _copy(side, id, linkId: row?.id, fromAnswer: true);
-            row?.done = true;
-          }
-        case ContactAnswerKind.leaveOut || ContactAnswerKind.keepOnlyHere:
-          for (final (side, id) in _named(g, h)) {
-            final row = _rowOf(side, id);
-            if (row?.done == true) continue;
-            if (row != null && row.state == ContactLinkState.paired) continue;
-            _hold(side, id, ContactHeldReason.leftOut, linkId: row?.id);
-            row?.done = true;
-          }
-        case ContactAnswerKind.useGoogle ||
-            ContactAnswerKind.useGraph ||
-            ContactAnswerKind.useValue:
-          final row = g != null ? googleRow[g] : graphRow[h];
-          if (row == null ||
-              row.done ||
-              row.state != ContactLinkState.paired ||
-              !_googleAlive(row.googleName) ||
-              !_graphAlive(row.graphId)) {
-            continue;
-          }
-          if (answer.kind == ContactAnswerKind.useValue) {
-            _pairSync(
-              row,
-              fromAnswer: true,
-              useValues: SyncedContact.fromJson(answer.value),
-            );
-          } else {
-            final from = answer.kind == ContactAnswerKind.useGoogle
-                ? ContactSide.google
-                : ContactSide.graph;
-            final fields = answer.fields.isNotEmpty
-                ? answer.fields
-                : ContactField.values.where(
-                    (f) => !norm.equivalent(
-                      f,
-                      _googleNow(row)[f],
-                      _graphNow(row)[f],
-                    ),
-                  );
-            _pairSync(
-              row,
-              fromAnswer: true,
-              useSide: {for (final f in fields) f: from},
-            );
-          }
-        case ContactAnswerKind.copyBack:
-          for (final (side, id) in _named(g, h)) {
-            final row = _rowOf(side, id);
-            if (row == null || row.done) continue;
-            if (row.state == ContactLinkState.paired) continue;
-            _copy(side, id, linkId: row.id, fromAnswer: true);
-            row.done = true;
-          }
-        case ContactAnswerKind.deleteHereToo:
-          for (final (side, id) in _named(g, h)) {
-            final row = _rowOf(side, id);
-            if (row == null || row.done) continue;
-            if (row.state == ContactLinkState.paired) continue;
-            _deleteHeld(row, side, id, ContactDeleteCause.answered);
-          }
-        case ContactAnswerKind.deleteHeld:
-          for (final row in rows) {
-            if (row.done || row.reason != ContactHeldReason.deletionBrake) {
-              continue;
-            }
-            final side = row.googleName != null
-                ? ContactSide.google
-                : ContactSide.graph;
-            final id = row.googleName ?? row.graphId;
-            if (id == null) continue;
-            _deleteHeld(
-              row,
-              side,
-              id,
-              side == ContactSide.google
-                  ? ContactDeleteCause.goneFromGraph
-                  : ContactDeleteCause.deletedInGoogle,
-            );
-          }
-        case ContactAnswerKind.keepHeld:
-          for (final row in rows) {
-            if (row.done || row.reason != ContactHeldReason.deletionBrake) {
-              continue;
-            }
-            final side = row.googleName != null
-                ? ContactSide.google
-                : ContactSide.graph;
-            final id = row.googleName ?? row.graphId;
-            if (id == null) continue;
-            row.done = true;
-            if (!(side == ContactSide.google
-                ? _googleAlive(id)
-                : _graphAlive(id))) {
-              _add(ContactLinkPlan(linkId: row.id, removeRow: true));
-              continue;
-            }
-            _keep(row, side, id, ContactReviewReason.notDeleted);
-          }
-        case ContactAnswerKind.applyHeld || ContactAnswerKind.copyHeldBack:
-          for (final row in rows) {
-            if (row.done || row.reason != ContactHeldReason.changeBrake) {
-              continue;
-            }
-            if (!_googleAlive(row.googleName) || !_graphAlive(row.graphId)) {
-              continue;
-            }
-            _pairSync(
-              row,
-              fromAnswer: true,
-              copyBack: answer.kind == ContactAnswerKind.copyHeldBack,
-            );
-          }
-        case ContactAnswerKind.retry:
-          for (final (side, id) in _named(g, h)) {
-            final row = _rowOf(side, id);
-            if (row == null || row.done) continue;
-            if (row.reason != ContactHeldReason.refused) continue;
-            _retry(row, fromAnswer: true);
-          }
-        case ContactAnswerKind.carryOn:
-          break;
-      }
+      answerOutcomes.add(_answerOne(answer));
     }
   }
 
-  List<(ContactSide, String)> _named(String? g, String? h) => [
-    if (g != null && _googleAlive(g)) (ContactSide.google, g),
-    if (h != null && _graphAlive(h)) (ContactSide.graph, h),
-  ];
+  /// One answer, planned only from contacts read this run: never from a
+  /// stored base, which may be out of date or, for a new contact, empty.
+  ContactAnswerOutcome _answerOne(ContactAnswer answer) {
+    const applied = ContactAnswerOutcome.applied;
+    const waiting = ContactAnswerOutcome.waiting;
+    const dropped = ContactAnswerOutcome.dropped;
+    final g = answer.googleName == null ? null : _newName(answer.googleName!);
+    final h = answer.graphId;
+    final named = [
+      if (g != null) (ContactSide.google, g),
+      if (h != null) (ContactSide.graph, h),
+    ];
+
+    // Gone wins over unread: an answer whose contact has gone is dropped.
+    ContactAnswerOutcome? unread(List<(ContactSide, String?)> contacts) {
+      for (final (side, id) in contacts) {
+        if (_isGone(side, id)) return dropped;
+      }
+      for (final (side, id) in contacts) {
+        if (id != null && !_wasRead(side, id)) return waiting;
+      }
+      return null;
+    }
+
+    switch (answer.kind) {
+      case ContactAnswerKind.samePerson:
+        if (g == null || h == null) return dropped;
+        if (unread(named) case final ContactAnswerOutcome o) return o;
+        final rg = googleRow[g];
+        final rh = graphRow[h];
+        bool pairedElsewhere(_Row? r) =>
+            r != null &&
+            r.state == ContactLinkState.paired &&
+            (r.googleName != g || r.graphId != h);
+        if (pairedElsewhere(rg) || pairedElsewhere(rh)) return dropped;
+        if (rg?.done == true || rh?.done == true) return dropped;
+        final keep = rg ?? rh;
+        final other = rg != null && rh != null && rg != rh ? rh : null;
+        _pairNew(
+          g,
+          h,
+          linkId: keep?.id,
+          alsoRemove: [?other?.id],
+          fromAnswer: true,
+        );
+        rg?.done = true;
+        rh?.done = true;
+        _answered(named);
+        return applied;
+      case ContactAnswerKind.copyAnyway || ContactAnswerKind.copyBack:
+        if (unread(named) case final ContactAnswerOutcome o) return o;
+        var any = false;
+        for (final (side, id) in named) {
+          final row = _rowOf(side, id);
+          if (row?.done == true || row?.state == ContactLinkState.paired) {
+            continue;
+          }
+          if (answer.kind == ContactAnswerKind.copyBack && row == null) {
+            continue;
+          }
+          _copy(side, id, linkId: row?.id, fromAnswer: true);
+          row?.done = true;
+          any = true;
+        }
+        _answered(named);
+        return any ? applied : dropped;
+      case ContactAnswerKind.leaveOut || ContactAnswerKind.keepOnlyHere:
+        var any = false;
+        for (final (side, id) in named) {
+          if (!_alive(side, id) && !_wasRead(side, id)) continue;
+          final row = _rowOf(side, id);
+          if (row?.done == true) continue;
+          if (row != null && row.state == ContactLinkState.paired) continue;
+          _hold(side, id, ContactHeldReason.leftOut, linkId: row?.id);
+          row?.done = true;
+          any = true;
+        }
+        _answered(named);
+        return any ? applied : dropped;
+      case ContactAnswerKind.useGoogle ||
+          ContactAnswerKind.useGraph ||
+          ContactAnswerKind.useValue:
+        final row = g != null ? googleRow[g] : graphRow[h];
+        if (row == null || row.done || row.state != ContactLinkState.paired) {
+          return dropped;
+        }
+        if (unread([
+              (ContactSide.google, row.googleName),
+              (ContactSide.graph, row.graphId),
+            ])
+            case final ContactAnswerOutcome o) {
+          return o;
+        }
+        if (answer.kind == ContactAnswerKind.useValue) {
+          _pairSync(
+            row,
+            fromAnswer: true,
+            useValues: SyncedContact.fromJson(answer.value),
+          );
+          return applied;
+        }
+        final from = answer.kind == ContactAnswerKind.useGoogle
+            ? ContactSide.google
+            : ContactSide.graph;
+        final googleNow = _googleNow(row);
+        final graphNow = _graphNow(row);
+        // With no details named, those the differing item lists: single
+        // details there on both sides and not the same.
+        final fields = answer.fields.isNotEmpty
+            ? answer.fields
+            : ContactField.values.where(
+                (f) =>
+                    !f.isList &&
+                    googleNow[f] != null &&
+                    graphNow[f] != null &&
+                    !norm.same(f, googleNow[f], graphNow[f]),
+              );
+        _pairSync(
+          row,
+          fromAnswer: true,
+          useSide: {for (final f in fields) f: from},
+        );
+        return applied;
+      case ContactAnswerKind.deleteHereToo:
+        var any = false;
+        for (final (side, id) in named) {
+          final row = _rowOf(side, id);
+          if (row == null || row.done) continue;
+          if (row.state == ContactLinkState.paired) continue;
+          _deleteHeld(row, side, id, ContactDeleteCause.answered);
+          any = true;
+        }
+        _answered(named);
+        return any ? applied : dropped;
+      case ContactAnswerKind.deleteHeld:
+        var any = false;
+        for (final row in rows) {
+          if (row.done || row.reason != ContactHeldReason.deletionBrake) {
+            continue;
+          }
+          final side = row.googleName != null
+              ? ContactSide.google
+              : ContactSide.graph;
+          final id = row.googleName ?? row.graphId;
+          if (id == null) continue;
+          _deleteHeld(
+            row,
+            side,
+            id,
+            side == ContactSide.google
+                ? ContactDeleteCause.goneFromGraph
+                : ContactDeleteCause.deletedInGoogle,
+          );
+          any = true;
+        }
+        return any ? applied : dropped;
+      case ContactAnswerKind.keepHeld:
+        var any = false;
+        for (final row in rows) {
+          if (row.done || row.reason != ContactHeldReason.deletionBrake) {
+            continue;
+          }
+          final side = row.googleName != null
+              ? ContactSide.google
+              : ContactSide.graph;
+          final id = row.googleName ?? row.graphId;
+          if (id == null) continue;
+          row.done = true;
+          any = true;
+          if (!_alive(side, id)) {
+            _add(ContactLinkPlan(linkId: row.id, removeRow: true));
+            continue;
+          }
+          _keep(row, side, id, ContactReviewReason.notDeleted);
+        }
+        return any ? applied : dropped;
+      case ContactAnswerKind.applyHeld || ContactAnswerKind.copyHeldBack:
+        var any = false;
+        var unreadRows = false;
+        for (final row in rows) {
+          if (row.done || row.reason != ContactHeldReason.changeBrake) {
+            continue;
+          }
+          if (!_alive(ContactSide.google, row.googleName) ||
+              !_alive(ContactSide.graph, row.graphId)) {
+            continue;
+          }
+          if (!_wasRead(ContactSide.google, row.googleName) ||
+              !_wasRead(ContactSide.graph, row.graphId)) {
+            // Held still, its changes not lost: the answer stays queued
+            // for the next run that reads it.
+            unreadRows = true;
+            continue;
+          }
+          _pairSync(
+            row,
+            fromAnswer: true,
+            copyBack: answer.kind == ContactAnswerKind.copyHeldBack,
+          );
+          any = true;
+        }
+        if (unreadRows) return waiting;
+        return any ? applied : dropped;
+      case ContactAnswerKind.retry:
+        var any = false;
+        for (final (side, id) in named) {
+          final row = _rowOf(side, id);
+          if (row == null || row.done) continue;
+          if (row.reason != ContactHeldReason.refused) continue;
+          if (unread([
+                (ContactSide.google, row.googleName),
+                (ContactSide.graph, row.graphId),
+              ])
+              case final ContactAnswerOutcome o) {
+            return o;
+          }
+          _retry(row, fromAnswer: true);
+          any = true;
+        }
+        return any ? applied : dropped;
+      case ContactAnswerKind.carryOn:
+        return applied;
+    }
+  }
+
+  /// Contacts an answer has acted on are no longer waiting for Ron.
+  void _answered(List<(ContactSide, String)> contacts) {
+    waitingSubjects.removeAll(contacts);
+  }
 
   void _retry(_Row row, {bool fromAnswer = false}) {
     if (row.googleName != null && row.graphId != null) {
@@ -1990,22 +2246,52 @@ class _Planner {
       final partnerDetails = SyncedContact.fromJson(bin.partnerBase);
       final here = _findBack(side, contactId, partnerId, details);
       final there = _findBack(other, partnerId, contactId, partnerDetails);
-      final hereStatus = here == null ? null : _status(side, here);
-      if (here != null && hereStatus == _Status.paired) {
+      // Only its own id or tag says it is back; an address it shares may
+      // be someone else's, and the bin holds the only copy.
+      if (here != null &&
+          here.exact &&
+          _status(side, here.id) == _Status.paired) {
         restores.add(
           ContactRestorePlan(binId: bin.binId, alreadyBack: true),
         );
         continue;
       }
-      final thereFree =
-          there != null &&
-          (_status(other, there) == null ||
-              _status(other, there) == _Status.fresh);
-      final g = side == ContactSide.google ? here : (thereFree ? there : null);
-      final h = side == ContactSide.graph ? here : (thereFree ? there : null);
+      // A contact found back is used, held or not, unless it is paired
+      // with another.
+      String? usable(ContactSide s, ({String id, bool exact})? found) {
+        if (found == null) return null;
+        if (_status(s, found.id) == _Status.paired) return null;
+        final row = _rowOf(s, found.id);
+        if (row != null && row.googleName != null && row.graphId != null) {
+          return null;
+        }
+        return found.id;
+      }
+
+      final hereId = usable(side, here);
+      final thereId = usable(other, there);
+      final g = side == ContactSide.google ? hereId : thereId;
+      final h = side == ContactSide.graph ? hereId : thereId;
+      final googleRowFound = g == null ? null : googleRow[g];
+      final graphRowFound = h == null ? null : graphRow[h];
+      final keep = googleRowFound ?? graphRowFound;
+      final alsoRemove = [
+        if (googleRowFound != null &&
+            graphRowFound != null &&
+            googleRowFound != graphRowFound)
+          graphRowFound.id,
+      ];
       if (g != null && h != null) {
         // Both back already, by Ron's hand: they are only paired.
-        _pairNew(g, h, fromAnswer: true);
+        _pairNew(
+          g,
+          h,
+          linkId: keep?.id,
+          alsoRemove: alsoRemove,
+          fromAnswer: true,
+        );
+        googleRowFound?.done = true;
+        graphRowFound?.done = true;
         restores.add(
           ContactRestorePlan(binId: bin.binId, alreadyBack: true),
         );
@@ -2017,11 +2303,14 @@ class _Planner {
       ]) {
         _setStatus(s, id, _Status.paired);
         _rowOf(s, id)?.done = true;
+        waitingSubjects.remove((s, id));
       }
       final partner = partnerDetails.isEmpty ? null : partnerDetails;
       restores.add(
         ContactRestorePlan(
           binId: bin.binId,
+          linkId: keep?.id,
+          alsoRemove: alsoRemove,
           googleName: g,
           graphId: h,
           googleRaw: side == ContactSide.google && g == null ? raw : null,
@@ -2038,29 +2327,31 @@ class _Planner {
     }
   }
 
-  /// A contact the sync deleted, if it is back: by its own id, by a tag
-  /// naming its partner, or by an email or mobile that only it has.
-  String? _findBack(
+  /// A contact the sync deleted, if it is back: by its own id or by a tag
+  /// naming its partner ([exact]), else by an email or mobile as the
+  /// new-contact rules would match it: the only contact on that side with
+  /// it, at most one on the other, and family names that agree.
+  ({String id, bool exact})? _findBack(
     ContactSide side,
     String? id,
     String? partnerId,
     SyncedContact details,
   ) {
     if (side == ContactSide.google) {
-      if (id != null && _googleAlive(id)) return id;
+      if (id != null && _googleAlive(id)) return (id: id, exact: true);
       if (partnerId != null) {
         final tagged = googleListed.values.firstWhereOrNull(
           (c) => c.tag == partnerId,
         );
-        if (tagged != null) return tagged.resourceName;
+        if (tagged != null) return (id: tagged.resourceName, exact: true);
       }
     } else {
-      if (id != null && _graphAlive(id)) return id;
+      if (id != null && _graphAlive(id)) return (id: id, exact: true);
       if (partnerId != null) {
         final tagged = graphListed.values.firstWhereOrNull(
           (c) => c.tag == partnerId,
         );
-        if (tagged != null) return tagged.id;
+        if (tagged != null) return (id: tagged.id, exact: true);
       }
     }
     for (final (keys, index) in [
@@ -2068,11 +2359,20 @@ class _Planner {
       (_mobileKeys(details), _mobileIndex),
     ]) {
       for (final key in keys) {
-        final owners = [
-          for (final o in index[key] ?? const <(ContactSide, String)>[])
+        final owners = index[key] ?? const <(ContactSide, String)>[];
+        final here = [
+          for (final o in owners)
             if (o.$1 == side) o.$2,
         ];
-        if (owners.length == 1) return owners.single;
+        final there = owners.where((o) => o.$1 != side).length;
+        if (here.length != 1 || there > 1) continue;
+        if (!ContactNormaliser.namesAgree(
+          details.name,
+          _detailsOf(side, here.single).name,
+        )) {
+          continue;
+        }
+        return (id: here.single, exact: false);
       }
     }
     return null;
@@ -2091,17 +2391,30 @@ class _Planner {
       }
       switch (row.reason) {
         case ContactHeldReason.movedOut:
-          if (googleGone.contains(g) && graphListed.containsKey(h)) {
-            // Its Gmail partner went while it was away: it comes back as
-            // a contact of its own.
-            row
-              ..googleName = null
-              ..reopened = true;
-            _setStatus(ContactSide.graph, h!, _Status.fresh);
-          } else if (graphListed.containsKey(h) ||
-              googleGone.contains(g) ||
-              graphGone.contains(h)) {
+          if (googleGone.contains(g)) {
+            if (graphListed.containsKey(h)) {
+              // Its Gmail partner went while it was away: back in
+              // Contacts, it is a contact of its own.
+              row
+                ..googleName = null
+                ..reopened = true;
+              _setStatus(ContactSide.graph, h!, _Status.fresh);
+            } else {
+              // Out of Contacts, the copy is not the sync's to delete:
+              // only the row goes.
+              row.done = true;
+              _add(ContactLinkPlan(linkId: row.id, removeRow: true));
+            }
+          } else if (graphListed.containsKey(h) || graphGone.contains(h)) {
             _paired(row);
+          }
+        case ContactHeldReason.candidate:
+          if (!_heldAlive(row)) {
+            _add(ContactLinkPlan(linkId: row.id, removeRow: true));
+          } else {
+            row.reopened = true;
+            final side = g != null ? ContactSide.google : ContactSide.graph;
+            _setStatus(side, (g ?? h)!, _Status.fresh);
           }
         case ContactHeldReason.changeBrake:
           if (googleGone.contains(g) || graphGone.contains(h)) _paired(row);
@@ -2398,12 +2711,11 @@ class _Planner {
         graphChangeKey: side == ContactSide.graph
             ? graphListed[id]?.changeKey ?? graphRow[id]?.input.graphChangeKey
             : null,
-        googleBase: side == ContactSide.google
-            ? googleRow[id]?.input.googleDetails
-            : null,
-        graphBase: side == ContactSide.graph
-            ? graphRow[id]?.input.graphDetails
-            : null,
+        // A held contact's base is what was read of it, so that a later
+        // run that does not read it can still see what it holds: a
+        // candidate re-placed then finds the contact it waits on.
+        googleBase: side == ContactSide.google ? details : null,
+        graphBase: side == ContactSide.graph ? details : null,
         title: details.title,
       ),
       reviews,
@@ -2546,9 +2858,9 @@ class _Planner {
       if (row != null && (!row.reopened || row.done)) continue;
       final status = _status(side, id);
       if (status != null && status != _Status.fresh) continue;
-      if (side == ContactSide.google ? !_googleAlive(id) : !_graphAlive(id)) {
-        continue;
-      }
+      // Placed only from what was read this run: a contact known only by
+      // its row waits, as it is, for a run that reads it.
+      if (!_wasRead(side, id)) continue;
       _place(side, id, row);
     }
   }
@@ -2699,6 +3011,16 @@ class _Planner {
     ContactReviewReason reason,
   ) {
     final other = side.other;
+    if (row != null &&
+        row.reason == ContactHeldReason.candidate &&
+        candidates.every(
+          (c) => waitingSubjects.contains((other, c)) && _alive(other, c),
+        )) {
+      // Already under those items, which are still waiting for Ron.
+      row.done = true;
+      _setStatus(side, id, _Status.held);
+      return;
+    }
     final details = _detailsOf(side, id);
     final statuses = [for (final c in candidates) _status(other, c)];
     final review = ContactReviewItem(
@@ -2721,13 +3043,16 @@ class _Planner {
       linkId: row?.id,
       reviews: [review],
     );
-    // A candidate that is new too waits under the same item.
+    waitingSubjects.add((side, id));
+    // A candidate that is new too waits under the same item, held as a
+    // candidate: once the item is answered or dropped it is placed by the
+    // new-contact rules (see ContactHeldReason.candidate).
     for (final c in candidates) {
       final status = _status(other, c);
       if (status != null && status != _Status.fresh) continue;
       final candidateRow = _rowOf(other, c);
       if (candidateRow != null && !candidateRow.reopened) continue;
-      _hold(other, c, ContactHeldReason.waiting, linkId: candidateRow?.id);
+      _hold(other, c, ContactHeldReason.candidate, linkId: candidateRow?.id);
       candidateRow?.done = true;
     }
   }
@@ -2896,6 +3221,7 @@ class _Planner {
       graphCount: _graphCount(),
       googleGone: Set.unmodifiable(googleGone),
       graphGone: Set.unmodifiable(graphGone),
+      answers: answerOutcomes,
       counts: ContactSyncCounts(
         addToGoogle: count((l) => l.create?.side == ContactSide.google),
         addToGraph: count((l) => l.create?.side == ContactSide.graph),
