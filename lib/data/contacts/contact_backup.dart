@@ -38,8 +38,8 @@ abstract final class ContactBackup {
   /// Ron's to restore. [labelNames] gives the names of the contact groups
   /// (labels) by resource name, written as CATEGORIES; a membership of a
   /// group not named there is left out, which is how the system groups
-  /// stay out. Lines end in CRLF and are folded at 75 octets, as RFC 2425
-  /// asks.
+  /// stay out, all but Starred, which goes as `starred`. Lines end in CRLF
+  /// and are folded at 75 octets, as RFC 2425 asks.
   static String vCard(
     Iterable<Map<String, Object?>> people, {
     Map<String, String> labelNames = const {},
@@ -178,6 +178,18 @@ abstract final class ContactBackup {
         ..add('item$group.X-ABLabel:${_text(label)}');
     }
 
+    /// [line] alone, or in a group of its own with [extras] beside it.
+    void grouped(String line, List<String> extras) {
+      if (extras.isEmpty) {
+        lines.add(line);
+        return;
+      }
+      group++;
+      for (final l in [line, ...extras]) {
+        lines.add('item$group.$l');
+      }
+    }
+
     final name = _entries(person, 'names').firstOrNull;
     final given = _str(name?['givenName']);
     final family = _str(name?['familyName']);
@@ -198,25 +210,40 @@ abstract final class ContactBackup {
       if (value.isNotEmpty) lines.add('$property:${_text(value)}');
     }
 
-    final nicknames = [
-      for (final n in _entries(person, 'nicknames'))
-        if (_str(n['value']) case final v when v.isNotEmpty) _text(v),
-    ];
+    // Nicknames of no particular kind together, as vCard has them; a
+    // maiden name as Apple writes it; the other kinds each with a label.
+    final nicknames = <String>[];
+    for (final n in _entries(person, 'nicknames')) {
+      final value = _str(n['value']);
+      if (value.isEmpty) continue;
+      final type = _str(n['type']);
+      switch (type) {
+        case '' || 'DEFAULT':
+          nicknames.add(_text(value));
+        case 'MAIDEN_NAME':
+          lines.add('X-MAIDENNAME:${_text(value)}');
+        default:
+          labelled('NICKNAME', _text(value), _nicknameLabels[type] ?? type);
+      }
+    }
     if (nicknames.isNotEmpty) lines.add('NICKNAME:${nicknames.join(',')}');
 
     for (final e in _entries(person, 'emailAddresses')) {
       final value = _str(e['value']);
       if (value.isEmpty) continue;
       final type = _str(e['type']);
-      switch (type) {
-        case '' || 'other':
-          lines.add('EMAIL;TYPE=INTERNET:${_text(value)}');
-        case 'home' || 'work':
-          lines.add(
-              'EMAIL;TYPE=INTERNET;TYPE=${type.toUpperCase()}:${_text(value)}');
-        default:
-          labelled('EMAIL;TYPE=INTERNET', _text(value), _label(e, type));
-      }
+      final shownAs = _str(e['displayName']);
+      final params = switch (type) {
+        'home' || 'work' => ';TYPE=INTERNET;TYPE=${type.toUpperCase()}',
+        _ => ';TYPE=INTERNET',
+      };
+      grouped('EMAIL$params:${_text(value)}', [
+        if (!const {'', 'other', 'home', 'work'}.contains(type))
+          'X-ABLabel:${_text(_label(e, type))}',
+        // The name the address is shown with, which vCard has no place
+        // for: kept beside it in its group.
+        if (shownAs.isNotEmpty) 'X-DISPLAY-NAME:${_text(shownAs)}',
+      ]);
     }
 
     for (final p in _entries(person, 'phoneNumbers')) {
@@ -239,7 +266,10 @@ abstract final class ContactBackup {
         _str(a['city']),
         _str(a['region']),
         _str(a['postalCode']),
-        _str(a['country']),
+        // The code where there is no name, rather than nothing.
+        _str(a['country']).isNotEmpty
+            ? _str(a['country'])
+            : _str(a['countryCode']),
       ];
       if (parts.every((p) => p.isEmpty)) {
         // Only the formatted form: kept as the street, so it is not lost.
@@ -266,19 +296,35 @@ abstract final class ContactBackup {
       final title = _str(o['title']);
       final office = _str(o['location']);
       final role = _str(o['jobDescription']);
-      if ([company, department, title, office, role].every((s) => s.isEmpty)) {
-        continue;
-      }
+      final type = _str(o['type']);
+      final current = o['current'];
+      final start = _partialDate(o['startDate']);
+      final end = _partialDate(o['endDate']);
+      final details = [
+        if (company.isNotEmpty || department.isNotEmpty)
+          'ORG:${[company, department].map(_text).join(';')}',
+        if (title.isNotEmpty) 'TITLE:${_text(title)}',
+        if (role.isNotEmpty) 'ROLE:${_text(role)}',
+        if (office.isNotEmpty) 'X-OFFICE:${_text(office)}',
+        if (start != null) 'X-ORG-START:$start',
+        if (end != null) 'X-ORG-END:$end',
+      ];
+      if (details.isEmpty) continue;
+      // Whether it is work or school, and still so: vCard has no word for
+      // either.
+      details.addAll([
+        if (type.isNotEmpty) 'X-ORG-TYPE:${_text(type)}',
+        if (current is bool) 'X-ORG-CURRENT:$current',
+      ]);
       // The first goes ungrouped, as an importer looks for it; the rest
       // each in a group, so that each title stays with its company.
-      final prefix = firstOrganisation ? '' : 'item${++group}.';
-      firstOrganisation = false;
-      if (company.isNotEmpty || department.isNotEmpty) {
-        lines.add('${prefix}ORG:${[company, department].map(_text).join(';')}');
+      if (firstOrganisation) {
+        lines.addAll(details);
+      } else {
+        group++;
+        lines.addAll([for (final d in details) 'item$group.$d']);
       }
-      if (title.isNotEmpty) lines.add('${prefix}TITLE:${_text(title)}');
-      if (role.isNotEmpty) lines.add('${prefix}ROLE:${_text(role)}');
-      if (office.isNotEmpty) lines.add('${prefix}X-OFFICE:${_text(office)}');
+      firstOrganisation = false;
     }
     for (final o in _entries(person, 'occupations')) {
       final value = _str(o['value']);
@@ -342,13 +388,24 @@ abstract final class ContactBackup {
       if (username.isEmpty) continue;
       final protocol = _str(im['protocol']);
       final property = _imProperties[protocol];
+      final type = _str(im['type']);
+      final params = type == 'home' || type == 'work'
+          ? ';TYPE=${type.toUpperCase()}'
+          : '';
+      final kind = const {'', 'other', 'home', 'work'}.contains(type)
+          ? null
+          : _label(im, type);
       if (property != null) {
-        lines.add('$property:${_text(username)}');
+        grouped('$property$params:${_text(username)}', [
+          if (kind != null) 'X-ABLabel:${_text(kind)}',
+        ]);
       } else {
-        final service = _str(im['formattedProtocol']).isNotEmpty
+        final named = _str(im['formattedProtocol']).isNotEmpty
             ? _str(im['formattedProtocol'])
             : protocol;
-        labelled('X-IM', _text(username), service.isEmpty ? 'IM' : service);
+        final service = named.isEmpty ? 'IM' : named;
+        labelled('X-IM$params', _text(username),
+            kind == null ? service : '$service ($kind)');
       }
     }
     for (final s in _entries(person, 'sipAddresses')) {
@@ -376,6 +433,7 @@ abstract final class ContactBackup {
       ('miscKeywords', 'X-KEYWORD'),
       ('externalIds', 'X-EXTERNAL-ID'),
       ('fileAses', 'X-FILE-AS'),
+      ('locales', 'X-LOCALE'),
     ]) {
       for (final e in _entries(person, key)) {
         final value = _str(e['value']);
@@ -394,8 +452,9 @@ abstract final class ContactBackup {
     final labels = [
       for (final m in _entries(person, 'memberships'))
         if (m['contactGroupMembership'] case final Map membership)
-          if (labelNames[_str(membership['contactGroupResourceName'])]
-              case final name? when name.isNotEmpty)
+          if (_groupName(
+                  _str(membership['contactGroupResourceName']), labelNames)
+              case final name?)
             _text(name),
     ];
     if (labels.isNotEmpty) lines.add('CATEGORIES:${labels.join(',')}');
@@ -428,6 +487,24 @@ abstract final class ContactBackup {
     }
     return '';
   }
+
+  /// A label's name for CATEGORIES: the one given, or for Google's own
+  /// Starred group `starred`; null for any other group, Google's system
+  /// ones among them.
+  static String? _groupName(String resource, Map<String, String> names) {
+    final name = names[resource] ??
+        (resource == 'contactGroups/starred' ? 'starred' : null);
+    return name == null || name.isEmpty ? null : name;
+  }
+
+  /// Google's kinds of nickname, as a label says them.
+  static const _nicknameLabels = {
+    'INITIALS': 'Initials',
+    'SHORT_NAME': 'Short name',
+    'ALTERNATE_NAME': 'Alternate name',
+    'OTHER_NAME': 'Other name',
+    'GPLUS': 'Google+ name',
+  };
 
   /// Google's phone types in vCard's words; a type not here goes with a
   /// label instead.
@@ -481,6 +558,22 @@ abstract final class ContactBackup {
     final formatted = _str(entry['formattedType']);
     if (formatted.isNotEmpty) return formatted;
     return type.isEmpty ? 'Other' : type;
+  }
+
+  /// A People API date that may have only some of its parts, as an
+  /// organisation's start and end do: `2001-09-01`, `2001-09`, `2001`, or
+  /// `--09-01` with no year. Null when it has none.
+  static String? _partialDate(Object? date) {
+    if (date is! Map) return null;
+    int part(String key) => date[key] is int ? date[key] as int : 0;
+    final year = part('year'), month = part('month'), day = part('day');
+    String two(int n) => n.toString().padLeft(2, '0');
+    final y = year.toString().padLeft(4, '0');
+    if (year > 0 && month > 0 && day > 0) return '$y-${two(month)}-${two(day)}';
+    if (year > 0 && month > 0) return '$y-${two(month)}';
+    if (year > 0) return y;
+    if (month > 0 && day > 0) return '--${two(month)}-${two(day)}';
+    return null;
   }
 
   /// [property] with a People API date: `BDAY:1980-05-17`, or with no

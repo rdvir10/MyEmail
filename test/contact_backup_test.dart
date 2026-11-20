@@ -80,7 +80,9 @@ void main() {
           ],
           'nicknames': [
             {'value': 'Dee'},
+            {'value': 'Dee D', 'type': 'DEFAULT'},
             {'value': 'D, the second', 'type': 'ALTERNATE_NAME'},
+            {'value': 'Katz', 'type': 'MAIDEN_NAME'},
           ],
         }),
       ]));
@@ -90,7 +92,10 @@ void main() {
         'FN:Dr. $dana Levi-Cohen Jr.',
         'X-PHONETIC-FIRST-NAME:Dana',
         'X-PHONETIC-LAST-NAME:Levi',
-        r'NICKNAME:Dee,D\, the second',
+        r'item1.NICKNAME:D\, the second',
+        'item1.X-ABLabel:Alternate name',
+        'X-MAIDENNAME:Katz',
+        'NICKNAME:Dee,Dee D',
       ]));
       expect(lines.join(), isNot(contains('CHARSET')),
           reason: 'vCard 3.0 is UTF-8 throughout; CHARSET is 2.1');
@@ -363,6 +368,99 @@ void main() {
         'item9.X-CUSTOM:M',
         'item9.X-ABLabel:Shirt size',
         r'NOTE:Likes tea\nNot coffee',
+      ]));
+    });
+
+    test('keeps the smaller details: names on emails, kinds of IM and '
+        'work, country codes, locales and Starred', () {
+      final lines = unfold(ContactBackup.vCard([
+        person({
+          'emailAddresses': [
+            {
+              'value': 'dana@work.example',
+              'type': 'work',
+              'displayName': 'Dana L. (Hadco)',
+            },
+            {'value': 'dana@home.example', 'type': 'home'},
+          ],
+          'addresses': [
+            {'type': 'home', 'city': 'Haifa', 'countryCode': 'IL'},
+            {
+              'type': 'work',
+              'city': 'Paris',
+              'country': 'France',
+              'countryCode': 'FR',
+            },
+          ],
+          'imClients': [
+            {'username': 'dana.l', 'protocol': 'skype', 'type': 'work'},
+            {
+              'username': 'dana.home',
+              'protocol': 'jabber',
+              'type': 'gaming',
+              'formattedType': 'Gaming',
+            },
+            {
+              'username': 'dana@chat',
+              'protocol': 'matrix',
+              'type': 'home',
+            },
+          ],
+          'organizations': [
+            {
+              'name': 'Hadco',
+              'type': 'work',
+              'current': true,
+              'startDate': {'year': 2019, 'month': 3},
+            },
+            {
+              'name': 'Technion',
+              'type': 'school',
+              'current': false,
+              'startDate': {'year': 1998},
+              'endDate': {'year': 2002, 'month': 6, 'day': 30},
+            },
+          ],
+          'locales': [
+            {'value': 'he'},
+          ],
+          'memberships': [
+            {
+              'contactGroupMembership': {
+                'contactGroupResourceName': 'contactGroups/starred',
+              },
+            },
+            {
+              'contactGroupMembership': {
+                'contactGroupResourceName': 'contactGroups/myContacts',
+              },
+            },
+          ],
+        }),
+      ]));
+
+      expect(lines, containsAllInOrder([
+        'item1.EMAIL;TYPE=INTERNET;TYPE=WORK:dana@work.example',
+        'item1.X-DISPLAY-NAME:Dana L. (Hadco)',
+        'EMAIL;TYPE=INTERNET;TYPE=HOME:dana@home.example',
+        'ADR;TYPE=HOME:;;;Haifa;;;IL',
+        'ADR;TYPE=WORK:;;;Paris;;;France',
+        'ORG:Hadco;',
+        'X-ORG-START:2019-03',
+        'X-ORG-TYPE:work',
+        'X-ORG-CURRENT:true',
+        'item2.ORG:Technion;',
+        'item2.X-ORG-START:1998',
+        'item2.X-ORG-END:2002-06-30',
+        'item2.X-ORG-TYPE:school',
+        'item2.X-ORG-CURRENT:false',
+        'X-SKYPE;TYPE=WORK:dana.l',
+        'item3.X-JABBER:dana.home',
+        'item3.X-ABLabel:Gaming',
+        'item4.X-IM;TYPE=HOME:dana@chat',
+        'item4.X-ABLabel:matrix',
+        'X-LOCALE:he',
+        'CATEGORIES:starred',
       ]));
     });
 
