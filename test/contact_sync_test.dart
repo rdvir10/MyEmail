@@ -75,6 +75,9 @@ class Harness {
   /// Accounts whose contacts permission is not given.
   final refusing = <String>{};
 
+  /// The accounts tokens were asked for, in order.
+  final tokensFor = <String>[];
+
   /// Every request, both servers.
   final requests = <http.Request>[];
 
@@ -101,6 +104,7 @@ class Harness {
         accounts: () => accounts,
         accessToken:
             (String id, {bool force = false, List<String>? scopes}) async {
+              tokensFor.add(id);
               if (refusing.contains(id)) {
                 throw const SignInNeedsConsent('Contacts not allowed.');
               }
@@ -1390,6 +1394,8 @@ void main() {
         ContactSyncChoice.deleteHereToo,
         ContactSyncChoice.keepOnlyHere,
       ]);
+      // Merged away in Gmail: "here" is the Outlook contact left.
+      expect(look.side, ContactSide.google);
       expect(h.graph.count, 2);
       await h.sync.answerLook(look.id, ContactSyncChoice.deleteHereToo);
       await h.sync.syncNow();
@@ -2054,11 +2060,16 @@ void main() {
       h.graph.claimRefused = true;
       final tablet = h.make(device: 'tablet', on: MemoryContactSyncStore());
       await h.choose(tablet);
+      await tablet.start();
+      expect(
+        (await tablet.status()).halt!.kind,
+        ContactSyncHaltKind.otherDevice,
+      );
       h.before = (r) async {
         if (r.url.path.endsWith(':createContact')) unawaited(tablet.stop());
       };
       await tablet.syncHere();
-      await tablet.start();
+      await tablet.syncNow();
       h.before = null;
       expect((await tablet.status()).halt!.kind, ContactSyncHaltKind.putAway);
       h.pass(const Duration(minutes: 1));
@@ -2429,6 +2440,216 @@ void main() {
       status = await h.later();
       expect(status.halt, isNull);
       expect(h.contactWritesOf(), isEmpty);
+    });
+  });
+
+  group('promises to the screen', () {
+    test('startIfDue keeps every rule', () async {
+      final pairs = seedPairs(h, 2);
+      await h.choose();
+      // Not started: never.
+      expect(await h.sync.startIfDue(), isFalse);
+
+      // A first sync put away part way is always due, at once.
+      h.graph.seed(outlook('O1', 'New', email: 'o1@example.com'));
+      h.graph.seed(outlook('O2', 'New', email: 'o2@example.com'));
+      h.before = (r) async {
+        if (r.url.path.endsWith(':createContact')) unawaited(h.sync.stop());
+      };
+      await h.sync.start();
+      h.before = null;
+      expect((await h.status()).halt!.kind, ContactSyncHaltKind.putAway);
+      expect(await h.sync.startIfDue(), isTrue);
+      // ...and not while one goes.
+      expect(await h.sync.startIfDue(), isFalse);
+      await h.sync.syncNow();
+      expect((await h.status()).firstDone, isTrue);
+
+      // Done: not again within the hour, then due.
+      h.pass(const Duration(minutes: 59));
+      expect(await h.sync.startIfDue(), isFalse);
+      h.pass(const Duration(minutes: 2));
+      expect(await h.sync.startIfDue(), isTrue);
+      await h.sync.syncNow();
+
+      // A failed run: not within five minutes, whatever the hour says.
+      h.pass(const Duration(hours: 2));
+      h.graph.consentMissing = true;
+      await h.sync.syncNow();
+      h.graph.consentMissing = false;
+      h.pass(const Duration(minutes: 4));
+      expect(await h.sync.startIfDue(), isFalse);
+      h.pass(const Duration(minutes: 2));
+      expect(await h.sync.startIfDue(), isTrue);
+      await h.sync.syncNow();
+
+      // A put-away is no failure: no pause after it.
+      h.pass(const Duration(hours: 2));
+      for (final p in pairs) {
+        h.google.editFromGmail(p.google, {
+          'organizations': [
+            {'name': 'X'},
+          ],
+        });
+      }
+      h.before = (r) async {
+        if (r.method == 'PATCH') unawaited(h.sync.stop());
+      };
+      await h.sync.syncNow();
+      h.before = null;
+      expect((await h.status()).halt!.kind, ContactSyncHaltKind.putAway);
+      expect(await h.sync.startIfDue(), isTrue);
+      await h.sync.syncNow();
+
+      // Google's daily quota: not until it is renewed.
+      h.pass(const Duration(hours: 2));
+      h.google.throttle(1, daily: true);
+      await h.sync.syncNow();
+      final until = (await h.status()).halt!.until!;
+      h.pass(const Duration(hours: 1));
+      expect(await h.sync.startIfDue(), isFalse);
+      h.now = until.add(const Duration(minutes: 1));
+      expect(await h.sync.startIfDue(), isTrue);
+      await h.sync.syncNow();
+    });
+
+    test('Start sets the first sync started before anything can stop it, '
+        'and a second Start joins the first', () async {
+      seedPairs(h, 1);
+      h.refusing.add(Harness.hadco.id);
+      await h.choose();
+      await h.sync.start();
+      var status = await h.status();
+      expect(status.halt!.kind, ContactSyncHaltKind.notAllowed);
+      expect(status.firstStarted, isTrue);
+
+      h.refusing.clear();
+      h.pass(const Duration(minutes: 6));
+      final listings = h.google.fullListings;
+      await Future.wait([h.sync.start(), h.sync.start()]);
+      status = await h.status();
+      expect(status.halt, isNull);
+      expect(h.google.fullListings, listings + 1);
+    });
+
+    test('Sync now, Sync here and answers never start a first sync',
+        () async {
+      seedPairs(h, 1);
+      await h.choose();
+      await h.sync.syncNow();
+      await h.sync.syncHere();
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.deletions,
+        ContactSyncChoice.deleteThem,
+      );
+      await h.sync.syncNow();
+      expect(h.requests, isEmpty);
+      expect((await h.status()).firstStarted, isFalse);
+      // Nor does a Sync here pressed before Start take the claim over once
+      // Start is pressed.
+      final tablet = h.make(device: 'tablet', on: MemoryContactSyncStore());
+      await h.firstSync();
+      await h.choose(tablet);
+      await tablet.syncHere();
+      await tablet.start();
+      expect(
+        (await tablet.status()).halt!.kind,
+        ContactSyncHaltKind.otherDevice,
+      );
+    });
+
+    test('answerAllDiffering leaves an item already answered as it was',
+        () async {
+      final a = h.google.seed(
+        person('Ann', 'Lee', email: 'a@example.com', company: 'GA'),
+      );
+      final aH = h.graph.seed(
+        outlook('Ann', 'Lee', email: 'a@example.com', company: 'HA'),
+      );
+      final b = h.google.seed(
+        person('Bob', 'Ray', email: 'b@example.com', company: 'GB'),
+      );
+      final bH = h.graph.seed(
+        outlook('Bob', 'Ray', email: 'b@example.com', company: 'HB'),
+      );
+      await h.firstSync();
+      final looks = (await h.status()).needsALook;
+      expect(looks, hasLength(2));
+      final annLook = looks.firstWhere((l) => l.title == 'Ann Lee');
+      await h.sync.answerLook(annLook.id, ContactSyncChoice.useGraph);
+      await h.sync.answerAllDiffering(ContactSyncChoice.useGoogle);
+      await h.sync.syncNow();
+      expect(companyOf(h.google.person(a)), 'HA');
+      expect(companyOf(h.graph.contact(aH)), 'HA');
+      expect(companyOf(h.graph.contact(bH)), 'GB');
+      expect(companyOf(h.google.person(b)), 'GB');
+    });
+
+    test('noticeSeen fires changed', () async {
+      seedPairs(h, 1);
+      h.refusing.add(Harness.hadco.id);
+      await h.firstSync();
+      final notice = (await h.status()).notice!;
+      final events = <void>[];
+      final listening = h.sync.changed.listen(events.add);
+      addTearDown(listening.cancel);
+      await h.sync.noticeSeen(notice.at);
+      await Future<void>.delayed(Duration.zero);
+      expect(events, isNotEmpty);
+    });
+
+    test('the preview and the backup are of the pair chosen last', () async {
+      const home = Account(
+        id: 'acct-home',
+        displayName: 'Home',
+        emailAddress: 'ron@home.example',
+        provider: MailProvider.outlook,
+        authMethod: AuthMethod.oauth,
+        colorValue: 2,
+      );
+      h.accounts = [Harness.gmail, Harness.hadco, home];
+      await h.choose();
+      await h.sync.choose(
+        googleAccountId: Harness.gmail.id,
+        graphAccountId: home.id,
+      );
+      h.tokensFor.clear();
+      await h.sync.preview();
+      await h.sync.backup();
+      expect(h.tokensFor, contains(home.id));
+      expect(h.tokensFor, isNot(contains(Harness.hadco.id)));
+    });
+
+    test('a pair chosen again within 30 days is taken up intact', () async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.google.deleteFromGmail(pairs[0].google);
+      await h.later();
+      final before = await h.pair();
+      final rows = (await h.links()).length;
+      const home = Account(
+        id: 'acct-home',
+        displayName: 'Home',
+        emailAddress: 'ron@home.example',
+        provider: MailProvider.outlook,
+        authMethod: AuthMethod.oauth,
+        colorValue: 2,
+      );
+      h.accounts = [Harness.gmail, Harness.hadco, home];
+      await h.sync.choose(
+        googleAccountId: Harness.gmail.id,
+        graphAccountId: home.id,
+      );
+      expect((await h.status()).graphAccountId, home.id);
+      expect((await h.status()).firstStarted, isFalse);
+      h.pass(const Duration(days: 29));
+      await h.choose();
+      final status = await h.status();
+      final after = await h.pair();
+      expect(after.pairId, before.pairId);
+      expect(status.firstDone, isTrue);
+      expect(status.recentlyDeleted, hasLength(1));
+      expect((await h.links()).length, rows);
     });
   });
 

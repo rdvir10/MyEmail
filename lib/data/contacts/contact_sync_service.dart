@@ -21,50 +21,74 @@ export 'contact_sync_planner.dart' show ContactReviewKind, ContactReviewReason;
 /// a UiStateKeys entry the screen and the shell read. With it off, nothing
 /// starts a run ([startIfDue] is not called) and the screen calls [stop].
 abstract interface class ContactSyncService {
-  /// Where contact sync stands, from what this device keeps. No network.
+  /// Where contact sync stands, from what this device keeps. Cheap, and
+  /// never a request to a server, whatever the switch: it may be read at
+  /// every [changed] for the app's life.
   Future<ContactSyncStatus> status();
 
-  /// Fires whenever [status] may have changed: a run starting, moving on or
-  /// ending, a pair chosen, an answer queued, a notice seen.
+  /// Fires whenever [status] may have changed: a run starting, moving on
+  /// (at most four times a second) or ending, which is when a notice
+  /// appears; a pair chosen; an answer queued; [noticeSeen].
   Stream<void> get changed;
 
   /// Whether [accountId] allows contact sync, asked now (a token for the
   /// contacts permission). Never throws: what went wrong is a state.
+  /// [ContactSyncAccessState.notPossible] for an account not there, a
+  /// shared mailbox, and a Gmail account only when it signs in with an
+  /// app password.
   Future<ContactSyncAccess> access(String accountId);
 
   /// Sync [googleAccountId] (a Gmail account signed in with Google) with
-  /// [graphAccountId] (a Microsoft account's own mailbox). The pair these
-  /// two had before is taken up again where it stopped; another pair naming
+  /// [graphAccountId] (a Microsoft account's own mailbox).
+  ///
+  /// The pair's own two accounts again change nothing and announce
+  /// nothing, even while a run goes: the screen may choose before every
+  /// action. Two others: the pair these two had before, detached when
+  /// another was chosen or an account removed, is taken up again intact
+  /// (its first sync, rows, Needs a look and Recently deleted) if that was
+  /// within `ContactSyncStore.detachedFor` (30 days); another pair naming
   /// either account is detached, keeping all it holds, since an account
   /// syncs with one other only. Throws [ContactSyncRefused] for accounts
-  /// that cannot sync, or while a run is going.
+  /// that cannot sync, or for a change while a run is going.
   Future<void> choose({
     required String googleAccountId,
     required String graphAccountId,
   });
 
-  /// What the first sync would do: both address books read in full,
-  /// nothing written or kept. Throws a [ReadableError] (typed as the
-  /// clients' failures are: [NeedsSignIn], [Retryable]).
+  /// What the first sync would do, for the pair chosen last: both address
+  /// books read in full, nothing written or kept. Throws a
+  /// [ReadableError] (typed as the clients' failures are: [NeedsSignIn],
+  /// [Retryable]), or [ContactSyncRefused] with no pair chosen.
   Future<ContactSyncPreview> preview();
 
-  /// Both address books, read in full, as the two backup files: one Google
-  /// Contacts imports, one Outlook on the web imports. Throws as [preview].
+  /// Both address books of the pair chosen last, read in full, as the two
+  /// backup files: exactly two, Google's first (a vCard Google Contacts
+  /// imports), then Microsoft's (a CSV Outlook on the web imports), one
+  /// per [ContactSyncBackupFile.side]. Throws as [preview].
   Future<List<ContactSyncBackupFile>> backup();
 
-  /// Start: the first sync, from Start only. Completes when the run ends,
-  /// and never throws: how it went is in [status].
+  /// Start: the first sync, from Start only. Sets
+  /// [ContactSyncStatus.firstStartedAt] before anything that can stop the
+  /// run (access, the other device, the network), so a stop shows as a
+  /// stop of a started first sync. A second Start while the first is going
+  /// joins it. Completes when the run ends, and never throws: how it went
+  /// is in [status]. The runner does not ask for the preview or the
+  /// backup first: the screen keeps Start for after both.
   Future<void> start();
 
   /// Sync now: a run at once, or the one already going. Completes when it
-  /// ends, and never throws.
+  /// ends, and never throws. Never starts a first sync that Start has not:
+  /// with none started it does nothing.
   Future<void> syncNow();
 
   /// The shell's start when MyEmail is opened or comes back: a run, only
   /// when one is due (the first sync started; the last completed run over
-  /// [ContactSyncStatus.dueAfter] ago, or the first sync unfinished; no run
-  /// failed in the last [ContactSyncStatus.failedPause]; Google's daily
-  /// quota not spent; none going). True when one started. Never throws.
+  /// [ContactSyncStatus.dueAfter] ago, or the first sync unfinished; no
+  /// stop but a put-away in the last [ContactSyncStatus.failedPause],
+  /// unless the account has signed in again since; Google's daily quota
+  /// not spent; none going). True when one started. Never throws. Whether
+  /// sync is switched on for this device is the shell's to check: this
+  /// does not know the switch.
   Future<bool> startIfDue();
 
   /// MyEmail was put away, or the switch turned off: the run going finishes
@@ -73,8 +97,10 @@ abstract interface class ContactSyncService {
   Future<void> stop();
 
   /// Ron's answer to a brake's question, queued for a run, which starts at
-  /// once (or straight after the one going). [ContactSyncChoice.keepWaiting]
-  /// queues nothing.
+  /// once (or straight after the one going). It acts only on the contacts
+  /// that question lists: a brake raised since holds its own under a
+  /// question of its own. [ContactSyncChoice.keepWaiting] queues nothing,
+  /// and the question stays.
   Future<void> answerQuestion(
     ContactSyncQuestionKind kind,
     ContactSyncChoice choice,
@@ -84,7 +110,9 @@ abstract interface class ContactSyncService {
   /// its [ContactSyncLook.choices], queued for a run that starts at once.
   /// [candidateId] says which candidate Same person means where there are
   /// several. Leave as they are, and keeping a clash's newer value, need no
-  /// run: the item just goes.
+  /// run: the item just goes. Delete it here too and Keep it only here act
+  /// on the contact that is left: the one on the other side from
+  /// [ContactSyncLook.side].
   Future<void> answerLook(
     int lookId,
     ContactSyncChoice choice, {
@@ -92,18 +120,22 @@ abstract interface class ContactSyncService {
   });
 
   /// The same answer (Use Gmail's, Use Hadco's, Leave as they are) for
-  /// every new pair whose details differ.
+  /// every new pair whose details differ that has no answer queued yet: an
+  /// answer given to one item stands.
   Future<void> answerAllDiffering(ContactSyncChoice choice);
 
   /// Restore a contact from Recently deleted ([ContactSyncDeleted.id]),
   /// queued for a run that starts at once.
   Future<void> restore(int deletedId);
 
-  /// Sync here although another device has been syncing: the next run
-  /// takes the claim over. Starts it.
+  /// Sync here although another device has been syncing: a run starts at
+  /// once and takes the claim over from its start, and goes on taking it
+  /// until a run of this device's completes. Like [syncNow], never starts
+  /// a first sync that Start has not.
   Future<void> syncHere();
 
   /// The shell showed [ContactSyncStatus.notice]: it is not shown again.
+  /// Fires [changed].
   Future<void> noticeSeen(DateTime at);
 }
 
@@ -432,12 +464,17 @@ class ContactSyncHalt {
   final ContactSyncHaltKind kind;
   final DateTime at;
 
-  /// The account's side, where it is about one.
+  /// The account's side, where it is about one: always set for
+  /// [ContactSyncHaltKind.notAllowed] and [ContactSyncHaltKind.emptyAnswer]
+  /// (and Google's for [ContactSyncHaltKind.quota]).
   final ContactSide? side;
 
   /// The failure, typed for ProblemView: [ContactSyncNeedsSignIn] for
-  /// [ContactSyncHaltKind.notAllowed], a [Retryable] [ReadableError] for a
-  /// failure worth trying again.
+  /// [ContactSyncHaltKind.notAllowed]; for [ContactSyncHaltKind.failed]
+  /// either a [ContactSyncFailed] ([Retryable]: no connection, a server in
+  /// trouble) or a [ContactSyncRefused], which is not (the People API
+  /// switched off, a request a server would not take): trying again may
+  /// not help, so the screen offers Sync now itself for that one.
   final Exception? error;
 
   /// For [ContactSyncHaltKind.quota]: when Google's quota is renewed.
@@ -539,6 +576,9 @@ class ContactSyncQuestion {
     this.answer,
   });
 
+  /// An [ContactSyncHaltKind.emptyAnswer] stop always comes with its open
+  /// question of this kind, there until a run completes (Keep waiting
+  /// leaves it).
   final ContactSyncQuestionKind kind;
 
   /// The contacts held, with where each went or changed.
@@ -604,8 +644,11 @@ class ContactSyncLook {
   final ContactReviewKind kind;
   final ContactReviewReason? reason;
 
-  /// For a new contact, its side; for a kept one, the side it went from;
-  /// for one a server refused, the side that refused it.
+  /// For a new contact, its side; for one a server refused, the side that
+  /// refused it. For a kept contact, the side it went from, and for one
+  /// merged away in Gmail, Google: always set for both, and what Delete it
+  /// here too and Keep it only here act on is the contact on the other
+  /// side.
   final ContactSide? side;
   final String title;
 

@@ -565,7 +565,10 @@ class ContactSync implements ContactSyncService {
     if (pair == null) return;
     var run = false;
     for (final r in await store.reviews(pair.pairId)) {
-      if (r.kind != ContactReviewKind.differing.name || r.reviewId == null) {
+      // Only those not answered yet: an answer given item by item stands.
+      if (r.kind != ContactReviewKind.differing.name ||
+          r.reviewId == null ||
+          r.isAnswered) {
         continue;
       }
       if (await _queueLook(r.reviewId!, choice)) run = true;
@@ -705,6 +708,10 @@ class ContactSync implements ContactSyncService {
 
   @override
   Future<void> syncHere() async {
+    // Only a pair whose first sync was started: the first sync starts
+    // from Start alone, after the preview and the backup.
+    final pair = await _attachedPair();
+    if (pair == null || pair.firstStartedAt == null) return;
     _takeClaim = true;
     _changed();
     unawaited(_go(again: true));
@@ -3392,6 +3399,8 @@ abstract final class _Look {
       reason: reason,
       side: switch (kind) {
         ContactReviewKind.kept => _sideOf(data['goneSide']),
+        // Merged away in Gmail: what is left is the Outlook contact.
+        ContactReviewKind.mergedInGoogle => ContactSide.google,
         _ => _sideOf(data['subjectSide']),
       },
       title: data['title'] as String? ?? '',
