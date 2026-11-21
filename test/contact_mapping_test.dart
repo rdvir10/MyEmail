@@ -50,7 +50,12 @@ void main() {
       'metadata': {
         'sources': [
           {'type': 'PROFILE', 'updateTime': '2026-01-01T00:00:00Z'},
-          {'type': 'CONTACT', 'updateTime': '2026-11-02T10:00:00.5Z'},
+          {
+            'type': 'CONTACT',
+            'id': 'c1',
+            'etag': '#src1',
+            'updateTime': '2026-11-02T10:00:00.5Z',
+          },
         ],
         'previousResourceNames': ['people/c0'],
       },
@@ -146,7 +151,8 @@ void main() {
     test('takes only the contact\'s own entries, and each detail', () {
       final g = GoogleContact.fromPerson(person);
       expect(g.resourceName, 'people/c1');
-      expect(g.etag, '%EgUBAgMEBQ==');
+      expect(g.etag, '#src1', reason: 'the contact source, not the Person');
+      expect(googleContactEtag(person), '#src1');
       expect(g.updatedAt, DateTime.utc(2026, 11, 2, 10, 0, 0, 500));
       expect(g.tag, 'AAMkGraphId=');
       expect(g.previousNames, ['people/c0']);
@@ -330,28 +336,63 @@ void main() {
       expect(d.name, ContactName.of(display: 'The Plumber'));
     });
 
-    test('a display name that is an email or the company is no name', () {
+    test('a display name that is an email or the company is kept raw, but '
+        'is no name to copy', () {
       final byEmail = syncedFromGraph({
         'displayName': 'Ann@X.example',
         'emailAddresses': [
           {'address': 'ann@x.example'},
         ],
       });
-      expect(byEmail.name, isNull);
+      expect(byEmail.name, ContactName.of(display: 'Ann@X.example'));
+      expect(byEmail.copyableName, isNull);
       final byCompany = syncedFromGraph({
         'displayName': 'HADCO',
         'companyName': 'Hadco',
       });
-      expect(byCompany.name, isNull);
+      expect(byCompany.name, ContactName.of(display: 'HADCO'));
+      expect(byCompany.copyableName, isNull);
       final google = syncedFromPerson({
         'names': [
-          contact({'displayName': 'ann@x.example'}),
+          contact({'unstructuredName': 'ann@x.example'}),
         ],
         'emailAddresses': [
           contact({'value': 'ann@x.example'}),
         ],
       });
-      expect(google.name, isNull);
+      expect(google.name, ContactName.of(display: 'ann@x.example'));
+      expect(google.copyableName, isNull);
+      // A display name that is not one of them is a name.
+      final plumber = syncedFromGraph({
+        'displayName': 'The Plumber',
+        'companyName': 'Pipes Ltd',
+      });
+      expect(plumber.copyableName, ContactName.of(display: 'The Plumber'));
+      // Neither create copies one that is no name.
+      expect(googleCreateBody(byEmail).containsKey('names'), isFalse);
+      expect(googleCreateBody(plumber)['names'], [
+        {'unstructuredName': 'The Plumber'},
+      ]);
+      final outlook = graphCreateBody(google);
+      expect(outlook.containsKey('displayName'), isFalse);
+      final acme = graphCreateBody(
+        syncedFromPerson({
+          'names': [
+            contact({'unstructuredName': 'Acme'}),
+          ],
+          'emailAddresses': [
+            contact({'value': 'info@acme.example'}),
+          ],
+          'organizations': [
+            contact({'name': 'Acme'}),
+          ],
+        }),
+      );
+      expect(acme.containsKey('displayName'), isFalse);
+      expect(acme.containsKey('givenName'), isFalse);
+      expect(acme['emailAddresses'], [
+        {'address': 'info@acme.example', 'name': 'info@acme.example'},
+      ], reason: 'the address, not the company, names it');
     });
 
     test('a removed or sparse delta item says so', () {
@@ -413,7 +454,13 @@ void main() {
       'etag': 'etag-1',
       'metadata': {
         'sources': [
-          {'type': 'CONTACT', 'etag': 'src-etag'},
+          {
+            'type': 'CONTACT',
+            'id': 'c1',
+            'etag': 'src-etag',
+            'updateTime': '2026-11-02T10:00:00Z',
+          },
+          {'type': 'PROFILE', 'id': 'p1', 'etag': 'profile-etag'},
         ],
       },
       'names': [
@@ -495,8 +542,18 @@ void main() {
       ]);
       final update = rebuild(person, target, {ContactField.emails});
       expect(update.updatePersonFields, ['emailAddresses']);
-      expect(update.person['etag'], 'etag-1');
-      expect(update.person['names'], person['names'], reason: 'untouched');
+      // The contact source and its etag, the named field, nothing else.
+      expect(update.person.keys, {
+        'resourceName',
+        'metadata',
+        'emailAddresses',
+      });
+      expect(update.person['resourceName'], 'people/c1');
+      expect(update.person['metadata'], {
+        'sources': [
+          {'type': 'CONTACT', 'id': 'c1', 'etag': 'src-etag'},
+        ],
+      });
       final emails = update.person['emailAddresses'] as List;
       expect(emails, hasLength(5));
       expect((emails[1] as Map)['formattedType'], 'Lab', reason: 'label kept');

@@ -38,7 +38,14 @@ void main() {
     updatedAt: at,
     tag: tag,
     previousNames: previous,
-    person: {'resourceName': name, 'etag': etag ?? 'etag-$name'},
+    person: {
+      'resourceName': name,
+      'metadata': {
+        'sources': [
+          {'type': 'CONTACT', 'id': name, 'etag': etag ?? 'etag-$name'},
+        ],
+      },
+    },
   );
 
   GoogleContact gDeleted(String name) => GoogleContact(
@@ -726,9 +733,16 @@ void main() {
       );
       final write = byLink(plan, 1)!.googleWrite!;
       expect(write.version, 'etag-1');
+      // Read with other fields than the listing: the Person's own etag
+      // differs, the contact source's is the version.
       Map<String, Object?> person(String etag) => {
         'resourceName': 'people/c1',
-        'etag': etag,
+        'etag': '%person-etag-of-another-read',
+        'metadata': {
+          'sources': [
+            {'type': 'CONTACT', 'id': 'c1', 'etag': etag},
+          ],
+        },
         'emailAddresses': [
           {'value': 'ann@x.example'},
           {'value': 'e4@x'},
@@ -739,6 +753,12 @@ void main() {
         throwsA(isA<ContactReadStale>()),
       );
       final update = write.googleUpdate(person('etag-1'), normaliser: norm);
+      expect(update.person['metadata'], {
+        'sources': [
+          {'type': 'CONTACT', 'id': 'c1', 'etag': 'etag-1'},
+        ],
+      }, reason: 'the version updateContact checks');
+      expect(update.person.containsKey('etag'), isFalse);
       expect(
         (update.person['emailAddresses'] as List).map(
           (e) => (e as Map)['value'],
@@ -761,6 +781,42 @@ void main() {
         graph.graphPatch({'changeKey': 'key-1'}),
         contains('officeLocation'),
       );
+    });
+
+    test('Gmail\'s version is its contact source\'s etag, whatever was read',
+        () {
+      // The Person's own etag is the answer's entity tag, and differs
+      // between a listing and a full read; the contact source's does not.
+      Map<String, Object?> read(String personEtag) => {
+        'resourceName': 'people/c1',
+        'etag': personEtag,
+        'metadata': {
+          'sources': [
+            {'type': 'CONTACT', 'id': 'c1', 'etag': 'src-1'},
+          ],
+        },
+        'names': [
+          {'givenName': 'Ann', 'familyName': 'Cole'},
+        ],
+        'emailAddresses': [
+          {'value': 'ann@x.example'},
+        ],
+      };
+      final listed = GoogleContact.fromPerson(read('%listing'));
+      expect(listed.etag, 'src-1');
+      // Outlook's copy went: the Gmail contact, unchanged since the row
+      // was saved, is deleted rather than kept as changed.
+      final plan = run(
+        google: [listed],
+        graphGone: {'H1'},
+        links: [link(1, 'people/c1', 'H1', base: ann, etag: 'src-1')],
+      );
+      final delete = byLink(plan, 1)!.delete!;
+      expect(delete.side, ContactSide.google);
+      expect(delete.expectedVersion, 'src-1');
+      // The full read just before the delete has another Person etag but
+      // the same version.
+      expect(googleContactEtag(read('%full-read')), delete.expectedVersion);
     });
 
     test('a removed, sparse or empty Outlook entry is never read as cleared',
@@ -791,6 +847,43 @@ void main() {
       expect(emptyGmail.links.where((l) => l.writes), isEmpty);
     });
 
+    test('a sparse Outlook entry passed over is counted, for a read by id',
+        () {
+      GraphContact sparse(String id) => GraphContact(
+        id: id,
+        details: SyncedContact({ContactField.company: 'X'}),
+        missing: const {'nickName'},
+      );
+      final plan = run(
+        graph: [
+          GraphContact(
+            id: 'H0',
+            details: SyncedContact.empty,
+            removed: true,
+          ),
+          sparse('H1'),
+          // Sparse in the delta, then read whole by id: not passed over.
+          sparse('H3'),
+          h('H3', person(given: 'Cy', family: 'Roe')),
+        ],
+        links: [link(1, 'people/c1', 'H1', base: base)],
+      );
+      expect(plan.graphPassedOver, {'H1'});
+      expect(plan.counts.passedOver, 1);
+      expect(plan.counts.toJson()['passedOver'], 1);
+      expect(plan.links.where((l) => l.writes && l.graphId == 'H1'), isEmpty);
+      expect(plan.counts.addToGoogle, 1, reason: 'H3 was read whole');
+      // A run the empty-answers brake stops says so too.
+      final stopped = run(
+        graph: [sparse('H1')],
+        graphComplete: true,
+        links: [link(1, 'people/c1', 'H1', base: base)],
+      );
+      expect(stopped.stop, isNotNull);
+      expect(stopped.graphPassedOver, {'H1'});
+      expect(stopped.counts.passedOver, 1);
+    });
+
     test('Outlook\'s year reaches a year-less Gmail birthday after pairing',
         () {
       const yearless = ContactBirthday(month: 7, day: 4);
@@ -810,6 +903,175 @@ void main() {
     test('a pair neither feed mentions is left alone', () {
       final plan = run(links: [link(1, 'people/c1', 'H1', base: base)]);
       expect(plan.links, isEmpty);
+    });
+  });
+
+  group('a display name that is no name', () {
+    // Outlook contacts as a whole read returns them: every synced
+    // property there, null when empty.
+    GraphContact outlook(String id, Map<String, Object?> values) =>
+        GraphContact.fromJson({
+          'id': id,
+          'changeKey': 'key-$id-2',
+          for (final p in graphSyncedProperties) p: null,
+          ...values,
+        });
+    SyncedContact read(Map<String, Object?> values) =>
+        outlook('H1', values).details;
+    SyncedContact gmail(Map<String, Object?> person) =>
+        syncedFromPerson(person);
+
+    test('an edit to the company never clears the Gmail name', () {
+      // Outlook shows "Acme Corp" with no name parts, company "Acme";
+      // Ron changes the company to "Acme Corp".
+      final gmailNow = gmail({
+        'names': [
+          {'unstructuredName': 'Acme Corp'},
+        ],
+        'organizations': [
+          {'name': 'Acme'},
+        ],
+      });
+      final plan = run(
+        graph: [
+          outlook('H1', {
+            'displayName': 'Acme Corp',
+            'companyName': 'Acme Corp',
+          }),
+        ],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: gmailNow,
+            graphBase: read({'displayName': 'Acme Corp', 'companyName': 'Acme'}),
+          ),
+        ],
+      );
+      final pair = byLink(plan, 1)!;
+      expect(pair.googleWrite!.fields, {ContactField.company});
+      expect(
+        pair.googleWrite!.target.text(ContactField.company),
+        'Acme Corp',
+      );
+      expect(pair.graphWrite, isNull);
+    });
+
+    test('an email edit never makes the old address a Gmail name', () {
+      // Outlook shows the address for want of a name, and keeps showing
+      // the old one after Ron changes the address.
+      final plan = run(
+        graph: [
+          outlook('H1', {
+            'displayName': 'bob@x.example',
+            'emailAddresses': [
+              {'address': 'bob@y.example'},
+            ],
+          }),
+        ],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: SyncedContact({
+              ContactField.emails: ['bob@x.example'],
+            }),
+            graphBase: read({
+              'displayName': 'bob@x.example',
+              'emailAddresses': [
+                {'address': 'bob@x.example'},
+              ],
+            }),
+          ),
+        ],
+      );
+      final write = byLink(plan, 1)!.googleWrite!;
+      expect(write.fields, {ContactField.emails});
+      expect(write.target.list(ContactField.emails), ['bob@y.example']);
+    });
+
+    test('one no-name display remade as another is no change', () {
+      // Outlook remakes the shown address with the address itself, while
+      // Gmail has a name: the name is not cleared.
+      final bob = person(given: 'Bob', family: 'Smith', emails: ['bob@x']);
+      final plan = run(
+        graph: [
+          outlook('H1', {
+            'displayName': 'bob@y',
+            'emailAddresses': [
+              {'address': 'bob@y'},
+            ],
+          }),
+        ],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: bob,
+            graphBase: read({
+              'displayName': 'bob@x',
+              'emailAddresses': [
+                {'address': 'bob@x'},
+              ],
+            }),
+          ),
+        ],
+      );
+      final write = byLink(plan, 1)!.googleWrite!;
+      expect(write.fields, {ContactField.emails});
+    });
+
+    test('a new pair is never filled with one, and keeps it raw', () {
+      final plan = run(
+        google: [
+          g('people/c1', SyncedContact({
+            ContactField.emails: ['bob@x.example'],
+          })),
+        ],
+        graph: [
+          outlook('H1', {
+            'displayName': 'bob@x.example',
+            'emailAddresses': [
+              {'address': 'bob@x.example'},
+            ],
+          }),
+        ],
+      );
+      final pair = byGoogle(plan, 'people/c1')!;
+      expect(pair.graphId, 'H1');
+      expect(pair.googleWrite, isNull, reason: 'no name copied to Gmail');
+      expect(
+        pair.graphBase!.name,
+        ContactName.of(display: 'bob@x.example'),
+        reason: 'the base keeps the raw value',
+      );
+    });
+
+    test('two contacts showing only their company are no same name', () {
+      final plan = run(
+        google: [
+          g('people/c1', SyncedContact({
+            ContactField.name: ContactName.of(display: 'Acme'),
+            ContactField.company: 'Acme',
+            ContactField.emails: ['info@acme.example'],
+          })),
+        ],
+        graph: [
+          outlook('H1', {
+            'displayName': 'Acme',
+            'companyName': 'Acme',
+            'emailAddresses': [
+              {'address': 'sales@acme.example'},
+            ],
+          }),
+        ],
+      );
+      expect(plan.reviews, isEmpty);
+      expect(plan.counts.addToGoogle, 1);
+      expect(plan.counts.addToGraph, 1);
     });
   });
 
@@ -2067,6 +2329,78 @@ void main() {
       expect(plan.answers, [ContactAnswerOutcome.dropped]);
     });
 
+    test('an answer about a contact moved out of Contacts is dropped', () {
+      // Outlook H1 was moved to another folder: no run reads it while it
+      // is away, so a waiting answer would wait for ever.
+      final differs = ann.withValue(ContactField.company, 'Hadco');
+      final plan = run(
+        google: [g('people/c1', differs), g('people/c2', ann)],
+        graphMovedOut: {'H1', 'H2'},
+        links: [
+          link(1, 'people/c1', 'H1', base: ann),
+          link(
+            2,
+            null,
+            'H2',
+            base: ann,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.waiting,
+          ),
+        ],
+        answers: [
+          const ContactAnswer(
+            ContactAnswerKind.useGoogle,
+            googleName: 'people/c1',
+            graphId: 'H1',
+          ),
+          const ContactAnswer(
+            ContactAnswerKind.samePerson,
+            googleName: 'people/c2',
+            graphId: 'H2',
+          ),
+        ],
+      );
+      expect(plan.answers, [
+        ContactAnswerOutcome.dropped,
+        ContactAnswerOutcome.dropped,
+      ]);
+      // The pair is held as moved out, both ids kept, nothing written.
+      final pair = byLink(plan, 1)!;
+      expect(pair.reason, ContactHeldReason.movedOut);
+      expect(pair.graphId, 'H1');
+      expect(pair.writes, isFalse);
+      expect(byLink(plan, 2), isNull, reason: 'H2 is not paired');
+    });
+
+    test('Apply them holds a pair moved out of Contacts as moved out', () {
+      final held = [
+        for (final i in [1, 2])
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: ann,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.changeBrake,
+          ),
+      ];
+      final changed = ann.withValue(ContactField.company, 'New');
+      final plan = run(
+        google: [g('people/c1', changed), g('people/c2', changed)],
+        graph: [h('H1', ann)],
+        graphMovedOut: {'H2'},
+        links: held,
+        answers: const [ContactAnswer(ContactAnswerKind.applyHeld)],
+      );
+      expect(plan.answers, [ContactAnswerOutcome.applied]);
+      expect(byLink(plan, 1)!.graphWrite!.fields, {ContactField.company});
+      final away = byLink(plan, 2)!;
+      expect(away.reason, ContactHeldReason.movedOut);
+      expect(away.googleName, 'people/c2');
+      expect(away.graphId, 'H2');
+      expect(away.writes, isFalse);
+    });
+
     test('a kept contact copied back, or deleted here too', () {
       final kept = link(
         1,
@@ -2211,6 +2545,44 @@ void main() {
       expect(restore.googleRaw, isNotNull, reason: 'made again');
     });
 
+    test('an address two contacts share on the other side finds none back',
+        () {
+      final family = ['fam@x'];
+      final cy = person(given: 'Cy', family: 'Cole', emails: family);
+      final plan = run(
+        // One Gmail contact has the address, as the deleted one did, but
+        // two Outlook contacts share it: a family email, not Cy's own.
+        google: [g('people/y', cy)],
+        graph: [
+          h('H-a', person(given: 'Ann', family: 'Cole', emails: family)),
+          h('H-b', person(given: 'Bob', family: 'Cole', emails: family)),
+        ],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.google,
+            contactId: 'people/x',
+            partnerId: 'H-x',
+            raw: const {
+              'resourceName': 'people/x',
+              'names': [
+                {'givenName': 'Cy', 'familyName': 'Cole'},
+              ],
+              'emailAddresses': [
+                {'value': 'fam@x'},
+              ],
+            },
+            partnerBase: cy.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      final restore = plan.restores.single;
+      expect(restore.googleName, isNull, reason: 'people/y is not Cy back');
+      expect(restore.googleRaw, isNotNull, reason: 'made again');
+      expect(restore.graphDetails, cy);
+    });
+
     test('a contact back but held is used, its row carried', () {
       final heldC9 = link(
         5,
@@ -2280,6 +2652,119 @@ void main() {
       expect(plan.restores.single.alreadyBack, isTrue);
       expect(plan.binAlreadyBack, [9]);
     });
+
+    test('made again by Ron and copied by the sync, it is Already back', () {
+      // The sync deleted Outlook H9 because Ron deleted Gmail c9. Ron then
+      // made Ann again as c9b, which the sync copied to H9b and paired.
+      // Restore on H9 must not make a second Ann on each side.
+      final plan = run(
+        google: [g('people/c9b', ann)],
+        graph: [h('H9b', ann, tag: 'people/c9b')],
+        links: [link(3, 'people/c9b', 'H9b', base: ann)],
+        googleGone: {'people/c9'},
+        graphGone: {'H9'},
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: const {
+              'id': 'H9',
+              'givenName': 'Ann',
+              'surname': 'Cole',
+              'emailAddresses': [
+                {'address': 'ann@x.example', 'name': 'Ann Cole'},
+              ],
+            },
+            partnerBase: ann.toJson(),
+            title: 'Ann Cole',
+            restore: true,
+          ),
+        ],
+      );
+      final restore = plan.restores.single;
+      expect(restore.alreadyBack, isTrue);
+      expect(restore.graphRaw, isNull);
+      expect(restore.googleDetails, isNull);
+      expect(plan.binAlreadyBack, [9]);
+      expect(plan.counts.restores, 0);
+      expect(plan.links.where((l) => l.create != null), isEmpty);
+
+      // Matches each paired with someone else are not it back.
+      final annOnly = person(given: 'Ann', family: 'Cole');
+      final apart = run(
+        google: [g('people/c9b', ann), g('people/c7', annOnly)],
+        graph: [h('H9b', ann), h('H7', annOnly)],
+        links: [
+          link(3, 'people/c9b', 'H7', base: ann),
+          link(4, 'people/c7', 'H9b', base: ann),
+        ],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: const {
+              'id': 'H9',
+              'givenName': 'Ann',
+              'surname': 'Cole',
+              'emailAddresses': [
+                {'address': 'ann@x.example'},
+              ],
+            },
+            partnerBase: ann.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      expect(apart.restores.single.alreadyBack, isFalse);
+      expect(apart.binAlreadyBack, isEmpty);
+
+      // Paired earlier in the same run, by Ron's Same person.
+      final answered = run(
+        google: [g('people/c9b', ann)],
+        graph: [h('H9b', ann)],
+        links: [
+          link(
+            3,
+            'people/c9b',
+            null,
+            base: ann,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.waiting,
+          ),
+        ],
+        answers: const [
+          ContactAnswer(
+            ContactAnswerKind.samePerson,
+            googleName: 'people/c9b',
+            graphId: 'H9b',
+          ),
+        ],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: const {
+              'id': 'H9',
+              'givenName': 'Ann',
+              'surname': 'Cole',
+              'emailAddresses': [
+                {'address': 'ann@x.example'},
+              ],
+            },
+            partnerBase: ann.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      expect(answered.answers, [ContactAnswerOutcome.applied]);
+      expect(answered.restores.single.alreadyBack, isTrue);
+    });
   });
 
   test('one pair compared directly, as the runner re-plans a moved one', () {
@@ -2298,6 +2783,90 @@ void main() {
     expect(pair.toGraph, {ContactField.office});
     expect(pair.toGoogle, isEmpty);
     expect(pair.removes, isTrue);
+  });
+
+  group('a pair planned again after a stale read', () {
+    final base = person(
+      given: 'Ann',
+      family: 'Cole',
+      more: {ContactField.office: 'A'},
+    );
+
+    test('keeps the first sync\'s rules', () {
+      // First sync: Gmail changed the office (Outlook has one, so it is
+      // listed, not overwritten) and added a nickname (copied).
+      final plan = run(
+        firstSync: true,
+        google: [
+          g(
+            'people/c1',
+            base
+                .withValue(ContactField.office, 'B')
+                .withValue(ContactField.nickname, 'Annie'),
+          ),
+        ],
+        links: [link(1, 'people/c1', 'H1', base: base)],
+      );
+      final first = byLink(plan, 1)!;
+      expect(first.graphWrite!.fields, {ContactField.nickname});
+      // The PATCH met a newer changeKey: Ron added a job title in Outlook
+      // meanwhile. Planned again, the office is still only listed.
+      final again = first.replan(
+        graph: h(
+          'H1',
+          base.withValue(ContactField.jobTitle, 'Lead'),
+          key: 'key-H1-2',
+        ),
+      );
+      expect(again.plan.graphWrite!.fields, {ContactField.nickname});
+      expect(again.plan.graphWrite!.version, 'key-H1-2');
+      expect(again.plan.googleWrite!.fields, {ContactField.jobTitle});
+      expect(again.plan.googleWrite!.version, first.googleEtag);
+      expect(again.plan.linkId, 1);
+      expect(again.reviews.single.kind, ContactReviewKind.differing);
+      expect(again.reviews.single.fields, [ContactField.office]);
+      expect(again.plan.settings!.firstSync, isTrue);
+    });
+
+    test('keeps a new pair\'s rules, and refuses what it cannot plan', () {
+      final plan = run(
+        google: [
+          g('people/c1', ann.withValue(ContactField.company, 'Hadco')),
+        ],
+        graph: [h('H1', ann.withValue(ContactField.company, 'Hadco Ltd'))],
+      );
+      final first = byGoogle(plan, 'people/c1')!;
+      expect(first.newPair, isTrue);
+      final again = first.replan(
+        graph: h(
+          'H1',
+          ann
+              .withValue(ContactField.company, 'Hadco Ltd')
+              .withValue(ContactField.office, 'B2'),
+          key: 'key-H1-2',
+        ),
+      );
+      // Still merged without overwriting: the company is listed, the
+      // office filled in.
+      expect(again.plan.newPair, isTrue);
+      expect(again.plan.graphWrite, isNull);
+      expect(again.plan.googleWrite!.fields, {ContactField.office});
+      expect(again.reviews.single.fields, [ContactField.company]);
+      expect(
+        () => first.replan(
+          graph: GraphContact(
+            id: 'H1',
+            details: ann,
+            missing: const {'surname'},
+          ),
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => const ContactLinkPlan(linkId: 1, removeRow: true).replan(),
+        throwsStateError,
+      );
+    });
   });
 }
 

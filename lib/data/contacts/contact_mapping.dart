@@ -81,7 +81,11 @@ class GoogleContact {
   /// Its `people/c…` name.
   final String resourceName;
 
-  /// The Person's etag, sent back with an update.
+  /// Its version: the etag of the contact's own source
+  /// ([googleContactEtag]), which `updateContact` checks and which every
+  /// stored Gmail version is. Not the Person's top-level etag, which is
+  /// the HTTP entity tag of one answer and changes with the fields asked
+  /// for. Null when the read carried no contact source.
   final String? etag;
 
   /// The contact source's `updateTime`: when it was last changed.
@@ -104,12 +108,10 @@ class GoogleContact {
 
   factory GoogleContact.fromPerson(Map<String, Object?> person) {
     final metadata = _map(person['metadata']);
-    final source = _list(metadata['sources'])
-        .map(_map)
-        .firstWhereOrNull((s) => s['type'] == 'CONTACT');
+    final source = _contactSource(person);
     return GoogleContact(
       resourceName: _string(person['resourceName']) ?? '',
-      etag: _string(person['etag']),
+      etag: _string(source?['etag']),
       updatedAt: DateTime.tryParse(_string(source?['updateTime']) ?? ''),
       tag: googleTag(person),
       deleted: metadata['deleted'] == true,
@@ -191,6 +193,21 @@ final graphSyncedProperties = [
   for (final f in ContactField.values) ...graphProperties(f),
 ];
 
+/// A Person's version: the etag of its contact source
+/// (`metadata.sources[]` of type CONTACT). `updateContact` compares it
+/// with the contact's own and answers 400 failedPrecondition when they
+/// differ; it is what [GoogleContact.etag], the rows, a write's
+/// `version` and a delete's `expectedVersion` hold, so the full read
+/// before a delete is compared with the listing on the same terms. Null
+/// when the Person carries no contact source.
+String? googleContactEtag(Map<String, Object?> person) =>
+    _string(_contactSource(person)?['etag']);
+
+Map<String, Object?>? _contactSource(Map<String, Object?> person) =>
+    _list(_map(person['metadata'])['sources'])
+        .map(_map)
+        .firstWhereOrNull((s) => s['type'] == 'CONTACT');
+
 /// The hidden tag in a Person's `clientData`, if it has one.
 String? googleTag(Map<String, Object?> person) => _contactEntries(
   person,
@@ -248,15 +265,11 @@ SyncedContact syncedFromPerson(Map<String, Object?> person) {
             suffix: _string(name['honorificSuffix']),
             phoneticGiven: _string(name['phoneticGivenName']),
             phoneticFamily: _string(name['phoneticFamilyName']),
-            display: _ownDisplay(
-              _string(name['unstructuredName']) ??
-                  _string(name['displayName']),
-              [
-                for (final e in _contactEntries(person, 'emailAddresses'))
-                  ?_string(e['value']),
-                ?_string(organization?['name']),
-              ],
-            ),
+            // Raw, even when it is an email or the company: see
+            // SyncedContact.copyableName.
+            display:
+                _string(name['unstructuredName']) ??
+                _string(name['displayName']),
           ),
     ContactField.nickname: _string(nickname?['value']),
     ContactField.emails: _primaryFirst(
@@ -333,7 +346,9 @@ SyncedContact syncedFromGraph(Map<String, Object?> contact) {
       suffix: s('generation'),
       phoneticGiven: s('yomiGivenName'),
       phoneticFamily: s('yomiSurname'),
-      display: _ownDisplay(s('displayName'), [...emails, ?s('companyName')]),
+      // Raw, even when it is an email or the company: see
+      // SyncedContact.copyableName.
+      display: s('displayName'),
     ),
     ContactField.nickname: s('nickName'),
     ContactField.emails: emails,
@@ -358,18 +373,6 @@ SyncedContact syncedFromGraph(Map<String, Object?> contact) {
     ContactField.webPage: s('businessHomePage'),
     ContactField.im: strings('imAddresses'),
   });
-}
-
-/// A display name that is a name: not one of the contact's own emails or
-/// its company, which Outlook (and Google) show when there is no name, and
-/// which would otherwise travel as the other side's name.
-String? _ownDisplay(String? display, List<String> notNames) {
-  final key = ContactNormaliser.textKey(display);
-  if (key == null) return null;
-  for (final other in notNames) {
-    if (ContactNormaliser.textKey(other) == key) return null;
-  }
-  return display;
 }
 
 /// Outlook's birthday as the day it falls on: the UTC date of the value
@@ -527,8 +530,12 @@ ContactListMerge mergeContactList(
 // ---------------------------------------------------------------------------
 // Writing into Gmail.
 
-/// An update to send with `people.updateContact`: the full rebuilt Person
-/// (its etag as read) and the fields to name in `updatePersonFields`.
+/// An update to send with `people.updateContact`: the body, and the
+/// fields to name in `updatePersonFields`. The body holds the Person's
+/// `resourceName`, `metadata.sources` with only its contact source as
+/// read (`type`, `id`, `etag`: the version `updateContact` checks), and
+/// each Person field in [updatePersonFields], rebuilt; nothing else, not
+/// the top-level etag.
 @immutable
 class GooglePersonUpdate {
   const GooglePersonUpdate(this.person, this.updatePersonFields);
@@ -564,10 +571,11 @@ String googlePersonField(ContactField field) => switch (field) {
   ContactField.im => 'imClients',
 };
 
-/// [person] (as last read) with [fields] set to [target]'s values, and the
-/// Person fields that names. Each field is rebuilt from the full current
-/// list with only the matched entries changed: types, labels and every
-/// value Outlook cannot hold are kept.
+/// The update setting [fields] of [person] (as last read) to [target]'s
+/// values (the body is set out at [GooglePersonUpdate]), and the Person
+/// fields that names. Each field is rebuilt from the full current list
+/// with only the matched entries changed: types, labels and every value
+/// Outlook cannot hold are kept.
 ///
 /// [replaced] says, per list, which value took which value's place in an
 /// Outlook slot (old raw value to new): that Gmail entry is changed in
@@ -582,8 +590,8 @@ String googlePersonField(ContactField field) => switch (field) {
 /// [seen] is Gmail's side as the plan read it. A list value in [person]
 /// that the plan never saw (neither there nor in [target]) was added
 /// since, and is kept: only values the plan saw are ever removed. The
-/// runner refuses a Person whose etag moved anyway (see
-/// `ContactWrite.googleUpdate`); this is the second line.
+/// runner refuses a Person whose version ([googleContactEtag]) moved
+/// anyway (see `ContactWrite.googleUpdate`); this is the second line.
 GooglePersonUpdate googlePersonUpdate(
   Map<String, Object?> person,
   SyncedContact target,
@@ -595,7 +603,22 @@ GooglePersonUpdate googlePersonUpdate(
   final norm = normaliser;
   final wanted = fields.toSet();
   final personFields = wanted.map(googlePersonField).toSet();
-  final rebuilt = <String, Object?>{...person};
+  // Google checks the contact source's etag, so the body carries that
+  // source as read; fields not named are not sent, since they are not
+  // written anyway.
+  final source = _contactSource(person);
+  final rebuilt = <String, Object?>{
+    'resourceName': ?person['resourceName'],
+    if (source != null)
+      'metadata': {
+        'sources': [
+          {
+            for (final key in const ['type', 'id', 'etag'])
+              if (source[key] != null) key: source[key],
+          },
+        ],
+      },
+  };
   for (final personField in personFields) {
     var entries = _contactEntries(
       person,
@@ -627,13 +650,17 @@ GooglePersonUpdate googlePersonUpdate(
 }
 
 /// A Person for `people.createContact`, carrying [details], in My
-/// Contacts. The hidden tag is the wire client's to add (it adds it to
-/// every create, and a batch needs one per contact).
+/// Contacts. A display name that is only an email or the company is no
+/// name to copy ([SyncedContact.copyableName]). The hidden tag is the
+/// wire client's to add (it adds it to every create, and a batch needs one
+/// per contact).
 Map<String, Object?> googleCreateBody(SyncedContact details) {
   final norm = ContactNormaliser.oneContact();
   final body = <String, Object?>{};
   for (final field in ContactField.values) {
-    final value = details[field];
+    final value = field == ContactField.name
+        ? details.copyableName
+        : details[field];
     if (value == null) continue;
     if (field == ContactField.birthday && !details.birthday!.hasYear) continue;
     final personField = googlePersonField(field);
@@ -1108,13 +1135,17 @@ Map<String, Object?> graphContactPatch(
   return body;
 }
 
-/// The body of a Graph `POST` making a contact with [details]. The hidden
-/// tag is the wire client's to add.
+/// The body of a Graph `POST` making a contact with [details]. A display
+/// name that is only an email or the company is no name to copy
+/// ([SyncedContact.copyableName]). The hidden tag is the wire client's to
+/// add.
 Map<String, Object?> graphCreateBody(SyncedContact details) {
+  final name = details.copyableName;
   final body = <String, Object?>{};
   for (final field in ContactField.values) {
-    if (details[field] == null) continue;
-    body.addAll(_graphValues(field, details[field], const {}, details));
+    final value = field == ContactField.name ? name : details[field];
+    if (value == null) continue;
+    body.addAll(_graphValues(field, value, const {}, details));
   }
   body.removeWhere((_, v) => v == null || (v is List && v.isEmpty));
   for (final e in body.entries.toList()) {
@@ -1122,7 +1153,7 @@ Map<String, Object?> graphCreateBody(SyncedContact details) {
       body[e.key] = {...e.value as Map}..removeWhere((_, v) => v == null);
     }
   }
-  final shown = graphDisplayName(const {}, details.name, nameChanged: true);
+  final shown = graphDisplayName(const {}, name, nameChanged: true);
   if (shown != null) body['displayName'] = shown;
   return body;
 }
@@ -1284,7 +1315,9 @@ Map<String, Object?> _graphValues(
             a.trim().toLowerCase(): _string(e['name']),
       };
       final fallback =
-          _string(current['displayName']) ?? target.name?.shown ?? '';
+          _string(current['displayName']) ??
+          target.copyableName?.shown ??
+          '';
       return {
         property: [
           for (final a in slots(value))
