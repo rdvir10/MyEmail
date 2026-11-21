@@ -4304,6 +4304,58 @@ void main() {
       expect(plan.reviews.single.reason, ContactReviewReason.sharedAddress);
     });
 
+    test('John Roe Sr. and Jr. on one family address are two people', () {
+      SyncedContact roe(
+        String suffix, [
+        Map<ContactField, Object?> more = const {},
+      ]) => SyncedContact({
+            ContactField.name: ContactName.of(
+              given: 'John',
+              family: 'Roe',
+              suffix: suffix,
+            ),
+            ContactField.emails: ['roes@x.example'],
+            ...more,
+          });
+      final plan = run(
+        google: [
+          g('people/sr', roe('Sr.')),
+          g('people/jr', roe('Jr.', {ContactField.jobTitle: 'Student'})),
+        ],
+        graph: [
+          h('H-sr', roe('Sr.', {ContactField.jobTitle: 'Owner'})),
+          h('H-jr', roe('Jr.')),
+        ],
+      );
+      expect(held(plan), isEmpty);
+      expect(plan.links.where((l) => l.state == ContactLinkState.paired),
+          isEmpty);
+      expect(
+        plan.reviews.map((r) => r.reason),
+        [ContactReviewReason.sharedAddress, ContactReviewReason.sharedAddress],
+      );
+      // A title is no other person: "Dr." Ann is a copy of Ann.
+      final dr = run(
+        google: [g('people/c1', annCopy())],
+        graph: [
+          h('H1', annCopy()),
+          h(
+            'H2',
+            SyncedContact({
+              ContactField.name: ContactName.of(
+                prefix: 'Dr.',
+                given: 'Ann',
+                family: 'Cole',
+              ),
+              ContactField.emails: ['ann@x.example'],
+            }),
+          ),
+        ],
+      );
+      expect(held(dr), hasLength(1));
+      expect(dr.reviews, isEmpty);
+    });
+
     test('a new copy of a paired person, linked through the pair, is held',
         () {
       // Gmail Ann is paired with Outlook H1, which has no email; a second

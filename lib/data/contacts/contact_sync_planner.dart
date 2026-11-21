@@ -1929,7 +1929,7 @@ class _Copies {
 
   final Set<(ContactSide, String)> members;
 
-  /// Their full name, as [ContactNormaliser.fullNameKey] gives it.
+  /// Their name, as `_Planner._personKey` gives it.
   final String name;
 }
 
@@ -3268,9 +3268,7 @@ class _Planner {
         ? row.input.googleDetails
         : row.input.graphDetails;
     final kept = side == ContactSide.google ? _graphNow(row) : _googleNow(row);
-    final name =
-        ContactNormaliser.fullNameKey(kept.copyableName) ??
-        ContactNormaliser.fullNameKey(gone.copyableName);
+    final name = _personKey(kept) ?? _personKey(gone);
     if (name == null) return null;
     Set<String> keys(SyncedContact d) => {..._emailKeys(d), ..._mobileKeys(d)};
     final pairKeys = {...keys(gone), ...keys(kept)};
@@ -3284,10 +3282,7 @@ class _Planner {
               case final id?
               when _alive(side, id) &&
                   !(side == ContactSide.graph && graphMoved.contains(id)) &&
-                  ContactNormaliser.fullNameKey(
-                        _detailsOf(side, id).copyableName,
-                      ) ==
-                      name &&
+                  _personKey(_detailsOf(side, id)) == name &&
                   keys(_detailsOf(side, id)).any(pairKeys.contains))
             id,
     ];
@@ -3542,7 +3537,8 @@ class _Planner {
 
   /// Copies of one person (R1): contacts joined by a shared email or
   /// mobile key, every one of them, on both sides, with a name to copy
-  /// and the same full name, with more than one on a side (counting the
+  /// and the same full name and suffix (`_personKey`), with more than one
+  /// on a side (counting the
   /// partner a member is paired with). A contact with no name never joins
   /// one, and a contact of another name on the keys (a family on one
   /// address) leaves the whole set to the usual rules. Built from what
@@ -3553,6 +3549,19 @@ class _Planner {
     for (final group in _copies)
       for (final member in group.members) member: group,
   };
+
+  /// The name copies of one person share: the full name
+  /// ([ContactNormaliser.fullNameKey]) and the suffix, so John Roe Sr.
+  /// and John Roe Jr. on one family address are two people; not the
+  /// prefix, by which copies of one person often differ ("Dr."). Null
+  /// for a contact with no name to copy.
+  static String? _personKey(SyncedContact details) {
+    final name = details.copyableName;
+    final full = ContactNormaliser.fullNameKey(name);
+    if (full == null) return null;
+    final suffix = ContactNormaliser.textKey(name?.suffix);
+    return suffix == null ? full : '$full|$suffix';
+  }
 
   /// Whether [a] and [b], both on [side], are copies of one person.
   bool _copiesWith(ContactSide side, String a, String b) {
@@ -3591,8 +3600,7 @@ class _Planner {
       }
       if (members.length < 2) continue;
       final names = {
-        for (final (side, id) in members)
-          ContactNormaliser.fullNameKey(_detailsOf(side, id).copyableName),
+        for (final (side, id) in members) _personKey(_detailsOf(side, id)),
       };
       if (names.length != 1 || names.single == null) continue;
       // Copies on a side: the members there, and the partners there of
@@ -3804,9 +3812,7 @@ class _Planner {
     // read): listed with the others of its name, so it is never hidden.
     final stray = <String, List<(ContactSide, String)>>{};
     for (final m in copies.difference(listed)) {
-      final name = ContactNormaliser.fullNameKey(
-        _detailsOf(m.$1, m.$2).copyableName,
-      );
+      final name = _personKey(_detailsOf(m.$1, m.$2));
       stray.putIfAbsent(name ?? '', () => []).add(m);
     }
     for (final members in stray.values) {
