@@ -2765,6 +2765,133 @@ void main() {
       expect(answered.answers, [ContactAnswerOutcome.applied]);
       expect(answered.restores.single.alreadyBack, isTrue);
     });
+
+    test('a family member or namesake on the address is not it back', () {
+      ContactBinInput binOf(Map<String, Object?> raw, SyncedContact partner) =>
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: raw,
+            partnerBase: partner.toJson(),
+            restore: true,
+          );
+      // Ann and Bob Cole shared fam@x; Ron deleted Ann in Gmail and the
+      // sync deleted Outlook H9. Only Bob, paired, has fam@x now.
+      final annFam = person(given: 'Ann', family: 'Cole', emails: ['fam@x']);
+      final bob = person(given: 'Bob', family: 'Cole', emails: ['fam@x']);
+      final family = run(
+        google: [g('people/c5', bob)],
+        graph: [h('H5', bob)],
+        links: [link(5, 'people/c5', 'H5', base: bob)],
+        bin: [
+          binOf(const {
+            'id': 'H9',
+            'givenName': 'Ann',
+            'surname': 'Cole',
+            'emailAddresses': [
+              {'address': 'fam@x'},
+            ],
+          }, annFam),
+        ],
+      );
+      final restore = family.restores.single;
+      expect(restore.alreadyBack, isFalse, reason: 'the bin holds Ann');
+      expect(restore.graphRaw, isNotNull);
+      expect(restore.googleDetails, annFam);
+      expect(family.binAlreadyBack, isEmpty);
+
+      // John Roe Jr. is not John Roe Sr. back.
+      SyncedContact roe(String suffix) => SyncedContact({
+        ContactField.name: ContactName.of(
+          given: 'John',
+          family: 'Roe',
+          suffix: suffix,
+        ),
+        ContactField.emails: ['roe@x'],
+      });
+      final namesake = run(
+        google: [g('people/c5', roe('Jr.'))],
+        graph: [h('H5', roe('Jr.'))],
+        links: [link(5, 'people/c5', 'H5', base: roe('Jr.'))],
+        bin: [
+          binOf(const {
+            'id': 'H9',
+            'givenName': 'John',
+            'surname': 'Roe',
+            'generation': 'Sr.',
+            'emailAddresses': [
+              {'address': 'roe@x'},
+            ],
+          }, roe('Sr.')),
+        ],
+      );
+      expect(namesake.restores.single.alreadyBack, isFalse);
+    });
+
+    test('a nameless contact made again and copied is Already back', () {
+      // info@acme, no name but the company shown. Ron made it again as
+      // c9b, which the sync copied to H9b and paired.
+      final info = SyncedContact({
+        ContactField.name: ContactName.of(display: 'Acme'),
+        ContactField.emails: ['info@acme.example'],
+        ContactField.company: 'Acme',
+      });
+      final plan = run(
+        google: [g('people/c9b', info)],
+        graph: [h('H9b', info, tag: 'people/c9b')],
+        links: [link(3, 'people/c9b', 'H9b', base: info)],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: const {
+              'id': 'H9',
+              'displayName': 'Acme',
+              'companyName': 'Acme',
+              'emailAddresses': [
+                {'address': 'info@acme.example'},
+              ],
+            },
+            partnerBase: info.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      expect(plan.restores.single.alreadyBack, isTrue);
+      expect(plan.binAlreadyBack, [9]);
+      // Another company on the address is another contact.
+      final other = info
+          .withValue(ContactField.company, 'Beta')
+          .withValue(ContactField.name, ContactName.of(display: 'Beta'));
+      final beta = run(
+        google: [g('people/c9b', other)],
+        graph: [h('H9b', other, tag: 'people/c9b')],
+        links: [link(3, 'people/c9b', 'H9b', base: other)],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: const {
+              'id': 'H9',
+              'displayName': 'Acme',
+              'companyName': 'Acme',
+              'emailAddresses': [
+                {'address': 'info@acme.example'},
+              ],
+            },
+            partnerBase: info.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      expect(beta.restores.single.alreadyBack, isFalse);
+    });
   });
 
   test('one pair compared directly, as the runner re-plans a moved one', () {

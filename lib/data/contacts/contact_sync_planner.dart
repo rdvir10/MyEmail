@@ -2498,20 +2498,16 @@ class _Planner {
       }
       // Found by an address, it is back when Ron made it again and the
       // sync copied it: its match and the partner's are paired with each
-      // other, and each has the name of the one deleted on its side.
-      // Dropping the bin row drops the only copy, so a name that merely
-      // agrees (one side with no family name) is not enough: John Roe
-      // holding the Info Desk's address is not the Info Desk back.
+      // other, and each is the same person as the one deleted on its side
+      // ([_samePerson]). Dropping the bin row drops the only copy, so a
+      // name that merely agrees is not enough: John Roe holding the Info
+      // Desk's address is not the Info Desk back, nor Bob Cole, sharing a
+      // family address, Ann Cole.
       bool named(
         ({String id, bool exact}) found,
         ContactSide s,
         SyncedContact deleted,
-      ) =>
-          found.exact ||
-          _sameName(
-            deleted.copyableName,
-            _detailsOf(s, found.id).copyableName,
-          );
+      ) => found.exact || _samePerson(deleted, _detailsOf(s, found.id));
       if (here != null &&
           there != null &&
           _pairedWith(side, here.id, there.id) &&
@@ -2642,6 +2638,23 @@ class _Planner {
       }
     }
     return null;
+  }
+
+  /// Whether [found], matched by an address to [deleted], is the same
+  /// person: the same name, part by part ([ContactNormaliser.same]); or,
+  /// with no name on either (an email or the company shown for want of
+  /// one is none), the same company, or none on both. Stricter than the
+  /// matching's "names agree", because a Restore that takes a match for
+  /// the deleted contact drops, or never makes again, the only copy: a
+  /// family member sharing the address, or John Roe Jr. for Sr., is not
+  /// it. A name that differs makes the contact again (a double at worst).
+  bool _samePerson(SyncedContact deleted, SyncedContact found) {
+    final a = deleted.copyableName;
+    final b = found.copyableName;
+    if (a != null && b != null) return norm.same(ContactField.name, a, b);
+    if (a != null || b != null) return false;
+    return ContactNormaliser.textKey(deleted.text(ContactField.company)) ==
+        ContactNormaliser.textKey(found.text(ContactField.company));
   }
 
   /// Whether [id] on [side] and [partner] on the other side are paired
@@ -3473,15 +3486,4 @@ class _Planner {
       ),
     );
   }
-}
-
-/// Two names of one person, more strictly than
-/// [ContactNormaliser.namesAgree]: the same family name on both, or, where
-/// either has none, the same full name. No name is no one's.
-bool _sameName(ContactName? a, ContactName? b) {
-  final fa = ContactNormaliser.textKey(a?.family);
-  final fb = ContactNormaliser.textKey(b?.family);
-  if (fa != null && fb != null) return fa == fb;
-  final full = ContactNormaliser.fullNameKey(a);
-  return full != null && full == ContactNormaliser.fullNameKey(b);
 }
