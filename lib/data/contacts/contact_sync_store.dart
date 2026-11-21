@@ -750,11 +750,16 @@ abstract class ContactSyncStore {
   /// reviews, the source of creates on the other side, the bin, where it
   /// is the contact or a partner, and the ids inside the JSON kept beside
   /// them ([rekeyContactJson]): the brakes' questions on the pair
-  /// ([ContactPair.held]) and each review's data and queued answer. Throws
-  /// [StateError], changing nothing,
-  /// when a link or a bin entry of the pair already names [newId] on that
-  /// side, or a create on the other side already copies [newId] (two
-  /// creates in flight whose sources Ron then merged).
+  /// ([ContactPair.held]) and each review's data and queued answer.
+  ///
+  /// The planner's own rows already take the new names, so a re-key after
+  /// the plan's links are saved finds none left under [oldId] and moves
+  /// the rest; before, it moves the links too. Throws [StateError],
+  /// changing nothing, only where a move would leave two rows naming
+  /// [newId]: a link or a bin entry of the pair under each of the two ids
+  /// on that side (contacts Ron merged in Gmail, both with rows), or a
+  /// create on the other side copying each (two creates in flight whose
+  /// sources Ron then merged).
   Future<void> rekey(
     int pairId,
     ContactSide side,
@@ -1366,15 +1371,19 @@ class DriftContactSyncStore implements ContactSyncStore {
   ) =>
       db.transaction(() async {
         if (oldId == newId) return;
-        final copied = await (db.select(db.contactSyncOps)
-              ..where((t) =>
-                  t.pairId.equals(pairId) &
-                  t.side.equals(side.other.name) &
-                  t.sourceKey.equals(newId)))
-            .get();
-        if (await linkFor(pairId, side, newId) != null ||
-            await binEntry(pairId, side, newId) != null ||
-            copied.isNotEmpty) {
+        Future<bool> copies(String id) async =>
+            (await (db.select(db.contactSyncOps)
+                      ..where((t) =>
+                          t.pairId.equals(pairId) &
+                          t.side.equals(side.other.name) &
+                          t.sourceKey.equals(id)))
+                    .get())
+                .isNotEmpty;
+        Future<bool> both(Future<Object?> Function(String id) find) async =>
+            await find(oldId) != null && await find(newId) != null;
+        if (await both((id) => linkFor(pairId, side, id)) ||
+            await both((id) => binEntry(pairId, side, id)) ||
+            (await copies(oldId) && await copies(newId))) {
           throw _rekeyClash(side);
         }
         final google = side == ContactSide.google;
@@ -1980,12 +1989,13 @@ class MemoryContactSyncStore implements ContactSyncStore {
     String newId,
   ) async {
     if (oldId == newId) return;
-    if (_linkFor(_links, pairId, side, newId) != null ||
-        _binEntry(pairId, side, newId) != null ||
-        _ops.values.any((o) =>
-            o.pairId == pairId &&
-            o.side == side.other &&
-            o.sourceKey == newId)) {
+    bool copies(String id) => _ops.values.any((o) =>
+        o.pairId == pairId && o.side == side.other && o.sourceKey == id);
+    bool both(Object? Function(String id) find) =>
+        find(oldId) != null && find(newId) != null;
+    if (both((id) => _linkFor(_links, pairId, side, id)) ||
+        both((id) => _binEntry(pairId, side, id)) ||
+        (copies(oldId) && copies(newId))) {
       throw _rekeyClash(side);
     }
     final google = side == ContactSide.google;

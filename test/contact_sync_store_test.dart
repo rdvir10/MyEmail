@@ -979,6 +979,48 @@ void main() {
           expect((await store.bin(pair.pairId)).single.contactId, 'people/c1');
         });
 
+        test("after the planner's rows already take the new name, moves "
+            'the rest', () async {
+          // The plan renames its rows itself, and the runner saves them
+          // before it re-keys what the plan does not hold: the reviews,
+          // the creates in flight and the bin.
+          final pair = await pairOf();
+          await fill(pair.pairId);
+          final link = (await store.links(pair.pairId)).single;
+          await store.saveLink(link.copyWith(googleName: 'people/c77'));
+
+          await store.rekey(
+              pair.pairId, ContactSide.google, 'people/c1', 'people/c77');
+
+          expect((await store.links(pair.pairId)).single.googleName,
+              'people/c77');
+          expect((await store.reviews(pair.pairId)).single.googleName,
+              'people/c77');
+          expect((await store.ops(pair.pairId)).single.sourceKey,
+              'people/c77');
+          expect((await store.bin(pair.pairId)).single.contactId,
+              'people/c77');
+        });
+
+        test('of two contacts Ron merged moves the rest once the planner '
+            'has folded their rows', () async {
+          final pair = await pairOf();
+          await fill(pair.pairId);
+          final merged =
+              await store.saveLink(paired(pair.pairId, 'people/c2', 'AAMk-2'));
+          final folded = (await store.links(pair.pairId)).first;
+          await store.deleteLinks([folded.linkId!]);
+
+          await store.rekey(
+              pair.pairId, ContactSide.google, 'people/c1', 'people/c2');
+
+          expect(await store.links(pair.pairId), [merged]);
+          expect((await store.reviews(pair.pairId)).single.googleName,
+              'people/c2');
+          expect((await store.ops(pair.pairId)).single.sourceKey,
+              'people/c2');
+        });
+
         test('onto a contact a create in flight copies changes nothing',
             () async {
           // Two creates journalled and cut short, then Ron merges the two
