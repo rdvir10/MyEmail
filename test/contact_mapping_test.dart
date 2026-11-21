@@ -330,28 +330,63 @@ void main() {
       expect(d.name, ContactName.of(display: 'The Plumber'));
     });
 
-    test('a display name that is an email or the company is no name', () {
+    test('a display name that is an email or the company is kept raw, but '
+        'is no name to copy', () {
       final byEmail = syncedFromGraph({
         'displayName': 'Ann@X.example',
         'emailAddresses': [
           {'address': 'ann@x.example'},
         ],
       });
-      expect(byEmail.name, isNull);
+      expect(byEmail.name, ContactName.of(display: 'Ann@X.example'));
+      expect(byEmail.copyableName, isNull);
       final byCompany = syncedFromGraph({
         'displayName': 'HADCO',
         'companyName': 'Hadco',
       });
-      expect(byCompany.name, isNull);
+      expect(byCompany.name, ContactName.of(display: 'HADCO'));
+      expect(byCompany.copyableName, isNull);
       final google = syncedFromPerson({
         'names': [
-          contact({'displayName': 'ann@x.example'}),
+          contact({'unstructuredName': 'ann@x.example'}),
         ],
         'emailAddresses': [
           contact({'value': 'ann@x.example'}),
         ],
       });
-      expect(google.name, isNull);
+      expect(google.name, ContactName.of(display: 'ann@x.example'));
+      expect(google.copyableName, isNull);
+      // A display name that is not one of them is a name.
+      final plumber = syncedFromGraph({
+        'displayName': 'The Plumber',
+        'companyName': 'Pipes Ltd',
+      });
+      expect(plumber.copyableName, ContactName.of(display: 'The Plumber'));
+      // Neither create copies one that is no name.
+      expect(googleCreateBody(byEmail).containsKey('names'), isFalse);
+      expect(googleCreateBody(plumber)['names'], [
+        {'unstructuredName': 'The Plumber'},
+      ]);
+      final outlook = graphCreateBody(google);
+      expect(outlook.containsKey('displayName'), isFalse);
+      final acme = graphCreateBody(
+        syncedFromPerson({
+          'names': [
+            contact({'unstructuredName': 'Acme'}),
+          ],
+          'emailAddresses': [
+            contact({'value': 'info@acme.example'}),
+          ],
+          'organizations': [
+            contact({'name': 'Acme'}),
+          ],
+        }),
+      );
+      expect(acme.containsKey('displayName'), isFalse);
+      expect(acme.containsKey('givenName'), isFalse);
+      expect(acme['emailAddresses'], [
+        {'address': 'info@acme.example', 'name': 'info@acme.example'},
+      ], reason: 'the address, not the company, names it');
     });
 
     test('a removed or sparse delta item says so', () {

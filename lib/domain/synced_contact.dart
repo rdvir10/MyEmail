@@ -431,7 +431,29 @@ class SyncedContact {
 
   Object? operator [](ContactField field) => values[field];
 
+  /// The name as its server returned it, raw: a display name alone is
+  /// kept even when it is one of the contact's own emails or its company
+  /// (see [copyableName]).
   ContactName? get name => values[ContactField.name] as ContactName?;
+
+  /// [name] when it is a name to copy: not a display name alone that is
+  /// one of the contact's own emails or its company, which Outlook (and
+  /// Google) show when a contact has no name. The test is made only where
+  /// a name would be copied to the other side (a fill, a one-sided change,
+  /// a create), never on the stored bases, so an edit to an email or the
+  /// company never reads as a change of name.
+  ContactName? get copyableName {
+    final n = name;
+    if (n == null || n.hasParts) return n;
+    final shown = ContactNormaliser.textKey(n.display);
+    for (final other in [
+      ...list(ContactField.emails),
+      ?text(ContactField.company),
+    ]) {
+      if (ContactNormaliser.textKey(other) == shown) return null;
+    }
+    return n;
+  }
 
   String? text(ContactField field) =>
       field.isList ? null : values[field] as String?;

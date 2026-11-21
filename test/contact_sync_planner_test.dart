@@ -813,6 +813,175 @@ void main() {
     });
   });
 
+  group('a display name that is no name', () {
+    // Outlook contacts as a whole read returns them: every synced
+    // property there, null when empty.
+    GraphContact outlook(String id, Map<String, Object?> values) =>
+        GraphContact.fromJson({
+          'id': id,
+          'changeKey': 'key-$id-2',
+          for (final p in graphSyncedProperties) p: null,
+          ...values,
+        });
+    SyncedContact read(Map<String, Object?> values) =>
+        outlook('H1', values).details;
+    SyncedContact gmail(Map<String, Object?> person) =>
+        syncedFromPerson(person);
+
+    test('an edit to the company never clears the Gmail name', () {
+      // Outlook shows "Acme Corp" with no name parts, company "Acme";
+      // Ron changes the company to "Acme Corp".
+      final gmailNow = gmail({
+        'names': [
+          {'unstructuredName': 'Acme Corp'},
+        ],
+        'organizations': [
+          {'name': 'Acme'},
+        ],
+      });
+      final plan = run(
+        graph: [
+          outlook('H1', {
+            'displayName': 'Acme Corp',
+            'companyName': 'Acme Corp',
+          }),
+        ],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: gmailNow,
+            graphBase: read({'displayName': 'Acme Corp', 'companyName': 'Acme'}),
+          ),
+        ],
+      );
+      final pair = byLink(plan, 1)!;
+      expect(pair.googleWrite!.fields, {ContactField.company});
+      expect(
+        pair.googleWrite!.target.text(ContactField.company),
+        'Acme Corp',
+      );
+      expect(pair.graphWrite, isNull);
+    });
+
+    test('an email edit never makes the old address a Gmail name', () {
+      // Outlook shows the address for want of a name, and keeps showing
+      // the old one after Ron changes the address.
+      final plan = run(
+        graph: [
+          outlook('H1', {
+            'displayName': 'bob@x.example',
+            'emailAddresses': [
+              {'address': 'bob@y.example'},
+            ],
+          }),
+        ],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: SyncedContact({
+              ContactField.emails: ['bob@x.example'],
+            }),
+            graphBase: read({
+              'displayName': 'bob@x.example',
+              'emailAddresses': [
+                {'address': 'bob@x.example'},
+              ],
+            }),
+          ),
+        ],
+      );
+      final write = byLink(plan, 1)!.googleWrite!;
+      expect(write.fields, {ContactField.emails});
+      expect(write.target.list(ContactField.emails), ['bob@y.example']);
+    });
+
+    test('one no-name display remade as another is no change', () {
+      // Outlook remakes the shown address with the address itself, while
+      // Gmail has a name: the name is not cleared.
+      final bob = person(given: 'Bob', family: 'Smith', emails: ['bob@x']);
+      final plan = run(
+        graph: [
+          outlook('H1', {
+            'displayName': 'bob@y',
+            'emailAddresses': [
+              {'address': 'bob@y'},
+            ],
+          }),
+        ],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: bob,
+            graphBase: read({
+              'displayName': 'bob@x',
+              'emailAddresses': [
+                {'address': 'bob@x'},
+              ],
+            }),
+          ),
+        ],
+      );
+      final write = byLink(plan, 1)!.googleWrite!;
+      expect(write.fields, {ContactField.emails});
+    });
+
+    test('a new pair is never filled with one, and keeps it raw', () {
+      final plan = run(
+        google: [
+          g('people/c1', SyncedContact({
+            ContactField.emails: ['bob@x.example'],
+          })),
+        ],
+        graph: [
+          outlook('H1', {
+            'displayName': 'bob@x.example',
+            'emailAddresses': [
+              {'address': 'bob@x.example'},
+            ],
+          }),
+        ],
+      );
+      final pair = byGoogle(plan, 'people/c1')!;
+      expect(pair.graphId, 'H1');
+      expect(pair.googleWrite, isNull, reason: 'no name copied to Gmail');
+      expect(
+        pair.graphBase!.name,
+        ContactName.of(display: 'bob@x.example'),
+        reason: 'the base keeps the raw value',
+      );
+    });
+
+    test('two contacts showing only their company are no same name', () {
+      final plan = run(
+        google: [
+          g('people/c1', SyncedContact({
+            ContactField.name: ContactName.of(display: 'Acme'),
+            ContactField.company: 'Acme',
+            ContactField.emails: ['info@acme.example'],
+          })),
+        ],
+        graph: [
+          outlook('H1', {
+            'displayName': 'Acme',
+            'companyName': 'Acme',
+            'emailAddresses': [
+              {'address': 'sales@acme.example'},
+            ],
+          }),
+        ],
+      );
+      expect(plan.reviews, isEmpty);
+      expect(plan.counts.addToGoogle, 1);
+      expect(plan.counts.addToGraph, 1);
+    });
+  });
+
   group('deletions', () {
     test('a contact deleted in Gmail is deleted in Outlook', () {
       final plan = run(

@@ -237,15 +237,11 @@ SyncedContact syncedFromPerson(Map<String, Object?> person) {
             suffix: _string(name['honorificSuffix']),
             phoneticGiven: _string(name['phoneticGivenName']),
             phoneticFamily: _string(name['phoneticFamilyName']),
-            display: _ownDisplay(
-              _string(name['unstructuredName']) ??
-                  _string(name['displayName']),
-              [
-                for (final e in _contactEntries(person, 'emailAddresses'))
-                  ?_string(e['value']),
-                ?_string(organization?['name']),
-              ],
-            ),
+            // Raw, even when it is an email or the company: see
+            // SyncedContact.copyableName.
+            display:
+                _string(name['unstructuredName']) ??
+                _string(name['displayName']),
           ),
     ContactField.nickname: _string(nickname?['value']),
     ContactField.emails: _primaryFirst(
@@ -322,7 +318,9 @@ SyncedContact syncedFromGraph(Map<String, Object?> contact) {
       suffix: s('generation'),
       phoneticGiven: s('yomiGivenName'),
       phoneticFamily: s('yomiSurname'),
-      display: _ownDisplay(s('displayName'), [...emails, ?s('companyName')]),
+      // Raw, even when it is an email or the company: see
+      // SyncedContact.copyableName.
+      display: s('displayName'),
     ),
     ContactField.nickname: s('nickName'),
     ContactField.emails: emails,
@@ -347,18 +345,6 @@ SyncedContact syncedFromGraph(Map<String, Object?> contact) {
     ContactField.webPage: s('businessHomePage'),
     ContactField.im: strings('imAddresses'),
   });
-}
-
-/// A display name that is a name: not one of the contact's own emails or
-/// its company, which Outlook (and Google) show when there is no name, and
-/// which would otherwise travel as the other side's name.
-String? _ownDisplay(String? display, List<String> notNames) {
-  final key = ContactNormaliser.textKey(display);
-  if (key == null) return null;
-  for (final other in notNames) {
-    if (ContactNormaliser.textKey(other) == key) return null;
-  }
-  return display;
 }
 
 /// Outlook's birthday as the day it falls on: the UTC date of the value
@@ -616,13 +602,17 @@ GooglePersonUpdate googlePersonUpdate(
 }
 
 /// A Person for `people.createContact`, carrying [details], in My
-/// Contacts. The hidden tag is the wire client's to add (it adds it to
-/// every create, and a batch needs one per contact).
+/// Contacts. A display name that is only an email or the company is no
+/// name to copy ([SyncedContact.copyableName]). The hidden tag is the
+/// wire client's to add (it adds it to every create, and a batch needs one
+/// per contact).
 Map<String, Object?> googleCreateBody(SyncedContact details) {
   final norm = ContactNormaliser.oneContact();
   final body = <String, Object?>{};
   for (final field in ContactField.values) {
-    final value = details[field];
+    final value = field == ContactField.name
+        ? details.copyableName
+        : details[field];
     if (value == null) continue;
     if (field == ContactField.birthday && !details.birthday!.hasYear) continue;
     final personField = googlePersonField(field);
@@ -1097,13 +1087,17 @@ Map<String, Object?> graphContactPatch(
   return body;
 }
 
-/// The body of a Graph `POST` making a contact with [details]. The hidden
-/// tag is the wire client's to add.
+/// The body of a Graph `POST` making a contact with [details]. A display
+/// name that is only an email or the company is no name to copy
+/// ([SyncedContact.copyableName]). The hidden tag is the wire client's to
+/// add.
 Map<String, Object?> graphCreateBody(SyncedContact details) {
+  final name = details.copyableName;
   final body = <String, Object?>{};
   for (final field in ContactField.values) {
-    if (details[field] == null) continue;
-    body.addAll(_graphValues(field, details[field], const {}, details));
+    final value = field == ContactField.name ? name : details[field];
+    if (value == null) continue;
+    body.addAll(_graphValues(field, value, const {}, details));
   }
   body.removeWhere((_, v) => v == null || (v is List && v.isEmpty));
   for (final e in body.entries.toList()) {
@@ -1111,7 +1105,7 @@ Map<String, Object?> graphCreateBody(SyncedContact details) {
       body[e.key] = {...e.value as Map}..removeWhere((_, v) => v == null);
     }
   }
-  final shown = graphDisplayName(const {}, details.name, nameChanged: true);
+  final shown = graphDisplayName(const {}, name, nameChanged: true);
   if (shown != null) body['displayName'] = shown;
   return body;
 }
@@ -1273,7 +1267,9 @@ Map<String, Object?> _graphValues(
             a.trim().toLowerCase(): _string(e['name']),
       };
       final fallback =
-          _string(current['displayName']) ?? target.name?.shown ?? '';
+          _string(current['displayName']) ??
+          target.copyableName?.shown ??
+          '';
       return {
         property: [
           for (final a in slots(value))

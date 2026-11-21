@@ -1213,7 +1213,11 @@ class ContactPairPlan {
 /// (a fix to capitals still counts as a change). Changed on both sides to
 /// different values, it clashes: the newer edit wins ([googleUpdatedAt]
 /// against [graphUpdatedAt]; Gmail when neither is known). Lists merge
-/// ([mergeContactList]). A birthday without a year never travels.
+/// ([mergeContactList]). A birthday without a year never travels. A
+/// display name that is only an email or the company is no name to copy
+/// ([SyncedContact.copyableName]): it is compared and copied as no name,
+/// the bases keep it raw, and a change from one such display name to
+/// another is no change.
 ///
 /// A [newPair] has no bases and is merged without overwriting: an empty
 /// detail is filled from the other side, lists are joined, a year is
@@ -1279,8 +1283,10 @@ ContactPairPlan planPairedContact({
   }
 
   for (final f in ContactField.values) {
-    final gN = googleNow[f];
-    final hN = graphNow[f];
+    // The values compared and copied; for the name, only a name (see
+    // SyncedContact.copyableName). The bases keep the raw values.
+    final gN = _copied(googleNow, f);
+    final hN = _copied(graphNow, f);
 
     if (useValues != null && useValues.values.containsKey(f)) {
       final v = useValues[f];
@@ -1309,8 +1315,8 @@ ContactPairPlan planPairedContact({
       continue;
     }
 
-    final gChanged = !rawEquals(gN, gBase[f]);
-    final hChanged = !rawEquals(hN, hBase[f]);
+    final gChanged = _changedSince(googleNow, gBase, f);
+    final hChanged = _changedSince(graphNow, hBase, f);
     if (!newPair && !gChanged && !hChanged) continue;
 
     if (f.isList) {
@@ -1354,7 +1360,12 @@ ContactPairPlan planPairedContact({
     }
 
     if (newPair) {
-      if (gN == null && hN == null) continue;
+      if (gN == null && hN == null) {
+        // Nothing to copy; a display name that is no name is still taken
+        // into the base as it is.
+        adopt(f);
+        continue;
+      }
       if (norm.same(f, gN, hN)) {
         // A year-less birthday takes the other side's year.
         if (gN is ContactBirthday && hN is ContactBirthday) {
@@ -1447,6 +1458,22 @@ ContactPairPlan planPairedContact({
     clashes: clashes,
     removes: removes && !newPair,
   );
+}
+
+/// [contact]'s value of [f] as it would be copied: for the name, only one
+/// that is a name ([SyncedContact.copyableName]).
+Object? _copied(SyncedContact contact, ContactField f) =>
+    f == ContactField.name ? contact.copyableName : contact[f];
+
+/// Whether a side changed [f] since its [base]: its raw value differs.
+/// For the name, a change between two display names that are no names
+/// (an email or the company, shown for want of a name, which Outlook
+/// remakes when they are edited) is no change.
+bool _changedSince(SyncedContact now, SyncedContact base, ContactField f) {
+  if (rawEquals(now[f], base[f])) return false;
+  return f != ContactField.name ||
+      now.copyableName != null ||
+      base.copyableName != null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1721,9 +1748,9 @@ class _Planner {
         return ContactField.values
             .where(
               (f) =>
-                  merged[f] != null &&
-                  other[f] != null &&
-                  norm.same(f, merged[f], other[f]),
+                  _copied(merged, f) != null &&
+                  _copied(other, f) != null &&
+                  norm.same(f, _copied(merged, f), _copied(other, f)),
             )
             .length;
       }
@@ -2093,9 +2120,9 @@ class _Planner {
             : ContactField.values.where(
                 (f) =>
                     !f.isList &&
-                    googleNow[f] != null &&
-                    graphNow[f] != null &&
-                    !norm.same(f, googleNow[f], graphNow[f]),
+                    _copied(googleNow, f) != null &&
+                    _copied(graphNow, f) != null &&
+                    !norm.same(f, _copied(googleNow, f), _copied(graphNow, f)),
               );
         _pairSync(
           row,
@@ -2268,7 +2295,10 @@ class _Planner {
         SyncedContact deleted,
       ) =>
           found.exact ||
-          _sameName(deleted.name, _detailsOf(s, found.id).name);
+          _sameName(
+            deleted.copyableName,
+            _detailsOf(s, found.id).copyableName,
+          );
       if (here != null &&
           there != null &&
           _pairedWith(side, here.id, there.id) &&
@@ -2859,7 +2889,7 @@ class _Planner {
   late final Map<String, List<(ContactSide, String)>> _mobileIndex =
       _index(_mobileKeys);
   late final Map<String, List<(ContactSide, String)>> _nameIndex = _index(
-    (d) => [?ContactNormaliser.fullNameKey(d.name)],
+    (d) => [?ContactNormaliser.fullNameKey(d.copyableName)],
   );
 
   Iterable<String> _emailKeys(SyncedContact d) => {
@@ -3016,7 +3046,7 @@ class _Planner {
     }
 
     // The same full name and nothing that pairs them.
-    final nameKey = ContactNormaliser.fullNameKey(details.name);
+    final nameKey = ContactNormaliser.fullNameKey(details.copyableName);
     if (nameKey != null) {
       final same = [
         for (final o in _nameIndex[nameKey] ?? const <(ContactSide, String)>[])
