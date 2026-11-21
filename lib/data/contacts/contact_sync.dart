@@ -1617,7 +1617,7 @@ class _Run {
   Future<ContactSyncPlan> previewPlan() async {
     await read();
     final input = this.input();
-    return planContactSync(
+    final plan = planContactSync(
       ContactSyncInput(
         google: input.google,
         graph: input.graph,
@@ -1637,6 +1637,8 @@ class _Run {
         now: input.now,
       ),
     );
+    _logShape(input, plan);
+    return plan;
   }
 
   // --- the run ---------------------------------------------------------------
@@ -1681,7 +1683,9 @@ class _Run {
       norm = ContactNormaliser(
         region: pair.phoneRegion ?? sync._regionNow(),
       );
-      plan = planContactSync(input());
+      final planned = input();
+      plan = planContactSync(planned);
+      _logShape(planned, plan);
       if (plan.stop case final stop?) {
         await _emptyAnswer(stop);
         return false;
@@ -3531,4 +3535,67 @@ abstract final class _Look {
         'retry' => ContactSyncChoice.retry,
         _ => null,
       };
+}
+
+/// What a plan sends to Needs a look, by kind and reason, and how much the
+/// two address books have in common: counts only, never a name or a value.
+/// Logged with every plan, since only a real address book shows why a
+/// first sync would hold many contacts back.
+void _logShape(ContactSyncInput input, ContactSyncPlan plan) {
+  final norm = ContactNormaliser(region: input.phoneRegion);
+  Set<String> emails(SyncedContact d) => {
+    for (final e in d.list(ContactField.emails))
+      ?norm.itemKey(ContactField.emails, e),
+  };
+  bool mobile(SyncedContact d) =>
+      norm.phoneKey(d.text(ContactField.mobile)) != null;
+  bool parts(SyncedContact d) => d.name?.hasParts ?? false;
+  String? fullName(SyncedContact d) =>
+      ContactNormaliser.fullNameKey(d.copyableName);
+
+  final gEmails = <String>{};
+  final gNames = <String>{};
+  var gEmail = 0, gMobile = 0, gParts = 0;
+  for (final c in input.google) {
+    final e = emails(c.details);
+    if (e.isNotEmpty) gEmail++;
+    gEmails.addAll(e);
+    if (mobile(c.details)) gMobile++;
+    if (parts(c.details)) gParts++;
+    if (fullName(c.details) case final k?) gNames.add(k);
+  }
+  final hEmails = <String>{};
+  final hNames = <String>{};
+  var hEmail = 0, hMobile = 0, hParts = 0, hWhole = 0, hTagged = 0;
+  for (final c in input.graph) {
+    if (c.readWhole) hWhole++;
+    if (c.tag != null) hTagged++;
+    final e = emails(c.details);
+    if (e.isNotEmpty) hEmail++;
+    hEmails.addAll(e);
+    if (mobile(c.details)) hMobile++;
+    if (parts(c.details)) hParts++;
+    if (fullName(c.details) case final k?) hNames.add(k);
+  }
+  debugPrint(
+    '[myemail] contacts: shape: Gmail ${input.google.length} '
+    '($gEmail with an email, $gMobile a mobile, $gParts name parts), '
+    'Microsoft ${input.graph.length} ($hWhole whole, $hTagged tagged, '
+    '$hEmail with an email, $hMobile a mobile, $hParts name parts); '
+    'addresses ${gEmails.length} and ${hEmails.length}, '
+    '${gEmails.intersection(hEmails).length} on both; full names '
+    '${gNames.length} and ${hNames.length}, '
+    '${gNames.intersection(hNames).length} on both',
+  );
+  final reasons = <String, int>{};
+  for (final r in plan.reviews) {
+    final key = '${r.kind.name}/${r.reason?.name ?? '-'}';
+    reasons[key] = (reasons[key] ?? 0) + 1;
+  }
+  debugPrint(
+    '[myemail] contacts: to look at by reason: '
+    '${reasons.isEmpty ? 'none' : [
+        for (final MapEntry(:key, :value) in reasons.entries) '$key $value',
+      ].join(', ')}',
+  );
 }
