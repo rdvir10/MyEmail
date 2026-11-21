@@ -526,6 +526,26 @@ void main() {
           findsOneWidget);
     });
 
+    testWidgets('a Gmail account signed in with Google that cannot sync is '
+        'not said to be on an app password', (tester) async {
+      sync = FakeContactSync(status: chosenOnly, access: {
+        'acct-g': const ContactSyncAccess(ContactSyncAccessState.notPossible),
+      });
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+
+      final row = button('contact-sync-access:acct-g');
+      expect(
+        find.descendant(
+          of: row,
+          matching: find.text('Not possible for this account.'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.descendant(of: row, matching: find.text('Allow')),
+          findsNothing);
+    });
+
     testWidgets('Allow on the Microsoft account asks for its contacts beside '
         'the mail', (tester) async {
       final web = FakeWebViewPlatform.install();
@@ -677,6 +697,46 @@ void main() {
       await tester.tap(button('contact-sync-start'));
       await tester.pumpAndSettle();
       expect(sync.count('start'), 1);
+    });
+
+    testWidgets('Start tapped twice asks for one first sync', (tester) async {
+      sync = FakeContactSync(status: chosenOnly)..startGate = Completer<void>();
+      engine = _Engine(sync, const [gmail, hadco]);
+      final c = await pumpScreen(tester);
+      final steps = c.read(contactSyncFirstStepsProvider.notifier);
+      steps.previewed('acct-g|acct-h', const ContactSyncPreview());
+      steps.backupSaved('acct-g|acct-h', ContactSide.google);
+      steps.backupSaved('acct-g|acct-h', ContactSide.graph);
+      await tester.pumpAndSettle();
+
+      await tester.tap(button('contact-sync-start'));
+      await tester.pump();
+      await tester.tap(button('contact-sync-start'));
+      await tester.pumpAndSettle();
+      expect(sync.count('start'), 1);
+
+      // The run ended without the status moving on: Start again.
+      sync.startGate!.complete();
+      await tester.pumpAndSettle();
+      expect(enabled(tester, 'contact-sync-start'), isTrue);
+    });
+
+    testWidgets('a backup handed over with one side only does not count as '
+        'both files', (tester) async {
+      sync = FakeContactSync(
+        status: chosenOnly,
+        backupFiles: [_backupFiles.first],
+      );
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(button('contact-sync-preview'));
+      await tester.pumpAndSettle();
+      await tester.tap(button('contact-sync-backup'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Start sync needs both files'),
+          findsOneWidget);
+      expect(enabled(tester, 'contact-sync-start'), isFalse);
     });
 
     testWidgets('a preview that fails says why, with the way out',
@@ -1753,6 +1813,7 @@ void main() {
       expect(sync.count('startIfDue'), 0);
       expect(find.textContaining('Contact sync has stopped'), findsNothing);
       expect(sync.noticesSeen, isEmpty);
+      expect(sync.statusReads, 0, reason: 'its status is not even read');
     });
 
     testWidgets('put away, the run stops', (tester) async {

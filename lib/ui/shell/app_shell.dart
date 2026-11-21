@@ -157,12 +157,19 @@ class _AppShellState extends ConsumerState<AppShell>
     });
     // Contact sync stopped, or held something back to ask first: said once
     // per stop, as it happens while the app is in front, or when it next
-    // comes back (see _contactSyncOpened).
-    ref.listenManual(contactSyncStatusProvider, (_, next) {
-      if (next.value?.notice case final notice? when !_away) {
-        _sayContactSyncNotice(notice, next.value!);
-      }
-    });
+    // comes back (see _contactSyncOpened). Its status is read only while
+    // contact sync is switched on for this device: off, nothing runs, and
+    // nothing is said.
+    ref.listenManual(contactSyncOnProvider, (_, on) {
+      _contactSyncStatus?.close();
+      _contactSyncStatus = !on
+          ? null
+          : ref.listenManual(contactSyncStatusProvider, (_, next) {
+              if (next.value?.notice case final notice? when !_away) {
+                _sayContactSyncNotice(notice, next.value!);
+              }
+            });
+    }, fireImmediately: true);
     // A password's days changed on an account's settings: its reminders
     // move with them.
     void passwordsMoved() => unawaited(
@@ -212,6 +219,7 @@ class _AppShellState extends ConsumerState<AppShell>
   }
 
   StreamSubscription<void>? _putAways;
+  ProviderSubscription<AsyncValue<ContactSyncStatus>>? _contactSyncStatus;
   StreamSubscription<String>? _meetingMail;
 
   /// Put away by the person (Home, another app): whatever was open over
@@ -263,7 +271,7 @@ class _AppShellState extends ConsumerState<AppShell>
       debugPrint('[myemail] contact sync not started: ${e.runtimeType}');
       return false;
     }));
-    final status = ref.read(contactSyncStatusProvider).value;
+    final status = _contactSyncStatus?.read().value;
     if (status?.notice case final notice?) {
       _sayContactSyncNotice(notice, status!);
     }

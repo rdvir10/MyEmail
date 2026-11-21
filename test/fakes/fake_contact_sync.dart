@@ -52,6 +52,12 @@ class FakeContactSync implements ContactSyncService {
   /// Runs [startIfDue] started.
   int runs = 0;
 
+  /// How many times [status] was read.
+  int statusReads = 0;
+
+  /// Holds [start] until completed, as a first sync takes its time.
+  Completer<void>? startGate;
+
   int count(String call) => calls.where((c) => c == call).length;
 
   /// A new status, as the runner would say one.
@@ -61,7 +67,10 @@ class FakeContactSync implements ContactSyncService {
   }
 
   @override
-  Future<ContactSyncStatus> status() async => current;
+  Future<ContactSyncStatus> status() async {
+    statusReads++;
+    return current;
+  }
 
   @override
   Stream<void> get changed => _changes.stream;
@@ -98,7 +107,10 @@ class FakeContactSync implements ContactSyncService {
   }
 
   @override
-  Future<void> start() async => calls.add('start');
+  Future<void> start() async {
+    calls.add('start');
+    await startGate?.future;
+  }
 
   @override
   Future<void> syncNow() async => calls.add('syncNow');

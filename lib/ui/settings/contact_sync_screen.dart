@@ -54,6 +54,10 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   bool _previewing = false;
   Object? _previewError;
   bool _saving = false;
+
+  /// Start was tapped, and its run has not ended: a second tap, before the
+  /// status has caught up, must not ask for a second first sync.
+  bool _starting = false;
   Object? _backupError;
   String? _backupSaid;
 
@@ -345,7 +349,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         steps.backupSaved(pair, file.side);
       }
       if (mounted) {
-        setState(() => _backupSaid = _savedSaid(saved, backup.length));
+        setState(() => _backupSaid = _savedSaid(saved));
       }
     } catch (e) {
       if (mounted) setState(() => _backupError = e);
@@ -354,14 +358,18 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     }
   }
 
-  static String? _savedSaid(List<ContactSyncBackupFile> saved, int of) {
+  /// What was saved. Both files are one for each side, whatever number
+  /// of files the runner handed over.
+  static String? _savedSaid(List<ContactSyncBackupFile> saved) {
     if (saved.isEmpty) return null;
     String one(ContactSyncBackupFile f) =>
         '${f.fileName}, ${_count(f.count, 'contact', 'contacts')}, which '
         '${f.side == ContactSide.google ? 'Google Contacts' : 'Outlook on the web'} '
         'can import';
     final said = 'Saved ${saved.map(one).join(', and ')}.';
-    if (saved.length == of) return said;
+    if ({for (final f in saved) f.side}.length == ContactSide.values.length) {
+      return said;
+    }
     return '$said Start sync needs both files: Save backup again.';
   }
 
@@ -375,14 +383,20 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       setState(() {});
       return;
     }
+    setState(() => _starting = true);
     try {
       await _choose(google, graph);
     } catch (e) {
-      if (mounted) _sayFailure(context, e);
+      if (mounted) {
+        setState(() => _starting = false);
+        _sayFailure(context, e);
+      }
       return;
     }
     // Completes when the run ends, and never throws: the status shows it.
-    unawaited(sync.start());
+    unawaited(sync.start().whenComplete(() {
+      if (mounted) setState(() => _starting = false);
+    }));
   }
 
   void _syncNow() => unawaited(_sync.syncNow());
@@ -703,7 +717,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       _Buttons([
         FilledButton.icon(
           key: const ValueKey('contact-sync-start'),
-          onPressed: ready ? () => _start(google, graph) : null,
+          onPressed:
+              ready && !_starting ? () => _start(google, graph) : null,
           icon: const Icon(Icons.play_arrow),
           label: const Text('Start sync'),
         ),
@@ -977,7 +992,9 @@ class _AccessRow extends ConsumerWidget {
               'they have, it starts on its own.',
           true,
         ),
-      ContactSyncAccessState.notPossible when gmail => (
+      ContactSyncAccessState.notPossible
+          when gmail && account.authMethod == AuthMethod.appPassword =>
+        (
           'Uses an app password, which reaches mail only. Allow signs it in '
               'with Google instead.',
           true,
