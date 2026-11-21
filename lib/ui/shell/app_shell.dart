@@ -282,31 +282,51 @@ class _AppShellState extends ConsumerState<AppShell>
   DateTime? _contactNoticeSaid;
 
   /// "Contact sync has stopped: 12 deletions need your OK", with Open, and
-  /// never a notification. Once per stop: the runner is told it was seen.
-  /// Not said over the Contact sync screen, which shows it already.
+  /// never a notification. Once per stop: the runner is told it was seen
+  /// once it has been, or once the Contact sync screen, which shows it
+  /// already, is open.
   void _sayContactSyncNotice(ContactSyncNotice notice, ContactSyncStatus s) {
     if (!mounted || !ref.read(contactSyncOnProvider)) return;
     if (notice.at == _contactNoticeSaid) return;
     _contactNoticeSaid = notice.at;
     final sync = ref.read(mailEngineProvider).contactSync;
-    unawaited(sync.noticeSeen(notice.at).catchError((Object e) {
-      debugPrint('[myemail] contact sync notice kept: ${e.runtimeType}');
-    }));
+    void seen() => unawaited(sync.noticeSeen(notice.at).catchError((Object e) {
+          debugPrint('[myemail] contact sync notice kept: ${e.runtimeType}');
+        }));
     final accounts = ref.read(accountsProvider).value ?? const <Account>[];
     final graph = accounts.where((a) => a.id == s.graphAccountId).firstOrNull;
     final text = contactSyncNoticeText(
       notice,
       graphName: contactSyncAccountName(graph),
     );
-    if (text == null || ContactSyncScreen.isOpen) return;
+    if (text == null || ContactSyncScreen.isOpen) {
+      seen();
+      return;
+    }
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
     // Queued behind whatever is along the bottom now, never in its place:
     // that may be a send's or a delete's Undo, and taking it away would
-    // take the Undo with it.
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+    // take the Undo with it. Seen only when its turn comes: behind a bar
+    // that waits to be answered (a held send's), it may not come before
+    // the app is ended, and then it is said at the next opening.
+    // Each Scaffold showing the bar builds it (one under a pushed screen as
+    // well): once is enough.
+    var shown = false;
+    messenger.showSnackBar(SnackBar(
       key: const ValueKey('contact-sync-notice'),
       duration: const Duration(seconds: 10),
       persist: false,
-      content: Text(text),
+      content: _WhenShown(
+        onShown: () {
+          if (shown) return;
+          shown = true;
+          // The Contact sync screen opened meanwhile, and shows it.
+          if (ContactSyncScreen.isOpen) messenger.removeCurrentSnackBar();
+          seen();
+        },
+        child: Text(text),
+      ),
       action: SnackBarAction(
         label: 'Open',
         onPressed: () {
@@ -812,6 +832,29 @@ class _AppShellState extends ConsumerState<AppShell>
     // into a phone gets them too.
     return AppShortcuts(child: layout);
   }
+}
+
+/// [child], saying once when it is first on screen: a message along the
+/// bottom is built only when its turn comes.
+class _WhenShown extends StatefulWidget {
+  const _WhenShown({required this.onShown, required this.child});
+
+  final VoidCallback onShown;
+  final Widget child;
+
+  @override
+  State<_WhenShown> createState() => _WhenShownState();
+}
+
+class _WhenShownState extends State<_WhenShown> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => widget.onShown());
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 // -----------------------------------------------------------------------------

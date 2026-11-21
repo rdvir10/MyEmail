@@ -1957,13 +1957,46 @@ void main() {
       }
       expect(find.text('Undo'), findsOneWidget, reason: 'not taken away');
       expect(find.textContaining('Contact sync has stopped'), findsNothing);
-      expect(sync.noticesSeen, [at]);
+      expect(sync.noticesSeen, isEmpty, reason: 'not seen until it is shown');
 
       // Its turn comes once the Undo has had its time.
       await tester.pump(const Duration(seconds: 8));
       await tester.pumpAndSettle();
       expect(find.text('Contact sync has stopped: 7 deletions need your OK'),
           findsOneWidget);
+      expect(sync.noticesSeen, [at]);
+    });
+
+    testWidgets('a stop whose turn comes over the Contact sync screen is not '
+        'shown there, and is seen then', (tester) async {
+      sync = FakeContactSync(status: synced());
+      await pumpApp(tester);
+      // A held send's bar, which waits until it is answered.
+      final messenger =
+          ScaffoldMessenger.of(tester.element(find.byType(AppShell)));
+      messenger.showSnackBar(SnackBar(
+        persist: true,
+        content: const Text('Held'),
+        action: SnackBarAction(label: 'Open', onPressed: () {}),
+      ));
+      await tester.pump(const Duration(milliseconds: 500));
+
+      final at = DateTime(today.year, today.month, today.day, 9);
+      sync.set(synced(notice: ContactSyncNotice(at: at, heldDeletions: 7)));
+      await tester.pump(const Duration(seconds: 30));
+      expect(sync.noticesSeen, isEmpty,
+          reason: 'behind a bar that waits, it may never be shown');
+
+      unawaited(tester.state<NavigatorState>(find.byType(Navigator).first)
+          .push(MaterialPageRoute<void>(
+        builder: (_) => const ContactSyncScreen(),
+      )));
+      await tester.pumpAndSettle();
+      messenger.removeCurrentSnackBar();
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Contact sync has stopped'), findsNothing);
+      expect(sync.noticesSeen, [at], reason: 'the screen shows it');
     });
 
     testWidgets('over the Contact sync screen, a stop is not said again',
