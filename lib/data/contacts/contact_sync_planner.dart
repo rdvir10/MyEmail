@@ -2224,6 +2224,19 @@ class _Planner {
           final g = entry.side == ContactSide.google ? copy : source;
           final h = entry.side == ContactSide.google ? source : copy;
           final row = _rowOf(sourceSide, source);
+          final partner = entry.side == ContactSide.google
+              ? row?.googleName
+              : row?.graphId;
+          if (row != null &&
+              row.state == ContactLinkState.paired &&
+              partner != null &&
+              partner != copy) {
+            // The source is paired already with another contact on the
+            // copy's side (Ron merged it in Gmail into a contact that was
+            // paired): its row is not taken from that partner.
+            _copyOfPaired(entry.side, copy, source);
+            continue;
+          }
           _pairNew(g, h, linkId: row?.id);
           row?.done = true;
           // An Outlook copy whose tag names the source's old name has it
@@ -2253,6 +2266,36 @@ class _Planner {
       }
       journalSettled.add(entry.opId);
     }
+  }
+
+  /// A copy whose create was interrupted, found after its source was
+  /// paired with another contact on the copy's side. An Outlook copy is
+  /// held under a "merged in Gmail" item, as a merge's other Outlook
+  /// contact is (delete it in Hadco too, or keep it only there); a Gmail
+  /// copy goes through the new-contact rules, its tag naming a paired
+  /// contact.
+  void _copyOfPaired(ContactSide side, String copy, String source) {
+    if (side == ContactSide.google) return;
+    final details = _detailsOf(side, copy);
+    _setStatus(side, copy, _Status.held);
+    _add(
+      ContactLinkPlan(
+        graphId: copy,
+        state: ContactLinkState.held,
+        reason: ContactHeldReason.waiting,
+        graphChangeKey: graphListed[copy]?.changeKey,
+        graphBase: details,
+        title: details.title,
+      ),
+      [
+        ContactReviewItem(
+          kind: ContactReviewKind.mergedInGoogle,
+          googleName: source,
+          graphId: copy,
+          title: details.title,
+        ),
+      ],
+    );
   }
 
   /// A copy whose create was interrupted, found after its source went: it
@@ -3609,13 +3652,28 @@ class _Planner {
       for (final r in restores)
         if (r.alreadyBack) r.binId,
     };
+    // A tag is moved only on an Outlook contact a row still names once
+    // the plan is carried out: not one gone, deleted, or left without a
+    // row.
+    final touched = {
+      for (final l in links) ...[?l.linkId, ...l.alsoRemove],
+    };
+    final stillNamed = {
+      for (final l in links)
+        if (!l.removeRow) ?l.graphId,
+      for (final r in input.links)
+        if (!touched.contains(r.linkId)) ?r.graphId,
+    };
     int count(bool Function(ContactLinkPlan) test) => links.where(test).length;
     return ContactSyncPlan(
       links: links,
       reviews: reviews,
       brakes: brakes,
       reKeys: Map.unmodifiable(reKeys),
-      graphTagMoves: Map.unmodifiable(tagMoves),
+      graphTagMoves: Map.unmodifiable({
+        for (final MapEntry(:key, :value) in tagMoves.entries)
+          if (stillNamed.contains(key)) key: value,
+      }),
       journalSettled: journalSettled,
       binToDrop: toDrop.toList(),
       binToMarkBack: broughtBack.difference(toDrop).toList(),

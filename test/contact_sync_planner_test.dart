@@ -1511,6 +1511,22 @@ void main() {
       );
     });
 
+    test('no tag is moved on an Outlook contact that loses its row', () {
+      // c1 was re-keyed to c9, and its Outlook partner H1 is gone: c9 is
+      // deleted, the row with it, and H1 has no tag left to move.
+      final plan = run(
+        googleReKeys: {'people/c1': 'people/c9'},
+        google: [g('people/c9', ann)],
+        graphGone: {'H1'},
+        links: [
+          link(1, 'people/c1', 'H1', base: ann, etag: 'etag-people/c9'),
+        ],
+      );
+      expect(byLink(plan, 1)!.delete!.contactId, 'people/c9');
+      expect(plan.reKeys, {'people/c1': 'people/c9'});
+      expect(plan.graphTagMoves, isEmpty);
+    });
+
     test('a re-key renames the row and moves the partner\'s tag', () {
       final plan = run(
         googleReKeys: {'people/c1': 'people/c9'},
@@ -2201,6 +2217,65 @@ void main() {
       expect(plan.links.where((l) => l.create != null), isEmpty);
       expect(plan.reviews, isEmpty);
       expect(plan.graphTagMoves, {'H9': 'people/c9'});
+    });
+
+    test('a copy whose source was merged into a pair keeps out of its row',
+        () {
+      // people/a is paired with H-a. people/c is new, and its copy Z was
+      // cut short. Ron merges a into c in Gmail.
+      final plan = run(
+        google: [
+          g('people/c', ann, previous: ['people/a']),
+          gDeleted('people/a'),
+        ],
+        graph: [h('H-a', ann), h('Z', ann, tag: 'people/c')],
+        links: [link(1, 'people/a', 'H-a', base: ann)],
+        journal: [
+          ContactJournalEntry(
+            opId: 7,
+            side: ContactSide.graph,
+            sourceId: 'people/c',
+            startedAt: now.subtract(const Duration(hours: 3)),
+          ),
+        ],
+      );
+      expect(plan.journalSettled, [7]);
+      final row = byLink(plan, 1)!;
+      expect(row.googleName, 'people/c');
+      expect(row.graphId, 'H-a', reason: 'H-a keeps its pair');
+      final copy = byGraph(plan, 'Z')!;
+      expect(copy.linkId, isNull);
+      expect(copy.state, ContactLinkState.held);
+      expect(copy.reason, ContactHeldReason.waiting);
+      final item = plan.reviews.single;
+      expect(item.kind, ContactReviewKind.mergedInGoogle);
+      expect(item.googleName, 'people/c');
+      expect(item.graphId, 'Z');
+      expect(plan.graphTagMoves, {'H-a': 'people/c'});
+      expect(plan.links.where((l) => l.create != null), isEmpty);
+    });
+
+    test('a Gmail copy whose source is paired goes through the rules', () {
+      // Outlook H5 is paired with Gmail c7 by the time its interrupted
+      // Gmail copy c9 is found.
+      final plan = run(
+        google: [g('people/c7', ann), g('people/c9', ann, tag: 'H5')],
+        graph: [h('H5', ann)],
+        links: [link(5, 'people/c7', 'H5', base: ann)],
+        journal: [
+          ContactJournalEntry(
+            opId: 8,
+            side: ContactSide.google,
+            sourceId: 'H5',
+            startedAt: now.subtract(const Duration(hours: 3)),
+          ),
+        ],
+      );
+      expect(plan.journalSettled, [8]);
+      expect(byLink(plan, 5)!.googleName, 'people/c7');
+      final item = plan.reviews.single;
+      expect(item.googleName, 'people/c9');
+      expect(item.reason, ContactReviewReason.taggedPaired);
     });
   });
 
