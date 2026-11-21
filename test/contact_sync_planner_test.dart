@@ -250,6 +250,34 @@ void main() {
         isEmpty,
       );
       expect(alone.reviews.single.graphId, 'H-bob');
+      // Nor one retyped as just "Bob", or as a company only: a missing
+      // family name, or no name, is no agreement.
+      for (final typedOver in [
+        person(given: 'Bob', emails: ['bob@x']),
+        SyncedContact({
+          ContactField.company: 'Acme',
+          ContactField.emails: ['info@acme.example'],
+        }),
+      ]) {
+        final plan = run(
+          google: [g('people/c1', ann)],
+          graph: [h('H-x', typedOver, tag: 'people/c1')],
+        );
+        expect(
+          plan.links.where(
+            (l) => l.googleName == 'people/c1' && l.graphId == 'H-x',
+          ),
+          isEmpty,
+        );
+        expect(plan.reviews.single.graphId, 'H-x');
+      }
+      // A first name alone on both, the same, is one person.
+      final first = person(given: 'Ann');
+      final same = run(
+        google: [g('people/c1', first)],
+        graph: [h('H1', first, tag: 'people/c1')],
+      );
+      expect(byGoogle(same, 'people/c1')!.graphId, 'H1');
     });
 
     test('a tag naming an old name is moved on when it pairs', () {
