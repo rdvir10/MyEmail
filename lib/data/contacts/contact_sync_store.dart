@@ -751,7 +751,10 @@ abstract class ContactSyncStore {
   /// reviews, the source of creates on the other side, the bin, where it
   /// is the contact or a partner, and the ids inside the JSON kept beside
   /// them ([rekeyContactJson]): the brakes' questions on the pair
-  /// ([ContactPair.held]) and each review's data and queued answer.
+  /// ([ContactPair.held]) and each review's data and queued answer. Two
+  /// reviews of one kind that come to name the same contacts (two
+  /// contacts Ron merged, each with an item) are folded into the older,
+  /// which keeps its answer, or takes the other's when it has none.
   ///
   /// The planner's own rows already take the new names, so a re-key after
   /// the plan's links are saved finds none left under [oldId] and moves
@@ -1449,6 +1452,23 @@ class DriftContactSyncStore implements ContactSyncStore {
             answer: Value(answer),
           ));
         }
+        // Two reviews of one kind now naming the same contacts are one:
+        // saveReview would only ever find the first, and an answer to the
+        // other would be lost.
+        final named = await (db.select(db.contactReviews)
+              ..where((t) =>
+                  t.pairId.equals(pairId) &
+                  (google
+                      ? t.googleName.equals(newId)
+                      : t.graphId.equals(newId)))
+              ..orderBy([(t) => OrderingTerm.asc(t.reviewId)]))
+            .get();
+        for (final (:kept, :dropped) in _sameReviews(named.map(_reviewOf))) {
+          await _writeReview(kept);
+          await (db.delete(db.contactReviews)
+                ..where((t) => t.reviewId.isIn(dropped)))
+              .go();
+        }
       });
 
   // --- rows -----------------------------------------------------------------
@@ -2019,6 +2039,13 @@ class MemoryContactSyncStore implements ContactSyncStore {
       }
       _reviews[r.reviewId!] = review;
     }
+    final named = _sameReviews(_reviews.values.where((r) =>
+        r.pairId == pairId &&
+        (google ? r.googleName : r.graphId) == newId));
+    for (final (:kept, :dropped) in named) {
+      _reviews[kept.reviewId!] = kept;
+      dropped.forEach(_reviews.remove);
+    }
     final pair = _pairs[pairId];
     if (pair != null) {
       _pairs[pairId] = pair.copyWith(
@@ -2141,6 +2168,46 @@ ContactLink _linkRead({
 
 StateError _linkGone() =>
     StateError('This contact link has gone since it was read.');
+
+/// [reviews], saved ones of one pair, oldest first, grouped where they
+/// name the same contacts under the same kind, as a re-key of two
+/// contacts Ron merged leaves them: for each group of more than one, its
+/// oldest, given the first answer queued among the others when it has
+/// none of its own, and the ids of the others, which go.
+List<({ContactReview kept, List<int> dropped})> _sameReviews(
+  Iterable<ContactReview> reviews,
+) {
+  final groups = <(String, String?, String?), List<ContactReview>>{};
+  for (final r in reviews) {
+    groups.putIfAbsent((r.kind, r.googleName, r.graphId), () => []).add(r);
+  }
+  final folds = <({ContactReview kept, List<int> dropped})>[];
+  for (final group in groups.values) {
+    if (group.length < 2) continue;
+    final oldest = group.first;
+    final others = group.skip(1);
+    final answered = oldest.isAnswered
+        ? null
+        : others.firstWhereOrNull((r) => r.isAnswered);
+    folds.add((
+      kept: answered == null
+          ? oldest
+          : ContactReview(
+              reviewId: oldest.reviewId,
+              pairId: oldest.pairId,
+              kind: oldest.kind,
+              googleName: oldest.googleName,
+              graphId: oldest.graphId,
+              data: oldest.data,
+              createdAt: oldest.createdAt,
+              answer: answered.answer,
+              answeredAt: answered.answeredAt,
+            ),
+      dropped: [for (final r in others) r.reviewId!],
+    ));
+  }
+  return folds;
+}
 
 StateError _rekeyClash(ContactSide side) => StateError(
       'A re-key landed on a ${side.name} contact the pair already has.',

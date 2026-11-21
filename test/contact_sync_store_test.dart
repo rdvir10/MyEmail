@@ -946,6 +946,88 @@ void main() {
               reason: 'another pair is not touched');
         });
 
+        test('folds two reviews that come to name the same contacts into '
+            'the older, which takes the answer the other had', () async {
+          // Ron merges in Gmail two contacts that each had an item of one
+          // kind. Left as two, saveReview would only ever find the first,
+          // and an answer given to the second would be lost.
+          final pair = await pairOf();
+          final older = await store.saveReview(ContactReview(
+            pairId: pair.pairId,
+            kind: 'newContact',
+            googleName: 'people/a',
+            data: '{"googleName":"people/a"}',
+          ));
+          now = now.add(const Duration(minutes: 1));
+          final newer = await store.saveReview(ContactReview(
+            pairId: pair.pairId,
+            kind: 'newContact',
+            googleName: 'people/c',
+            data: '{"googleName":"people/c"}',
+          ));
+          final answered = await store.answerReview(
+              newer.reviewId!, '{"kind":"leaveOut","googleName":"people/c"}');
+          final otherKind = await store.saveReview(ContactReview(
+            pairId: pair.pairId,
+            kind: 'clash',
+            googleName: 'people/c',
+            data: '{}',
+          ));
+
+          await store.rekey(
+              pair.pairId, ContactSide.google, 'people/a', 'people/c');
+
+          final reviews = await store.reviews(pair.pairId);
+          expect(reviews, hasLength(2));
+          final kept = reviews.first;
+          expect(kept.reviewId, older.reviewId);
+          expect(kept.googleName, 'people/c');
+          expect(kept.data, '{"googleName":"people/c"}');
+          expect(kept.createdAt, older.createdAt);
+          expect(kept.answer, answered!.answer);
+          expect(kept.answeredAt, answered.answeredAt);
+          expect(reviews.last, otherKind,
+              reason: 'another kind is another item');
+
+          final again = await store.saveReview(ContactReview(
+            pairId: pair.pairId,
+            kind: 'newContact',
+            googleName: 'people/c',
+            data: '{"v":2}',
+          ));
+          expect(again.reviewId, older.reviewId);
+          expect(again.answer, answered.answer);
+          expect(await store.reviews(pair.pairId), hasLength(2));
+        });
+
+        test("folding two answered reviews keeps the older one's answer",
+            () async {
+          final pair = await pairOf();
+          final older = await store.saveReview(ContactReview(
+            pairId: pair.pairId,
+            kind: 'kept',
+            googleName: 'people/a',
+            graphId: 'AAMk-1',
+            data: '{}',
+          ));
+          await store.answerReview(older.reviewId!, 'copyBack');
+          final newer = await store.saveReview(ContactReview(
+            pairId: pair.pairId,
+            kind: 'kept',
+            googleName: 'people/c',
+            graphId: 'AAMk-1',
+            data: '{}',
+          ));
+          await store.answerReview(newer.reviewId!, 'keepOnlyHere');
+
+          await store.rekey(
+              pair.pairId, ContactSide.google, 'people/a', 'people/c');
+
+          final kept = (await store.reviews(pair.pairId)).single;
+          expect(kept.reviewId, older.reviewId);
+          expect(kept.answer, 'copyBack');
+        });
+
         test('of a Hadco contact moves its own rows', () async {
           final pair = await pairOf();
           await store.saveLink(paired(pair.pairId, 'people/c1', 'AAMk-1'));
