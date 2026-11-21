@@ -74,6 +74,7 @@ void main() {
     DateTime? lastDoneAt,
     DateTime? firstDoneAt,
     bool firstDone = true,
+    bool firstStarted = true,
     int? googleCount,
     int? graphCount,
     ContactSyncNotice? notice,
@@ -81,7 +82,8 @@ void main() {
       ContactSyncStatus(
         googleAccountId: gmail.id,
         graphAccountId: hadco.id,
-        firstStartedAt: at1042.subtract(const Duration(days: 3)),
+        firstStartedAt:
+            firstStarted ? at1042.subtract(const Duration(days: 3)) : null,
         firstDoneAt: firstDone
             ? firstDoneAt ?? at1042.subtract(const Duration(days: 3))
             : null,
@@ -770,6 +772,7 @@ void main() {
 
     testWidgets('a failed run says why, with Try again', (tester) async {
       sync = FakeContactSync(status: synced(
+        last: ContactSyncTally(at: at1042, addedToGraph: 1),
         halt: ContactSyncHalt(
           kind: ContactSyncHaltKind.failed,
           at: at1042,
@@ -780,11 +783,51 @@ void main() {
       await pumpScreen(tester);
 
       expect(find.text('Hadco could not be reached.'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.textContaining('The last sync stopped')).dy,
+        lessThan(tester.getTopLeft(button('contact-sync-last')).dy),
+        reason: 'the stop above "Synced at", which would read as all well',
+      );
       expect(find.text('Sync now'), findsNothing,
           reason: 'Try again is the same, beside the reason');
       await tester.tap(find.text('Try again'));
       await tester.pumpAndSettle();
       expect(sync.count('syncNow'), 1);
+    });
+
+    testWidgets('a stop before the first sync has started is shown too',
+        (tester) async {
+      sync = FakeContactSync(status: synced(
+        firstDone: false,
+        firstStarted: false,
+        halt: ContactSyncHalt(
+          kind: ContactSyncHaltKind.otherDevice,
+          at: at1042,
+          claimedAt: at1042.subtract(const Duration(hours: 2)),
+        ),
+      ));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+
+      expect(find.text('First sync'), findsOneWidget);
+      expect(find.text('Contact sync is on on your other device'),
+          findsOneWidget);
+      await tester.tap(button('contact-sync-here'));
+      await tester.pumpAndSettle();
+      expect(sync.count('syncHere'), 1);
+
+      sync.set(synced(
+        firstDone: false,
+        firstStarted: false,
+        halt: ContactSyncHalt(
+          kind: ContactSyncHaltKind.notAllowed,
+          at: at1042,
+          side: ContactSide.graph,
+        ),
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('Contact sync has stopped: not allowed yet for Hadco.'),
+          findsOneWidget);
     });
 
     testWidgets('not allowed: the stop names the account, and Sign in again '

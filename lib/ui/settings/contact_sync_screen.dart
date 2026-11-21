@@ -519,10 +519,20 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         }
       else if (ours && s.isRunning)
         ..._running(s.running!)
-      else if (!ours || !s.firstStarted)
-        ..._firstSync(google, graph, graphName)
-      else
-        ..._lastResult(s, google, graph, graphName),
+      else ...[
+        // Why the runner's pair stopped, first sync or not: a stop before
+        // Start's first write (access, the other device, the network)
+        // must show as plainly as one after it, and above the result, so
+        // that "Synced at" over it does not read as all well.
+        if (ours)
+          if (s.halt case final halt?
+              when halt.kind != ContactSyncHaltKind.putAway)
+            ..._halt(s, halt, google, graph, graphName),
+        if (!ours || !s.firstStarted)
+          ..._firstSync(google, graph, graphName)
+        else
+          ..._lastResult(s, google, graph, graphName),
+      ],
       if (s != null && ours) ...[
         for (final q in s.questions)
           _QuestionCard(
@@ -730,7 +740,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     ];
   }
 
-  /// How the last sync went, why it stopped if it did, and Sync now.
+  /// How the last sync went, and Sync now.
   List<Widget> _lastResult(
     ContactSyncStatus s,
     Account google,
@@ -764,8 +774,6 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     };
     return [
       if (line != null) _Para(line, key: const ValueKey('contact-sync-last')),
-      if (halt != null && halt.kind != ContactSyncHaltKind.putAway)
-        ..._halt(s, halt, google, graph, graphName, now, use24h),
       if (!offersItsOwn)
         _Buttons([
           FilledButton.tonalIcon(
@@ -784,9 +792,9 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     Account google,
     Account graph,
     String graphName,
-    DateTime now,
-    bool use24h,
   ) {
+    final now = DateTime.now();
+    final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
     final side = halt.side ?? ContactSide.graph;
     final name = _sideName(side, graphName);
     switch (halt.kind) {
