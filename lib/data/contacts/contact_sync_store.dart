@@ -20,7 +20,8 @@ enum ContactBinState { pending, done, back }
 /// where each side's feed has got to.
 ///
 /// Times are UTC. The JSON fields are kept as the runner writes them: the
-/// store neither reads nor checks them.
+/// store checks nothing in them, and only a re-key changes [held], moving
+/// the ids in it ([ContactSyncStore.rekey]).
 @immutable
 class ContactPair {
   const ContactPair({
@@ -391,8 +392,9 @@ class ContactSyncOp {
 /// the next run.
 ///
 /// [kind], [data] and [answer] are the runner's: the store keeps them as
-/// they are. The ids are the contacts it is about, kept here rather than in
-/// [data] so that a re-key reaches them.
+/// they are, but for a re-key, which moves the ids inside [data] and
+/// [answer] too ([rekeyContactJson]). The ids are the contacts it is about,
+/// kept here as well so that the store can find a review by them.
 @immutable
 class ContactReview {
   const ContactReview({
@@ -745,8 +747,11 @@ abstract class ContactSyncStore {
 
   /// A contact's id changed on [side] (Google's re-keys): every place in
   /// the pair that names [oldId] names [newId] instead, together: links,
-  /// reviews, the source of creates on the other side, and the bin, where
-  /// it is the contact or a partner. Throws [StateError], changing nothing,
+  /// reviews, the source of creates on the other side, the bin, where it
+  /// is the contact or a partner, and the ids inside the JSON kept beside
+  /// them ([rekeyContactJson]): the brakes' questions on the pair
+  /// ([ContactPair.held]) and each review's data and queued answer. Throws
+  /// [StateError], changing nothing,
   /// when a link or a bin entry of the pair already names [newId] on that
   /// side, or a create on the other side already copies [newId] (two
   /// creates in flight whose sources Ron then merged).
@@ -1410,6 +1415,30 @@ class DriftContactSyncStore implements ContactSyncStore {
                   t.side.equals(side.other.name) &
                   t.partnerId.equals(oldId)))
             .write(ContactBinCompanion(partnerId: Value(newId)));
+        // The ids inside the JSON: the brakes' questions, and each
+        // review's data and queued answer (a candidate among them).
+        final pair = await (db.select(db.contactPairs)
+              ..where((t) => t.pairId.equals(pairId)))
+            .getSingleOrNull();
+        final held = rekeyContactJson(pair?.held, side, oldId, newId);
+        if (pair != null && held != pair.held) {
+          await (db.update(db.contactPairs)
+                ..where((t) => t.pairId.equals(pairId)))
+              .write(ContactPairsCompanion(held: Value(held)));
+        }
+        for (final r in await (db.select(db.contactReviews)
+              ..where((t) => t.pairId.equals(pairId)))
+            .get()) {
+          final data = rekeyContactJson(r.data, side, oldId, newId)!;
+          final answer = rekeyContactJson(r.answer, side, oldId, newId);
+          if (data == r.data && answer == r.answer) continue;
+          await (db.update(db.contactReviews)
+                ..where((t) => t.reviewId.equals(r.reviewId)))
+              .write(ContactReviewsCompanion(
+            data: Value(data),
+            answer: Value(answer),
+          ));
+        }
       });
 
   // --- rows -----------------------------------------------------------------
@@ -1968,9 +1997,22 @@ class MemoryContactSyncStore implements ContactSyncStore {
     }
     for (final r in _reviews.values.toList()) {
       if (r.pairId != pairId) continue;
-      if (google ? r.googleName != oldId : r.graphId != oldId) continue;
-      _reviews[r.reviewId!] =
-          google ? r.copyWith(googleName: newId) : r.copyWith(graphId: newId);
+      var review = r.copyWith(
+        data: rekeyContactJson(r.data, side, oldId, newId),
+        answer: rekeyContactJson(r.answer, side, oldId, newId),
+      );
+      if ((google ? review.googleName : review.graphId) == oldId) {
+        review = google
+            ? review.copyWith(googleName: newId)
+            : review.copyWith(graphId: newId);
+      }
+      _reviews[r.reviewId!] = review;
+    }
+    final pair = _pairs[pairId];
+    if (pair != null) {
+      _pairs[pairId] = pair.copyWith(
+        held: rekeyContactJson(pair.held, side, oldId, newId),
+      );
     }
     for (final o in _ops.values.toList()) {
       if (o.pairId != pairId || o.side != side.other) continue;

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/contacts/contact_mapping.dart';
 import 'package:myemail/data/contacts/contact_sync_planner.dart';
@@ -215,6 +217,121 @@ void main() {
       );
 
       expect(syncedFromPerson(answer)[ContactField.company], 'Acme');
+    });
+  });
+
+  group('a re-key inside the JSON kept beside the rows', () {
+    // The store's re-key runs rekeyContactJson over what the planner's
+    // items wrote: these pin it to their keys.
+    String review({
+      ContactSide subject = ContactSide.graph,
+      String? googleName,
+      String? graphId = 'AAMk-9',
+      List<String> candidates = const ['people/c1', 'people/c2'],
+    }) => jsonEncode(ContactReviewItem(
+      kind: ContactReviewKind.newContact,
+      reason: ContactReviewReason.severalMatches,
+      subjectSide: subject,
+      googleName: googleName,
+      graphId: graphId,
+      candidates: candidates,
+      candidateTitles: [for (final c in candidates) 'title of $c'],
+      title: 'Ann Lee',
+    ).toJson());
+
+    test("reaches a review's subject and its candidates on the other side",
+        () {
+      final moved = jsonDecode(rekeyContactJson(
+        review(),
+        ContactSide.google,
+        'people/c1',
+        'people/c7',
+      )!) as Map;
+      expect(moved['candidates'], ['people/c7', 'people/c2']);
+      expect(moved['candidateTitles'], [
+        'title of people/c1',
+        'title of people/c2',
+      ]);
+
+      final subject = jsonDecode(rekeyContactJson(
+        review(subject: ContactSide.google, googleName: 'people/c1',
+            graphId: null, candidates: ['AAMk-1']),
+        ContactSide.google,
+        'people/c1',
+        'people/c7',
+      )!) as Map;
+      expect(subject['googleName'], 'people/c7');
+      expect(subject['candidates'], ['AAMk-1']);
+    });
+
+    test('leaves the other side alone, and what names nothing as it was',
+        () {
+      // Candidates of a Gmail contact are Outlook ids: a Gmail re-key
+      // never reaches them, even one spelt the same.
+      final gmailSubject = review(
+        subject: ContactSide.google,
+        googleName: 'people/c5',
+        graphId: null,
+        candidates: ['people/c1'],
+      );
+      expect(
+        rekeyContactJson(
+            gmailSubject, ContactSide.google, 'people/c1', 'people/c7'),
+        same(gmailSubject),
+      );
+      final graphNamed = review(graphId: 'people/c1');
+      expect(
+        jsonDecode(rekeyContactJson(
+          graphNamed, ContactSide.google, 'people/c1', 'people/c7',
+        )!)['graphId'],
+        'people/c1',
+      );
+      expect(rekeyContactJson(null, ContactSide.google, 'a', 'b'), isNull);
+      expect(
+        rekeyContactJson('not json', ContactSide.google, 'a', 'b'),
+        'not json',
+      );
+    });
+
+    test("reaches a brake's items at any depth", () {
+      final held = jsonEncode({
+        'questions': [
+          {
+            'kind': 'deletions',
+            'items': [
+              const ContactBrakeItem(
+                title: 'Ann Lee',
+                side: ContactSide.google,
+                graphId: 'AAMk-1',
+              ).toJson(),
+            ],
+          },
+        ],
+      });
+
+      final moved = rekeyContactJson(
+        held,
+        ContactSide.graph,
+        'AAMk-1',
+        'AAMk-2',
+      )!;
+
+      expect(moved, held.replaceAll('AAMk-1', 'AAMk-2'));
+    });
+
+    test('two candidates merged into one are one candidate', () {
+      final moved = jsonDecode(rekeyContactJson(
+        review(candidates: ['people/c1', 'people/c2', 'people/c3']),
+        ContactSide.google,
+        'people/c1',
+        'people/c3',
+      )!) as Map;
+
+      expect(moved['candidates'], ['people/c3', 'people/c2']);
+      expect(moved['candidateTitles'], [
+        'title of people/c1',
+        'title of people/c2',
+      ]);
     });
   });
 }

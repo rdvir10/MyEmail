@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:drift/native.dart';
@@ -5,6 +6,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/account_store.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/cache/mail_database.dart';
+import 'package:myemail/data/contacts/contact_sync_planner.dart'
+    show
+        ContactBrakeItem,
+        ContactReviewItem,
+        ContactReviewKind,
+        ContactReviewReason;
 import 'package:myemail/data/contacts/contact_sync_store.dart';
 import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/imap/cached_imap_engine.dart';
@@ -849,6 +856,94 @@ void main() {
               reason: 'another pair is not touched');
           expect((await store.ops(other.pairId)).single.sourceKey,
               'people/c1');
+        });
+
+        test('reaches the ids a brake holds and an open review names, in '
+            'the JSON beside the rows', () async {
+          // Google re-keys a contact while the deletion brake holds it and
+          // a Needs a look item offers it as a candidate. Left under the
+          // old name, Ron's answer to either would name a contact that is
+          // no longer there, and be dropped.
+          final pair = await pairOf();
+          await store.saveLink(ContactLink(
+            pairId: pair.pairId,
+            googleName: 'people/c1',
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.deletionBrake,
+          ));
+          String brakes(String google) => jsonEncode({
+                'deletions': [
+                  ContactBrakeItem(
+                    title: 'Ann Lee',
+                    side: ContactSide.graph,
+                    googleName: google,
+                  ).toJson(),
+                  const ContactBrakeItem(
+                    title: 'Bo Ng',
+                    side: ContactSide.graph,
+                    googleName: 'people/c3',
+                  ).toJson(),
+                ],
+              });
+          await store.updatePair(
+              pair.pairId, (p) => p.copyWith(held: brakes('people/c1')));
+          final candidate = await store.saveReview(ContactReview(
+            pairId: pair.pairId,
+            kind: ContactReviewKind.newContact.name,
+            graphId: 'AAMk-9',
+            data: jsonEncode(const ContactReviewItem(
+              kind: ContactReviewKind.newContact,
+              reason: ContactReviewReason.sameName,
+              subjectSide: ContactSide.graph,
+              graphId: 'AAMk-9',
+              candidates: ['people/c2', 'people/c1'],
+              candidateTitles: ['Ann Lee', 'Ann Lee'],
+              title: 'Ann Lee',
+            ).toJson()),
+          ));
+          await store.answerReview(
+            candidate.reviewId!,
+            jsonEncode({
+              'kind': 'samePerson',
+              'googleName': 'people/c1',
+              'graphId': 'AAMk-9',
+            }),
+          );
+          final other = await pairOf(google: 'g-2', googleAddress: 'b@x.com');
+          await store.updatePair(
+              other.pairId, (p) => p.copyWith(held: brakes('people/c1')));
+
+          // A re-key that clashes changes nothing, the JSON included.
+          await store.saveLink(paired(pair.pairId, 'people/c8', 'AAMk-8'));
+          final pairBefore = await store.pair(pair.pairId);
+          final reviewsBefore = await store.reviews(pair.pairId);
+          await expectLater(
+            store.rekey(
+                pair.pairId, ContactSide.google, 'people/c1', 'people/c8'),
+            throwsStateError,
+          );
+          expect(await store.pair(pair.pairId), pairBefore);
+          expect(await store.reviews(pair.pairId), reviewsBefore);
+
+          await store.rekey(
+              pair.pairId, ContactSide.google, 'people/c1', 'people/c77');
+
+          final held = (await store.pair(pair.pairId))!.held!;
+          expect(held, brakes('people/c77'));
+          final review = (await store.reviews(pair.pairId)).single;
+          final data = jsonDecode(review.data) as Map;
+          expect(data['candidates'], ['people/c2', 'people/c77']);
+          expect(data['graphId'], 'AAMk-9');
+          expect((jsonDecode(review.answer!) as Map)['googleName'],
+              'people/c77');
+          expect(review.isAnswered, isTrue);
+          expect(review.createdAt, candidate.createdAt);
+          expect(
+            (await store.links(pair.pairId)).first.googleName,
+            'people/c77',
+          );
+          expect((await store.pair(other.pairId))!.held, brakes('people/c1'),
+              reason: 'another pair is not touched');
         });
 
         test('of a Hadco contact moves its own rows', () async {
