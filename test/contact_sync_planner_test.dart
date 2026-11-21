@@ -4544,6 +4544,76 @@ void main() {
       expect(alone.googleSynced, isNull);
     });
 
+    test('a first sync shaped like the tablet asks only about families and '
+        'same names', () {
+      // About 2000 contacts as Ron's tablet holds them: most people twice
+      // in Hadco and once in Gmail, some twice in Gmail, a copy with only
+      // an email or only a mobile; families on one address; and people
+      // with the same name and nothing else in common.
+      String mobile(int i) => '+1 212 555 ${i.toString().padLeft(4, '0')}';
+      SyncedContact someone(
+        int i, {
+        bool email = true,
+        bool phone = true,
+      }) => person(
+        given: 'P$i',
+        family: 'Fam$i',
+        emails: email ? ['p$i@x.example'] : null,
+        mobile: phone ? mobile(i) : null,
+      );
+      final google = <GoogleContact>[];
+      final graph = <GraphContact>[];
+      for (var i = 0; i < 650; i++) {
+        google.add(g('people/p$i', someone(i)));
+        if (i % 10 == 0) {
+          google.add(g('people/p$i-2', someone(i, email: false)));
+        }
+        graph.add(h('H$i', someone(i)));
+        if (i % 5 != 0) {
+          graph.add(h('H$i-2', someone(i, email: i.isEven, phone: i.isOdd)));
+        }
+      }
+      for (var f = 0; f < 30; f++) {
+        for (final given in ['Ann', 'Bob']) {
+          final member = person(
+            given: given,
+            family: 'Home$f',
+            emails: ['home$f@x.example'],
+          );
+          google.add(g('people/$given$f', member));
+          graph.add(h('H-$given$f', member));
+        }
+      }
+      SyncedContact sam(int k, String email) =>
+          person(given: 'Sam$k', family: 'Same', emails: [email]);
+      for (var k = 0; k < 20; k++) {
+        google.add(g('people/s$k', sam(k, 'g$k@x')));
+        graph.add(h('H-s$k', sam(k, 'h$k@x')));
+      }
+      expect(google.length + graph.length, greaterThan(2000));
+      final plan = run(
+        firstSync: true,
+        google: google,
+        graph: graph,
+        googleComplete: true,
+        graphComplete: true,
+      );
+      final reasons = <ContactReviewReason?, int>{};
+      for (final r in plan.reviews) {
+        reasons[r.reason] = (reasons[r.reason] ?? 0) + 1;
+      }
+      expect(reasons, {
+        ContactReviewReason.sharedAddress: 60,
+        ContactReviewReason.sameName: 20,
+      });
+      expect(plan.counts.pairUp, 650);
+      expect(plan.counts.addToGoogle + plan.counts.addToGraph, 0);
+      expect(plan.counts.duplicateCopies, 585);
+      expect(plan.duplicates, hasLength(585));
+      expect(plan.brakes, isEmpty);
+      expect(plan.stop, isNull);
+    });
+
     test('holding copies is no deletion and no change for the brakes', () {
       SyncedContact someone(int i) =>
           person(given: 'P$i', family: 'X', emails: ['p$i@x']);
