@@ -874,6 +874,27 @@ void main() {
       expect(status.graphCount, 5);
     });
 
+    test('a Gmail re-key moves the tag of the Outlook copy the sync made, '
+        'and gives none to a contact that had none', () async {
+      final made = h.google.seed(person('Ann', 'Lee', email: 'ann@example.com'));
+      final pairs = seedPairs(h, 1);
+      await h.firstSync();
+      final copy = h.graph.idWithEmail('ann@example.com')!;
+      expect(h.graph.tagOf(copy), made);
+      final annNow = h.google.rekeyFromGmail(made);
+      final p0Now = h.google.rekeyFromGmail(pairs[0].google);
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.graph.tagOf(copy), annNow);
+      expect(h.graph.tagOf(pairs[0].graph), isNull);
+      final rows = await h.paired();
+      expect(rows.map((l) => l.googleName), containsAll([annNow, p0Now]));
+      // The patch's own changeKey is kept: no change read back from it.
+      h.requests.clear();
+      await h.later();
+      expect(h.contactWritesOf(), isEmpty);
+    });
+
     test('a re-key reaches a held brake and an open review', () async {
       final pairs = seedPairs(h, 6);
       h.google.seed(person('Kim', 'Shared', email: 'family@example.com'));
@@ -986,6 +1007,54 @@ void main() {
       expect(await h.paired(), hasLength(1));
       expect(h.google.count, 1);
       expect(h.graph.count, 1);
+    });
+
+    test('merged in Gmail: Delete it here too deletes the other Outlook '
+        'contact', () async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.google.mergeInGmail(pairs[0].google, pairs[1].google);
+      var status = await h.later();
+      expect(status.halt, isNull);
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.mergedInGoogle);
+      expect(look.choices, [
+        ContactSyncChoice.deleteHereToo,
+        ContactSyncChoice.keepOnlyHere,
+      ]);
+      expect(h.graph.count, 2);
+      await h.sync.answerLook(look.id, ContactSyncChoice.deleteHereToo);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.needsALook, isEmpty);
+      expect(h.graph.count, 1);
+      expect(h.google.count, 1);
+      expect(await h.paired(), hasLength(1));
+      expect(status.recentlyDeleted.single.side, ContactSide.graph);
+    });
+
+    test('kept: Copy it back makes the partner again', () async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.google.deleteFromGmail(pairs[0].google);
+      h.before = (r) async {
+        if (r.method == 'GET' &&
+            r.url.path.endsWith('/me/contacts/${pairs[0].graph}') &&
+            !r.url.queryParameters.containsKey(r'$select')) {
+          h.before = null;
+          h.graph.editFromOutlook(pairs[0].graph, {'jobTitle': 'Chief'});
+        }
+      };
+      var status = await h.later();
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.kept);
+      await h.sync.answerLook(look.id, ContactSyncChoice.copyBack);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.needsALook, isEmpty);
+      expect(h.google.nameWithEmail('p0@example.com'), isNotNull);
+      expect(await h.paired(), hasLength(2));
+      expect(h.google.count, 2);
     });
 
     test('Leave as they are just takes the item away', () async {

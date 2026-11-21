@@ -2217,9 +2217,14 @@ class _Run {
     }
   }
 
-  /// A Gmail contact re-keyed: its Outlook partner's tag names it anew.
+  /// A Gmail contact re-keyed: its Outlook partner's tag, where it has
+  /// one (a contact the sync made), names it anew. One without a tag is
+  /// left without: Ron's own contact is not given one.
   Future<void> _moveTag(String id, String name) async {
     try {
+      final read = await graph((a) => a.get(id, withTag: true));
+      final tag = read == null ? null : GraphContactsApi.tagOf(read);
+      if (tag == null || tag == name) return;
       final answer = await graph((a) => a.update(id, graphTagPatch(name)));
       sync._tags[id] = (changeKey: answer['changeKey'] as String?, tag: name);
       final link = await store.linkFor(pairId, ContactSide.graph, id);
