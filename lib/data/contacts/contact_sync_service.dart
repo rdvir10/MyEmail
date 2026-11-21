@@ -268,6 +268,7 @@ class ContactSyncStatus {
     this.googleCount,
     this.graphCount,
     this.notice,
+    this.duplicates = const [],
   });
 
   /// A run is due when the last completed one is this old.
@@ -320,6 +321,15 @@ class ContactSyncStatus {
   /// stopped, or held something back. Null once [ContactSyncService
   /// .noticeSeen] has been told, and when there is nothing to say.
   final ContactSyncNotice? notice;
+
+  /// Copies of one person: for each person held more than once, how many
+  /// copies each side holds and whether one on each is synced. One copy
+  /// on each side is synced and the others are left as they are, for Ron
+  /// to merge when he likes ("Duplicates to merge when you like").
+  /// Rebuilt by every run, kept between runs and app restarts, and read
+  /// here with no network, as the rest of the status is. Empty when there
+  /// are none, and before the first run.
+  final List<ContactSyncDuplicates> duplicates;
 
   bool get chosen => googleAccountId != null && graphAccountId != null;
   bool get firstStarted => firstStartedAt != null;
@@ -739,6 +749,7 @@ class ContactSyncPreview {
     this.needsALook = 0,
     this.differingPairs = 0,
     this.deletions = 0,
+    this.duplicateCopies = 0,
   });
 
   /// How many contacts each side has now.
@@ -757,6 +768,40 @@ class ContactSyncPreview {
 
   /// Always none: the first sync deletes nothing ("Deleted: none").
   final int deletions;
+
+  /// Copies of the same person beyond the one synced on each side, both
+  /// sides together: left as they are ("Copies of the same person, left
+  /// as they are: N"). Not among [needsALook], [addToGoogle] or
+  /// [addToGraph].
+  final int duplicateCopies;
+}
+
+/// One person held more than once: one copy on each side is synced (where
+/// a side has one), and the other copies are left as they are, neither
+/// copied, changed nor deleted, until Ron merges them. Whichever copy he
+/// removes, the sync moves to one that is left.
+@immutable
+class ContactSyncDuplicates {
+  const ContactSyncDuplicates({
+    required this.title,
+    this.googleCopies = 0,
+    this.graphCopies = 0,
+    this.googleSynced = false,
+    this.graphSynced = false,
+  });
+
+  /// The person's name, for show.
+  final String title;
+
+  /// How many copies each side holds, the synced one included.
+  final int googleCopies;
+  final int graphCopies;
+
+  /// Whether one copy on each side is synced (the pair). Both, for a
+  /// person on both sides; one side only while its copy waits to be made
+  /// on the other.
+  final bool googleSynced;
+  final bool graphSynced;
 }
 
 /// One of the two backup files, for `BackupFiles.save`.
