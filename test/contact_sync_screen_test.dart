@@ -919,8 +919,10 @@ void main() {
       );
     });
 
-    testWidgets('a copy of a contact deleted on one side says so, with the '
-        'kept answers', (tester) async {
+    testWidgets('a copy of a contact that no longer syncs says so, with '
+        'the kept answers', (tester) async {
+      // Its pair may have gone, or been renamed away from it: nothing is
+      // said to have been deleted.
       sync = FakeContactSync(status: synced(looks: const [
         ContactSyncLook(
           id: 1,
@@ -955,22 +957,33 @@ void main() {
       await tester.tap(find.text('Needs a look (3)'));
       await tester.pumpAndSettle();
 
-      expect(
-        find.text('A copy of a contact deleted in Gmail: its synced copy in '
-            'Hadco was deleted with it, and this one was left as it is.'),
-        findsOneWidget,
-      );
-      expect(
-        find.text('A copy of a contact gone from Hadco: its synced copy in '
-            'Gmail was deleted with it, and this one was left as it is.'),
-        findsOneWidget,
-      );
-      expect(
-        find.text('A copy of a contact deleted on one side: its synced copy '
-            'on the other was deleted with it, and this one was left as it '
-            'is.'),
-        findsOneWidget,
-      );
+      // Each names the side its copy is on: the other from the item's.
+      for (final (id, line) in [
+        (
+          1,
+          'A copy of a contact that no longer syncs: its synced copy went, '
+              'or no longer matches it. This copy in Hadco was left as it is.',
+        ),
+        (
+          2,
+          'A copy of a contact that no longer syncs: its synced copy went, '
+              'or no longer matches it. This copy in Gmail was left as it is.',
+        ),
+        (
+          3,
+          'A copy of a contact that no longer syncs: its synced copy went, '
+              'or no longer matches it. This copy was left as it is.',
+        ),
+      ]) {
+        expect(
+          find.descendant(
+            of: button('contact-sync-look:$id'),
+            matching: find.text(line),
+          ),
+          findsOneWidget,
+          reason: line,
+        );
+      }
       // Ann's copy is in Hadco: the answers name it.
       expect(find.text('Keep it only in Hadco'), findsOneWidget);
       await tester.tap(find.text('Delete it in Hadco too'));
