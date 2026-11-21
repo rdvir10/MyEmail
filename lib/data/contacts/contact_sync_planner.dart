@@ -3666,10 +3666,33 @@ class _Planner {
   /// for another reason, or not read, is left as it is.
   ///
   /// A copy held before is never copied over unasked (D2): held again
-  /// while its person is synced, and, once no member is (the synced copy's
-  /// partner deleted, or kept instead), held as kept under a Needs a look
+  /// while its person is synced (a member paired, or held with its
+  /// partner: moved out, held by the change brake), and, once its
+  /// person's pair has gone (a member due to be deleted this run), or no
+  /// contact of its name is synced, held as kept under a Needs a look
   /// item of its own, like any kept contact.
   void _placeCopies() {
+    // A contact synced, for its copies: paired, or held with its partner
+    // (moved out of Contacts, held by the change brake), whose pair stands.
+    bool synced(ContactSide side, String id) {
+      if (!_alive(side, id)) return false;
+      if (_status(side, id) == _Status.paired) return true;
+      final row = _rowOf(side, id);
+      return row != null &&
+          row.state == ContactLinkState.held &&
+          row.googleName != null &&
+          row.graphId != null;
+    }
+
+    final syncedNames = {
+      for (final name in {...googleStatus.keys, ...googleRow.keys})
+        if (synced(ContactSide.google, name))
+          ?_personKey(_detailsOf(ContactSide.google, name)),
+      for (final id in {...graphStatus.keys, ...graphRow.keys})
+        if (synced(ContactSide.graph, id))
+          ?_personKey(_detailsOf(ContactSide.graph, id)),
+    };
+
     for (final group in _copies) {
       final members = group.members;
       bool heldCopy((ContactSide, String) m) {
@@ -3690,7 +3713,9 @@ class _Planner {
             !heldCopy(m);
       }
 
-      var paired = members.any((m) => _status(m.$1, m.$2) == _Status.paired);
+      var paired = members.any((m) => synced(m.$1, m.$2));
+      // Its person's pair has just gone: a member is due to be deleted.
+      final gone = members.any((m) => _status(m.$1, m.$2) == _Status.orphan);
       final waiting = [for (final m in members) if (open(m)) m];
       if (!paired) {
         // A copy due to be deleted (its partner gone) is paired first, so
@@ -3763,7 +3788,12 @@ class _Planner {
       }
       for (final (side, id) in [...members.where(heldCopy)]) {
         final row = _rowOf(side, id)!;
-        if (!paired) {
+        // Kept only once its person is no longer synced: the pair has
+        // just gone, or no contact of its name is synced (copies joined
+        // only by an address the pair has since dropped stay held).
+        if (!paired &&
+            (gone ||
+                !syncedNames.contains(_personKey(_detailsOf(side, id))))) {
           _keepCopy(side, id, row);
         } else if (row.reopened) {
           _hold(side, id, ContactHeldReason.duplicate, linkId: row.id);
@@ -3776,14 +3806,6 @@ class _Planner {
     // person's, changed since): held while a contact of their name is
     // synced, kept with an item once none is. One Ron has given another
     // name is someone else now: the usual rules.
-    final syncedNames = {
-      for (final MapEntry(:key, :value) in googleStatus.entries)
-        if (value == _Status.paired)
-          ?_personKey(_detailsOf(ContactSide.google, key)),
-      for (final MapEntry(:key, :value) in graphStatus.entries)
-        if (value == _Status.paired)
-          ?_personKey(_detailsOf(ContactSide.graph, key)),
-    };
     for (final row in rows) {
       if (row.done ||
           row.state != ContactLinkState.held ||
@@ -3866,7 +3888,9 @@ class _Planner {
       ContactLinkState state,
       ContactHeldReason? reason,
     ) {
-      if (state == ContactLinkState.paired && g != null && h != null) {
+      // A pair held with both its ids (moved out, held by the change
+      // brake) is still the person's synced pair, as for holding copies.
+      if (g != null && h != null) {
         pairOf[(google, g)] = (g, h);
         pairOf[(graph, h)] = (g, h);
       } else if (reason == ContactHeldReason.duplicate) {
@@ -3928,8 +3952,17 @@ class _Planner {
       );
     }
 
+    // The pair of a name, which keeps copies of it held when they are no
+    // longer joined to it by an address.
+    final pairByName = <String, (ContactSide, String)>{};
+    for (final MapEntry(key: (side, id), value: _) in pairOf.entries) {
+      if (_personKey(_detailsOf(side, id)) case final name?) {
+        pairByName.putIfAbsent(name, () => (side, id));
+      }
+    }
     for (final group in _copies) {
-      add(group.members);
+      final paired = group.members.any(pairOf.containsKey);
+      add([if (!paired) ?pairByName[group.name], ...group.members]);
     }
     // A held copy no longer joined to its person by an address (as last
     // read): listed with the others of its name, so it is never hidden.
@@ -3937,13 +3970,6 @@ class _Planner {
     for (final m in copies.difference(listed)) {
       final name = _personKey(_detailsOf(m.$1, m.$2));
       stray.putIfAbsent(name ?? '', () => []).add(m);
-    }
-    // With the pair of their name, which keeps them held.
-    final pairByName = <String, (ContactSide, String)>{};
-    for (final MapEntry(key: (side, id), value: _) in pairOf.entries) {
-      if (_personKey(_detailsOf(side, id)) case final name?) {
-        pairByName.putIfAbsent(name, () => (side, id));
-      }
     }
     for (final MapEntry(key: name, value: members) in stray.entries) {
       add([?pairByName[name], ...members]);
