@@ -6,6 +6,8 @@ import 'package:http/http.dart' as http;
 import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart'
     show SignInNeedsConsent, SignInUnreachable;
+import '../contacts/contact_mapping.dart'
+    show graphContactSelect, graphDevicePropertyId, graphLinkPropertyId;
 import '../contacts/contact_wire_errors.dart';
 import '../mail_engine.dart' show AuthenticationFailed, ConnectionFailed;
 
@@ -79,62 +81,12 @@ class GraphContactsApi {
   /// How many requests one `$batch` may carry. Graph takes no more.
   static const batchLimit = 20;
 
-  /// The app's own namespace for its extended properties. Fixed for ever:
-  /// each name in it takes a slot in the mailbox, and a contact tagged
-  /// under one GUID is not found under another.
-  static const appGuid = '958f81ac-dee9-4f9e-a713-9043484f5b0f';
-
-  /// The hidden tag a contact the sync creates carries: the resource name
-  /// of its partner in Gmail.
-  static const tagProperty = 'String {$appGuid} Name MyEmailLink';
-
-  /// The device claim on the Contacts folder: which device syncs, and
-  /// when it last did.
-  static const claimProperty = 'String {$appGuid} Name MyEmailSyncDevice';
-
-  /// The properties the sync reads, as the delta's one `$select`. Graph
-  /// builds the select into its links, so a change to this list must come
-  /// with a new [selectVersion], which starts a new delta.
-  static const syncProperties = [
-    'id',
-    'changeKey',
-    'parentFolderId',
-    'lastModifiedDateTime',
-    'displayName',
-    'givenName',
-    'middleName',
-    'surname',
-    'title',
-    'generation',
-    'yomiGivenName',
-    'yomiSurname',
-    'nickName',
-    'emailAddresses',
-    'mobilePhone',
-    'homePhones',
-    'businessPhones',
-    'homeAddress',
-    'businessAddress',
-    'otherAddress',
-    'companyName',
-    'department',
-    'jobTitle',
-    'officeLocation',
-    'birthday',
-    'personalNotes',
-    'spouseName',
-    'children',
-    'manager',
-    'assistantName',
-    'businessHomePage',
-    'imAddresses',
-  ];
-
-  /// Kept with the delta link: a link made under another version is not
-  /// used.
-  static const selectVersion = 1;
-
-  static String get select => syncProperties.join(',');
+  // The hidden tag ([graphLinkPropertyId]) and the device claim
+  // ([graphDevicePropertyId]), each a named property in the app's own
+  // property set, and the properties the sync reads ([graphContactSelect],
+  // the delta's one `$select`, whose version goes with the delta link),
+  // are the mapping's, defined there once. Graph builds the select into
+  // its links, so a change to it starts a new delta.
 
   /// The id of the main Contacts folder, or null when it holds no contacts
   /// yet. Graph names no such folder in v1.0; every contact `/me/contacts`
@@ -160,7 +112,7 @@ class GraphContactsApi {
   /// Every contact in [folderId], or in the main Contacts folder when it
   /// is not known yet (`/me/contacts`), every page of them. With [whole],
   /// every property, as the backup files take them; otherwise the sync's
-  /// ([syncProperties]).
+  /// ([graphContactSelect]).
   Future<List<Map<String, Object?>>> listAll({
     String? folderId,
     bool whole = false,
@@ -173,7 +125,7 @@ class GraphContactsApi {
       Uri.parse(at).replace(
         queryParameters: {
           r'$top': '$pageSize',
-          if (!whole) r'$select': select,
+          if (!whole) r'$select': graphContactSelect,
         },
       ),
       'list',
@@ -229,7 +181,7 @@ class GraphContactsApi {
       // the links it answers with.
       next = Uri.parse(
         '$base/me/contactFolders/${_id(folderId)}/contacts/delta',
-      ).replace(queryParameters: {r'$select': select});
+      ).replace(queryParameters: {r'$select': graphContactSelect});
     } else {
       next = Uri.tryParse(deltaLink);
       // A link that is not Graph's is never sent the token: it is no link.
@@ -305,8 +257,8 @@ class GraphContactsApi {
   }) async {
     final uri = Uri.parse('$base/me/contacts/${_id(id)}').replace(
       queryParameters: {
-        if (!whole) r'$select': select,
-        if (withTag) r'$expand': _expandOf(tagProperty),
+        if (!whole) r'$select': graphContactSelect,
+        if (withTag) r'$expand': _expandOf(graphLinkPropertyId),
       },
     );
     final response = await _exchange(() => http.Request('GET', uri));
@@ -326,8 +278,8 @@ class GraphContactsApi {
         queryParameters: {
           r'$filter': "emailAddresses/any(a:a/address eq '$quoted')",
           r'$top': '$pageSize',
-          r'$select': select,
-          r'$expand': _expandOf(tagProperty),
+          r'$select': graphContactSelect,
+          r'$expand': _expandOf(graphLinkPropertyId),
         },
       ),
       'find',
@@ -547,12 +499,12 @@ class GraphContactsApi {
       Uri.parse('$base/me/contactFolders/${_id(folderId)}').replace(
         queryParameters: {
           r'$select': 'id',
-          r'$expand': _expandOf(claimProperty),
+          r'$expand': _expandOf(graphDevicePropertyId),
         },
       ),
       'claim',
     );
-    final value = _propertyOf(json, claimProperty);
+    final value = _propertyOf(json, graphDevicePropertyId);
     return value == null ? null : GraphDeviceClaim.parse(value);
   }
 
@@ -567,7 +519,7 @@ class GraphContactsApi {
     final body = jsonEncode({
       'singleValueExtendedProperties': [
         {
-          'id': claimProperty,
+          'id': graphDevicePropertyId,
           'value': GraphDeviceClaim(device: device, at: at).value,
         },
       ],
@@ -597,8 +549,8 @@ class GraphContactsApi {
       'singleValueExtendedProperties': [
         if (others is List)
           for (final p in others)
-            if (p is! Map || !_sameProperty(p['id'], tagProperty)) p,
-        {'id': tagProperty, 'value': tag},
+            if (p is! Map || !_sameProperty(p['id'], graphLinkPropertyId)) p,
+        {'id': graphLinkPropertyId, 'value': tag},
       ],
     };
   }
@@ -606,7 +558,7 @@ class GraphContactsApi {
   /// The hidden tag [contact] carries, where it was read with its tag
   /// ([get] with `withTag`, [findByEmail]).
   static String? tagOf(Map<String, Object?> contact) =>
-      _propertyOf(contact, tagProperty);
+      _propertyOf(contact, graphLinkPropertyId);
 
   /// Let go of the connection. Only one made here: a client handed in is
   /// closed by its owner.

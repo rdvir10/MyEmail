@@ -8,6 +8,8 @@ import '../answer_limit.dart';
 import '../auth/microsoft_oauth.dart'
     show SignInNeedsConsent, SignInUnreachable;
 import '../mail_engine.dart' show AuthenticationFailed, ConnectionFailed;
+import 'contact_mapping.dart'
+    show googleContactFields, googleEveryField, googleLinkKey;
 import 'contact_wire_errors.dart';
 
 /// A thin client over Google's People API for contact sync: the account's
@@ -52,29 +54,11 @@ class GoogleContactsApi {
 
   static const base = 'https://people.googleapis.com/v1';
 
-  /// The fields the sync reads, on every call that answers with a Person
-  /// (as `personFields`, or `readMask` for a batch create). Asking for
-  /// these alone keeps the answers small, and a sync token is tied to the
-  /// mask it was made with: a change to this list must come with a new
-  /// [syncFieldsVersion], which makes the next run a full listing.
-  static const syncFields =
-      'names,nicknames,emailAddresses,phoneNumbers,addresses,organizations,'
-      'birthdays,biographies,relations,urls,imClients,memberships,'
-      'clientData,metadata';
-
-  /// Kept with the sync token: a token made under another version is not
-  /// used.
-  static const syncFieldsVersion = 1;
-
-  /// Every field a contact can be read with: for the read just before a
-  /// delete, which goes into Recently deleted whole, and for the backup
-  /// files. The deprecated ones are left out; Google refuses some of them.
-  static const everyField =
-      'addresses,ageRanges,biographies,birthdays,calendarUrls,clientData,'
-      'coverPhotos,emailAddresses,events,externalIds,genders,imClients,'
-      'interests,locales,locations,memberships,metadata,miscKeywords,names,'
-      'nicknames,occupations,organizations,phoneNumbers,photos,relations,'
-      'sipAddresses,skills,urls,userDefined';
+  // The masks every call that answers with a Person sends (`personFields`,
+  // or `readMask` for a batch create), and the key of the hidden tag, are
+  // the mapping's, defined there once: [googleContactFields], whose version
+  // goes with the sync token, and [googleEveryField] for a whole read;
+  // [googleLinkKey].
 
   /// Sent with every call that answers with a Person. Without it Google
   /// merges in the person's own Google profile, which cannot be written
@@ -88,10 +72,6 @@ class GoogleContactsApi {
   /// The most names one `getBatchGet`, and contacts one
   /// `batchCreateContacts`, may carry.
   static const batchLimit = 200;
-
-  /// The `clientData` key of the hidden tag a contact the sync creates
-  /// carries: the id of its partner on the other side.
-  static const tagKey = 'myemail.link';
 
   /// The longest a throttle is waited out, all waits together, before the
   /// run stops to be tried again later.
@@ -123,7 +103,7 @@ class GoogleContactsApi {
   }) async {
     final uri = Uri.parse('$base/${_name(resourceName)}').replace(
       queryParameters: {
-        'personFields': everyField ? GoogleContactsApi.everyField : syncFields,
+        'personFields': everyField ? googleEveryField : googleContactFields,
         'sources': contactSource,
       },
     );
@@ -156,7 +136,7 @@ class GoogleContactsApi {
         queryParameters: {
           'resourceNames': [for (final n in chunk) _name(n)],
           'personFields':
-              everyField ? GoogleContactsApi.everyField : syncFields,
+              everyField ? googleEveryField : googleContactFields,
           'sources': contactSource,
         },
       );
@@ -190,7 +170,7 @@ class GoogleContactsApi {
   }
 
   /// Create [person] and answer with it as Google made it. [tag], where
-  /// given, goes in as the hidden tag ([tagKey]), beside any other
+  /// given, goes in as the hidden tag ([googleLinkKey]), beside any other
   /// `clientData` the person carries.
   ///
   /// A refusal of this contact is a [ContactRefused].
@@ -199,7 +179,10 @@ class GoogleContactsApi {
     String? tag,
   }) async {
     final uri = Uri.parse('$base/people:createContact').replace(
-      queryParameters: {'personFields': syncFields, 'sources': contactSource},
+      queryParameters: {
+        'personFields': googleContactFields,
+        'sources': contactSource,
+      },
     );
     final body = jsonEncode(withTag(person, tag));
     final response = await _exchange(
@@ -251,7 +234,7 @@ class GoogleContactsApi {
               for (final i in pending)
                 {'contactPerson': withTag(people[i].person, people[i].tag)},
             ],
-            'readMask': syncFields,
+            'readMask': googleContactFields,
             'sources': [contactSource],
           });
           final response = await _exchange(
@@ -339,7 +322,7 @@ class GoogleContactsApi {
     final uri = Uri.parse('$base/${_name(resourceName)}:updateContact').replace(
       queryParameters: {
         'updatePersonFields': fields.join(','),
-        'personFields': syncFields,
+        'personFields': googleContactFields,
         'sources': contactSource,
       },
     );
@@ -382,8 +365,8 @@ class GoogleContactsApi {
       'clientData': [
         if (others is List)
           for (final e in others)
-            if (e is! Map || e['key'] != tagKey) e,
-        {'key': tagKey, 'value': tag},
+            if (e is! Map || e['key'] != googleLinkKey) e,
+        {'key': googleLinkKey, 'value': tag},
       ],
     };
   }
@@ -393,7 +376,7 @@ class GoogleContactsApi {
     final data = person['clientData'];
     if (data is! List) return null;
     for (final e in data) {
-      if (e is Map && e['key'] == tagKey && e['value'] is String) {
+      if (e is Map && e['key'] == googleLinkKey && e['value'] is String) {
         final value = e['value'] as String;
         if (value.isNotEmpty) return value;
       }
@@ -418,7 +401,7 @@ class GoogleContactsApi {
     // The same parameters on every page and, for a later run, with the
     // token: Google refuses a token sent with any that differ.
     final fixed = <String, String>{
-      'personFields': everyField ? GoogleContactsApi.everyField : syncFields,
+      'personFields': everyField ? googleEveryField : googleContactFields,
       'sources': contactSource,
       'pageSize': '$pageSize',
       if (!everyField) 'requestSyncToken': 'true',

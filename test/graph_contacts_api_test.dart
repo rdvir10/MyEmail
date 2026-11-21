@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:myemail/data/answer_limit.dart';
 import 'package:myemail/data/auth/microsoft_oauth.dart';
+import 'package:myemail/data/contacts/contact_mapping.dart';
 import 'package:myemail/data/contacts/contact_wire_errors.dart';
 import 'package:myemail/data/graph/graph_contacts_api.dart';
 import 'package:myemail/data/mail_engine.dart';
@@ -67,20 +68,20 @@ void main() {
       GraphContactsApi.prefer,
       'IdType="ImmutableId", odata.maxpagesize=200',
     );
-    expect(GraphContactsApi.selectVersion, 1);
+    expect(graphContactSelectVersion, 1);
   });
 
   test('the tag and the claim are fixed for ever', () {
     // Contacts already tagged in Hadco are found again only under these
     // exact ids, and each name takes a slot in the mailbox: never change
     // them, and never add another.
-    expect(GraphContactsApi.appGuid, '958f81ac-dee9-4f9e-a713-9043484f5b0f');
+    expect(myEmailPropertySet, '{958f81ac-dee9-4f9e-a713-9043484f5b0f}');
     expect(
-      GraphContactsApi.tagProperty,
+      graphLinkPropertyId,
       'String {958f81ac-dee9-4f9e-a713-9043484f5b0f} Name MyEmailLink',
     );
     expect(
-      GraphContactsApi.claimProperty,
+      graphDevicePropertyId,
       'String {958f81ac-dee9-4f9e-a713-9043484f5b0f} Name MyEmailSyncDevice',
     );
   });
@@ -106,7 +107,7 @@ void main() {
     expect(tagged['givenName'], 'Ann');
     expect(tagged['singleValueExtendedProperties'], [
       other,
-      {'id': GraphContactsApi.tagProperty, 'value': 'people/new'},
+      {'id': graphLinkPropertyId, 'value': 'people/new'},
     ]);
     expect(GraphContactsApi.tagOf(tagged), 'people/new');
     final untouched = {'givenName': 'Ann'};
@@ -187,7 +188,7 @@ void main() {
       expect(selected.first.containsKey('fileAs'), isFalse);
       expect(
         graph.requests.first.url.queryParameters[r'$select'],
-        GraphContactsApi.select,
+        graphContactSelect,
       );
       expect(graph.requests.first.url.queryParameters[r'$top'], '200');
       expect(graph.requests, hasLength(3));
@@ -224,7 +225,7 @@ void main() {
       expect(round.deltaLink, contains(r'$deltatoken='));
       final asked = graph.requestsTo('/delta');
       expect(asked.first.url.queryParameters[r'$select'],
-          GraphContactsApi.select);
+          graphContactSelect);
       for (final r in asked.skip(1)) {
         expect(r.url.queryParameters.containsKey(r'$select'), isFalse,
             reason: 'Graph built it into the link');
@@ -424,7 +425,7 @@ void main() {
       expect(selected['id'], ann);
       expect(GraphContactsApi.tagOf(selected), isNull);
       expect(graph.requests.last.url.queryParameters[r'$select'],
-          GraphContactsApi.select);
+          graphContactSelect);
 
       final whole = (await client.get(ann, whole: true, withTag: true))!;
       expect(whole.containsKey('fileAs'), isTrue);
@@ -434,7 +435,7 @@ void main() {
       expect(
         q[r'$expand'],
         "singleValueExtendedProperties(\$filter=id eq "
-        "'${GraphContactsApi.tagProperty}')",
+        "'$graphLinkPropertyId')",
       );
 
       graph.purgeFromOutlook(ann);
@@ -520,7 +521,7 @@ void main() {
             'id': 'String {00000000-0000-0000-0000-000000000001} Name X',
             'value': 'kept',
           },
-          {'id': GraphContactsApi.tagProperty.toUpperCase(), 'value': 'stale'},
+          {'id': graphLinkPropertyId.toUpperCase(), 'value': 'stale'},
         ],
       }, tag: 'people/c42');
 
@@ -530,7 +531,7 @@ void main() {
       final props = sent['singleValueExtendedProperties'] as List;
       expect(props, hasLength(2));
       expect(props.last, {
-        'id': GraphContactsApi.tagProperty,
+        'id': graphLinkPropertyId,
         'value': 'people/c42',
       });
     });

@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:myemail/data/contacts/contact_mapping.dart'
+    show graphDevicePropertyId, graphLinkPropertyId;
 
 /// An in-memory Microsoft Graph for one mailbox's contacts, as an http
 /// handler: hand [client] (or `MockClient(fake.handle)`) to
@@ -113,7 +115,7 @@ class FakeGraphContacts {
     final c = _Contact(_newId(), folderId ?? mainFolderId, _newKey(), now);
     _store(c.fields, _writable(fields));
     c.fields['displayName'] ??= _composed(c.fields);
-    if (tag != null) c.properties[_tagProperty] = tag;
+    if (tag != null) c.properties[graphLinkPropertyId] = tag;
     _contacts[c.id] = c;
     _record(c.id, null, c.folder, null);
     return c.id;
@@ -234,10 +236,10 @@ class FakeGraphContacts {
   }
 
   /// The hidden tag [id] carries.
-  String? tagOf(String id) => _contacts[id]?.properties[_tagProperty];
+  String? tagOf(String id) => _contacts[id]?.properties[graphLinkPropertyId];
 
   /// The device claim on the main folder, as it is kept.
-  String? get claim => _folderProperties[mainFolderId]?[_claimProperty];
+  String? get claim => _folderProperties[mainFolderId]?[graphDevicePropertyId];
 
   /// Requests (batch parts among them) to paths ending with [suffix].
   List<http.Request> requestsTo(String suffix) => [
@@ -246,10 +248,6 @@ class FakeGraphContacts {
   ];
 
   // --- the server ------------------------------------------------------------
-
-  static const _guid = '958f81ac-dee9-4f9e-a713-9043484f5b0f';
-  static const _tagProperty = 'String {$_guid} Name MyEmailLink';
-  static const _claimProperty = 'String {$_guid} Name MyEmailSyncDevice';
 
   Future<http.Response> handle(http.Request request) async =>
       _handle(request, inBatch: false);

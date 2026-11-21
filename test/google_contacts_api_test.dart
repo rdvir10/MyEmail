@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:myemail/data/answer_limit.dart';
 import 'package:myemail/data/auth/microsoft_oauth.dart';
+import 'package:myemail/data/contacts/contact_mapping.dart';
 import 'package:myemail/data/contacts/contact_wire_errors.dart';
 import 'package:myemail/data/contacts/google_contacts_api.dart';
 import 'package:myemail/data/mail_engine.dart';
@@ -75,7 +76,7 @@ void main() {
       expect(asked, hasLength(3));
       for (final r in asked) {
         final q = r.url.queryParameters;
-        expect(q['personFields'], GoogleContactsApi.syncFields);
+        expect(q['personFields'], googleContactFields);
         expect(q['sources'], 'READ_SOURCE_TYPE_CONTACT');
         expect(q['requestSyncToken'], 'true');
         expect(q['pageSize'], '1000');
@@ -90,12 +91,12 @@ void main() {
       // A change to the mask without a new version would send an old
       // token with new parameters, which Google refuses.
       expect(
-        GoogleContactsApi.syncFields,
+        googleContactFields,
         'names,nicknames,emailAddresses,phoneNumbers,addresses,'
         'organizations,birthdays,biographies,relations,urls,imClients,'
         'memberships,clientData,metadata',
       );
-      expect(GoogleContactsApi.syncFieldsVersion, 1);
+      expect(googleContactFieldsVersion, 1);
     });
 
     test('a listing of every field asks for no token', () async {
@@ -106,7 +107,7 @@ void main() {
       expect(read.people, hasLength(1));
       expect(read.syncToken, isNull);
       final q = google.requestsTo('/connections').single.url.queryParameters;
-      expect(q['personFields'], GoogleContactsApi.everyField);
+      expect(q['personFields'], googleEveryField);
       expect(q['sources'], 'READ_SOURCE_TYPE_CONTACT');
       expect(q.containsKey('requestSyncToken'), isFalse);
     });
@@ -141,7 +142,7 @@ void main() {
       for (final r in asked) {
         final q = r.url.queryParameters;
         expect(q['syncToken'], first.syncToken);
-        expect(q['personFields'], GoogleContactsApi.syncFields);
+        expect(q['personFields'], googleContactFields);
         expect(q['sources'], 'READ_SOURCE_TYPE_CONTACT');
         expect(q['requestSyncToken'], 'true');
         expect(q['pageSize'], '1000');
@@ -297,14 +298,14 @@ void main() {
       final got = await client.get(ann);
       expect(got!['resourceName'], ann);
       final q = google.requests.last.url.queryParameters;
-      expect(q['personFields'], GoogleContactsApi.syncFields);
+      expect(q['personFields'], googleContactFields);
       expect(q['sources'], 'READ_SOURCE_TYPE_CONTACT');
 
       final whole = await client.get(ann, everyField: true);
       expect(whole, isNotNull);
       expect(
         google.requests.last.url.queryParameters['personFields'],
-        GoogleContactsApi.everyField,
+        googleEveryField,
       );
 
       google.deleteFromGmail(ann);
@@ -340,7 +341,7 @@ void main() {
       for (final r in asked) {
         expect(r.url.queryParameters['sources'], 'READ_SOURCE_TYPE_CONTACT');
         expect(r.url.queryParameters['personFields'],
-            GoogleContactsApi.syncFields);
+            googleContactFields);
       }
     });
 
@@ -383,7 +384,7 @@ void main() {
         ...person('Ann', 'Lee', 'ann@example.com'),
         'clientData': [
           {'key': 'other.app', 'value': 'kept'},
-          {'key': GoogleContactsApi.tagKey, 'value': 'stale'},
+          {'key': googleLinkKey, 'value': 'stale'},
         ],
       }, tag: 'AAkALg-1');
 
@@ -393,11 +394,11 @@ void main() {
       final data = google.person(name)!['clientData']! as List;
       expect(data.map((e) => (e as Map)['key']), [
         'other.app',
-        GoogleContactsApi.tagKey,
+        googleLinkKey,
       ]);
       final q = google.requestsTo('people:createContact').single.url
           .queryParameters;
-      expect(q['personFields'], GoogleContactsApi.syncFields);
+      expect(q['personFields'], googleContactFields);
       expect(q['sources'], 'READ_SOURCE_TYPE_CONTACT');
     });
 
@@ -425,7 +426,7 @@ void main() {
       expect(sent, hasLength(2));
       final second = jsonDecode(sent.last.body) as Map;
       expect(second['contacts'], hasLength(2));
-      expect(second['readMask'], GoogleContactsApi.syncFields);
+      expect(second['readMask'], googleContactFields);
       expect(second['sources'], ['READ_SOURCE_TYPE_CONTACT']);
     });
 
@@ -541,7 +542,7 @@ void main() {
       final q = google.requestsTo(':updateContact').single.url
           .queryParameters;
       expect(q['updatePersonFields'], 'nicknames');
-      expect(q['personFields'], GoogleContactsApi.syncFields);
+      expect(q['personFields'], googleContactFields);
       expect(q['sources'], 'READ_SOURCE_TYPE_CONTACT');
 
       await expectLater(

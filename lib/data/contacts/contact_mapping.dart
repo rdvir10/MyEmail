@@ -18,6 +18,17 @@ const googleContactFields =
     'metadata';
 const googleContactFieldsVersion = 1;
 
+/// Every field a Person can be read with, beside [googleContactFields]:
+/// for the read just before a delete, which goes into Recently deleted
+/// whole, and for the backup files. Not a feed's mask, so it has no
+/// version. The deprecated fields are left out; Google refuses some.
+const googleEveryField =
+    'addresses,ageRanges,biographies,birthdays,calendarUrls,clientData,'
+    'coverPhotos,emailAddresses,events,externalIds,genders,imClients,'
+    'interests,locales,locations,memberships,metadata,miscKeywords,names,'
+    'nicknames,occupations,organizations,phoneNumbers,photos,relations,'
+    'sipAddresses,skills,urls,userDefined';
+
 /// The Graph contact properties the sync asks for with `$select`, and
 /// their version, kept with the delta link.
 const graphContactSelect =

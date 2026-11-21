@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:myemail/data/contacts/contact_mapping.dart'
+    show googleLinkKey;
 
 /// How an expired sync token is answered: Google has used all three.
 enum FakeTokenExpiry {
@@ -283,7 +285,7 @@ class FakeGooglePeople {
     final p = _current[_renamed[name] ?? name];
     final data = p?.fields['clientData'];
     for (final e in data is List ? data : const []) {
-      if (e is Map && e['key'] == 'myemail.link') return e['value'] as String?;
+      if (e is Map && e['key'] == googleLinkKey) return e['value'] as String?;
     }
     return null;
   }
