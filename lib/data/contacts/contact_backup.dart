@@ -38,7 +38,8 @@ abstract final class ContactBackup {
   /// Ron's to restore. [labelNames] gives the names of the contact groups
   /// (labels) by resource name, written as CATEGORIES; a membership of a
   /// group not named there is left out, which is how the system groups
-  /// stay out, all but Starred, which goes as `starred`. Lines end in CRLF
+  /// stay out. Starred is not a label, and goes as `X-STARRED:true`
+  /// rather than become one called "starred" on import. Lines end in CRLF
   /// and are folded at 75 octets, as RFC 2425 asks.
   static String vCard(
     Iterable<Map<String, Object?>> people, {
@@ -331,13 +332,16 @@ abstract final class ContactBackup {
       if (value.isNotEmpty) lines.add('ROLE:${_text(value)}');
     }
 
-    // One BDAY, the first birthday with a date. One kept only as text has
-    // no vCard form; it goes as an X- property, so that the file, which is
+    // One BDAY, the first birthday with a day and a month. One with less
+    // (a year alone, or a year and a month) or kept only as text has no
+    // vCard form; each goes as an X- property, so that the file, which is
     // Ron's record to read as well as to import, still says it.
     var dated = false;
     for (final b in _entries(person, 'birthdays')) {
       final line = _dated('BDAY', b['date']);
       if (line == null) {
+        final partial = _partialDate(b['date']);
+        if (partial != null) lines.add('X-BIRTHDAY-PARTIAL:$partial');
         final text = _str(b['text']);
         if (text.isNotEmpty) lines.add('X-BIRTHDAY-TEXT:${_text(text)}');
       } else if (!dated) {
@@ -347,7 +351,9 @@ abstract final class ContactBackup {
     }
 
     for (final e in _entries(person, 'events')) {
-      final line = _dated('X-ABDATE', e['date']);
+      final partial = _partialDate(e['date']);
+      final line = _dated('X-ABDATE', e['date']) ??
+          (partial == null ? null : 'X-DATE-PARTIAL:$partial');
       if (line == null) continue;
       final type = _str(e['type']);
       final label =
@@ -449,15 +455,18 @@ abstract final class ContactBackup {
       if (note.isNotEmpty) lines.add('NOTE:${_text(note)}');
     }
 
-    final labels = [
+    final groups = [
       for (final m in _entries(person, 'memberships'))
         if (m['contactGroupMembership'] case final Map membership)
-          if (_groupName(
-                  _str(membership['contactGroupResourceName']), labelNames)
-              case final name?)
-            _text(name),
+          _str(membership['contactGroupResourceName']),
+    ];
+    final labels = [
+      for (final g in groups)
+        if (g != _starred)
+          if (labelNames[g] case final name? when name.isNotEmpty) _text(name),
     ];
     if (labels.isNotEmpty) lines.add('CATEGORIES:${labels.join(',')}');
+    if (groups.contains(_starred)) lines.add('X-STARRED:true');
 
     lines.add('END:VCARD');
     return lines;
@@ -488,14 +497,8 @@ abstract final class ContactBackup {
     return '';
   }
 
-  /// A label's name for CATEGORIES: the one given, or for Google's own
-  /// Starred group `starred`; null for any other group, Google's system
-  /// ones among them.
-  static String? _groupName(String resource, Map<String, String> names) {
-    final name = names[resource] ??
-        (resource == 'contactGroups/starred' ? 'starred' : null);
-    return name == null || name.isEmpty ? null : name;
-  }
+  /// Google's own group of starred contacts.
+  static const _starred = 'contactGroups/starred';
 
   /// Google's kinds of nickname, as a label says them.
   static const _nicknameLabels = {
@@ -597,44 +600,77 @@ abstract final class ContactBackup {
   /// entity decoded (`&#1488;`, `&#8217;` and the named ones alike), a
   /// line break for `<br>` and after each block, and a link's target kept
   /// after its words, "site (https://...)", unless the words are the
-  /// target already. Scripts and styles are left out.
+  /// target already. Scripts and styles are left out. Inside `<pre>` the
+  /// text is kept as it is, its line breaks, blank lines and indents with
+  /// it: white space is tidied only outside.
   static String _noteText(String html) {
-    final out = StringBuffer();
-    void walk(dom.Node node) {
+    // Runs of text, each kept as it is (from a pre) or to be tidied.
+    final runs = <(StringBuffer, bool)>[];
+    var atLineStart = true;
+    void write(String text, {required bool kept}) {
+      if (text.isEmpty) return;
+      if (runs.isEmpty || runs.last.$2 != kept) {
+        runs.add((StringBuffer(), kept));
+      }
+      runs.last.$1.write(text);
+      atLineStart = text.endsWith('\n');
+    }
+
+    void walk(dom.Node node, {required bool inPre}) {
       if (node is dom.Text) {
-        // White space in HTML source is a space wherever it falls.
-        out.write(node.data.replaceAll(RegExp(r'\s+'), ' '));
+        // White space in HTML source is a space wherever it falls, but
+        // inside a pre.
+        write(
+          inPre ? node.data : node.data.replaceAll(RegExp(r'\s+'), ' '),
+          kept: inPre,
+        );
         return;
       }
       if (node is! dom.Element) {
-        node.nodes.forEach(walk);
+        for (final child in node.nodes) {
+          walk(child, inPre: inPre);
+        }
         return;
       }
       final tag = node.localName;
       if (tag == 'script' || tag == 'style') return;
       if (tag == 'br') {
-        out.write('\n');
+        write('\n', kept: inPre);
         return;
       }
-      node.nodes.forEach(walk);
+      // A block starts on a line of its own, as it does on screen.
+      final block = _blocks.contains(tag);
+      if (block && !atLineStart) write('\n', kept: inPre);
+      for (final child in node.nodes) {
+        walk(child, inPre: inPre || tag == 'pre');
+      }
       if (tag == 'a') {
         final href = (node.attributes['href'] ?? '').trim();
         const mailto = 'mailto:';
         final target =
             href.startsWith(mailto) ? href.substring(mailto.length) : href;
         if (target.isNotEmpty && target != node.text.trim()) {
-          out.write(' ($target)');
+          write(' ($target)', kept: inPre);
         }
       }
-      if (_blocks.contains(tag)) out.write('\n');
+      if (block) write('\n', kept: inPre && tag != 'pre');
     }
 
-    walk(html_parser.parseFragment(html));
-    return out
-        .toString()
-        .replaceAll(RegExp(r' *\n *'), '\n')
-        .replaceAll(RegExp(r'\n{3,}'), '\n\n')
-        .trim();
+    walk(html_parser.parseFragment(html), inPre: false);
+    final texts = [
+      for (final (text, kept) in runs)
+        kept
+            ? text.toString()
+            : text
+                .toString()
+                .replaceAll(RegExp(r' *\n *'), '\n')
+                .replaceAll(RegExp(r'\n{3,}'), '\n\n'),
+    ];
+    if (texts.isEmpty) return '';
+    // The ends are trimmed only where they are not a pre's own.
+    if (!runs.first.$2) texts.first = texts.first.trimLeft();
+    if (!runs.last.$2) texts.last = texts.last.trimRight();
+    return texts.join();
   }
 
   /// The elements a line break follows.

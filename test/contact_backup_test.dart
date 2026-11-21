@@ -174,6 +174,39 @@ void main() {
       expect(birthday(null), isNull, reason: 'text alone is not a date');
     });
 
+    test('keeps a birthday or a date with only a year, or a year and a '
+        'month', () {
+      final lines = unfold(ContactBackup.vCard([
+        person({
+          'birthdays': [
+            {
+              'date': {'year': 1980},
+            },
+          ],
+          'events': [
+            {
+              'date': {'year': 2010, 'month': 6},
+              'type': 'anniversary',
+            },
+            {
+              'date': {'year': 1999},
+              'type': 'aliyah',
+              'formattedType': 'Aliyah',
+            },
+          ],
+        }),
+      ]));
+
+      expect(lines.where((l) => l.startsWith('BDAY')), isEmpty);
+      expect(lines, containsAllInOrder([
+        'X-BIRTHDAY-PARTIAL:1980',
+        'item1.X-DATE-PARTIAL:2010-06',
+        r'item1.X-ABLabel:_$!<Anniversary>!$_',
+        'item2.X-DATE-PARTIAL:1999',
+        'item2.X-ABLabel:Aliyah',
+      ]));
+    });
+
     test('keeps a birthday known only as text, to be read', () {
       final lines = unfold(ContactBackup.vCard([
         person({
@@ -460,8 +493,33 @@ void main() {
         'item4.X-IM;TYPE=HOME:dana@chat',
         'item4.X-ABLabel:matrix',
         'X-LOCALE:he',
-        'CATEGORIES:starred',
+        'X-STARRED:true',
       ]));
+      expect(lines.where((l) => l.startsWith('CATEGORIES')), isEmpty,
+          reason: 'a star is not a label: as CATEGORIES:starred an import '
+              'could make it one called "starred"');
+    });
+
+    test('a star stays out of the labels even when its group is named', () {
+      final lines = unfold(ContactBackup.vCard([
+        person({
+          'memberships': [
+            for (final group in [
+              'contactGroups/starred',
+              'contactGroups/1a2b',
+            ])
+              {
+                'contactGroupMembership': {'contactGroupResourceName': group},
+              },
+          ],
+        }),
+      ], labelNames: {
+        'contactGroups/starred': 'Starred',
+        'contactGroups/1a2b': 'Family',
+      }));
+
+      expect(
+          lines, containsAllInOrder(['CATEGORIES:Family', 'X-STARRED:true']));
     });
 
     test('reads an HTML note as text, keeping links and decoding entities',
@@ -487,6 +545,12 @@ void main() {
       expect(note('<div>One\n  line</div><div>Two<br>Three</div>'
               '<script>x()</script>'),
           r'One line\nTwo\nThree');
+      // Inside a pre the line breaks, the blank line and the indents are
+      // the text; outside it white space is tidied as before.
+      expect(
+          note('Before  it:<pre>Shopping:\n  milk  x2\n\n\n  <b>bread'
+              '</b>\nend</pre>after'),
+          r'Before it:\nShopping:\n  milk  x2\n\n\n  bread\nend\nafter');
     });
 
     test("leaves out what came from a Google profile, not Ron's contact", () {
