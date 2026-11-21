@@ -1889,6 +1889,97 @@ void main() {
       expect(await h.paired(), hasLength(2));
     });
 
+    test('a Restore stopped after its Outlook create, then refused on the '
+        'Gmail one: the Outlook contact is placed, and Restore again makes '
+        'nothing twice', () async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.google.deleteFromGmail(pairs[0].google);
+      var status = await h.later();
+      expect(h.graph.contact(pairs[0].graph), isNull);
+      final binId = status.recentlyDeleted.single.id;
+      h.before = (r) async {
+        if (r.method == 'POST' && r.url.path.endsWith('/me/contacts')) {
+          unawaited(h.sync.stop());
+        }
+      };
+      await h.sync.restore(binId);
+      await h.sync.syncNow();
+      h.before = null;
+      final made = h.graph.idWithEmail('p0@example.com')!;
+
+      // Google will not take the Gmail side made again.
+      h.google.refuse = (p) => '${p['names']}'.contains('P0');
+      status = await h.later(after: const Duration(minutes: 1));
+      expect(status.recentlyDeleted.single.restoreProblem, isNotNull);
+      // The Outlook contact it made has a row, so it is read again.
+      final row = (await h.links()).firstWhere((l) => l.graphId == made);
+      expect(row.state, ContactLinkState.held);
+
+      // Once Google takes it, it is placed: copied to Gmail and paired.
+      h.google.refuse = null;
+      status = await h.later();
+      status = await h.later();
+      expect(h.google.nameWithEmail('p0@example.com'), isNotNull);
+      expect(
+        (await h.links()).firstWhere((l) => l.graphId == made).isPaired,
+        isTrue,
+      );
+
+      // Restore pressed again finds both back.
+      await h.sync.restore(binId);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.recentlyDeleted, isEmpty);
+      expect(h.graph.count, 2);
+      expect(h.google.count, 2);
+    });
+
+    test('a Restore whose bin row goes while it waits leaves what it made '
+        'placed, nothing doubled', () async {
+      h = Harness(lagWrites: true);
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.google.publish();
+      h.google.deleteFromGmail(pairs[0].google);
+      h.google.publish();
+      var status = await h.later();
+      expect(h.graph.contact(pairs[0].graph), isNull);
+
+      // Restore: Outlook's contact is made; the answer to Gmail's is lost.
+      h.after = (r) {
+        if (r.url.path.endsWith(':createContact')) {
+          throw http.ClientException('connection lost');
+        }
+      };
+      await h.sync.restore(status.recentlyDeleted.single.id);
+      await h.sync.syncNow();
+      h.after = null;
+      final made = h.graph.idWithEmail('p0@example.com')!;
+
+      // The Gmail copy not listed yet: the Restore waits, and this run,
+      // which completes, moves the Outlook feed past the contact made.
+      status = await h.later(after: const Duration(minutes: 10));
+      expect(status.halt, isNull);
+      expect(status.recentlyDeleted.single.restoreAsked, isTrue);
+
+      // Not opened for a month: the bin row is pruned, the Restore with it.
+      h.google.publish();
+      status = await h.later(after: const Duration(days: 31));
+      expect(status.halt, isNull);
+      expect(status.recentlyDeleted, isEmpty);
+      status = await h.later();
+      // The contact the Restore made was read and placed: paired with the
+      // Gmail copy, not copied a second time.
+      expect(h.graph.count, 2);
+      expect(h.google.count, 2);
+      expect(
+        (await h.links()).firstWhere((l) => l.graphId == made).isPaired,
+        isTrue,
+      );
+    });
+
     test('a restored pair whose two sides differ is listed, as a new pair '
         'is', () async {
       final ann = h.google.seed(

@@ -992,11 +992,14 @@ class _Run {
     final rowGraph = {for (final l in links) ?l.graphId};
     final binIds = {for (final b in bin) b.binId};
     final kept = <Map<String, Object?>>[];
+    final givenUp = <Map<String, Object?>>[];
     var changed = false;
     for (final note in held.restoring) {
       final binId = note['binId'];
       final side = _sideOf(note['side']);
       if (binId is! int || side == null || !binIds.contains(binId)) {
+        // Its bin row has gone (kept past its 30 days): the Restore with it.
+        givenUp.add(note);
         changed = true;
         continue;
       }
@@ -1040,13 +1043,50 @@ class _Run {
     held.restoring
       ..clear()
       ..addAll(kept);
-    await store.updatePair(pairId, (p) {
-      final h = _Held.parse(p.held);
-      h.restoring
-        ..clear()
-        ..addAll(kept);
-      return p.copyWith(held: h.encode());
+    final rows = await store.transaction(() async {
+      final saved = await _keepMade(givenUp);
+      await store.updatePair(pairId, (p) {
+        final h = _Held.parse(p.held);
+        h.restoring
+          ..clear()
+          ..addAll(kept);
+        return p.copyWith(held: h.encode());
+      });
+      return saved;
     });
+    if (rows > 0) {
+      // The plan is made from the rows as they now are.
+      links = await store.links(pairId);
+      linkById = {for (final l in links) l.linkId!: l};
+    }
+  }
+
+  /// Contacts a Restore made before it was given up (refused, its bin row
+  /// gone, only one side to bring back), each kept as a row held as a
+  /// candidate where no row names it yet. A feed that has moved past one
+  /// never shows it again, and with no row nothing would read it; a
+  /// candidate is read and placed every run (paired, copied or under
+  /// Needs a look), and a Restore pressed again finds it, not makes it.
+  /// How many rows it saved.
+  Future<int> _keepMade(Iterable<Map<String, Object?>> notes) async {
+    var saved = 0;
+    for (final note in [...notes]) {
+      final made = _Held.madeBy(note);
+      final side = _sideOf(note['side']);
+      if (made == null || side == null) continue;
+      if (await store.linkFor(pairId, side, made) != null) continue;
+      saved++;
+      await store.saveLink(
+        ContactLink(
+          pairId: pairId,
+          googleName: side == ContactSide.google ? made : null,
+          graphId: side == ContactSide.graph ? made : null,
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.candidate,
+        ),
+      );
+    }
+    return saved;
   }
 
   /// The device claim: another device's, younger than a week, stops the
@@ -2544,10 +2584,11 @@ class _Run {
         graphId == null ||
         googleOne == null ||
         graphOne == null) {
-      // Only one side to bring back: it is back, and the next run places
-      // it as it would any contact.
+      // Only one side to bring back: it is back, and placed by the next
+      // run as any contact is.
       await store.transaction(() async {
         await store.dropBin([r.binId]);
+        await _keepMade(held.restoring.where((n) => n['binId'] == r.binId));
         await _forgetRestore(r.binId);
       });
       return;
@@ -2702,10 +2743,11 @@ class _Run {
 
   /// A server would not take a contact a Restore made: the Restore is
   /// taken back and says why in Recently deleted. A contact it made
-  /// before the refusal stays, and the next run places it as any other.
+  /// before the refusal stays, kept as a candidate ([_keepMade]).
   Future<void> _restoreRefused(int binId, ContactRefused refused) async {
     await store.transaction(() async {
       await store.askRestore(binId, restore: false);
+      await _keepMade(held.restoring.where((n) => n['binId'] == binId));
       held.restoring.removeWhere((n) => n['binId'] == binId);
       await store.updatePair(pairId, (p) {
         final h = _Held.parse(p.held);
@@ -2743,41 +2785,48 @@ class _Run {
                 outcomes[i] != ContactAnswerOutcome.waiting)
           id,
     };
-    final rows = await store.links(pairId);
     final binIds = {for (final b in await store.bin(pairId)) b.binId};
     final tallyNow = tally.toTally(at, complete: true);
-    await store.updatePair(pairId, (p) {
-      final h = _Held.parse(p.held);
-      h.pending
-        ..clear()
-        ..addAll(waitingPending);
-      h.questions.removeWhere(
-        (q) =>
-            answeredQuestions.contains(q.id) ||
-            q.kind == ContactSyncQuestionKind.emptyAnswer,
+    await store.transaction(() async {
+      // Restores whose bin rows went this run without them (found back by
+      // the plan, or pruned): what they made is kept, as their notes go.
+      await _keepMade(
+        held.restoring.where((n) => !binIds.contains(n['binId'])),
       );
-      h.prune(rows);
-      h.passedOver
-        ..clear()
-        ..addAll(plan.graphPassedOver);
-      h.quotaUntil = null;
-      h.restoring.removeWhere((n) => !binIds.contains(n['binId']));
-      h.restoreProblems.removeWhere((id, _) => !binIds.contains(id));
-      return p.copyWith(
-        googleSyncToken: googleToken ?? p.googleSyncToken,
-        googleMask: googleContactFieldsVersion,
-        googleFullAt: googleFull ? now : p.googleFullAt,
-        graphDeltaLink: deltaLink ?? p.graphDeltaLink,
-        graphMask: graphContactSelectVersion,
-        graphFolderId: p.graphFolderId ?? folderId,
-        normaliser: contactNormaliserVersion,
-        googleCount: plan.googleCount + googleMade - googleDeleted,
-        graphCount: plan.graphCount + graphMade - graphDeleted,
-        firstDoneAt: p.firstDoneAt ?? (firstSync ? at : null),
-        lastDoneAt: at,
-        lastResult: _LastResult(tally: tallyNow).encode(),
-        held: h.encode(),
-      );
+      final rows = await store.links(pairId);
+      await store.updatePair(pairId, (p) {
+        final h = _Held.parse(p.held);
+        h.pending
+          ..clear()
+          ..addAll(waitingPending);
+        h.questions.removeWhere(
+          (q) =>
+              answeredQuestions.contains(q.id) ||
+              q.kind == ContactSyncQuestionKind.emptyAnswer,
+        );
+        h.prune(rows);
+        h.passedOver
+          ..clear()
+          ..addAll(plan.graphPassedOver);
+        h.quotaUntil = null;
+        h.restoring.removeWhere((n) => !binIds.contains(n['binId']));
+        h.restoreProblems.removeWhere((id, _) => !binIds.contains(id));
+        return p.copyWith(
+          googleSyncToken: googleToken ?? p.googleSyncToken,
+          googleMask: googleContactFieldsVersion,
+          googleFullAt: googleFull ? now : p.googleFullAt,
+          graphDeltaLink: deltaLink ?? p.graphDeltaLink,
+          graphMask: graphContactSelectVersion,
+          graphFolderId: p.graphFolderId ?? folderId,
+          normaliser: contactNormaliserVersion,
+          googleCount: plan.googleCount + googleMade - googleDeleted,
+          graphCount: plan.graphCount + graphMade - graphDeleted,
+          firstDoneAt: p.firstDoneAt ?? (firstSync ? at : null),
+          lastDoneAt: at,
+          lastResult: _LastResult(tally: tallyNow).encode(),
+          held: h.encode(),
+        );
+      });
     });
     await _writeClaim(at);
     debugPrint(
