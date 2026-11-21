@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -11,6 +12,7 @@ import 'package:myemail/data/contacts/contact_sync_service.dart';
 import 'package:myemail/data/contacts/contact_sync_store.dart';
 import 'package:myemail/data/account_store.dart';
 import 'package:myemail/data/cache/cache_store.dart';
+import 'package:myemail/data/cache/mail_database.dart';
 import 'package:myemail/data/credential_store.dart';
 import 'package:myemail/data/imap/cached_imap_engine.dart';
 import 'package:myemail/domain/folder_role.dart';
@@ -24,8 +26,13 @@ import 'fakes/fake_imap_transport.dart';
 /// Contact sync end to end: the runner against both fake servers and the
 /// Memory store, as the phone would run it, a run at a time.
 class Harness {
-  Harness({bool lagWrites = false}) {
+  Harness({
+    bool lagWrites = false,
+    ContactSyncStore Function(DateTime Function() clock)? store,
+  }) {
     google.lagWrites = lagWrites;
+    this.store = store?.call(() => _now) ??
+        MemoryContactSyncStore(clock: () => _now);
   }
 
   DateTime _now = DateTime.utc(2026, 11, 20, 9);
@@ -40,7 +47,7 @@ class Harness {
 
   final google = FakeGooglePeople();
   final graph = FakeGraphContacts();
-  late final store = MemoryContactSyncStore(clock: () => _now);
+  late final ContactSyncStore store;
 
   static const gmail = Account(
     id: 'acct-gmail',
@@ -699,6 +706,46 @@ void main() {
       });
     }
 
+    test('the preview names the account not allowed, and the access line '
+        'says which state each is in', () async {
+      h.refusing.add(Harness.hadco.id);
+      await h.choose();
+      await expectLater(
+        h.sync.preview(),
+        throwsA(
+          isA<ContactSyncNeedsSignIn>()
+              .having((e) => e.side, 'side', ContactSide.graph)
+              .having((e) => e.accountId, 'account', Harness.hadco.id),
+        ),
+      );
+      expect(
+        (await h.sync.access(Harness.gmail.id)).state,
+        ContactSyncAccessState.allowed,
+      );
+      expect(
+        (await h.sync.access(Harness.hadco.id)).state,
+        ContactSyncAccessState.needsSignIn,
+      );
+      expect(
+        (await h.sync.access('no-such-account')).state,
+        ContactSyncAccessState.notPossible,
+      );
+    });
+
+    test('a stop is told once, when MyEmail is next opened', () async {
+      seedPairs(h, 1);
+      h.refusing.add(Harness.hadco.id);
+      await h.firstSync();
+      var status = await h.status();
+      expect(status.notice!.halt!.kind, ContactSyncHaltKind.notAllowed);
+      await h.sync.noticeSeen(status.notice!.at);
+      status = await h.status();
+      expect(status.notice, isNull);
+      // A later stop is a new notice.
+      await h.later(after: const Duration(minutes: 10));
+      expect((await h.status()).notice, isNotNull);
+    });
+
     test("a server's own refusal of the permission (403) names the account",
         () async {
       seedPairs(h, 1);
@@ -1111,6 +1158,44 @@ void main() {
       expect(h.google.nameWithEmail('p0@example.com'), isNotNull);
       expect(await h.paired(), hasLength(2));
       expect(h.google.count, 2);
+    });
+
+    test('an answer applied on an item a re-key folds into another is not '
+        'applied again', () async {
+      final x1 = h.google.seed(person('Jo', 'Smith', email: 'jo1@example.com'));
+      final x2 = h.google.seed(person('Jo', 'Smith', email: 'jo2@example.com'));
+      h.graph.seed(outlook('Jo', 'Smith', email: 'jo3@example.com'));
+      await h.firstSync();
+      var status = await h.status();
+      final looks = [
+        for (final l in status.needsALook)
+          if (l.kind == ContactReviewKind.newContact &&
+              l.side == ContactSide.google)
+            l,
+      ];
+      expect(looks, hasLength(2));
+      final pairId = (await h.pair()).pairId;
+      Future<ContactReview> reviewOf(String name) async =>
+          (await h.store.reviews(pairId)).firstWhere(
+            (r) => r.googleName == name,
+          );
+      final older = await reviewOf(x1);
+      final answered = await reviewOf(x2);
+      expect(older.reviewId! < answered.reviewId!, isTrue);
+
+      // Ron leaves out the second, then merges it into the first in Gmail:
+      // the run's re-key brings the two items onto one contact.
+      await h.sync.answerLook(answered.reviewId!, ContactSyncChoice.leaveOut);
+      await h.sync.stop();
+      h.google.mergeInGmail(x1, x2);
+      status = await h.later();
+      expect(status.halt, isNull);
+      final kept = (await h.store.reviews(pairId)).where(
+        (r) => r.googleName == x1,
+      );
+      // The older item is not handed the answer that was carried out.
+      expect(kept.every((r) => r.answer == null), isTrue);
+      expect((await h.pair()).held ?? '', isNot(contains('leaveOut')));
     });
 
     test('Leave as they are just takes the item away', () async {
@@ -1526,6 +1611,50 @@ void main() {
       expect(attached.single.graphAccountId, home.id);
     });
 
+    test('choosing the same two accounts again changes nothing, even '
+        'while a run goes', () async {
+      seedPairs(h, 1);
+      await h.firstSync();
+      final before = await h.pair();
+      final events = <void>[];
+      final listening = h.sync.changed.listen(events.add);
+      addTearDown(listening.cancel);
+      final gate = Completer<void>();
+      h.before = (r) async => gate.future;
+      h.pass(const Duration(hours: 2));
+      final run = h.sync.syncNow();
+      await Future<void>.delayed(Duration.zero);
+      events.clear();
+      await h.choose();
+      await Future<void>.delayed(Duration.zero);
+      expect(events, isEmpty);
+      gate.complete();
+      h.before = null;
+      await run;
+      final after = await h.pair();
+      expect(after.pairId, before.pairId);
+      expect(after.firstStartedAt, before.firstStartedAt);
+      expect(await h.store.pairs(), hasLength(1));
+    });
+
+    test('status reads only what this device keeps, and a stop is '
+        'announced on changed', () async {
+      seedPairs(h, 1);
+      h.refusing.add(Harness.hadco.id);
+      final events = <void>[];
+      final listening = h.sync.changed.listen(events.add);
+      addTearDown(listening.cancel);
+      await h.firstSync();
+      await Future<void>.delayed(Duration.zero);
+      final status = await h.status();
+      expect(status.notice, isNotNull);
+      expect(events, isNotEmpty);
+      h.requests.clear();
+      await h.status();
+      await h.status();
+      expect(h.requests, isEmpty);
+    });
+
     test('choosing refuses an account that cannot sync', () async {
       h.accounts = [
         Harness.gmail.copyWithAuth(AuthMethod.appPassword),
@@ -1587,6 +1716,67 @@ void main() {
       expect(back.isDetached, isFalse);
       expect(back.graphAccountId, again.id);
       expect((await engine.contactSync.status()).graphAccountId, again.id);
+    });
+  });
+
+  group('in the database', () {
+    late MailDatabase db;
+
+    setUp(() {
+      db = MailDatabase(NativeDatabase.memory());
+      h = Harness(
+        store: (clock) => DriftContactSyncStore(db, clock: clock),
+      );
+    });
+
+    tearDown(() => db.close());
+
+    test('a first sync, a change, a held deletion answered, a refusal '
+        'and a Restore keep to the store', () async {
+      final pairs = seedPairs(h, 7, mobiles: true);
+      h.graph.seed(outlook('Bad', 'Apple', email: 'bad@example.com'));
+      h.google.refuse = (p) => '${p['names']}'.contains('Bad');
+      await h.firstSync();
+      var status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.needsALook.single.kind, ContactReviewKind.refused);
+
+      h.google.editFromGmail(pairs[6].google, {
+        'organizations': [
+          {'name': 'Kept going'},
+        ],
+      });
+      for (var i = 0; i < 6; i++) {
+        h.google.deleteFromGmail(pairs[i].google);
+      }
+      status = await h.later();
+      expect(status.halt, isNull);
+      expect(companyOf(h.graph.contact(pairs[6].graph)), 'Kept going');
+      expect(status.questions.single.items, hasLength(6));
+
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.deletions,
+        ContactSyncChoice.deleteThem,
+      );
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.recentlyDeleted, hasLength(6));
+      expect(h.graph.count, 2);
+
+      await h.sync.restore(status.recentlyDeleted.first.id);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.recentlyDeleted, hasLength(5));
+      expect(h.graph.count, 3);
+      // A deletion the brake held keeps no partner (the planner's row
+      // holds the surviving id alone), so Restore makes the Outlook
+      // contact again and the next run copies it to Gmail as new.
+      status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.google.count, 2);
+      expect(await h.paired(), hasLength(2));
     });
   });
 

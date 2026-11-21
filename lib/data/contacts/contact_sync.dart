@@ -322,6 +322,14 @@ class ContactSync implements ContactSyncService {
     required String googleAccountId,
     required String graphAccountId,
   }) async {
+    // The screen chooses again whenever it is about to act: the same two
+    // accounts change nothing, whatever is going on.
+    final current = await _attachedPair();
+    if (current != null &&
+        current.googleAccountId == googleAccountId &&
+        current.graphAccountId == graphAccountId) {
+      return;
+    }
     if (_running != null) {
       throw const ContactSyncRefused(
         'Contact sync is running. Choose the accounts once it has stopped.',
@@ -1522,11 +1530,15 @@ class _Run {
 
   // --- the rows that need no write -------------------------------------------
 
-  /// One transaction: the rows the plan removes, the rows that need no
-  /// write in plan order (a merge's losers before its winner), the re-keys,
-  /// Needs a look and the brakes' questions, the journal entries settled
-  /// and the bin rows found back. Rows with writes are saved as each
-  /// write comes back.
+  /// One transaction, in this order: the rows the plan removes; the rows
+  /// that need no write, in plan order (a merge's losers before its
+  /// winner); the items of answers planned and of contacts gone; the
+  /// plan's re-keys; then new Needs a look items, the brakes' questions,
+  /// the journal entries settled and the bin rows found back. Answered
+  /// items go before the re-key, which folds two items that come to name
+  /// one contact into the older, taking a queued answer along: one dropped
+  /// after it would leave its answer on the other, done again next run.
+  /// Rows with writes are saved as each write comes back.
   Future<void> _saveFirst() async {
     final reKeys = plan.reKeys;
     final noWrite = [
@@ -1534,6 +1546,37 @@ class _Run {
         if (!p.writes) p,
     ];
     final outcomes = plan.answers;
+
+    // Answers planned: their items go, and the answers are kept on the
+    // pair until the run is done, so a run stopped before their writes
+    // plans them again.
+    final pending = <Map<String, Object?>>[];
+    final dropReviews = <int>{};
+    for (final (i, source) in answerSources.indexed) {
+      final outcome = i < outcomes.length ? outcomes[i] : null;
+      if (outcome == null) continue;
+      if (source.reviewId case final id?) {
+        if (outcome == ContactAnswerOutcome.waiting) continue;
+        dropReviews.add(id);
+        if (outcome == ContactAnswerOutcome.applied) {
+          final r = reviews.firstWhereOrNull((r) => r.reviewId == id);
+          if (_decode(r?.answer) case final answer?) pending.add(answer);
+        }
+      }
+      if (source.pendingIndex case final at?
+          when outcome != ContactAnswerOutcome.dropped &&
+              at < held.pending.length) {
+        pending.add(held.pending[at]);
+      }
+    }
+    // Items about contacts gone this run go too.
+    for (final r in reviews) {
+      if ((r.googleName != null && plan.googleGone.contains(r.googleName)) ||
+          (r.graphId != null && plan.graphGone.contains(r.graphId))) {
+        dropReviews.add(r.reviewId!);
+      }
+    }
+
     await store.transaction(() async {
       final remove = <int>{
         for (final p in noWrite) ...p.alsoRemove,
@@ -1549,6 +1592,17 @@ class _Run {
         }
         await store.saveLink(_linkOf(p));
       }
+
+      await store.dropReviews(dropReviews);
+      // Kept with their ids where the re-key below reaches them.
+      await store.updatePair(pairId, (p) {
+        final h = _Held.parse(p.held);
+        h.pending
+          ..clear()
+          ..addAll(pending);
+        return p.copyWith(held: h.encode());
+      });
+
       await store.dropOps(plan.journalSettled);
       for (final MapEntry(key: old, value: name) in reKeys.entries) {
         // Two creates in flight whose sources Ron then merged: the store
@@ -1567,55 +1621,22 @@ class _Run {
         await store.rekey(pairId, ContactSide.google, old, name);
       }
 
-      // Answers planned: their items go, and the answers are kept on the
-      // pair until the run is done, so a run stopped before their writes
-      // plans them again.
-      final pending = <Map<String, Object?>>[];
-      final dropReviews = <int>{};
-      for (final (i, source) in answerSources.indexed) {
-        final outcome = i < outcomes.length ? outcomes[i] : null;
-        if (outcome == null) continue;
-        if (source.reviewId case final id?) {
-          if (outcome == ContactAnswerOutcome.waiting) continue;
-          dropReviews.add(id);
-          if (outcome == ContactAnswerOutcome.applied) {
-            final r = reviews.firstWhereOrNull((r) => r.reviewId == id);
-            if (_decode(r?.answer) case final answer?) pending.add(answer);
-          }
-        }
-        if (source.pendingIndex case final at?
-            when outcome != ContactAnswerOutcome.dropped &&
-                at < held.pending.length) {
-          pending.add(held.pending[at]);
-        }
-      }
-      // Items about contacts gone this run go too.
-      for (final r in reviews) {
-        if ((r.googleName != null && plan.googleGone.contains(r.googleName)) ||
-            (r.graphId != null && plan.graphGone.contains(r.graphId))) {
-          dropReviews.add(r.reviewId!);
-        }
-      }
-      await store.dropReviews(dropReviews);
       for (final item in plan.reviews) {
         await _saveReview(item);
       }
-
       await store.dropBin(plan.binToDrop);
       for (final id in plan.binToMarkBack) {
         await store.markBinBack(id);
       }
-
-      await store.updatePair(pairId, (p) {
-        final h = _Held.parse(p.held);
-        h.pending
-          ..clear()
-          ..addAll(pending);
-        for (final brake in plan.brakes) {
-          h.raise(brake, now);
-        }
-        return p.copyWith(held: h.encode());
-      });
+      if (plan.brakes.isNotEmpty) {
+        await store.updatePair(pairId, (p) {
+          final h = _Held.parse(p.held);
+          for (final brake in plan.brakes) {
+            h.raise(brake, now);
+          }
+          return p.copyWith(held: h.encode());
+        });
+      }
     });
     final rekeyed = reKeys.length;
     if (rekeyed > 0) debugPrint('[myemail] contacts: $rekeyed Gmail re-keys');
