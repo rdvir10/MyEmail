@@ -289,10 +289,12 @@ class ContactPairs extends Table {
   IntColumn get lastAttemptAt => integer().nullable()();
   IntColumn get lastDoneAt => integer().nullable()();
 
-  /// JSON: the last run's counts, or the kind of error that stopped it.
+  /// JSON in the runner's own form: the last run's counts, or the kind of
+  /// error that stopped it.
   TextColumn get lastResult => text().nullable()();
 
-  /// JSON: the open questions the brakes asked.
+  /// JSON: the open questions the brakes asked, each contact in them as
+  /// `ContactBrakeItem.toJson` writes it.
   TextColumn get held => text().nullable()();
 
   /// When one of the two accounts was removed; null while both are here.
@@ -347,9 +349,12 @@ class ContactReviews extends Table {
   TextColumn get googleName => text().nullable()();
   TextColumn get graphId => text().nullable()();
 
-  /// JSON: what the screen shows.
+  /// JSON: what the screen shows, as `ContactReviewItem.toJson` writes it.
   TextColumn get data => text()();
   IntColumn get createdAt => integer()();
+
+  /// JSON in the runner's own form, naming contacts under `googleName` and
+  /// `graphId`.
   TextColumn get answer => text().nullable()();
   IntColumn get answeredAt => integer().nullable()();
 }
@@ -371,7 +376,12 @@ class ContactBin extends Table {
   /// `ContactBinState`'s name.
   TextColumn get state => text()();
   IntColumn get deletedAt => integer()();
+
+  /// The contact in full as its server returned it: a Person or a Graph
+  /// contact.
   TextColumn get raw => text()();
+
+  /// The partner's synced details, in `SyncedContact.toJson`'s form.
   TextColumn get partnerBase => text().nullable()();
   TextColumn get title => text()();
 

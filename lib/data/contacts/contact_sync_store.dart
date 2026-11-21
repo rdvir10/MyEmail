@@ -89,10 +89,15 @@ class ContactPair {
   final DateTime? lastAttemptAt;
   final DateTime? lastDoneAt;
 
-  /// JSON: the last run's counts, or the kind of error that stopped it.
+  /// JSON in the runner's own form: the last run's counts
+  /// (`ContactSyncCounts.toJson`), or the kind of error that stopped it.
+  /// Nothing here reads it.
   final String? lastResult;
 
-  /// JSON: the open questions the brakes asked.
+  /// JSON: the open questions the brakes asked, in the runner's own
+  /// container, each contact in it as `ContactBrakeItem.toJson` writes it
+  /// (`googleName`, `graphId`), which is where a re-key finds it
+  /// ([rekeyContactJson]).
   final String? held;
 
   /// When one of the two accounts was removed. A detached pair runs no
@@ -417,11 +422,16 @@ class ContactReview {
   final String? googleName;
   final String? graphId;
 
-  /// JSON: what the screen shows.
+  /// JSON: what the screen shows, as `ContactReviewItem.toJson` writes
+  /// it.
   final String data;
 
   /// Stamped by the store when the review is first saved.
   final DateTime? createdAt;
+
+  /// Ron's answer, queued: JSON in the runner's own form, naming its
+  /// contacts under `googleName` and `graphId` as `ContactAnswer` does, so
+  /// that a re-key reaches them.
   final String? answer;
 
   /// Stamped by the store when [answer] is given.
@@ -507,10 +517,15 @@ class ContactBinEntry {
   /// Stamped by the store when the entry is written.
   final DateTime? deletedAt;
 
-  /// The contact in full, raw JSON as its server returned it.
+  /// The contact in full as its server returned it, encoded: a Person or
+  /// a Graph contact, which Restore makes again (`ContactBinInput.raw`).
   final String raw;
 
-  /// The partner's synced details, raw JSON, from its link.
+  /// The partner's synced details, from its link's base: in
+  /// `SyncedContact.toJson`'s form, encoded, as the planner reads it
+  /// (`ContactBinInput.partnerBase`). Not the server's own JSON: Restore
+  /// makes the partner again from this, and would find almost nothing in
+  /// that.
   final String? partnerBase;
 
   /// The name shown in Recently deleted.
