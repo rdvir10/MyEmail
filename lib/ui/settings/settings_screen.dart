@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/account.dart';
 import '../../domain/sync_prefs.dart';
+import '../../state/contact_providers.dart'
+    show contactSyncOnProvider, contactSyncStatusProvider;
 import '../../state/providers.dart';
 import '../../state/sync_providers.dart';
 import '../quick_steps/quick_steps_screen.dart';
@@ -11,6 +13,7 @@ import 'about_screen.dart';
 import 'accounts_screen.dart';
 import 'auto_replies_screen.dart';
 import 'calendar_settings_screen.dart';
+import 'contact_sync_screen.dart';
 import 'duet_screen.dart';
 import '../../state/duet_providers.dart';
 import 'rules_screen.dart';
@@ -35,6 +38,7 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final accounts = ref.watch(accountsProvider).value ?? const [];
     final sync = ref.watch(syncSettingsProvider).value;
+    final contactSyncOn = ref.watch(contactSyncOnProvider);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings'), centerTitle: false),
@@ -102,6 +106,20 @@ class SettingsScreen extends ConsumerWidget {
               final n => '$n accounts',
             },
             onTap: () => _open(context, const AccountsScreen()),
+          ),
+          _Row(
+            icon: Icons.contacts_outlined,
+            title: 'Contact sync',
+            subtitle: contactSyncSubtitle(
+              on: contactSyncOn,
+              status: contactSyncOn
+                  ? ref.watch(contactSyncStatusProvider)
+                  : null,
+              accounts: accounts,
+              now: DateTime.now(),
+              use24h: MediaQuery.alwaysUse24HourFormatOf(context),
+            ),
+            onTap: () => _open(context, const ContactSyncScreen()),
           ),
           _Row(
             icon: Icons.draw_outlined,

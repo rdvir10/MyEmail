@@ -15,6 +15,8 @@ import 'package:myemail/domain/meeting_link.dart';
 import 'package:myemail/domain/settings_backup.dart';
 import 'package:myemail/state/backup_providers.dart';
 import 'package:myemail/state/compose_providers.dart' show signaturesProvider;
+import 'package:myemail/state/contact_providers.dart'
+    show contactSyncOnProvider;
 import 'package:myemail/state/meeting_providers.dart'
     show PreparedMeetingLedger;
 import 'package:myemail/state/providers.dart';
@@ -184,6 +186,24 @@ void main() {
       }));
       expect(to.readString(UiStateKeys.contactSyncDevice), isNull);
       expect(to.readString(UiStateKeys.contactSyncDeviceId), isNull);
+    });
+
+    test('contact sync switched on in Settings is not in a backup', () async {
+      // The switch as the Contact sync screen turns it on, not a value
+      // written by hand: it must be kept under the one key Backup leaves
+      // out, or a restore would start a second syncing device.
+      final c = ProviderContainer(
+        overrides: [uiStateStoreProvider.overrideWithValue(uiState)],
+      );
+      addTearDown(c.dispose);
+      await c.read(contactSyncOnProvider.notifier).set(true);
+      expect(c.read(contactSyncOnProvider), isTrue);
+      expect(uiState.readString(UiStateKeys.contactSyncDevice), 'on',
+          reason: 'kept on this device');
+
+      final file = (await service.export()).toJsonString();
+      expect(file, isNot(contains(UiStateKeys.contactSyncDevice)));
+      expect(file, isNot(contains('contactsync')));
     });
 
     test('meetings made ahead of Send are left out', () async {

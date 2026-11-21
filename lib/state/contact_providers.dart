@@ -2,11 +2,18 @@ import 'contact_groups.dart';
 import 'dart:async';
 import 'dart:math';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, immutable;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/contacts/device_contacts.dart';
-import '../data/mail_engine.dart' show PeopleSearchAccess;
+import '../data/mail_engine.dart'
+    show
+        ContactSide,
+        ContactSyncAccess,
+        ContactSyncPreview,
+        ContactSyncStatus,
+        PeopleSearchAccess;
+import '../data/ui_state_store.dart';
 import '../domain/address_suggestions.dart';
 import '../domain/mail_message.dart';
 import 'providers.dart';
@@ -275,3 +282,163 @@ final peopleSearchAccessProvider = FutureProvider.autoDispose
     .family<PeopleSearchAccess, String>((ref, accountId) {
       return ref.watch(mailEngineProvider).peopleSearchAccess(accountId);
     });
+
+/// Whether contact sync is switched on for this device.
+///
+/// Kept on the device and never in a backup (see
+/// [UiStateKeys.contactSyncDevice]): each device keeps its own record of
+/// what it paired and deleted, so only one may sync. The engine's runner
+/// has no switch of its own; the shell starts no run while this is off.
+class ContactSyncSwitch extends Notifier<bool> {
+  @override
+  bool build() =>
+      ref.watch(uiStateStoreProvider).readString(
+            UiStateKeys.contactSyncDevice,
+          ) ==
+      'on';
+
+  /// Off stops the run going, which finishes the write in hand, and
+  /// deletes nothing: on again carries on where it stopped.
+  Future<void> set(bool on) async {
+    final store = ref.read(uiStateStoreProvider);
+    final sync = ref.read(mailEngineProvider).contactSync;
+    state = on;
+    await store.writeString(UiStateKeys.contactSyncDevice, on ? 'on' : null);
+    if (!on) await sync.stop();
+  }
+}
+
+final contactSyncOnProvider =
+    NotifierProvider<ContactSyncSwitch, bool>(ContactSyncSwitch.new);
+
+/// Where contact sync stands, read again whenever the engine says it may
+/// have changed: a run starting, moving on or ending, an answer queued.
+///
+/// A run says so at every write, and each saying is a read of the store,
+/// so reads are not stacked: one asked for while another is going is
+/// made once that one is done, however many were asked for meanwhile.
+final contactSyncStatusProvider =
+    StreamProvider.autoDispose<ContactSyncStatus>((ref) {
+  final sync = ref.watch(mailEngineProvider).contactSync;
+  final out = StreamController<ContactSyncStatus>();
+  var reading = false;
+  var again = false;
+  Future<void> read() async {
+    if (reading) {
+      again = true;
+      return;
+    }
+    reading = true;
+    try {
+      do {
+        again = false;
+        try {
+          final status = await sync.status();
+          if (!out.isClosed) out.add(status);
+        } catch (e, s) {
+          if (!out.isClosed) out.addError(e, s);
+        }
+      } while (again && !out.isClosed);
+    } finally {
+      reading = false;
+    }
+  }
+
+  final changes = sync.changed.listen((_) => read());
+  unawaited(read());
+  ref.onDispose(() {
+    changes.cancel();
+    out.close();
+  });
+  return out.stream;
+});
+
+/// Whether an account allows contact sync, asked when the Contact sync
+/// screen shows it (a token for the contacts permission). Invalidated
+/// after a sign-in that may have allowed it. Never fails: what went wrong
+/// is a state, so there is nothing to retry.
+final contactSyncAccessProvider =
+    FutureProvider.autoDispose.family<ContactSyncAccess, String>(
+  (ref, accountId) =>
+      ref.watch(mailEngineProvider).contactSync.access(accountId),
+  retry: (_, _) => null,
+);
+
+/// Before the first sync: the preview seen and the backup files saved, for
+/// the pair of accounts they were of, and when.
+///
+/// Kept while the app runs rather than on the screen, so that leaving the
+/// screen to look at the saved files does not grey Start out again. But
+/// the preview and the files are of the address books as they were, and
+/// the app may run for days: Start takes them only within [freshFor].
+@immutable
+class ContactSyncFirstSteps {
+  const ContactSyncFirstSteps({
+    this.pair,
+    this.preview,
+    this.previewedAt,
+    this.saved = const {},
+  });
+
+  /// How long a preview, or a backup, is taken as the address books as
+  /// they are.
+  static const freshFor = Duration(hours: 1);
+
+  /// The accounts, as [pairKey] gives them.
+  final String? pair;
+  final ContactSyncPreview? preview;
+  final DateTime? previewedAt;
+
+  /// When each side's backup file was saved.
+  final Map<ContactSide, DateTime> saved;
+
+  bool get backupSaved => saved.keys.toSet().containsAll(ContactSide.values);
+
+  /// The preview is no older than [freshFor] at [now].
+  bool previewFresh(DateTime now) => _fresh(previewedAt, now);
+
+  /// Both backup files were saved no longer than [freshFor] before [now].
+  bool backupFresh(DateTime now) =>
+      ContactSide.values.every((side) => _fresh(saved[side], now));
+
+  /// Start may go: the preview seen and both files saved, all within the
+  /// hour.
+  bool readyAt(DateTime now) =>
+      preview != null && previewFresh(now) && backupFresh(now);
+
+  static bool _fresh(DateTime? at, DateTime now) =>
+      at != null && now.difference(at) < freshFor;
+
+  static String pairKey(String googleAccountId, String graphAccountId) =>
+      '$googleAccountId|$graphAccountId';
+}
+
+class ContactSyncFirstStepsNotifier extends Notifier<ContactSyncFirstSteps> {
+  @override
+  ContactSyncFirstSteps build() => const ContactSyncFirstSteps();
+
+  /// The steps taken for [pair], or none for another pair.
+  ContactSyncFirstSteps of(String pair) =>
+      state.pair == pair ? state : const ContactSyncFirstSteps();
+
+  void previewed(String pair, ContactSyncPreview preview, {DateTime? at}) =>
+      state = ContactSyncFirstSteps(
+        pair: pair,
+        preview: preview,
+        previewedAt: at ?? DateTime.now(),
+        saved: of(pair).saved,
+      );
+
+  void backupSaved(String pair, ContactSide side, {DateTime? at}) =>
+      state = ContactSyncFirstSteps(
+        pair: pair,
+        preview: of(pair).preview,
+        previewedAt: of(pair).previewedAt,
+        saved: {...of(pair).saved, side: at ?? DateTime.now()},
+      );
+}
+
+final contactSyncFirstStepsProvider =
+    NotifierProvider<ContactSyncFirstStepsNotifier, ContactSyncFirstSteps>(
+  ContactSyncFirstStepsNotifier.new,
+);
