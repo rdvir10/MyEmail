@@ -1403,6 +1403,37 @@ void main() {
       ]);
     });
 
+    testWidgets('a new contact whose names disagree says so, however it was '
+        'matched', (tester) async {
+      // By an email or mobile, or by MyEmail's own link on a copy typed
+      // over as someone else: one line true of both.
+      sync = FakeContactSync(status: synced(looks: const [
+        ContactSyncLook(
+          id: 1,
+          kind: ContactReviewKind.newContact,
+          reason: ContactReviewReason.namesDisagree,
+          side: ContactSide.graph,
+          title: 'Dana Levi',
+          candidates: [ContactSyncCandidate(id: 'g-1', title: 'Noa Gal')],
+          choices: [
+            ContactSyncChoice.samePerson,
+            ContactSyncChoice.copyAnyway,
+            ContactSyncChoice.leaveOut,
+          ],
+        ),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (1)'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text("New in Hadco. MyEmail's own link, or its email or mobile, "
+            'points to Noa Gal in Gmail, but the names differ.'),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('Recently deleted, with Restore', (tester) async {
       sync = FakeContactSync(status: synced(deleted: [
         ContactSyncDeleted(

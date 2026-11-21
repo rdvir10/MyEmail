@@ -1773,8 +1773,12 @@ String _lookLine(ContactSyncLook l, String graphName) {
               'another contact.',
         ContactReviewReason.matchHeld =>
           'Its email or mobile matches $named, which is waiting here itself.',
+        // Raised for a match by email or mobile, and for MyEmail's own
+        // link naming a contact under another name (a copy typed over as
+        // someone else, found after a reinstall): the line fits both.
         ContactReviewReason.namesDisagree =>
-          'Its email or mobile matches $named, but the names differ.',
+          "MyEmail's own link, or its email or mobile, points to $named, "
+              'but the names differ.',
         ContactReviewReason.sharedAddress =>
           "Its email or mobile is shared by several contacts, as a family's "
               'is.',
