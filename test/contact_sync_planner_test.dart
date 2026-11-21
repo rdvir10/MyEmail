@@ -1956,6 +1956,102 @@ void main() {
       expect(first.graphWrite, isNull);
       expect(first.googleWrite!.target.text(ContactField.company), 'Old');
     });
+
+    test('an answer acts only on the rows its question listed', () {
+      // Rows 0 and 1 were held by the brake Ron answered; row 2 by a later
+      // one, after his answer was queued.
+      final rows = [
+        for (var i = 0; i < 3; i++)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: base,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.changeBrake,
+          ),
+      ];
+      final asked = [
+        for (var i = 0; i < 2; i++)
+          ContactBrakeItem(
+            title: 'P X',
+            side: ContactSide.graph,
+            googleName: 'people/c$i',
+            graphId: 'H$i',
+          ),
+      ];
+      final plan = run(
+        google: renamed(3),
+        graph: unchanged(3),
+        links: rows,
+        answers: [ContactAnswer(ContactAnswerKind.applyHeld, held: asked)],
+      );
+      expect(plan.answers, [ContactAnswerOutcome.applied]);
+      expect(byLink(plan, 0)!.graphWrite, isNotNull);
+      expect(byLink(plan, 1)!.graphWrite, isNotNull);
+      expect(byLink(plan, 2), isNull, reason: 'still held, its own question');
+      // The same for the deletion brake's Delete them.
+      final deletions = run(
+        graphGone: {'H3', 'H4'},
+        links: [
+          for (final i in [3, 4])
+            link(
+              i,
+              'people/c$i',
+              null,
+              base: base,
+              state: ContactLinkState.held,
+              reason: ContactHeldReason.deletionBrake,
+            ),
+        ],
+        answers: [
+          ContactAnswer(
+            ContactAnswerKind.deleteHeld,
+            held: [
+              ContactBrakeItem.fromJson(
+                const ContactBrakeItem(
+                  title: 'P X',
+                  side: ContactSide.graph,
+                  googleName: 'people/c3',
+                ).toJson(),
+              )!,
+            ],
+          ),
+        ],
+      );
+      expect(byLink(deletions, 3)!.delete!.contactId, 'people/c3');
+      expect(byLink(deletions, 4), isNull);
+      // And Don't delete them.
+      final kept = run(
+        google: [g('people/c3', base), g('people/c4', base)],
+        graphGone: {'H3', 'H4'},
+        links: [
+          for (final i in [3, 4])
+            link(
+              i,
+              'people/c$i',
+              null,
+              base: base,
+              state: ContactLinkState.held,
+              reason: ContactHeldReason.deletionBrake,
+            ),
+        ],
+        answers: [
+          const ContactAnswer(
+            ContactAnswerKind.keepHeld,
+            held: [
+              ContactBrakeItem(
+                title: 'P X',
+                side: ContactSide.graph,
+                googleName: 'people/c3',
+              ),
+            ],
+          ),
+        ],
+      );
+      expect(byLink(kept, 3)!.reason, ContactHeldReason.kept);
+      expect(byLink(kept, 4), isNull);
+    });
   });
 
   group('the empty-answers brake', () {

@@ -218,6 +218,7 @@ class ContactAnswer {
     this.fields = const {},
     this.value,
     this.side,
+    this.held,
   });
 
   final ContactAnswerKind kind;
@@ -229,6 +230,14 @@ class ContactAnswer {
   /// [SyncedContact.toJson]'s form.
   final Map<String, Object?>? value;
   final ContactSide? side;
+
+  /// For a brake's answer (Delete them, Don't delete them, Apply them,
+  /// Copy them back): the items its question listed
+  /// ([ContactBrake.items], kept and re-keyed with the question). The
+  /// answer then acts only on rows they name: a row a later run held
+  /// under that brake stays held, its own question standing. Null acts
+  /// on every row the brake holds.
+  final List<ContactBrakeItem>? held;
 }
 
 /// What became of a queued answer in this run.
@@ -944,6 +953,22 @@ class ContactBrakeItem {
     'googleName': ?googleName,
     'graphId': ?graphId,
   };
+
+  /// An item as [toJson] wrote it; null for anything else.
+  static ContactBrakeItem? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final side = ContactSide.values.firstWhereOrNull(
+      (s) => s.name == json['side'],
+    );
+    if (side == null) return null;
+    String? s(String key) => json[key] is String ? json[key] as String : null;
+    return ContactBrakeItem(
+      title: s('title') ?? '',
+      side: side,
+      googleName: s('googleName'),
+      graphId: s('graphId'),
+    );
+  }
 }
 
 /// A brake's question, raised this run.
@@ -2608,7 +2633,9 @@ class _Planner {
       case ContactAnswerKind.deleteHeld:
         var any = false;
         for (final row in rows) {
-          if (row.done || row.reason != ContactHeldReason.deletionBrake) {
+          if (row.done ||
+              row.reason != ContactHeldReason.deletionBrake ||
+              !_covers(answer, row)) {
             continue;
           }
           final side = row.googleName != null
@@ -2630,7 +2657,9 @@ class _Planner {
       case ContactAnswerKind.keepHeld:
         var any = false;
         for (final row in rows) {
-          if (row.done || row.reason != ContactHeldReason.deletionBrake) {
+          if (row.done ||
+              row.reason != ContactHeldReason.deletionBrake ||
+              !_covers(answer, row)) {
             continue;
           }
           final side = row.googleName != null
@@ -2651,7 +2680,9 @@ class _Planner {
         var any = false;
         var unreadRows = false;
         for (final row in rows) {
-          if (row.done || row.reason != ContactHeldReason.changeBrake) {
+          if (row.done ||
+              row.reason != ContactHeldReason.changeBrake ||
+              !_covers(answer, row)) {
             continue;
           }
           if (!_alive(ContactSide.google, row.googleName) ||
@@ -2705,6 +2736,20 @@ class _Planner {
       case ContactAnswerKind.carryOn:
         return applied;
     }
+  }
+
+  /// Whether a brake's answer acts on [row]: every row its brake holds,
+  /// or, with [ContactAnswer.held], only those its question listed (a
+  /// Gmail name there may since have been re-keyed).
+  bool _covers(ContactAnswer answer, _Row row) {
+    final held = answer.held;
+    if (held == null) return true;
+    return held.any(
+      (item) =>
+          (item.googleName != null &&
+              _newName(item.googleName!) == row.googleName) ||
+          (item.graphId != null && item.graphId == row.graphId),
+    );
   }
 
   /// Contacts an answer has acted on are no longer waiting for Ron.
