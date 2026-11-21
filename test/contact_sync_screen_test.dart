@@ -956,6 +956,14 @@ void main() {
 
         expect(find.text('Hadco listed only 3 contacts'), findsOneWidget);
         expect(find.textContaining('120 were expected'), findsOneWidget);
+        expect(
+          find.text("That's right, carry on takes 3 as the number to expect: "
+              'the contacts no longer listed in Hadco are then taken as '
+              'deleted there, and their copies in Gmail are deleted too (it '
+              'asks first if that is more than 5). Keep waiting leaves it '
+              'stopped, and the next sync looks again.'),
+          findsOneWidget,
+        );
         expect(find.text('Sync now'), findsOneWidget,
             reason: 'after Keep waiting, the way to look again');
         expect(find.text('Keep waiting'), findsOneWidget);

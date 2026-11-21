@@ -1078,10 +1078,16 @@ class _QuestionCard extends StatelessWidget {
               'expected. Contact sync has stopped and written nothing, '
               'because a lapsed permission, a wrong folder or an empty '
               'answer must never read as everything deleted.',
+          // Not only a number: carrying on reads every contact missing
+          // from the listing as deleted, and deletes its copy.
           "That's right, carry on takes "
               '${q.listed == null ? 'the new count' : '${q.listed}'} as the '
-              'number to expect. Keep waiting leaves it stopped, and the '
-              'next sync looks again.',
+              'number to expect: the contacts no longer listed in '
+              '${side(q.side ?? ContactSide.graph)} are then taken as '
+              'deleted there, and their copies in '
+              '${side((q.side ?? ContactSide.graph).other)} are deleted too '
+              '(it asks first if that is more than 5). Keep waiting leaves '
+              'it stopped, and the next sync looks again.',
         ),
     };
     String item(ContactSyncQuestionItem i) => switch (q.kind) {
