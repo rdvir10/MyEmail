@@ -71,21 +71,27 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     super.dispose();
   }
 
-  /// The two accounts the screen is about: those picked here, else the
-  /// pair the runner has, else the first of each that could sync (a Gmail
-  /// signed in with Google before one on an app password). Only accounts
-  /// still in MyEmail.
+  /// The two accounts the screen is about: the pair the runner has, while
+  /// both are still in MyEmail; else those picked here, else the first of
+  /// each that could sync (a Gmail signed in with Google before one on an
+  /// app password).
+  ///
+  /// The runner's pair comes first, switched on or off: turning the switch
+  /// off and on again (as Ron will before an Undo changes) must carry on
+  /// with Gmail and Hadco, never pair Gmail with whichever Microsoft
+  /// account happens to be listed first.
   (Account?, Account?) _pair(List<Account> accounts, ContactSyncStatus? s) {
     final googles = _googleAccounts(accounts);
     final graphs = _graphAccounts(accounts);
+    final (runnerGoogle, runnerGraph) = _runnerPair(accounts, s);
+    if (runnerGoogle != null && runnerGraph != null) {
+      return (runnerGoogle, runnerGraph);
+    }
     return (
       _byId(googles, _pickedGoogle) ??
-          _byId(googles, s?.googleAccountId) ??
           googles.firstWhereOrNull((a) => a.authMethod == AuthMethod.oauth) ??
           googles.firstOrNull,
-      _byId(graphs, _pickedGraph) ??
-          _byId(graphs, s?.graphAccountId) ??
-          graphs.firstOrNull,
+      _byId(graphs, _pickedGraph) ?? graphs.firstOrNull,
     );
   }
 
@@ -100,18 +106,11 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     await sync.choose(googleAccountId: google.id, graphAccountId: graph.id);
   }
 
-  Future<void> _setOn(bool on, Account? google, Account? graph) async {
-    await ref.read(contactSyncOnProvider.notifier).set(on);
-    if (!on || google == null || graph == null) return;
-    try {
-      await _choose(google, graph);
-    } on ContactSyncRefused {
-      // An account that cannot sync yet: its row says why, and Preview
-      // asks again.
-    } catch (e) {
-      if (mounted) _sayFailure(context, e);
-    }
-  }
+  /// The switch alone: it never chooses a pair. Off and on again carries on
+  /// with the pair the runner has; a pair is chosen only by a pick, or by
+  /// Preview, Save backup or Start.
+  Future<void> _setOn(bool on) =>
+      ref.read(contactSyncOnProvider.notifier).set(on);
 
   Future<void> _pick({
     required bool google,
@@ -312,9 +311,14 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   Widget build(BuildContext context) {
     final on = ref.watch(contactSyncOnProvider);
     final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
-    final statusValue = on ? ref.watch(contactSyncStatusProvider) : null;
-    final status = statusValue?.value;
+    // Read while off too, for the pair the runner has.
+    final statusValue = ref.watch(contactSyncStatusProvider);
+    final status = statusValue.value;
     final (google, graph) = _pair(accounts, status);
+    final (runnerGoogle, runnerGraph) = _runnerPair(accounts, status);
+    final carriesOn = runnerGoogle == null || runnerGraph == null
+        ? ''
+        : 'syncing Gmail with ${contactSyncAccountName(runnerGraph)} ';
 
     return Scaffold(
       appBar: AppBar(title: const Text('Contact sync'), centerTitle: false),
@@ -339,13 +343,14 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
             ),
             isThreeLine: true,
             value: on,
-            onChanged: (value) => _setOn(value, google, graph),
+            onChanged: _setOn,
           ),
           if (!on)
-            const _Para(
+            _Para(
               'Off: nothing syncs on this device. Turning it off deletes '
-              'nothing, and turning it on again carries on where it '
-              'stopped.',
+              'nothing, and turning it on again carries on ${carriesOn}where '
+              'it stopped.',
+              key: const ValueKey('contact-sync-off'),
               muted: true,
             )
           else if (google == null || graph == null)
@@ -354,7 +359,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
               'in MyEmail. Add them in Settings, Accounts.',
             )
           else
-            ..._onFor(accounts, statusValue!, google, graph),
+            ..._onFor(accounts, statusValue, google, graph),
           if (on)
             const _Para(
               "Turn this off before using Google's Undo changes, Outlook's "
@@ -1557,6 +1562,14 @@ String _fieldLabel(ContactField f) => switch (f) {
 
 Account? _byId(List<Account> accounts, String? id) =>
     id == null ? null : accounts.firstWhereOrNull((a) => a.id == id);
+
+/// The pair the runner has, each account only while it is still in
+/// MyEmail.
+(Account?, Account?) _runnerPair(List<Account> accounts, ContactSyncStatus? s) =>
+    (
+      _byId(_googleAccounts(accounts), s?.googleAccountId),
+      _byId(_graphAccounts(accounts), s?.graphAccountId),
+    );
 
 /// Gmail accounts that could take part: not a mailbox shared through
 /// another account.

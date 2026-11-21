@@ -51,6 +51,15 @@ void main() {
     colorValue: 0xFF107C41,
   );
 
+  const studio = Account(
+    id: 'acct-m',
+    displayName: 'Myhomestudio',
+    emailAddress: 'ron@studio.example',
+    provider: MailProvider.outlook,
+    authMethod: AuthMethod.oauth,
+    colorValue: 0xFF5C2D91,
+  );
+
   final today = DateTime.now();
   final at1042 = DateTime(today.year, today.month, today.day, 10, 42);
 
@@ -273,34 +282,45 @@ void main() {
     bool enabled(WidgetTester tester, String key) =>
         tester.widget<ButtonStyleButton>(button(key)).onPressed != null;
 
-    testWidgets('off: the switch alone; on chooses the pair, off stops it',
-        (tester) async {
-      sync = FakeContactSync();
-      engine = _Engine(sync, const [gmail, hadco]);
+    testWidgets('off and on again carries on with the pair the runner has, '
+        'and chooses nothing', (tester) async {
+      // Myhomestudio is listed before Hadco: turning the switch off and on,
+      // as Ron will before an Undo changes, must not pair Gmail with it.
+      engine = _Engine(sync, const [gmail, studio, hadco]);
       await pumpScreen(tester, on: false);
 
       expect(
         tester.widget<SwitchListTile>(button('contact-sync-on')).value,
         isFalse,
       );
-      expect(find.textContaining('Off: nothing syncs'), findsOneWidget);
+      expect(
+        find.text('Off: nothing syncs on this device. Turning it off deletes '
+            'nothing, and turning it on again carries on syncing Gmail with '
+            'Hadco where it stopped.'),
+        findsOneWidget,
+      );
       expect(find.text('Sync Gmail with'), findsNothing);
       expect(find.text('Sync now'), findsNothing);
-      expect(find.text('Preview'), findsNothing);
       expect(sync.accessAsked, isEmpty, reason: 'nothing is asked while off');
 
       await tester.tap(button('contact-sync-on'));
       await tester.pumpAndSettle();
       expect(ui.readString(UiStateKeys.contactSyncDevice), 'on');
-      expect(sync.chosen, [(google: 'acct-g', graph: 'acct-h')]);
-      expect(find.text('Sync Gmail with'), findsOneWidget);
-      expect(find.text('Hadco'), findsOneWidget);
-      expect(find.text('Preview'), findsOneWidget);
+      expect(sync.chosen, isEmpty);
+      expect(
+        find.descendant(
+          of: button('contact-sync-with'),
+          matching: find.text('Hadco'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Sync now'), findsOneWidget);
 
       await tester.tap(button('contact-sync-on'));
       await tester.pumpAndSettle();
       expect(ui.readString(UiStateKeys.contactSyncDevice), isNull);
       expect(sync.count('stop'), 1);
+      expect(sync.chosen, isEmpty);
     });
 
     testWidgets('an account not allowed yet says so, with Allow',
@@ -992,16 +1012,8 @@ void main() {
 
     testWidgets('a second Microsoft account can be chosen instead',
         (tester) async {
-      const other = Account(
-        id: 'acct-m',
-        displayName: 'Myhomestudio',
-        emailAddress: 'ron@studio.example',
-        provider: MailProvider.outlook,
-        authMethod: AuthMethod.oauth,
-        colorValue: 0xFF5C2D91,
-      );
       sync = FakeContactSync(status: chosenOnly);
-      engine = _Engine(sync, const [gmail, hadco, other]);
+      engine = _Engine(sync, const [gmail, hadco, studio]);
       await pumpScreen(tester);
 
       await tester.tap(button('contact-sync-with'));
