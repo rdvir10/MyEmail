@@ -12,6 +12,9 @@ import 'package:myemail/data/contacts/contact_sync.dart';
 import 'package:myemail/data/contacts/contact_sync_service.dart';
 import 'package:myemail/data/contacts/contact_sync_store.dart';
 import 'package:myemail/data/account_store.dart';
+import 'package:myemail/data/auth/oauth_refresher.dart';
+import 'package:myemail/data/auth/oauth_token.dart';
+import 'package:myemail/data/auth/oauth_token_repository.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/cache/mail_database.dart';
 import 'package:myemail/data/credential_store.dart';
@@ -1045,6 +1048,32 @@ void main() {
       h.requests.clear();
       await h.later();
       expect(h.contactWritesOf(), isEmpty);
+    });
+
+    test("an Outlook edit made as the tag moves still reads as one: the "
+        "partner's delete then keeps it", () async {
+      final made = h.google.seed(person('Ann', 'Lee', email: 'ann@example.com'));
+      seedPairs(h, 1);
+      await h.firstSync();
+      final copy = h.graph.idWithEmail('ann@example.com')!;
+      final annNow = h.google.rekeyFromGmail(made);
+      h.before = (r) async {
+        // The read just before the tag's patch.
+        if (r.method == 'GET' &&
+            r.url.path.endsWith('/me/contacts/$copy') &&
+            (r.url.queryParameters[r'$expand'] ?? '').isNotEmpty) {
+          h.before = null;
+          h.graph.editFromOutlook(copy, {'jobTitle': 'Chief'});
+        }
+      };
+      await h.later();
+      expect(h.graph.tagOf(copy), annNow);
+      // Ron deletes the Gmail contact: the Outlook one changed since it was
+      // last synced, so it is kept, not deleted.
+      h.google.deleteFromGmail(annNow);
+      final status = await h.later();
+      expect(h.graph.contact(copy), isNotNull);
+      expect(status.needsALook.single.kind, ContactReviewKind.kept);
     });
 
     test('a re-key reaches a held brake and an open review', () async {
@@ -2265,6 +2294,59 @@ void main() {
           secret: 'abcdabcdabcdabcd',
         );
 
+    test("signing in again lifts the pause a refused run left", () async {
+      final secrets = MemoryCredentialStore();
+      final token = OAuthToken(
+        accessToken: 'old',
+        refreshToken: 'refresh',
+        expiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+      ).toStoredJson();
+      await secrets.writeSecret(Harness.gmail.id, token);
+      await secrets.writeSecret(Harness.hadco.id, token);
+      final refresher = _Refresher()
+        ..refuse = const SignInNeedsConsent('Contacts not allowed.');
+      final h = Harness();
+      seedPairs(h, 1);
+      final engine = CachedImapEngine(
+        accountStore: MemoryAccountStore([Harness.gmail, Harness.hadco]),
+        credentialStore: secrets,
+        cache: MemoryCacheStore(),
+        contactSyncStore: store,
+        oauthTokens: OAuthTokenRepository(
+          credentialStore: secrets,
+          oauthClient: (_) => refresher,
+        ),
+        contactSyncHttpClient: MockClient(
+          (r) => r.url.host == 'people.googleapis.com'
+              ? h.google.handle(r)
+              : h.graph.handle(r),
+        ),
+        transportFactory: (_, _) => server,
+      );
+      final sync = engine.contactSync;
+      await sync.choose(
+        googleAccountId: Harness.gmail.id,
+        graphAccountId: Harness.hadco.id,
+      );
+      await sync.start();
+      expect((await sync.status()).halt!.kind, ContactSyncHaltKind.notAllowed);
+      expect(await sync.startIfDue(), isFalse);
+
+      // Ron signs in again, allowing contacts.
+      refresher.refuse = null;
+      await engine.updateOAuthToken(
+        accountId: Harness.gmail.id,
+        token: OAuthToken(
+          accessToken: 'new',
+          refreshToken: 'refresh-2',
+          expiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+        ),
+      );
+      expect(await sync.startIfDue(), isTrue);
+      await sync.syncNow();
+      expect((await sync.status()).halt, isNull);
+    });
+
     test('removing an account detaches its pair, and adding the address '
         'again attaches it under the new account', () async {
       final gmail = await add('ron@gmail.com', MailProvider.gmail);
@@ -2435,4 +2517,22 @@ extension on Account {
     authMethod: method,
     colorValue: colorValue,
   );
+}
+
+class _Refresher implements OAuthRefresher {
+  Exception? refuse;
+
+  @override
+  Future<OAuthToken> refresh(OAuthToken token, {List<String>? scopes}) async {
+    final refusal = refuse;
+    if (refusal != null) throw refusal;
+    return OAuthToken(
+      accessToken: 'fresh',
+      refreshToken: token.refreshToken,
+      expiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+    );
+  }
+
+  @override
+  void close() {}
 }

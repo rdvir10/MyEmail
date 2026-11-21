@@ -2431,14 +2431,19 @@ class _Run {
   Future<void> _moveTag(String id, String name) async {
     try {
       final read = await graph((a) => a.get(id, withTag: true));
-      final tag = read == null ? null : GraphContactsApi.tagOf(read);
+      if (read == null) return;
+      final tag = GraphContactsApi.tagOf(read);
       if (tag == null || tag == name) return;
       final answer = await graph((a) => a.update(id, graphTagPatch(name)));
       sync._tags[id] = (changeKey: answer['changeKey'] as String?, tag: name);
       final link = await store.linkFor(pairId, ContactSide.graph, id);
-      if (link != null && answer['changeKey'] is String) {
-        // The patch moved its changeKey: kept, so a later delete does not
-        // read the sync's own write as a change.
+      // The patch moved its changeKey: kept, so a later delete does not read
+      // the sync's own write as a change. Only where the contact was, just
+      // before it, at the version the row holds: an edit Ron made since the
+      // listing must still read as one.
+      if (link != null &&
+          read['changeKey'] == link.graphChangeKey &&
+          answer['changeKey'] is String) {
         await store.saveLink(
           link.copyWith(graphChangeKey: answer['changeKey'] as String),
         );
