@@ -222,6 +222,8 @@ class ContactLink {
     this.reason,
     this.googleWrittenAt,
     this.updatedAt,
+    this.partnerId,
+    this.partnerBase,
   });
 
   /// Null until the store has saved it.
@@ -253,6 +255,14 @@ class ContactLink {
   /// When it was last saved. Stamped by the store.
   final DateTime? updatedAt;
 
+  /// For a link held with one id after its partner went (kept, or held by
+  /// the deletion brake): that partner's id, on the other side, and its
+  /// synced details (`SyncedContact.toJson`, encoded), as the planner's
+  /// plan gives them (`ContactLinkPlan.partnerId`, `partnerBase`) and
+  /// takes them back. Not a contact the link names: no index holds it.
+  final String? partnerId;
+  final String? partnerBase;
+
   bool get isPaired => state == ContactLinkState.paired;
 
   String? idOn(ContactSide side) =>
@@ -270,6 +280,8 @@ class ContactLink {
     ContactLinkState? state,
     Object? reason = _keep,
     Object? googleWrittenAt = _keep,
+    Object? partnerId = _keep,
+    Object? partnerBase = _keep,
   }) =>
       ContactLink(
         linkId: linkId,
@@ -284,6 +296,8 @@ class ContactLink {
         reason: _or(reason, this.reason),
         googleWrittenAt: _or(googleWrittenAt, this.googleWrittenAt),
         updatedAt: updatedAt,
+        partnerId: _or(partnerId, this.partnerId),
+        partnerBase: _or(partnerBase, this.partnerBase),
       );
 
   /// Paired: both ids and no reason. Held: a reason and at least one id.
@@ -321,6 +335,8 @@ class ContactLink {
         reason: reason,
         googleWrittenAt: _kept(googleWrittenAt),
         updatedAt: at,
+        partnerId: partnerId,
+        partnerBase: partnerBase,
       );
 
   List<Object?> get _fields => [
@@ -336,6 +352,8 @@ class ContactLink {
         reason,
         googleWrittenAt,
         updatedAt,
+        partnerId,
+        partnerBase,
       ];
 
   @override
@@ -769,7 +787,8 @@ abstract class ContactSyncStore {
   /// ([ContactPair.held]) and each review's data and queued answer. Two
   /// reviews of one kind that come to name the same contacts (two
   /// contacts Ron merged, each with an item) are folded into the older,
-  /// which keeps its answer, or takes the other's when it has none.
+  /// which takes the answer queued last among them (Ron's latest choice),
+  /// where any has one.
   ///
   /// The planner's own rows already take the new names, so a re-key after
   /// the plan's links are saved finds none left under [oldId] and moves
@@ -1052,6 +1071,8 @@ class DriftContactSyncStore implements ContactSyncStore {
       reason: Value(link.reason?.code),
       googleWrittenAt: Value(_ms(link.googleWrittenAt)),
       updatedAt: Value(at.millisecondsSinceEpoch),
+      partnerId: Value(link.partnerId),
+      partnerBase: Value(link.partnerBase),
     );
     final linkId = link.linkId;
     if (linkId != null) {
@@ -1529,6 +1550,8 @@ class DriftContactSyncStore implements ContactSyncStore {
       reason: reason,
       googleWrittenAt: _time(r.googleWrittenAt),
       updatedAt: _time(r.updatedAt),
+      partnerId: r.partnerId,
+      partnerBase: r.partnerBase,
     );
   }
 
@@ -2161,6 +2184,8 @@ ContactLink _linkRead({
   required ContactHeldReason? reason,
   required DateTime? googleWrittenAt,
   required DateTime? updatedAt,
+  String? partnerId,
+  String? partnerBase,
 }) {
   final paired = state == ContactLinkState.paired &&
       googleName != null &&
@@ -2178,6 +2203,8 @@ ContactLink _linkRead({
     reason: paired ? null : reason ?? ContactHeldReason.waiting,
     googleWrittenAt: googleWrittenAt,
     updatedAt: updatedAt,
+    partnerId: partnerId,
+    partnerBase: partnerBase,
   );
 }
 
@@ -2187,8 +2214,9 @@ StateError _linkGone() =>
 /// [reviews], saved ones of one pair, oldest first, grouped where they
 /// name the same contacts under the same kind, as a re-key of two
 /// contacts Ron merged leaves them: for each group of more than one, its
-/// oldest, given the first answer queued among the others when it has
-/// none of its own, and the ids of the others, which go.
+/// oldest, given the answer queued last among the group (Ron's latest
+/// choice; the earlier review's on a tie), and the ids of the others,
+/// which go.
 List<({ContactReview kept, List<int> dropped})> _sameReviews(
   Iterable<ContactReview> reviews,
 ) {
@@ -2201,11 +2229,16 @@ List<({ContactReview kept, List<int> dropped})> _sameReviews(
     if (group.length < 2) continue;
     final oldest = group.first;
     final others = group.skip(1);
-    final answered = oldest.isAnswered
-        ? null
-        : others.firstWhereOrNull((r) => r.isAnswered);
+    ContactReview? answered;
+    for (final r in group) {
+      if (!r.isAnswered) continue;
+      final at = r.answeredAt;
+      final last = answered?.answeredAt;
+      final later = at != null && (last == null || at.isAfter(last));
+      if (answered == null || later) answered = r;
+    }
     folds.add((
-      kept: answered == null
+      kept: answered == null || identical(answered, oldest)
           ? oldest
           : ContactReview(
               reviewId: oldest.reviewId,

@@ -52,6 +52,8 @@ class ContactLinkInput {
     this.state = ContactLinkState.paired,
     this.reason,
     this.googleWrittenAt,
+    this.partnerId,
+    this.partnerBase,
   });
 
   final int linkId;
@@ -81,8 +83,34 @@ class ContactLinkInput {
   /// When the sync last wrote the Gmail side, for the hour of grace.
   final DateTime? googleWrittenAt;
 
+  /// For a row held with one id after its partner went (kept, or held by
+  /// the deletion brake): that partner's id, on the other side, and its
+  /// synced details in [SyncedContact.toJson]'s form, as the row's
+  /// [ContactLinkPlan.partnerId] and [ContactLinkPlan.partnerBase] gave
+  /// them. A delete of the row's contact after all puts them in the bin,
+  /// so Restore makes both sides again and pairs them.
+  final String? partnerId;
+  final Map<String, Object?>? partnerBase;
+
   SyncedContact get googleDetails => SyncedContact.fromJson(googleBase);
   SyncedContact get graphDetails => SyncedContact.fromJson(graphBase);
+
+  /// The contact on the other side from [side] that the row pairs, or
+  /// paired before it went.
+  String? partnerOf(ContactSide side) =>
+      (side == ContactSide.google ? graphId : googleName) ?? partnerId;
+
+  /// That contact's synced details.
+  SyncedContact partnerDetailsOf(ContactSide side) {
+    if (side == ContactSide.google) {
+      return graphId != null
+          ? graphDetails
+          : SyncedContact.fromJson(partnerBase);
+    }
+    return googleName != null
+        ? googleDetails
+        : SyncedContact.fromJson(partnerBase);
+  }
 }
 
 /// A create in flight: journalled before it was sent, cleared with the row
@@ -218,6 +246,7 @@ class ContactAnswer {
     this.fields = const {},
     this.value,
     this.side,
+    this.held,
   });
 
   final ContactAnswerKind kind;
@@ -229,6 +258,14 @@ class ContactAnswer {
   /// [SyncedContact.toJson]'s form.
   final Map<String, Object?>? value;
   final ContactSide? side;
+
+  /// For a brake's answer (Delete them, Don't delete them, Apply them,
+  /// Copy them back): the items its question listed
+  /// ([ContactBrake.items], kept and re-keyed with the question). The
+  /// answer then acts only on rows they name: a row a later run held
+  /// under that brake stays held, its own question standing. Null acts
+  /// on every row the brake holds.
+  final List<ContactBrakeItem>? held;
 }
 
 /// What became of a queued answer in this run.
@@ -502,6 +539,8 @@ class ContactLinkPlan {
     this.removes = false,
     this.title = '',
     this.settings,
+    this.partnerId,
+    this.partnerBase,
   });
 
   /// The row, or null for a new one.
@@ -551,6 +590,15 @@ class ContactLinkPlan {
   /// What a pair was compared with, for [replan]; null for a plan that
   /// compares no pair (a create, a delete, a held or removed row).
   final ContactPairSettings? settings;
+
+  /// For a row held with one id after its partner went (kept, or held by
+  /// the deletion brake): that partner's id and synced details, which the
+  /// runner saves with the row and passes back as
+  /// [ContactLinkInput.partnerId] and [ContactLinkInput.partnerBase]
+  /// (toJson), so that a delete of the row's contact after all can put
+  /// its partner in the bin with it.
+  final String? partnerId;
+  final SyncedContact? partnerBase;
 
   bool get writes =>
       googleWrite != null ||
@@ -698,6 +746,8 @@ class ContactLinkPlan {
     googleBase: delete?.side == ContactSide.google ? googleBase : null,
     graphBase: delete?.side == ContactSide.graph ? graphBase : null,
     title: title,
+    partnerId: delete?.partnerId,
+    partnerBase: delete?.partnerBase,
   );
 
   ContactReviewItem keptReview() => ContactReviewItem(
@@ -944,6 +994,22 @@ class ContactBrakeItem {
     'googleName': ?googleName,
     'graphId': ?graphId,
   };
+
+  /// An item as [toJson] wrote it; null for anything else.
+  static ContactBrakeItem? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final side = ContactSide.values.firstWhereOrNull(
+      (s) => s.name == json['side'],
+    );
+    if (side == null) return null;
+    String? s(String key) => json[key] is String ? json[key] as String : null;
+    return ContactBrakeItem(
+      title: s('title') ?? '',
+      side: side,
+      googleName: s('googleName'),
+      graphId: s('graphId'),
+    );
+  }
 }
 
 /// A brake's question, raised this run.
@@ -1100,6 +1166,7 @@ class ContactSyncPlan {
     this.graphGone = const {},
     this.answers = const [],
     this.graphPassedOver = const {},
+    this.mergedAway = const [],
   });
 
   /// The empty-answers brake: when set, nothing else is planned.
@@ -1160,6 +1227,14 @@ class ContactSyncPlan {
 
   /// What became of each of the input's answers, in the same order. Empty
   /// when the run stopped.
+  ///
+  /// The runner removes the Needs a look item (and the answer) of every
+  /// answer applied or dropped before it saves this plan's [reviews]: a
+  /// contact a dropped answer names is placed again, and the item that
+  /// raises can have the same kind and ids as the dropped one, which the
+  /// store's saveReview would fold into the old item, keeping its old
+  /// answer, so it would run again and be dropped again. A waiting
+  /// answer and its item stay.
   final List<ContactAnswerOutcome> answers;
 
   /// Outlook contacts whose only read this run left out a synced property
@@ -1169,6 +1244,15 @@ class ContactSyncPlan {
   /// by id, for this run or the next, since the delta link has moved on.
   /// Set on a stopped run too.
   final Set<String> graphPassedOver;
+
+  /// Rows folded away by a merge in Gmail: each losing row's old Gmail
+  /// name and, where the row had one, its Outlook id. Before applying
+  /// [reKeys] (which would move them onto the merged contact), the
+  /// runner drops every Needs a look item naming that Gmail name, and,
+  /// where [graphId] is given, that Outlook id with it. A losing row with
+  /// an Outlook contact gets a "merged in Gmail" item of its own in
+  /// [reviews].
+  final List<({String googleName, String? graphId})> mergedAway;
 
   /// The normaliser this plan compared with, for the pair to store.
   int get normaliserVersion => contactNormaliserVersion;
@@ -1826,6 +1910,7 @@ class _Planner {
   final otherReviews = <ContactReviewItem>[];
   final brakes = <ContactBrake>[];
   final journalSettled = <int>[];
+  final mergedAway = <({String googleName, String? graphId})>[];
   /// Bin rows of contacts paired or copied this run (see
   /// [ContactSyncPlan.binToMarkBack]).
   final broughtBack = <int>{};
@@ -2058,6 +2143,7 @@ class _Planner {
         });
       _rename(ranked.first, name);
       for (final loser in ranked.skip(1)) {
+        mergedAway.add((googleName: loser.googleName!, graphId: loser.graphId));
         loser
           ..googleName = null
           ..done = true;
@@ -2189,35 +2275,80 @@ class _Planner {
 
   // ---- Interrupted creates.
 
-  void _settleJournal() {
-    for (final entry in input.journal) {
-      final sourceSide = entry.side.other;
-      final source = sourceSide == ContactSide.google
+  /// The source an interrupted create copies, under its name now.
+  String _journalSource(ContactJournalEntry entry) =>
+      entry.side == ContactSide.graph
           ? _newName(entry.sourceId)
           : entry.sourceId;
-      final String? copy;
-      if (entry.side == ContactSide.google) {
-        copy = googleListed.values
-            .firstWhereOrNull(
-              (c) =>
-                  // An Outlook id is never re-keyed: the tag is the id.
-                  c.tag == entry.sourceId &&
-                  !googleRow.containsKey(c.resourceName) &&
-                  googleStatus[c.resourceName] == null,
-            )
-            ?.resourceName;
-      } else {
-        copy = graphListed.values
-            .firstWhereOrNull(
-              (c) =>
-                  (c.tag == source ||
-                      c.tag == entry.sourceId ||
-                      (entry.tag != null && c.tag == entry.tag)) &&
-                  !graphRow.containsKey(c.id) &&
-                  graphStatus[c.id] == null,
-            )
-            ?.id;
+
+  /// The copy an interrupted create made, if it is there with no row and
+  /// not yet placed this run: found by its hidden tag.
+  ({String id, String? tag})? _journalCopy(
+    ContactJournalEntry entry,
+    String source,
+  ) {
+    if (entry.side == ContactSide.google) {
+      final c = googleListed.values.firstWhereOrNull(
+        (c) =>
+            // An Outlook id is never re-keyed: the tag is the id.
+            c.tag == entry.sourceId &&
+            !googleRow.containsKey(c.resourceName) &&
+            googleStatus[c.resourceName] == null,
+      );
+      return c == null ? null : (id: c.resourceName, tag: c.tag);
+    }
+    bool free(GraphContact c) =>
+        !graphRow.containsKey(c.id) && graphStatus[c.id] == null;
+    // Its own tag first (the name it was written under), so that another
+    // create's copy tagged with the source's name now is never taken.
+    final own = {entry.sourceId, ?entry.tag};
+    final c =
+        graphListed.values.firstWhereOrNull(
+          (c) => free(c) && own.contains(c.tag),
+        ) ??
+        graphListed.values.firstWhereOrNull(
+          (c) => free(c) && c.tag == source,
+        );
+    return c == null ? null : (id: c.id, tag: c.tag);
+  }
+
+  /// The contact on [side] paired this run with [source], on the other.
+  String? _pairedThisRun(ContactSide side, String source) {
+    for (final p in planned) {
+      final plan = p.plan;
+      if (plan.removeRow || plan.state != ContactLinkState.paired) continue;
+      if (side == ContactSide.graph && plan.googleName == source) {
+        return plan.graphId;
       }
+      if (side == ContactSide.google && plan.graphId == source) {
+        return plan.googleName;
+      }
+    }
+    return null;
+  }
+
+  void _settleJournal() {
+    // Two copies can settle onto one source: Ron merged in Gmail two
+    // contacts whose copies were both being made. The copy tagged with
+    // the surviving name is paired, else the oldest op's, and the other
+    // is held like any copy whose source has a partner already (below).
+    int rank(ContactJournalEntry entry) {
+      final source = _journalSource(entry);
+      return _journalCopy(entry, source)?.tag == source ? 0 : 1;
+    }
+
+    final entries = [...input.journal]
+      ..sort((a, b) {
+        final byTag = rank(a).compareTo(rank(b));
+        if (byTag != 0) return byTag;
+        final byAge = a.startedAt.compareTo(b.startedAt);
+        if (byAge != 0) return byAge;
+        return a.opId.compareTo(b.opId);
+      });
+    for (final entry in entries) {
+      final sourceSide = entry.side.other;
+      final source = _journalSource(entry);
+      final copy = _journalCopy(entry, source)?.id;
       // Only a source confirmed gone is gone: one merely not read this
       // run is still there, and its copy is not to be deleted.
       final sourceGone = _isGone(sourceSide, source);
@@ -2231,16 +2362,18 @@ class _Planner {
           final g = entry.side == ContactSide.google ? copy : source;
           final h = entry.side == ContactSide.google ? source : copy;
           final row = _rowOf(sourceSide, source);
-          final partner = entry.side == ContactSide.google
-              ? row?.googleName
-              : row?.graphId;
-          if (row != null &&
-              row.state == ContactLinkState.paired &&
-              partner != null &&
-              partner != copy) {
-            // The source is paired already with another contact on the
-            // copy's side (Ron merged it in Gmail into a contact that was
-            // paired): its row is not taken from that partner.
+          final partner =
+              (entry.side == ContactSide.google
+                  ? row?.googleName
+                  : row?.graphId) ??
+              _pairedThisRun(entry.side, source);
+          if (partner != null && partner != copy) {
+            // The source has another contact on the copy's side already:
+            // its row names one, paired or held with it (moved out, held
+            // by the change brake), or another copy was paired with it
+            // this run. Ron merged it in Gmail into a contact that had a
+            // partner, or merged two being copied. The row and the pair
+            // are not taken from that partner.
             _copyOfPaired(entry.side, copy, source);
             continue;
           }
@@ -2275,8 +2408,8 @@ class _Planner {
     }
   }
 
-  /// A copy whose create was interrupted, found after its source was
-  /// paired with another contact on the copy's side. An Outlook copy is
+  /// A copy whose create was interrupted, found after its source came to
+  /// have another contact on the copy's side. An Outlook copy is
   /// held under a "merged in Gmail" item, as a merge's other Outlook
   /// contact is (delete it in Hadco too, or keep it only there); a Gmail
   /// copy goes through the new-contact rules, its tag naming a paired
@@ -2369,6 +2502,9 @@ class _Planner {
   /// rows pass keeps a waiting row until its contact is gone. It goes
   /// through the new-contact rules again instead: now, if it was read
   /// this run, else as a candidate, which every run reads and places.
+  /// The item raised again may have the dropped one's kind and ids, so
+  /// the runner removes the dropped answer's item before saving this
+  /// plan's (see [ContactSyncPlan.answers]).
   void _placeAgain(ContactAnswer answer) {
     final g = answer.googleName == null ? null : _newName(answer.googleName!);
     for (final (side, id) in [
@@ -2413,9 +2549,10 @@ class _Planner {
     // The plan's moved-out rule (both ids kept, the pair back when it
     // returns) is for a pair, and the rows pass applies it to the row; a
     // contact with one id held as moved out would read, on its return, as
-    // a pair whose Gmail side went, and be deleted. Copy it back on a
-    // kept contact away is the exception ([waitWhileAway]): a kept row
-    // goes through no rules again, so the answer waits for its return.
+    // a pair whose Gmail side went, and be deleted. Copy it anyway and
+    // Copy it back are the exception ([waitWhileAway]): Ron's choice is
+    // kept, and done when the contact is back, rather than dropped and
+    // asked again (a kept row goes through no rules again at all).
     ContactAnswerOutcome? unread(
       List<(ContactSide, String?)> contacts, {
       bool waitWhileAway = false,
@@ -2456,10 +2593,7 @@ class _Planner {
         _answered(named);
         return applied;
       case ContactAnswerKind.copyAnyway || ContactAnswerKind.copyBack:
-        if (unread(
-              named,
-              waitWhileAway: answer.kind == ContactAnswerKind.copyBack,
-            )
+        if (unread(named, waitWhileAway: true)
             case final ContactAnswerOutcome o) {
           return o;
         }
@@ -2549,7 +2683,9 @@ class _Planner {
       case ContactAnswerKind.deleteHeld:
         var any = false;
         for (final row in rows) {
-          if (row.done || row.reason != ContactHeldReason.deletionBrake) {
+          if (row.done ||
+              row.reason != ContactHeldReason.deletionBrake ||
+              !_covers(answer, row)) {
             continue;
           }
           final side = row.googleName != null
@@ -2571,7 +2707,9 @@ class _Planner {
       case ContactAnswerKind.keepHeld:
         var any = false;
         for (final row in rows) {
-          if (row.done || row.reason != ContactHeldReason.deletionBrake) {
+          if (row.done ||
+              row.reason != ContactHeldReason.deletionBrake ||
+              !_covers(answer, row)) {
             continue;
           }
           final side = row.googleName != null
@@ -2592,7 +2730,9 @@ class _Planner {
         var any = false;
         var unreadRows = false;
         for (final row in rows) {
-          if (row.done || row.reason != ContactHeldReason.changeBrake) {
+          if (row.done ||
+              row.reason != ContactHeldReason.changeBrake ||
+              !_covers(answer, row)) {
             continue;
           }
           if (!_alive(ContactSide.google, row.googleName) ||
@@ -2646,6 +2786,20 @@ class _Planner {
       case ContactAnswerKind.carryOn:
         return applied;
     }
+  }
+
+  /// Whether a brake's answer acts on [row]: every row its brake holds,
+  /// or, with [ContactAnswer.held], only those its question listed (a
+  /// Gmail name there may since have been re-keyed).
+  bool _covers(ContactAnswer answer, _Row row) {
+    final held = answer.held;
+    if (held == null) return true;
+    return held.any(
+      (item) =>
+          (item.googleName != null &&
+              _newName(item.googleName!) == row.googleName) ||
+          (item.graphId != null && item.graphId == row.graphId),
+    );
   }
 
   /// Contacts an answer has acted on are no longer waiting for Ron.
@@ -3205,18 +3359,15 @@ class _Planner {
               ? googleListed[id]?.etag ?? row.input.googleEtag
               : graphListed[id]?.changeKey ?? row.input.graphChangeKey,
           title: details.title,
-          partnerId: side == ContactSide.google
-              ? row.input.graphId
-              : row.input.googleName,
-          partnerBase: side == ContactSide.google
-              ? row.input.graphDetails
-              : row.input.googleDetails,
+          partnerId: row.input.partnerOf(side),
+          partnerBase: row.input.partnerDetailsOf(side),
         ),
       ),
     );
   }
 
-  /// A surviving copy held as kept, its gone partner's id cleared.
+  /// A surviving copy held as kept, its gone partner's id cleared (and
+  /// kept as the row's partner, for a delete after all).
   void _keep(
     _Row row,
     ContactSide side,
@@ -3241,6 +3392,8 @@ class _Planner {
             : null,
         graphBase: side == ContactSide.graph ? row.input.graphDetails : null,
         title: details.title,
+        partnerId: row.input.partnerOf(side),
+        partnerBase: row.input.partnerDetailsOf(side),
       ),
       [
         ContactReviewItem(
@@ -3348,6 +3501,31 @@ class _Planner {
         }
         return;
       }
+    }
+
+    // A contact on the other side whose hidden tag names this one: the
+    // sync's copy of it, from before a reinstall or a lost store. Placed
+    // first, this contact would otherwise never look at it, and one with
+    // no email or mobile would go under Needs a look. Only one that is
+    // free (not paired, held or due to be deleted), and only when one is.
+    final tagging = other == ContactSide.graph
+        ? [
+            for (final c in graphListed.values)
+              if (c.tag != null && _newName(c.tag!) == id) c.id,
+          ]
+        : [
+            for (final c in googleListed.values)
+              if (c.tag == id) c.resourceName,
+          ];
+    final taggedHere = [
+      for (final t in tagging)
+        if ((_status(other, t) ?? _Status.fresh) == _Status.fresh &&
+            _wasRead(other, t))
+          t,
+    ];
+    if (taggedHere.length == 1) {
+      _pair(side, id, taggedHere.single, row);
+      return;
     }
 
     // A unique email address, else a unique mobile.
@@ -3525,6 +3703,13 @@ class _Planner {
         _keep(row, side, id, ContactReviewReason.firstSync);
         continue;
       }
+      // Versions are compared as they are, a Gmail re-key included: the
+      // version is the contact source's etag, so a re-key that leaves it
+      // as it was is no change, and one that moves it (as a merge, which
+      // changes the contact, does; whether Google's other re-keys do is
+      // not known) keeps the contact as changed since. A re-key is not
+      // taken for no change on its own: Ron is asked rather than a
+      // changed contact deleted.
       if (listedVersion != null &&
           storedVersion != null &&
           listedVersion != storedVersion) {
@@ -3593,6 +3778,8 @@ class _Planner {
           googleBase: onGoogle ? plan.googleBase : null,
           graphBase: onGoogle ? null : plan.graphBase,
           title: plan.title,
+          partnerId: delete.partnerId,
+          partnerBase: delete.partnerBase,
         );
         p.reviews = const [];
       }
@@ -3692,6 +3879,7 @@ class _Planner {
       graphGone: Set.unmodifiable(graphGone),
       answers: answerOutcomes,
       graphPassedOver: Set.unmodifiable(graphPassedOver),
+      mergedAway: List.unmodifiable(mergedAway),
       counts: ContactSyncCounts(
         addToGoogle: count((l) => l.create?.side == ContactSide.google),
         addToGraph: count((l) => l.create?.side == ContactSide.graph),
