@@ -149,14 +149,20 @@ class FakeGraphContacts {
   void deleteFromOutlook(String id) =>
       moveFromOutlook(id, deletedItemsId);
 
-  /// Move [id] to [folderId], keeping its id.
-  void moveFromOutlook(String id, String folderId) {
+  /// Move [id] to [folderId], keeping its id. With [keepChangeKey], its
+  /// `changeKey` stays as it was: whether Exchange moves it on a move is
+  /// not documented, and the sync must not depend on it.
+  void moveFromOutlook(
+    String id,
+    String folderId, {
+    bool keepChangeKey = false,
+  }) {
     final c = _there(id);
     final from = c.folder;
     c
       ..folder = folderId
-      ..changeKey = _newKey()
       ..modified = now;
+    if (!keepChangeKey) c.changeKey = _newKey();
     _record(id, from, folderId, null);
   }
 

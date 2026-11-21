@@ -930,7 +930,52 @@ class _Run {
     await _readGraph(fresh: normaliserMoved || preview);
     _checkStop();
     await _readMore();
+    await _dropMergedCopies();
     _checkStop();
+  }
+
+  /// Two Outlook creates in flight whose Gmail sources Ron has since
+  /// merged into one: only the create of the contact that stays is
+  /// settled as its copy. The other's journal entry goes, so its copy, if
+  /// it was made, is a contact of its own whose tag names a contact
+  /// already paired (Needs a look), not a second partner for it, and the
+  /// re-key does not find two creates copying one contact.
+  Future<void> _dropMergedCopies() async {
+    final reKeys = {...googleReKeys};
+    for (final MapEntry(key: name, value: p) in googleRead.entries) {
+      for (final old in GoogleContact.fromPerson(p).previousNames) {
+        if (old != name) reKeys[old] = name;
+      }
+    }
+    if (reKeys.isEmpty) return;
+    String last(String name) {
+      var now = name;
+      for (var i = 0; i < 8; i++) {
+        now = reKeys[now] ?? now;
+      }
+      return now;
+    }
+
+    final bySource = <String, List<ContactSyncOp>>{};
+    for (final op in ops) {
+      if (op.side != ContactSide.graph) continue;
+      bySource.putIfAbsent(last(op.sourceKey), () => []).add(op);
+    }
+    final dropped = <int>[];
+    for (final MapEntry(key: name, value: group) in bySource.entries) {
+      if (group.length < 2) continue;
+      final keep =
+          group.firstWhereOrNull((o) => o.sourceKey == name) ?? group.first;
+      for (final o in group) {
+        if (o != keep) dropped.add(o.opId);
+      }
+    }
+    if (dropped.isEmpty) return;
+    await store.dropOps(dropped);
+    ops = [
+      for (final o in ops)
+        if (!dropped.contains(o.opId)) o,
+    ];
   }
 
   /// The device claim: another device's, younger than a week, stops the
@@ -1503,7 +1548,21 @@ class _Run {
         }
         await store.saveLink(_linkOf(p));
       }
+      await store.dropOps(plan.journalSettled);
       for (final MapEntry(key: old, value: name) in reKeys.entries) {
+        // Two creates in flight whose sources Ron then merged: the store
+        // will not leave two copying one contact, so the merged-away
+        // source's goes, and its copy, if made, is found by its tag.
+        final copying = await store.ops(pairId);
+        bool copies(String id) => copying.any(
+          (o) => o.side == ContactSide.graph && o.sourceKey == id,
+        );
+        if (copies(old) && copies(name)) {
+          await store.dropOps([
+            for (final o in copying)
+              if (o.side == ContactSide.graph && o.sourceKey == old) o.opId,
+          ]);
+        }
         await store.rekey(pairId, ContactSide.google, old, name);
       }
 
@@ -1541,7 +1600,6 @@ class _Run {
         await _saveReview(item);
       }
 
-      await store.dropOps(plan.journalSettled);
       final restoreBack = {
         for (final r in plan.restores)
           if (r.alreadyBack) r.binId,
