@@ -1031,11 +1031,25 @@ void main() {
         ),
       ));
       engine = _Engine(sync, const [gmail, hadco]);
-      await pumpScreen(tester);
+      final c = await pumpScreen(tester);
 
       expect(find.text('First sync'), findsOneWidget);
       expect(find.text('Contact sync is on on your other device'),
           findsOneWidget);
+      // Sync here would start the first sync: not without Start's preview
+      // and backup from the last hour (the tablet the next day, say).
+      expect(enabled(tester, 'contact-sync-here'), isFalse);
+      expect(
+        find.text('To sync here instead, see the preview and save the backup '
+            'below first.'),
+        findsOneWidget,
+      );
+      final steps = c.read(contactSyncFirstStepsProvider.notifier);
+      steps.previewed('acct-g|acct-h', const ContactSyncPreview());
+      steps.backupSaved('acct-g|acct-h', ContactSide.google);
+      steps.backupSaved('acct-g|acct-h', ContactSide.graph);
+      await tester.pumpAndSettle();
+      expect(button('contact-sync-here-note'), findsNothing);
       await tester.tap(button('contact-sync-here'));
       await tester.pumpAndSettle();
       expect(sync.count('syncHere'), 1);
@@ -1052,6 +1066,31 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Contact sync has stopped: not allowed yet for Hadco.'),
           findsOneWidget);
+    });
+
+    testWidgets('a failure before the first sync has started offers no Try '
+        'again: a run goes only through Start', (tester) async {
+      sync = FakeContactSync(status: synced(
+        firstDone: false,
+        firstStarted: false,
+        halt: ContactSyncHalt(
+          kind: ContactSyncHaltKind.failed,
+          at: at1042,
+          error: const ContactSyncFailed('Hadco could not be reached.'),
+        ),
+      ));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+
+      expect(
+        find.text('The first sync could not begin: it stopped at '
+            '${formatClock(at1042, use24h: false)}.'),
+        findsOneWidget,
+      );
+      expect(find.text('Hadco could not be reached.'), findsOneWidget);
+      expect(find.text('Try again'), findsNothing);
+      expect(find.text('Sync now'), findsNothing);
+      expect(find.text('Start sync'), findsOneWidget);
     });
 
     testWidgets('not allowed: the stop names the account, and Sign in again '

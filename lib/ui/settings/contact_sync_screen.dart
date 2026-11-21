@@ -735,6 +735,20 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     ];
   }
 
+  /// The first sync's steps taken for [google] and [graph], or none.
+  /// Watched while building, read in a tap.
+  ContactSyncFirstSteps _stepsFor(
+    Account google,
+    Account graph, {
+    bool watch = true,
+  }) {
+    final pair = ContactSyncFirstSteps.pairKey(google.id, graph.id);
+    final all = watch
+        ? ref.watch(contactSyncFirstStepsProvider)
+        : ref.read(contactSyncFirstStepsProvider);
+    return all.pair == pair ? all : const ContactSyncFirstSteps();
+  }
+
   /// The way out of a failure, where there is one: the account's Allow
   /// for one that has not allowed it, or [again] for one worth trying
   /// again.
@@ -742,7 +756,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     Object e,
     Account google,
     Account graph,
-    VoidCallback again,
+    VoidCallback? again,
   ) =>
       switch (e) {
         ContactSyncNeedsSignIn(:final side) => () =>
@@ -837,6 +851,10 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     final now = DateTime.now();
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
     final side = _haltSide(halt);
+    // Before the first sync has started, Sync here would start it without
+    // Start's preview and backup from the last hour.
+    final firstGated =
+        !s.firstStarted && !_stepsFor(google, graph).readyAt(now);
     final name = _sideOrNot(side, graphName);
     switch (halt.kind) {
       case ContactSyncHaltKind.notAllowed:
@@ -870,10 +888,30 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           _Buttons([
             OutlinedButton(
               key: const ValueKey('contact-sync-here'),
-              onPressed: () => _act(context, _sync.syncHere),
+              onPressed: firstGated
+                  ? null
+                  : () => _act(context, () async {
+                        // Checked again: the screen may have stood open
+                        // past the hour since the button was drawn.
+                        final steps =
+                            _stepsFor(google, graph, watch: false);
+                        if (!s.firstStarted &&
+                            !steps.readyAt(DateTime.now())) {
+                          if (mounted) setState(() {});
+                          return;
+                        }
+                        await _sync.syncHere();
+                      }),
               child: const Text('Sync here'),
             ),
           ]),
+          if (firstGated)
+            const _Para(
+              'To sync here instead, see the preview and save the backup '
+              'below first.',
+              key: ValueKey('contact-sync-here-note'),
+              muted: true,
+            ),
         ];
       case ContactSyncHaltKind.emptyAnswer:
         // Its question says it, with the buttons.
@@ -899,11 +937,24 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         ];
       case ContactSyncHaltKind.failed:
         return [
-          _Para('The last sync stopped ${_when(halt.at, now, use24h)}.'),
+          _Para(
+            s.firstStarted
+                ? 'The last sync stopped ${_when(halt.at, now, use24h)}.'
+                : 'The first sync could not begin: it stopped '
+                    '${_when(halt.at, now, use24h)}.',
+          ),
+          // Before the first sync, a run goes only through Start, just
+          // below, and its preview and backup from the last hour: no Try
+          // again beside it.
           _Problem(
             doing: 'Syncing contacts',
             error: _failureOf(halt),
-            onRemedy: _remedy(_failureOf(halt), google, graph, _syncNow),
+            onRemedy: _remedy(
+              _failureOf(halt),
+              google,
+              graph,
+              s.firstStarted ? _syncNow : null,
+            ),
           ),
         ];
       case ContactSyncHaltKind.putAway:
