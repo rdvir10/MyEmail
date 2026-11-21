@@ -1535,21 +1535,26 @@ void main() {
 
       expect(find.text('Needs a look (2)'), findsOneWidget,
           reason: 'copies are not questions');
-      expect(find.text('Duplicates to merge when you like (5)'),
+      expect(find.text('Duplicates to merge when you like (5 people)'),
           findsOneWidget);
       expect(
         tester.getTopLeft(button('contact-sync-duplicates')).dy,
         greaterThan(tester.getTopLeft(button('contact-sync-looks')).dy),
       );
 
-      await tester.tap(find.text('Duplicates to merge when you like (5)'));
+      await tester.tap(
+        find.text('Duplicates to merge when you like (5 people)'),
+      );
       await tester.pumpAndSettle();
       expect(
         find.text('These are copies of the same person. One copy on each side '
             'is synced; the others are left as they are. Merge them when you '
             'like: Merge & fix in Google Contacts, or delete the extra ones '
-            'in Outlook. Whichever copy you remove, the sync moves to one '
-            'that is left, and nothing is deleted on the other side.'),
+            'in Outlook. Where a side holds more than one copy, whichever '
+            'one you remove there, the sync moves to one that is left, and '
+            "nothing is deleted on the other side. Removing a person's last "
+            'copy on one side deletes it on the other too, as any deletion '
+            'does.'),
         findsOneWidget,
       );
       final lines = [
@@ -1571,6 +1576,36 @@ void main() {
           reason: 'by name: ${lines[i]}',
         );
       }
+    });
+
+    test('a side with no copies has none synced, whatever its flag says',
+        () {
+      // Hadco said synced, but holding none: its copy is still to be made.
+      expect(
+        contactSyncCopiesLine(
+          const ContactSyncDuplicates(
+            title: 'Ann Cole',
+            googleCopies: 2,
+            googleSynced: true,
+            graphSynced: true,
+          ),
+          'Hadco',
+        ),
+        '2 in Gmail; one is synced, and its copy in Hadco is still to be '
+        'made',
+      );
+      // Gmail said synced, but holding none, and Hadco not: none is.
+      expect(
+        contactSyncCopiesLine(
+          const ContactSyncDuplicates(
+            title: 'Bob Day',
+            graphCopies: 2,
+            googleSynced: true,
+          ),
+          'Hadco',
+        ),
+        '2 in Hadco; none is synced yet',
+      );
     });
 
     testWidgets('a few hundred copies of people scroll to the last',
@@ -1969,19 +2004,32 @@ void main() {
       Navigator.of(tester.element(find.text('Restore'))).pop();
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
-        find.text('Duplicates to merge when you like (1)'),
+        find.text('Duplicates to merge when you like (1 person)'),
         -300,
         scrollable: list,
       );
-      await tester.ensureVisible(find.text('Duplicates to merge when you like (1)'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Duplicates to merge when you like (1)'));
-      await tester.pumpAndSettle();
-      expect(
-        find.text('Alexandra Rosenblum-Katzenellenbogen: 12 in Gmail, 1 in '
-            'Hadco; one in Gmail is synced'),
-        findsOneWidget,
+      await tester.ensureVisible(
+        find.text('Duplicates to merge when you like (1 person)'),
       );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.text('Duplicates to merge when you like (1 person)'),
+      );
+      await tester.pumpAndSettle();
+      // Under the text, which at this size fills most of the screen.
+      final person = find.text(
+        'Alexandra Rosenblum-Katzenellenbogen: 12 in Gmail, 1 in Hadco; one '
+        'in Gmail is synced',
+      );
+      await tester.scrollUntilVisible(
+        person,
+        300,
+        scrollable: find.descendant(
+          of: button('contact-sync-duplicates-list'),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      expect(person, findsOneWidget);
     });
   });
 

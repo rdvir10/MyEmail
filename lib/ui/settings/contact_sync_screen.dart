@@ -587,7 +587,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
               minVerticalPadding: 10,
               leading: const Icon(Icons.people_outline),
               title: Text(
-                'Duplicates to merge when you like (${s.duplicates.length})',
+                'Duplicates to merge when you like '
+                '(${_count(s.duplicates.length, 'person', 'people')})',
               ),
               subtitle: const Text(
                 'Copies of the same person: one on each side is synced, the '
@@ -1557,11 +1558,15 @@ class _DuplicatesScreen extends ConsumerWidget {
     final people = [...?status?.duplicates]..sort(
         (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
       );
+    // The sync moves to another copy only while the side Ron removes from
+    // still holds one: a person's last copy there goes as any deletion.
     const intro = 'These are copies of the same person. One copy on each '
         'side is synced; the others are left as they are. Merge them when '
         'you like: Merge & fix in Google Contacts, or delete the extra ones '
-        'in Outlook. Whichever copy you remove, the sync moves to one that '
-        'is left, and nothing is deleted on the other side.';
+        'in Outlook. Where a side holds more than one copy, whichever one '
+        'you remove there, the sync moves to one that is left, and nothing '
+        "is deleted on the other side. Removing a person's last copy on one "
+        'side deletes it on the other too, as any deletion does.';
     return Scaffold(
       appBar: AppBar(
         title: const Text('Duplicates to merge'),
@@ -1616,7 +1621,9 @@ String contactSyncCopiesLine(ContactSyncDuplicates d, String graphName) {
     if (d.graphCopies > 0) '${d.graphCopies} in $graphName',
   ];
   final bothSides = counts.length == 2;
-  final synced = switch ((d.googleSynced, d.graphSynced)) {
+  final googleSynced = d.googleSynced && d.googleCopies > 0;
+  final graphSynced = d.graphSynced && d.graphCopies > 0;
+  final synced = switch ((googleSynced, graphSynced)) {
     (true, true) => bothSides ? 'one of each is synced' : 'one is synced',
     (true, false) when d.graphCopies == 0 =>
       'one is synced, and its copy in $graphName is still to be made',
