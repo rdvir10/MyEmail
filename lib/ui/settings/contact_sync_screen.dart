@@ -1851,6 +1851,17 @@ String _lookLine(ContactSyncLook l, String graphName) {
           'change was kept'
           '${losing == null || losingSide == null ? '' : '. ${side(losingSide)} had: $losing'}'
           '.';
+    case ContactReviewKind.kept when l.side == null:
+      // Which side it went from is not known: nothing named at a guess.
+      return switch (l.reason) {
+        ContactReviewReason.changedSince =>
+          'Deleted on one side, changed on the other since: kept.',
+        ContactReviewReason.firstSync => 'Deleted on one side during the '
+            'first sync, which deletes nothing: kept on the other.',
+        ContactReviewReason.notDeleted => "Deleted on one side. You chose "
+            "Don't delete them: it stays on the other but stops syncing.",
+        _ => 'Deleted on one side, kept on the other.',
+      };
     case ContactReviewKind.kept:
       final gone = _goneFrom(here, graphName);
       return switch (l.reason) {

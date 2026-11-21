@@ -928,6 +928,9 @@ void main() {
       expect(find.text('Copy it back'), findsOneWidget);
       expect(find.textContaining('Delete it in'), findsNothing);
       expect(find.textContaining('Keep it only in'), findsNothing);
+      expect(find.text('Deleted on one side, kept on the other.'),
+          findsOneWidget,
+          reason: 'not "Deleted in Gmail, kept in Hadco" at a guess');
     });
 
     testWidgets('a first sync left unfinished says how far it got',
