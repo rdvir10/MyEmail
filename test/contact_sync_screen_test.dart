@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -15,12 +16,14 @@ import 'package:myemail/domain/display_settings.dart';
 import 'package:myemail/state/backup_providers.dart';
 import 'package:myemail/state/contact_providers.dart';
 import 'package:myemail/state/providers.dart';
+import 'package:myemail/state/put_away_providers.dart';
 import 'package:myemail/ui/accounts/microsoft_sign_in_screen.dart';
 import 'package:myemail/ui/common/text_size.dart';
 import 'package:myemail/ui/messages/date_format.dart' show formatClock;
 import 'package:myemail/ui/settings/backup_screen.dart';
 import 'package:myemail/ui/settings/contact_sync_screen.dart';
 import 'package:myemail/ui/settings/settings_screen.dart';
+import 'package:myemail/ui/shell/app_shell.dart';
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
 import 'fakes/fake_contact_sync.dart';
@@ -1137,6 +1140,211 @@ void main() {
       expect(find.byType(ContactSyncScreen), findsOneWidget);
     });
   });
+
+  group('the shell', () {
+    late FakeContactSync sync;
+    late MemoryUiStateStore ui;
+    late StreamController<void> putAway;
+
+    setUp(() {
+      ui = MemoryUiStateStore();
+      putAway = StreamController<void>.broadcast();
+      addTearDown(putAway.close);
+    });
+
+    Future<void> pumpApp(WidgetTester tester, {bool on = true}) async {
+      if (on) await ui.writeString(UiStateKeys.contactSyncDevice, 'on');
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(ui),
+        mailEngineProvider.overrideWithValue(_SampleWith(sync)),
+        appPutAwayProvider.overrideWithValue(putAway.stream),
+      ]);
+      addTearDown(c.dispose);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: const MaterialApp(home: AppShell()),
+      ));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> away(WidgetTester tester) async {
+      for (final state in [
+        AppLifecycleState.inactive,
+        AppLifecycleState.hidden,
+        AppLifecycleState.paused,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      await tester.pump();
+    }
+
+    Future<void> back(WidgetTester tester) async {
+      for (final state in [
+        AppLifecycleState.hidden,
+        AppLifecycleState.inactive,
+        AppLifecycleState.resumed,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('starts a run when MyEmail is opened, and again when it '
+        'comes back, at most once an hour', (tester) async {
+      sync = FakeContactSync(status: synced(
+        lastDoneAt: today.subtract(const Duration(hours: 2)),
+      ));
+      sync.now = today;
+      await pumpApp(tester);
+      expect(sync.count('startIfDue'), 1);
+      expect(sync.runs, 1);
+
+      // Focus back only, the shade pushed up: not an opening.
+      tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.inactive,
+      );
+      tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      );
+      await tester.pumpAndSettle();
+      expect(sync.count('startIfDue'), 1);
+
+      await away(tester);
+      sync.now = today.add(const Duration(minutes: 10));
+      await back(tester);
+      expect(sync.count('startIfDue'), 2);
+      expect(sync.runs, 1, reason: 'ten minutes after the last run');
+
+      await away(tester);
+      sync.now = today.add(const Duration(minutes: 61));
+      await back(tester);
+      expect(sync.count('startIfDue'), 3);
+      expect(sync.runs, 2);
+    });
+
+    testWidgets('switched off, it starts nothing and says nothing',
+        (tester) async {
+      sync = FakeContactSync(status: synced(
+        lastDoneAt: today.subtract(const Duration(hours: 2)),
+        notice: ContactSyncNotice(at: at1042, heldDeletions: 12),
+      ));
+      await pumpApp(tester, on: false);
+      await away(tester);
+      await back(tester);
+
+      expect(sync.count('startIfDue'), 0);
+      expect(find.textContaining('Contact sync has stopped'), findsNothing);
+      expect(sync.noticesSeen, isEmpty);
+    });
+
+    testWidgets('put away, the run stops', (tester) async {
+      sync = FakeContactSync(status: synced());
+      await pumpApp(tester);
+      expect(sync.count('stop'), 0);
+
+      putAway.add(null);
+      await tester.pumpAndSettle();
+      expect(sync.count('stop'), 1);
+    });
+
+    testWidgets('says a stop once, with Open', (tester) async {
+      final first = DateTime(today.year, today.month, today.day, 9);
+      sync = FakeContactSync(status: synced(
+        notice: ContactSyncNotice(at: first, heldDeletions: 12),
+      ));
+      await pumpApp(tester);
+
+      expect(find.text('Contact sync has stopped: 12 deletions need your OK'),
+          findsOneWidget);
+      expect(sync.noticesSeen, [first]);
+
+      ScaffoldMessenger.of(tester.element(find.byType(AppShell)))
+          .removeCurrentSnackBar();
+      await tester.pumpAndSettle();
+      await away(tester);
+      await back(tester);
+      expect(find.textContaining('Contact sync has stopped'), findsNothing,
+          reason: 'said once per stop');
+
+      // Another stop, while MyEmail is in front.
+      final second = first.add(const Duration(hours: 1));
+      sync.set(synced(
+        notice: ContactSyncNotice(at: second, heldChanges: 15),
+      ));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Contact sync has stopped: changes to 15 contacts need '
+            'your OK'),
+        findsOneWidget,
+      );
+      expect(sync.noticesSeen, [first, second]);
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      expect(find.byType(ContactSyncScreen), findsOneWidget);
+    });
+
+    testWidgets('over the Contact sync screen, a stop is not said again',
+        (tester) async {
+      sync = FakeContactSync(status: synced());
+      await pumpApp(tester);
+      unawaited(tester.state<NavigatorState>(find.byType(Navigator).first)
+          .push(MaterialPageRoute<void>(
+        builder: (_) => const ContactSyncScreen(),
+      )));
+      await tester.pumpAndSettle();
+
+      final at = DateTime(today.year, today.month, today.day, 9);
+      sync.set(synced(notice: ContactSyncNotice(at: at, heldDeletions: 6)));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Contact sync has stopped'), findsNothing);
+      expect(sync.noticesSeen, [at], reason: 'the screen shows it already');
+    });
+  });
+
+  group('the one-line message', () {
+    test('names what stopped it', () {
+      String? say(ContactSyncNotice n) =>
+          contactSyncNoticeText(n, graphName: 'Hadco');
+      expect(
+        say(ContactSyncNotice(at: at1042, heldDeletions: 1)),
+        'Contact sync has stopped: 1 deletion needs your OK',
+      );
+      expect(
+        say(ContactSyncNotice(at: at1042, heldDeletions: 12, heldChanges: 1)),
+        'Contact sync has stopped: 12 deletions and changes to 1 contact '
+        'need your OK',
+      );
+      expect(
+        say(ContactSyncNotice(
+          at: at1042,
+          halt: ContactSyncHalt(
+            kind: ContactSyncHaltKind.notAllowed,
+            at: at1042,
+            side: ContactSide.graph,
+          ),
+        )),
+        'Contact sync has stopped: not allowed yet for Hadco',
+      );
+      expect(
+        say(ContactSyncNotice(
+          at: at1042,
+          halt: ContactSyncHalt(
+            kind: ContactSyncHaltKind.otherDevice,
+            at: at1042,
+          ),
+        )),
+        'Contact sync is on on your other device',
+      );
+      expect(
+        say(ContactSyncNotice(
+          at: at1042,
+          halt: ContactSyncHalt(kind: ContactSyncHaltKind.putAway, at: at1042),
+        )),
+        isNull,
+      );
+    });
+  });
 }
 
 const _backupFiles = [
@@ -1193,6 +1401,17 @@ class _Engine extends SampleMailEngine {
     String? signedInAs,
   }) async =>
       signedInAgain.add(accountId);
+}
+
+/// The sample engine, with its own accounts and mail, and [contacts]'
+/// contact sync.
+class _SampleWith extends SampleMailEngine {
+  _SampleWith(this.contacts);
+
+  final FakeContactSync contacts;
+
+  @override
+  ContactSyncService get contactSync => contacts;
 }
 
 /// The save dialogs, answered in turn by [answers] (saved when it runs

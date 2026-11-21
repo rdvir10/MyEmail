@@ -17,7 +17,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/imap/imap_mapping.dart';
-import '../../data/mail_engine.dart' show SaysMeetingMailArrived;
+import '../../data/mail_engine.dart'
+    show ContactSyncNotice, ContactSyncStatus, SaysMeetingMailArrived;
+import '../../state/contact_providers.dart'
+    show contactSyncOnProvider, contactSyncStatusProvider;
+import '../settings/contact_sync_screen.dart'
+    show ContactSyncScreen, contactSyncAccountName, contactSyncNoticeText;
 import '../../domain/mail_message.dart';
 import '../../domain/meeting_alerts.dart' show MeetingRef, calendarDayOf;
 import '../../data/auth/microsoft_oauth.dart' show SignInExpired;
@@ -148,6 +153,15 @@ class _AppShellState extends ConsumerState<AppShell>
           .dropLeftovers(ref.read(mailEngineProvider)));
       unawaited(ref.read(calendarKeeperProvider).keepUp());
       unawaited(ref.read(passwordKeeperProvider).keepUp());
+      _contactSyncOpened();
+    });
+    // Contact sync stopped, or held something back to ask first: said once
+    // per stop, as it happens while the app is in front, or when it next
+    // comes back (see _contactSyncOpened).
+    ref.listenManual(contactSyncStatusProvider, (_, next) {
+      if (next.value?.notice case final notice? when !_away) {
+        _sayContactSyncNotice(notice, next.value!);
+      }
     });
     // A password's days changed on an account's settings: its reminders
     // move with them.
@@ -205,6 +219,9 @@ class _AppShellState extends ConsumerState<AppShell>
   /// the list goes back to the Inbox at its newest. The app then reopens on
   /// the mail; a tapped widget or notification takes it on from there.
   Future<void> _backToTheMail() async {
+    // Contact sync's run finishes the write in hand and stops: Android may
+    // end the app at any moment now, and the next opening carries on.
+    unawaited(_stopContactSync());
     await closeForPutAway(
       Navigator.of(context),
       ref.read(putAwayGuardsProvider),
@@ -224,6 +241,73 @@ class _AppShellState extends ConsumerState<AppShell>
     );
     if (inbox != null) ref.read(selectedFolderIdProvider.notifier).select(inbox);
     ref.read(listToTopProvider.notifier).request();
+  }
+
+  Future<void> _stopContactSync() async {
+    try {
+      await ref.read(mailEngineProvider).contactSync.stop();
+    } catch (e) {
+      debugPrint('[myemail] contact sync not stopped: ${e.runtimeType}');
+    }
+  }
+
+  /// MyEmail opened, or back in front after being away: with contact sync
+  /// switched on for this device, a run if one is due (the runner says:
+  /// the last over an hour ago, or the first sync unfinished, and none
+  /// failed in the last five minutes), and the message about the last
+  /// stop if it has not been said. Nothing while it is off. Never throws.
+  void _contactSyncOpened() {
+    if (!mounted || !ref.read(contactSyncOnProvider)) return;
+    final sync = ref.read(mailEngineProvider).contactSync;
+    unawaited(sync.startIfDue().catchError((Object e) {
+      debugPrint('[myemail] contact sync not started: ${e.runtimeType}');
+      return false;
+    }));
+    final status = ref.read(contactSyncStatusProvider).value;
+    if (status?.notice case final notice?) {
+      _sayContactSyncNotice(notice, status!);
+    }
+  }
+
+  /// The notice last said, so the same stop is not said twice while the
+  /// runner is still being told it was seen.
+  DateTime? _contactNoticeSaid;
+
+  /// "Contact sync has stopped: 12 deletions need your OK", with Open, and
+  /// never a notification. Once per stop: the runner is told it was seen.
+  /// Not said over the Contact sync screen, which shows it already.
+  void _sayContactSyncNotice(ContactSyncNotice notice, ContactSyncStatus s) {
+    if (!mounted || !ref.read(contactSyncOnProvider)) return;
+    if (notice.at == _contactNoticeSaid) return;
+    _contactNoticeSaid = notice.at;
+    final sync = ref.read(mailEngineProvider).contactSync;
+    unawaited(sync.noticeSeen(notice.at).catchError((Object e) {
+      debugPrint('[myemail] contact sync notice kept: ${e.runtimeType}');
+    }));
+    final accounts = ref.read(accountsProvider).value ?? const <Account>[];
+    final graph = accounts.where((a) => a.id == s.graphAccountId).firstOrNull;
+    final text = contactSyncNoticeText(
+      notice,
+      graphName: contactSyncAccountName(graph),
+    );
+    if (text == null || ContactSyncScreen.isOpen) return;
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        key: const ValueKey('contact-sync-notice'),
+        duration: const Duration(seconds: 10),
+        persist: false,
+        content: Text(text),
+        action: SnackBarAction(
+          label: 'Open',
+          onPressed: () {
+            if (!mounted) return;
+            unawaited(Navigator.of(context).push(MaterialPageRoute<void>(
+              builder: (_) => const ContactSyncScreen(),
+            )));
+          },
+        ),
+      ));
   }
 
   /// See [SyncSettings.askToRunInBackgroundOnce].
@@ -370,6 +454,7 @@ class _AppShellState extends ConsumerState<AppShell>
     unawaited(ref.read(calendarKeeperProvider).keepUp());
     // Every six hours at most.
     unawaited(ref.read(passwordKeeperProvider).keepUp());
+    _contactSyncOpened();
   }
 
   /// Hidden or paused since the app was last in front; see
