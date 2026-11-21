@@ -2234,13 +2234,11 @@ class _Planner {
           final partner = entry.side == ContactSide.google
               ? row?.googleName
               : row?.graphId;
-          if (row != null &&
-              row.state == ContactLinkState.paired &&
-              partner != null &&
-              partner != copy) {
-            // The source is paired already with another contact on the
-            // copy's side (Ron merged it in Gmail into a contact that was
-            // paired): its row is not taken from that partner.
+          if (partner != null && partner != copy) {
+            // The source's row names another contact on the copy's side
+            // already, paired or held with it (moved out, held by the
+            // change brake): Ron merged it in Gmail into a contact that
+            // had a partner. The row is not taken from that partner.
             _copyOfPaired(entry.side, copy, source);
             continue;
           }
@@ -2275,8 +2273,8 @@ class _Planner {
     }
   }
 
-  /// A copy whose create was interrupted, found after its source was
-  /// paired with another contact on the copy's side. An Outlook copy is
+  /// A copy whose create was interrupted, found after its source came to
+  /// have another contact on the copy's side. An Outlook copy is
   /// held under a "merged in Gmail" item, as a merge's other Outlook
   /// contact is (delete it in Hadco too, or keep it only there); a Gmail
   /// copy goes through the new-contact rules, its tag naming a paired

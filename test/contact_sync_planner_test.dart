@@ -2266,6 +2266,38 @@ void main() {
       expect(plan.links.where((l) => l.create != null), isEmpty);
     });
 
+    test('a copy keeps out of a row its source holds with another', () {
+      // people/c's row holds it with H-a, which is in another folder (the
+      // row moved out); people/c's interrupted copy Z is found.
+      final plan = run(
+        google: [g('people/c', ann)],
+        graph: [h('Z', ann, tag: 'people/c')],
+        graphMovedOut: {'H-a'},
+        links: [
+          link(
+            1,
+            'people/c',
+            'H-a',
+            base: ann,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.movedOut,
+          ),
+        ],
+        journal: [
+          ContactJournalEntry(
+            opId: 7,
+            side: ContactSide.graph,
+            sourceId: 'people/c',
+            startedAt: now.subtract(const Duration(hours: 3)),
+          ),
+        ],
+      );
+      expect(plan.journalSettled, [7]);
+      expect(byLink(plan, 1), isNull, reason: 'held with H-a, as it was');
+      expect(byGraph(plan, 'Z')!.reason, ContactHeldReason.waiting);
+      expect(plan.reviews.single.kind, ContactReviewKind.mergedInGoogle);
+    });
+
     test('a Gmail copy whose source is paired goes through the rules', () {
       // Outlook H5 is paired with Gmail c7 by the time its interrupted
       // Gmail copy c9 is found.
