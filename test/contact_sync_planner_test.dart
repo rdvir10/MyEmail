@@ -4457,6 +4457,141 @@ void main() {
       expect(plan.reviews, isEmpty);
     });
 
+    test('a copy of a person no longer synced is kept, never copied back',
+        () {
+      // Ron deletes Ann in Gmail: the sync deletes Hadco's synced copy,
+      // and the copy held beside it becomes a kept item at once.
+      final plan = run(googleGone: {'people/c1'}, links: synced());
+      expect(byLink(plan, 1)!.delete!.contactId, 'H1');
+      final copy = byLink(plan, 2)!;
+      expect(copy.state, ContactLinkState.held);
+      expect(copy.reason, ContactHeldReason.kept);
+      expect(copy.graphId, 'H2');
+      final item = plan.reviews.single;
+      expect(item.kind, ContactReviewKind.kept);
+      expect(item.reason, ContactReviewReason.copyOfGone);
+      expect(item.graphId, 'H2');
+      expect(item.goneSide, ContactSide.google);
+      expect(plan.duplicates, isEmpty);
+      // Read later, it stays as it is: no second Ann in Gmail.
+      final keptRow = link(
+        2,
+        null,
+        'H2',
+        base: annCopy(),
+        state: ContactLinkState.held,
+        reason: ContactHeldReason.kept,
+      );
+      final later = run(
+        graph: [h('H2', annCopy(more: {ContactField.nickname: 'Annie'}))],
+        links: [keptRow],
+      );
+      expect(later.links.where((l) => l.create != null), isEmpty);
+      // A copy left held with no pair at all (from before), read or not,
+      // is kept with an item too, not placed by the usual rules.
+      final lone = link(
+        2,
+        null,
+        'H2',
+        base: annCopy(),
+        state: ContactLinkState.held,
+        reason: ContactHeldReason.duplicate,
+      );
+      for (final plan in [
+        run(graph: [h('H2', annCopy())], links: [lone]),
+        run(links: [lone]),
+      ]) {
+        expect(plan.links.where((l) => l.create != null), isEmpty);
+        expect(byLink(plan, 2)!.reason, ContactHeldReason.kept);
+        expect(plan.reviews.single.reason, ContactReviewReason.copyOfGone);
+      }
+      // Held copies on both sides with no pair left are not paired with
+      // each other either: each is kept with an item.
+      ContactLinkInput copyRow(int id, String? g, String? h) => link(
+        id,
+        g,
+        h,
+        base: annCopy(),
+        state: ContactLinkState.held,
+        reason: ContactHeldReason.duplicate,
+      );
+      final orphaned = run(
+        google: [g('people/c2', annCopy()), g('people/c3', annCopy())],
+        graph: [h('H2', annCopy())],
+        links: [
+          copyRow(2, 'people/c2', null),
+          copyRow(3, 'people/c3', null),
+          copyRow(4, null, 'H2'),
+        ],
+      );
+      expect(orphaned.links.where((l) => l.state == ContactLinkState.paired),
+          isEmpty);
+      expect(
+        orphaned.links.map((l) => l.reason),
+        everyElement(ContactHeldReason.kept),
+      );
+      expect(orphaned.reviews, hasLength(3));
+    });
+
+    test('kept after a Gmail delete: whatever Ron answers, no second Ann',
+        () {
+      // Ron deletes Ann in Gmail; Hadco's synced copy changed since, so it
+      // is kept; the copy held beside it is kept too, each with an item.
+      final changed = annCopy(more: {ContactField.office: 'B3'});
+      final kept = run(
+        googleGone: {'people/c1'},
+        graph: [h('H1', changed, key: 'k2')],
+        links: synced(),
+      );
+      expect(byLink(kept, 1)!.reason, ContactHeldReason.kept);
+      expect(byLink(kept, 2)!.reason, ContactHeldReason.kept);
+      expect(
+        kept.reviews.map((r) => r.reason),
+        unorderedEquals([
+          ContactReviewReason.changedSince,
+          ContactReviewReason.copyOfGone,
+        ]),
+      );
+      final rows = [
+        link(
+          1,
+          null,
+          'H1',
+          base: changed,
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.kept,
+        ),
+        link(
+          2,
+          null,
+          'H2',
+          base: annCopy(),
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.kept,
+        ),
+      ];
+      for (final answer in [
+        ContactAnswerKind.copyBack,
+        ContactAnswerKind.deleteHereToo,
+        ContactAnswerKind.keepOnlyHere,
+      ]) {
+        final plan = run(
+          graph: [
+            h('H1', changed, key: 'k2'),
+            h('H2', annCopy(more: {ContactField.nickname: 'Annie'})),
+          ],
+          links: rows,
+          answers: [ContactAnswer(answer, graphId: 'H1')],
+        );
+        expect(
+          plan.counts.addToGoogle,
+          answer == ContactAnswerKind.copyBack ? 1 : 0,
+          reason: '$answer: only H1, and only when asked',
+        );
+        expect(byGraph(plan, 'H2'), isNull, reason: '$answer: H2 left alone');
+      }
+    });
+
     test('Ron deleting the synced copy in Hadco: the pair moves to a copy',
         () {
       final plan = run(
@@ -4596,7 +4731,7 @@ void main() {
       expect(group.graphCopies, ['H2']);
       expect(plan.counts.duplicateCopies, 2);
       // A held copy whose address has changed since it was read is still
-      // listed, under its name.
+      // held while Ann is synced, and listed with her pair.
       final apart = run(
         links: [
           link(1, 'people/c1', 'H1', base: annCopy()),
@@ -4613,7 +4748,8 @@ void main() {
       final alone = apart.duplicates.single;
       expect(alone.title, 'Ann Cole');
       expect(alone.graphCopies, ['H2']);
-      expect(alone.googleSynced, isNull);
+      expect((alone.googleSynced, alone.graphSynced), ('people/c1', 'H1'));
+      expect(apart.reviews, isEmpty);
     });
 
     test('a first sync shaped like the tablet asks only about families and '
