@@ -2057,6 +2057,32 @@ void main() {
       expect(plan.journalSettled, [3]);
       expect(byGoogle(plan, 'people/c1')!.create!.side, ContactSide.graph);
     });
+
+    test('found by the tag it was written with, after a re-key', () {
+      // Journalled under people/c1 with tag people/c1; the store then
+      // re-keyed the source to people/c9, and Google no longer reports
+      // the re-key. The Outlook copy still carries people/c1.
+      final plan = run(
+        google: [g('people/c9', ann)],
+        graph: [
+          h('H9', person(given: 'Ann', family: 'Cole'), tag: 'people/c1'),
+        ],
+        journal: [
+          ContactJournalEntry(
+            opId: 3,
+            side: ContactSide.graph,
+            sourceId: 'people/c9',
+            tag: 'people/c1',
+            startedAt: now.subtract(const Duration(hours: 3)),
+          ),
+        ],
+      );
+      expect(plan.journalSettled, [3]);
+      expect(byGoogle(plan, 'people/c9')!.graphId, 'H9');
+      expect(plan.links.where((l) => l.create != null), isEmpty);
+      expect(plan.reviews, isEmpty);
+      expect(plan.graphTagMoves, {'H9': 'people/c9'});
+    });
   });
 
   group('Ron\'s answers', () {

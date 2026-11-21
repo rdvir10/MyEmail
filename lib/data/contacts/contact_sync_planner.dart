@@ -94,6 +94,7 @@ class ContactJournalEntry {
     required this.side,
     required this.sourceId,
     required this.startedAt,
+    this.tag,
   });
 
   final int opId;
@@ -101,11 +102,18 @@ class ContactJournalEntry {
   /// Where the contact was being made.
   final ContactSide side;
 
-  /// The contact it copies, on the other side, which is also the hidden
-  /// tag it carries.
+  /// The contact it copies, on the other side, as the store has it now:
+  /// a re-key of the source moves it.
   final String sourceId;
 
   final DateTime startedAt;
+
+  /// The hidden tag the create wrote on the copy (the store's op tag):
+  /// the source's id when it was sent, which a later re-key of the source
+  /// does not change on the copy. Null when it is [sourceId]. An Outlook
+  /// copy is found by either; a Gmail copy's tag is an Outlook id, which
+  /// is never re-keyed.
+  final String? tag;
 }
 
 /// A contact the sync deleted, from Recently deleted.
@@ -2152,6 +2160,7 @@ class _Planner {
         copy = googleListed.values
             .firstWhereOrNull(
               (c) =>
+                  // An Outlook id is never re-keyed: the tag is the id.
                   c.tag == entry.sourceId &&
                   !googleRow.containsKey(c.resourceName) &&
                   googleStatus[c.resourceName] == null,
@@ -2161,7 +2170,9 @@ class _Planner {
         copy = graphListed.values
             .firstWhereOrNull(
               (c) =>
-                  (c.tag == source || c.tag == entry.sourceId) &&
+                  (c.tag == source ||
+                      c.tag == entry.sourceId ||
+                      (entry.tag != null && c.tag == entry.tag)) &&
                   !graphRow.containsKey(c.id) &&
                   graphStatus[c.id] == null,
             )
@@ -2182,6 +2193,12 @@ class _Planner {
           final row = _rowOf(sourceSide, source);
           _pairNew(g, h, linkId: row?.id);
           row?.done = true;
+          // An Outlook copy whose tag names the source's old name has it
+          // moved on, as a re-key moves the tag of a partner with a row.
+          if (entry.side == ContactSide.graph &&
+              graphListed[copy]?.tag != source) {
+            tagMoves[copy] = source;
+          }
         } else {
           // The source was not read: both wait for a run that reads it.
           _setStatus(entry.side, copy, _Status.leftAlone);
