@@ -919,6 +919,80 @@ void main() {
       );
     });
 
+    testWidgets('a copy of a contact that no longer syncs says so, with '
+        'the kept answers', (tester) async {
+      // Its pair may have gone, or been renamed away from it: nothing is
+      // said to have been deleted.
+      sync = FakeContactSync(status: synced(looks: const [
+        ContactSyncLook(
+          id: 1,
+          kind: ContactReviewKind.kept,
+          reason: ContactReviewReason.copyOfGone,
+          side: ContactSide.google,
+          title: 'Ann Cole',
+          choices: [
+            ContactSyncChoice.copyBack,
+            ContactSyncChoice.deleteHereToo,
+            ContactSyncChoice.keepOnlyHere,
+          ],
+        ),
+        ContactSyncLook(
+          id: 2,
+          kind: ContactReviewKind.kept,
+          reason: ContactReviewReason.copyOfGone,
+          side: ContactSide.graph,
+          title: 'Bob Day',
+          choices: [ContactSyncChoice.copyBack],
+        ),
+        ContactSyncLook(
+          id: 3,
+          kind: ContactReviewKind.kept,
+          reason: ContactReviewReason.copyOfGone,
+          title: 'Cy Fox',
+          choices: [ContactSyncChoice.copyBack],
+        ),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (3)'));
+      await tester.pumpAndSettle();
+
+      // Each names the side its copy is on: the other from the item's.
+      for (final (id, line) in [
+        (
+          1,
+          'A copy of a contact that no longer syncs: its synced copy went, '
+              'or no longer matches it. This copy in Hadco was left as it is.',
+        ),
+        (
+          2,
+          'A copy of a contact that no longer syncs: its synced copy went, '
+              'or no longer matches it. This copy in Gmail was left as it is.',
+        ),
+        (
+          3,
+          'A copy of a contact that no longer syncs: its synced copy went, '
+              'or no longer matches it. This copy was left as it is.',
+        ),
+      ]) {
+        expect(
+          find.descendant(
+            of: button('contact-sync-look:$id'),
+            matching: find.text(line),
+          ),
+          findsOneWidget,
+          reason: line,
+        );
+      }
+      // Ann's copy is in Hadco: the answers name it.
+      expect(find.text('Keep it only in Hadco'), findsOneWidget);
+      await tester.tap(find.text('Delete it in Hadco too'));
+      await tester.pumpAndSettle();
+      expect(sync.lookAnswers, [
+        (id: 1, choice: ContactSyncChoice.deleteHereToo, candidateId: null),
+      ]);
+    });
+
     testWidgets('a kept contact whose side is not known offers no button '
         'naming a side', (tester) async {
       sync = FakeContactSync(status: synced(looks: const [
