@@ -2619,6 +2619,90 @@ void main() {
     expect(pair.toGoogle, isEmpty);
     expect(pair.removes, isTrue);
   });
+
+  group('a pair planned again after a stale read', () {
+    final base = person(
+      given: 'Ann',
+      family: 'Cole',
+      more: {ContactField.office: 'A'},
+    );
+
+    test('keeps the first sync\'s rules', () {
+      // First sync: Gmail changed the office (Outlook has one, so it is
+      // listed, not overwritten) and added a nickname (copied).
+      final plan = run(
+        firstSync: true,
+        google: [
+          g(
+            'people/c1',
+            base
+                .withValue(ContactField.office, 'B')
+                .withValue(ContactField.nickname, 'Annie'),
+          ),
+        ],
+        links: [link(1, 'people/c1', 'H1', base: base)],
+      );
+      final first = byLink(plan, 1)!;
+      expect(first.graphWrite!.fields, {ContactField.nickname});
+      // The PATCH met a newer changeKey: Ron added a job title in Outlook
+      // meanwhile. Planned again, the office is still only listed.
+      final again = first.replan(
+        graph: h(
+          'H1',
+          base.withValue(ContactField.jobTitle, 'Lead'),
+          key: 'key-H1-2',
+        ),
+      );
+      expect(again.plan.graphWrite!.fields, {ContactField.nickname});
+      expect(again.plan.graphWrite!.version, 'key-H1-2');
+      expect(again.plan.googleWrite!.fields, {ContactField.jobTitle});
+      expect(again.plan.googleWrite!.version, first.googleEtag);
+      expect(again.plan.linkId, 1);
+      expect(again.reviews.single.kind, ContactReviewKind.differing);
+      expect(again.reviews.single.fields, [ContactField.office]);
+      expect(again.plan.settings!.firstSync, isTrue);
+    });
+
+    test('keeps a new pair\'s rules, and refuses what it cannot plan', () {
+      final plan = run(
+        google: [
+          g('people/c1', ann.withValue(ContactField.company, 'Hadco')),
+        ],
+        graph: [h('H1', ann.withValue(ContactField.company, 'Hadco Ltd'))],
+      );
+      final first = byGoogle(plan, 'people/c1')!;
+      expect(first.newPair, isTrue);
+      final again = first.replan(
+        graph: h(
+          'H1',
+          ann
+              .withValue(ContactField.company, 'Hadco Ltd')
+              .withValue(ContactField.office, 'B2'),
+          key: 'key-H1-2',
+        ),
+      );
+      // Still merged without overwriting: the company is listed, the
+      // office filled in.
+      expect(again.plan.newPair, isTrue);
+      expect(again.plan.graphWrite, isNull);
+      expect(again.plan.googleWrite!.fields, {ContactField.office});
+      expect(again.reviews.single.fields, [ContactField.company]);
+      expect(
+        () => first.replan(
+          graph: GraphContact(
+            id: 'H1',
+            details: ann,
+            missing: const {'surname'},
+          ),
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => const ContactLinkPlan(linkId: 1, removeRow: true).replan(),
+        throwsStateError,
+      );
+    });
+  });
 }
 
 extension on ContactLinkPlan {

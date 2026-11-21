@@ -354,8 +354,8 @@ class ContactSyncInput {
 
 /// The contact changed after the plan read it: its etag or `changeKey`
 /// is no longer the one the plan was made from. Nothing was built. The
-/// runner plans that pair again ([planPairedContact]) from what it has
-/// just read, and writes that instead.
+/// runner plans that pair again ([ContactLinkPlan.replan]) from what it
+/// has just read, with the run's settings, and writes that instead.
 class ContactReadStale implements Exception {
   const ContactReadStale(this.side);
 
@@ -517,6 +517,7 @@ class ContactLinkPlan {
     this.fromAnswer = false,
     this.removes = false,
     this.title = '',
+    this.settings,
   });
 
   /// The row, or null for a new one.
@@ -562,6 +563,10 @@ class ContactLinkPlan {
   final bool removes;
 
   final String title;
+
+  /// What a pair was compared with, for [replan]; null for a plan that
+  /// compares no pair (a create, a delete, a held or removed row).
+  final ContactPairSettings? settings;
 
   bool get writes =>
       googleWrite != null ||
@@ -612,6 +617,58 @@ class ContactLinkPlan {
     return (google: g, graph: h);
   }
 
+  /// This pair planned again from what the runner has just read, when a
+  /// write threw [ContactReadStale]: [google] and [graph] are the contacts
+  /// read again (null for a side not read again, which keeps the read this
+  /// plan was made from). Everything else is repeated from the run: the
+  /// first sync or not, a new pair, Ron's Copy them back, Use Gmail's or
+  /// Use Hadco's, or Use this one, the bases compared with, the
+  /// normaliser, and the row. The runner writes [plan]'s writes and saves
+  /// its [basesAfter]; [reviews] are the pair's Needs a look items now,
+  /// in place of those the run's plan gave it. The brakes are not counted
+  /// again.
+  ///
+  /// Only a plan with [settings] can be planned again (a [StateError]
+  /// otherwise). A read that is no whole contact (Gmail's deleted entry,
+  /// Outlook's `@removed` or sparse one, or one with no synced details)
+  /// is an [ArgumentError]: what it lacks would read as cleared.
+  ({ContactLinkPlan plan, List<ContactReviewItem> reviews}) replan({
+    GoogleContact? google,
+    GraphContact? graph,
+  }) {
+    final s = settings;
+    final g = googleName;
+    final h = graphId;
+    final gNow = googleNow;
+    final hNow = graphNow;
+    if (s == null || g == null || h == null || gNow == null || hNow == null) {
+      throw StateError('Only a compared pair can be planned again');
+    }
+    if (google != null && (google.deleted || google.details.isEmpty)) {
+      throw ArgumentError('The Gmail read is no whole contact');
+    }
+    if (graph != null &&
+        (graph.removed || !graph.readWhole || graph.details.isEmpty)) {
+      throw ArgumentError('The Outlook read is no whole contact');
+    }
+    final again = _comparePair(
+      settings: s._read(
+        googleUpdatedAt: google?.updatedAt,
+        graphUpdatedAt: graph?.updatedAt,
+      ),
+      linkId: linkId,
+      alsoRemove: alsoRemove,
+      googleName: g,
+      graphId: h,
+      googleNow: google?.details ?? gNow,
+      graphNow: graph?.details ?? hNow,
+      googleEtag: google != null ? google.etag : googleEtag,
+      graphChangeKey: graph != null ? graph.changeKey : graphChangeKey,
+      fromAnswer: fromAnswer,
+    );
+    return (plan: again.plan, reviews: again.reviews);
+  }
+
   /// The row to save when the read just before [delete] finds the contact
   /// changed, or no longer in Contacts: held as kept, the gone side's id
   /// cleared. Its Needs a look item is [keptReview].
@@ -635,6 +692,64 @@ class ContactLinkPlan {
     graphId: delete?.side == ContactSide.graph ? graphId : null,
     goneSide: delete?.side.other,
     title: title,
+  );
+}
+
+/// What a pair was compared with ([planPairedContact]'s settings), so
+/// that [ContactLinkPlan.replan] compares it again the same way.
+@immutable
+class ContactPairSettings {
+  const ContactPairSettings({
+    required this.normaliser,
+    this.googleBase,
+    this.graphBase,
+    this.googleUpdatedAt,
+    this.graphUpdatedAt,
+    this.newPair = false,
+    this.firstSync = false,
+    this.copyBack = false,
+    this.useSide = const {},
+    this.useValues,
+  });
+
+  /// The pair's, from its phone region.
+  final ContactNormaliser normaliser;
+
+  /// The row's bases as stored; null for a new pair.
+  final SyncedContact? googleBase;
+  final SyncedContact? graphBase;
+
+  /// Each side's last edit as read, for a clash.
+  final DateTime? googleUpdatedAt;
+  final DateTime? graphUpdatedAt;
+
+  final bool newPair;
+  final bool firstSync;
+
+  /// The change brake's Copy them back.
+  final bool copyBack;
+
+  /// Ron's Use Gmail's or Use Hadco's.
+  final Map<ContactField, ContactSide> useSide;
+
+  /// Ron's Use this one.
+  final SyncedContact? useValues;
+
+  /// The same, with the edit times of the sides read again.
+  ContactPairSettings _read({
+    DateTime? googleUpdatedAt,
+    DateTime? graphUpdatedAt,
+  }) => ContactPairSettings(
+    normaliser: normaliser,
+    googleBase: googleBase,
+    graphBase: graphBase,
+    googleUpdatedAt: googleUpdatedAt ?? this.googleUpdatedAt,
+    graphUpdatedAt: graphUpdatedAt ?? this.graphUpdatedAt,
+    newPair: newPair,
+    firstSync: firstSync,
+    copyBack: copyBack,
+    useSide: useSide,
+    useValues: useValues,
   );
 }
 
@@ -1474,6 +1589,90 @@ bool _changedSince(SyncedContact now, SyncedContact base, ContactField f) {
   return f != ContactField.name ||
       now.copyableName != null ||
       base.copyableName != null;
+}
+
+/// One pair compared ([planPairedContact]) with [settings], as the row
+/// to save with its writes and the pair's Needs a look items. The run and
+/// [ContactLinkPlan.replan] both plan a pair this way.
+({ContactPairPlan pair, ContactLinkPlan plan, List<ContactReviewItem> reviews})
+_comparePair({
+  required ContactPairSettings settings,
+  int? linkId,
+  List<int> alsoRemove = const [],
+  required String googleName,
+  required String graphId,
+  required SyncedContact googleNow,
+  required SyncedContact graphNow,
+  String? googleEtag,
+  String? graphChangeKey,
+  bool fromAnswer = false,
+}) {
+  final s = settings;
+  final pair = planPairedContact(
+    googleNow: googleNow,
+    googleBase: s.googleBase,
+    graphNow: graphNow,
+    graphBase: s.graphBase,
+    googleUpdatedAt: s.googleUpdatedAt,
+    graphUpdatedAt: s.graphUpdatedAt,
+    normaliser: s.normaliser,
+    newPair: s.newPair,
+    firstSync: s.firstSync,
+    copyBack: s.copyBack,
+    useSide: s.useSide,
+    useValues: s.useValues,
+  );
+  final title = googleNow.title.isNotEmpty ? googleNow.title : graphNow.title;
+  return (
+    pair: pair,
+    plan: ContactLinkPlan(
+      linkId: linkId,
+      alsoRemove: alsoRemove,
+      googleName: googleName,
+      graphId: graphId,
+      googleEtag: googleEtag,
+      graphChangeKey: graphChangeKey,
+      googleBase: pair.googleBase,
+      graphBase: pair.graphBase,
+      googleNow: googleNow,
+      graphNow: graphNow,
+      googleWrite: pair.googleWrite(version: googleEtag),
+      graphWrite: pair.graphWrite(version: graphChangeKey),
+      newPair: s.newPair,
+      fromAnswer: fromAnswer,
+      removes: pair.removes,
+      title: title,
+      settings: s,
+    ),
+    reviews: [
+      if (pair.differing.isNotEmpty)
+        ContactReviewItem(
+          kind: ContactReviewKind.differing,
+          googleName: googleName,
+          graphId: graphId,
+          fields: pair.differing,
+          googleValues: googleNow.withFieldsFrom(
+            SyncedContact.empty,
+            ContactField.values.whereNot(pair.differing.contains),
+          ),
+          graphValues: graphNow.withFieldsFrom(
+            SyncedContact.empty,
+            ContactField.values.whereNot(pair.differing.contains),
+          ),
+          title: title,
+        ),
+      for (final clash in pair.clashes)
+        ContactReviewItem(
+          kind: ContactReviewKind.clash,
+          googleName: googleName,
+          graphId: graphId,
+          fields: [clash.field],
+          losing: SyncedContact({clash.field: clash.losing}),
+          losingSide: clash.losingSide,
+          title: title,
+        ),
+    ],
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2596,80 +2795,29 @@ class _Planner {
         useValues == null) {
       return;
     }
-    final googleNow = _googleNow(row);
-    final graphNow = _graphNow(row);
-    final pair = planPairedContact(
-      googleNow: googleNow,
-      googleBase: row.input.googleDetails,
-      graphNow: graphNow,
-      graphBase: row.input.graphDetails,
-      googleUpdatedAt: gc?.updatedAt,
-      graphUpdatedAt: hc?.updatedAt,
-      normaliser: norm,
-      firstSync: input.firstSync,
-      copyBack: copyBack,
-      useSide: useSide,
-      useValues: useValues,
-    );
-    final title = googleNow.title.isNotEmpty ? googleNow.title : graphNow.title;
-    final googleEtag = gc?.etag ?? row.input.googleEtag;
-    final graphChangeKey = hc?.changeKey ?? row.input.graphChangeKey;
-    _add(
-      ContactLinkPlan(
-        linkId: row.id,
-        googleName: g,
-        graphId: h,
-        googleEtag: googleEtag,
-        graphChangeKey: graphChangeKey,
-        googleBase: pair.googleBase,
-        graphBase: pair.graphBase,
-        googleNow: googleNow,
-        graphNow: graphNow,
-        googleWrite: pair.googleWrite(version: googleEtag),
-        graphWrite: pair.graphWrite(version: graphChangeKey),
-        fromAnswer: fromAnswer,
-        removes: pair.removes,
-        title: title,
+    final made = _comparePair(
+      settings: ContactPairSettings(
+        normaliser: norm,
+        googleBase: row.input.googleDetails,
+        graphBase: row.input.graphDetails,
+        googleUpdatedAt: gc?.updatedAt,
+        graphUpdatedAt: hc?.updatedAt,
+        firstSync: input.firstSync,
+        copyBack: copyBack,
+        useSide: useSide,
+        useValues: useValues,
       ),
-      _pairReviews(pair, g, h, title, googleNow, graphNow),
+      linkId: row.id,
+      googleName: g,
+      graphId: h,
+      googleNow: _googleNow(row),
+      graphNow: _graphNow(row),
+      googleEtag: gc?.etag ?? row.input.googleEtag,
+      graphChangeKey: hc?.changeKey ?? row.input.graphChangeKey,
+      fromAnswer: fromAnswer,
     );
+    _add(made.plan, made.reviews);
   }
-
-  List<ContactReviewItem> _pairReviews(
-    ContactPairPlan pair,
-    String g,
-    String h,
-    String title,
-    SyncedContact googleNow,
-    SyncedContact graphNow,
-  ) => [
-    if (pair.differing.isNotEmpty)
-      ContactReviewItem(
-        kind: ContactReviewKind.differing,
-        googleName: g,
-        graphId: h,
-        fields: pair.differing,
-        googleValues: googleNow.withFieldsFrom(
-          SyncedContact.empty,
-          ContactField.values.whereNot(pair.differing.contains),
-        ),
-        graphValues: graphNow.withFieldsFrom(
-          SyncedContact.empty,
-          ContactField.values.whereNot(pair.differing.contains),
-        ),
-        title: title,
-      ),
-    for (final clash in pair.clashes)
-      ContactReviewItem(
-        kind: ContactReviewKind.clash,
-        googleName: g,
-        graphId: h,
-        fields: [clash.field],
-        losing: SyncedContact({clash.field: clash.losing}),
-        losingSide: clash.losingSide,
-        title: title,
-      ),
-  ];
 
   /// Two contacts paired this run, merged without overwriting.
   void _pairNew(
@@ -2681,45 +2829,32 @@ class _Planner {
   }) {
     final gc = googleListed[g];
     final hc = graphListed[h];
-    final googleNow = _detailsOf(ContactSide.google, g);
-    final graphNow = _detailsOf(ContactSide.graph, h);
-    final pair = planPairedContact(
-      googleNow: googleNow,
-      graphNow: graphNow,
-      normaliser: norm,
-      newPair: true,
+    final made = _comparePair(
+      settings: ContactPairSettings(
+        normaliser: norm,
+        googleUpdatedAt: gc?.updatedAt,
+        graphUpdatedAt: hc?.updatedAt,
+        newPair: true,
+      ),
+      linkId: linkId,
+      alsoRemove: alsoRemove,
+      googleName: g,
+      graphId: h,
+      googleNow: _detailsOf(ContactSide.google, g),
+      graphNow: _detailsOf(ContactSide.graph, h),
+      googleEtag: gc?.etag ?? googleRow[g]?.input.googleEtag,
+      graphChangeKey: hc?.changeKey ?? graphRow[h]?.input.graphChangeKey,
+      fromAnswer: fromAnswer,
     );
     _setStatus(ContactSide.google, g, _Status.paired);
     _setStatus(ContactSide.graph, h, _Status.paired);
     googleRow[g]?.done = true;
     graphRow[h]?.done = true;
     pairUp++;
-    if (pair.differing.isNotEmpty) differingPairs++;
+    if (made.pair.differing.isNotEmpty) differingPairs++;
     _backFromBin(ContactSide.google, g);
     _backFromBin(ContactSide.graph, h);
-    final title = googleNow.title.isNotEmpty ? googleNow.title : graphNow.title;
-    final googleEtag = gc?.etag ?? googleRow[g]?.input.googleEtag;
-    final graphChangeKey = hc?.changeKey ?? graphRow[h]?.input.graphChangeKey;
-    _add(
-      ContactLinkPlan(
-        linkId: linkId,
-        alsoRemove: alsoRemove,
-        googleName: g,
-        graphId: h,
-        googleEtag: googleEtag,
-        graphChangeKey: graphChangeKey,
-        googleBase: pair.googleBase,
-        graphBase: pair.graphBase,
-        googleNow: googleNow,
-        graphNow: graphNow,
-        googleWrite: pair.googleWrite(version: googleEtag),
-        graphWrite: pair.graphWrite(version: graphChangeKey),
-        newPair: true,
-        fromAnswer: fromAnswer,
-        title: title,
-      ),
-      _pairReviews(pair, g, h, title, googleNow, graphNow),
-    );
+    _add(made.plan, made.reviews);
   }
 
   /// A contact the sync deleted that Ron brought back himself, now being
