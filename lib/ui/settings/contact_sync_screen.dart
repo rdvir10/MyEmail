@@ -1104,6 +1104,12 @@ class _PreviewTable extends StatelessWidget {
       ('Of those, with details that differ, left as they are',
           '${p.differingPairs}'),
       ('Need a look', '${p.needsALook}'),
+      // Copies of one person beyond the one synced on each side: not
+      // among those to add or to look at, and said only where there are
+      // some.
+      if (p.duplicateCopies > 0)
+        ('Copies of the same person, left as they are',
+            '${p.duplicateCopies}'),
       ('Deleted', p.deletions == 0 ? 'none' : '${p.deletions}'),
     ];
     return Container(

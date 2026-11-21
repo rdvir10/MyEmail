@@ -465,6 +465,9 @@ void main() {
       await tester.tap(button('contact-sync-preview'));
       await tester.pumpAndSettle();
       expect(sync.chosen, [(google: 'acct-g', graph: 'acct-h')]);
+      expect(button('contact-sync-preview-table'), findsOneWidget);
+      expect(find.textContaining('Copies of the same person'), findsNothing,
+          reason: 'said only where there are some');
     });
 
     testWidgets('an account not allowed yet says so, with Allow',
@@ -602,6 +605,7 @@ void main() {
           pairUp: 300,
           needsALook: 4,
           differingPairs: 12,
+          duplicateCopies: 37,
         ),
         backupFiles: _backupFiles,
       );
@@ -623,6 +627,7 @@ void main() {
         ('Already in both, to be paired up:', '300'),
         ('Of those, with details that differ, left as they are:', '12'),
         ('Need a look:', '4'),
+        ('Copies of the same person, left as they are:', '37'),
         ('Deleted:', 'none'),
       ]) {
         expect(find.descendant(of: table, matching: find.text(label)),
