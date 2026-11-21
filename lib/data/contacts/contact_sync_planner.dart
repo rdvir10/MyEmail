@@ -1081,6 +1081,40 @@ class ContactRestorePlan {
   final String title;
 }
 
+/// Copies of one person (see [ContactHeldReason.duplicate]), for the
+/// screen: one copy each side synced, the others held as they are, for Ron
+/// to merge when he likes.
+@immutable
+class ContactDuplicateGroup {
+  const ContactDuplicateGroup({
+    this.title,
+    this.googleSynced,
+    this.graphSynced,
+    this.googleCopies = const [],
+    this.graphCopies = const [],
+  });
+
+  /// The person's name, for show.
+  final String? title;
+
+  /// The synced Gmail copy, if any.
+  final String? googleSynced;
+
+  /// The synced Hadco copy, if any.
+  final String? graphSynced;
+
+  /// Held Gmail copies.
+  final List<String> googleCopies;
+
+  /// Held Hadco copies.
+  final List<String> graphCopies;
+
+  // Never a name or an id here: logs get none (the plan's Privacy).
+  @override
+  String toString() =>
+      'ContactDuplicateGroup(${googleCopies.length} + ${graphCopies.length})';
+}
+
 /// The numbers for the preview and the result.
 @immutable
 class ContactSyncCounts {
@@ -1099,6 +1133,7 @@ class ContactSyncCounts {
     this.heldChanges = 0,
     this.restores = 0,
     this.passedOver = 0,
+    this.duplicateCopies = 0,
   });
 
   final int addToGoogle;
@@ -1127,6 +1162,10 @@ class ContactSyncCounts {
   /// [ContactSyncPlan.graphPassedOver].
   final int passedOver;
 
+  /// Copies of one person held as they are, both sides
+  /// ([ContactSyncPlan.duplicates]).
+  final int duplicateCopies;
+
   Map<String, Object?> toJson() => {
     'addToGoogle': addToGoogle,
     'addToGraph': addToGraph,
@@ -1142,6 +1181,7 @@ class ContactSyncCounts {
     'heldChanges': heldChanges,
     'restores': restores,
     'passedOver': passedOver,
+    'duplicateCopies': duplicateCopies,
   };
 }
 
@@ -1168,6 +1208,7 @@ class ContactSyncPlan {
     this.answers = const [],
     this.graphPassedOver = const {},
     this.mergedAway = const [],
+    this.duplicates = const [],
   });
 
   /// The empty-answers brake: when set, nothing else is planned.
@@ -1254,6 +1295,12 @@ class ContactSyncPlan {
   /// an Outlook contact gets a "merged in Gmail" item of its own in
   /// [reviews].
   final List<({String googleName, String? graphId})> mergedAway;
+
+  /// Copies of one person, as they stand once the plan is carried out:
+  /// every group holding a copy as a duplicate, from this run's reads and
+  /// the rows (so an incremental run that read none of them lists them
+  /// too), by title.
+  final List<ContactDuplicateGroup> duplicates;
 
   /// The normaliser this plan compared with, for the pair to store.
   int get normaliserVersion => contactNormaliserVersion;
@@ -3686,6 +3733,97 @@ class _Planner {
     }
   }
 
+  /// The groups of copies as [links] leave them (R7): each contact's
+  /// state is its plan's, or, for a row this run did not plan, the row's.
+  List<ContactDuplicateGroup> _duplicateGroups(List<ContactLinkPlan> links) {
+    const google = ContactSide.google;
+    const graph = ContactSide.graph;
+    final pairOf = <(ContactSide, String), (String, String)>{};
+    final copies = <(ContactSide, String)>{};
+    void take(
+      String? g,
+      String? h,
+      ContactLinkState state,
+      ContactHeldReason? reason,
+    ) {
+      if (state == ContactLinkState.paired && g != null && h != null) {
+        pairOf[(google, g)] = (g, h);
+        pairOf[(graph, h)] = (g, h);
+      } else if (reason == ContactHeldReason.duplicate) {
+        if (g != null && _googleAlive(g)) copies.add((google, g));
+        if (h != null && _graphAlive(h)) copies.add((graph, h));
+      }
+    }
+
+    final touched = {
+      for (final l in links) ...[?l.linkId, ...l.alsoRemove],
+    };
+    for (final l in links) {
+      if (!l.removeRow) take(l.googleName, l.graphId, l.state, l.reason);
+    }
+    for (final row in rows) {
+      if (!touched.contains(row.id)) {
+        take(row.googleName, row.graphId, row.state, row.reason);
+      }
+    }
+
+    String? titleOf(ContactSide side, String? id) =>
+        id == null ? null : _detailsOf(side, id).copyableName?.shown;
+    final groups = <ContactDuplicateGroup>[];
+    final listed = <(ContactSide, String)>{};
+    void add(Iterable<(ContactSide, String)> members) {
+      final held = [
+        for (final m in members)
+          if (copies.contains(m)) m,
+      ];
+      if (held.isEmpty) return;
+      listed.addAll(held);
+      final pair = members.map((m) => pairOf[m]).nonNulls.firstOrNull;
+      List<String> on(ContactSide side) => [
+        for (final (s, id) in held)
+          if (s == side) id,
+      ]..sort();
+      groups.add(
+        ContactDuplicateGroup(
+          title:
+              titleOf(google, pair?.$1) ??
+              titleOf(graph, pair?.$2) ??
+              titleOf(held.first.$1, held.first.$2),
+          googleSynced: pair?.$1,
+          graphSynced: pair?.$2,
+          googleCopies: on(google),
+          graphCopies: on(graph),
+        ),
+      );
+    }
+
+    for (final group in _copies) {
+      add(group.members);
+    }
+    // A held copy no longer joined to its person by an address (as last
+    // read): listed with the others of its name, so it is never hidden.
+    final stray = <String, List<(ContactSide, String)>>{};
+    for (final m in copies.difference(listed)) {
+      final name = ContactNormaliser.fullNameKey(
+        _detailsOf(m.$1, m.$2).copyableName,
+      );
+      stray.putIfAbsent(name ?? '', () => []).add(m);
+    }
+    for (final members in stray.values) {
+      add(members);
+    }
+    return groups
+      ..sort((a, b) {
+        final byTitle = (a.title ?? '').toLowerCase().compareTo(
+          (b.title ?? '').toLowerCase(),
+        );
+        if (byTitle != 0) return byTitle;
+        return '${a.googleSynced}${a.graphSynced}'.compareTo(
+          '${b.googleSynced}${b.graphSynced}',
+        );
+      });
+  }
+
   // ---- New contacts.
 
   late final Map<String, List<(ContactSide, String)>> _emailIndex =
@@ -4163,6 +4301,7 @@ class _Planner {
 
   ContactSyncPlan _result() {
     final links = [for (final p in planned) p.plan];
+    final duplicates = _duplicateGroups(links);
     final reviews = [
       for (final p in planned) ...p.reviews,
       ...otherReviews,
@@ -4215,6 +4354,7 @@ class _Planner {
       answers: answerOutcomes,
       graphPassedOver: Set.unmodifiable(graphPassedOver),
       mergedAway: List.unmodifiable(mergedAway),
+      duplicates: duplicates,
       counts: ContactSyncCounts(
         addToGoogle: count((l) => l.create?.side == ContactSide.google),
         addToGraph: count((l) => l.create?.side == ContactSide.graph),
@@ -4236,6 +4376,10 @@ class _Planner {
             .fold(0, (n, b) => n + b.items.length),
         restores: restores.where((r) => !r.alreadyBack).length,
         passedOver: graphPassedOver.length,
+        duplicateCopies: duplicates.fold(
+          0,
+          (n, d) => n + d.googleCopies.length + d.graphCopies.length,
+        ),
       ),
     );
   }

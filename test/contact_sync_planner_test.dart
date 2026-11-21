@@ -4200,6 +4200,14 @@ void main() {
       );
       expect(plan.reviews, isEmpty);
       expect(plan.links.where((l) => l.create != null), isEmpty);
+      // What the screen lists.
+      final group = plan.duplicates.single;
+      expect(group.title, 'Ann Cole');
+      expect((group.googleSynced, group.graphSynced), ('people/c1', 'H1'));
+      expect(group.googleCopies, ['people/c2']);
+      expect(group.graphCopies, ['H2']);
+      expect(plan.counts.duplicateCopies, 2);
+      expect(plan.counts.toJson()['duplicateCopies'], 2);
     });
 
     test('three copies, one with no mobile and one with no email', () {
@@ -4412,6 +4420,7 @@ void main() {
       expect(plan.links.where((l) => l.delete != null), isEmpty);
       expect(plan.brakes, isEmpty);
       expect(plan.reviews, isEmpty);
+      expect(plan.duplicates, isEmpty, reason: 'the copy is synced now');
       // A held copy of another person is not taken: the partner goes as
       // usual.
       final other = run(
@@ -4492,6 +4501,47 @@ void main() {
       expect((kept.googleName, kept.graphId), ('people/c2', 'H1'));
       expect(byLink(into, 2)!.removeRow, isTrue);
       expect(into.links.where((l) => l.delete != null), isEmpty);
+    });
+
+    test('listed on a run that read none of the copies', () {
+      final rows = [
+        ...synced(),
+        link(
+          3,
+          'people/c2',
+          null,
+          base: annCopy(),
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.duplicate,
+        ),
+      ];
+      final plan = run(links: rows);
+      expect(plan.links, isEmpty);
+      final group = plan.duplicates.single;
+      expect(group.title, 'Ann Cole');
+      expect((group.googleSynced, group.graphSynced), ('people/c1', 'H1'));
+      expect(group.googleCopies, ['people/c2']);
+      expect(group.graphCopies, ['H2']);
+      expect(plan.counts.duplicateCopies, 2);
+      // A held copy whose address has changed since it was read is still
+      // listed, under its name.
+      final apart = run(
+        links: [
+          link(1, 'people/c1', 'H1', base: annCopy()),
+          link(
+            2,
+            null,
+            'H2',
+            base: annCopy(emails: ['ann@old.example'], mobile: null),
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+        ],
+      );
+      final alone = apart.duplicates.single;
+      expect(alone.title, 'Ann Cole');
+      expect(alone.graphCopies, ['H2']);
+      expect(alone.googleSynced, isNull);
     });
 
     test('holding copies is no deletion and no change for the brakes', () {
