@@ -1269,6 +1269,8 @@ void main() {
       expect(kept.reason, ContactHeldReason.kept);
       expect(kept.graphId, 'H1');
       expect(kept.googleName, isNull);
+      expect(kept.partnerId, 'people/c1', reason: 'for a delete after all');
+      expect(kept.partnerBase, pair.delete!.partnerBase);
       expect(pair.keptReview().goneSide, ContactSide.google);
     });
 
@@ -1719,6 +1721,94 @@ void main() {
       for (var i = 0; i < n; i++)
         link(i, 'people/c$i', 'H$i', base: person(given: 'P$i', family: 'X')),
     ];
+
+    test('Delete them keeps the partner for the bin, and Restore makes both',
+        () {
+      // Run one: Ron deleted six Outlook contacts; the brake holds their
+      // Gmail partners.
+      final held = run(
+        google: [for (var i = 0; i < 6; i++) g('people/c$i', ann)],
+        graphGone: {for (var i = 0; i < 6; i++) 'H$i'},
+        links: [
+          for (var i = 0; i < 6; i++) link(i, 'people/c$i', 'H$i', base: ann),
+        ],
+      );
+      final row = byLink(held, 0)!;
+      expect(row.reason, ContactHeldReason.deletionBrake);
+      expect(row.graphId, isNull);
+      expect(row.partnerId, 'H0');
+      expect(row.partnerBase, ann);
+      // Saved as the runner saves it, and passed back.
+      ContactLinkInput saved(ContactLinkPlan p) => ContactLinkInput(
+        linkId: p.linkId!,
+        googleName: p.googleName,
+        graphId: p.graphId,
+        googleEtag: p.googleEtag,
+        googleBase: p.googleBase?.toJson(),
+        state: p.state,
+        reason: p.reason,
+        partnerId: p.partnerId,
+        partnerBase: p.partnerBase?.toJson(),
+      );
+      // Run two: Delete them.
+      final deleted = run(
+        google: [g('people/c0', ann)],
+        links: [saved(row)],
+        answers: const [ContactAnswer(ContactAnswerKind.deleteHeld)],
+      );
+      final delete = byLink(deleted, 0)!.delete!;
+      expect(delete.contactId, 'people/c0');
+      expect(delete.partnerId, 'H0');
+      expect(delete.partnerBase, ann);
+      // Run three: Restore on the bin row the delete made remakes both
+      // sides, to be paired.
+      final restored = run(
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.google,
+            contactId: delete.contactId,
+            partnerId: delete.partnerId,
+            raw: const {
+              'resourceName': 'people/c0',
+              'names': [
+                {'givenName': 'Ann', 'familyName': 'Cole'},
+              ],
+              'emailAddresses': [
+                {'value': 'ann@x.example'},
+              ],
+            },
+            partnerBase: delete.partnerBase!.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      final restore = restored.restores.single;
+      expect(restore.alreadyBack, isFalse);
+      expect(restore.googleRaw, isNotNull);
+      expect(restore.graphDetails, ann, reason: 'the Outlook side too');
+      // Don't delete them, then Delete it here too, keeps it as well.
+      final kept = run(
+        google: [g('people/c0', ann)],
+        links: [saved(row)],
+        answers: const [ContactAnswer(ContactAnswerKind.keepHeld)],
+      );
+      final keptRow = byLink(kept, 0)!;
+      expect(keptRow.reason, ContactHeldReason.kept);
+      expect(keptRow.partnerId, 'H0');
+      final again = run(
+        google: [g('people/c0', ann)],
+        links: [saved(keptRow)],
+        answers: const [
+          ContactAnswer(
+            ContactAnswerKind.deleteHereToo,
+            googleName: 'people/c0',
+          ),
+        ],
+      );
+      expect(byLink(again, 0)!.delete!.partnerId, 'H0');
+      expect(byLink(again, 0)!.delete!.partnerBase, ann);
+    });
 
     test('five deletions go ahead', () {
       final plan = run(

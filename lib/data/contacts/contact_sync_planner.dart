@@ -52,6 +52,8 @@ class ContactLinkInput {
     this.state = ContactLinkState.paired,
     this.reason,
     this.googleWrittenAt,
+    this.partnerId,
+    this.partnerBase,
   });
 
   final int linkId;
@@ -81,8 +83,34 @@ class ContactLinkInput {
   /// When the sync last wrote the Gmail side, for the hour of grace.
   final DateTime? googleWrittenAt;
 
+  /// For a row held with one id after its partner went (kept, or held by
+  /// the deletion brake): that partner's id, on the other side, and its
+  /// synced details in [SyncedContact.toJson]'s form, as the row's
+  /// [ContactLinkPlan.partnerId] and [ContactLinkPlan.partnerBase] gave
+  /// them. A delete of the row's contact after all puts them in the bin,
+  /// so Restore makes both sides again and pairs them.
+  final String? partnerId;
+  final Map<String, Object?>? partnerBase;
+
   SyncedContact get googleDetails => SyncedContact.fromJson(googleBase);
   SyncedContact get graphDetails => SyncedContact.fromJson(graphBase);
+
+  /// The contact on the other side from [side] that the row pairs, or
+  /// paired before it went.
+  String? partnerOf(ContactSide side) =>
+      (side == ContactSide.google ? graphId : googleName) ?? partnerId;
+
+  /// That contact's synced details.
+  SyncedContact partnerDetailsOf(ContactSide side) {
+    if (side == ContactSide.google) {
+      return graphId != null
+          ? graphDetails
+          : SyncedContact.fromJson(partnerBase);
+    }
+    return googleName != null
+        ? googleDetails
+        : SyncedContact.fromJson(partnerBase);
+  }
 }
 
 /// A create in flight: journalled before it was sent, cleared with the row
@@ -511,6 +539,8 @@ class ContactLinkPlan {
     this.removes = false,
     this.title = '',
     this.settings,
+    this.partnerId,
+    this.partnerBase,
   });
 
   /// The row, or null for a new one.
@@ -560,6 +590,15 @@ class ContactLinkPlan {
   /// What a pair was compared with, for [replan]; null for a plan that
   /// compares no pair (a create, a delete, a held or removed row).
   final ContactPairSettings? settings;
+
+  /// For a row held with one id after its partner went (kept, or held by
+  /// the deletion brake): that partner's id and synced details, which the
+  /// runner saves with the row and passes back as
+  /// [ContactLinkInput.partnerId] and [ContactLinkInput.partnerBase]
+  /// (toJson), so that a delete of the row's contact after all can put
+  /// its partner in the bin with it.
+  final String? partnerId;
+  final SyncedContact? partnerBase;
 
   bool get writes =>
       googleWrite != null ||
@@ -707,6 +746,8 @@ class ContactLinkPlan {
     googleBase: delete?.side == ContactSide.google ? googleBase : null,
     graphBase: delete?.side == ContactSide.graph ? graphBase : null,
     title: title,
+    partnerId: delete?.partnerId,
+    partnerBase: delete?.partnerBase,
   );
 
   ContactReviewItem keptReview() => ContactReviewItem(
@@ -3318,18 +3359,15 @@ class _Planner {
               ? googleListed[id]?.etag ?? row.input.googleEtag
               : graphListed[id]?.changeKey ?? row.input.graphChangeKey,
           title: details.title,
-          partnerId: side == ContactSide.google
-              ? row.input.graphId
-              : row.input.googleName,
-          partnerBase: side == ContactSide.google
-              ? row.input.graphDetails
-              : row.input.googleDetails,
+          partnerId: row.input.partnerOf(side),
+          partnerBase: row.input.partnerDetailsOf(side),
         ),
       ),
     );
   }
 
-  /// A surviving copy held as kept, its gone partner's id cleared.
+  /// A surviving copy held as kept, its gone partner's id cleared (and
+  /// kept as the row's partner, for a delete after all).
   void _keep(
     _Row row,
     ContactSide side,
@@ -3354,6 +3392,8 @@ class _Planner {
             : null,
         graphBase: side == ContactSide.graph ? row.input.graphDetails : null,
         title: details.title,
+        partnerId: row.input.partnerOf(side),
+        partnerBase: row.input.partnerDetailsOf(side),
       ),
       [
         ContactReviewItem(
@@ -3706,6 +3746,8 @@ class _Planner {
           googleBase: onGoogle ? plan.googleBase : null,
           graphBase: onGoogle ? null : plan.graphBase,
           title: plan.title,
+          partnerId: delete.partnerId,
+          partnerBase: delete.partnerBase,
         );
         p.reviews = const [];
       }

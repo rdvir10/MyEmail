@@ -222,6 +222,8 @@ class ContactLink {
     this.reason,
     this.googleWrittenAt,
     this.updatedAt,
+    this.partnerId,
+    this.partnerBase,
   });
 
   /// Null until the store has saved it.
@@ -253,6 +255,14 @@ class ContactLink {
   /// When it was last saved. Stamped by the store.
   final DateTime? updatedAt;
 
+  /// For a link held with one id after its partner went (kept, or held by
+  /// the deletion brake): that partner's id, on the other side, and its
+  /// synced details (`SyncedContact.toJson`, encoded), as the planner's
+  /// plan gives them (`ContactLinkPlan.partnerId`, `partnerBase`) and
+  /// takes them back. Not a contact the link names: no index holds it.
+  final String? partnerId;
+  final String? partnerBase;
+
   bool get isPaired => state == ContactLinkState.paired;
 
   String? idOn(ContactSide side) =>
@@ -270,6 +280,8 @@ class ContactLink {
     ContactLinkState? state,
     Object? reason = _keep,
     Object? googleWrittenAt = _keep,
+    Object? partnerId = _keep,
+    Object? partnerBase = _keep,
   }) =>
       ContactLink(
         linkId: linkId,
@@ -284,6 +296,8 @@ class ContactLink {
         reason: _or(reason, this.reason),
         googleWrittenAt: _or(googleWrittenAt, this.googleWrittenAt),
         updatedAt: updatedAt,
+        partnerId: _or(partnerId, this.partnerId),
+        partnerBase: _or(partnerBase, this.partnerBase),
       );
 
   /// Paired: both ids and no reason. Held: a reason and at least one id.
@@ -321,6 +335,8 @@ class ContactLink {
         reason: reason,
         googleWrittenAt: _kept(googleWrittenAt),
         updatedAt: at,
+        partnerId: partnerId,
+        partnerBase: partnerBase,
       );
 
   List<Object?> get _fields => [
@@ -336,6 +352,8 @@ class ContactLink {
         reason,
         googleWrittenAt,
         updatedAt,
+        partnerId,
+        partnerBase,
       ];
 
   @override
@@ -1053,6 +1071,8 @@ class DriftContactSyncStore implements ContactSyncStore {
       reason: Value(link.reason?.code),
       googleWrittenAt: Value(_ms(link.googleWrittenAt)),
       updatedAt: Value(at.millisecondsSinceEpoch),
+      partnerId: Value(link.partnerId),
+      partnerBase: Value(link.partnerBase),
     );
     final linkId = link.linkId;
     if (linkId != null) {
@@ -1530,6 +1550,8 @@ class DriftContactSyncStore implements ContactSyncStore {
       reason: reason,
       googleWrittenAt: _time(r.googleWrittenAt),
       updatedAt: _time(r.updatedAt),
+      partnerId: r.partnerId,
+      partnerBase: r.partnerBase,
     );
   }
 
@@ -2162,6 +2184,8 @@ ContactLink _linkRead({
   required ContactHeldReason? reason,
   required DateTime? googleWrittenAt,
   required DateTime? updatedAt,
+  String? partnerId,
+  String? partnerBase,
 }) {
   final paired = state == ContactLinkState.paired &&
       googleName != null &&
@@ -2179,6 +2203,8 @@ ContactLink _linkRead({
     reason: paired ? null : reason ?? ContactHeldReason.waiting,
     googleWrittenAt: googleWrittenAt,
     updatedAt: updatedAt,
+    partnerId: partnerId,
+    partnerBase: partnerBase,
   );
 }
 

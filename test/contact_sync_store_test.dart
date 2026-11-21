@@ -408,6 +408,36 @@ void main() {
               reason: 'two links with no Google side do not clash');
         });
 
+        test('a held link keeps the partner that went, which names nothing',
+            () async {
+          final pair = await pairOf();
+          final kept = await store.saveLink(ContactLink(
+            pairId: pair.pairId,
+            googleName: 'people/c1',
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.deletionBrake,
+            partnerId: 'AAMk-1',
+            partnerBase: '{"company":"Hadco"}',
+          ));
+          final read = (await store.links(pair.pairId)).single;
+          expect(read.partnerId, 'AAMk-1');
+          expect(read.partnerBase, '{"company":"Hadco"}');
+          expect(read, kept);
+          // The partner's id is no contact of the link: another link may
+          // name it.
+          await store.saveLink(ContactLink(
+            pairId: pair.pairId,
+            graphId: 'AAMk-1',
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.waiting,
+          ));
+          final cleared = await store.saveLink(
+            read.copyWith(partnerId: null, partnerBase: null),
+          );
+          expect(cleared.partnerId, isNull);
+          expect(cleared.partnerBase, isNull);
+        });
+
         test('that break the rules are refused', () async {
           final pair = await pairOf();
           for (final wrong in [
