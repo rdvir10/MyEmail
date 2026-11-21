@@ -252,6 +252,35 @@ void main() {
       expect(alone.reviews.single.graphId, 'H-bob');
     });
 
+    test('a tag naming an old name is moved on when it pairs', () {
+      // A reinstall; Ron merged c5 into c6, and H5 is the sync's copy of
+      // c5, tagged with it.
+      GoogleContact merged() => GoogleContact(
+        resourceName: 'people/c6',
+        details: ann,
+        etag: 'e6',
+        previousNames: const ['people/c5'],
+        person: const {'resourceName': 'people/c6'},
+      );
+      final plan = run(
+        google: [merged()],
+        graph: [h('H5', ann, tag: 'people/c5')],
+      );
+      expect(byGoogle(plan, 'people/c6')!.graphId, 'H5');
+      expect(plan.graphTagMoves, {'H5': 'people/c6'});
+      // Placed by its own tag (c6 due to be deleted, its partner gone).
+      final own = run(
+        google: [merged()],
+        graph: [h('H5', ann, tag: 'people/c5')],
+        graphGone: {'X'},
+        links: [link(1, 'people/c5', 'X', base: ann, etag: 'e6')],
+      );
+      final pair = byLink(own, 1)!;
+      expect(pair.googleName, 'people/c6');
+      expect(pair.graphId, 'H5');
+      expect(own.graphTagMoves, {'H5': 'people/c6'});
+    });
+
     test('a tag the other side carries pairs them, whichever is placed first',
         () {
       // A reinstall: no rows. Each pair as the sync left it, its copy

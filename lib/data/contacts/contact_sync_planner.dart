@@ -3501,6 +3501,7 @@ class _Planner {
       } else if (alive) {
         if (free) {
           _pair(side, id, target, row);
+          _moveTag(side, id, target);
         } else {
           _review(
             side,
@@ -3539,6 +3540,7 @@ class _Planner {
     if (taggedHere.length == 1 &&
         _onePerson(details, _detailsOf(other, taggedHere.single))) {
       _pair(side, id, taggedHere.single, row);
+      _moveTag(side, id, taggedHere.single);
       return;
     }
 
@@ -3637,6 +3639,16 @@ class _Planner {
     if (_emailKeys(b).any(emails.contains)) return true;
     final mobiles = _mobileKeys(a).toSet();
     return _mobileKeys(b).any(mobiles.contains);
+  }
+
+  /// After a pair made by a hidden tag: an Outlook tag that names another
+  /// Gmail name than the one paired (a name since re-keyed, a contact
+  /// since merged) is moved on to it.
+  void _moveTag(ContactSide side, String id, String match) {
+    final g = side == ContactSide.google ? id : match;
+    final h = side == ContactSide.google ? match : id;
+    final tag = graphListed[h]?.tag;
+    if (tag != null && tag != g) tagMoves[h] = g;
   }
 
   void _pair(ContactSide side, String id, String match, _Row? row) {
