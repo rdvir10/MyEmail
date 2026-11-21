@@ -545,6 +545,10 @@ void main() {
       expect(note('<div>One\n  line</div><div>Two<br>Three</div>'
               '<script>x()</script>'),
           r'One line\nTwo\nThree');
+      // Line breaks between the tags, as most HTML has them, are not
+      // blank lines.
+      expect(note('<p>A</p>\n<p>B</p>'), r'A\nB');
+      expect(note('<ul>\n<li>a</li>\n<li>b</li>\n</ul>'), r'a\nb');
       // Inside a pre the line breaks, the blank line and the indents are
       // the text; outside it white space is tidied as before.
       expect(

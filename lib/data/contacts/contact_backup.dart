@@ -613,7 +613,14 @@ abstract final class ContactBackup {
         runs.add((StringBuffer(), kept));
       }
       runs.last.$1.write(text);
-      atLineStart = text.endsWith('\n');
+      // A run of spaces (the line breaks between tags, tidied) leaves the
+      // line where it was: taken as text, every block after it gained a
+      // blank line.
+      if (text.endsWith('\n')) {
+        atLineStart = true;
+      } else if (text.trim().isNotEmpty) {
+        atLineStart = false;
+      }
     }
 
     void walk(dom.Node node, {required bool inPre}) {
