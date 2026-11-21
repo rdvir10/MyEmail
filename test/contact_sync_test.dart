@@ -2756,7 +2756,9 @@ void main() {
       bool mobiles = true,
     }) {
       final email = '${given.toLowerCase()}@example.com';
-      final mobile = mobiles ? '+1 202 555 01${given.length}${family.length}' : null;
+      final mobile = mobiles
+          ? '+1 202 555 01${given.length}${family.length}'
+          : null;
       String? first;
       for (var i = 0; i < gmail; i++) {
         final name = h.google.seed(
@@ -2982,6 +2984,164 @@ void main() {
       expect(h.graph.count, 1);
       expect(h.google.count, 1);
       expect(status.duplicates, isEmpty);
+    });
+
+    test('a first sync put away after the held copy is saved but before the '
+        'pair is written: the resumed run pairs once', () async {
+      h.google.seed(
+        person(
+          'Ann',
+          'Cole',
+          email: 'ann@example.com',
+          mobile: '+1 202 555 0144',
+          company: 'Acme',
+        ),
+      );
+      for (var i = 0; i < 2; i++) {
+        h.graph.seed(
+          outlook(
+            'Ann',
+            'Cole',
+            email: 'ann@example.com',
+            mobile: '+1 202 555 0144',
+          ),
+        );
+      }
+      h.graph.seed(outlook('Ola', 'Only', email: 'ola@example.com'));
+      // Creates go first: the stop lands before Ann's pair is written.
+      h.before = (r) async {
+        if (r.url.path.endsWith(':createContact')) unawaited(h.sync.stop());
+      };
+      await h.firstSync();
+      h.before = null;
+      var status = await h.status();
+      expect(status.halt!.kind, ContactSyncHaltKind.putAway);
+      expect(heldCopies(await h.links()), 1);
+
+      h.pass(const Duration(minutes: 1));
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      expect(await h.paired(), hasLength(2));
+      expect(heldCopies(await h.links()), 1);
+      expect(h.google.count, 2);
+      expect(h.graph.count, 3);
+      final group = status.duplicates.single;
+      expect(group.googleCopies, 1);
+      expect(group.graphCopies, 2);
+      h.requests.clear();
+      await h.later();
+      expect(h.contactWritesOf(), isEmpty);
+    });
+
+    test('an incremental run put away likewise: the resumed run pairs once',
+        () async {
+      seedPairs(h, 1);
+      h.graph.seed(outlook('Ola', 'Only', email: 'ola@example.com'));
+      await h.firstSync();
+      h.google.addFromGmail(
+        person(
+          'Ann',
+          'Cole',
+          email: 'ann@example.com',
+          mobile: '+1 202 555 0144',
+          company: 'Acme',
+        ),
+      );
+      for (var i = 0; i < 2; i++) {
+        h.graph.addFromOutlook(
+          outlook(
+            'Ann',
+            'Cole',
+            email: 'ann@example.com',
+            mobile: '+1 202 555 0144',
+          ),
+        );
+      }
+      h.graph.addFromOutlook(outlook('Pia', 'Only', email: 'pia@example.com'));
+      h.before = (r) async {
+        if (r.url.path.endsWith(':createContact')) unawaited(h.sync.stop());
+      };
+      var status = await h.later();
+      h.before = null;
+      expect(status.halt!.kind, ContactSyncHaltKind.putAway);
+      status = await h.later(after: const Duration(minutes: 1));
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      // P0, Ola, Ann and Pia, each paired once; Ann's second Hadco copy held.
+      expect(await h.paired(), hasLength(4));
+      expect(heldCopies(await h.links()), 1);
+      expect(h.google.count, 4);
+      expect(h.graph.count, 5);
+    });
+
+    for (final which in ['held', 'synced']) {
+      test('a Gmail re-key of the $which copy changes nothing but its name',
+          () async {
+        person2(h, 'Ann', 'Cole', gmail: 2, hadco: 1);
+        await h.firstSync();
+        final rows = await h.links();
+        final target = which == 'held'
+            ? rows
+                  .firstWhere((l) => l.reason == ContactHeldReason.duplicate)
+                  .googleName!
+            : rows.firstWhere((l) => l.isPaired).googleName!;
+        final now = h.google.rekeyFromGmail(target);
+        h.requests.clear();
+        var status = await h.later();
+        expect(status.halt, isNull);
+        expect(status.needsALook, isEmpty);
+        expect(h.contactWritesOf(), isEmpty);
+        final after = await h.links();
+        expect(after.any((l) => l.googleName == now), isTrue);
+        expect(after.any((l) => l.googleName == target), isFalse);
+        expect(await h.paired(), hasLength(1));
+        expect(heldCopies(after), 1);
+        status = await h.later();
+        final group = status.duplicates.single;
+        expect(group.googleCopies, 2);
+        expect(group.graphCopies, 1);
+        expect(group.googleSynced && group.graphSynced, isTrue);
+      });
+    }
+
+    test('the synced Outlook copy moved to another folder while a copy is '
+        'left: nothing deleted, the pair moves', () async {
+      final ann = person2(h, 'Ann', 'Cole');
+      await h.firstSync();
+      final synced = (await h.links()).firstWhere((l) => l.isPaired).graphId!;
+      final left = ann.graph.firstWhere((id) => id != synced);
+      h.graph.moveFromOutlook(synced, h.graph.addFolder());
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.last!.deleted, 0);
+      expect(status.needsALook, isEmpty);
+      expect(h.google.person(ann.google), isNotNull);
+      final pair = (await h.links()).where((l) => l.isPaired).single;
+      expect(pair.googleName, ann.google);
+      expect(pair.graphId, left);
+      expect(h.graph.contact(synced), isNotNull);
+    });
+
+    test('the synced Gmail copy deleted while a Gmail copy is left: nothing '
+        'deleted in Outlook, the pair moves', () async {
+      person2(h, 'Ann', 'Cole', gmail: 2, hadco: 1);
+      await h.firstSync();
+      final rows = await h.links();
+      final pair = rows.firstWhere((l) => l.isPaired);
+      final copy = rows
+          .firstWhere((l) => l.reason == ContactHeldReason.duplicate)
+          .googleName!;
+      h.google.deleteFromGmail(pair.googleName!);
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.last!.deleted, 0);
+      expect(status.recentlyDeleted, isEmpty);
+      expect(h.graph.count, 1);
+      final moved = (await h.links()).where((l) => l.isPaired).single;
+      expect(moved.googleName, copy);
+      expect(moved.graphId, pair.graphId);
     });
 
     test('copies on one side only: one is copied once, the rest held',
