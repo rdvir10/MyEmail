@@ -278,12 +278,11 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           _signedInHere.add(account.id);
       }
     } catch (e) {
-      messenger
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
-          duration: kBottomMessage,
-          content: Text(e is ReadableError ? e.message : '$e'),
-        ));
+      // Queued, never in place of what is there: perhaps a send's Undo.
+      messenger.showSnackBar(SnackBar(
+        duration: kBottomMessage,
+        content: Text(e is ReadableError ? e.message : '$e'),
+      ));
     } finally {
       if (mounted) {
         ref.invalidate(contactSyncAccessProvider(account.id));
@@ -1778,28 +1777,25 @@ List<Account> _graphAccounts(List<Account> accounts) => [
 // ---------------------------------------------------------------------------
 // Pieces.
 
-/// An answer or a Restore, queued: a failure said along the bottom.
+/// An answer or a Restore, queued: a failure said along the bottom,
+/// after whatever is there now.
 Future<void> _act(BuildContext context, Future<void> Function() action) async {
   final messenger = ScaffoldMessenger.maybeOf(context);
   try {
     await action();
   } catch (e) {
-    messenger
-      ?..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-        duration: kBottomMessage,
-        content: Text(e is ReadableError ? e.message : '$e'),
-      ));
+    messenger?.showSnackBar(SnackBar(
+      duration: kBottomMessage,
+      content: Text(e is ReadableError ? e.message : '$e'),
+    ));
   }
 }
 
 void _sayFailure(BuildContext context, Object e) {
-  ScaffoldMessenger.maybeOf(context)
-    ?..hideCurrentSnackBar()
-    ..showSnackBar(SnackBar(
-      duration: kBottomMessage,
-      content: Text(e is ReadableError ? e.message : '$e'),
-    ));
+  ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+    duration: kBottomMessage,
+    content: Text(e is ReadableError ? e.message : '$e'),
+  ));
 }
 
 class _Heading extends StatelessWidget {

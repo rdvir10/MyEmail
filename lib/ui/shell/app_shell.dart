@@ -291,23 +291,24 @@ class _AppShellState extends ConsumerState<AppShell>
       graphName: contactSyncAccountName(graph),
     );
     if (text == null || ContactSyncScreen.isOpen) return;
-    ScaffoldMessenger.maybeOf(context)
-      ?..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-        key: const ValueKey('contact-sync-notice'),
-        duration: const Duration(seconds: 10),
-        persist: false,
-        content: Text(text),
-        action: SnackBarAction(
-          label: 'Open',
-          onPressed: () {
-            if (!mounted) return;
-            unawaited(Navigator.of(context).push(MaterialPageRoute<void>(
-              builder: (_) => const ContactSyncScreen(),
-            )));
-          },
-        ),
-      ));
+    // Queued behind whatever is along the bottom now, never in its place:
+    // that may be a send's or a delete's Undo, and taking it away would
+    // take the Undo with it.
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+      key: const ValueKey('contact-sync-notice'),
+      duration: const Duration(seconds: 10),
+      persist: false,
+      content: Text(text),
+      action: SnackBarAction(
+        label: 'Open',
+        onPressed: () {
+          if (!mounted) return;
+          unawaited(Navigator.of(context).push(MaterialPageRoute<void>(
+            builder: (_) => const ContactSyncScreen(),
+          )));
+        },
+      ),
+    ));
   }
 
   /// See [SyncSettings.askToRunInBackgroundOnce].

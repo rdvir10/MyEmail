@@ -1301,16 +1301,29 @@ void main() {
         ..chooseFailure = const ContactSyncRefused('Contact sync is running.');
       engine = _Engine(sync, const [gmail, hadco, studio]);
       await pumpScreen(tester);
+      // A send's Undo along the bottom, which the refusal must not take
+      // away.
+      ScaffoldMessenger.of(tester.element(find.byType(ContactSyncScreen)))
+          .showSnackBar(SnackBar(
+        duration: const Duration(seconds: 8),
+        persist: false,
+        content: const Text('Sending'),
+        action: SnackBarAction(label: 'Undo', onPressed: () {}),
+      ));
+      await tester.pump(const Duration(milliseconds: 500));
 
       await tester.tap(button('contact-sync-with'));
-      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 500));
       await tester.tap(find.text('Myhomestudio'));
-      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 500));
       await tester.tap(find.text('Switch accounts'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
 
       expect(sync.count('choose'), 1);
+      expect(find.text('Undo'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 8));
+      await tester.pumpAndSettle();
       expect(find.text('Contact sync is running.'), findsOneWidget);
       expect(
         find.descendant(
@@ -1624,6 +1637,36 @@ void main() {
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
       expect(find.byType(ContactSyncScreen), findsOneWidget);
+    });
+
+    testWidgets("a stop said while in front waits behind a send's Undo",
+        (tester) async {
+      sync = FakeContactSync(status: synced());
+      await pumpApp(tester);
+      ScaffoldMessenger.of(tester.element(find.byType(AppShell))).showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 8),
+          persist: false,
+          content: const Text('Sending'),
+          action: SnackBarAction(label: 'Undo', onPressed: () {}),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+
+      final at = DateTime(today.year, today.month, today.day, 9);
+      sync.set(synced(notice: ContactSyncNotice(at: at, heldDeletions: 7)));
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(find.text('Undo'), findsOneWidget, reason: 'not taken away');
+      expect(find.textContaining('Contact sync has stopped'), findsNothing);
+      expect(sync.noticesSeen, [at]);
+
+      // Its turn comes once the Undo has had its time.
+      await tester.pump(const Duration(seconds: 8));
+      await tester.pumpAndSettle();
+      expect(find.text('Contact sync has stopped: 7 deletions need your OK'),
+          findsOneWidget);
     });
 
     testWidgets('over the Contact sync screen, a stop is not said again',
