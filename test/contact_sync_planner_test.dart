@@ -909,13 +909,17 @@ void main() {
   group('a display name that is no name', () {
     // Outlook contacts as a whole read returns them: every synced
     // property there, null when empty.
-    GraphContact outlook(String id, Map<String, Object?> values) =>
-        GraphContact.fromJson({
-          'id': id,
-          'changeKey': 'key-$id-2',
-          for (final p in graphSyncedProperties) p: null,
-          ...values,
-        });
+    GraphContact outlook(
+      String id,
+      Map<String, Object?> values, {
+      DateTime? at,
+    }) => GraphContact.fromJson({
+      'id': id,
+      'changeKey': 'key-$id-2',
+      'lastModifiedDateTime': ?at?.toIso8601String(),
+      for (final p in graphSyncedProperties) p: null,
+      ...values,
+    });
     SyncedContact read(Map<String, Object?> values) =>
         outlook('H1', values).details;
     SyncedContact gmail(Map<String, Object?> person) =>
@@ -1048,6 +1052,73 @@ void main() {
         ContactName.of(display: 'bob@x.example'),
         reason: 'the base keeps the raw value',
       );
+    });
+
+    test('one remade from a new company is taken into the base', () {
+      // Outlook shows the company for want of a name; Ron renames the
+      // company and Outlook remakes the shown name with it.
+      final first = run(
+        graph: [
+          outlook('H1', {
+            'displayName': 'Acme Inc',
+            'companyName': 'Acme Inc',
+          }),
+        ],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: SyncedContact({ContactField.company: 'Acme'}),
+            graphBase: read({'displayName': 'Acme', 'companyName': 'Acme'}),
+          ),
+        ],
+      );
+      final pair = byLink(first, 1)!;
+      expect(pair.googleWrite!.fields, {ContactField.company});
+      final bases = pair.basesAfter(
+        googleAnswer: SyncedContact({ContactField.company: 'Acme Inc'}),
+      );
+      expect(bases.graph.name, ContactName.of(display: 'Acme Inc'));
+      // Later Ron types a name in Gmail, then edits the mobile in Outlook
+      // (the newer edit): the name goes to Outlook, with no clash.
+      final second = run(
+        google: [
+          g(
+            'people/c1',
+            person(
+              given: 'Ann',
+              family: 'Lee',
+              more: {ContactField.company: 'Acme Inc'},
+            ),
+            at: earlier,
+          ),
+        ],
+        graph: [
+          outlook('H1', {
+            'displayName': 'Acme Inc',
+            'companyName': 'Acme Inc',
+            'mobilePhone': '+1 212 555 0100',
+          }, at: later),
+        ],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: bases.google,
+            graphBase: bases.graph,
+          ),
+        ],
+      );
+      final now2 = byLink(second, 1)!;
+      expect(now2.graphWrite!.fields, contains(ContactField.name));
+      expect(
+        now2.googleWrite?.fields.contains(ContactField.name) ?? false,
+        isFalse,
+        reason: 'Gmail\'s new name is not cleared',
+      );
+      expect(second.reviews, isEmpty);
     });
 
     test('two contacts showing only their company are no same name', () {

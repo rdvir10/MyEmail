@@ -1416,7 +1416,14 @@ ContactPairPlan planPairedContact({
 
     final gChanged = _changedSince(googleNow, gBase, f);
     final hChanged = _changedSince(graphNow, hBase, f);
-    if (!newPair && !gChanged && !hChanged) continue;
+    if (!newPair && !gChanged && !hChanged) {
+      // A display name that is no name remade as another (Outlook showing
+      // a new address or company) is no change, but it is taken into the
+      // base: kept, the old one would later read as a name the contact
+      // once had, and a name typed on the other side would clash with it.
+      if (f == ContactField.name) adopt(f);
+      continue;
+    }
 
     if (f.isList) {
       if (firstSync && !newPair && !copyBack) {
