@@ -1441,6 +1441,8 @@ void main() {
       expect(plan.reKeys, {'people/a': 'people/m', 'people/b': 'people/m'});
       expect(plan.googleGone, isEmpty, reason: 'merged, not deleted');
       expect(plan.graphTagMoves, {'H-b': 'people/m'});
+      // The losing row's old items are dropped, not moved onto people/m.
+      expect(plan.mergedAway, [(googleName: 'people/a', graphId: 'H-a')]);
     });
 
     test('a held Gmail contact merged away loses its row, and nothing else',
@@ -1478,6 +1480,9 @@ void main() {
       expect(plan.reviews, isEmpty);
       expect(byLink(plan, 1)!.googleName, 'people/j1');
       expect(plan.googleGone, isEmpty);
+      // j2's own Needs a look item goes with it, not onto j1.
+      expect(plan.mergedAway, [(googleName: 'people/j2', graphId: null)]);
+      expect(plan.reKeys, {'people/j2': 'people/j1'});
       // The row held with no Outlook contact never wins over a pair, even
       // when the merged contact shares nothing with its Outlook partner.
       final heldWins = run(

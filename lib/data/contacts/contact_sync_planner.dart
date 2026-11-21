@@ -1100,6 +1100,7 @@ class ContactSyncPlan {
     this.graphGone = const {},
     this.answers = const [],
     this.graphPassedOver = const {},
+    this.mergedAway = const [],
   });
 
   /// The empty-answers brake: when set, nothing else is planned.
@@ -1169,6 +1170,15 @@ class ContactSyncPlan {
   /// by id, for this run or the next, since the delta link has moved on.
   /// Set on a stopped run too.
   final Set<String> graphPassedOver;
+
+  /// Rows folded away by a merge in Gmail: each losing row's old Gmail
+  /// name and, where the row had one, its Outlook id. Before applying
+  /// [reKeys] (which would move them onto the merged contact), the
+  /// runner drops every Needs a look item naming that Gmail name, and,
+  /// where [graphId] is given, that Outlook id with it. A losing row with
+  /// an Outlook contact gets a "merged in Gmail" item of its own in
+  /// [reviews].
+  final List<({String googleName, String? graphId})> mergedAway;
 
   /// The normaliser this plan compared with, for the pair to store.
   int get normaliserVersion => contactNormaliserVersion;
@@ -1826,6 +1836,7 @@ class _Planner {
   final otherReviews = <ContactReviewItem>[];
   final brakes = <ContactBrake>[];
   final journalSettled = <int>[];
+  final mergedAway = <({String googleName, String? graphId})>[];
   /// Bin rows of contacts paired or copied this run (see
   /// [ContactSyncPlan.binToMarkBack]).
   final broughtBack = <int>{};
@@ -2058,6 +2069,7 @@ class _Planner {
         });
       _rename(ranked.first, name);
       for (final loser in ranked.skip(1)) {
+        mergedAway.add((googleName: loser.googleName!, graphId: loser.graphId));
         loser
           ..googleName = null
           ..done = true;
@@ -3739,6 +3751,7 @@ class _Planner {
       graphGone: Set.unmodifiable(graphGone),
       answers: answerOutcomes,
       graphPassedOver: Set.unmodifiable(graphPassedOver),
+      mergedAway: List.unmodifiable(mergedAway),
       counts: ContactSyncCounts(
         addToGoogle: count((l) => l.create?.side == ContactSide.google),
         addToGraph: count((l) => l.create?.side == ContactSide.graph),
