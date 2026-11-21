@@ -893,6 +893,11 @@ enum ContactReviewReason {
 
   /// Ron said Don't delete them.
   notDeleted,
+
+  /// A copy held as a duplicate of a person no longer synced: the synced
+  /// copy went (its partner deleted, or kept instead), or the copy no
+  /// longer joins any. It is never copied over unasked.
+  copyOfGone,
 }
 
 /// One Needs a look item.
@@ -1929,7 +1934,7 @@ class _Copies {
 
   final Set<(ContactSide, String)> members;
 
-  /// Their full name, as [ContactNormaliser.fullNameKey] gives it.
+  /// Their name, as `_Planner._personKey` gives it.
   final String name;
 }
 
@@ -3260,18 +3265,19 @@ class _Planner {
   }
 
   /// A copy held as a duplicate on [side] of the person [row] pairs: alive
-  /// and in Contacts, not yet planned this run, with that person's full
-  /// name and an email or mobile in common with either side of the pair.
+  /// and in Contacts, not yet planned this run, with the name of either
+  /// side of the pair and an email or mobile in common with either.
   /// The most complete, ties by id.
   String? _heldCopyOf(ContactSide side, _Row row) {
     final gone = side == ContactSide.google
         ? row.input.googleDetails
         : row.input.graphDetails;
     final kept = side == ContactSide.google ? _graphNow(row) : _googleNow(row);
-    final name =
-        ContactNormaliser.fullNameKey(kept.copyableName) ??
-        ContactNormaliser.fullNameKey(gone.copyableName);
-    if (name == null) return null;
+    // Either side's name: the copy left may still carry the gone copy's
+    // name though the other side has been renamed since (or the other
+    // way round).
+    final names = {?_personKey(kept), ?_personKey(gone)};
+    if (names.isEmpty) return null;
     Set<String> keys(SyncedContact d) => {..._emailKeys(d), ..._mobileKeys(d)};
     final pairKeys = {...keys(gone), ...keys(kept)};
     final copies = [
@@ -3284,10 +3290,7 @@ class _Planner {
               case final id?
               when _alive(side, id) &&
                   !(side == ContactSide.graph && graphMoved.contains(id)) &&
-                  ContactNormaliser.fullNameKey(
-                        _detailsOf(side, id).copyableName,
-                      ) ==
-                      name &&
+                  names.contains(_personKey(_detailsOf(side, id))) &&
                   keys(_detailsOf(side, id)).any(pairKeys.contains))
             id,
     ];
@@ -3542,7 +3545,8 @@ class _Planner {
 
   /// Copies of one person (R1): contacts joined by a shared email or
   /// mobile key, every one of them, on both sides, with a name to copy
-  /// and the same full name, with more than one on a side (counting the
+  /// and the same full name and suffix (`_personKey`), with more than one
+  /// on a side (counting the
   /// partner a member is paired with). A contact with no name never joins
   /// one, and a contact of another name on the keys (a family on one
   /// address) leaves the whole set to the usual rules. Built from what
@@ -3553,6 +3557,19 @@ class _Planner {
     for (final group in _copies)
       for (final member in group.members) member: group,
   };
+
+  /// The name copies of one person share: the full name
+  /// ([ContactNormaliser.fullNameKey]) and the suffix, so John Roe Sr.
+  /// and John Roe Jr. on one family address are two people; not the
+  /// prefix, by which copies of one person often differ ("Dr."). Null
+  /// for a contact with no name to copy.
+  static String? _personKey(SyncedContact details) {
+    final name = details.copyableName;
+    final full = ContactNormaliser.fullNameKey(name);
+    if (full == null) return null;
+    final suffix = ContactNormaliser.textKey(name?.suffix);
+    return suffix == null ? full : '$full|$suffix';
+  }
 
   /// Whether [a] and [b], both on [side], are copies of one person.
   bool _copiesWith(ContactSide side, String a, String b) {
@@ -3591,8 +3608,7 @@ class _Planner {
       }
       if (members.length < 2) continue;
       final names = {
-        for (final (side, id) in members)
-          ContactNormaliser.fullNameKey(_detailsOf(side, id).copyableName),
+        for (final (side, id) in members) _personKey(_detailsOf(side, id)),
       };
       if (names.length != 1 || names.single == null) continue;
       // Copies on a side: the members there, and the partners there of
@@ -3642,25 +3658,39 @@ class _Planner {
   /// Copies of one person, placed (R2, R3): one copy each side synced,
   /// the rest held as duplicates, never copied, written, deleted or asked
   /// about. A member already paired keeps its pair, and every other copy
-  /// read this run is held. With no pair, the most complete copy read on
-  /// each side (one Ron's own link joins first, a copy due to be deleted
-  /// first of all) is paired like any new pair; with copies on one side
-  /// only, its most complete goes through the usual rules alone (its
+  /// read this run is held. With no pair, the most complete new copy read
+  /// on each side (one Ron's own link joins first, a copy due to be
+  /// deleted first of all) is paired like any new pair; with copies on one
+  /// side only, its most complete goes through the usual rules alone (its
   /// copies are no other person to them), the rest held. A member held
   /// for another reason, or not read, is left as it is.
+  ///
+  /// A copy held before is never copied over unasked (D2): held again
+  /// while its person is synced, and, once no member is (the synced copy's
+  /// partner deleted, or kept instead), held as kept under a Needs a look
+  /// item of its own, like any kept contact.
   void _placeCopies() {
     for (final group in _copies) {
       final members = group.members;
+      bool heldCopy((ContactSide, String) m) {
+        final row = _rowOf(m.$1, m.$2);
+        return row != null &&
+            !row.done &&
+            row.state == ContactLinkState.held &&
+            row.reason == ContactHeldReason.duplicate;
+      }
+
       bool open((ContactSide, String) m) {
         final (side, id) = m;
         final row = _rowOf(side, id);
         final status = _status(side, id);
         return (status == null || status == _Status.fresh) &&
             _wasRead(side, id) &&
-            (row == null || (row.reopened && !row.done));
+            (row == null || (row.reopened && !row.done)) &&
+            !heldCopy(m);
       }
 
-      final paired = members.any((m) => _status(m.$1, m.$2) == _Status.paired);
+      var paired = members.any((m) => _status(m.$1, m.$2) == _Status.paired);
       final waiting = [for (final m in members) if (open(m)) m];
       if (!paired) {
         // A copy due to be deleted (its partner gone) is paired first, so
@@ -3708,6 +3738,7 @@ class _Planner {
           }
           gRow?.done = true;
           hRow?.done = true;
+          paired = true;
           _moveTag(ContactSide.google, g, h);
           waiting.removeWhere(
             (m) =>
@@ -3730,7 +3761,96 @@ class _Planner {
         _hold(side, id, ContactHeldReason.duplicate, linkId: row?.id);
         row?.done = true;
       }
+      for (final (side, id) in [...members.where(heldCopy)]) {
+        final row = _rowOf(side, id)!;
+        if (!paired) {
+          _keepCopy(side, id, row);
+        } else if (row.reopened) {
+          _hold(side, id, ContactHeldReason.duplicate, linkId: row.id);
+          row.done = true;
+        }
+      }
     }
+
+    // Copies held before that no longer join any (their address, or their
+    // person's, changed since): held while a contact of their name is
+    // synced, kept with an item once none is. One Ron has given another
+    // name is someone else now: the usual rules.
+    final syncedNames = {
+      for (final MapEntry(:key, :value) in googleStatus.entries)
+        if (value == _Status.paired)
+          ?_personKey(_detailsOf(ContactSide.google, key)),
+      for (final MapEntry(:key, :value) in graphStatus.entries)
+        if (value == _Status.paired)
+          ?_personKey(_detailsOf(ContactSide.graph, key)),
+    };
+    for (final row in rows) {
+      if (row.done ||
+          row.state != ContactLinkState.held ||
+          row.reason != ContactHeldReason.duplicate) {
+        continue;
+      }
+      final side = row.googleName != null
+          ? ContactSide.google
+          : ContactSide.graph;
+      final id = (row.googleName ?? row.graphId)!;
+      if (_copiesByContact.containsKey((side, id)) || !_alive(side, id)) {
+        continue;
+      }
+      final name = _personKey(_detailsOf(side, id));
+      final was = _personKey(
+        side == ContactSide.google
+            ? row.input.googleDetails
+            : row.input.graphDetails,
+      );
+      if (_wasRead(side, id) && name != was) continue;
+      if (syncedNames.contains(name)) {
+        if (row.reopened) {
+          _hold(side, id, ContactHeldReason.duplicate, linkId: row.id);
+          row.done = true;
+        }
+        continue;
+      }
+      _keepCopy(side, id, row);
+    }
+  }
+
+  /// A held copy of a person no longer synced (D2), never copied over
+  /// unasked: held as kept, under a Needs a look item of its own (Copy it
+  /// back, Delete it here too, Keep it only here).
+  void _keepCopy(ContactSide side, String id, _Row row) {
+    row.done = true;
+    final details = _detailsOf(side, id);
+    _setStatus(side, id, _Status.held);
+    final onGoogle = side == ContactSide.google;
+    _add(
+      ContactLinkPlan(
+        linkId: row.id,
+        googleName: onGoogle ? id : null,
+        graphId: onGoogle ? null : id,
+        state: ContactLinkState.held,
+        reason: ContactHeldReason.kept,
+        googleEtag: onGoogle
+            ? googleListed[id]?.etag ?? row.input.googleEtag
+            : null,
+        graphChangeKey: onGoogle
+            ? null
+            : graphListed[id]?.changeKey ?? row.input.graphChangeKey,
+        googleBase: onGoogle ? details : null,
+        graphBase: onGoogle ? null : details,
+        title: details.title,
+      ),
+      [
+        ContactReviewItem(
+          kind: ContactReviewKind.kept,
+          reason: ContactReviewReason.copyOfGone,
+          googleName: onGoogle ? id : null,
+          graphId: onGoogle ? null : id,
+          goneSide: side.other,
+          title: details.title,
+        ),
+      ],
+    );
   }
 
   /// The groups of copies as [links] leave them (R7): each contact's
@@ -3804,13 +3924,18 @@ class _Planner {
     // read): listed with the others of its name, so it is never hidden.
     final stray = <String, List<(ContactSide, String)>>{};
     for (final m in copies.difference(listed)) {
-      final name = ContactNormaliser.fullNameKey(
-        _detailsOf(m.$1, m.$2).copyableName,
-      );
+      final name = _personKey(_detailsOf(m.$1, m.$2));
       stray.putIfAbsent(name ?? '', () => []).add(m);
     }
-    for (final members in stray.values) {
-      add(members);
+    // With the pair of their name, which keeps them held.
+    final pairByName = <String, (ContactSide, String)>{};
+    for (final MapEntry(key: (side, id), value: _) in pairOf.entries) {
+      if (_personKey(_detailsOf(side, id)) case final name?) {
+        pairByName.putIfAbsent(name, () => (side, id));
+      }
+    }
+    for (final MapEntry(key: name, value: members) in stray.entries) {
+      add([?pairByName[name], ...members]);
     }
     return groups
       ..sort((a, b) {
