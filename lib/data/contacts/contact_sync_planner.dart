@@ -3096,6 +3096,19 @@ class _Planner {
             final side = g != null ? ContactSide.google : ContactSide.graph;
             _setStatus(side, (g ?? h)!, _Status.fresh);
           }
+        case ContactHeldReason.duplicate:
+          final side = g != null ? ContactSide.google : ContactSide.graph;
+          final id = (g ?? h)!;
+          if (!_heldAlive(row)) {
+            // A copy Ron deleted: only its row goes (R3, R5).
+            _add(ContactLinkPlan(linkId: row.id, removeRow: true));
+          } else if (_wasRead(side, id)) {
+            // Read again, it is placed again: held again while it is still
+            // a copy (R4), its read kept; by the usual rules once it is
+            // not (Ron gave it another name, or another address).
+            row.reopened = true;
+            _setStatus(side, id, _Status.fresh);
+          }
         case ContactHeldReason.changeBrake:
           if (googleGone.contains(g) || graphGone.contains(h)) _paired(row);
         case ContactHeldReason.refused:

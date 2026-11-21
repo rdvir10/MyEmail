@@ -4349,6 +4349,54 @@ void main() {
       );
     });
 
+    // Ann as a run after the first leaves her: c1 with H1 paired, H2 held.
+    List<ContactLinkInput> synced() => [
+      link(1, 'people/c1', 'H1', base: annCopy()),
+      link(
+        2,
+        null,
+        'H2',
+        base: annCopy(),
+        state: ContactLinkState.held,
+        reason: ContactHeldReason.duplicate,
+      ),
+    ];
+
+    test('a later run: a new copy is held, not copied', () {
+      final plan = run(graph: [h('H3', annCopy())], links: synced());
+      final copy = byGraph(plan, 'H3')!;
+      expect(copy.reason, ContactHeldReason.duplicate);
+      expect(copy.linkId, isNull);
+      expect(plan.links.where((l) => l.create != null), isEmpty);
+      expect(plan.reviews, isEmpty);
+      // In Gmail too.
+      final gmail = run(google: [g('people/c3', annCopy())], links: synced());
+      expect(byGoogle(gmail, 'people/c3')!.reason, ContactHeldReason.duplicate);
+      expect(gmail.reviews, isEmpty);
+    });
+
+    test('a held copy read again is held again, its read kept', () {
+      final edited = annCopy(more: {ContactField.office: 'B2'});
+      final plan = run(graph: [h('H2', edited)], links: synced());
+      final copy = byLink(plan, 2)!;
+      expect(copy.reason, ContactHeldReason.duplicate);
+      expect(copy.graphBase, edited);
+      expect(copy.writes, isFalse);
+      expect(byLink(plan, 1), isNull, reason: 'the pair as it was');
+      // Given another name by Ron, it is no copy: the usual rules.
+      final bob = person(given: 'Bob', family: 'Roe', emails: ['bob@x']);
+      final renamed = run(graph: [h('H2', bob)], links: synced());
+      expect(byLink(renamed, 2)!.create!.side, ContactSide.google);
+    });
+
+    test('Ron deleting a held copy: its row goes, and nothing else', () {
+      final plan = run(graphGone: {'H2'}, links: synced());
+      expect(byLink(plan, 2)!.removeRow, isTrue);
+      expect(byLink(plan, 2)!.delete, isNull);
+      expect(plan.links, hasLength(1));
+      expect(plan.reviews, isEmpty);
+    });
+
     test('holding copies is no deletion and no change for the brakes', () {
       SyncedContact someone(int i) =>
           person(given: 'P$i', family: 'X', emails: ['p$i@x']);
