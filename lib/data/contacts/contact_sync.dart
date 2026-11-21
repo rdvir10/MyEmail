@@ -2223,15 +2223,22 @@ class _Run {
       if (!graph.readWhole || graph.details.isEmpty) return null;
     }
     final writtenG = gAnswer == null ? null : GoogleContact.fromPerson(gAnswer);
-    final writtenH = hAnswer == null ? null : GraphContact.fromJson(hAnswer);
+    var writtenH = hAnswer == null ? null : GraphContact.fromJson(hAnswer);
     if (writtenH != null && (!writtenH.readWhole || writtenH.details.isEmpty)) {
       // A write's answer that lacks a property cannot stand for the
-      // contact; read it whole instead.
+      // contact: read it whole, and take that as what was written only
+      // while it is still the version the write made. Read as Ron's, the
+      // sync's own write would win a clash against his edit in Gmail.
       final fresh = await this.graph((a) => a.get(p.graphId!));
       if (fresh == null || !_inContacts(fresh)) return null;
-      graph = GraphContact.fromJson(fresh);
-      if (!graph.readWhole || graph.details.isEmpty) return null;
-      return p.replan(google: google, graph: graph);
+      final whole = GraphContact.fromJson(fresh);
+      if (!whole.readWhole ||
+          whole.details.isEmpty ||
+          whole.changeKey == null ||
+          whole.changeKey != writtenH.changeKey) {
+        return null;
+      }
+      writtenH = whole;
     }
     return p.replan(
       google: google,

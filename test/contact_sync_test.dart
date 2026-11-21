@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
@@ -84,6 +85,11 @@ class Harness {
   /// An answer in place of the server's, where it gives one.
   http.Response? Function(http.Request request)? answer;
 
+  /// The server's answer as the client gets it, changed where it returns
+  /// another.
+  http.Response? Function(http.Request request, http.Response response)?
+  reshape;
+
   late ContactSync sync = make();
 
   ContactSync make({String device = 'phone', ContactSyncStore? on}) =>
@@ -107,7 +113,7 @@ class Harness {
               ? await google.handle(request)
               : await graph.handle(request);
           after?.call(request);
-          return response;
+          return reshape?.call(request, response) ?? response;
         }),
         sleep: (_) async {},
         clock: () => _now,
@@ -1223,6 +1229,109 @@ void main() {
       expect(h.google.count, 2);
       expect(h.graph.count, 2);
       expect(h.contactWritesOf().where((r) => r.method == 'POST'), isEmpty);
+    });
+
+    test("an Outlook write's answer that lacks a property is read whole and "
+        "still taken as the sync's own write", () async {
+      final pairs = seedPairs(h, 1, mobiles: true);
+      await h.firstSync();
+      final g = pairs[0].google;
+      final o = pairs[0].graph;
+      Map<String, Object?> phone(String n) => {
+        'phoneNumbers': [
+          {'value': n, 'type': 'mobile'},
+        ],
+      };
+      h.google.editFromGmail(g, phone('+1 202 555 0177'));
+      h.graph.editFromOutlook(o, {'companyName': 'Acme'});
+      // The PATCH's answer leaves out a property, as Graph may.
+      h.reshape = (r, response) {
+        if (r.method != 'PATCH' || !r.url.path.endsWith('/me/contacts/$o')) {
+          return null;
+        }
+        final json = jsonDecode(response.body) as Map<String, Object?>
+          ..remove('imAddresses');
+        return http.Response(
+          jsonEncode(json),
+          response.statusCode,
+          headers: response.headers,
+        );
+      };
+      // Ron changes the mobile again in Gmail as the run reads Outlook
+      // before its write; the write is made a minute after his edit.
+      var edited = false;
+      h.before = (r) async {
+        if (!edited &&
+            r.method == 'GET' &&
+            r.url.path.endsWith('/me/contacts/$o')) {
+          edited = true;
+          h.google.editFromGmail(g, phone('+1 202 555 0199'));
+          h.pass(const Duration(minutes: 1));
+        }
+      };
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(edited, isTrue);
+      // Ron's edit wins over the value the sync had just written.
+      expect(mobileOf(h.google.person(g)), '+1 202 555 0199');
+      expect(mobileOf(h.graph.contact(o)), '+1 202 555 0199');
+      expect(companyOf(h.google.person(g)), 'Acme');
+      expect(
+        status.needsALook.where((l) => l.kind == ContactReviewKind.clash),
+        isEmpty,
+      );
+    });
+
+    test('...and one changed again since the write is left for the next '
+        "run, Ron's edit kept", () async {
+      final pairs = seedPairs(h, 1, mobiles: true);
+      await h.firstSync();
+      final g = pairs[0].google;
+      final o = pairs[0].graph;
+      h.google.editFromGmail(g, {
+        'phoneNumbers': [
+          {'value': '+1 202 555 0177', 'type': 'mobile'},
+        ],
+      });
+      h.graph.editFromOutlook(o, {'companyName': 'Acme'});
+      h.reshape = (r, response) {
+        if (r.method != 'PATCH' || !r.url.path.endsWith('/me/contacts/$o')) {
+          return null;
+        }
+        final json = jsonDecode(response.body) as Map<String, Object?>
+          ..remove('imAddresses');
+        return http.Response(
+          jsonEncode(json),
+          response.statusCode,
+          headers: response.headers,
+        );
+      };
+      var gets = 0;
+      h.before = (r) async {
+        if (r.method == 'GET' && r.url.path.endsWith('/v1/$g') && ++gets == 1) {
+          // Gmail changed under the run, and Ron changes in Outlook the
+          // mobile the sync has just written there.
+          h.google.editFromGmail(g, {
+            'nicknames': [
+              {'value': 'Bo'},
+            ],
+          });
+          h.pass(const Duration(minutes: 1));
+          h.graph.editFromOutlook(o, {'mobilePhone': '+1 202 555 0155'});
+        }
+      };
+      var status = await h.later();
+      expect(status.halt, isNull);
+      h.before = null;
+      h.reshape = null;
+      status = await h.later();
+      expect(status.halt, isNull);
+      // His Outlook edit reaches Gmail: it was not taken for the sync's.
+      final gmail = h.google.person(g)!;
+      expect(mobileOf(gmail), '+1 202 555 0155');
+      expect(mobileOf(h.graph.contact(o)), '+1 202 555 0155');
+      expect(companyOf(gmail), 'Acme');
+      expect(h.graph.contact(o)!['nickName'], 'Bo');
     });
 
     test('Same person pairs a new contact with its candidate', () async {
