@@ -676,6 +676,10 @@ class SampleMailEngine
   Future<PasswordAge> passwordAge(String accountId) async =>
       PasswordAge.unknown;
 
+  /// The preview has no contacts to sync.
+  @override
+  ContactSyncService get contactSync => const NoContactSync();
+
   @override
   Future<List<MailAttachment>> listAttachments(String messageId) async {
     await _latency();

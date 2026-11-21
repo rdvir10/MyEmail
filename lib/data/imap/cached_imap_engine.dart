@@ -1125,6 +1125,10 @@ class CachedImapEngine
     return _people.access(account);
   }
 
+  // Until the runner is built: an engine with nothing to sync.
+  @override
+  ContactSyncService get contactSync => const NoContactSync();
+
   @override
   Future<PasswordAge> passwordAge(String accountId) async {
     final account =
