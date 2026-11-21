@@ -2331,10 +2331,25 @@ class _Run {
         : full['changeKey'] as String?;
     final expected = d.expectedVersion;
     final moved = !onGoogle && !_inContacts(full);
-    if ((expected != null && version != expected) || moved) {
-      // Changed since it was last synced: kept, and Ron is asked.
+    // A version not known is no proof the contact is unchanged: only Ron's
+    // own answer deletes it then.
+    final unknown = expected == null && !p.fromAnswer;
+    if ((expected != null && version != expected) || moved || unknown) {
+      // Changed since it was last synced: kept, and Ron is asked. Kept as
+      // it is now, its version and details from the read in hand, so a
+      // later Delete it here too with nothing changed since goes through,
+      // and one with a change since keeps it again.
+      final details = onGoogle ? syncedFromPerson(full) : syncedFromGraph(full);
       await store.transaction(() async {
-        await store.saveLink(_linkOf(p.keptInstead()));
+        await store.saveLink(
+          _linkOf(
+            p.keptInstead(),
+            googleEtag: onGoogle ? version : null,
+            graphChangeKey: onGoogle ? null : version,
+            googleBase: onGoogle ? details : null,
+            graphBase: onGoogle ? null : details,
+          ),
+        );
         await _saveReview(p.keptReview());
       });
       debugPrint('[myemail] contacts: a contact due to be deleted had '

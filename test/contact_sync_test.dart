@@ -1442,6 +1442,77 @@ void main() {
       expect(row.googleName, isNull);
     });
 
+    test('kept at its delete, the contact is kept as it is now: Delete it '
+        'here too then deletes it, and keeps it again after a change',
+        () async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      final g = pairs[0].google;
+      Future<void> Function(http.Request) editOnce(String company) {
+        var done = false;
+        return (r) async {
+          // The read in full just before the delete.
+          if (!done &&
+              r.method == 'GET' &&
+              r.url.path == '/v1/$g' &&
+              (r.url.queryParameters['personFields'] ?? '').contains(
+                'userDefined',
+              )) {
+            done = true;
+            h.google.editFromGmail(g, {
+              'organizations': [
+                {'name': company},
+              ],
+            });
+          }
+        };
+      }
+
+      h.graph.deleteFromOutlook(pairs[0].graph);
+      h.before = editOnce('Edited');
+      var status = await h.later();
+      h.before = null;
+      expect(h.google.person(g), isNotNull);
+      final row = (await h.links()).firstWhere((l) => l.googleName == g);
+      expect(row.reason, ContactHeldReason.kept);
+      final now = h.google.person(g)!;
+      final source = ((now['metadata']! as Map)['sources']! as List).first
+          as Map;
+      expect(row.googleEtag, source['etag']);
+      expect(row.googleBase, contains('Edited'));
+
+      // Changed again while the answer's run reads it: kept again.
+      var look = status.needsALook.single;
+      h.before = editOnce('Edited again');
+      await h.sync.answerLook(look.id, ContactSyncChoice.deleteHereToo);
+      await h.sync.syncNow();
+      h.before = null;
+      status = await h.status();
+      expect(h.google.person(g), isNotNull);
+      look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.kept);
+
+      // Nothing changed since: Delete it here too deletes it.
+      await h.sync.answerLook(look.id, ContactSyncChoice.deleteHereToo);
+      await h.sync.syncNow();
+      expect(h.google.person(g), isNull);
+      expect((await h.status()).needsALook, isEmpty);
+    });
+
+    test('a delete with no version known is kept, unless Ron asked for it',
+        () async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      final row = (await h.links()).firstWhere(
+        (l) => l.graphId == pairs[0].graph,
+      );
+      await h.store.saveLink(row.copyWith(graphChangeKey: null));
+      h.google.deleteFromGmail(pairs[0].google);
+      final status = await h.later();
+      expect(h.graph.contact(pairs[0].graph), isNotNull);
+      expect(status.needsALook.single.kind, ContactReviewKind.kept);
+    });
+
     test('a contact moved out of Contacts just before its delete is kept',
         () async {
       final pairs = seedPairs(h, 2);
