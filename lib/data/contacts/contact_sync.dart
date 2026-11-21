@@ -164,8 +164,11 @@ class ContactSync implements ContactSyncService {
     final pair = await _attachedPair();
     if (pair == null || pair.firstStartedAt == null) return;
     _pauseLifted = false;
-    await _Run(this, pair, takeClaim: _takeClaim).go();
-    _takeClaim = false;
+    // Sync here holds until a run completes: one stopped part way takes
+    // the claim over again when it carries on.
+    if (await _Run(this, pair, takeClaim: _takeClaim).go()) {
+      _takeClaim = false;
+    }
   }
 
   /// When [changed] last told of progress: a first sync of a thousand
@@ -1060,7 +1063,14 @@ class _Run {
       return;
     }
     final me = await sync._thisDevice();
-    if (claim == null || claim.device == me || takeClaim) return;
+    if (takeClaim && claim?.device != me) {
+      // Sync here: the claim is this device's from the start of the run,
+      // so the other stops at its next run, even if this one does not
+      // complete.
+      await _writeClaim(now);
+      return;
+    }
+    if (claim == null || claim.device == me) return;
     if (now.difference(claim.at) < ContactSync.claimLasts) {
       throw _OtherDevice(claim.at);
     }
@@ -1584,7 +1594,8 @@ class _Run {
   /// can replace its own.
   final savedReviews = <(String, String?, String?), int>{};
 
-  Future<void> go() async {
+  /// True when the run completed.
+  Future<bool> go() async {
     watch.start();
     try {
       pair = await store.updatePair(
@@ -1611,7 +1622,7 @@ class _Run {
       plan = planContactSync(input());
       if (plan.stop case final stop?) {
         await _emptyAnswer(stop);
-        return;
+        return false;
       }
       tally
         ..firstSync = pair.firstDoneAt == null
@@ -1622,8 +1633,10 @@ class _Run {
       await _saveFirst();
       await _write();
       await _finish();
+      return true;
     } catch (e) {
       await _halted(e);
+      return false;
     } finally {
       close();
     }

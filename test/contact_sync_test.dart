@@ -1867,6 +1867,68 @@ void main() {
   });
 
   group('the claim', () {
+    test('Sync here takes the claim at once, and holds until a run of its '
+        'completes', () async {
+      seedPairs(h, 1);
+      await h.firstSync();
+      for (var i = 0; i < 3; i++) {
+        h.graph.seed(outlook('O$i', 'New', email: 'o$i@example.com'));
+      }
+      final tablet = h.make(device: 'tablet', on: MemoryContactSyncStore());
+      await h.choose(tablet);
+      await tablet.start();
+      expect(
+        (await tablet.status()).halt!.kind,
+        ContactSyncHaltKind.otherDevice,
+      );
+
+      // Sync here, and the tablet is put away after its first create.
+      h.before = (r) async {
+        if (r.url.path.endsWith(':createContact')) unawaited(tablet.stop());
+      };
+      await tablet.syncHere();
+      await tablet.syncNow();
+      h.before = null;
+      expect((await tablet.status()).halt!.kind, ContactSyncHaltKind.putAway);
+      expect(h.graph.claim, startsWith('tablet '));
+
+      // The phone sees the tablet's claim and stops.
+      final made = h.google.count;
+      await h.later();
+      expect((await h.status()).halt!.kind, ContactSyncHaltKind.otherDevice);
+      expect(h.google.count, made);
+
+      // The tablet carries on, still taking over, and completes.
+      h.pass(const Duration(minutes: 1));
+      await tablet.syncNow();
+      expect((await tablet.status()).halt, isNull);
+      expect(h.google.count, 4);
+      expect(h.graph.count, 4);
+    });
+
+    test('Sync here still holds when the folder will not take the claim',
+        () async {
+      seedPairs(h, 1);
+      await h.firstSync();
+      for (var i = 0; i < 2; i++) {
+        h.graph.seed(outlook('O$i', 'New', email: 'o$i@example.com'));
+      }
+      h.graph.claimRefused = true;
+      final tablet = h.make(device: 'tablet', on: MemoryContactSyncStore());
+      await h.choose(tablet);
+      h.before = (r) async {
+        if (r.url.path.endsWith(':createContact')) unawaited(tablet.stop());
+      };
+      await tablet.syncHere();
+      await tablet.start();
+      h.before = null;
+      expect((await tablet.status()).halt!.kind, ContactSyncHaltKind.putAway);
+      h.pass(const Duration(minutes: 1));
+      await tablet.syncNow();
+      expect((await tablet.status()).halt, isNull);
+      expect(h.google.count, 3);
+    });
+
     for (final status in [400, 404]) {
       test('a folder that will not give its claim (HTTP $status) does not '
           'stop the run', () async {
