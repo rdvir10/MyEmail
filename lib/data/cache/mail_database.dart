@@ -310,7 +310,8 @@ class ContactLinks extends Table {
   TextColumn get googleEtag => text().nullable()();
   TextColumn get graphChangeKey => text().nullable()();
 
-  /// Each side's synced details, raw JSON as its server last returned them.
+  /// Each side's synced details as its server last returned them, in
+  /// `SyncedContact.toJson`'s form.
   TextColumn get googleBase => text().nullable()();
   TextColumn get graphBase => text().nullable()();
 

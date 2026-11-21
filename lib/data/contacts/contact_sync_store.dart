@@ -198,10 +198,10 @@ class ContactPair {
 /// A contact contact sync has decided about: paired with its partner, or
 /// held, with a reason.
 ///
-/// Each side's etag or `changeKey`, and its synced details as raw JSON
-/// (the base), are as they were when that contact was last synced: written
-/// by the sync, or a change of it taken in. A paired link names both sides;
-/// a held one names at least one.
+/// Each side's version (the etag or `changeKey` the planner compares) and
+/// its synced details (the base) are as they were when that contact was
+/// last synced: written by the sync, or a change of it taken in. A paired
+/// link names both sides; a held one names at least one.
 @immutable
 class ContactLink {
   const ContactLink({
@@ -231,8 +231,9 @@ class ContactLink {
   final String? googleEtag;
   final String? graphChangeKey;
 
-  /// Raw JSON of each side's synced details, as its server last returned
-  /// them.
+  /// Each side's synced details as its server last returned them, as the
+  /// planner keeps a base: `SyncedContact.toJson`, encoded. Not the
+  /// server's own JSON, which the planner cannot read as a base.
   final String? googleBase;
   final String? graphBase;
   final ContactLinkState state;
