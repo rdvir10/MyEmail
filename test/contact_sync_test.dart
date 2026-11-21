@@ -2745,6 +2745,267 @@ void main() {
     });
   });
 
+  group('copies of one person', () {
+    /// A person once in Gmail and [hadco] times in Hadco, alike.
+    ({String google, List<String> graph}) person2(
+      Harness h,
+      String given,
+      String family, {
+      int gmail = 1,
+      int hadco = 2,
+      bool mobiles = true,
+    }) {
+      final email = '${given.toLowerCase()}@example.com';
+      final mobile = mobiles ? '+1 202 555 01${given.length}${family.length}' : null;
+      String? first;
+      for (var i = 0; i < gmail; i++) {
+        final name = h.google.seed(
+          person(given, family, email: email, mobile: mobile),
+        );
+        first ??= name;
+      }
+      return (
+        google: first ?? '',
+        graph: [
+          for (var i = 0; i < hadco; i++)
+            h.graph.seed(outlook(given, family, email: email, mobile: mobile)),
+        ],
+      );
+    }
+
+    int heldCopies(List<ContactLink> rows) => rows
+        .where((l) => l.reason == ContactHeldReason.duplicate)
+        .length;
+
+    test("the tablet's pattern: twice in Hadco, once in Gmail is one pair "
+        'and one held copy, nothing to look at', () async {
+      person2(h, 'Ann', 'Cole');
+      person2(h, 'Bob', 'Ray', hadco: 1);
+      await h.choose();
+      final preview = await h.sync.preview();
+      expect(preview.duplicateCopies, 1);
+      expect(preview.needsALook, 0);
+      expect(preview.addToGoogle + preview.addToGraph, 0);
+      expect(preview.pairUp, 2);
+
+      await h.sync.start();
+      final status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      expect(h.google.count, 2);
+      expect(h.graph.count, 3);
+      expect(await h.paired(), hasLength(2));
+      expect(heldCopies(await h.links()), 1);
+      final group = status.duplicates.single;
+      expect(group.title, 'Ann Cole');
+      expect(group.googleCopies, 1);
+      expect(group.graphCopies, 2);
+      expect(group.googleSynced, isTrue);
+      expect(group.graphSynced, isTrue);
+
+      // Ron's edit to the held copy does nothing on the other side.
+      final held = (await h.links())
+          .firstWhere((l) => l.reason == ContactHeldReason.duplicate)
+          .graphId!;
+      h.graph.editFromOutlook(held, {'companyName': 'Only here'});
+      h.requests.clear();
+      await h.later();
+      expect(h.contactWritesOf(), isEmpty);
+    });
+
+    test('status lists the groups after a restart, with no network',
+        () async {
+      person2(h, 'Ann', 'Cole', hadco: 3);
+      await h.firstSync();
+      final restarted = h.make();
+      h.requests.clear();
+      final status = await restarted.status();
+      expect(h.requests, isEmpty);
+      final group = status.duplicates.single;
+      expect(group.title, 'Ann Cole');
+      expect(group.graphCopies, 3);
+      expect(group.googleCopies, 1);
+      await restarted.close();
+    });
+
+    test('a run put away part way lists the groups it held', () async {
+      person2(h, 'Ann', 'Cole');
+      h.graph.seed(outlook('O1', 'New', email: 'o1@example.com'));
+      h.graph.seed(outlook('O2', 'New', email: 'o2@example.com'));
+      h.before = (r) async {
+        if (r.url.path.endsWith(':createContact')) unawaited(h.sync.stop());
+      };
+      await h.firstSync();
+      final status = await h.status();
+      expect(status.halt!.kind, ContactSyncHaltKind.putAway);
+      expect(status.duplicates.single.graphCopies, 2);
+    });
+
+    test('a stopped run keeps the groups it last listed', () async {
+      final pairs = seedPairs(h, 12);
+      person2(h, 'Ann', 'Cole');
+      await h.firstSync();
+      expect((await h.status()).duplicates, hasLength(1));
+      for (var i = 0; i < 8; i++) {
+        h.graph.purgeFromOutlook(pairs[i].graph);
+      }
+      h.graph.expireDeltaLinks();
+      final status = await h.later();
+      expect(status.halt!.kind, ContactSyncHaltKind.emptyAnswer);
+      expect(status.duplicates, hasLength(1));
+    });
+
+    test('Ron deleting the synced copy in Outlook while a copy is left: '
+        'nothing is deleted in Gmail, the pair moves', () async {
+      final ann = person2(h, 'Ann', 'Cole');
+      await h.firstSync();
+      final synced = (await h.links())
+          .firstWhere((l) => l.isPaired && l.googleName == ann.google)
+          .graphId!;
+      final left = ann.graph.firstWhere((id) => id != synced);
+      h.graph.deleteFromOutlook(synced);
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.google.person(ann.google), isNotNull);
+      expect(status.recentlyDeleted, isEmpty);
+      expect(status.last!.deleted, 0);
+      final row = (await h.links()).firstWhere(
+        (l) => l.googleName == ann.google,
+      );
+      expect(row.isPaired, isTrue);
+      expect(row.graphId, left);
+      expect(heldCopies(await h.links()), 0);
+      expect(status.duplicates, isEmpty);
+    });
+
+    test('Ron deleting a held copy: its row goes, nothing else', () async {
+      final ann = person2(h, 'Ann', 'Cole', hadco: 3);
+      await h.firstSync();
+      final heldIds = [
+        for (final l in await h.links())
+          if (l.reason == ContactHeldReason.duplicate) l.graphId!,
+      ];
+      expect(heldIds, hasLength(2));
+      h.graph.deleteFromOutlook(heldIds.first);
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.google.person(ann.google), isNotNull);
+      expect(status.last!.deleted, 0);
+      expect(heldCopies(await h.links()), 1);
+      expect(status.duplicates.single.graphCopies, 2);
+    });
+
+    test('six held copies deleted at once raise no brake', () async {
+      for (final given in ['Ann', 'Bea', 'Cal', 'Dee', 'Eve', 'Fay']) {
+        person2(h, given, 'Cole', mobiles: false);
+      }
+      await h.firstSync();
+      final heldIds = [
+        for (final l in await h.links())
+          if (l.reason == ContactHeldReason.duplicate) l.graphId!,
+      ];
+      expect(heldIds, hasLength(6));
+      expect((await h.status()).questions, isEmpty);
+      for (final id in heldIds) {
+        h.graph.deleteFromOutlook(id);
+      }
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.questions, isEmpty);
+      expect(status.notice, isNull);
+      expect(h.google.count, 6);
+      expect(await h.paired(), hasLength(6));
+      expect(heldCopies(await h.links()), 0);
+    });
+
+    test('a later copy joining a person is held, not copied', () async {
+      final ann = person2(h, 'Ann', 'Cole', hadco: 1);
+      await h.firstSync();
+      expect((await h.status()).duplicates, isEmpty);
+      h.graph.addFromOutlook(
+        outlook('Ann', 'Cole', email: 'ann@example.com'),
+      );
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.last!.addedToGoogle, 0);
+      expect(h.google.count, 1);
+      expect(status.needsALook, isEmpty);
+      expect(heldCopies(await h.links()), 1);
+      expect(status.duplicates.single.graphCopies, 2);
+      expect(h.google.person(ann.google), isNotNull);
+    });
+
+    test('Merge & fix in Gmail, the held copy merged into the synced one: '
+        'the pair stands', () async {
+      final ann = person2(h, 'Ann', 'Cole', gmail: 2, hadco: 1);
+      await h.firstSync();
+      final rows = await h.links();
+      final synced = rows.firstWhere((l) => l.isPaired).googleName!;
+      final copy = rows
+          .firstWhere((l) => l.reason == ContactHeldReason.duplicate)
+          .googleName!;
+      final pairedWith = rows.firstWhere((l) => l.isPaired).graphId;
+      h.google.mergeInGmail(synced, copy);
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      expect(status.last!.deleted, 0);
+      final after = await h.links();
+      expect(after.where((l) => l.isPaired).single.googleName, synced);
+      expect(after.where((l) => l.isPaired).single.graphId, pairedWith);
+      expect(heldCopies(after), 0);
+      expect(h.graph.count, 1);
+      expect(ann.graph, hasLength(1));
+      expect(status.duplicates, isEmpty);
+    });
+
+    test('Merge & fix in Gmail, the synced copy merged into the held one: '
+        'the pair moves to it', () async {
+      person2(h, 'Ann', 'Cole', gmail: 2, hadco: 1);
+      await h.firstSync();
+      final rows = await h.links();
+      final synced = rows.firstWhere((l) => l.isPaired).googleName!;
+      final copy = rows
+          .firstWhere((l) => l.reason == ContactHeldReason.duplicate)
+          .googleName!;
+      final pairedWith = rows.firstWhere((l) => l.isPaired).graphId;
+      h.google.mergeInGmail(copy, synced);
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      expect(status.last!.deleted, 0);
+      final after = await h.links();
+      final pair = after.where((l) => l.isPaired).single;
+      expect(pair.googleName, copy);
+      expect(pair.graphId, pairedWith);
+      expect(heldCopies(after), 0);
+      expect(h.graph.count, 1);
+      expect(h.google.count, 1);
+      expect(status.duplicates, isEmpty);
+    });
+
+    test('copies on one side only: one is copied once, the rest held',
+        () async {
+      person2(h, 'Ann', 'Cole', gmail: 3, hadco: 0);
+      await h.firstSync();
+      final status = await h.status();
+      expect(status.halt, isNull);
+      expect(h.graph.count, 1);
+      expect(heldCopies(await h.links()), 2);
+      expect(await h.paired(), hasLength(1));
+      // Listed at once as the run leaves them: one copy of each synced.
+      final group = status.duplicates.single;
+      expect(group.googleCopies, 3);
+      expect(group.graphCopies, 1);
+      expect(group.googleSynced, isTrue);
+      expect(group.graphSynced, isTrue);
+      // Nothing more next time.
+      h.requests.clear();
+      await h.later();
+      expect(h.contactWritesOf(), isEmpty);
+    });
+  });
+
   group('privacy', () {
     test('a run logs no name, address or number', () async {
       final logged = <String>[];

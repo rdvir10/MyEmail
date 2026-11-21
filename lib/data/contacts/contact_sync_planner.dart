@@ -3755,6 +3755,13 @@ class _Planner {
       }
     }
 
+    // A copy being made on the other side this run: its source is the
+    // person's synced copy on its side, as it is once the copy is made.
+    final making = <(ContactSide, String)>{
+      for (final l in links)
+        if (l.create case final c? when !l.removeRow)
+          (c.side.other, c.sourceId),
+    };
     final touched = {
       for (final l in links) ...[?l.linkId, ...l.alsoRemove],
     };
@@ -3779,6 +3786,9 @@ class _Planner {
       if (held.isEmpty) return;
       listed.addAll(held);
       final pair = members.map((m) => pairOf[m]).nonNulls.firstOrNull;
+      final made = pair == null
+          ? members.firstWhereOrNull(making.contains)
+          : null;
       List<String> on(ContactSide side) => [
         for (final (s, id) in held)
           if (s == side) id,
@@ -3789,8 +3799,9 @@ class _Planner {
               titleOf(google, pair?.$1) ??
               titleOf(graph, pair?.$2) ??
               titleOf(held.first.$1, held.first.$2),
-          googleSynced: pair?.$1,
-          graphSynced: pair?.$2,
+          googleSynced:
+              pair?.$1 ?? (made?.$1 == google ? made?.$2 : null),
+          graphSynced: pair?.$2 ?? (made?.$1 == graph ? made?.$2 : null),
           googleCopies: on(google),
           graphCopies: on(graph),
         ),

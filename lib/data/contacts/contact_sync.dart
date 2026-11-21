@@ -18,7 +18,6 @@ import '../mail_engine.dart' show AuthenticationFailed, ConnectionFailed;
 import '../ui_state_store.dart';
 import 'account_people.dart' show AccountPeople;
 import 'contact_backup.dart';
-import 'contact_duplicates_stub.dart';
 import 'contact_mapping.dart';
 import 'contact_sync_planner.dart';
 import 'contact_sync_service.dart';
@@ -1653,6 +1652,9 @@ class _Run {
   final tally = _Tally();
   final watch = Stopwatch();
 
+  /// The contacts copied to the other side this run, by their source.
+  final copiedFrom = <(ContactSide, String)>{};
+
   /// Contacts made and deleted this run, per side, for the counts.
   var googleMade = 0;
   var graphMade = 0;
@@ -2130,6 +2132,7 @@ class _Run {
           : (p.linkId == null ? null : linkById[p.linkId]?.googleWrittenAt),
     );
     await store.completeCreates({op.opId: link});
+    copiedFrom.add((create.side.other, create.sourceId));
     if (onGoogle) {
       googleMade++;
       tally.addedToGoogle++;
@@ -2841,6 +2844,13 @@ class _Run {
         h.quotaUntil = null;
         h.restoring.removeWhere((n) => !binIds.contains(n['binId']));
         h.restoreProblems.removeWhere((id, _) => !binIds.contains(id));
+        // The copies of one person as this run leaves them: a copy made of
+        // a person's synced copy counts on its side.
+        h.duplicates
+          ..clear()
+          ..addAll(
+            plan.duplicates.map((d) => _Duplicates.of(d, made: copiedFrom)),
+          );
         return p.copyWith(
           googleSyncToken: googleToken ?? p.googleSyncToken,
           googleMask: googleContactFieldsVersion,
@@ -3258,14 +3268,29 @@ class _Duplicates {
 
   /// [group]'s counts: the copies each side holds, the synced one among
   /// them.
-  factory _Duplicates.of(ContactDuplicateGroup group) => _Duplicates(
-    title: group.title ?? '',
-    googleCopies:
-        group.googleCopies.length + (group.googleSynced == null ? 0 : 1),
-    graphCopies: group.graphCopies.length + (group.graphSynced == null ? 0 : 1),
-    googleSynced: group.googleSynced != null,
-    graphSynced: group.graphSynced != null,
-  );
+  ///
+  /// [made] are the contacts copied to the other side this run, by their
+  /// source: a person's copy made from its synced copy counts on that
+  /// other side as its synced copy, as the next plan will list it.
+  factory _Duplicates.of(
+    ContactDuplicateGroup group, {
+    Set<(ContactSide, String)> made = const {},
+  }) {
+    final g = group.googleSynced;
+    final h = group.graphSynced;
+    final toGraph =
+        h == null && g != null && made.contains((ContactSide.google, g));
+    final toGoogle =
+        g == null && h != null && made.contains((ContactSide.graph, h));
+    return _Duplicates(
+      title: group.title ?? '',
+      googleCopies:
+          group.googleCopies.length + (g != null || toGoogle ? 1 : 0),
+      graphCopies: group.graphCopies.length + (h != null || toGraph ? 1 : 0),
+      googleSynced: g != null || toGoogle,
+      graphSynced: h != null || toGraph,
+    );
+  }
 
   factory _Duplicates.parse(Map<Object?, Object?> json) {
     int n(String key) => json[key] is int ? json[key]! as int : 0;
