@@ -78,6 +78,7 @@ void main() {
     int? googleCount,
     int? graphCount,
     ContactSyncNotice? notice,
+    List<ContactSyncDuplicates> duplicates = const [],
   }) =>
       ContactSyncStatus(
         googleAccountId: gmail.id,
@@ -97,6 +98,7 @@ void main() {
         googleCount: googleCount,
         graphCount: graphCount,
         notice: notice,
+        duplicates: duplicates,
       );
 
   const chosenOnly = ContactSyncStatus(
@@ -893,6 +895,8 @@ void main() {
       expect(find.text('First sync'), findsNothing);
       expect(find.textContaining("Turn this off before using Google's Undo"),
           findsOneWidget);
+      expect(button('contact-sync-duplicates'), findsNothing,
+          reason: 'no copies of anyone, no row for them');
 
       await tester.tap(button('contact-sync-now'));
       await tester.pumpAndSettle();
@@ -1483,6 +1487,134 @@ void main() {
             'points to Noa Gal in Gmail, but the names differ.'),
         findsOneWidget,
       );
+    });
+
+    testWidgets('copies of one person: a row of their own, not among Needs '
+        'a look, opening one line for each', (tester) async {
+      sync = FakeContactSync(status: synced(
+        looks: const [
+          ContactSyncLook(id: 1, kind: ContactReviewKind.clash),
+          ContactSyncLook(id: 2, kind: ContactReviewKind.clash),
+        ],
+        // Not in order: the list is by name.
+        duplicates: const [
+          ContactSyncDuplicates(
+            title: 'Eli Ho',
+            googleCopies: 2,
+            graphCopies: 2,
+            googleSynced: true,
+          ),
+          ContactSyncDuplicates(
+            title: 'Ann Cole',
+            googleCopies: 2,
+            graphCopies: 3,
+            googleSynced: true,
+            graphSynced: true,
+          ),
+          ContactSyncDuplicates(
+            title: 'Dee Gal',
+            graphCopies: 2,
+            graphSynced: true,
+          ),
+          ContactSyncDuplicates(
+            title: 'Bob Day',
+            googleCopies: 3,
+            googleSynced: true,
+          ),
+          ContactSyncDuplicates(
+            title: 'cy Fox',
+            googleCopies: 2,
+            graphCopies: 1,
+            googleSynced: true,
+            graphSynced: true,
+          ),
+        ],
+      ));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+
+      expect(find.text('Needs a look (2)'), findsOneWidget,
+          reason: 'copies are not questions');
+      expect(find.text('Duplicates to merge when you like (5)'),
+          findsOneWidget);
+      expect(
+        tester.getTopLeft(button('contact-sync-duplicates')).dy,
+        greaterThan(tester.getTopLeft(button('contact-sync-looks')).dy),
+      );
+
+      await tester.tap(find.text('Duplicates to merge when you like (5)'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('These are copies of the same person. One copy on each side '
+            'is synced; the others are left as they are. Merge them when you '
+            'like: Merge & fix in Google Contacts, or delete the extra ones '
+            'in Outlook. Whichever copy you remove, the sync moves to one '
+            'that is left, and nothing is deleted on the other side.'),
+        findsOneWidget,
+      );
+      final lines = [
+        'Ann Cole: 2 in Gmail, 3 in Hadco; one of each is synced',
+        'Bob Day: 3 in Gmail; one is synced, and its copy in Hadco is still '
+            'to be made',
+        'cy Fox: 2 in Gmail, 1 in Hadco; one of each is synced',
+        'Dee Gal: 2 in Hadco; one is synced, and its copy in Gmail is still '
+            'to be made',
+        'Eli Ho: 2 in Gmail, 2 in Hadco; one in Gmail is synced',
+      ];
+      for (final line in lines) {
+        expect(find.text(line), findsOneWidget, reason: line);
+      }
+      for (var i = 1; i < lines.length; i++) {
+        expect(
+          tester.getTopLeft(find.text(lines[i])).dy,
+          greaterThan(tester.getTopLeft(find.text(lines[i - 1])).dy),
+          reason: 'by name: ${lines[i]}',
+        );
+      }
+    });
+
+    testWidgets('a few hundred copies of people scroll to the last',
+        (tester) async {
+      sync = FakeContactSync(status: synced(duplicates: [
+        for (var i = 0; i < 300; i++)
+          ContactSyncDuplicates(
+            title: 'Person ${i.toString().padLeft(3, '0')}',
+            googleCopies: 2,
+            graphCopies: 2,
+            googleSynced: true,
+            graphSynced: true,
+          ),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester, size: const Size(412, 915));
+      await tester.scrollUntilVisible(
+        button('contact-sync-duplicates'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(button('contact-sync-duplicates'));
+      await tester.pumpAndSettle();
+
+      final last = find.text(
+        'Person 299: 2 in Gmail, 2 in Hadco; one of each is synced',
+      );
+      expect(
+        find.text(
+          'Person 299: 2 in Gmail, 2 in Hadco; one of each is synced',
+          skipOffstage: false,
+        ),
+        findsNothing,
+        reason: 'built as it scrolls, not all three hundred at once',
+      );
+      await tester.scrollUntilVisible(
+        last,
+        600,
+        scrollable: find.descendant(
+          of: button('contact-sync-duplicates-list'),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      expect(last, findsOneWidget);
     });
 
     testWidgets('Recently deleted, with Restore', (tester) async {
