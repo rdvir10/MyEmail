@@ -1121,6 +1121,70 @@ void main() {
       expect(second.reviews, isEmpty);
     });
 
+    test('an old address still shown is no name', () {
+      // Outlook kept showing bob@x after Ron changed the address to
+      // bob@y: a new pair does not give Gmail the name "bob@x".
+      final paired = run(
+        google: [
+          g('people/c1', SyncedContact({
+            ContactField.emails: ['bob@y.example'],
+          })),
+        ],
+        graph: [
+          outlook('H1', {
+            'displayName': 'bob@x.example',
+            'emailAddresses': [
+              {'address': 'bob@y.example'},
+            ],
+          }),
+        ],
+      );
+      final pair = paired.links.singleWhere(
+        (l) => l.googleName == 'people/c1',
+      );
+      expect(pair.googleWrite, isNull);
+      // A base left showing the old address (from before it was taken
+      // in) is no name either: a name typed in Gmail goes to Outlook,
+      // with no clash.
+      final plan = run(
+        google: [
+          g(
+            'people/c1',
+            person(given: 'Ann', family: 'Lee', emails: ['ann@y.example']),
+            at: later,
+          ),
+        ],
+        graph: [
+          outlook('H1', {
+            'displayName': 'ann@y.example',
+            'emailAddresses': [
+              {'address': 'ann@y.example'},
+            ],
+          }, at: earlier),
+        ],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: SyncedContact({
+              ContactField.emails: ['ann@y.example'],
+            }),
+            graphBase: read({
+              'displayName': 'ann@x.example',
+              'emailAddresses': [
+                {'address': 'ann@y.example'},
+              ],
+            }),
+          ),
+        ],
+      );
+      final p = byLink(plan, 1)!;
+      expect(p.graphWrite!.fields, contains(ContactField.name));
+      expect(p.removes, isFalse);
+      expect(plan.reviews, isEmpty);
+    });
+
     test('two contacts showing only their company are no same name', () {
       final plan = run(
         google: [

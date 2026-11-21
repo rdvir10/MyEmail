@@ -438,14 +438,19 @@ class SyncedContact {
 
   /// [name] when it is a name to copy: not a display name alone that is
   /// one of the contact's own emails or its company, which Outlook (and
-  /// Google) show when a contact has no name. The test is made only where
-  /// a name would be copied to the other side (a fill, a one-sided change,
-  /// a create), never on the stored bases, so an edit to an email or the
-  /// company never reads as a change of name.
+  /// Google) show when a contact has no name, nor one that is a single
+  /// word with an `@` in it, an address shown even after the contact's
+  /// address changed (Outlook does not always remake it). The test is
+  /// made only where a name would be copied to the other side (a fill, a
+  /// one-sided change, a create), never on the stored bases, so an edit
+  /// to an email or the company never reads as a change of name.
   ContactName? get copyableName {
     final n = name;
     if (n == null || n.hasParts) return n;
     final shown = ContactNormaliser.textKey(n.display);
+    if (shown != null && !shown.contains(' ') && shown.contains('@')) {
+      return null;
+    }
     for (final other in [
       ...list(ContactField.emails),
       ?text(ContactField.company),
