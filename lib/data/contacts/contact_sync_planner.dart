@@ -3260,16 +3260,19 @@ class _Planner {
   }
 
   /// A copy held as a duplicate on [side] of the person [row] pairs: alive
-  /// and in Contacts, not yet planned this run, with that person's full
-  /// name and an email or mobile in common with either side of the pair.
+  /// and in Contacts, not yet planned this run, with the name of either
+  /// side of the pair and an email or mobile in common with either.
   /// The most complete, ties by id.
   String? _heldCopyOf(ContactSide side, _Row row) {
     final gone = side == ContactSide.google
         ? row.input.googleDetails
         : row.input.graphDetails;
     final kept = side == ContactSide.google ? _graphNow(row) : _googleNow(row);
-    final name = _personKey(kept) ?? _personKey(gone);
-    if (name == null) return null;
+    // Either side's name: the copy left may still carry the gone copy's
+    // name though the other side has been renamed since (or the other
+    // way round).
+    final names = {?_personKey(kept), ?_personKey(gone)};
+    if (names.isEmpty) return null;
     Set<String> keys(SyncedContact d) => {..._emailKeys(d), ..._mobileKeys(d)};
     final pairKeys = {...keys(gone), ...keys(kept)};
     final copies = [
@@ -3282,7 +3285,7 @@ class _Planner {
               case final id?
               when _alive(side, id) &&
                   !(side == ContactSide.graph && graphMoved.contains(id)) &&
-                  _personKey(_detailsOf(side, id)) == name &&
+                  names.contains(_personKey(_detailsOf(side, id))) &&
                   keys(_detailsOf(side, id)).any(pairKeys.contains))
             id,
     ];

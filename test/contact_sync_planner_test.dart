@@ -4509,9 +4509,29 @@ void main() {
       final pair = byLink(deleted, 1)!;
       expect((pair.googleName, pair.graphId), ('people/c2', 'H1'));
       expect(deleted.links.where((l) => l.delete != null), isEmpty);
+      // Hadco's side renamed since (Ann married): the Gmail copy left
+      // still carries the gone copy's name, and is taken.
+      final renamed = run(
+        google: [gDeleted('people/c1')],
+        graph: [
+          h(
+            'H1',
+            person(
+              given: 'Ann',
+              family: 'Smith',
+              emails: ['ann@x.example'],
+              mobile: '+1 212 555 0100',
+            ),
+          ),
+        ],
+        links: rows,
+      );
+      final moved = byLink(renamed, 1)!;
+      expect((moved.googleName, moved.graphId), ('people/c2', 'H1'));
+      expect(renamed.links.where((l) => l.delete != null), isEmpty);
       // Outlook's synced copy moved to another folder, a copy left.
-      final moved = run(graphMovedOut: {'H1'}, links: synced());
-      final now = byLink(moved, 1)!;
+      final away = run(graphMovedOut: {'H1'}, links: synced());
+      final now = byLink(away, 1)!;
       expect((now.googleName, now.graphId), ('people/c1', 'H2'));
       expect(now.state, ContactLinkState.paired);
     });
