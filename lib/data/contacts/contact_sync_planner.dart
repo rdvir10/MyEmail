@@ -597,13 +597,26 @@ class ContactLinkPlan {
   /// in place of those the run's plan gave it. The brakes are not counted
   /// again.
   ///
+  /// [googleWritten] and [graphWritten] are the contact as its server
+  /// answered this plan's write to that side ([googleWrite],
+  /// [graphWrite]), when that write already went through this run: it
+  /// stands as that side's read (details and version), and the bases move
+  /// on as [basesAfter] gives them for that answer, so the sync's own
+  /// write never reads as Ron's change, in this plan or in one planned
+  /// again from it. Its edit time stays the one read before the write.
+  /// A side has a read or a written answer, not both.
+  ///
   /// Only a plan with [settings] can be planned again (a [StateError]
   /// otherwise). A read that is no whole contact (Gmail's deleted entry,
   /// Outlook's `@removed` or sparse one, or one with no synced details)
-  /// is an [ArgumentError]: what it lacks would read as cleared.
+  /// is an [ArgumentError]: what it lacks would read as cleared. So are
+  /// a read and a written answer for one side, and a written answer for
+  /// a side this plan does not write.
   ({ContactLinkPlan plan, List<ContactReviewItem> reviews}) replan({
     GoogleContact? google,
     GraphContact? graph,
+    GoogleContact? googleWritten,
+    GraphContact? graphWritten,
   }) {
     final s = settings;
     final g = googleName;
@@ -613,29 +626,47 @@ class ContactLinkPlan {
     if (s == null || g == null || h == null || gNow == null || hNow == null) {
       throw StateError('Only a compared pair can be planned again');
     }
-    if (google != null && (google.deleted || google.details.isEmpty)) {
+    if ((google != null && googleWritten != null) ||
+        (graph != null && graphWritten != null)) {
+      throw ArgumentError('A side is read again or was written, not both');
+    }
+    if ((googleWritten != null && googleWrite == null) ||
+        (graphWritten != null && graphWrite == null)) {
+      throw ArgumentError('A written answer for a side this plan leaves');
+    }
+    final gRead = google ?? googleWritten;
+    final hRead = graph ?? graphWritten;
+    if (gRead != null && (gRead.deleted || gRead.details.isEmpty)) {
       throw ArgumentError('The Gmail read is no whole contact');
     }
-    if (graph != null &&
-        (graph.removed || !graph.readWhole || graph.details.isEmpty)) {
+    if (hRead != null &&
+        (hRead.removed || !hRead.readWhole || hRead.details.isEmpty)) {
       throw ArgumentError('The Outlook read is no whole contact');
     }
-    final again = _comparePair(
-      settings: s._read(
-        googleUpdatedAt: google?.updatedAt,
-        graphUpdatedAt: graph?.updatedAt,
-      ),
+    var again = s._read(
+      googleUpdatedAt: google?.updatedAt,
+      graphUpdatedAt: graph?.updatedAt,
+    );
+    if (googleWritten != null || graphWritten != null) {
+      final bases = basesAfter(
+        googleAnswer: googleWritten?.details,
+        graphAnswer: graphWritten?.details,
+      );
+      again = again._based(google: bases.google, graph: bases.graph);
+    }
+    final made = _comparePair(
+      settings: again,
       linkId: linkId,
       alsoRemove: alsoRemove,
       googleName: g,
       graphId: h,
-      googleNow: google?.details ?? gNow,
-      graphNow: graph?.details ?? hNow,
-      googleEtag: google != null ? google.etag : googleEtag,
-      graphChangeKey: graph != null ? graph.changeKey : graphChangeKey,
+      googleNow: gRead?.details ?? gNow,
+      graphNow: hRead?.details ?? hNow,
+      googleEtag: gRead != null ? gRead.etag : googleEtag,
+      graphChangeKey: hRead != null ? hRead.changeKey : graphChangeKey,
       fromAnswer: fromAnswer,
     );
-    return (plan: again.plan, reviews: again.reviews);
+    return (plan: made.plan, reviews: made.reviews);
   }
 
   /// The row to save when the read just before [delete] finds the contact
@@ -703,6 +734,23 @@ class ContactPairSettings {
 
   /// Ron's Use this one.
   final SyncedContact? useValues;
+
+  /// The same, compared with [google] and [graph] as bases.
+  ContactPairSettings _based({
+    required SyncedContact google,
+    required SyncedContact graph,
+  }) => ContactPairSettings(
+    normaliser: normaliser,
+    googleBase: google,
+    graphBase: graph,
+    googleUpdatedAt: googleUpdatedAt,
+    graphUpdatedAt: graphUpdatedAt,
+    newPair: newPair,
+    firstSync: firstSync,
+    copyBack: copyBack,
+    useSide: useSide,
+    useValues: useValues,
+  );
 
   /// The same, with the edit times of the sides read again.
   ContactPairSettings _read({

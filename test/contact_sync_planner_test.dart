@@ -3298,6 +3298,75 @@ void main() {
         throwsStateError,
       );
     });
+
+    test('never takes the sync\'s own write for Ron\'s', () {
+      final start = base.withValue(ContactField.company, 'A');
+      // Outlook changed the company to B, Gmail added a nickname.
+      final plan = run(
+        google: [
+          g(
+            'people/c1',
+            start.withValue(ContactField.nickname, 'Annie'),
+            etag: 'e1',
+            at: earlier,
+          ),
+        ],
+        graph: [
+          h('H1', start.withValue(ContactField.company, 'B'), key: 'k1'),
+        ],
+        links: [
+          link(1, 'people/c1', 'H1', base: start, etag: 'e0', key: 'k0'),
+        ],
+      );
+      final first = byLink(plan, 1)!;
+      expect(first.googleWrite!.fields, {ContactField.company});
+      expect(first.graphWrite!.fields, {ContactField.nickname});
+      // The Gmail write went through (etag e2). Outlook's read before the
+      // PATCH finds Ron changed the company to C meanwhile.
+      final written = g(
+        'people/c1',
+        start
+            .withValue(ContactField.nickname, 'Annie')
+            .withValue(ContactField.company, 'B'),
+        etag: 'e2',
+        at: now,
+      );
+      final again = first.replan(
+        graph: h('H1', start.withValue(ContactField.company, 'C'), key: 'k2'),
+        googleWritten: written,
+      );
+      expect(again.plan.googleWrite!.fields, {ContactField.company});
+      expect(
+        again.plan.googleWrite!.target.text(ContactField.company),
+        'C',
+        reason: 'Ron\'s newest value, one-sided: no clash',
+      );
+      expect(again.plan.googleWrite!.version, 'e2');
+      expect(again.plan.graphWrite!.fields, {ContactField.nickname});
+      expect(again.plan.graphWrite!.version, 'k2');
+      expect(again.reviews, isEmpty);
+      // The Gmail write of C meets a newer etag in turn (Ron set an
+      // office): planned again from that read, the sync's B is still not
+      // Ron's, and C still wins.
+      final third = again.plan.replan(
+        google: g(
+          'people/c1',
+          written.details.withValue(ContactField.office, 'B2'),
+          etag: 'e3',
+          at: now,
+        ),
+      );
+      expect(third.plan.googleWrite!.target.text(ContactField.company), 'C');
+      expect(third.plan.graphWrite!.fields, {
+        ContactField.nickname,
+        ContactField.office,
+      });
+      expect(third.reviews, isEmpty);
+      expect(
+        () => first.replan(google: written, googleWritten: written),
+        throwsArgumentError,
+      );
+    });
   });
 }
 
