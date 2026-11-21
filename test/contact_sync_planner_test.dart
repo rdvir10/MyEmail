@@ -4533,6 +4533,102 @@ void main() {
       expect(orphaned.reviews, hasLength(3));
     });
 
+    test('copies of a person still synced stay held, never kept', () {
+      ContactLinkInput copyRow(int id, String? g, String? h, SyncedContact b) =>
+          link(
+            id,
+            g,
+            h,
+            base: b,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          );
+      // Ron changed Ann's email and mobile on the pair; two Hadco copies
+      // still share only the old email: a group of their own, Ann synced.
+      final moved = annCopy(
+        emails: ['ann@new.example'],
+        mobile: '+1 212 555 0199',
+      );
+      final oldOnly = annCopy(mobile: null);
+      final changed = run(
+        google: [g('people/c1', moved)],
+        graph: [h('H2', oldOnly), h('H3', oldOnly)],
+        links: [
+          link(1, 'people/c1', 'H1', base: moved),
+          copyRow(2, null, 'H2', oldOnly),
+          copyRow(3, null, 'H3', oldOnly),
+        ],
+      );
+      expect(changed.reviews, isEmpty);
+      expect(
+        [for (final i in [2, 3]) byLink(changed, i)?.reason],
+        everyElement(ContactHeldReason.duplicate),
+      );
+      // Listed with Ann's pair, by her name.
+      final listed = changed.duplicates.single;
+      expect((listed.googleSynced, listed.graphSynced), ('people/c1', 'H1'));
+      expect(listed.graphCopies, ['H2', 'H3']);
+      // The pair held as moved out, or by the change brake: its copies
+      // stay held, and a new copy is held too.
+      for (final reason in [
+        ContactHeldReason.movedOut,
+        ContactHeldReason.changeBrake,
+      ]) {
+        final plan = run(
+          google: [g('people/c2', annCopy()), g('people/c3', annCopy())],
+          graphMovedOut: {if (reason == ContactHeldReason.movedOut) 'H1'},
+          links: [
+            link(
+              1,
+              'people/c1',
+              'H1',
+              base: annCopy(),
+              state: ContactLinkState.held,
+              reason: reason,
+            ),
+            copyRow(2, 'people/c2', null, annCopy()),
+          ],
+        );
+        expect(plan.reviews, isEmpty, reason: '$reason');
+        expect(byLink(plan, 2)!.reason, ContactHeldReason.duplicate);
+        final group = plan.duplicates.single;
+        expect((group.googleSynced, group.graphSynced), ('people/c1', 'H1'));
+        expect(byGoogle(plan, 'people/c3')!.reason,
+            ContactHeldReason.duplicate);
+      }
+      // But when its own pair has just gone, a copy is kept even while
+      // another person of the same name is synced.
+      final other = annCopy(
+        emails: ['annb@y.example'],
+        mobile: '+1 312 555 0000',
+      );
+      final gone = run(
+        googleGone: {'people/c1'},
+        links: [
+          link(1, 'people/c1', 'H1', base: annCopy()),
+          copyRow(2, null, 'H2', annCopy()),
+          link(5, 'people/c5', 'H5', base: other),
+        ],
+      );
+      expect(byLink(gone, 2)!.reason, ContactHeldReason.kept);
+      expect(gone.reviews.single.reason, ContactReviewReason.copyOfGone);
+      // A copy joined to nobody by its address is kept when the contact
+      // of its name that was synced has gone, not held for it.
+      final stray = run(
+        googleGone: {'people/c1'},
+        links: [
+          link(1, 'people/c1', 'H1', base: annCopy()),
+          copyRow(
+            2,
+            null,
+            'H2',
+            annCopy(emails: ['ann@old.example'], mobile: null),
+          ),
+        ],
+      );
+      expect(byLink(stray, 2)!.reason, ContactHeldReason.kept);
+    });
+
     test('kept after a Gmail delete: whatever Ron answers, no second Ann',
         () {
       // Ron deletes Ann in Gmail; Hadco's synced copy changed since, so it
