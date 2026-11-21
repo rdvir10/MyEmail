@@ -66,6 +66,12 @@ void main() {
       expect(q['scope'], contains('calendar.events'));
       expect(q['scope'], contains('meetings.space.created'));
       expect(q['scope'], contains('openid'));
+      expect(q['scope']!.split(' '),
+          containsAll(GoogleOAuth.contactSyncScopes),
+          reason: 'contact sync changes contacts, and an installed app '
+              'cannot add a scope to a sign-in it has');
+      expect(q['scope']!.split(' '), containsAll(GoogleOAuth.contactsScopes),
+          reason: 'recipient search still asks for the read-only pair');
       expect(q['access_type'], 'offline',
           reason: 'without it there is no refresh token');
       expect(q['prompt'], contains('consent'),
@@ -380,6 +386,85 @@ void main() {
     test('no connection is not a sign-out either', () async {
       final o = oauth(handler: (_) async => throw Exception('offline'));
       expect(() => o.refresh(stored), throwsA(isA<SignInUnreachable>()));
+    });
+  });
+
+  group('contacts', () {
+    final stored = OAuthToken(
+      accessToken: 'old',
+      refreshToken: '1//refresh',
+      expiresAt: now.subtract(const Duration(minutes: 1)),
+    );
+
+    GoogleOAuth granting(List<String> granted) =>
+        oauth(handler: (_) async => json({
+              'access_token': 'new',
+              'expires_in': 3600,
+              'scope': ['https://mail.google.com/', ...granted, 'openid']
+                  .join(' '),
+            }));
+
+    test('the broader scope covers recipient search\'s read-only one',
+        () async {
+      // Google may list only auth/contacts once both are granted. Recipient
+      // search asking for contacts.readonly must not then read as a
+      // sign-in that needs consent.
+      final o = granting([
+        'https://www.googleapis.com/auth/contacts',
+        'https://www.googleapis.com/auth/contacts.other.readonly',
+      ]);
+
+      expect(
+        (await o.refresh(stored, scopes: GoogleOAuth.contactsScopes))
+            .accessToken,
+        'new',
+      );
+    });
+
+    test('but not "Other contacts", which must be named', () async {
+      final o = granting(['https://www.googleapis.com/auth/contacts']);
+
+      await expectLater(
+        o.refresh(stored, scopes: GoogleOAuth.contactsScopes),
+        throwsA(isA<SignInNeedsConsent>()
+            .having((e) => e.message, 'message', contains('your contacts'))),
+      );
+    });
+
+    test('nor does the read-only scope cover the one that changes them',
+        () async {
+      final o = granting(GoogleOAuth.contactsScopes);
+
+      await expectLater(
+        o.refresh(stored, scopes: GoogleOAuth.contactSyncScopes),
+        throwsA(isA<SignInNeedsConsent>()
+            .having((e) => e.needsAdministrator, 'needsAdministrator', isFalse)
+            .having((e) => e.message, 'message', contains('your contacts'))),
+      );
+    });
+
+    test('a sign-in from before contact sync needs consent for contacts',
+        () async {
+      final o = granting(
+          const ['https://www.googleapis.com/auth/calendar.events']);
+
+      await expectLater(
+        o.refresh(stored, scopes: GoogleOAuth.contactSyncScopes),
+        throwsA(isA<SignInNeedsConsent>()
+            .having((e) => e.message, 'message', contains('your contacts'))),
+      );
+      expect(await o.refresh(stored), isA<OAuthToken>(),
+          reason: 'for mail alone the same sign-in is fine');
+    });
+
+    test('a sign-in that allowed it gives a token for it', () async {
+      final o = granting(GoogleOAuth.contactSyncScopes);
+
+      expect(
+        (await o.refresh(stored, scopes: GoogleOAuth.contactSyncScopes))
+            .accessToken,
+        'new',
+      );
     });
   });
 }

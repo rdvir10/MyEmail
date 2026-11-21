@@ -38,6 +38,7 @@ import '../cache/folder_sync.dart';
 import '../calendar/account_calendar.dart';
 import '../calendar/sheet_calendar.dart';
 import '../contacts/account_people.dart';
+import '../contacts/contact_sync_store.dart';
 import '../compose/graph_sender.dart';
 import '../compose/mime_parts.dart' show draftOnlyHeaders;
 import '../compose/smtp_sender.dart';
@@ -81,6 +82,7 @@ class CachedImapEngine
     FolderListStore? folderLists,
     OAuthTokenRepository? oauthTokens,
     this.graphIdMap,
+    ContactSyncStore? contactSyncStore,
     ImapTransport Function(Account account, MailCredentials credentials)?
         transportFactory,
     this.senderFactory,
@@ -90,6 +92,7 @@ class CachedImapEngine
     this.onChangesWaiting,
     DateTime Function()? clock,
   })  : folderLists = folderLists ?? MemoryFolderListStore(),
+        contactSyncStore = contactSyncStore ?? MemoryContactSyncStore(),
         _injectedOAuthTokens = oauthTokens,
         _injectedTransportFactory = transportFactory,
         _clock = clock ?? DateTime.now;
@@ -164,6 +167,12 @@ class CachedImapEngine
   /// exercise a Microsoft account — in which case an in-memory one is used
   /// and the numbering lasts as long as the process.
   final GraphIdMap? graphIdMap;
+
+  /// What contact sync keeps between runs: its pairs, links, creates in
+  /// flight, Needs a look and bin. In memory where no database is given,
+  /// as [graphIdMap] is, and then forgotten at every restart, so the app
+  /// passes the database's.
+  final ContactSyncStore contactSyncStore;
 
   /// Late so the default can see [credentialStore], which an initializer list
   /// cannot.

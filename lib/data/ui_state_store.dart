@@ -182,6 +182,15 @@ abstract final class UiStateKeys {
   /// The password reminders set with Android, by id, so one no longer
   /// wanted can be taken back.
   static const passwordReminders = 'accounts.password-reminders.v1';
+
+  /// Contact sync's switch on this device, and this device's own id: a
+  /// random one, written into its claim on the Microsoft account's
+  /// Contacts folder so that another device switched on too can see that
+  /// this one syncs. Not in the backup: each device keeps its own record
+  /// of what it paired and deleted, so only one may sync, and a switch
+  /// restored onto another device, or an id copied to it, would make two.
+  static const contactSyncDevice = 'contactsync.device.v1';
+  static const contactSyncDeviceId = 'contactsync.deviceid.v1';
 }
 
 /// Backed by shared_preferences, which works on Android and in the browser.

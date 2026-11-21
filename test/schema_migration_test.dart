@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/cache/cache_store.dart';
 import 'package:myemail/data/cache/folder_sync.dart';
 import 'package:myemail/data/cache/mail_database.dart';
+import 'package:myemail/data/contacts/contact_sync_store.dart';
 import 'package:myemail/data/graph/graph_id_map.dart';
 import 'package:myemail/domain/account_calendars.dart';
 import 'package:myemail/domain/calendar_event.dart';
@@ -64,6 +65,43 @@ void main() {
   // and every test here would still have passed, while every device
   // upgrading from 2.35 or earlier failed on every cache read.
 
+  /// What schema 21 added: contact sync's records, five tables, whose
+  /// indexes go with them.
+  Future<void> dropSchema21(MailDatabase db) async {
+    for (final table in [
+      'contact_pairs',
+      'contact_links',
+      'contact_sync_ops',
+      'contact_reviews',
+      'contact_bin',
+    ]) {
+      await db.customStatement('DROP TABLE IF EXISTS $table');
+    }
+  }
+
+  /// A database as it stood at schema 20, the release before this one:
+  /// mail cached and opened, a change kept for later, and the calendar as
+  /// last read, with nowhere to keep contact sync's records.
+  Future<void> buildVersion20() async {
+    final db = MailDatabase(NativeDatabase(file));
+    final store = DriftCacheStore(db);
+    await store.upsertMessages('acct-1', 'INBOX', [message(11)]);
+    await store.addPending([
+      PendingChange(
+        accountId: 'acct-1',
+        path: 'INBOX',
+        uid: 11,
+        kind: PendingKind.delete,
+        toPath: 'Trash',
+        action: 'one',
+        madeAt: DateTime(2026, 11, 19, 9),
+      ),
+    ]);
+    await dropSchema21(db);
+    await db.customStatement('PRAGMA user_version = 20');
+    await db.close();
+  }
+
   /// A stray � or two, as a message that read well but for a bad byte
   /// has them.
   const stray = 'Total 12\u{FFFD} and 3\u{FFFD}\u{FFFD} more';
@@ -106,12 +144,14 @@ void main() {
       'INSERT INTO graph_ids (account_id, path, uid, remote_id) VALUES '
       "('acct-2', 'Inbox', 1, 'g-1')",
     );
+    await dropSchema21(db);
     await db.customStatement('PRAGMA user_version = 19');
     await db.close();
   }
 
   /// What schema 19 added: changes kept for later.
   Future<void> dropSchema19(MailDatabase db) async {
+    await dropSchema21(db);
     await db.customStatement('DROP TABLE IF EXISTS pending_changes');
   }
 
@@ -478,6 +518,29 @@ void main() {
             .get())
           row.read<String>('name'),
       };
+
+  Future<Set<String>> tables(MailDatabase db) async => {
+        for (final row in await db
+            .customSelect("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .get())
+          row.read<String>('name'),
+      };
+
+  const contactSyncTables = [
+    'contact_pairs',
+    'contact_links',
+    'contact_sync_ops',
+    'contact_reviews',
+    'contact_bin',
+  ];
+
+  const contactSyncIndexes = [
+    'contact_links_by_google',
+    'contact_links_by_graph',
+    'contact_sync_ops_by_source',
+    'contact_reviews_by_pair',
+    'contact_bin_one_per_contact',
+  ];
 
   test('a version 9 database gains the conversation, keeps its rows, and has '
       'each folder read its headers once more', () async {
@@ -914,8 +977,24 @@ void main() {
         'graph_ids_by_remote',
         'graph_ids_one_per_remote',
         'messages_by_arrival',
+        ...contactSyncIndexes,
       ]),
     );
+  });
+
+  test("a brand new database has contact sync's tables", () async {
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+
+    expect(await tables(db), containsAll(contactSyncTables));
+    final sync = DriftContactSyncStore(db);
+    final pair = await sync.ensurePair(
+      googleAccountId: 'g',
+      googleAddress: 'ron@gmail.com',
+      graphAccountId: 'm',
+      graphAddress: 'ron@hadco.com',
+    );
+    expect(await sync.pairs(), [pair]);
   });
 
   test('a Gmail account still reads its cache after the upgrade', () async {
@@ -1140,6 +1219,77 @@ void main() {
         'Sent broken \u{FFFD}',
         reason: 'Exchange sends Unicode: fetched again, it would read the '
             'same');
+  });
+
+  test('a version 20 database gains the contact sync tables and keeps its '
+      'rows', () async {
+    await buildVersion20();
+    // The fixture is what a phone has: none of the tables.
+    final raw = sqlite3.open(file.path);
+    final before = {
+      for (final row in raw.select(
+          "SELECT name FROM sqlite_master WHERE type = 'table'"))
+        row['name'] as String,
+    };
+    raw.close();
+    expect(before, isNot(contains('contact_pairs')));
+    expect(before, contains('messages'));
+
+    final db = MailDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    final store = DriftCacheStore(db);
+
+    expect((await store.readMessages('acct-1', 'INBOX')).single.subject,
+        'Cached before the upgrade');
+    expect((await store.readBody('acct-1', 'INBOX', 11))?.html,
+        '<p>A body worth keeping</p>');
+    expect((await store.readPending()).single.uid, 11);
+    expect(await tables(db), containsAll(contactSyncTables));
+    expect(await indexes(db), containsAll(contactSyncIndexes));
+
+    // And they work: a link, its one-per-contact rule, and the rest.
+    final sync = DriftContactSyncStore(db);
+    final pair = await sync.ensurePair(
+      googleAccountId: 'g',
+      googleAddress: 'ron@gmail.com',
+      graphAccountId: 'm',
+      graphAddress: 'ron@hadco.com',
+    );
+    final saved = await sync.saveLink(ContactLink(
+      pairId: pair.pairId,
+      googleName: 'people/c1',
+      graphId: 'AAMk-1',
+      state: ContactLinkState.paired,
+    ));
+    await expectLater(
+      db.customStatement(
+        'INSERT INTO contact_links (pair_id, google_name, state, reason, '
+        "updated_at) VALUES (?, 'people/c1', 'held', 'waiting', 0)",
+        [pair.pairId],
+      ),
+      throwsA(anything),
+      reason: 'the unique index came with the table',
+    );
+    await sync.journalCreates(pair.pairId, ContactSide.graph, [
+      (sourceKey: 'people/c2', tag: 'people/c2'),
+    ]);
+    await sync.saveReview(ContactReview(
+      pairId: pair.pairId,
+      kind: 'clash',
+      googleName: 'people/c1',
+      data: '{}',
+    ));
+    await sync.addToBin(ContactBinEntry(
+      pairId: pair.pairId,
+      side: ContactSide.google,
+      contactId: 'people/c3',
+      raw: '{}',
+      title: 'Dana',
+    ));
+    expect(await sync.links(pair.pairId), [saved]);
+    expect(await sync.ops(pair.pairId), hasLength(1));
+    expect(await sync.reviews(pair.pairId), hasLength(1));
+    expect(await sync.bin(pair.pairId), hasLength(1));
   });
 
   test('a Gmail message with a stray � keeps its body over the upgrade',

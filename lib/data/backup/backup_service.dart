@@ -78,7 +78,9 @@ class BackupService {
     // to find waiting on a new device. Nor UiStateKeys.preparedMeetings,
     // events this device made and will delete itself, nor UiStateKeys.pinned,
     // whose message ids are numbered by this device, nor
-    // UiStateKeys.followUps, whose reminders are set with this device.
+    // UiStateKeys.followUps, whose reminders are set with this device. Nor
+    // UiStateKeys.contactSyncDevice or contactSyncDeviceId: only one device
+    // may sync contacts, and a restore must never start a second.
   };
 
   /// Read everything into a backup.
