@@ -209,15 +209,22 @@ def slug(text):
     return re.sub(r'\s+', '-', s.strip())
 
 
+def _italic(text):
+    return re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<em>\1</em>', text)
+
+
 def inline(text):
     out = html.escape(text, quote=False)
     out = re.sub(r'`([^`]+)`', lambda m: f'<code>{m.group(1)}</code>', out)
-    # Bold with an italic inside it — **always from *sender*** — before the
-    # plain rule, which would otherwise stop at the wrong asterisk.
-    out = re.sub(r'\*\*([^*]*)\*([^*]+)\*([^*]*)\*\*',
-                 r'<strong>\1<em>\2</em>\3</strong>', out)
-    out = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', out)
-    out = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<em>\1</em>', out)
+    # Bold first, paired from the left: each ** opens a bold that the next
+    # ** closes, and an italic inside it — **always from *sender*** — is
+    # taken whole, so its asterisks never close the bold early. A separate
+    # bold-italic-bold rule used to run first, and wherever an italic sat
+    # between two bolds it paired the end of the first with the start of
+    # the second, turning the plain text between them bold.
+    out = re.sub(r'\*\*((?:[^*]|\*[^*]+\*)+?)\*\*',
+                 lambda m: f'<strong>{_italic(m.group(1))}</strong>', out)
+    out = _italic(out)
     out = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', out)
     return out
 
