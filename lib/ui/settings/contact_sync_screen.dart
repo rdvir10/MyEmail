@@ -566,7 +566,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           ),
         if (s.firstStarted ||
             s.needsALook.isNotEmpty ||
-            s.recentlyDeleted.isNotEmpty) ...[
+            s.recentlyDeleted.isNotEmpty ||
+            s.duplicates.isNotEmpty) ...[
           ListTile(
             key: const ValueKey('contact-sync-looks'),
             minVerticalPadding: 10,
@@ -578,6 +579,24 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
             trailing: const Icon(Icons.chevron_right, size: 20),
             onTap: () => _push(const _LooksScreen()),
           ),
+          // Copies of one person: not questions, so not among Needs a
+          // look, and a row only while there are some to merge.
+          if (s.duplicates.isNotEmpty)
+            ListTile(
+              key: const ValueKey('contact-sync-duplicates'),
+              minVerticalPadding: 10,
+              leading: const Icon(Icons.people_outline),
+              title: Text(
+                'Duplicates to merge when you like '
+                '(${_count(s.duplicates.length, 'person', 'people')})',
+              ),
+              subtitle: const Text(
+                'Copies of the same person: one on each side is synced, the '
+                'others are left as they are',
+              ),
+              trailing: const Icon(Icons.chevron_right, size: 20),
+              onTap: () => _push(const _DuplicatesScreen()),
+            ),
           ListTile(
             key: const ValueKey('contact-sync-deleted'),
             minVerticalPadding: 10,
@@ -1104,6 +1123,12 @@ class _PreviewTable extends StatelessWidget {
       ('Of those, with details that differ, left as they are',
           '${p.differingPairs}'),
       ('Need a look', '${p.needsALook}'),
+      // Copies of one person beyond the one synced on each side: not
+      // among those to add or to look at, and said only where there are
+      // some.
+      if (p.duplicateCopies > 0)
+        ('Copies of the same person, left as they are',
+            '${p.duplicateCopies}'),
       ('Deleted', p.deletions == 0 ? 'none' : '${p.deletions}'),
     ];
     return Container(
@@ -1514,6 +1539,102 @@ class _LookTile extends StatelessWidget {
 
   static String _valueOf(String? value) =>
       value == null || value.trim().isEmpty ? '(none)' : value;
+}
+
+/// Duplicates to merge when you like: each person held more than once, how
+/// many copies each side holds, and which side's copy is synced. Nothing to
+/// answer here: the merging is Ron's, in Google Contacts and Outlook, and
+/// the sync follows whichever copy is left.
+class _DuplicatesScreen extends ConsumerWidget {
+  const _DuplicatesScreen();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final status = ref.watch(contactSyncStatusProvider).value;
+    final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
+    final graphName =
+        contactSyncAccountName(_byId(accounts, status?.graphAccountId));
+    // By name, to find someone among a few hundred.
+    final people = [...?status?.duplicates]..sort(
+        (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
+      );
+    // The sync moves to another copy only while the side Ron removes from
+    // still holds one: a person's last copy there goes as any deletion.
+    const intro = 'These are copies of the same person. One copy on each '
+        'side is synced; the others are left as they are. Merge them when '
+        'you like: Merge & fix in Google Contacts, or delete the extra ones '
+        'in Outlook. Where a side holds more than one copy, whichever one '
+        'you remove there, the sync moves to one that is left, and nothing '
+        "is deleted on the other side. Removing a person's last copy on one "
+        'side deletes it on the other too, as any deletion does.';
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Duplicates to merge'),
+        centerTitle: false,
+      ),
+      // Built as it scrolls: Ron's address books hold hundreds.
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: ListView.builder(
+            key: const ValueKey('contact-sync-duplicates-list'),
+            padding: const EdgeInsets.only(bottom: 32),
+            itemCount: people.length + 1,
+            itemBuilder: (context, i) {
+              if (i == 0) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const _Para(intro, top: 16),
+                    if (people.isEmpty)
+                      const _Para('No copies left to merge.'),
+                  ],
+                );
+              }
+              final d = people[i - 1];
+              return Padding(
+                key: ValueKey('contact-sync-duplicate:${i - 1}'),
+                padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+                child: Text.rich(TextSpan(children: [
+                  TextSpan(
+                    text: _title(d.title),
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  TextSpan(text: ': ${contactSyncCopiesLine(d, graphName)}'),
+                ])),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One person's copies, after the name: "2 in Gmail, 3 in Hadco; one of
+/// each is synced". A side with none is left out; with one copy synced
+/// on one side only, it says which, or that its copy on the other side is
+/// still to be made.
+String contactSyncCopiesLine(ContactSyncDuplicates d, String graphName) {
+  final counts = [
+    if (d.googleCopies > 0) '${d.googleCopies} in Gmail',
+    if (d.graphCopies > 0) '${d.graphCopies} in $graphName',
+  ];
+  final bothSides = counts.length == 2;
+  final googleSynced = d.googleSynced && d.googleCopies > 0;
+  final graphSynced = d.graphSynced && d.graphCopies > 0;
+  final synced = switch ((googleSynced, graphSynced)) {
+    (true, true) => bothSides ? 'one of each is synced' : 'one is synced',
+    (true, false) when d.graphCopies == 0 =>
+      'one is synced, and its copy in $graphName is still to be made',
+    (false, true) when d.googleCopies == 0 =>
+      'one is synced, and its copy in Gmail is still to be made',
+    (true, false) => bothSides ? 'one in Gmail is synced' : 'one is synced',
+    (false, true) =>
+      bothSides ? 'one in $graphName is synced' : 'one is synced',
+    (false, false) => 'none is synced yet',
+  };
+  return '${counts.join(', ')}; $synced';
 }
 
 /// Recently deleted: what the sync deleted in the last 30 days, with

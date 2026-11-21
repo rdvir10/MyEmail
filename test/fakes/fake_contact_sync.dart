@@ -198,5 +198,6 @@ class FakeContactSync implements ContactSyncService {
         googleCount: s.googleCount,
         graphCount: s.graphCount,
         notice: dropNotice ? null : s.notice,
+        duplicates: s.duplicates,
       );
 }
