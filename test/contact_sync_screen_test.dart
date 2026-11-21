@@ -919,6 +919,67 @@ void main() {
       );
     });
 
+    testWidgets('a copy of a contact deleted on one side says so, with the '
+        'kept answers', (tester) async {
+      sync = FakeContactSync(status: synced(looks: const [
+        ContactSyncLook(
+          id: 1,
+          kind: ContactReviewKind.kept,
+          reason: ContactReviewReason.copyOfGone,
+          side: ContactSide.google,
+          title: 'Ann Cole',
+          choices: [
+            ContactSyncChoice.copyBack,
+            ContactSyncChoice.deleteHereToo,
+            ContactSyncChoice.keepOnlyHere,
+          ],
+        ),
+        ContactSyncLook(
+          id: 2,
+          kind: ContactReviewKind.kept,
+          reason: ContactReviewReason.copyOfGone,
+          side: ContactSide.graph,
+          title: 'Bob Day',
+          choices: [ContactSyncChoice.copyBack],
+        ),
+        ContactSyncLook(
+          id: 3,
+          kind: ContactReviewKind.kept,
+          reason: ContactReviewReason.copyOfGone,
+          title: 'Cy Fox',
+          choices: [ContactSyncChoice.copyBack],
+        ),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (3)'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('A copy of a contact deleted in Gmail: its synced copy in '
+            'Hadco was deleted with it, and this one was left as it is.'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('A copy of a contact gone from Hadco: its synced copy in '
+            'Gmail was deleted with it, and this one was left as it is.'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('A copy of a contact deleted on one side: its synced copy '
+            'on the other was deleted with it, and this one was left as it '
+            'is.'),
+        findsOneWidget,
+      );
+      // Ann's copy is in Hadco: the answers name it.
+      expect(find.text('Keep it only in Hadco'), findsOneWidget);
+      await tester.tap(find.text('Delete it in Hadco too'));
+      await tester.pumpAndSettle();
+      expect(sync.lookAnswers, [
+        (id: 1, choice: ContactSyncChoice.deleteHereToo, candidateId: null),
+      ]);
+    });
+
     testWidgets('a kept contact whose side is not known offers no button '
         'naming a side', (tester) async {
       sync = FakeContactSync(status: synced(looks: const [

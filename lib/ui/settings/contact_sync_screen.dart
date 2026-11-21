@@ -2003,6 +2003,9 @@ String _lookLine(ContactSyncLook l, String graphName) {
             'first sync, which deletes nothing: kept on the other.',
         ContactReviewReason.notDeleted => "Deleted on one side. You chose "
             "Don't delete them: it stays on the other but stops syncing.",
+        ContactReviewReason.copyOfGone => 'A copy of a contact deleted on '
+            'one side: its synced copy on the other was deleted with it, and '
+            'this one was left as it is.',
         _ => 'Deleted on one side, kept on the other.',
       };
     case ContactReviewKind.kept:
@@ -2016,6 +2019,12 @@ String _lookLine(ContactSyncLook l, String graphName) {
         ContactReviewReason.notDeleted =>
           "$gone. You chose Don't delete them: it stays in ${side(there)} "
               'but stops syncing.',
+        // A held copy of a person whose synced pair went: never copied
+        // back unasked.
+        ContactReviewReason.copyOfGone => 'A copy of a contact '
+            '${_goneFrom(here, graphName, lower: true)}: its synced copy in '
+            '${side(there)} was deleted with it, and this one was left as it '
+            'is.',
         _ => '$gone, kept in ${side(there)}.',
       };
     case ContactReviewKind.mergedInGoogle:
