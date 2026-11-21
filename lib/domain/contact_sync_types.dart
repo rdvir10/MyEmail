@@ -44,7 +44,15 @@ enum ContactHeldReason {
   deletionBrake('brake_delete'),
 
   /// Held by the change brake. Both ids, the bases as they were.
-  changeBrake('brake_change');
+  changeBrake('brake_change'),
+
+  /// A copy of a person who has another copy on the same side, synced
+  /// (copies of one person: contacts sharing an email or mobile under one
+  /// full name). One id; its base is what was read of it. Not copied,
+  /// written or deleted, and asked about nowhere: Ron's edits to it and
+  /// its deletion do nothing on the other side. An older build reads the
+  /// code back as waiting, which holds it all the same.
+  duplicate('duplicate');
 
   const ContactHeldReason(this.code);
 
