@@ -764,15 +764,15 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       null => null,
     };
     // A failure worth trying again offers Try again in Sync now's place,
-    // another device Sync here, and an empty answer its question: a sync
-    // now would only stop again. A failure that is not worth it offers no
-    // Try again, so Sync now stays: there must always be a way on.
+    // and another device Sync here. A failure that is not worth it offers
+    // no Try again, and an empty answer's Keep waiting starts nothing, so
+    // Sync now stays for both: there must always be a way on, and after
+    // Keep waiting, Sync now is how to look again.
     final halt = s.halt;
     final offersItsOwn = switch (halt?.kind) {
       ContactSyncHaltKind.failed =>
         remedyFor(_failureOf(halt!)) == ErrorRemedy.retry,
-      ContactSyncHaltKind.otherDevice ||
-      ContactSyncHaltKind.emptyAnswer => true,
+      ContactSyncHaltKind.otherDevice => true,
       _ => false,
     };
     return [

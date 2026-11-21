@@ -956,14 +956,32 @@ void main() {
 
         expect(find.text('Hadco listed only 3 contacts'), findsOneWidget);
         expect(find.textContaining('120 were expected'), findsOneWidget);
-        expect(find.text('Sync now'), findsNothing,
-            reason: 'it would only stop again before the answer');
+        expect(find.text('Sync now'), findsOneWidget,
+            reason: 'after Keep waiting, the way to look again');
         expect(find.text('Keep waiting'), findsOneWidget);
         await tester.tap(find.text("That's right, carry on"));
         await tester.pumpAndSettle();
         expect(sync.questionAnswers, [
           (ContactSyncQuestionKind.emptyAnswer, ContactSyncChoice.carryOn),
         ]);
+
+        // The stop with no open question: not a dead end either.
+        sync.set(synced(
+          halt: ContactSyncHalt(
+            kind: ContactSyncHaltKind.emptyAnswer,
+            at: at1042,
+            side: ContactSide.graph,
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Contact sync has stopped: Hadco listed far fewer '
+              'contacts than expected.'),
+          findsOneWidget,
+        );
+        await tester.tap(find.text('Sync now'));
+        await tester.pumpAndSettle();
+        expect(sync.count('syncNow'), 1);
       });
 
       testWidgets('an answer waiting for the next sync shows no buttons',
