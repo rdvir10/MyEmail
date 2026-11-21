@@ -2189,35 +2189,80 @@ class _Planner {
 
   // ---- Interrupted creates.
 
-  void _settleJournal() {
-    for (final entry in input.journal) {
-      final sourceSide = entry.side.other;
-      final source = sourceSide == ContactSide.google
+  /// The source an interrupted create copies, under its name now.
+  String _journalSource(ContactJournalEntry entry) =>
+      entry.side == ContactSide.graph
           ? _newName(entry.sourceId)
           : entry.sourceId;
-      final String? copy;
-      if (entry.side == ContactSide.google) {
-        copy = googleListed.values
-            .firstWhereOrNull(
-              (c) =>
-                  // An Outlook id is never re-keyed: the tag is the id.
-                  c.tag == entry.sourceId &&
-                  !googleRow.containsKey(c.resourceName) &&
-                  googleStatus[c.resourceName] == null,
-            )
-            ?.resourceName;
-      } else {
-        copy = graphListed.values
-            .firstWhereOrNull(
-              (c) =>
-                  (c.tag == source ||
-                      c.tag == entry.sourceId ||
-                      (entry.tag != null && c.tag == entry.tag)) &&
-                  !graphRow.containsKey(c.id) &&
-                  graphStatus[c.id] == null,
-            )
-            ?.id;
+
+  /// The copy an interrupted create made, if it is there with no row and
+  /// not yet placed this run: found by its hidden tag.
+  ({String id, String? tag})? _journalCopy(
+    ContactJournalEntry entry,
+    String source,
+  ) {
+    if (entry.side == ContactSide.google) {
+      final c = googleListed.values.firstWhereOrNull(
+        (c) =>
+            // An Outlook id is never re-keyed: the tag is the id.
+            c.tag == entry.sourceId &&
+            !googleRow.containsKey(c.resourceName) &&
+            googleStatus[c.resourceName] == null,
+      );
+      return c == null ? null : (id: c.resourceName, tag: c.tag);
+    }
+    bool free(GraphContact c) =>
+        !graphRow.containsKey(c.id) && graphStatus[c.id] == null;
+    // Its own tag first (the name it was written under), so that another
+    // create's copy tagged with the source's name now is never taken.
+    final own = {entry.sourceId, ?entry.tag};
+    final c =
+        graphListed.values.firstWhereOrNull(
+          (c) => free(c) && own.contains(c.tag),
+        ) ??
+        graphListed.values.firstWhereOrNull(
+          (c) => free(c) && c.tag == source,
+        );
+    return c == null ? null : (id: c.id, tag: c.tag);
+  }
+
+  /// The contact on [side] paired this run with [source], on the other.
+  String? _pairedThisRun(ContactSide side, String source) {
+    for (final p in planned) {
+      final plan = p.plan;
+      if (plan.removeRow || plan.state != ContactLinkState.paired) continue;
+      if (side == ContactSide.graph && plan.googleName == source) {
+        return plan.graphId;
       }
+      if (side == ContactSide.google && plan.graphId == source) {
+        return plan.googleName;
+      }
+    }
+    return null;
+  }
+
+  void _settleJournal() {
+    // Two copies can settle onto one source: Ron merged in Gmail two
+    // contacts whose copies were both being made. The copy tagged with
+    // the surviving name is paired, else the oldest op's, and the other
+    // is held like any copy whose source has a partner already (below).
+    int rank(ContactJournalEntry entry) {
+      final source = _journalSource(entry);
+      return _journalCopy(entry, source)?.tag == source ? 0 : 1;
+    }
+
+    final entries = [...input.journal]
+      ..sort((a, b) {
+        final byTag = rank(a).compareTo(rank(b));
+        if (byTag != 0) return byTag;
+        final byAge = a.startedAt.compareTo(b.startedAt);
+        if (byAge != 0) return byAge;
+        return a.opId.compareTo(b.opId);
+      });
+    for (final entry in entries) {
+      final sourceSide = entry.side.other;
+      final source = _journalSource(entry);
+      final copy = _journalCopy(entry, source)?.id;
       // Only a source confirmed gone is gone: one merely not read this
       // run is still there, and its copy is not to be deleted.
       final sourceGone = _isGone(sourceSide, source);
@@ -2231,14 +2276,18 @@ class _Planner {
           final g = entry.side == ContactSide.google ? copy : source;
           final h = entry.side == ContactSide.google ? source : copy;
           final row = _rowOf(sourceSide, source);
-          final partner = entry.side == ContactSide.google
-              ? row?.googleName
-              : row?.graphId;
+          final partner =
+              (entry.side == ContactSide.google
+                  ? row?.googleName
+                  : row?.graphId) ??
+              _pairedThisRun(entry.side, source);
           if (partner != null && partner != copy) {
-            // The source's row names another contact on the copy's side
-            // already, paired or held with it (moved out, held by the
-            // change brake): Ron merged it in Gmail into a contact that
-            // had a partner. The row is not taken from that partner.
+            // The source has another contact on the copy's side already:
+            // its row names one, paired or held with it (moved out, held
+            // by the change brake), or another copy was paired with it
+            // this run. Ron merged it in Gmail into a contact that had a
+            // partner, or merged two being copied. The row and the pair
+            // are not taken from that partner.
             _copyOfPaired(entry.side, copy, source);
             continue;
           }

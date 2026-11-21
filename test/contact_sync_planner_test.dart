@@ -2266,6 +2266,85 @@ void main() {
       expect(plan.links.where((l) => l.create != null), isEmpty);
     });
 
+    test('two copies settling onto one source: one pair, one held', () {
+      // Copies of new Gmail contacts a and b were both being made in
+      // Outlook, the answers lost; Ron merges b into a in Gmail. The op
+      // for b is the older, and comes first.
+      final plan = run(
+        google: [
+          g('people/a', ann, previous: ['people/b']),
+          gDeleted('people/b'),
+        ],
+        graph: [
+          h('copy-a', ann, tag: 'people/a'),
+          h('copy-b', ann, tag: 'people/b'),
+        ],
+        journal: [
+          ContactJournalEntry(
+            opId: 1,
+            side: ContactSide.graph,
+            sourceId: 'people/b',
+            startedAt: now.subtract(const Duration(hours: 4)),
+          ),
+          ContactJournalEntry(
+            opId: 2,
+            side: ContactSide.graph,
+            sourceId: 'people/a',
+            startedAt: now.subtract(const Duration(hours: 3)),
+          ),
+        ],
+      );
+      expect(plan.journalSettled, unorderedEquals([1, 2]));
+      final pair = byGoogle(plan, 'people/a')!;
+      expect(pair.graphId, 'copy-a', reason: 'tagged with the surviving name');
+      expect(pair.state, ContactLinkState.paired);
+      final held = byGraph(plan, 'copy-b')!;
+      expect(held.googleName, isNull);
+      expect(held.reason, ContactHeldReason.waiting);
+      expect(plan.reviews.single.kind, ContactReviewKind.mergedInGoogle);
+      expect(plan.links.where((l) => l.create != null), isEmpty);
+      // Every row saves: none names nothing, no contact is named twice.
+      final kept = plan.links.where((l) => !l.removeRow);
+      expect(
+        kept.where((l) => l.googleName == null && l.graphId == null),
+        isEmpty,
+      );
+      final googleNames = [for (final l in kept) ?l.googleName];
+      final graphIds = [for (final l in kept) ?l.graphId];
+      expect(googleNames.toSet(), hasLength(googleNames.length));
+      expect(graphIds.toSet(), hasLength(graphIds.length));
+
+      // Both merged into a third contact c: the oldest op's copy is the
+      // one paired.
+      final third = run(
+        google: [
+          g('people/c', ann, previous: ['people/a', 'people/b']),
+          gDeleted('people/a'),
+          gDeleted('people/b'),
+        ],
+        graph: [
+          h('copy-a', ann, tag: 'people/a'),
+          h('copy-b', ann, tag: 'people/b'),
+        ],
+        journal: [
+          ContactJournalEntry(
+            opId: 5,
+            side: ContactSide.graph,
+            sourceId: 'people/a',
+            startedAt: now.subtract(const Duration(hours: 4)),
+          ),
+          ContactJournalEntry(
+            opId: 6,
+            side: ContactSide.graph,
+            sourceId: 'people/b',
+            startedAt: now.subtract(const Duration(hours: 5)),
+          ),
+        ],
+      );
+      expect(byGoogle(third, 'people/c')!.graphId, 'copy-b');
+      expect(byGraph(third, 'copy-a')!.reason, ContactHeldReason.waiting);
+    });
+
     test('a copy keeps out of a row its source holds with another', () {
       // people/c's row holds it with H-a, which is in another folder (the
       // row moved out); people/c's interrupted copy Z is found.
