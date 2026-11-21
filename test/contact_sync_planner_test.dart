@@ -1545,7 +1545,8 @@ void main() {
           ),
         ],
       );
-      expect(plan.binAlreadyBack, [4]);
+      expect(plan.binToMarkBack, [4]);
+      expect(plan.binToDrop, isEmpty);
       expect(plan.binNotDue, [5]);
       // Brought back with no partner left: copied, and back all the same.
       final copied = run(
@@ -1559,7 +1560,57 @@ void main() {
         ],
       );
       expect(byGraph(copied, 'H1')!.create, isNotNull);
-      expect(copied.binAlreadyBack, [4]);
+      expect(copied.binToMarkBack, [4]);
+    });
+
+    test('a Restore found back is dropped, not marked back', () {
+      // Ron brought both back himself (Outlook's Recover deleted items,
+      // Gmail's Trash) and pressed Restore: the run pairs them, and the
+      // bin row is a Restore found already back.
+      final plan = run(
+        google: [g('people/c1', ann)],
+        graph: [h('H1', ann)],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H1',
+            partnerId: 'people/c1',
+            partnerBase: ann.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      expect(plan.restores.single.alreadyBack, isTrue);
+      expect(byGoogle(plan, 'people/c1')!.graphId, 'H1');
+      expect(plan.binToDrop, [9]);
+      expect(plan.binToMarkBack, isEmpty);
+    });
+
+    test('a bin row marked back is left out, so a later deletion counts', () {
+      final links = [link(1, 'people/c1', 'H1', base: ann)];
+      // Passed in, H1's id reads as the sync's own deletion: ignored.
+      final passed = run(
+        google: [g('people/c1', ann)],
+        graphGone: {'H1'},
+        links: links,
+        bin: [
+          const ContactBinInput(
+            binId: 4,
+            side: ContactSide.graph,
+            contactId: 'H1',
+          ),
+        ],
+      );
+      expect(passed.links.where((l) => l.delete != null), isEmpty);
+      // Left out, as the runner must once the row is marked back: Ron's
+      // deleting H1 again deletes its Gmail partner.
+      final leftOut = run(
+        google: [g('people/c1', ann)],
+        graphGone: {'H1'},
+        links: links,
+      );
+      expect(byLink(leftOut, 1)!.delete!.contactId, 'people/c1');
     });
   });
 
@@ -2797,7 +2848,7 @@ void main() {
       expect(restore.alreadyBack, isFalse);
       expect(restore.googleRaw, isNotNull, reason: 'made again');
       expect(restore.graphDetails, isNotNull);
-      expect(plan.binAlreadyBack, isEmpty);
+      expect(plan.binToDrop, isEmpty);
     });
 
     test('an address two contacts share finds neither back', () {
@@ -2980,7 +3031,7 @@ void main() {
         ],
       );
       expect(plan.restores.single.alreadyBack, isTrue);
-      expect(plan.binAlreadyBack, [9]);
+      expect(plan.binToDrop, [9]);
     });
 
     test('made again by Ron and copied by the sync, it is Already back', () {
@@ -3017,7 +3068,7 @@ void main() {
       expect(restore.alreadyBack, isTrue);
       expect(restore.graphRaw, isNull);
       expect(restore.googleDetails, isNull);
-      expect(plan.binAlreadyBack, [9]);
+      expect(plan.binToDrop, [9]);
       expect(plan.counts.restores, 0);
       expect(plan.links.where((l) => l.create != null), isEmpty);
 
@@ -3050,7 +3101,7 @@ void main() {
         ],
       );
       expect(apart.restores.single.alreadyBack, isFalse);
-      expect(apart.binAlreadyBack, isEmpty);
+      expect(apart.binToDrop, isEmpty);
 
       // Paired earlier in the same run, by Ron's Same person.
       final answered = run(
@@ -3130,7 +3181,7 @@ void main() {
       expect(restore.alreadyBack, isFalse, reason: 'the bin holds Ann');
       expect(restore.graphRaw, isNotNull);
       expect(restore.googleDetails, annFam);
-      expect(family.binAlreadyBack, isEmpty);
+      expect(family.binToDrop, isEmpty);
 
       // John Roe Jr. is not John Roe Sr. back.
       SyncedContact roe(String suffix) => SyncedContact({
@@ -3192,7 +3243,7 @@ void main() {
         ],
       );
       expect(plan.restores.single.alreadyBack, isTrue);
-      expect(plan.binAlreadyBack, [9]);
+      expect(plan.binToDrop, [9]);
       // Another company on the address is another contact.
       final other = info
           .withValue(ContactField.company, 'Beta')

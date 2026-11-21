@@ -116,7 +116,8 @@ class ContactJournalEntry {
   final String? tag;
 }
 
-/// A contact the sync deleted, from Recently deleted.
+/// A contact the sync deleted, from Recently deleted: a pending or done
+/// row, never one marked back (see [ContactSyncInput.bin]).
 @immutable
 class ContactBinInput {
   const ContactBinInput({
@@ -305,6 +306,12 @@ class ContactSyncInput {
   final Map<String, String> googleReKeys;
 
   final List<ContactJournalEntry> journal;
+
+  /// The store's bin rows that are pending (`done: false`) or done; never
+  /// one marked back ([ContactSyncPlan.binToMarkBack]). The planner reads
+  /// every id here as a contact the sync deleted itself, and ignores its
+  /// deletion signals as their echo; a contact Ron brought back is a live
+  /// contact again, and its id here would hide his deleting it again.
   final List<ContactBinInput> bin;
   final List<ContactAnswer> answers;
 
@@ -1082,7 +1089,8 @@ class ContactSyncPlan {
     this.reKeys = const {},
     this.graphTagMoves = const {},
     this.journalSettled = const [],
-    this.binAlreadyBack = const [],
+    this.binToDrop = const [],
+    this.binToMarkBack = const [],
     this.binNotDue = const [],
     this.restores = const [],
     this.counts = const ContactSyncCounts(),
@@ -1117,8 +1125,20 @@ class ContactSyncPlan {
   /// Journal entries done with: their copy found and paired, or given up.
   final List<int> journalSettled;
 
-  /// Bin rows to drop as Already back.
-  final List<int> binAlreadyBack;
+  /// Bin rows of Restores that found the contact already back and paired
+  /// ([ContactRestorePlan.alreadyBack]): dropped (the store's dropBin).
+  final List<int> binToDrop;
+
+  /// Bin rows of contacts Ron brought back himself, with no Restore asked,
+  /// found by their own id and paired or copied this run: marked back
+  /// (the store's markBinBack), shown as Already back in Recently
+  /// deleted, and from then on left out of the planner's bin input
+  /// ([ContactSyncInput.bin]). None is also in [binToDrop].
+  final List<int> binToMarkBack;
+
+  /// Both: [binToDrop] and [binToMarkBack].
+  @Deprecated('Drop binToDrop, mark binToMarkBack back')
+  List<int> get binAlreadyBack => [...binToDrop, ...binToMarkBack];
 
   /// Pending bin rows whose contact is no longer due to be deleted:
   /// dropped if it still exists, marked done if it does not.
@@ -1805,7 +1825,9 @@ class _Planner {
   final otherReviews = <ContactReviewItem>[];
   final brakes = <ContactBrake>[];
   final journalSettled = <int>[];
-  final binAlreadyBack = <int>{};
+  /// Bin rows of contacts paired or copied this run (see
+  /// [ContactSyncPlan.binToMarkBack]).
+  final broughtBack = <int>{};
   final restores = <ContactRestorePlan>[];
   final answerOutcomes = <ContactAnswerOutcome>[];
 
@@ -3016,7 +3038,7 @@ class _Planner {
   /// paired again: its bin row is Already back.
   void _backFromBin(ContactSide side, String id) {
     for (final b in input.bin) {
-      if (b.side == side && b.contactId == id) binAlreadyBack.add(b.binId);
+      if (b.side == side && b.contactId == id) broughtBack.add(b.binId);
     }
   }
 
@@ -3570,9 +3592,12 @@ class _Planner {
       for (final b in input.bin)
         if (!b.done && !deleting.contains((b.side, b.contactId))) b.binId,
     ];
-    for (final r in restores) {
-      if (r.alreadyBack) binAlreadyBack.add(r.binId);
-    }
+    // A Restore found already back drops its row, even where the run
+    // also paired the contact it names.
+    final toDrop = {
+      for (final r in restores)
+        if (r.alreadyBack) r.binId,
+    };
     int count(bool Function(ContactLinkPlan) test) => links.where(test).length;
     return ContactSyncPlan(
       links: links,
@@ -3581,7 +3606,8 @@ class _Planner {
       reKeys: Map.unmodifiable(reKeys),
       graphTagMoves: Map.unmodifiable(tagMoves),
       journalSettled: journalSettled,
-      binAlreadyBack: binAlreadyBack.toList(),
+      binToDrop: toDrop.toList(),
+      binToMarkBack: broughtBack.difference(toDrop).toList(),
       binNotDue: binNotDue,
       restores: restores,
       googleCount: _googleCount(),
