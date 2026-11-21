@@ -168,9 +168,25 @@ class ContactSync implements ContactSyncService {
     _takeClaim = false;
   }
 
+  /// When [changed] last told of progress: a first sync of a thousand
+  /// contacts would otherwise have the screen read the status a thousand
+  /// times.
+  final _sinceProgress = Stopwatch();
+
   void _progressTo(ContactSyncProgress? progress) {
+    final before = _progress;
     _progress = progress;
-    _changed();
+    final moved =
+        before == null ||
+        progress == null ||
+        before.step != progress.step ||
+        progress.done >= progress.total;
+    if (moved || _sinceProgress.elapsedMilliseconds >= 250) {
+      _sinceProgress
+        ..reset()
+        ..start();
+      _changed();
+    }
   }
 
   @override
