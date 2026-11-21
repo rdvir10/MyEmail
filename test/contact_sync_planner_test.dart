@@ -2211,6 +2211,44 @@ void main() {
       expect(restore.googleRaw, isNotNull, reason: 'made again');
     });
 
+    test('an address two contacts share on the other side finds none back',
+        () {
+      final family = ['fam@x'];
+      final cy = person(given: 'Cy', family: 'Cole', emails: family);
+      final plan = run(
+        // One Gmail contact has the address, as the deleted one did, but
+        // two Outlook contacts share it: a family email, not Cy's own.
+        google: [g('people/y', cy)],
+        graph: [
+          h('H-a', person(given: 'Ann', family: 'Cole', emails: family)),
+          h('H-b', person(given: 'Bob', family: 'Cole', emails: family)),
+        ],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.google,
+            contactId: 'people/x',
+            partnerId: 'H-x',
+            raw: const {
+              'resourceName': 'people/x',
+              'names': [
+                {'givenName': 'Cy', 'familyName': 'Cole'},
+              ],
+              'emailAddresses': [
+                {'value': 'fam@x'},
+              ],
+            },
+            partnerBase: cy.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      final restore = plan.restores.single;
+      expect(restore.googleName, isNull, reason: 'people/y is not Cy back');
+      expect(restore.googleRaw, isNotNull, reason: 'made again');
+      expect(restore.graphDetails, cy);
+    });
+
     test('a contact back but held is used, its row carried', () {
       final heldC9 = link(
         5,
