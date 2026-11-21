@@ -2022,7 +2022,8 @@ class _Planner {
         continue;
       }
       // Ron merged contacts in Gmail: the row whose Outlook contact shares
-      // most with the merged one stays paired.
+      // most with the merged one stays paired, and a row with an Outlook
+      // contact always before one held with none.
       final merged = googleListed[name]?.details ?? SyncedContact.empty;
       int shared(_Row row) {
         final other = _graphNow(row);
@@ -2040,6 +2041,9 @@ class _Planner {
         ..sort((a, b) {
           final byShared = shared(b).compareTo(shared(a));
           if (byShared != 0) return byShared;
+          final aPaired = a.graphId != null ? 0 : 1;
+          final bPaired = b.graphId != null ? 0 : 1;
+          if (aPaired != bPaired) return aPaired.compareTo(bPaired);
           final aHere = a.googleName == name ? 0 : 1;
           final bHere = b.googleName == name ? 0 : 1;
           if (aHere != bHere) return aHere.compareTo(bHere);
@@ -2051,6 +2055,13 @@ class _Planner {
           ..googleName = null
           ..done = true;
         final graphId = loser.graphId;
+        if (graphId == null) {
+          // A Gmail contact held with no Outlook one, merged away: nothing
+          // is left for its row to name (the store refuses a row naming
+          // no contact), and nothing to ask about.
+          _add(ContactLinkPlan(linkId: loser.id, removeRow: true));
+          continue;
+        }
         final title = _graphNow(loser).title;
         _add(
           ContactLinkPlan(

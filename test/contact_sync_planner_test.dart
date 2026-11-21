@@ -1443,6 +1443,74 @@ void main() {
       expect(plan.graphTagMoves, {'H-b': 'people/m'});
     });
 
+    test('a held Gmail contact merged away loses its row, and nothing else',
+        () {
+      // j2, a second Gmail copy of Ann, waits under Needs a look; Ron
+      // merges it into j1, which is paired.
+      final plan = run(
+        google: [
+          g('people/j1', ann, previous: ['people/j2']),
+          gDeleted('people/j2'),
+        ],
+        graph: [h('H1', ann)],
+        links: [
+          link(1, 'people/j1', 'H1', base: ann),
+          link(
+            2,
+            'people/j2',
+            null,
+            base: ann,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.waiting,
+          ),
+        ],
+      );
+      final gone = byLink(plan, 2)!;
+      expect(gone.removeRow, isTrue);
+      expect(gone.writes, isFalse);
+      // The store refuses a row that names no contact.
+      expect(
+        plan.links.where(
+          (l) => !l.removeRow && l.googleName == null && l.graphId == null,
+        ),
+        isEmpty,
+      );
+      expect(plan.reviews, isEmpty);
+      expect(byLink(plan, 1)!.googleName, 'people/j1');
+      expect(plan.googleGone, isEmpty);
+      // The row held with no Outlook contact never wins over a pair, even
+      // when the merged contact shares nothing with its Outlook partner.
+      final heldWins = run(
+        google: [
+          g('people/j1', person(given: 'Zed', family: 'Quorn'),
+              previous: ['people/j2']),
+          gDeleted('people/j2'),
+        ],
+        links: [
+          link(
+            1,
+            'people/j1',
+            null,
+            base: ann,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.leftOut,
+          ),
+          link(2, 'people/j2', 'H2', base: ann),
+        ],
+      );
+      expect(byLink(heldWins, 1)!.removeRow, isTrue);
+      final pair = byLink(heldWins, 2)!;
+      expect(pair.googleName, 'people/j1');
+      expect(pair.graphId, 'H2');
+      expect(pair.state, ContactLinkState.paired);
+      expect(
+        heldWins.reviews.where(
+          (r) => r.kind == ContactReviewKind.mergedInGoogle,
+        ),
+        isEmpty,
+      );
+    });
+
     test('a re-key renames the row and moves the partner\'s tag', () {
       final plan = run(
         googleReKeys: {'people/c1': 'people/c9'},
