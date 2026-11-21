@@ -609,7 +609,9 @@ abstract class ContactSyncStore {
   /// a brake and its question on the pair, or an answer's links saved and
   /// its review dropped. Calls inside may be any of this store's, a
   /// [transaction] among them; one that throws and is caught inside
-  /// [body] undoes only its own writes.
+  /// [body] undoes only its own writes. [body] holds store calls only,
+  /// never a network request: in the database it holds the file, and the
+  /// mail cache's writes and the background worker's wait until it ends.
   Future<T> transaction<T>(Future<T> Function() body);
 
   // --- pairs ----------------------------------------------------------------
