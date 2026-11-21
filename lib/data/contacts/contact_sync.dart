@@ -1055,9 +1055,24 @@ class _Run {
       return saved;
     });
     if (rows > 0) {
-      // The plan is made from the rows as they now are.
+      // The plan is made from the rows as they now are, and from the
+      // contacts kept read: a candidate's row holds no details, and one
+      // not read would be placed as a contact with none (no name to agree
+      // with a tag naming it, no email to match).
       links = await store.links(pairId);
       linkById = {for (final l in links) l.linkId!: l};
+      final google = <String>[];
+      for (final note in givenUp) {
+        final made = _Held.madeBy(note);
+        if (made == null) continue;
+        if (_sideOf(note['side']) == ContactSide.google) {
+          if (!googleRead.containsKey(made)) google.add(made);
+        } else if (!graphRead.containsKey(made)) {
+          _checkStop();
+          await _confirmGraph(made);
+        }
+      }
+      await _confirmGoogle(google);
     }
   }
 

@@ -1978,6 +1978,7 @@ void main() {
         (await h.links()).firstWhere((l) => l.graphId == made).isPaired,
         isTrue,
       );
+      expect(status.needsALook, isEmpty);
     });
 
     test('a restored pair whose two sides differ is listed, as a new pair '
