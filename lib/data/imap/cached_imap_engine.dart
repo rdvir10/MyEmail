@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:collection/collection.dart';
 import 'package:enough_mail/enough_mail.dart' as em;
+import 'package:http/http.dart' as http;
 
 import '../../domain/account.dart';
 import '../../domain/password_expiry.dart';
@@ -38,6 +39,7 @@ import '../cache/folder_sync.dart';
 import '../calendar/account_calendar.dart';
 import '../calendar/sheet_calendar.dart';
 import '../contacts/account_people.dart';
+import '../contacts/contact_sync.dart';
 import '../contacts/contact_sync_store.dart';
 import '../compose/graph_sender.dart';
 import '../compose/mime_parts.dart' show draftOnlyHeaders;
@@ -83,6 +85,8 @@ class CachedImapEngine
     OAuthTokenRepository? oauthTokens,
     this.graphIdMap,
     ContactSyncStore? contactSyncStore,
+    this.contactSyncDeviceId,
+    this.contactSyncHttpClient,
     ImapTransport Function(Account account, MailCredentials credentials)?
         transportFactory,
     this.senderFactory,
@@ -173,6 +177,25 @@ class CachedImapEngine
   /// as [graphIdMap] is, and then forgotten at every restart, so the app
   /// passes the database's.
   final ContactSyncStore contactSyncStore;
+
+  /// This device's own id for contact sync's claim, kept where the app
+  /// keeps it (`ContactSync.deviceIdIn`). Null in tests and in a second
+  /// isolate, which never syncs contacts: a random one per engine.
+  final Future<String> Function()? contactSyncDeviceId;
+
+  /// Tests' way to the fake contact servers. Null in the app.
+  final http.Client? contactSyncHttpClient;
+
+  /// Contact sync's runner, the engine's for its life rather than a
+  /// screen's, since settings screens close when the app is put away.
+  late final ContactSync _contactSync = ContactSync(
+    store: contactSyncStore,
+    accounts: accountStore.read,
+    accessToken: oauthTokens.accessToken,
+    deviceId: contactSyncDeviceId,
+    httpClient: contactSyncHttpClient,
+    clock: _clock,
+  );
 
   /// Late so the default can see [credentialStore], which an initializer list
   /// cannot.
@@ -446,6 +469,9 @@ class CachedImapEngine
     // search can pick its targets, without a second round trip.
     await folderLists.write(account.id, folders);
     await accountStore.write([...existing, account]);
+    // An address contact sync knew, removed and added again: its pair
+    // takes the new account and carries on.
+    await _contactSync.accountAdded(account);
     // Only now, with the secret stored, is the cached transport safe to keep:
     // the OAuth one built above closes over a token that will expire, whereas
     // one built from _credentialsFor can refresh itself.
@@ -553,6 +579,7 @@ class CachedImapEngine
     }
     // What this account would not allow before, it may have allowed now.
     _people.forget(accountId);
+    _contactSync.forget(accountId);
   }
 
   Future<void> _replaceSecret({
@@ -638,6 +665,11 @@ class CachedImapEngine
     ]) {
       await removeAccount(shared.id);
     }
+    // Contact sync first: its run stops and is waited for, then the pairs
+    // naming the account are detached, keeping all they hold, so the same
+    // address added again carries on where it stopped. Contacts on the
+    // servers are never touched.
+    await _contactSync.accountRemoved(accountId);
     await _landedFor(accountId);
     await _transports.remove(accountId)?.close();
     _syncs.remove(accountId);
@@ -1125,9 +1157,8 @@ class CachedImapEngine
     return _people.access(account);
   }
 
-  // Until the runner is built: an engine with nothing to sync.
   @override
-  ContactSyncService get contactSync => const NoContactSync();
+  ContactSyncService get contactSync => _contactSync;
 
   @override
   Future<PasswordAge> passwordAge(String accountId) async {
