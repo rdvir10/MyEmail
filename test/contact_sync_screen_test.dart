@@ -1525,6 +1525,42 @@ void main() {
       expect(sync.restored, [7]);
     });
 
+    testWidgets('a Restore refused says why under the contact, and Restore '
+        'is offered again', (tester) async {
+      sync = FakeContactSync(status: synced(deleted: [
+        ContactSyncDeleted(
+          id: 7,
+          title: 'Rina Dar',
+          side: ContactSide.google,
+          state: ContactSyncDeletedState.deleted,
+          deletedAt: at1042,
+          // Whether or not the runner keeps it marked as asked for.
+          restoreAsked: true,
+          restoreProblem: 'Could not restore. Google would not take the '
+              'contact (HTTP 400, INVALID_ARGUMENT).',
+        ),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Recently deleted (1)'));
+      await tester.pumpAndSettle();
+
+      final row = button('contact-sync-deleted:7');
+      expect(
+        find.descendant(
+          of: row,
+          matching: find.text('Could not restore. Google would not take the '
+              'contact (HTTP 400, INVALID_ARGUMENT).'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Restore asked for'), findsNothing,
+          reason: 'not waiting: refused');
+      await tester.tap(find.descendant(of: row, matching: find.text('Restore')));
+      await tester.pumpAndSettle();
+      expect(sync.restored, [7]);
+    });
+
     testWidgets('a second Microsoft account can be chosen instead',
         (tester) async {
       sync = FakeContactSync(status: chosenOnly);

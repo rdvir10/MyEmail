@@ -1540,7 +1540,9 @@ class _DeletedScreen extends ConsumerWidget {
             : 'Deleted from $from ${_when(d.deletedAt!, now, use24h)}',
         ContactSyncDeletedState.back => 'Already back',
       };
-      return d.restoreAsked && d.state != ContactSyncDeletedState.back
+      return d.restoreAsked &&
+              d.restoreProblem == null &&
+              d.state != ContactSyncDeletedState.back
           ? '$said. Restore asked for: the next sync brings it back.'
           : said;
     }
@@ -1565,9 +1567,26 @@ class _DeletedScreen extends ConsumerWidget {
               key: ValueKey('contact-sync-deleted:${d.id}'),
               minVerticalPadding: 10,
               title: Text(_title(d.title)),
-              subtitle: Text(line(d)),
-              trailing: d.restoreAsked ||
-                      d.state == ContactSyncDeletedState.back
+              subtitle: switch (d.restoreProblem) {
+                null => Text(line(d)),
+                // A Restore refused: why, under the contact, and Restore
+                // still offered, since pressing it again tries again.
+                final problem => Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(line(d)),
+                      Text(
+                        problem,
+                        key: ValueKey('contact-sync-restore-problem:${d.id}'),
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ],
+                  ),
+              },
+              trailing: d.state == ContactSyncDeletedState.back ||
+                      (d.restoreAsked && d.restoreProblem == null)
                   ? null
                   : TextButton(
                       key: ValueKey('contact-sync-restore:${d.id}'),
