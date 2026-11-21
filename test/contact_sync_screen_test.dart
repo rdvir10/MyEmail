@@ -795,6 +795,28 @@ void main() {
       expect(sync.count('syncNow'), 1);
     });
 
+    testWidgets('a failure not worth trying again keeps Sync now',
+        (tester) async {
+      sync = FakeContactSync(status: synced(
+        halt: ContactSyncHalt(
+          kind: ContactSyncHaltKind.failed,
+          at: at1042,
+          error: const ContactSyncRefused(
+            'The People API is off in the Cloud project.',
+          ),
+        ),
+      ));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+
+      expect(find.text('The People API is off in the Cloud project.'),
+          findsOneWidget);
+      expect(find.text('Try again'), findsNothing);
+      await tester.tap(find.text('Sync now'));
+      await tester.pumpAndSettle();
+      expect(sync.count('syncNow'), 1);
+    });
+
     testWidgets('a stop before the first sync has started is shown too',
         (tester) async {
       sync = FakeContactSync(status: synced(

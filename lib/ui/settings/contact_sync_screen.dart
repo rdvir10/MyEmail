@@ -763,11 +763,14 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
             'open.',
       null => null,
     };
-    // A failure offers Try again in its place, another device Sync here,
-    // and an empty answer its question: a sync now would only stop again.
+    // A failure worth trying again offers Try again in Sync now's place,
+    // another device Sync here, and an empty answer its question: a sync
+    // now would only stop again. A failure that is not worth it offers no
+    // Try again, so Sync now stays: there must always be a way on.
     final halt = s.halt;
     final offersItsOwn = switch (halt?.kind) {
-      ContactSyncHaltKind.failed ||
+      ContactSyncHaltKind.failed =>
+        remedyFor(_failureOf(halt!)) == ErrorRemedy.retry,
       ContactSyncHaltKind.otherDevice ||
       ContactSyncHaltKind.emptyAnswer => true,
       _ => false,
@@ -857,15 +860,19 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           _Para('The last sync stopped ${_when(halt.at, now, use24h)}.'),
           _Problem(
             doing: 'Syncing contacts',
-            error: halt.error ??
-                const ContactSyncFailed('Contact sync could not finish.'),
-            onRemedy: _syncNow,
+            error: _failureOf(halt),
+            onRemedy: _remedy(_failureOf(halt), google, graph, _syncNow),
           ),
         ];
       case ContactSyncHaltKind.putAway:
         return const [];
     }
   }
+
+  /// A failed run's failure, or one worth trying again where the runner
+  /// gave none.
+  static Object _failureOf(ContactSyncHalt halt) =>
+      halt.error ?? const ContactSyncFailed('Contact sync could not finish.');
 
   static String _syncedLine(ContactSyncTally t, DateTime now, bool use24h) {
     final counts = [
