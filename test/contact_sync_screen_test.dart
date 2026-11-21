@@ -238,6 +238,63 @@ void main() {
         reason: 'put away is not a stop to report',
       );
     });
+
+    test('a stop that names no side names no account at a guess', () {
+      expect(
+        say(synced(halt: ContactSyncHalt(
+          kind: ContactSyncHaltKind.notAllowed,
+          at: at1042,
+          error: const ContactSyncNeedsSignIn(
+            side: ContactSide.google,
+            accountId: 'acct-g',
+            message: 'Gmail has not allowed contact sync.',
+          ),
+        ))),
+        'Not allowed yet for Gmail',
+        reason: 'the failure names it',
+      );
+      expect(
+        say(synced(halt: ContactSyncHalt(
+          kind: ContactSyncHaltKind.notAllowed,
+          at: at1042,
+        ))),
+        'Not allowed yet for one of the accounts',
+      );
+      expect(
+        say(synced(halt: ContactSyncHalt(
+          kind: ContactSyncHaltKind.emptyAnswer,
+          at: at1042,
+        ))),
+        'Stopped: one address book listed too few contacts',
+      );
+      expect(
+        contactSyncNoticeText(
+          ContactSyncNotice(
+            at: at1042,
+            halt: ContactSyncHalt(
+              kind: ContactSyncHaltKind.notAllowed,
+              at: at1042,
+            ),
+          ),
+          graphName: 'Hadco',
+        ),
+        'Contact sync has stopped: not allowed yet for one of the accounts',
+      );
+      expect(
+        contactSyncNoticeText(
+          ContactSyncNotice(
+            at: at1042,
+            halt: ContactSyncHalt(
+              kind: ContactSyncHaltKind.emptyAnswer,
+              at: at1042,
+            ),
+          ),
+          graphName: 'Hadco',
+        ),
+        'Contact sync has stopped: one address book listed far fewer '
+        'contacts than before',
+      );
+    });
   });
 
   group('the screen', () {
@@ -771,6 +828,46 @@ void main() {
       await tester.tap(button('contact-sync-now'));
       await tester.pumpAndSettle();
       expect(sync.count('syncNow'), 1);
+    });
+
+    testWidgets('the result says what was left for the next sync',
+        (tester) async {
+      sync = FakeContactSync(status: synced(
+        last: ContactSyncTally(at: at1042, addedToGraph: 2, passedOver: 3),
+      ));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+
+      expect(
+        find.text('Synced at ${formatClock(at1042, use24h: false)}: 2 added, '
+            'none changed, none deleted, 3 in Hadco could not be read whole, '
+            'left for the next sync'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a kept contact whose side is not known offers no button '
+        'naming a side', (tester) async {
+      sync = FakeContactSync(status: synced(looks: const [
+        ContactSyncLook(
+          id: 1,
+          kind: ContactReviewKind.kept,
+          title: 'Noa Gal',
+          choices: [
+            ContactSyncChoice.copyBack,
+            ContactSyncChoice.deleteHereToo,
+            ContactSyncChoice.keepOnlyHere,
+          ],
+        ),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (1)'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Copy it back'), findsOneWidget);
+      expect(find.textContaining('Delete it in'), findsNothing);
+      expect(find.textContaining('Keep it only in'), findsNothing);
     });
 
     testWidgets('a first sync left unfinished says how far it got',

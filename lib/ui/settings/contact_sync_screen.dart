@@ -774,7 +774,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
     final last = s.last;
     final line = switch (last) {
-      final l? when l.complete => _syncedLine(l, now, use24h),
+      final l? when l.complete => _syncedLine(l, now, use24h, graphName),
       final l? when l.firstSync =>
         'The first sync got ${l.done} of ${l.planned} changes done. It '
             'carries on when MyEmail is open.',
@@ -821,18 +821,22 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   ) {
     final now = DateTime.now();
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
-    final side = halt.side ?? ContactSide.graph;
-    final name = _sideName(side, graphName);
+    final side = _haltSide(halt);
+    final name = _sideOrNot(side, graphName);
     switch (halt.kind) {
       case ContactSyncHaltKind.notAllowed:
-        final account = side == ContactSide.google ? google : graph;
+        final account = switch (side) {
+          ContactSide.google => google,
+          ContactSide.graph => graph,
+          null => null,
+        };
         return [
           _Para('Contact sync has stopped: not allowed yet for $name.'),
           if (halt.error case final e?)
             _Problem(
               doing: 'Syncing contacts',
               error: e,
-              onRemedy: () => _allow(account),
+              onRemedy: account == null ? null : () => _allow(account),
             ),
         ];
       case ContactSyncHaltKind.otherDevice:
@@ -865,8 +869,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         }
         return [
           _Para(
-            'Contact sync has stopped: $name listed far fewer contacts than '
-            'expected.',
+            'Contact sync has stopped: ${_bookOrNot(side, graphName)} listed '
+            'far fewer contacts than expected.',
           ),
         ];
       case ContactSyncHaltKind.quota:
@@ -897,7 +901,12 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   static Object _failureOf(ContactSyncHalt halt) =>
       halt.error ?? const ContactSyncFailed('Contact sync could not finish.');
 
-  static String _syncedLine(ContactSyncTally t, DateTime now, bool use24h) {
+  static String _syncedLine(
+    ContactSyncTally t,
+    DateTime now,
+    bool use24h,
+    String graphName,
+  ) {
     final counts = [
       if (t.added > 0 || t.changed > 0 || t.deleted > 0) ...[
         _none(t.added, 'added'),
@@ -909,6 +918,9 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       if (t.refused > 0) '${t.refused} could not be copied',
       if (t.needsALook > 0)
         _count(t.needsALook, 'needs a look', 'need a look'),
+      if (t.passedOver > 0)
+        '${t.passedOver} in $graphName could not be read whole, left for '
+            'the next sync',
     ];
     return 'Synced ${_when(t.at, now, use24h)}: '
         '${counts.isEmpty ? 'nothing needed changing' : counts.join(', ')}';
@@ -1094,9 +1106,9 @@ class _QuestionCard extends StatelessWidget {
         ),
       ContactSyncQuestionKind.emptyAnswer => (
           q.listed == null
-              ? '${side(q.side ?? ContactSide.graph)} listed far fewer '
-                  'contacts than expected'
-              : '${side(q.side ?? ContactSide.graph)} listed only '
+              ? '${_capital(_bookOrNot(q.side, graphName))} listed far '
+                  'fewer contacts than expected'
+              : '${_capital(_bookOrNot(q.side, graphName))} listed only '
                   '${_count(q.listed!, 'contact', 'contacts')}',
           '${q.expected == null ? 'Far more were' : '${q.expected} were'} '
               'expected. Contact sync has stopped and written nothing, '
@@ -1106,12 +1118,12 @@ class _QuestionCard extends StatelessWidget {
           // from the listing as deleted, and deletes its copy.
           "That's right, carry on takes "
               '${q.listed == null ? 'the new count' : '${q.listed}'} as the '
-              'number to expect: the contacts no longer listed in '
-              '${side(q.side ?? ContactSide.graph)} are then taken as '
-              'deleted there, and their copies in '
-              '${side((q.side ?? ContactSide.graph).other)} are deleted too '
-              '(it asks first if that is more than 5). Keep waiting leaves '
-              'it stopped, and the next sync looks again.',
+              'number to expect: the contacts no longer listed '
+              '${q.side == null ? 'there' : 'in ${side(q.side!)}'} are then '
+              'taken as deleted there, and their copies '
+              '${q.side == null ? 'on the other side' : 'in ${side(q.side!.other)}'} '
+              'are deleted too (it asks first if that is more than 5). Keep '
+              'waiting leaves it stopped, and the next sync looks again.',
         ),
     };
     String item(ContactSyncQuestionItem i) => switch (q.kind) {
@@ -1385,7 +1397,7 @@ class _LookTile extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: [
-                for (final c in l.choices)
+                for (final c in _offered(l))
                   if (c == ContactSyncChoice.samePerson &&
                       l.candidates.length > 1)
                     for (final candidate in l.candidates)
@@ -1514,8 +1526,6 @@ String contactSyncSubtitle({
   final graph = _byId(_graphAccounts(accounts), s.graphAccountId);
   if (google == null || graph == null) return 'Not set up yet';
   final graphName = contactSyncAccountName(graph);
-  String side(ContactSide? side) =>
-      _sideName(side ?? ContactSide.graph, graphName);
   final pair = 'Gmail and $graphName';
   for (final q in s.questions) {
     if (q.answer != null) continue;
@@ -1530,18 +1540,21 @@ String contactSyncSubtitle({
         return 'Changes to ${_count(q.items.length, 'contact', 'contacts')} '
             'need your OK';
       case ContactSyncQuestionKind.emptyAnswer:
-        return 'Stopped: ${side(q.side)} listed too few contacts';
+        return 'Stopped: ${_bookOrNot(q.side, graphName)} listed too few '
+            'contacts';
     }
   }
   if (s.isRunning) return '$pair, syncing now';
   if (s.halt case final halt?) {
     switch (halt.kind) {
       case ContactSyncHaltKind.notAllowed:
-        return 'Not allowed yet for ${side(halt.side)}';
+        return 'Not allowed yet for '
+            '${_sideOrNot(_haltSide(halt), graphName)}';
       case ContactSyncHaltKind.otherDevice:
         return 'Syncing on your other device';
       case ContactSyncHaltKind.emptyAnswer:
-        return 'Stopped: ${side(halt.side)} listed too few contacts';
+        return 'Stopped: ${_bookOrNot(_haltSide(halt), graphName)} listed '
+            'too few contacts';
       case ContactSyncHaltKind.quota:
         return "Waiting for Google's daily limit";
       case ContactSyncHaltKind.failed:
@@ -1581,13 +1594,13 @@ String? contactSyncNoticeText(
   }
   final halt = notice.halt;
   if (halt == null) return null;
-  final side = _sideName(halt.side ?? ContactSide.graph, graphName);
+  final side = _haltSide(halt);
   return switch (halt.kind) {
-    ContactSyncHaltKind.notAllowed =>
-      'Contact sync has stopped: not allowed yet for $side',
+    ContactSyncHaltKind.notAllowed => 'Contact sync has stopped: not allowed '
+        'yet for ${_sideOrNot(side, graphName)}',
     ContactSyncHaltKind.otherDevice => 'Contact sync is on on your other device',
-    ContactSyncHaltKind.emptyAnswer =>
-      'Contact sync has stopped: $side listed far fewer contacts than before',
+    ContactSyncHaltKind.emptyAnswer => 'Contact sync has stopped: '
+        '${_bookOrNot(side, graphName)} listed far fewer contacts than before',
     ContactSyncHaltKind.quota =>
       "Contact sync has stopped: Google's daily limit on changes is spent",
     ContactSyncHaltKind.failed => 'Contact sync could not finish',
@@ -1605,6 +1618,36 @@ String contactSyncAccountName(Account? account) {
 
 String _sideName(ContactSide side, String graphName) =>
     side == ContactSide.google ? 'Gmail' : graphName;
+
+/// The side a stop is about: its own, or the account a sign-in failure
+/// names. Null where neither says, and then nothing is named at a guess.
+ContactSide? _haltSide(ContactSyncHalt halt) =>
+    halt.side ??
+    switch (halt.error) {
+      ContactSyncNeedsSignIn(:final side) => side,
+      _ => null,
+    };
+
+String _sideOrNot(ContactSide? side, String graphName) =>
+    side == null ? 'one of the accounts' : _sideName(side, graphName);
+
+String _bookOrNot(ContactSide? side, String graphName) =>
+    side == null ? 'one address book' : _sideName(side, graphName);
+
+String _capital(String said) =>
+    '${said[0].toUpperCase()}${said.substring(1)}';
+
+/// A Needs a look item's buttons, less Delete it ... too and Keep it only
+/// in ... for a kept contact whose side is not known: they would name a
+/// side at a guess.
+List<ContactSyncChoice> _offered(ContactSyncLook l) => [
+      for (final c in l.choices)
+        if (!(l.kind == ContactReviewKind.kept &&
+            l.side == null &&
+            (c == ContactSyncChoice.deleteHereToo ||
+                c == ContactSyncChoice.keepOnlyHere)))
+          c,
+    ];
 
 /// Where a contact went: Gmail's deletes are deletions, while one gone
 /// from Outlook may have been moved to Deleted Items.
@@ -1748,8 +1791,12 @@ String _lookLine(ContactSyncLook l, String graphName) {
       return 'Merged in Gmail with another contact: delete it in $graphName '
           'too, or keep it only there.';
     case ContactReviewKind.refused:
-      return 'Could not copy to ${side(l.side ?? ContactSide.graph)}: it '
-          'would not take this contact, perhaps for a detail too long.';
+      return switch (l.side) {
+        final refusedBy? => 'Could not copy to ${side(refusedBy)}: it would '
+            'not take this contact, perhaps for a detail too long.',
+        null => 'Could not copy this contact: the other side would not take '
+            'it, perhaps for a detail too long.',
+      };
   }
 }
 
