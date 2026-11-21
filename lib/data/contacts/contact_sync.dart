@@ -1308,6 +1308,7 @@ class _Run {
     side: op.side,
     sourceId: op.sourceKey,
     startedAt: op.startedAt,
+    tag: op.tag,
   );
 
   /// The bin as the planner reads it. Not the rows Ron brought back
@@ -1600,13 +1601,9 @@ class _Run {
         await _saveReview(item);
       }
 
-      final restoreBack = {
-        for (final r in plan.restores)
-          if (r.alreadyBack) r.binId,
-      };
-      await store.dropBin(restoreBack);
-      for (final id in plan.binAlreadyBack) {
-        if (!restoreBack.contains(id)) await store.markBinBack(id);
+      await store.dropBin(plan.binToDrop);
+      for (final id in plan.binToMarkBack) {
+        await store.markBinBack(id);
       }
 
       await store.updatePair(pairId, (p) {
@@ -1971,56 +1968,55 @@ class _Run {
 
   // Changes to pairs.
 
-  /// A pair's writes: each side read just before it is written; a version
-  /// moved since the plan's read means both are read again and the pair
-  /// planned again, once.
+  /// A pair's writes, Outlook's first: each side read just before it is
+  /// written. A version moved since the plan read it means that side is
+  /// read again and the pair planned again with the run's settings, told
+  /// of a write already made to the other side; once, then the rest waits
+  /// for the next run, which reads the change.
   Future<void> _update(ContactLinkPlan planned) async {
     var p = planned;
     Map<String, Object?>? gAnswer;
     Map<String, Object?>? hAnswer;
+    var googleWritten = false;
+    var graphWritten = false;
     String? googleName = p.googleName;
     for (var attempt = 0; ; attempt++) {
-      Map<String, Object?>? person;
-      Map<String, Object?>? contact;
+      ContactSide? stale;
       try {
         if (p.graphWrite case final write?) {
-          contact = await graph((a) => a.get(p.graphId!));
-          if (contact == null || !_inContacts(contact)) return;
+          final contact = await graph((a) => a.get(p.graphId!));
+          if (contact == null || !_inContacts(contact)) break;
           final body = write.graphPatch(contact);
           hAnswer = await graph((a) => a.update(p.graphId!, body));
+          graphWritten = true;
         }
         if (p.googleWrite case final write?) {
-          person = await google((a) => a.get(p.googleName!));
-          if (person == null) return;
+          final person = await google((a) => a.get(p.googleName!));
+          if (person == null) break;
           final u = write.googleUpdate(person, normaliser: norm);
           final name = person['resourceName'] as String;
           gAnswer = await google(
             (a) => a.update(name, u.person, fields: u.updatePersonFields),
           );
           googleName = name;
+          googleWritten = true;
         }
         break;
-      } on ContactReadStale {
-        if (attempt > 0) return;
+      } on ContactReadStale catch (e) {
+        stale = e.side;
       } on ContactChangedMeanwhile {
-        if (attempt > 0) return;
+        stale = ContactSide.google;
       } on ContactGone {
-        // Deleted while the run went: the next run's feed says so.
-        return;
+        // Deleted while the run went: the next run's feed says so. What
+        // was written to the other side is kept.
+        break;
       } on ContactRefused {
         await _refusedPair(p, gAnswer: gAnswer, hAnswer: hAnswer);
         return;
       }
-      // Changed since the plan read it: both read again and planned again
-      // with the run's settings, so a value one side has just been given
-      // reads as the same on both and is not written back.
-      final freshG = await google((a) => a.get(p.googleName!));
-      final freshH = await graph((a) => a.get(p.graphId!));
-      if (freshG == null || freshH == null || !_inContacts(freshH)) return;
-      final g = GoogleContact.fromPerson(freshG);
-      final h = GraphContact.fromJson(freshH);
-      if (g.details.isEmpty || !h.readWhole || h.details.isEmpty) return;
-      final again = p.replan(google: g, graph: h);
+      if (attempt > 0) break;
+      final again = await _replanned(p, stale, gAnswer: gAnswer, hAnswer: hAnswer);
+      if (again == null) break;
       await _replaceReviews(p, again.reviews);
       p = again.plan;
       gAnswer = null;
@@ -2041,7 +2037,7 @@ class _Run {
       graphBase: bases.graph,
       googleEtag: gAnswer == null ? null : googleContactEtag(gAnswer),
       graphChangeKey: hAnswer?['changeKey'] as String?,
-      googleWritten: gAnswer != null,
+      googleWritten: googleWritten,
     );
     await store.transaction(() async {
       await store.deleteLinks(p.alsoRemove);
@@ -2051,8 +2047,51 @@ class _Run {
             : link.copyWith(googleName: googleName),
       );
     });
-    if (gAnswer != null) tally.changedGoogle++;
-    if (hAnswer != null) tally.changedGraph++;
+    if (googleWritten) tally.changedGoogle++;
+    if (graphWritten) tally.changedGraph++;
+  }
+
+  /// [p] planned again after [stale]'s version moved: that side read again,
+  /// the other's write made this run, if any, passed as written, so that
+  /// a value it has just been given is not read as Ron's change. Null when
+  /// the side is gone, moved or not read whole: left for the next run.
+  Future<({ContactLinkPlan plan, List<ContactReviewItem> reviews})?>
+  _replanned(
+    ContactLinkPlan p,
+    ContactSide? stale, {
+    Map<String, Object?>? gAnswer,
+    Map<String, Object?>? hAnswer,
+  }) async {
+    GoogleContact? google;
+    GraphContact? graph;
+    if (stale == ContactSide.google) {
+      final fresh = await this.google((a) => a.get(p.googleName!));
+      if (fresh == null) return null;
+      google = GoogleContact.fromPerson(fresh);
+      if (google.details.isEmpty) return null;
+    } else {
+      final fresh = await this.graph((a) => a.get(p.graphId!));
+      if (fresh == null || !_inContacts(fresh)) return null;
+      graph = GraphContact.fromJson(fresh);
+      if (!graph.readWhole || graph.details.isEmpty) return null;
+    }
+    final writtenG = gAnswer == null ? null : GoogleContact.fromPerson(gAnswer);
+    final writtenH = hAnswer == null ? null : GraphContact.fromJson(hAnswer);
+    if (writtenH != null && (!writtenH.readWhole || writtenH.details.isEmpty)) {
+      // A write's answer that lacks a property cannot stand for the
+      // contact; read it whole instead.
+      final fresh = await this.graph((a) => a.get(p.graphId!));
+      if (fresh == null || !_inContacts(fresh)) return null;
+      graph = GraphContact.fromJson(fresh);
+      if (!graph.readWhole || graph.details.isEmpty) return null;
+      return p.replan(google: google, graph: graph);
+    }
+    return p.replan(
+      google: google,
+      graph: graph,
+      googleWritten: writtenG,
+      graphWritten: writtenH,
+    );
   }
 
   /// A pair planned again: the items the run's plan gave it are replaced.

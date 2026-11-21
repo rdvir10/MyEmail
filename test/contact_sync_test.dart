@@ -594,10 +594,21 @@ void main() {
       ];
       h.google.mergeInGmail(names[0], names[1]);
       h.after = null;
-      final status = await h.later();
+      var status = await h.later();
       expect(status.halt, isNull);
       // No third Ann.
       expect(h.graph.count, 2);
+      // The copy of the contact merged away is not paired with the one that
+      // stays, nor copied back: it waits under Needs a look.
+      expect(await h.paired(), hasLength(1));
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.newContact);
+      expect(look.side, ContactSide.graph);
+      expect(look.reason, ContactReviewReason.taggedPaired);
+      status = await h.later();
+      expect(h.google.count, 1);
+      expect(h.graph.count, 2);
+      expect(status.needsALook, hasLength(1));
     });
   });
 
@@ -993,6 +1004,51 @@ void main() {
       final orgs = h.google.person(ann)!['organizations']! as List;
       expect((orgs.first as Map)['title'], 'Boss');
       expect(status.needsALook, isEmpty);
+    });
+
+    test('a Gmail contact changed after its Outlook partner was written is '
+        'planned again knowing that write', () async {
+      final pairs = seedPairs(h, 1, mobiles: true);
+      await h.firstSync();
+      final g = pairs[0].google;
+      final o = pairs[0].graph;
+      h.google.editFromGmail(g, {
+        'phoneNumbers': [
+          {'value': '+1 202 555 0177', 'type': 'mobile'},
+        ],
+      });
+      h.graph.editFromOutlook(o, {'companyName': 'Acme'});
+      var edited = false;
+      h.before = (r) async {
+        // The read of the Gmail contact just before its write.
+        if (!edited &&
+            r.method == 'GET' &&
+            r.url.path.endsWith('/v1/$g') &&
+            h.writesTo('graph.microsoft.com').isNotEmpty) {
+          edited = true;
+          h.google.editFromGmail(g, {
+            'nicknames': [
+              {'value': 'Bo'},
+            ],
+          });
+        }
+      };
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(edited, isTrue);
+      final outlook = h.graph.contact(o)!;
+      expect(mobileOf(outlook), '+1 202 555 0177');
+      expect(outlook['nickName'], 'Bo');
+      final gmail = h.google.person(g)!;
+      expect(companyOf(gmail), 'Acme');
+      expect((gmail['nicknames']! as List).length, 1);
+      expect(mobileOf(gmail), '+1 202 555 0177');
+      expect(status.needsALook, isEmpty);
+
+      h.before = null;
+      h.requests.clear();
+      await h.later();
+      expect(h.contactWritesOf(), isEmpty);
     });
 
     test('Same person pairs a new contact with its candidate', () async {
