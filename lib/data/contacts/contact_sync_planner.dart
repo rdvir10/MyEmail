@@ -2407,10 +2407,14 @@ class _Planner {
               !_alive(ContactSide.graph, row.graphId)) {
             continue;
           }
-          if (_movedOut(ContactSide.graph, row.graphId)) {
-            // Not read while it is away, so it would keep the answer
-            // waiting: the pair is held as moved out instead, and comes
-            // back, planned as usual, when the contact returns.
+          if (answer.kind == ContactAnswerKind.applyHeld &&
+              _movedOut(ContactSide.graph, row.graphId)) {
+            // Apply them: not read while it is away, it would keep the
+            // answer waiting, so the pair is held as moved out instead and
+            // comes back, planned as usual (the changes applied), when the
+            // contact returns. Copy them back cannot be kept that way (the
+            // usual plan would apply the changes), so for it the answer
+            // waits for the contact's return, below.
             _paired(row);
             continue;
           }

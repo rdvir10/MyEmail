@@ -2536,6 +2536,47 @@ void main() {
       expect(away.writes, isFalse);
     });
 
+    test('Copy them back waits for a pair moved out of Contacts', () {
+      // Google's Undo changes took the company off both Gmail contacts and
+      // the change brake held them; H2 is in another folder when Ron
+      // answers Copy them back.
+      final base = ann.withValue(ContactField.company, 'Hadco');
+      final lost = ann;
+      List<ContactLinkInput> held(Iterable<int> ids) => [
+        for (final i in ids)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: base,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.changeBrake,
+          ),
+      ];
+      const copyBack = [ContactAnswer(ContactAnswerKind.copyHeldBack)];
+      final away = run(
+        google: [g('people/c1', lost), g('people/c2', lost)],
+        graph: [h('H1', base)],
+        graphMovedOut: {'H2'},
+        links: held([1, 2]),
+        answers: copyBack,
+      );
+      expect(away.answers, [ContactAnswerOutcome.waiting]);
+      expect(byLink(away, 1)!.googleWrite!.fields, {ContactField.company});
+      expect(byLink(away, 2), isNull, reason: 'still held by the brake');
+      // H2 is back: the queued answer copies it back too.
+      final back = run(
+        google: [g('people/c2', lost)],
+        graph: [h('H2', base)],
+        links: held([2]),
+        answers: copyBack,
+      );
+      expect(back.answers, [ContactAnswerOutcome.applied]);
+      final pair = byLink(back, 2)!;
+      expect(pair.googleWrite!.target.text(ContactField.company), 'Hadco');
+      expect(pair.graphWrite, isNull, reason: 'Hadco keeps its company');
+    });
+
     test('a kept contact copied back, or deleted here too', () {
       final kept = link(
         1,
