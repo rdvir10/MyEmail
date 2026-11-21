@@ -2099,6 +2099,10 @@ class _Planner {
           ? googleGone.contains(id)
           : graphGone.contains(id));
 
+  /// An Outlook contact found in another folder, and not back in Contacts.
+  bool _movedOut(ContactSide side, String? id) =>
+      side == ContactSide.graph && id != null && graphMoved.contains(id);
+
   _Status? _status(ContactSide side, String id) =>
       side == ContactSide.google ? googleStatus[id] : graphStatus[id];
 
@@ -2257,9 +2261,15 @@ class _Planner {
     ];
 
     // Gone wins over unread: an answer whose contact has gone is dropped.
+    // So is one whose Outlook contact has moved out of Contacts, which no
+    // run reads while it is away: waiting, the answer would wait for ever.
+    // The plan's moved-out rule (both ids kept, the pair back when it
+    // returns) is for a pair, and the rows pass applies it to the row; a
+    // contact with one id held as moved out would read, on its return, as
+    // a pair whose Gmail side went, and be deleted.
     ContactAnswerOutcome? unread(List<(ContactSide, String?)> contacts) {
       for (final (side, id) in contacts) {
-        if (_isGone(side, id)) return dropped;
+        if (_isGone(side, id) || _movedOut(side, id)) return dropped;
       }
       for (final (side, id) in contacts) {
         if (id != null && !_wasRead(side, id)) return waiting;
@@ -2428,6 +2438,13 @@ class _Planner {
           }
           if (!_alive(ContactSide.google, row.googleName) ||
               !_alive(ContactSide.graph, row.graphId)) {
+            continue;
+          }
+          if (_movedOut(ContactSide.graph, row.graphId)) {
+            // Not read while it is away, so it would keep the answer
+            // waiting: the pair is held as moved out instead, and comes
+            // back, planned as usual, when the contact returns.
+            _paired(row);
             continue;
           }
           if (!_wasRead(ContactSide.google, row.googleName) ||

@@ -2329,6 +2329,78 @@ void main() {
       expect(plan.answers, [ContactAnswerOutcome.dropped]);
     });
 
+    test('an answer about a contact moved out of Contacts is dropped', () {
+      // Outlook H1 was moved to another folder: no run reads it while it
+      // is away, so a waiting answer would wait for ever.
+      final differs = ann.withValue(ContactField.company, 'Hadco');
+      final plan = run(
+        google: [g('people/c1', differs), g('people/c2', ann)],
+        graphMovedOut: {'H1', 'H2'},
+        links: [
+          link(1, 'people/c1', 'H1', base: ann),
+          link(
+            2,
+            null,
+            'H2',
+            base: ann,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.waiting,
+          ),
+        ],
+        answers: [
+          const ContactAnswer(
+            ContactAnswerKind.useGoogle,
+            googleName: 'people/c1',
+            graphId: 'H1',
+          ),
+          const ContactAnswer(
+            ContactAnswerKind.samePerson,
+            googleName: 'people/c2',
+            graphId: 'H2',
+          ),
+        ],
+      );
+      expect(plan.answers, [
+        ContactAnswerOutcome.dropped,
+        ContactAnswerOutcome.dropped,
+      ]);
+      // The pair is held as moved out, both ids kept, nothing written.
+      final pair = byLink(plan, 1)!;
+      expect(pair.reason, ContactHeldReason.movedOut);
+      expect(pair.graphId, 'H1');
+      expect(pair.writes, isFalse);
+      expect(byLink(plan, 2), isNull, reason: 'H2 is not paired');
+    });
+
+    test('Apply them holds a pair moved out of Contacts as moved out', () {
+      final held = [
+        for (final i in [1, 2])
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: ann,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.changeBrake,
+          ),
+      ];
+      final changed = ann.withValue(ContactField.company, 'New');
+      final plan = run(
+        google: [g('people/c1', changed), g('people/c2', changed)],
+        graph: [h('H1', ann)],
+        graphMovedOut: {'H2'},
+        links: held,
+        answers: const [ContactAnswer(ContactAnswerKind.applyHeld)],
+      );
+      expect(plan.answers, [ContactAnswerOutcome.applied]);
+      expect(byLink(plan, 1)!.graphWrite!.fields, {ContactField.company});
+      final away = byLink(plan, 2)!;
+      expect(away.reason, ContactHeldReason.movedOut);
+      expect(away.googleName, 'people/c2');
+      expect(away.graphId, 'H2');
+      expect(away.writes, isFalse);
+    });
+
     test('a kept contact copied back, or deleted here too', () {
       final kept = link(
         1,
