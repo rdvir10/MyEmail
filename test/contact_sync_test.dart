@@ -81,6 +81,9 @@ class Harness {
   /// answer, as a dropped connection does.
   void Function(http.Request request)? after;
 
+  /// An answer in place of the server's, where it gives one.
+  http.Response? Function(http.Request request)? answer;
+
   late ContactSync sync = make();
 
   ContactSync make({String device = 'phone', ContactSyncStore? on}) =>
@@ -99,6 +102,7 @@ class Harness {
         httpClient: MockClient((request) async {
           requests.add(request);
           await before?.call(request);
+          if (answer?.call(request) case final given?) return given;
           final response = request.url.host == 'people.googleapis.com'
               ? await google.handle(request)
               : await graph.handle(request);
@@ -1788,6 +1792,42 @@ void main() {
       // A week later the claim has lapsed.
       await h.later(after: const Duration(days: 8));
       expect((await h.status()).halt, isNull);
+    });
+  });
+
+  group('the claim', () {
+    for (final status in [400, 404]) {
+      test('a folder that will not give its claim (HTTP $status) does not '
+          'stop the run', () async {
+        seedPairs(h, 1);
+        h.google.addFromGmail(person('New', 'One', email: 'n@example.com'));
+        h.answer = (r) =>
+            r.method == 'GET' &&
+                r.url.path.endsWith(FakeGraphContacts.mainFolderId)
+            ? http.Response(
+                '{"error":{"code":"ErrorInvalidRequest","message":"x"}}',
+                status,
+                headers: {'content-type': 'application/json'},
+              )
+            : null;
+        await h.firstSync();
+        final s = await h.status();
+        expect(s.halt, isNull);
+        expect(h.graph.count, 2);
+      });
+    }
+
+    test('a lost connection on the claim read still stops the run',
+        () async {
+      seedPairs(h, 1);
+      h.before = (r) async {
+        if (r.method == 'GET' &&
+                r.url.path.endsWith(FakeGraphContacts.mainFolderId)) {
+          throw http.ClientException('connection lost');
+        }
+      };
+      await h.firstSync();
+      expect((await h.status()).halt!.kind, ContactSyncHaltKind.failed);
     });
   });
 

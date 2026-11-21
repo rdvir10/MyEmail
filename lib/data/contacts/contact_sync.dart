@@ -1041,8 +1041,24 @@ class _Run {
 
   /// The device claim: another device's, younger than a week, stops the
   /// run unless this one was told to take it over.
+  ///
+  /// A folder that will not give its claim (a refusal, or not found) is
+  /// taken as having none: the claim only warns a second device, and must
+  /// not stop the one that syncs. A sign-in, a consent or a connection
+  /// lost still stops the run, as any request's would.
   Future<void> _claim() async {
-    final claim = await graph((a) => a.readClaim(folderId!));
+    final GraphDeviceClaim? claim;
+    try {
+      claim = await graph((a) => a.readClaim(folderId!));
+    } on ContactRefused catch (e) {
+      debugPrint('[myemail] contacts: the device claim was not read '
+          '(HTTP ${e.status})');
+      return;
+    } on ContactGone {
+      debugPrint('[myemail] contacts: the device claim was not read '
+          '(HTTP 404)');
+      return;
+    }
     final me = await sync._thisDevice();
     if (claim == null || claim.device == me || takeClaim) return;
     if (now.difference(claim.at) < ContactSync.claimLasts) {
