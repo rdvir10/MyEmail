@@ -847,6 +847,43 @@ void main() {
       expect(emptyGmail.links.where((l) => l.writes), isEmpty);
     });
 
+    test('a sparse Outlook entry passed over is counted, for a read by id',
+        () {
+      GraphContact sparse(String id) => GraphContact(
+        id: id,
+        details: SyncedContact({ContactField.company: 'X'}),
+        missing: const {'nickName'},
+      );
+      final plan = run(
+        graph: [
+          GraphContact(
+            id: 'H0',
+            details: SyncedContact.empty,
+            removed: true,
+          ),
+          sparse('H1'),
+          // Sparse in the delta, then read whole by id: not passed over.
+          sparse('H3'),
+          h('H3', person(given: 'Cy', family: 'Roe')),
+        ],
+        links: [link(1, 'people/c1', 'H1', base: base)],
+      );
+      expect(plan.graphPassedOver, {'H1'});
+      expect(plan.counts.passedOver, 1);
+      expect(plan.counts.toJson()['passedOver'], 1);
+      expect(plan.links.where((l) => l.writes && l.graphId == 'H1'), isEmpty);
+      expect(plan.counts.addToGoogle, 1, reason: 'H3 was read whole');
+      // A run the empty-answers brake stops says so too.
+      final stopped = run(
+        graph: [sparse('H1')],
+        graphComplete: true,
+        links: [link(1, 'people/c1', 'H1', base: base)],
+      );
+      expect(stopped.stop, isNotNull);
+      expect(stopped.graphPassedOver, {'H1'});
+      expect(stopped.counts.passedOver, 1);
+    });
+
     test('Outlook\'s year reaches a year-less Gmail birthday after pairing',
         () {
       const yearless = ContactBirthday(month: 7, day: 4);

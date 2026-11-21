@@ -308,7 +308,8 @@ class ContactSyncInput {
   /// contacts without a row). An `@removed` entry, one that lacks a
   /// synced property ([GraphContact.readWhole]) or one with no synced
   /// details is passed over, as if not read: a missing property is never
-  /// read as cleared.
+  /// read as cleared. Those that lack a property, with no whole read of
+  /// them beside, are listed in [ContactSyncPlan.graphPassedOver].
   final List<GraphContact> graph;
 
   /// Whether [google] / [graph] is a full listing.
@@ -1007,6 +1008,7 @@ class ContactSyncCounts {
     this.heldDeletions = 0,
     this.heldChanges = 0,
     this.restores = 0,
+    this.passedOver = 0,
   });
 
   final int addToGoogle;
@@ -1031,6 +1033,10 @@ class ContactSyncCounts {
   final int heldChanges;
   final int restores;
 
+  /// Outlook entries passed over, unread: see
+  /// [ContactSyncPlan.graphPassedOver].
+  final int passedOver;
+
   Map<String, Object?> toJson() => {
     'addToGoogle': addToGoogle,
     'addToGraph': addToGraph,
@@ -1045,6 +1051,7 @@ class ContactSyncCounts {
     'heldDeletions': heldDeletions,
     'heldChanges': heldChanges,
     'restores': restores,
+    'passedOver': passedOver,
   };
 }
 
@@ -1068,6 +1075,7 @@ class ContactSyncPlan {
     this.googleGone = const {},
     this.graphGone = const {},
     this.answers = const [],
+    this.graphPassedOver = const {},
   });
 
   /// The empty-answers brake: when set, nothing else is planned.
@@ -1116,6 +1124,14 @@ class ContactSyncPlan {
   /// What became of each of the input's answers, in the same order. Empty
   /// when the run stopped.
   final List<ContactAnswerOutcome> answers;
+
+  /// Outlook contacts whose only read this run left out a synced property
+  /// ([GraphContact.readWhole]): passed over, as if not read, and never
+  /// read as cleared, so a change they carry is not synced. The runner
+  /// logs how many ([ContactSyncCounts.passedOver]) and reads them whole
+  /// by id, for this run or the next, since the delta link has moved on.
+  /// Set on a stopped run too.
+  final Set<String> graphPassedOver;
 
   /// The normaliser this plan compared with, for the pair to store.
   int get normaliserVersion => contactNormaliserVersion;
@@ -1750,6 +1766,7 @@ class _Planner {
   final googleGone = <String>{};
   final graphGone = <String>{};
   final graphMoved = <String>{};
+  final graphPassedOver = <String>{};
   final reKeys = <String, String>{};
   final tagMoves = <String, String>{};
 
@@ -1783,6 +1800,8 @@ class _Planner {
         stop: stop,
         googleCount: _googleCount(),
         graphCount: _graphCount(),
+        graphPassedOver: Set.unmodifiable(graphPassedOver),
+        counts: ContactSyncCounts(passedOver: graphPassedOver.length),
       );
     }
     _buildRows();
@@ -1815,12 +1834,22 @@ class _Planner {
       if (c.details.isEmpty) continue;
       googleListed[c.resourceName] = c;
     }
+    final sparse = <String>{};
+    final whole = <String>{};
     for (final c in input.graph) {
       // An @removed entry is only a reason to look the contact up, and a
-      // sparse one is read whole first: neither is read as cleared.
-      if (c.removed || !c.readWhole || c.details.isEmpty) continue;
+      // sparse one is read whole first: neither is read as cleared. One
+      // still sparse is passed over, and counted.
+      if (c.removed) continue;
+      if (!c.readWhole) {
+        sparse.add(c.id);
+        continue;
+      }
+      whole.add(c.id);
+      if (c.details.isEmpty) continue;
       graphListed[c.id] = c;
     }
+    graphPassedOver.addAll(sparse.difference(whole));
     final googleBin = {
       for (final b in input.bin)
         if (b.side == ContactSide.google) b.contactId,
@@ -3442,6 +3471,7 @@ class _Planner {
       googleGone: Set.unmodifiable(googleGone),
       graphGone: Set.unmodifiable(graphGone),
       answers: answerOutcomes,
+      graphPassedOver: Set.unmodifiable(graphPassedOver),
       counts: ContactSyncCounts(
         addToGoogle: count((l) => l.create?.side == ContactSide.google),
         addToGraph: count((l) => l.create?.side == ContactSide.graph),
@@ -3462,6 +3492,7 @@ class _Planner {
             .where((b) => b.kind == ContactBrakeKind.changes)
             .fold(0, (n, b) => n + b.items.length),
         restores: restores.where((r) => !r.alreadyBack).length,
+        passedOver: graphPassedOver.length,
       ),
     );
   }
