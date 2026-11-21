@@ -1185,26 +1185,12 @@ class _LooksScreen extends ConsumerWidget {
             top: 16,
           ),
           if (looks.isEmpty) const _Para('Nothing needs a look.'),
-          if (differing > 1) ...[
-            _Para(
-              'Every pair whose details differ ($differing):',
-              strong: true,
-              top: 8,
+          if (differing > 1)
+            _AllDiffering(
+              count: differing,
+              graphName: graphName,
+              onAnswer: (c) => _act(context, () => sync.answerAllDiffering(c)),
             ),
-            _Buttons([
-              for (final c in const [
-                ContactSyncChoice.useGoogle,
-                ContactSyncChoice.useGraph,
-                ContactSyncChoice.leaveAsTheyAre,
-              ])
-                OutlinedButton(
-                  key: ValueKey('contact-sync-all:${c.name}'),
-                  onPressed: () =>
-                      _act(context, () => sync.answerAllDiffering(c)),
-                  child: Text(_choiceLabel(c, graphName)),
-                ),
-            ]),
-          ],
           for (final look in looks) ...[
             const Divider(height: 1),
             _LookTile(
@@ -1216,6 +1202,101 @@ class _LooksScreen extends ConsumerWidget {
               ),
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+/// One answer for every new pair whose details differ, set apart from
+/// each contact's own buttons, and asked again before one side's details
+/// replace the other's on all of them: the brakes do not hold Ron's own
+/// answers back, so this is the only question there is.
+class _AllDiffering extends StatelessWidget {
+  const _AllDiffering({
+    required this.count,
+    required this.graphName,
+    required this.onAnswer,
+  });
+
+  final int count;
+  final String graphName;
+  final ValueChanged<ContactSyncChoice> onAnswer;
+
+  Future<void> _answer(BuildContext context, ContactSyncChoice c) async {
+    if (c == ContactSyncChoice.leaveAsTheyAre) {
+      onAnswer(c);
+      return;
+    }
+    final (kept, replaced) = c == ContactSyncChoice.useGoogle
+        ? ('Gmail', graphName)
+        : (graphName, 'Gmail');
+    final sure = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        key: const ValueKey('contact-sync-all-sure'),
+        title: Text("Use $kept's details for all $count?"),
+        content: Text(
+          "On the $count contacts whose details differ, $replaced's are "
+          "replaced with $kept's at the next sync, which starts at once. "
+          'This is the only time you are asked.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text("Replace $replaced's"),
+          ),
+        ],
+      ),
+    );
+    if (sure == true) onAnswer(c);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      key: const ValueKey('contact-sync-all'),
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'All $count pairs whose details differ',
+            style: theme.textTheme.titleSmall,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'One answer for every one of them at once.',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final (c, label) in [
+                (ContactSyncChoice.useGoogle, "Use Gmail's for all"),
+                (ContactSyncChoice.useGraph, "Use $graphName's for all"),
+                (ContactSyncChoice.leaveAsTheyAre, 'Leave all as they are'),
+              ])
+                FilledButton.tonal(
+                  key: ValueKey('contact-sync-all:${c.name}'),
+                  onPressed: () => _answer(context, c),
+                  child: Text(label),
+                ),
+            ],
+          ),
         ],
       ),
     );

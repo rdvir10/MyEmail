@@ -1129,6 +1129,57 @@ void main() {
       expect(sync.allDiffering, [ContactSyncChoice.leaveAsTheyAre]);
     });
 
+    testWidgets("one side's details for every differing pair is asked again, "
+        'naming the count and the side replaced', (tester) async {
+      ContactSyncLook differs(int id) => ContactSyncLook(
+            id: id,
+            kind: ContactReviewKind.differing,
+            title: 'Person $id',
+            fields: const [ContactField.jobTitle],
+            choices: const [
+              ContactSyncChoice.useGoogle,
+              ContactSyncChoice.useGraph,
+              ContactSyncChoice.leaveAsTheyAre,
+            ],
+          );
+      sync = FakeContactSync(status: synced(looks: [
+        for (var id = 1; id <= 12; id++) differs(id),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (12)'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('All 12 pairs whose details differ'), findsOneWidget);
+      await tester.tap(find.text("Use Hadco's for all"));
+      await tester.pumpAndSettle();
+      expect(find.text("Use Hadco's details for all 12?"), findsOneWidget);
+      expect(
+        find.text("On the 12 contacts whose details differ, Gmail's are "
+            "replaced with Hadco's at the next sync, which starts at once. "
+            'This is the only time you are asked.'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(sync.allDiffering, isEmpty);
+
+      await tester.tap(find.text("Use Gmail's for all"));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text("Replace Hadco's"));
+      await tester.pumpAndSettle();
+      expect(sync.allDiffering, [ContactSyncChoice.useGoogle]);
+
+      // Leaving them as they are replaces nothing, and is not asked again.
+      await tester.tap(find.text('Leave all as they are'));
+      await tester.pumpAndSettle();
+      expect(button('contact-sync-all-sure'), findsNothing);
+      expect(sync.allDiffering, [
+        ContactSyncChoice.useGoogle,
+        ContactSyncChoice.leaveAsTheyAre,
+      ]);
+    });
+
     testWidgets('Recently deleted, with Restore', (tester) async {
       sync = FakeContactSync(status: synced(deleted: [
         ContactSyncDeleted(
