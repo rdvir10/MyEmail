@@ -70,7 +70,11 @@ class GoogleContact {
   /// Its `people/c…` name.
   final String resourceName;
 
-  /// The Person's etag, sent back with an update.
+  /// Its version: the etag of the contact's own source
+  /// ([googleContactEtag]), which `updateContact` checks and which every
+  /// stored Gmail version is. Not the Person's top-level etag, which is
+  /// the HTTP entity tag of one answer and changes with the fields asked
+  /// for. Null when the read carried no contact source.
   final String? etag;
 
   /// The contact source's `updateTime`: when it was last changed.
@@ -93,12 +97,10 @@ class GoogleContact {
 
   factory GoogleContact.fromPerson(Map<String, Object?> person) {
     final metadata = _map(person['metadata']);
-    final source = _list(metadata['sources'])
-        .map(_map)
-        .firstWhereOrNull((s) => s['type'] == 'CONTACT');
+    final source = _contactSource(person);
     return GoogleContact(
       resourceName: _string(person['resourceName']) ?? '',
-      etag: _string(person['etag']),
+      etag: _string(source?['etag']),
       updatedAt: DateTime.tryParse(_string(source?['updateTime']) ?? ''),
       tag: googleTag(person),
       deleted: metadata['deleted'] == true,
@@ -179,6 +181,21 @@ final graphSyncedProperties = [
   'displayName',
   for (final f in ContactField.values) ...graphProperties(f),
 ];
+
+/// A Person's version: the etag of its contact source
+/// (`metadata.sources[]` of type CONTACT). `updateContact` compares it
+/// with the contact's own and answers 400 failedPrecondition when they
+/// differ; it is what [GoogleContact.etag], the rows, a write's
+/// `version` and a delete's `expectedVersion` hold, so the full read
+/// before a delete is compared with the listing on the same terms. Null
+/// when the Person carries no contact source.
+String? googleContactEtag(Map<String, Object?> person) =>
+    _string(_contactSource(person)?['etag']);
+
+Map<String, Object?>? _contactSource(Map<String, Object?> person) =>
+    _list(_map(person['metadata'])['sources'])
+        .map(_map)
+        .firstWhereOrNull((s) => s['type'] == 'CONTACT');
 
 /// The hidden tag in a Person's `clientData`, if it has one.
 String? googleTag(Map<String, Object?> person) => _contactEntries(
@@ -502,8 +519,12 @@ ContactListMerge mergeContactList(
 // ---------------------------------------------------------------------------
 // Writing into Gmail.
 
-/// An update to send with `people.updateContact`: the full rebuilt Person
-/// (its etag as read) and the fields to name in `updatePersonFields`.
+/// An update to send with `people.updateContact`: the body, and the
+/// fields to name in `updatePersonFields`. The body holds the Person's
+/// `resourceName`, `metadata.sources` with only its contact source as
+/// read (`type`, `id`, `etag`: the version `updateContact` checks), and
+/// each Person field in [updatePersonFields], rebuilt; nothing else, not
+/// the top-level etag.
 @immutable
 class GooglePersonUpdate {
   const GooglePersonUpdate(this.person, this.updatePersonFields);
@@ -539,10 +560,11 @@ String googlePersonField(ContactField field) => switch (field) {
   ContactField.im => 'imClients',
 };
 
-/// [person] (as last read) with [fields] set to [target]'s values, and the
-/// Person fields that names. Each field is rebuilt from the full current
-/// list with only the matched entries changed: types, labels and every
-/// value Outlook cannot hold are kept.
+/// The update setting [fields] of [person] (as last read) to [target]'s
+/// values (the body is set out at [GooglePersonUpdate]), and the Person
+/// fields that names. Each field is rebuilt from the full current list
+/// with only the matched entries changed: types, labels and every value
+/// Outlook cannot hold are kept.
 ///
 /// [replaced] says, per list, which value took which value's place in an
 /// Outlook slot (old raw value to new): that Gmail entry is changed in
@@ -557,8 +579,8 @@ String googlePersonField(ContactField field) => switch (field) {
 /// [seen] is Gmail's side as the plan read it. A list value in [person]
 /// that the plan never saw (neither there nor in [target]) was added
 /// since, and is kept: only values the plan saw are ever removed. The
-/// runner refuses a Person whose etag moved anyway (see
-/// `ContactWrite.googleUpdate`); this is the second line.
+/// runner refuses a Person whose version ([googleContactEtag]) moved
+/// anyway (see `ContactWrite.googleUpdate`); this is the second line.
 GooglePersonUpdate googlePersonUpdate(
   Map<String, Object?> person,
   SyncedContact target,
@@ -570,7 +592,22 @@ GooglePersonUpdate googlePersonUpdate(
   final norm = normaliser;
   final wanted = fields.toSet();
   final personFields = wanted.map(googlePersonField).toSet();
-  final rebuilt = <String, Object?>{...person};
+  // Google checks the contact source's etag, so the body carries that
+  // source as read; fields not named are not sent, since they are not
+  // written anyway.
+  final source = _contactSource(person);
+  final rebuilt = <String, Object?>{
+    'resourceName': ?person['resourceName'],
+    if (source != null)
+      'metadata': {
+        'sources': [
+          {
+            for (final key in const ['type', 'id', 'etag'])
+              if (source[key] != null) key: source[key],
+          },
+        ],
+      },
+  };
   for (final personField in personFields) {
     var entries = _contactEntries(
       person,

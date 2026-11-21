@@ -50,7 +50,12 @@ void main() {
       'metadata': {
         'sources': [
           {'type': 'PROFILE', 'updateTime': '2026-01-01T00:00:00Z'},
-          {'type': 'CONTACT', 'updateTime': '2026-11-02T10:00:00.5Z'},
+          {
+            'type': 'CONTACT',
+            'id': 'c1',
+            'etag': '#src1',
+            'updateTime': '2026-11-02T10:00:00.5Z',
+          },
         ],
         'previousResourceNames': ['people/c0'],
       },
@@ -146,7 +151,8 @@ void main() {
     test('takes only the contact\'s own entries, and each detail', () {
       final g = GoogleContact.fromPerson(person);
       expect(g.resourceName, 'people/c1');
-      expect(g.etag, '%EgUBAgMEBQ==');
+      expect(g.etag, '#src1', reason: 'the contact source, not the Person');
+      expect(googleContactEtag(person), '#src1');
       expect(g.updatedAt, DateTime.utc(2026, 11, 2, 10, 0, 0, 500));
       expect(g.tag, 'AAMkGraphId=');
       expect(g.previousNames, ['people/c0']);
@@ -448,7 +454,13 @@ void main() {
       'etag': 'etag-1',
       'metadata': {
         'sources': [
-          {'type': 'CONTACT', 'etag': 'src-etag'},
+          {
+            'type': 'CONTACT',
+            'id': 'c1',
+            'etag': 'src-etag',
+            'updateTime': '2026-11-02T10:00:00Z',
+          },
+          {'type': 'PROFILE', 'id': 'p1', 'etag': 'profile-etag'},
         ],
       },
       'names': [
@@ -530,8 +542,18 @@ void main() {
       ]);
       final update = rebuild(person, target, {ContactField.emails});
       expect(update.updatePersonFields, ['emailAddresses']);
-      expect(update.person['etag'], 'etag-1');
-      expect(update.person['names'], person['names'], reason: 'untouched');
+      // The contact source and its etag, the named field, nothing else.
+      expect(update.person.keys, {
+        'resourceName',
+        'metadata',
+        'emailAddresses',
+      });
+      expect(update.person['resourceName'], 'people/c1');
+      expect(update.person['metadata'], {
+        'sources': [
+          {'type': 'CONTACT', 'id': 'c1', 'etag': 'src-etag'},
+        ],
+      });
       final emails = update.person['emailAddresses'] as List;
       expect(emails, hasLength(5));
       expect((emails[1] as Map)['formattedType'], 'Lab', reason: 'label kept');

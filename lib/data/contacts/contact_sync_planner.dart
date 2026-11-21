@@ -102,8 +102,11 @@ class ContactLinkInput {
   /// The Outlook contact's immutable id, where the row has one.
   final String? graphId;
 
-  /// Each side's etag or `changeKey` as it was when the contact was last
-  /// synced: written by the sync, or a change of it taken in.
+  /// Each side's version as it was when the contact was last synced:
+  /// written by the sync, or a change of it taken in. For Gmail the etag
+  /// of the contact source ([googleContactEtag] of the Person, as
+  /// [GoogleContact.etag] holds it; never the Person's top-level etag),
+  /// for Outlook the `changeKey`.
   final String? googleEtag;
   final String? graphChangeKey;
 
@@ -387,24 +390,27 @@ class ContactWrite {
   /// Gmail list values Outlook replaced in a slot: see [googlePersonUpdate].
   final Map<ContactField, Map<String, String>> replaced;
 
-  /// The side's etag or `changeKey` the plan was made from: the listed
-  /// one, or the row's when the feed did not bring the contact. Null when
-  /// none is known, and then not checked.
+  /// The side's version the plan was made from (Gmail's contact source
+  /// etag, [GoogleContact.etag]; Outlook's `changeKey`): the listed one,
+  /// or the row's when the feed did not bring the contact. Null when none
+  /// is known, and then not checked.
   final String? version;
 
   /// The side's details the plan was made from.
   final SyncedContact? seen;
 
   /// The `updateContact` request, from the Person just read. Throws
-  /// [ContactReadStale] when its etag is not [version]: a Person changed
-  /// since the plan read it would otherwise be written over with Google's
-  /// blessing, its etag matching. List values the plan never saw survive
-  /// even so (see [googlePersonUpdate]).
+  /// [ContactReadStale] when its contact source's etag
+  /// ([googleContactEtag]) is not [version]: a Person changed since the
+  /// plan read it would otherwise be written over with Google's blessing,
+  /// that etag matching. The body carries that source and etag (see
+  /// [GooglePersonUpdate]). List values the plan never saw survive even so
+  /// (see [googlePersonUpdate]).
   GooglePersonUpdate googleUpdate(
     Map<String, Object?> person, {
     required ContactNormaliser normaliser,
   }) {
-    if (version != null && person['etag'] != version) {
+    if (version != null && googleContactEtag(person) != version) {
       throw ContactReadStale(side);
     }
     return googlePersonUpdate(
@@ -467,7 +473,9 @@ enum ContactDeleteCause {
 }
 
 /// A contact to delete. The runner reads it again in full first: if its
-/// etag or `changeKey` is no longer [expectedVersion], or it has left
+/// version is no longer [expectedVersion] (for Gmail [googleContactEtag]
+/// of that read, the contact source's etag, which does not change with
+/// the fields asked for; for Outlook its `changeKey`), or it has left
 /// Contacts, it is kept instead (see [ContactLinkPlan.keptInstead]).
 @immutable
 class ContactDelete {

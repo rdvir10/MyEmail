@@ -38,7 +38,14 @@ void main() {
     updatedAt: at,
     tag: tag,
     previousNames: previous,
-    person: {'resourceName': name, 'etag': etag ?? 'etag-$name'},
+    person: {
+      'resourceName': name,
+      'metadata': {
+        'sources': [
+          {'type': 'CONTACT', 'id': name, 'etag': etag ?? 'etag-$name'},
+        ],
+      },
+    },
   );
 
   GoogleContact gDeleted(String name) => GoogleContact(
@@ -726,9 +733,16 @@ void main() {
       );
       final write = byLink(plan, 1)!.googleWrite!;
       expect(write.version, 'etag-1');
+      // Read with other fields than the listing: the Person's own etag
+      // differs, the contact source's is the version.
       Map<String, Object?> person(String etag) => {
         'resourceName': 'people/c1',
-        'etag': etag,
+        'etag': '%person-etag-of-another-read',
+        'metadata': {
+          'sources': [
+            {'type': 'CONTACT', 'id': 'c1', 'etag': etag},
+          ],
+        },
         'emailAddresses': [
           {'value': 'ann@x.example'},
           {'value': 'e4@x'},
@@ -739,6 +753,12 @@ void main() {
         throwsA(isA<ContactReadStale>()),
       );
       final update = write.googleUpdate(person('etag-1'), normaliser: norm);
+      expect(update.person['metadata'], {
+        'sources': [
+          {'type': 'CONTACT', 'id': 'c1', 'etag': 'etag-1'},
+        ],
+      }, reason: 'the version updateContact checks');
+      expect(update.person.containsKey('etag'), isFalse);
       expect(
         (update.person['emailAddresses'] as List).map(
           (e) => (e as Map)['value'],
@@ -761,6 +781,42 @@ void main() {
         graph.graphPatch({'changeKey': 'key-1'}),
         contains('officeLocation'),
       );
+    });
+
+    test('Gmail\'s version is its contact source\'s etag, whatever was read',
+        () {
+      // The Person's own etag is the answer's entity tag, and differs
+      // between a listing and a full read; the contact source's does not.
+      Map<String, Object?> read(String personEtag) => {
+        'resourceName': 'people/c1',
+        'etag': personEtag,
+        'metadata': {
+          'sources': [
+            {'type': 'CONTACT', 'id': 'c1', 'etag': 'src-1'},
+          ],
+        },
+        'names': [
+          {'givenName': 'Ann', 'familyName': 'Cole'},
+        ],
+        'emailAddresses': [
+          {'value': 'ann@x.example'},
+        ],
+      };
+      final listed = GoogleContact.fromPerson(read('%listing'));
+      expect(listed.etag, 'src-1');
+      // Outlook's copy went: the Gmail contact, unchanged since the row
+      // was saved, is deleted rather than kept as changed.
+      final plan = run(
+        google: [listed],
+        graphGone: {'H1'},
+        links: [link(1, 'people/c1', 'H1', base: ann, etag: 'src-1')],
+      );
+      final delete = byLink(plan, 1)!.delete!;
+      expect(delete.side, ContactSide.google);
+      expect(delete.expectedVersion, 'src-1');
+      // The full read just before the delete has another Person etag but
+      // the same version.
+      expect(googleContactEtag(read('%full-read')), delete.expectedVersion);
     });
 
     test('a removed, sparse or empty Outlook entry is never read as cleared',
