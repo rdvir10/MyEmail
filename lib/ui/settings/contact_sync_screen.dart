@@ -147,21 +147,95 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       ),
     );
     if (picked == null || !mounted || picked.id == current?.id) return;
-    setState(() {
-      if (google) {
-        _pickedGoogle = picked.id;
-      } else {
-        _pickedGraph = picked.id;
-      }
-    });
     final g = google ? picked : other;
     final m = google ? other : picked;
-    if (g == null || m == null || !ref.read(contactSyncOnProvider)) return;
+    if (g == null || m == null) {
+      // The other account is still to be picked: nothing can be chosen
+      // yet, and nothing is replaced, since there is no pair.
+      setState(() => _hold(picked, google: google));
+      return;
+    }
+    // A pair whose first sync has started is replaced only when Ron says
+    // so: it stops syncing, and what it holds is set aside with it.
+    final sync = _sync;
+    final status = await sync.status();
+    if (!mounted) return;
+    final (runnerGoogle, runnerGraph) = _runnerPair(
+      ref.read(accountsProvider).value ?? const <Account>[],
+      status,
+    );
+    if (runnerGoogle != null &&
+        runnerGraph != null &&
+        status.firstStarted &&
+        !await _sureToReplace(
+          from: (runnerGoogle, runnerGraph),
+          to: (g, m),
+        )) {
+      return;
+    }
+    // Taken up only once the runner has it: a pick it refuses (a run
+    // going, an account that cannot sync) leaves the screen on the pair
+    // it has, with its questions and its answers.
     try {
-      await _choose(g, m);
+      await sync.choose(googleAccountId: g.id, graphAccountId: m.id);
+      if (mounted) {
+        setState(() {
+          _pickedGoogle = null;
+          _pickedGraph = null;
+        });
+      }
     } catch (e) {
       if (mounted) _sayFailure(context, e);
     }
+  }
+
+  void _hold(Account picked, {required bool google}) {
+    if (google) {
+      _pickedGoogle = picked.id;
+    } else {
+      _pickedGraph = picked.id;
+    }
+  }
+
+  /// Whether Ron wants pair [from], whose first sync has started, replaced
+  /// by [to].
+  Future<bool> _sureToReplace({
+    required (Account, Account) from,
+    required (Account, Account) to,
+  }) async {
+    final (_, oldGraph) = from;
+    final (newGoogle, newGraph) = to;
+    final oldName = contactSyncAccountName(oldGraph);
+    final sameGraph = newGraph.id == oldGraph.id;
+    final sure = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        key: const ValueKey('contact-sync-replace'),
+        title: Text(
+          sameGraph
+              ? 'Sync ${newGoogle.emailAddress} with $oldName instead?'
+              : 'Sync Gmail with ${contactSyncAccountName(newGraph)} '
+                  'instead?',
+        ),
+        content: Text(
+          'Gmail and $oldName stop syncing. Their Needs a look and Recently '
+          'deleted are set aside, and come back if you choose them again; '
+          'no contact is deleted. The new pair starts with a first sync of '
+          'its own.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Switch accounts'),
+          ),
+        ],
+      ),
+    );
+    return sure ?? false;
   }
 
   /// A sign-in that asks for the contacts beside the mail, as View's

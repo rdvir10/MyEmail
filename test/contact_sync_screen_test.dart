@@ -1102,8 +1102,92 @@ void main() {
       await tester.tap(find.text('Myhomestudio'));
       await tester.pumpAndSettle();
 
+      expect(button('contact-sync-replace'), findsNothing,
+          reason: 'its first sync has not started: nothing to set aside');
       expect(sync.chosen.last, (google: 'acct-g', graph: 'acct-m'));
       expect(button('contact-sync-access:acct-m'), findsOneWidget);
+    });
+
+    testWidgets('replacing a pair whose first sync has started asks first',
+        (tester) async {
+      engine = _Engine(sync, const [gmail, hadco, studio]);
+      await pumpScreen(tester);
+
+      Future<void> pickStudio() async {
+        await tester.tap(button('contact-sync-with'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Myhomestudio'));
+        await tester.pumpAndSettle();
+      }
+
+      await pickStudio();
+      expect(find.text('Sync Gmail with Myhomestudio instead?'),
+          findsOneWidget);
+      expect(
+        find.text('Gmail and Hadco stop syncing. Their Needs a look and '
+            'Recently deleted are set aside, and come back if you choose '
+            'them again; no contact is deleted. The new pair starts with a '
+            'first sync of its own.'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(sync.chosen, isEmpty);
+      expect(
+        find.descendant(
+          of: button('contact-sync-with'),
+          matching: find.text('Hadco'),
+        ),
+        findsOneWidget,
+      );
+
+      await pickStudio();
+      await tester.tap(find.text('Switch accounts'));
+      await tester.pumpAndSettle();
+      expect(sync.chosen, [(google: 'acct-g', graph: 'acct-m')]);
+    });
+
+    testWidgets('a pick the runner refuses leaves the pair it has',
+        (tester) async {
+      sync = FakeContactSync(status: synced(
+        running: const ContactSyncProgress(
+          step: ContactSyncStep.writing,
+          done: 1,
+          total: 4,
+        ),
+        questions: const [
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.deletions,
+            items: [
+              ContactSyncQuestionItem(title: 'Ann', side: ContactSide.google),
+            ],
+          ),
+        ],
+      ))
+        ..chooseFailure = const ContactSyncRefused('Contact sync is running.');
+      engine = _Engine(sync, const [gmail, hadco, studio]);
+      await pumpScreen(tester);
+
+      await tester.tap(button('contact-sync-with'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Myhomestudio'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Switch accounts'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(sync.count('choose'), 1);
+      expect(find.text('Contact sync is running.'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: button('contact-sync-with'),
+          matching: find.text('Hadco'),
+        ),
+        findsOneWidget,
+      );
+      expect(button('contact-sync-access:acct-m'), findsNothing);
+      expect(find.text('Delete them'), findsOneWidget);
+      expect(find.text('First sync'), findsNothing);
     });
 
     testWidgets('fits at the largest text on a phone, every part of it',

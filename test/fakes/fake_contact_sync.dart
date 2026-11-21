@@ -26,6 +26,10 @@ class FakeContactSync implements ContactSyncService {
 
   ContactSyncPreview previewAnswer;
   Object? previewFailure;
+
+  /// What [choose] throws, as the runner refuses a pair while a run is
+  /// going or for an account that cannot sync.
+  Object? chooseFailure;
   List<ContactSyncBackupFile> backupFiles;
 
   /// The clock [startIfDue] judges by.
@@ -75,6 +79,7 @@ class FakeContactSync implements ContactSyncService {
     required String graphAccountId,
   }) async {
     calls.add('choose');
+    if (chooseFailure case final failure?) throw failure;
     chosen.add((google: googleAccountId, graph: graphAccountId));
     set(copy(current, google: googleAccountId, graph: graphAccountId));
   }
