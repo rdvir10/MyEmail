@@ -249,6 +249,153 @@ class PendingChanges extends Table {
   IntColumn get failedAt => integer().nullable()();
 }
 
+/// Contact sync's pairs of address books: a Gmail account's contacts with a
+/// Microsoft account's, where each side's feed has got to, and how the last
+/// run went. One row per pair; see `ContactSyncStore`. Here, beside the
+/// cache, because the database is the one place on the device that a
+/// restart and an update both keep. Added in schema 21, as are the four
+/// tables after it.
+@DataClassName('ContactPairRow')
+class ContactPairs extends Table {
+  IntColumn get pairId => integer().autoIncrement()();
+  TextColumn get googleAccountId => text()();
+
+  /// Lower-cased. A removed account that is added again gets a new id but
+  /// keeps its address, which is how its pair is found again.
+  TextColumn get googleAddress => text()();
+  TextColumn get graphAccountId => text()();
+  TextColumn get graphAddress => text()();
+
+  /// The id of the mailbox's main Contacts folder, once known.
+  TextColumn get graphFolderId => text().nullable()();
+
+  /// The region phone numbers without a country code are read in.
+  TextColumn get phoneRegion => text().nullable()();
+  TextColumn get googleSyncToken => text().nullable()();
+
+  /// The version of the field mask [googleSyncToken] was taken with.
+  IntColumn get googleMask => integer().nullable()();
+
+  /// When Google was last listed in full, in milliseconds since the
+  /// epoch, as are the other times here.
+  IntColumn get googleFullAt => integer().nullable()();
+  TextColumn get graphDeltaLink => text().nullable()();
+  IntColumn get graphMask => integer().nullable()();
+  IntColumn get normaliser => integer().nullable()();
+  IntColumn get googleCount => integer().nullable()();
+  IntColumn get graphCount => integer().nullable()();
+  IntColumn get firstStartedAt => integer().nullable()();
+  IntColumn get firstDoneAt => integer().nullable()();
+  IntColumn get lastAttemptAt => integer().nullable()();
+  IntColumn get lastDoneAt => integer().nullable()();
+
+  /// JSON in the runner's own form: the last run's counts, or the kind of
+  /// error that stopped it.
+  TextColumn get lastResult => text().nullable()();
+
+  /// JSON: the open questions the brakes asked, each contact in them as
+  /// `ContactBrakeItem.toJson` writes it.
+  TextColumn get held => text().nullable()();
+
+  /// When one of the two accounts was removed; null while both are here.
+  IntColumn get detachedAt => integer().nullable()();
+}
+
+/// Each contact contact sync has decided about, paired or held, with each
+/// side's id, version and synced details. See `ContactLink`.
+@DataClassName('ContactLinkRow')
+class ContactLinks extends Table {
+  IntColumn get linkId => integer().autoIncrement()();
+  IntColumn get pairId => integer()();
+  TextColumn get googleName => text().nullable()();
+  TextColumn get graphId => text().nullable()();
+  TextColumn get googleEtag => text().nullable()();
+  TextColumn get graphChangeKey => text().nullable()();
+
+  /// Each side's synced details as its server last returned them, in
+  /// `SyncedContact.toJson`'s form.
+  TextColumn get googleBase => text().nullable()();
+  TextColumn get graphBase => text().nullable()();
+
+  /// `ContactLinkState`'s name, and for a held one `ContactHeldReason`'s
+  /// code.
+  TextColumn get state => text()();
+  TextColumn get reason => text().nullable()();
+  IntColumn get googleWrittenAt => integer().nullable()();
+  IntColumn get updatedAt => integer()();
+
+  /// For a link held with one id after its partner went: that partner's
+  /// id and synced details (`SyncedContact.toJson`), for the bin should
+  /// the held contact be deleted after all. Not indexed: not a contact
+  /// the link names.
+  TextColumn get partnerId => text().nullable()();
+  TextColumn get partnerBase => text().nullable()();
+}
+
+/// The creates contact sync has sent and not yet saved a row for. See
+/// `ContactSyncOp`.
+@DataClassName('ContactSyncOpRow')
+class ContactSyncOps extends Table {
+  IntColumn get opId => integer().autoIncrement()();
+  IntColumn get pairId => integer()();
+
+  /// `ContactSide`'s name: the side the contact is created on.
+  TextColumn get side => text()();
+  TextColumn get sourceKey => text()();
+  TextColumn get tag => text()();
+  IntColumn get startedAt => integer()();
+}
+
+/// What contact sync has listed under Needs a look, and Ron's answers,
+/// queued for the next run. See `ContactReview`.
+@DataClassName('ContactReviewRow')
+class ContactReviews extends Table {
+  IntColumn get reviewId => integer().autoIncrement()();
+  IntColumn get pairId => integer()();
+  TextColumn get kind => text()();
+  TextColumn get googleName => text().nullable()();
+  TextColumn get graphId => text().nullable()();
+
+  /// JSON: what the screen shows, as `ContactReviewItem.toJson` writes it.
+  TextColumn get data => text()();
+  IntColumn get createdAt => integer()();
+
+  /// JSON in the runner's own form, naming contacts under `googleName` and
+  /// `graphId`.
+  TextColumn get answer => text().nullable()();
+  IntColumn get answeredAt => integer().nullable()();
+}
+
+/// Contacts contact sync deleted, each as read just before, for Recently
+/// deleted and Restore. See `ContactBinEntry`.
+@DataClassName('ContactBinRow')
+class ContactBin extends Table {
+  IntColumn get binId => integer().autoIncrement()();
+  IntColumn get pairId => integer()();
+
+  /// `ContactSide`'s name: the side it was deleted from.
+  TextColumn get side => text()();
+  TextColumn get contactId => text()();
+
+  /// Its partner's id on the other side, whose deletion it followed.
+  TextColumn get partnerId => text().nullable()();
+
+  /// `ContactBinState`'s name.
+  TextColumn get state => text()();
+  IntColumn get deletedAt => integer()();
+
+  /// The contact in full as its server returned it: a Person or a Graph
+  /// contact.
+  TextColumn get raw => text()();
+
+  /// The partner's synced details, in `SyncedContact.toJson`'s form.
+  TextColumn get partnerBase => text().nullable()();
+  TextColumn get title => text()();
+
+  /// Restore asked for, to be done in the next run.
+  BoolColumn get restore => boolean().withDefault(const Constant(false))();
+}
+
 @DriftDatabase(tables: [
   FolderStates,
   Messages,
@@ -258,6 +405,11 @@ class PendingChanges extends Table {
   CalendarReads,
   CalendarLists,
   PendingChanges,
+  ContactPairs,
+  ContactLinks,
+  ContactSyncOps,
+  ContactReviews,
+  ContactBin,
 ])
 class MailDatabase extends _$MailDatabase {
   MailDatabase(super.executor);
@@ -325,8 +477,56 @@ class MailDatabase extends _$MailDatabase {
             '(account_id, path, COALESCE(arrived, date), uid)',
       );
 
+  /// One link per Google contact in a pair, which finds it by its name.
+  /// Partial, so that a held row with no Google side is not a clash.
+  Index get contactLinksByGoogle => Index(
+        'contact_links_by_google',
+        'CREATE UNIQUE INDEX IF NOT EXISTS contact_links_by_google '
+            'ON contact_links (pair_id, google_name) '
+            'WHERE google_name IS NOT NULL',
+      );
+
+  /// One link per Microsoft contact in a pair, as [contactLinksByGoogle].
+  Index get contactLinksByGraph => Index(
+        'contact_links_by_graph',
+        'CREATE UNIQUE INDEX IF NOT EXISTS contact_links_by_graph '
+            'ON contact_links (pair_id, graph_id) WHERE graph_id IS NOT NULL',
+      );
+
+  /// One create in flight per contact copied: a create sent again after
+  /// the first was given up replaces it.
+  Index get contactOpsBySource => Index(
+        'contact_sync_ops_by_source',
+        'CREATE UNIQUE INDEX IF NOT EXISTS contact_sync_ops_by_source '
+            'ON contact_sync_ops (pair_id, side, source_key)',
+      );
+
+  /// A pair's Needs a look, read for the screen and by each run.
+  Index get contactReviewsByPair => Index(
+        'contact_reviews_by_pair',
+        'CREATE INDEX IF NOT EXISTS contact_reviews_by_pair '
+            'ON contact_reviews (pair_id)',
+      );
+
+  /// One bin row per side and contact in a pair.
+  Index get contactBinOnePerContact => Index(
+        'contact_bin_one_per_contact',
+        'CREATE UNIQUE INDEX IF NOT EXISTS contact_bin_one_per_contact '
+            'ON contact_bin (pair_id, side, contact_id)',
+      );
+
+  /// What schema 21 made beside its tables, for [migration] to make both
+  /// on a new database and on the way up.
+  List<Index> get _contactSyncIndexes => [
+        contactLinksByGoogle,
+        contactLinksByGraph,
+        contactOpsBySource,
+        contactReviewsByPair,
+        contactBinOnePerContact,
+      ];
+
   @override
-  int get schemaVersion => 20;
+  int get schemaVersion => 21;
 
   /// Adding a column must not cost the user their cache.
   ///
@@ -342,6 +542,9 @@ class MailDatabase extends _$MailDatabase {
           await m.createIndex(graphIdByRemote);
           await m.createIndex(graphIdOnePerRemote);
           await m.createIndex(messagesByArrival);
+          for (final index in _contactSyncIndexes) {
+            await m.createIndex(index);
+          }
         },
         onUpgrade: (m, from, to) async {
           // All of it or none, and one connection at a time.
@@ -537,6 +740,18 @@ class MailDatabase extends _$MailDatabase {
       await m.createTable(pendingChanges);
     }
     if (from < 20) await _rereadHebrew();
+    if (from < 21) {
+      // Contact sync's records. Empty until it is first switched on, and
+      // nothing else in the database changes.
+      await m.createTable(contactPairs);
+      await m.createTable(contactLinks);
+      await m.createTable(contactSyncOps);
+      await m.createTable(contactReviews);
+      await m.createTable(contactBin);
+      for (final index in _contactSyncIndexes) {
+        await m.createIndex(index);
+      }
+    }
   }
 
   /// Gmail mail in windows-1255 or iso-8859-8-i, read as UTF-8 until

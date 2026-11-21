@@ -326,7 +326,17 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
 /// to drive.
 abstract class BackupFiles {
   /// Returns false if the person backed out of the save dialog.
-  Future<bool> save({required String fileName, required String contents});
+  ///
+  /// [mimeType] is what the file is saved as. Android names a saved file
+  /// by its type, so a vCard saved as JSON would end in `.json`; the
+  /// settings file is JSON, and contact sync's backup is a vCard file and
+  /// a CSV (see `ContactBackup`). [dialogTitle] heads the save dialog.
+  Future<bool> save({
+    required String fileName,
+    required String contents,
+    String mimeType = 'application/json',
+    String dialogTitle = 'Save MyEmail settings',
+  });
 
   /// Null if they backed out of the open dialog.
   Future<String?> pick();
@@ -339,12 +349,14 @@ class PlatformBackupFiles implements BackupFiles {
   Future<bool> save({
     required String fileName,
     required String contents,
+    String mimeType = 'application/json',
+    String dialogTitle = 'Save MyEmail settings',
   }) async {
     final uri = await FilePicker.saveFile(
       fileName: fileName,
       bytes: Uint8List.fromList(utf8.encode(contents)),
-      mimeType: 'application/json',
-      dialogTitle: 'Save MyEmail settings',
+      mimeType: mimeType,
+      dialogTitle: dialogTitle,
     );
     return uri != null;
   }

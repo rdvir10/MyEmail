@@ -15,6 +15,8 @@ import 'package:myemail/domain/meeting_link.dart';
 import 'package:myemail/domain/settings_backup.dart';
 import 'package:myemail/state/backup_providers.dart';
 import 'package:myemail/state/compose_providers.dart' show signaturesProvider;
+import 'package:myemail/state/contact_providers.dart'
+    show contactSyncOnProvider;
 import 'package:myemail/state/meeting_providers.dart'
     show PreparedMeetingLedger;
 import 'package:myemail/state/providers.dart';
@@ -145,6 +147,63 @@ void main() {
 
       expect(entries.containsKey(UiStateKeys.selected), isFalse);
       expect(entries.containsKey(UiStateKeys.recentMoves), isFalse);
+    });
+
+    test("contact sync's switch and this device's id are left out",
+        () async {
+      // Each device keeps its own record of what it paired and deleted,
+      // so only one may sync. A switch carried to a new device would start
+      // a second there, working against the first; an id carried with it
+      // would let each take the other's claim for its own.
+      await uiState.writeString(UiStateKeys.contactSyncDevice, 'on');
+      await uiState.writeString(UiStateKeys.contactSyncDeviceId, 'dev-1');
+      final creds = MemoryCredentialStore();
+      final sealing = BackupService(
+        accountStore: accounts,
+        uiState: uiState,
+        credentialStore: creds,
+      );
+
+      for (final backup in [
+        await service.export(),
+        await sealing.export(passphrase: 'correct horse'),
+      ]) {
+        final file = backup.toJsonString();
+        expect(file, isNot(contains(UiStateKeys.contactSyncDevice)));
+        expect(file, isNot(contains(UiStateKeys.contactSyncDeviceId)));
+        expect(file, isNot(contains('dev-1')));
+      }
+      expect(BackupService.exported.keys, isNot(contains(
+          UiStateKeys.contactSyncDevice)));
+
+      // Nor does a file that carries them, which no build writes, switch
+      // it on.
+      final to = MemoryUiStateStore();
+      await BackupService(accountStore: MemoryAccountStore(), uiState: to)
+          .import(SettingsBackup(accounts: const [], entries: const {
+        UiStateKeys.contactSyncDevice: 'on',
+        UiStateKeys.contactSyncDeviceId: 'dev-1',
+      }));
+      expect(to.readString(UiStateKeys.contactSyncDevice), isNull);
+      expect(to.readString(UiStateKeys.contactSyncDeviceId), isNull);
+    });
+
+    test('contact sync switched on in Settings is not in a backup', () async {
+      // The switch as the Contact sync screen turns it on, not a value
+      // written by hand: it must be kept under the one key Backup leaves
+      // out, or a restore would start a second syncing device.
+      final c = ProviderContainer(
+        overrides: [uiStateStoreProvider.overrideWithValue(uiState)],
+      );
+      addTearDown(c.dispose);
+      await c.read(contactSyncOnProvider.notifier).set(true);
+      expect(c.read(contactSyncOnProvider), isTrue);
+      expect(uiState.readString(UiStateKeys.contactSyncDevice), 'on',
+          reason: 'kept on this device');
+
+      final file = (await service.export()).toJsonString();
+      expect(file, isNot(contains(UiStateKeys.contactSyncDevice)));
+      expect(file, isNot(contains('contactsync')));
     });
 
     test('meetings made ahead of Send are left out', () async {
@@ -643,6 +702,8 @@ void main() {
 
       expect(files.saved, isNotNull);
       expect(files.savedName, endsWith('.json'));
+      expect(files.savedType, 'application/json',
+          reason: 'Android names a saved file by its type');
       expect(find.textContaining('2 accounts'), findsOneWidget);
     });
 
@@ -1332,16 +1393,22 @@ class _FakeBackupFiles implements BackupFiles {
   final bool accept;
   String? saved;
   String? savedName;
+  String? savedType;
+  String? savedTitle;
   String? toPick;
 
   @override
   Future<bool> save({
     required String fileName,
     required String contents,
+    String mimeType = 'application/json',
+    String dialogTitle = 'Save MyEmail settings',
   }) async {
     if (!accept) return false;
     saved = contents;
     savedName = fileName;
+    savedType = mimeType;
+    savedTitle = dialogTitle;
     return true;
   }
 

@@ -66,6 +66,7 @@ dependencies:
   cryptography: ^2.9.0
   home_widget: ^0.10.0
   webview_flutter_android: ^4.14.1
+  phone_numbers_parser: ^9.0.29
 
 dev_dependencies:
   flutter_test:

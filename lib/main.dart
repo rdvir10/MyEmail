@@ -26,6 +26,8 @@ import 'data/updates/update_service.dart';
 import 'data/ui_state_store.dart';
 import 'domain/sender_blocks.dart';
 import 'data/widget/home_screen_surface.dart';
+import 'data/contacts/contact_sync.dart';
+import 'data/contacts/contact_sync_store.dart';
 import 'data/contacts/device_contacts.dart';
 import 'data/files/attachment_files.dart';
 import 'data/files/draft_files.dart';
@@ -88,6 +90,9 @@ Future<void> main() async {
   // preferences would each hold their own idea of the list.
   final database = MailDatabase.open();
   final accountStore = PrefsAccountStore(prefs);
+  // One for the app, as for the account store: contact sync's device id is
+  // read from it by the engine, and everything else by the providers.
+  final uiStateStore = PrefsUiStateStore(prefs);
   final credentialStore = SecureCredentialStore();
 
   // The browser preview has no WorkManager and no notification channel, so it
@@ -112,6 +117,11 @@ Future<void> main() async {
           // cache it exists to key, and two connections to one file would be
           // two views of the same rows.
           graphIdMap: DriftGraphIdMap(database),
+          // Contact sync's records, in the same file for the same reason:
+          // without it they would be forgotten at every restart.
+          contactSyncStore: DriftContactSyncStore(database),
+          // This device's own id, for the claim that says it syncs.
+          contactSyncDeviceId: () => ContactSync.deviceIdIn(uiStateStore),
           folderLists: PrefsFolderListStore(prefs),
           // Mail read, filed or deleted here takes its notification with it.
           onMessagesHandled: (handled) => unawaited(notifier.withdraw(handled)),
@@ -179,7 +189,7 @@ Future<void> main() async {
       // is on screen, and everything is read again when the app comes back.
       retry: (_, _) => null,
       overrides: [
-        uiStateStoreProvider.overrideWithValue(PrefsUiStateStore(prefs)),
+        uiStateStoreProvider.overrideWithValue(uiStateStore),
         accountStoreProvider.overrideWithValue(accountStore),
         credentialStoreProvider.overrideWithValue(credentialStore),
         mailEngineProvider.overrideWithValue(engine),

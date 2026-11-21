@@ -179,6 +179,9 @@ class _RefusingEngine implements MailEngine {
       _inner.passwordAge(accountId);
 
   @override
+  ContactSyncService get contactSync => _inner.contactSync;
+
+  @override
   Future<Uint8List> fetchAttachment(String messageId, String attachmentId) =>
       _inner.fetchAttachment(messageId, attachmentId);
 
