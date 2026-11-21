@@ -1114,8 +1114,9 @@ class ContactSyncPlan {
   /// Brake questions raised this run.
   final List<ContactBrake> brakes;
 
-  /// Gmail re-keys read this run, old name to new: every place that names
-  /// an old name (reviews, the journal, the bin) takes the new one.
+  /// Gmail re-keys read this run, each old name to the name the contact
+  /// has last (a chain of re-keys flattened): every place that names an
+  /// old name (reviews, the journal, the bin) takes the new one.
   final Map<String, String> reKeys;
 
   /// Outlook contacts whose hidden tag names a Gmail contact that was
@@ -1924,7 +1925,13 @@ class _Planner {
     );
     reKeys.addAll(input.googleReKeys);
     reKeys.addAll(previous);
-    reKeys.removeWhere((old, now) => old == now);
+    // Each old name straight to the last one: a chain (a to b from
+    // getBatchGet, b to c from the listing) applied entry by entry, in no
+    // set order, could leave a journal entry, review or bin row under b.
+    final last = {for (final old in reKeys.keys) old: _newName(old)};
+    reKeys
+      ..addAll(last)
+      ..removeWhere((old, now) => old == now);
   }
 
   bool _accepted(ContactSide side) => input.answers.any(

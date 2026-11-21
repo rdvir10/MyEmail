@@ -1511,6 +1511,17 @@ void main() {
       );
     });
 
+    test('a chain of re-keys maps each old name to the last', () {
+      // getBatchGet found a re-keyed to b; the listing says c was b.
+      final plan = run(
+        googleReKeys: {'people/a': 'people/b'},
+        google: [g('people/c', ann, previous: ['people/b'])],
+        links: [link(1, 'people/a', 'H1', base: ann)],
+      );
+      expect(plan.reKeys, {'people/a': 'people/c', 'people/b': 'people/c'});
+      expect(byLink(plan, 1)!.googleName, 'people/c');
+    });
+
     test('no tag is moved on an Outlook contact that loses its row', () {
       // c1 was re-keyed to c9, and its Outlook partner H1 is gone: c9 is
       // deleted, the row with it, and H1 has no tag left to move.
