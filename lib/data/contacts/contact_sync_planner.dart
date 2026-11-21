@@ -2519,9 +2519,17 @@ class _Planner {
         continue;
       }
       // A contact found back is used, held or not, unless it is paired
-      // with another.
-      String? usable(ContactSide s, ({String id, bool exact})? found) {
+      // with another, or was found only by an address and is not the same
+      // person: Bob Cole's left-out contact on Ann's family address would
+      // otherwise take her row and be filled with her details, and Ann
+      // never be made again.
+      String? usable(
+        ContactSide s,
+        ({String id, bool exact})? found,
+        SyncedContact deleted,
+      ) {
         if (found == null) return null;
+        if (!named(found, s, deleted)) return null;
         if (_status(s, found.id) == _Status.paired) return null;
         final row = _rowOf(s, found.id);
         if (row != null && row.googleName != null && row.graphId != null) {
@@ -2530,8 +2538,8 @@ class _Planner {
         return found.id;
       }
 
-      final hereId = usable(side, here);
-      final thereId = usable(other, there);
+      final hereId = usable(side, here, details);
+      final thereId = usable(other, there, partnerDetails);
       final g = side == ContactSide.google ? hereId : thereId;
       final h = side == ContactSide.graph ? hereId : thereId;
       final googleRowFound = g == null ? null : googleRow[g];

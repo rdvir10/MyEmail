@@ -2583,6 +2583,51 @@ void main() {
       expect(restore.graphDetails, cy);
     });
 
+    test('another\'s held contact on the address is not used', () {
+      // Ann and Bob Cole share fam@x. Bob is only in Gmail, left out.
+      // Restoring Ann's Outlook copy must make her Gmail copy again, not
+      // take Bob's contact and row and fill him with Ann.
+      final annFam = person(given: 'Ann', family: 'Cole', emails: ['fam@x']);
+      final bob = person(given: 'Bob', family: 'Cole', emails: ['fam@x']);
+      final plan = run(
+        google: [g('people/c5', bob)],
+        links: [
+          link(
+            5,
+            'people/c5',
+            null,
+            base: bob,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.leftOut,
+          ),
+        ],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: const {
+              'id': 'H9',
+              'givenName': 'Ann',
+              'surname': 'Cole',
+              'emailAddresses': [
+                {'address': 'fam@x'},
+              ],
+            },
+            partnerBase: annFam.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      final restore = plan.restores.single;
+      expect(restore.googleName, isNull);
+      expect(restore.linkId, isNull, reason: 'Bob keeps his row');
+      expect(restore.googleDetails, annFam, reason: 'Ann made again');
+      expect(restore.graphRaw, isNotNull);
+      expect(byLink(plan, 5), isNull, reason: 'Bob left as he was');
+    });
+
     test('a contact back but held is used, its row carried', () {
       final heldC9 = link(
         5,
