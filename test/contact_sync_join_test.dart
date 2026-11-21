@@ -94,8 +94,11 @@ void main() {
       expect(googleCreateBody(ann).containsKey('clientData'), isFalse);
 
       final old = await outlook.create(graphCreateBody(ann), tag: 'people/c1');
-      final whole =
-          (await outlook.get(old['id']! as String, whole: true, withTag: true))!;
+      final whole = (await outlook.get(
+        old['id']! as String,
+        whole: true,
+        withTag: true,
+      ))!;
       final back = await outlook.create(
         graphRestoreBody(whole),
         tag: 'people/c5',
@@ -332,6 +335,46 @@ void main() {
         'title of people/c1',
         'title of people/c2',
       ]);
+    });
+  });
+
+  group("the fake Graph's switch for empty properties", () {
+    test('an entry it leaves them out of is not read whole', () async {
+      // For the runner's tests: an entry Graph sends without a selected
+      // property is passed over by the planner, never read as cleared.
+      final id = graph.seed({
+        'givenName': 'Ann',
+        'surname': 'Lee',
+        'emailAddresses': [
+          {'address': 'ann@example.com', 'name': 'Ann Lee'},
+        ],
+      });
+      expect(GraphContact.fromJson((await outlook.get(id))!).readWhole, isTrue);
+
+      graph.leaveOutEmpty = true;
+      final got = (await outlook.get(id))!;
+      expect(got['givenName'], 'Ann');
+      expect(got.keys, isNot(contains('nickName')));
+      expect(got.keys, isNot(contains('homeAddress')));
+      expect(got.keys, isNot(contains('homePhones')));
+      final read = GraphContact.fromJson(got);
+      expect(read.readWhole, isFalse);
+      expect(
+        read.missing,
+        containsAll(['nickName', 'homeAddress', 'homePhones']),
+      );
+      expect(read.missing, isNot(contains('givenName')));
+
+      final delta = await outlook.delta(
+        folderId: FakeGraphContacts.mainFolderId,
+      );
+      expect(GraphContact.fromJson(delta.contacts.single).readWhole, isFalse);
+      final listed = await outlook.listAll();
+      expect(listed.single.keys, isNot(contains('nickName')));
+
+      final whole = (await outlook.get(id, whole: true))!;
+      expect(whole.keys, contains('nickName'),
+          reason: 'a read of every property is as before');
     });
   });
 }

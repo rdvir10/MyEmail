@@ -58,6 +58,13 @@ class FakeGraphContacts {
   /// the properties that changed (Graph promises at least those).
   bool sparseDelta = false;
 
+  /// An entry read with a `$select` (a listing, a delta, a GET by id)
+  /// leaves out each selected property that is empty: null, an empty list
+  /// or an empty address. Graph is not known to do this, and not known
+  /// not to: an entry it left a property out of is not read whole, and
+  /// the sync passes it over rather than read the property as cleared.
+  bool leaveOutEmpty = false;
+
   /// Every request answered 403, as Graph does for a token without
   /// Contacts.ReadWrite.
   bool consentMissing = false;
@@ -359,7 +366,7 @@ class FakeGraphContacts {
         for (final c in _contacts.values)
           if (c.folder == folder && (email == null || _hasEmail(c, email)))
             {
-              ..._json(c, select),
+              ..._json(c, select, leaveOutEmpty: leaveOutEmpty),
               if (expand != null) ..._expanded(c.properties, expand),
             },
       ];
@@ -406,7 +413,9 @@ class FakeGraphContacts {
     final items = <Map<String, Object?>>[];
     if (since < 0) {
       for (final c in _contacts.values) {
-        if (c.folder == folder) items.add(_json(c, select));
+        if (c.folder == folder) {
+          items.add(_json(c, select, leaveOutEmpty: leaveOutEmpty));
+        }
       }
     } else {
       final after = [
@@ -426,11 +435,11 @@ class FakeGraphContacts {
           final only = sparseDelta && wasHere ? _changedIn(mine, folder) : null;
           items.add(
             only == null
-                ? _json(c, select)
+                ? _json(c, select, leaveOutEmpty: leaveOutEmpty)
                 : _json(c, {
                     'id',
                     ...select == null ? only : only.intersection(select),
-                  }),
+                  }, leaveOutEmpty: leaveOutEmpty),
           );
         } else if (wasHere) {
           items.add({
@@ -458,7 +467,7 @@ class FakeGraphContacts {
     if (c == null) return _notFound();
     final expand = _expandOf(q);
     return _ok({
-      ..._json(c, _selectOf(q)),
+      ..._json(c, _selectOf(q), leaveOutEmpty: leaveOutEmpty),
       if (expand != null) ..._expanded(c.properties, expand),
     });
   }
@@ -805,8 +814,13 @@ class FakeGraphContacts {
   ];
 
   /// [c] as Graph answers with it: [select]'s properties (every v1.0
-  /// property for none), empty ones as Graph writes them.
-  static Map<String, Object?> _json(_Contact c, Set<String>? select) {
+  /// property for none), empty ones as Graph writes them, or, with
+  /// [leaveOutEmpty] and a [select], left out.
+  static Map<String, Object?> _json(
+    _Contact c,
+    Set<String>? select, {
+    bool leaveOutEmpty = false,
+  }) {
     Object? valueOf(String p) => switch (p) {
       'id' => c.id,
       'changeKey' => c.changeKey,
@@ -822,11 +836,14 @@ class FakeGraphContacts {
       },
       _ => c.fields[p],
     };
+    bool empty(Object? v) =>
+        v == null || (v is List && v.isEmpty) || (v is Map && v.isEmpty);
     return {
       '@odata.etag': 'W/"${c.changeKey}"',
       for (final p in _properties)
         if (select == null || select.contains(p) || p == 'id')
-          p: jsonDecode(jsonEncode(valueOf(p))),
+          if (!(leaveOutEmpty && select != null && empty(valueOf(p))))
+            p: jsonDecode(jsonEncode(valueOf(p))),
     };
   }
 
