@@ -769,7 +769,8 @@ abstract class ContactSyncStore {
   /// ([ContactPair.held]) and each review's data and queued answer. Two
   /// reviews of one kind that come to name the same contacts (two
   /// contacts Ron merged, each with an item) are folded into the older,
-  /// which keeps its answer, or takes the other's when it has none.
+  /// which takes the answer queued last among them (Ron's latest choice),
+  /// where any has one.
   ///
   /// The planner's own rows already take the new names, so a re-key after
   /// the plan's links are saved finds none left under [oldId] and moves
@@ -2187,8 +2188,9 @@ StateError _linkGone() =>
 /// [reviews], saved ones of one pair, oldest first, grouped where they
 /// name the same contacts under the same kind, as a re-key of two
 /// contacts Ron merged leaves them: for each group of more than one, its
-/// oldest, given the first answer queued among the others when it has
-/// none of its own, and the ids of the others, which go.
+/// oldest, given the answer queued last among the group (Ron's latest
+/// choice; the earlier review's on a tie), and the ids of the others,
+/// which go.
 List<({ContactReview kept, List<int> dropped})> _sameReviews(
   Iterable<ContactReview> reviews,
 ) {
@@ -2201,11 +2203,16 @@ List<({ContactReview kept, List<int> dropped})> _sameReviews(
     if (group.length < 2) continue;
     final oldest = group.first;
     final others = group.skip(1);
-    final answered = oldest.isAnswered
-        ? null
-        : others.firstWhereOrNull((r) => r.isAnswered);
+    ContactReview? answered;
+    for (final r in group) {
+      if (!r.isAnswered) continue;
+      final at = r.answeredAt;
+      final last = answered?.answeredAt;
+      final later = at != null && (last == null || at.isAfter(last));
+      if (answered == null || later) answered = r;
+    }
     folds.add((
-      kept: answered == null
+      kept: answered == null || identical(answered, oldest)
           ? oldest
           : ContactReview(
               reviewId: oldest.reviewId,
