@@ -1525,6 +1525,40 @@ void main() {
       expect(sync.restored, [7]);
     });
 
+    testWidgets('a contact left by a merge in Gmail names Hadco, where its '
+        'copy survives', (tester) async {
+      // The runner sets the item's side to Gmail, where the merge was; the
+      // buttons' "here" is the other side.
+      sync = FakeContactSync(status: synced(looks: const [
+        ContactSyncLook(
+          id: 3,
+          kind: ContactReviewKind.mergedInGoogle,
+          side: ContactSide.google,
+          title: 'Dana Levi',
+          choices: [
+            ContactSyncChoice.deleteHereToo,
+            ContactSyncChoice.keepOnlyHere,
+          ],
+        ),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (1)'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Merged in Gmail with another contact: delete it in Hadco '
+            'too, or keep it only there.'),
+        findsOneWidget,
+      );
+      expect(find.text('Keep it only in Hadco'), findsOneWidget);
+      await tester.tap(find.text('Delete it in Hadco too'));
+      await tester.pumpAndSettle();
+      expect(sync.lookAnswers, [
+        (id: 3, choice: ContactSyncChoice.deleteHereToo, candidateId: null),
+      ]);
+    });
+
     testWidgets('a Restore refused says why under the contact, and Restore '
         'is offered again', (tester) async {
       sync = FakeContactSync(status: synced(deleted: [
