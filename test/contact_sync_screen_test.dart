@@ -1904,6 +1904,14 @@ void main() {
         ],
         googleCount: 1340,
         graphCount: 1412,
+        duplicates: const [
+          ContactSyncDuplicates(
+            title: 'Alexandra Rosenblum-Katzenellenbogen',
+            googleCopies: 12,
+            graphCopies: 1,
+            googleSynced: true,
+          ),
+        ],
       ));
       engine = _Engine(sync, const [gmail, hadco]);
       tester.view.physicalSize = const Size(412, 915);
@@ -1936,14 +1944,44 @@ void main() {
       ]) {
         await tester.scrollUntilVisible(part, 300, scrollable: list);
       }
+      await tester.scrollUntilVisible(
+        find.text('Needs a look (1)'),
+        -300,
+        scrollable: list,
+      );
+      await tester.ensureVisible(find.text('Needs a look (1)'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Needs a look (1)'));
       await tester.pumpAndSettle();
       expect(find.text('Same person'), findsOneWidget);
       Navigator.of(tester.element(find.text('Same person'))).pop();
       await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Recently deleted (1)'),
+        300,
+        scrollable: list,
+      );
+      await tester.ensureVisible(find.text('Recently deleted (1)'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Recently deleted (1)'));
       await tester.pumpAndSettle();
       expect(find.text('Restore'), findsOneWidget);
+      Navigator.of(tester.element(find.text('Restore'))).pop();
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Duplicates to merge when you like (1)'),
+        -300,
+        scrollable: list,
+      );
+      await tester.ensureVisible(find.text('Duplicates to merge when you like (1)'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Duplicates to merge when you like (1)'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Alexandra Rosenblum-Katzenellenbogen: 12 in Gmail, 1 in '
+            'Hadco; one in Gmail is synced'),
+        findsOneWidget,
+      );
     });
   });
 
