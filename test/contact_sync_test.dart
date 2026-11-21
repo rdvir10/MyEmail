@@ -900,6 +900,44 @@ void main() {
       expect(await h.paired(), isEmpty);
     });
 
+    test("a held row's gone partner is kept while it is held, and cleared "
+        'when the plan clears it', () async {
+      final pairs = seedPairs(h, 6);
+      await h.firstSync();
+      for (final p in pairs) {
+        h.google.deleteFromGmail(p.google);
+      }
+      await h.later();
+      var rows = await h.links();
+      expect(rows.every((l) => l.reason == ContactHeldReason.deletionBrake),
+          isTrue);
+      expect(rows.every((l) => l.partnerId != null && l.partnerBase != null),
+          isTrue);
+
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.deletions,
+        ContactSyncChoice.dontDelete,
+      );
+      await h.sync.syncNow();
+      var status = await h.status();
+      final kept = status.needsALook;
+      expect(kept, hasLength(6));
+      // Keep it only here on one: held as left out, its partner gone.
+      await h.sync.answerLook(kept[0].id, ContactSyncChoice.keepOnlyHere);
+      // Copy it back on another: paired again, no partner kept.
+      await h.sync.answerLook(kept[1].id, ContactSyncChoice.copyBack);
+      await h.sync.syncNow();
+      rows = await h.links();
+      final leftOut = rows.where((l) => l.reason == ContactHeldReason.leftOut);
+      expect(leftOut, hasLength(1));
+      expect(leftOut.single.partnerId, isNull);
+      expect(leftOut.single.partnerBase, isNull);
+      final paired = rows.where((l) => l.isPaired);
+      expect(paired, hasLength(1));
+      expect(paired.single.partnerId, isNull);
+      expect(paired.single.partnerBase, isNull);
+    });
+
     test('more than ten contacts losing details are held; Copy them back '
         'puts the details back', () async {
       final pairs = seedPairs(h, 11, mobiles: true);
