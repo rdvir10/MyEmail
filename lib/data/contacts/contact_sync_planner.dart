@@ -2256,6 +2256,29 @@ class _Planner {
         );
         continue;
       }
+      // Found by an address, it is back when Ron made it again and the
+      // sync copied it: its match and the partner's are paired with each
+      // other, and each has the name of the one deleted on its side.
+      // Dropping the bin row drops the only copy, so a name that merely
+      // agrees (one side with no family name) is not enough: John Roe
+      // holding the Info Desk's address is not the Info Desk back.
+      bool named(
+        ({String id, bool exact}) found,
+        ContactSide s,
+        SyncedContact deleted,
+      ) =>
+          found.exact ||
+          _sameName(deleted.name, _detailsOf(s, found.id).name);
+      if (here != null &&
+          there != null &&
+          _pairedWith(side, here.id, there.id) &&
+          named(here, side, details) &&
+          named(there, other, partnerDetails)) {
+        restores.add(
+          ContactRestorePlan(binId: bin.binId, alreadyBack: true),
+        );
+        continue;
+      }
       // A contact found back is used, held or not, unless it is paired
       // with another.
       String? usable(ContactSide s, ({String id, bool exact})? found) {
@@ -2376,6 +2399,30 @@ class _Planner {
       }
     }
     return null;
+  }
+
+  /// Whether [id] on [side] and [partner] on the other side are paired
+  /// with each other: by their row, or by a pair made earlier this run.
+  bool _pairedWith(ContactSide side, String id, String partner) {
+    final g = side == ContactSide.google ? id : partner;
+    final h = side == ContactSide.google ? partner : id;
+    if (_status(ContactSide.google, g) != _Status.paired ||
+        _status(ContactSide.graph, h) != _Status.paired) {
+      return false;
+    }
+    final row = googleRow[g];
+    if (row != null &&
+        row.state == ContactLinkState.paired &&
+        row.graphId == h) {
+      return true;
+    }
+    return planned.any(
+      (p) =>
+          p.plan.state == ContactLinkState.paired &&
+          !p.plan.removeRow &&
+          p.plan.googleName == g &&
+          p.plan.graphId == h,
+    );
   }
 
   // ---- Rows.
@@ -3245,4 +3292,15 @@ class _Planner {
       ),
     );
   }
+}
+
+/// Two names of one person, more strictly than
+/// [ContactNormaliser.namesAgree]: the same family name on both, or, where
+/// either has none, the same full name. No name is no one's.
+bool _sameName(ContactName? a, ContactName? b) {
+  final fa = ContactNormaliser.textKey(a?.family);
+  final fb = ContactNormaliser.textKey(b?.family);
+  if (fa != null && fb != null) return fa == fb;
+  final full = ContactNormaliser.fullNameKey(a);
+  return full != null && full == ContactNormaliser.fullNameKey(b);
 }

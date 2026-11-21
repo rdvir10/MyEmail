@@ -2318,6 +2318,119 @@ void main() {
       expect(plan.restores.single.alreadyBack, isTrue);
       expect(plan.binAlreadyBack, [9]);
     });
+
+    test('made again by Ron and copied by the sync, it is Already back', () {
+      // The sync deleted Outlook H9 because Ron deleted Gmail c9. Ron then
+      // made Ann again as c9b, which the sync copied to H9b and paired.
+      // Restore on H9 must not make a second Ann on each side.
+      final plan = run(
+        google: [g('people/c9b', ann)],
+        graph: [h('H9b', ann, tag: 'people/c9b')],
+        links: [link(3, 'people/c9b', 'H9b', base: ann)],
+        googleGone: {'people/c9'},
+        graphGone: {'H9'},
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: const {
+              'id': 'H9',
+              'givenName': 'Ann',
+              'surname': 'Cole',
+              'emailAddresses': [
+                {'address': 'ann@x.example', 'name': 'Ann Cole'},
+              ],
+            },
+            partnerBase: ann.toJson(),
+            title: 'Ann Cole',
+            restore: true,
+          ),
+        ],
+      );
+      final restore = plan.restores.single;
+      expect(restore.alreadyBack, isTrue);
+      expect(restore.graphRaw, isNull);
+      expect(restore.googleDetails, isNull);
+      expect(plan.binAlreadyBack, [9]);
+      expect(plan.counts.restores, 0);
+      expect(plan.links.where((l) => l.create != null), isEmpty);
+
+      // Matches each paired with someone else are not it back.
+      final annOnly = person(given: 'Ann', family: 'Cole');
+      final apart = run(
+        google: [g('people/c9b', ann), g('people/c7', annOnly)],
+        graph: [h('H9b', ann), h('H7', annOnly)],
+        links: [
+          link(3, 'people/c9b', 'H7', base: ann),
+          link(4, 'people/c7', 'H9b', base: ann),
+        ],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: const {
+              'id': 'H9',
+              'givenName': 'Ann',
+              'surname': 'Cole',
+              'emailAddresses': [
+                {'address': 'ann@x.example'},
+              ],
+            },
+            partnerBase: ann.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      expect(apart.restores.single.alreadyBack, isFalse);
+      expect(apart.binAlreadyBack, isEmpty);
+
+      // Paired earlier in the same run, by Ron's Same person.
+      final answered = run(
+        google: [g('people/c9b', ann)],
+        graph: [h('H9b', ann)],
+        links: [
+          link(
+            3,
+            'people/c9b',
+            null,
+            base: ann,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.waiting,
+          ),
+        ],
+        answers: const [
+          ContactAnswer(
+            ContactAnswerKind.samePerson,
+            googleName: 'people/c9b',
+            graphId: 'H9b',
+          ),
+        ],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: const {
+              'id': 'H9',
+              'givenName': 'Ann',
+              'surname': 'Cole',
+              'emailAddresses': [
+                {'address': 'ann@x.example'},
+              ],
+            },
+            partnerBase: ann.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      expect(answered.answers, [ContactAnswerOutcome.applied]);
+      expect(answered.restores.single.alreadyBack, isTrue);
+    });
   });
 
   test('one pair compared directly, as the runner re-plans a moved one', () {
