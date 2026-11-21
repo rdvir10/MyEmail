@@ -323,6 +323,13 @@ class ContactLinks extends Table {
   TextColumn get reason => text().nullable()();
   IntColumn get googleWrittenAt => integer().nullable()();
   IntColumn get updatedAt => integer()();
+
+  /// For a link held with one id after its partner went: that partner's
+  /// id and synced details (`SyncedContact.toJson`), for the bin should
+  /// the held contact be deleted after all. Not indexed: not a contact
+  /// the link names.
+  TextColumn get partnerId => text().nullable()();
+  TextColumn get partnerBase => text().nullable()();
 }
 
 /// The creates contact sync has sent and not yet saved a row for. See

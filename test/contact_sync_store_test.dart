@@ -408,6 +408,36 @@ void main() {
               reason: 'two links with no Google side do not clash');
         });
 
+        test('a held link keeps the partner that went, which names nothing',
+            () async {
+          final pair = await pairOf();
+          final kept = await store.saveLink(ContactLink(
+            pairId: pair.pairId,
+            googleName: 'people/c1',
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.deletionBrake,
+            partnerId: 'AAMk-1',
+            partnerBase: '{"company":"Hadco"}',
+          ));
+          final read = (await store.links(pair.pairId)).single;
+          expect(read.partnerId, 'AAMk-1');
+          expect(read.partnerBase, '{"company":"Hadco"}');
+          expect(read, kept);
+          // The partner's id is no contact of the link: another link may
+          // name it.
+          await store.saveLink(ContactLink(
+            pairId: pair.pairId,
+            graphId: 'AAMk-1',
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.waiting,
+          ));
+          final cleared = await store.saveLink(
+            read.copyWith(partnerId: null, partnerBase: null),
+          );
+          expect(cleared.partnerId, isNull);
+          expect(cleared.partnerBase, isNull);
+        });
+
         test('that break the rules are refused', () async {
           final pair = await pairOf();
           for (final wrong in [
@@ -1000,32 +1030,40 @@ void main() {
           expect(await store.reviews(pair.pairId), hasLength(2));
         });
 
-        test("folding two answered reviews keeps the older one's answer",
+        test('folding two answered reviews keeps the answer given last',
             () async {
-          final pair = await pairOf();
-          final older = await store.saveReview(ContactReview(
-            pairId: pair.pairId,
-            kind: 'kept',
-            googleName: 'people/a',
-            graphId: 'AAMk-1',
-            data: '{}',
-          ));
-          await store.answerReview(older.reviewId!, 'copyBack');
-          final newer = await store.saveReview(ContactReview(
-            pairId: pair.pairId,
-            kind: 'kept',
-            googleName: 'people/c',
-            graphId: 'AAMk-1',
-            data: '{}',
-          ));
-          await store.answerReview(newer.reviewId!, 'keepOnlyHere');
+          // Ron's latest choice, whichever item he gave it on.
+          for (final olderLast in [false, true]) {
+            final pair = await pairOf();
+            final older = await store.saveReview(ContactReview(
+              pairId: pair.pairId,
+              kind: 'kept',
+              googleName: 'people/a',
+              graphId: 'AAMk-1',
+              data: '{}',
+            ));
+            final newer = await store.saveReview(ContactReview(
+              pairId: pair.pairId,
+              kind: 'kept',
+              googleName: 'people/c',
+              graphId: 'AAMk-1',
+              data: '{}',
+            ));
+            final first = olderLast ? newer : older;
+            final last = olderLast ? older : newer;
+            await store.answerReview(first.reviewId!, 'copyBack');
+            now = now.add(const Duration(minutes: 1));
+            await store.answerReview(last.reviewId!, 'keepOnlyHere');
 
-          await store.rekey(
-              pair.pairId, ContactSide.google, 'people/a', 'people/c');
+            await store.rekey(
+                pair.pairId, ContactSide.google, 'people/a', 'people/c');
 
-          final kept = (await store.reviews(pair.pairId)).single;
-          expect(kept.reviewId, older.reviewId);
-          expect(kept.answer, 'copyBack');
+            final kept = (await store.reviews(pair.pairId)).single;
+            expect(kept.reviewId, older.reviewId);
+            expect(kept.answer, 'keepOnlyHere');
+            expect(kept.answeredAt, now);
+            await store.dropReviews([kept.reviewId!]);
+          }
         });
 
         test('of a Hadco contact moves its own rows', () async {
