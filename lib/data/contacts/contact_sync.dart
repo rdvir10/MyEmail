@@ -473,6 +473,9 @@ class ContactSync implements ContactSyncService {
       googleCount: pair.googleCount,
       graphCount: pair.graphCount,
       notice: _noticeOf(held, last),
+      duplicates: [
+        for (final d in held.duplicates) d.shown(),
+      ],
     );
   }
 
@@ -744,6 +747,7 @@ class ContactSync implements ContactSyncService {
         pairUp: c.pairUp,
         needsALook: c.needsALook,
         differingPairs: c.differingPairs,
+        duplicateCopies: c.duplicateCopies,
       );
     } catch (e) {
       throw run.readable(e);
@@ -1648,6 +1652,9 @@ class _Run {
   final tally = _Tally();
   final watch = Stopwatch();
 
+  /// The contacts copied to the other side this run, by their source.
+  final copiedFrom = <(ContactSide, String)>{};
+
   /// Contacts made and deleted this run, per side, for the counts.
   var googleMade = 0;
   var graphMade = 0;
@@ -1816,15 +1823,21 @@ class _Run {
       for (final id in plan.binToMarkBack) {
         await store.markBinBack(id);
       }
-      if (plan.brakes.isNotEmpty) {
-        await store.updatePair(pairId, (p) {
-          final h = _Held.parse(p.held);
-          for (final brake in plan.brakes) {
-            h.raise(brake, now);
-          }
-          return p.copyWith(held: h.encode());
-        });
-      }
+      // The brakes' questions, and the copies of one person as this plan
+      // groups them: with the rows that hold them, so the screen lists
+      // them from what this device keeps, after a restart too. Held
+      // copies are not deletions and raise no question (the planner keeps
+      // them out of the brakes); only their groups are kept here.
+      await store.updatePair(pairId, (p) {
+        final h = _Held.parse(p.held);
+        for (final brake in plan.brakes) {
+          h.raise(brake, now);
+        }
+        h.duplicates
+          ..clear()
+          ..addAll(plan.duplicates.map(_Duplicates.of));
+        return p.copyWith(held: h.encode());
+      });
     });
     final rekeyed = reKeys.length;
     if (rekeyed > 0) debugPrint('[myemail] contacts: $rekeyed Gmail re-keys');
@@ -2119,6 +2132,7 @@ class _Run {
           : (p.linkId == null ? null : linkById[p.linkId]?.googleWrittenAt),
     );
     await store.completeCreates({op.opId: link});
+    copiedFrom.add((create.side.other, create.sourceId));
     if (onGoogle) {
       googleMade++;
       tally.addedToGoogle++;
@@ -2830,6 +2844,13 @@ class _Run {
         h.quotaUntil = null;
         h.restoring.removeWhere((n) => !binIds.contains(n['binId']));
         h.restoreProblems.removeWhere((id, _) => !binIds.contains(id));
+        // The copies of one person as this run leaves them: a copy made of
+        // a person's synced copy counts on its side.
+        h.duplicates
+          ..clear()
+          ..addAll(
+            plan.duplicates.map((d) => _Duplicates.of(d, made: copiedFrom)),
+          );
         return p.copyWith(
           googleSyncToken: googleToken ?? p.googleSyncToken,
           googleMask: googleContactFieldsVersion,
@@ -3115,6 +3136,10 @@ class _Held {
         if (id != null && value is String) held.restoreProblems[id] = value;
       }
     }
+    final duplicates = map['duplicates'];
+    for (final d in duplicates is List ? duplicates : const []) {
+      if (d is Map) held.duplicates.add(_Duplicates.parse(d));
+    }
     return held;
   }
 
@@ -3133,6 +3158,11 @@ class _Held {
 
   /// Why a Restore could not be done, by bin row, in a sentence.
   final Map<int, String> restoreProblems = {};
+
+  /// Copies of one person, as the last plan grouped them: counts and
+  /// titles only, so a re-key (which moves ids in this JSON) has nothing
+  /// here to move, and the next plan groups them afresh.
+  final List<_Duplicates> duplicates = [];
 
   /// The contact a Restore's note says it made, if its answer came.
   static String? madeBy(Map<String, Object?> note) =>
@@ -3220,7 +3250,80 @@ class _Held {
         for (final MapEntry(:key, :value) in restoreProblems.entries)
           '$key': value,
       },
+    if (duplicates.isNotEmpty)
+      'duplicates': [for (final d in duplicates) d.toJson()],
   });
+}
+
+/// One person held more than once, as kept on the pair: what the screen
+/// shows of a [ContactDuplicateGroup], with no ids.
+class _Duplicates {
+  const _Duplicates({
+    required this.title,
+    required this.googleCopies,
+    required this.graphCopies,
+    required this.googleSynced,
+    required this.graphSynced,
+  });
+
+  /// [group]'s counts: the copies each side holds, the synced one among
+  /// them.
+  ///
+  /// [made] are the contacts copied to the other side this run, by their
+  /// source: a person's copy made from its synced copy counts on that
+  /// other side as its synced copy, as the next plan will list it.
+  factory _Duplicates.of(
+    ContactDuplicateGroup group, {
+    Set<(ContactSide, String)> made = const {},
+  }) {
+    final g = group.googleSynced;
+    final h = group.graphSynced;
+    final toGraph =
+        h == null && g != null && made.contains((ContactSide.google, g));
+    final toGoogle =
+        g == null && h != null && made.contains((ContactSide.graph, h));
+    return _Duplicates(
+      title: group.title ?? '',
+      googleCopies:
+          group.googleCopies.length + (g != null || toGoogle ? 1 : 0),
+      graphCopies: group.graphCopies.length + (h != null || toGraph ? 1 : 0),
+      googleSynced: g != null || toGoogle,
+      graphSynced: h != null || toGraph,
+    );
+  }
+
+  factory _Duplicates.parse(Map<Object?, Object?> json) {
+    int n(String key) => json[key] is int ? json[key]! as int : 0;
+    return _Duplicates(
+      title: json['title'] is String ? json['title']! as String : '',
+      googleCopies: n('googleCopies'),
+      graphCopies: n('graphCopies'),
+      googleSynced: json['googleSynced'] == true,
+      graphSynced: json['graphSynced'] == true,
+    );
+  }
+
+  final String title;
+  final int googleCopies;
+  final int graphCopies;
+  final bool googleSynced;
+  final bool graphSynced;
+
+  Map<String, Object?> toJson() => {
+    'title': title,
+    'googleCopies': googleCopies,
+    'graphCopies': graphCopies,
+    'googleSynced': googleSynced,
+    'graphSynced': graphSynced,
+  };
+
+  ContactSyncDuplicates shown() => ContactSyncDuplicates(
+    title: title,
+    googleCopies: googleCopies,
+    graphCopies: graphCopies,
+    googleSynced: googleSynced,
+    graphSynced: graphSynced,
+  );
 }
 
 class _Question {

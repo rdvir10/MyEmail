@@ -4237,6 +4237,12 @@ void main() {
       expect(byGoogle(plan, 'people/c2')!.create!.side, ContactSide.graph);
       expect(byGoogle(plan, 'people/c1')!.reason, ContactHeldReason.duplicate);
       expect(plan.reviews, isEmpty);
+      // Listed with the copy being made as its side's synced copy, so the
+      // screen counts it before the next run pairs it.
+      final group = plan.duplicates.single;
+      expect(group.googleSynced, 'people/c2');
+      expect(group.graphSynced, isNull);
+      expect(group.googleCopies, ['people/c1']);
       // Facing a Hadco copy Ron left out, the most complete is asked about
       // as matching a held contact, its own copies no other person.
       final leftOut = run(
