@@ -605,13 +605,17 @@ void main() {
       expect(status.halt, isNull);
       // No third Ann.
       expect(h.graph.count, 2);
-      // The copy of the contact merged away is not paired with the one that
-      // stays, nor copied back: it waits under Needs a look.
+      // One pair; the copy of the contact merged away is held under
+      // "merged in Gmail", not paired with the one that stays nor copied
+      // back.
       expect(await h.paired(), hasLength(1));
       final look = status.needsALook.single;
-      expect(look.kind, ContactReviewKind.newContact);
-      expect(look.side, ContactSide.graph);
-      expect(look.reason, ContactReviewReason.taggedPaired);
+      expect(look.kind, ContactReviewKind.mergedInGoogle);
+      expect(look.choices, [
+        ContactSyncChoice.deleteHereToo,
+        ContactSyncChoice.keepOnlyHere,
+      ]);
+      expect(await h.store.ops((await h.pair()).pairId), isEmpty);
       status = await h.later();
       expect(h.google.count, 1);
       expect(h.graph.count, 2);
@@ -830,6 +834,48 @@ void main() {
       expect(h.graph.count, 2);
       expect(status.questions, isEmpty);
       expect(status.recentlyDeleted, hasLength(6));
+    });
+
+    test('Delete them deletes only the contacts its question named, across '
+        'a stopped run', () async {
+      final pairs = seedPairs(h, 14);
+      await h.firstSync();
+      for (var i = 0; i < 6; i++) {
+        h.google.deleteFromGmail(pairs[i].google);
+      }
+      var status = await h.later();
+      expect(status.questions.single.items, hasLength(6));
+
+      // Ron deletes six more, then answers the first question; the run that
+      // carries it out holds the new six under a question of their own,
+      // and is put away after two deletes.
+      for (var i = 6; i < 12; i++) {
+        h.google.deleteFromGmail(pairs[i].google);
+      }
+      var deletes = 0;
+      h.before = (r) async {
+        if (r.method == 'DELETE' && ++deletes == 2) unawaited(h.sync.stop());
+      };
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.deletions,
+        ContactSyncChoice.deleteThem,
+      );
+      await h.sync.syncNow();
+      expect((await h.status()).halt!.kind, ContactSyncHaltKind.putAway);
+      h.before = null;
+      status = await h.later(after: const Duration(minutes: 1));
+      expect(status.halt, isNull);
+      // The first six are gone; the second six wait for their own answer.
+      expect(h.graph.count, 8);
+      for (var i = 0; i < 6; i++) {
+        expect(h.graph.contact(pairs[i].graph), isNull);
+      }
+      for (var i = 6; i < 12; i++) {
+        expect(h.graph.contact(pairs[i].graph), isNotNull);
+      }
+      final q = status.questions.single;
+      expect(q.answer, isNull);
+      expect(q.items, hasLength(6));
     });
 
     test("Don't delete them keeps the copies, unpaired, under Needs a look",
@@ -1098,6 +1144,45 @@ void main() {
       expect(h.contactWritesOf(), isEmpty);
     });
 
+    test('after a reinstall, copies the sync made pair again by their tags, '
+        'nothing made', () async {
+      // A name and a landline: only the hidden tags can pair these.
+      final wolf = h.google.seed({
+        'names': [
+          {'givenName': 'Lone', 'familyName': 'Wolf'},
+        ],
+        'phoneNumbers': [
+          {'value': '+1 202 555 0101', 'type': 'home'},
+        ],
+      });
+      h.graph.seed(
+        {
+          'givenName': 'Lone',
+          'surname': 'Wolf',
+          'homePhones': ['+1 202 555 0101'],
+        },
+        tag: wolf,
+      );
+      final ann = h.graph.seed(
+        outlook('Ann', 'Lee', email: 'ann@example.com'),
+      );
+      h.google.seed({
+        ...person('Ann', 'Lee', email: 'ann@example.com'),
+        'clientData': [
+          {'key': 'myemail.link', 'value': ann},
+        ],
+      });
+      // A store with nothing in it, as after a reinstall.
+      await h.firstSync();
+      final status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      expect(await h.paired(), hasLength(2));
+      expect(h.google.count, 2);
+      expect(h.graph.count, 2);
+      expect(h.contactWritesOf().where((r) => r.method == 'POST'), isEmpty);
+    });
+
     test('Same person pairs a new contact with its candidate', () async {
       h.google.seed(person('Jo', 'Smith', email: 'jo@home.example'));
       h.graph.seed(outlook('Jo', 'Smith', email: 'jo@work.example'));
@@ -1196,6 +1281,29 @@ void main() {
       // The older item is not handed the answer that was carried out.
       expect(kept.every((r) => r.answer == null), isTrue);
       expect((await h.pair()).held ?? '', isNot(contains('leaveOut')));
+    });
+
+    test("the item of a contact a Gmail merge folds away goes; it is not "
+        "moved onto the merged contact", () async {
+      final away = h.google.seed(person('Jo', 'Smith', email: 'j1@example.com'));
+      final stays = h.google.seed(person('Jo', 'Smith', email: 'j2@example.com'));
+      h.graph.seed(outlook('Jo', 'Smith', email: 'j3@example.com'));
+      await h.firstSync();
+      final pairId = (await h.pair()).pairId;
+      final before = await h.store.reviews(pairId);
+      final awayItem = before.firstWhere((r) => r.googleName == away);
+      final staysItem = before.firstWhere((r) => r.googleName == stays);
+      expect(awayItem.reviewId! < staysItem.reviewId!, isTrue);
+
+      h.google.mergeInGmail(stays, away);
+      final status = await h.later();
+      expect(status.halt, isNull);
+      final after = await h.store.reviews(pairId);
+      expect(after.map((r) => r.reviewId), isNot(contains(awayItem.reviewId)));
+      expect(
+        after.where((r) => r.googleName == stays).single.reviewId,
+        staysItem.reviewId,
+      );
     });
 
     test('Leave as they are just takes the item away', () async {
@@ -1769,14 +1877,14 @@ void main() {
       status = await h.status();
       expect(status.halt, isNull);
       expect(status.recentlyDeleted, hasLength(5));
-      expect(h.graph.count, 3);
-      // A deletion the brake held keeps no partner (the planner's row
-      // holds the surviving id alone), so Restore makes the Outlook
-      // contact again and the next run copies it to Gmail as new.
-      status = await h.later();
-      expect(status.halt, isNull);
+      // A deletion the brake held kept its gone partner: Restore makes
+      // both sides again and pairs them, in the one run.
       expect(h.google.count, 2);
       expect(await h.paired(), hasLength(2));
+      h.requests.clear();
+      status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.contactWritesOf(), isEmpty);
     });
   });
 

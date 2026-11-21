@@ -954,52 +954,7 @@ class _Run {
     await _readGraph(fresh: normaliserMoved || preview);
     _checkStop();
     await _readMore();
-    await _dropMergedCopies();
     _checkStop();
-  }
-
-  /// Two Outlook creates in flight whose Gmail sources Ron has since
-  /// merged into one: only the create of the contact that stays is
-  /// settled as its copy. The other's journal entry goes, so its copy, if
-  /// it was made, is a contact of its own whose tag names a contact
-  /// already paired (Needs a look), not a second partner for it, and the
-  /// re-key does not find two creates copying one contact.
-  Future<void> _dropMergedCopies() async {
-    final reKeys = {...googleReKeys};
-    for (final MapEntry(key: name, value: p) in googleRead.entries) {
-      for (final old in GoogleContact.fromPerson(p).previousNames) {
-        if (old != name) reKeys[old] = name;
-      }
-    }
-    if (reKeys.isEmpty) return;
-    String last(String name) {
-      var now = name;
-      for (var i = 0; i < 8; i++) {
-        now = reKeys[now] ?? now;
-      }
-      return now;
-    }
-
-    final bySource = <String, List<ContactSyncOp>>{};
-    for (final op in ops) {
-      if (op.side != ContactSide.graph) continue;
-      bySource.putIfAbsent(last(op.sourceKey), () => []).add(op);
-    }
-    final dropped = <int>[];
-    for (final MapEntry(key: name, value: group) in bySource.entries) {
-      if (group.length < 2) continue;
-      final keep =
-          group.firstWhereOrNull((o) => o.sourceKey == name) ?? group.first;
-      for (final o in group) {
-        if (o != keep) dropped.add(o.opId);
-      }
-    }
-    if (dropped.isEmpty) return;
-    await store.dropOps(dropped);
-    ops = [
-      for (final o in ops)
-        if (!dropped.contains(o.opId)) o,
-    ];
   }
 
   /// The device claim: another device's, younger than a week, stops the
@@ -1325,6 +1280,8 @@ class _Run {
     state: l.state,
     reason: l.reason,
     googleWrittenAt: l.googleWrittenAt,
+    partnerId: l.partnerId,
+    partnerBase: _decode(l.partnerBase),
   );
 
   ContactJournalEntry _journalEntry(ContactSyncOp op) => ContactJournalEntry(
@@ -1381,7 +1338,18 @@ class _Run {
         _ => null,
       };
       if (kind == null) continue;
-      answers.add(ContactAnswer(kind, side: q.side));
+      // Only the contacts the question named: a later brake of the same
+      // kind holds others, under a question of its own.
+      final items = [
+        for (final i in q.items) ?ContactBrakeItem.fromJson(i),
+      ];
+      answers.add(
+        ContactAnswer(
+          kind,
+          side: q.side,
+          held: kind == ContactAnswerKind.carryOn ? null : items,
+        ),
+      );
       answerSources.add(_AnswerSource.question(q.id));
     }
   }
@@ -1585,11 +1553,19 @@ class _Run {
         pending.add(held.pending[at]);
       }
     }
-    // Items about contacts gone this run go too.
+    // Items about contacts gone this run go too, and those of rows a merge
+    // in Gmail folded away, which the re-key would move onto the merged
+    // contact.
     for (final r in reviews) {
       if ((r.googleName != null && plan.googleGone.contains(r.googleName)) ||
           (r.graphId != null && plan.graphGone.contains(r.graphId))) {
         dropReviews.add(r.reviewId!);
+      }
+      for (final away in plan.mergedAway) {
+        if (r.googleName == away.googleName &&
+            (away.graphId == null || r.graphId == away.graphId)) {
+          dropReviews.add(r.reviewId!);
+        }
       }
     }
 
@@ -1696,6 +1672,10 @@ class _Run {
       state: p.state,
       reason: paired ? null : p.reason,
       googleWrittenAt: googleWritten ? now : stored?.googleWrittenAt,
+      // A row held with one id after its partner went keeps that partner,
+      // so a delete of its contact after all can bin both for Restore.
+      partnerId: paired ? null : p.partnerId,
+      partnerBase: paired ? null : _encode(p.partnerBase),
     );
   }
 
