@@ -526,7 +526,11 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       ]),
       if (_previewing) const _Working(),
       if (_previewError case final e?)
-        _Problem(doing: 'Previewing the first contact sync', error: e),
+        _Problem(
+          doing: 'Previewing the first contact sync',
+          error: e,
+          onRemedy: _remedy(e, google, graph, () => _preview(google, graph)),
+        ),
       if (preview != null) _PreviewTable(preview: preview, graphName: graphName),
       const _Para(
         'Then save a backup of both address books, as two files: one Google '
@@ -544,7 +548,16 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       ]),
       if (_saving) const _Working(),
       if (_backupError case final e?)
-        _Problem(doing: 'Saving the contacts backup', error: e),
+        _Problem(
+          doing: 'Saving the contacts backup',
+          error: e,
+          onRemedy: _remedy(
+            e,
+            google,
+            graph,
+            () => _saveBackup(google, graph, graphName),
+          ),
+        ),
       if (backupSaid != null) _Para(backupSaid),
       _Para(
         "Worth knowing: your Gmail contacts will be kept in $graphName's "
@@ -573,6 +586,22 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       ),
     ];
   }
+
+  /// The way out of a failure, where there is one: the account's Allow
+  /// for one that has not allowed it, or [again] for one worth trying
+  /// again.
+  VoidCallback? _remedy(
+    Object e,
+    Account google,
+    Account graph,
+    VoidCallback again,
+  ) =>
+      switch (e) {
+        ContactSyncNeedsSignIn(:final side) => () =>
+            _allow(side == ContactSide.google ? google : graph),
+        Retryable() => again,
+        _ => null,
+      };
 
   List<Widget> _running(ContactSyncProgress running) {
     final writing = running.step == ContactSyncStep.writing;
@@ -624,11 +653,15 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
             'open.',
       null => null,
     };
-    // A failure offers Try again, and another device Sync here, in its
-    // place.
+    // A failure offers Try again in its place, another device Sync here,
+    // and an empty answer its question: a sync now would only stop again.
     final halt = s.halt;
-    final offersItsOwn = halt?.kind == ContactSyncHaltKind.failed ||
-        halt?.kind == ContactSyncHaltKind.otherDevice;
+    final offersItsOwn = switch (halt?.kind) {
+      ContactSyncHaltKind.failed ||
+      ContactSyncHaltKind.otherDevice ||
+      ContactSyncHaltKind.emptyAnswer => true,
+      _ => false,
+    };
     return [
       if (line != null) _Para(line, key: const ValueKey('contact-sync-last')),
       if (halt != null && halt.kind != ContactSyncHaltKind.putAway)

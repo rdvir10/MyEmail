@@ -474,6 +474,35 @@ void main() {
       expect(sync.count('start'), 1);
     });
 
+    testWidgets('a preview that fails says why, with the way out',
+        (tester) async {
+      sync = FakeContactSync(status: chosenOnly)
+        ..previewFailure = const ContactSyncFailed('No connection.');
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester, oauth: _grants());
+
+      await tester.tap(button('contact-sync-preview'));
+      await tester.pumpAndSettle();
+      expect(find.text('No connection.'), findsOneWidget);
+      await tester.tap(find.text('Try again'));
+      await tester.pumpAndSettle();
+      expect(sync.count('preview'), 2);
+
+      sync.previewFailure = const ContactSyncNeedsSignIn(
+        side: ContactSide.graph,
+        accountId: 'acct-h',
+        message: 'Hadco has not allowed contact sync yet.',
+      );
+      await tester.tap(button('contact-sync-preview'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Sign in again'));
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.byType(MicrosoftSignInScreen), findsOneWidget,
+          reason: "the Microsoft account's Allow");
+    });
+
     testWidgets('both backup files saved without a preview still leave Start '
         'greyed out', (tester) async {
       sync = FakeContactSync(status: chosenOnly, backupFiles: _backupFiles);
@@ -761,6 +790,8 @@ void main() {
 
         expect(find.text('Hadco listed only 3 contacts'), findsOneWidget);
         expect(find.textContaining('120 were expected'), findsOneWidget);
+        expect(find.text('Sync now'), findsNothing,
+            reason: 'it would only stop again before the answer');
         expect(find.text('Keep waiting'), findsOneWidget);
         await tester.tap(find.text("That's right, carry on"));
         await tester.pumpAndSettle();
