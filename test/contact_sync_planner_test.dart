@@ -4397,6 +4397,103 @@ void main() {
       expect(plan.reviews, isEmpty);
     });
 
+    test('Ron deleting the synced copy in Hadco: the pair moves to a copy',
+        () {
+      final plan = run(
+        google: [g('people/c1', annCopy())],
+        graphGone: {'H1'},
+        links: synced(),
+      );
+      final pair = byLink(plan, 1)!;
+      expect((pair.googleName, pair.graphId), ('people/c1', 'H2'));
+      expect(pair.state, ContactLinkState.paired);
+      expect(pair.newPair, isTrue, reason: 'nothing overwritten');
+      expect(pair.alsoRemove, [2]);
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      expect(plan.brakes, isEmpty);
+      expect(plan.reviews, isEmpty);
+      // A held copy of another person is not taken: the partner goes as
+      // usual.
+      final other = run(
+        google: [g('people/c1', annCopy())],
+        graphGone: {'H1'},
+        links: [
+          link(1, 'people/c1', 'H1', base: annCopy()),
+          link(
+            2,
+            null,
+            'H2',
+            base: person(given: 'Bob', family: 'Roe', emails: ['bob@x']),
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+        ],
+      );
+      expect(byLink(other, 1)!.delete!.contactId, 'people/c1');
+    });
+
+    test('the synced copy deleted in Gmail, or moved out of Contacts', () {
+      final rows = [
+        link(1, 'people/c1', 'H1', base: annCopy()),
+        link(
+          2,
+          'people/c2',
+          null,
+          base: annCopy(),
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.duplicate,
+        ),
+      ];
+      final deleted = run(google: [gDeleted('people/c1')], links: rows);
+      final pair = byLink(deleted, 1)!;
+      expect((pair.googleName, pair.graphId), ('people/c2', 'H1'));
+      expect(deleted.links.where((l) => l.delete != null), isEmpty);
+      // Outlook's synced copy moved to another folder, a copy left.
+      final moved = run(graphMovedOut: {'H1'}, links: synced());
+      final now = byLink(moved, 1)!;
+      expect((now.googleName, now.graphId), ('people/c1', 'H2'));
+      expect(now.state, ContactLinkState.paired);
+    });
+
+    test("Gmail's Merge & fix folding a copy into the synced one", () {
+      final rows = [
+        link(1, 'people/c1', 'H1', base: annCopy()),
+        link(
+          2,
+          'people/c2',
+          null,
+          base: annCopy(),
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.duplicate,
+        ),
+      ];
+      final plan = run(
+        google: [
+          g('people/c1', annCopy(), previous: ['people/c2']),
+          gDeleted('people/c2'),
+        ],
+        links: rows,
+      );
+      expect(byLink(plan, 2)!.removeRow, isTrue);
+      final pair = byLink(plan, 1);
+      expect(pair == null || (pair.googleName, pair.graphId) ==
+          ('people/c1', 'H1'), isTrue, reason: 'the pair untouched');
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      expect(plan.mergedAway, [(googleName: 'people/c2', graphId: null)]);
+      // The other way round: the synced copy merged into the held one.
+      final into = run(
+        google: [
+          g('people/c2', annCopy(), previous: ['people/c1']),
+          gDeleted('people/c1'),
+        ],
+        links: rows,
+      );
+      final kept = byLink(into, 1)!;
+      expect((kept.googleName, kept.graphId), ('people/c2', 'H1'));
+      expect(byLink(into, 2)!.removeRow, isTrue);
+      expect(into.links.where((l) => l.delete != null), isEmpty);
+    });
+
     test('holding copies is no deletion and no change for the brakes', () {
       SyncedContact someone(int i) =>
           person(given: 'P$i', family: 'X', emails: ['p$i@x']);

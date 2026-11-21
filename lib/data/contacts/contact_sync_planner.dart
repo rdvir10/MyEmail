@@ -3155,6 +3155,7 @@ class _Planner {
         _add(ContactLinkPlan(linkId: row.id, removeRow: true));
         return;
       }
+      if (_moveToCopy(ContactSide.graph, row)) return;
       _add(
         ContactLinkPlan(
           linkId: row.id,
@@ -3172,6 +3173,8 @@ class _Planner {
       _setStatus(ContactSide.google, g, _Status.held);
       return;
     }
+    if (gGone && _moveToCopy(ContactSide.google, row)) return;
+    if (hGone && _moveToCopy(ContactSide.graph, row)) return;
     if (gGone) {
       orphans.add(
         _Orphan(row, ContactSide.graph, h!, ContactDeleteCause.deletedInGoogle),
@@ -3187,6 +3190,61 @@ class _Planner {
       return;
     }
     _pairSync(row);
+  }
+
+  /// R5: the synced copy on [side] of the pair [row] has gone (deleted,
+  /// or moved out of Contacts) while that side still holds a copy of the
+  /// same person: the pair moves to that copy, the most complete one left,
+  /// planned like a new pair (blanks filled, differences listed, nothing
+  /// overwritten), and nothing is deleted on the other side. False when
+  /// there is no such copy.
+  bool _moveToCopy(ContactSide side, _Row row) {
+    final copy = _heldCopyOf(side, row);
+    if (copy == null) return false;
+    final copyRow = _rowOf(side, copy)!;
+    copyRow.done = true;
+    _pairNew(
+      side == ContactSide.google ? copy : row.googleName!,
+      side == ContactSide.graph ? copy : row.graphId!,
+      linkId: row.id,
+      alsoRemove: [copyRow.id],
+    );
+    return true;
+  }
+
+  /// A copy held as a duplicate on [side] of the person [row] pairs: alive
+  /// and in Contacts, not yet planned this run, with that person's full
+  /// name and an email or mobile in common with either side of the pair.
+  /// The most complete, ties by id.
+  String? _heldCopyOf(ContactSide side, _Row row) {
+    final gone = side == ContactSide.google
+        ? row.input.googleDetails
+        : row.input.graphDetails;
+    final kept = side == ContactSide.google ? _graphNow(row) : _googleNow(row);
+    final name =
+        ContactNormaliser.fullNameKey(kept.copyableName) ??
+        ContactNormaliser.fullNameKey(gone.copyableName);
+    if (name == null) return null;
+    Set<String> keys(SyncedContact d) => {..._emailKeys(d), ..._mobileKeys(d)};
+    final pairKeys = {...keys(gone), ...keys(kept)};
+    final copies = [
+      for (final r in rows)
+        if (r != row &&
+            !r.done &&
+            r.state == ContactLinkState.held &&
+            r.reason == ContactHeldReason.duplicate)
+          if ((side == ContactSide.google ? r.googleName : r.graphId)
+              case final id?
+              when _alive(side, id) &&
+                  !(side == ContactSide.graph && graphMoved.contains(id)) &&
+                  ContactNormaliser.fullNameKey(
+                        _detailsOf(side, id).copyableName,
+                      ) ==
+                      name &&
+                  keys(_detailsOf(side, id)).any(pairKeys.contains))
+            id,
+    ];
+    return _mostComplete(side, copies).firstOrNull;
   }
 
   void _pairSync(
