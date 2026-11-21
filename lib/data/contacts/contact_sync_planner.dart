@@ -3703,6 +3703,13 @@ class _Planner {
         _keep(row, side, id, ContactReviewReason.firstSync);
         continue;
       }
+      // Versions are compared as they are, a Gmail re-key included: the
+      // version is the contact source's etag, so a re-key that leaves it
+      // as it was is no change, and one that moves it (as a merge, which
+      // changes the contact, does; whether Google's other re-keys do is
+      // not known) keeps the contact as changed since. A re-key is not
+      // taken for no change on its own: Ron is asked rather than a
+      // changed contact deleted.
       if (listedVersion != null &&
           storedVersion != null &&
           listedVersion != storedVersion) {
