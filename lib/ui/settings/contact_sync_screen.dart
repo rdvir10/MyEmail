@@ -1084,11 +1084,16 @@ class _QuestionCard extends StatelessWidget {
     final q = question;
     String side(ContactSide s) => _sideName(s, graphName);
     final n = q.items.length;
+    // The held contacts by their number, not the brakes' thresholds: a
+    // question stays until answered, and may by then hold fewer than the
+    // more than 5 (or 10) that raised it.
+    final (these, they) =
+        n == 1 ? ('this contact', 'it is') : ('these $n contacts', 'they are');
     final (String title, String body, String explain) = switch (q.kind) {
       ContactSyncQuestionKind.deletions => (
           _count(n, 'deletion needs your OK', 'deletions need your OK'),
-          'One sync would delete more than 5 contacts, so these are held, '
-              'and everything else carries on.',
+          'One sync would delete $these at once, so $they held for your '
+              'OK, and everything else carries on.',
           'Delete them deletes those still due, each read again first. '
               "Don't delete them: ${_staySide(q.items, graphName)} but "
               'stop syncing, and each waits under Needs a look, where it '
@@ -1096,9 +1101,9 @@ class _QuestionCard extends StatelessWidget {
         ),
       ContactSyncQuestionKind.changes => (
           'Changes to ${_count(n, 'contact', 'contacts')} need your OK',
-          'One sync would remove or replace details on more than 10 '
-              "contacts, as Google's Undo changes, a backup imported again "
-              'or a bulk edit can. These are held, and everything else '
+          'One sync would remove or replace details on $these at once, '
+              "as Google's Undo changes, a backup imported again or a bulk "
+              'edit can, so $they held for your OK, and everything else '
               'carries on.',
           'Copy them back puts the details back where they were removed or '
               'replaced, from the other side. Either way each is read again '

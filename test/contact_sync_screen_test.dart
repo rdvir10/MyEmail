@@ -1066,6 +1066,13 @@ void main() {
 
         expect(find.text('Changes to 11 contacts need your OK'),
             findsOneWidget);
+        expect(
+          find.text('One sync would remove or replace details on these 11 '
+              "contacts at once, as Google's Undo changes, a backup imported "
+              'again or a bulk edit can, so they are held for your OK, and '
+              'everything else carries on.'),
+          findsOneWidget,
+        );
         expect(find.text('Person 0: would lose details in Hadco'),
             findsOneWidget);
         expect(find.text('Apply them'), findsOneWidget);
@@ -1149,6 +1156,12 @@ void main() {
         await pumpScreen(tester);
 
         expect(find.text('Ann: gone from Hadco'), findsOneWidget);
+        expect(
+          find.text('One sync would delete this contact at once, so it is '
+              'held for your OK, and everything else carries on.'),
+          findsOneWidget,
+          reason: 'no "more than 5" over a question holding one',
+        );
         expect(
           find.text('You chose Delete them. The next sync carries it out.'),
           findsOneWidget,
