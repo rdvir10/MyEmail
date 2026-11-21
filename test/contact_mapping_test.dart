@@ -368,6 +368,17 @@ void main() {
         'companyName': 'Pipes Ltd',
       });
       expect(plumber.copyableName, ContactName.of(display: 'The Plumber'));
+      // An address still shown after the contact's address changed is no
+      // name either; words around an @ are.
+      final stale = syncedFromGraph({
+        'displayName': 'bob@x.example',
+        'emailAddresses': [
+          {'address': 'bob@y.example'},
+        ],
+      });
+      expect(stale.copyableName, isNull);
+      final words = syncedFromGraph({'displayName': 'Bob @ Acme'});
+      expect(words.copyableName, ContactName.of(display: 'Bob @ Acme'));
       // Neither create copies one that is no name.
       expect(googleCreateBody(byEmail).containsKey('names'), isFalse);
       expect(googleCreateBody(plumber)['names'], [

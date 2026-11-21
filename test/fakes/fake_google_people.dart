@@ -27,7 +27,10 @@ enum FakeTokenExpiry {
 /// sent with other parameters; deleted contacts in a listing with a
 /// token; contacts that Google re-keys, named in `previousResourceNames`;
 /// an etag on every contact, moved by every write and checked by
-/// updateContact; and writes through the API that show in the listings
+/// updateContact (the contact source's, in `metadata.sources`; the
+/// Person's own top-level etag is the entity tag of one answer and
+/// differs with the fields asked for and the kind of call, so a version
+/// taken from it never matches across reads); and writes through the API that show in the listings
 /// only later ([lagWrites], until [publish]), while reads by name show
 /// them at once.
 ///
@@ -466,7 +469,7 @@ class FakeGooglePeople {
     final body = <String, Object?>{
       'connections': [
         for (final p in listing.people.sublist(start, end))
-          _json(p, fields, withDeleted: true),
+          _json(p, fields, withDeleted: true, read: 'list'),
       ],
       'totalItems': listing.people.length,
     };
@@ -510,7 +513,7 @@ class FakeGooglePeople {
               when !p.deleted)
             {
               'httpStatusCode': 200,
-              'person': _json(p, fields),
+              'person': _json(p, fields, read: 'batch'),
               'requestedResourceName': name,
               'status': <String, Object?>{},
             }
@@ -533,7 +536,7 @@ class FakeGooglePeople {
     final person = _decode(body);
     _refused(person);
     final p = _made(person);
-    return _ok(_json(p, fields));
+    return _ok(_json(p, fields, read: 'write'));
   }
 
   http.Response _batchCreate(String body) {
@@ -590,7 +593,7 @@ class FakeGooglePeople {
         for (final p in made.reversed)
           {
             'httpStatusCode': 200,
-            'person': _json(p, fields),
+            'person': _json(p, fields, read: 'write'),
             'status': <String, Object?>{},
           },
       ],
@@ -641,7 +644,11 @@ class FakeGooglePeople {
             'source.',
       );
     }
-    if (sourceEtag != p.sourceEtag || (etag != null && etag != p.etag)) {
+    // A top-level etag sent is not compared as a whole (it differs with
+    // the read it came from), only refused when it is of an older
+    // version.
+    if (sourceEtag != p.sourceEtag ||
+        (etag is String && _Person.versionOf(etag) != p.etagNumber)) {
       return _error(
         400,
         'FAILED_PRECONDITION',
@@ -673,7 +680,7 @@ class FakeGooglePeople {
     }
     _bump(p);
     _written(p.name);
-    return _ok(_json(p, fields));
+    return _ok(_json(p, fields, read: 'write'));
   }
 
   http.Response _delete(String name) {
@@ -849,10 +856,14 @@ class FakeGooglePeople {
 
   /// [p] as Google answers with it, its fields cut to [mask] (all with
   /// none), each entry with the metadata that says it is the contact's.
+  ///
+  /// [read] is the kind of call answered ('get', 'list', 'batch',
+  /// 'write'): with the mask it makes the Person's top-level etag.
   Map<String, Object?> _json(
     _Person p,
     Set<String>? mask, {
     bool withDeleted = false,
+    String read = 'get',
   }) {
     final id = p.name.substring('people/'.length);
     final source = {'type': 'CONTACT', 'id': id};
@@ -868,10 +879,11 @@ class FakeGooglePeople {
       if (p.deleted) 'deleted': true,
       'objectType': 'PERSON',
     };
+    final etag = p.etagFor(read, mask);
     if (p.deleted && withDeleted) {
-      return {'resourceName': p.name, 'etag': p.etag, 'metadata': metadata};
+      return {'resourceName': p.name, 'etag': etag, 'metadata': metadata};
     }
-    final json = <String, Object?>{'resourceName': p.name, 'etag': p.etag};
+    final json = <String, Object?>{'resourceName': p.name, 'etag': etag};
     for (final MapEntry(:key, :value) in p.fields.entries) {
       if (mask != null && !mask.contains(key)) continue;
       final copy = jsonDecode(jsonEncode(value));
@@ -1025,8 +1037,30 @@ class _Person {
   List<String> previous = const [];
   bool deleted = false;
 
-  String get etag => '%EgUBAi43PRoEAQIFByIM$etagNumber';
+  /// The contact's version, which updateContact checks: the same for
+  /// every read of it until it changes.
   String get sourceEtag => '#S$etagNumber';
+
+  /// The Person's top-level etag in an answer of the kind [read] with
+  /// [mask] (every field when null): Google's is the HTTP entity tag of
+  /// that answer, so it differs between a listing, a read by name and a
+  /// read of every field of an unchanged contact.
+  String etagFor(String read, Set<String>? mask) {
+    final fields = mask == null ? '*' : (mask.toList()..sort()).join(',');
+    final key = '$read:$fields';
+    var hash = 0x811c9dc5;
+    for (final unit in key.codeUnits) {
+      hash = ((hash ^ unit) * 0x01000193) & 0xffffffff;
+    }
+    return '%EgUBAi43PRoEAQIFByIM$etagNumber.${hash.toRadixString(36)}';
+  }
+
+  /// The version a top-level etag of [etagFor] was made from.
+  static int? versionOf(String etag) {
+    const prefix = '%EgUBAi43PRoEAQIFByIM';
+    if (!etag.startsWith(prefix)) return null;
+    return int.tryParse(etag.substring(prefix.length).split('.').first);
+  }
 
   _Person copy() {
     final fields = jsonDecode(jsonEncode(this.fields)) as Map<String, Object?>;
