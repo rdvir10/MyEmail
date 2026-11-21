@@ -353,15 +353,33 @@ void main() {
 
           final held = await store.saveLink(first.copyWith(
             state: ContactLinkState.held,
-            reason: ContactHoldReason.kept,
+            reason: ContactHeldReason.kept,
             graphChangeKey: null,
           ));
 
           expect(held.linkId, first.linkId);
           expect(held.updatedAt, now);
-          expect(held.reason, ContactHoldReason.kept);
+          expect(held.reason, ContactHeldReason.kept);
           expect(held.graphChangeKey, isNull);
           expect(await store.links(pair.pairId), [held]);
+        });
+
+        test("every held reason, the planner's candidate among them, "
+            'reads back as saved', () async {
+          final pair = await pairOf();
+          for (final (i, reason) in ContactHeldReason.values.indexed) {
+            await store.saveLink(ContactLink(
+              pairId: pair.pairId,
+              googleName: 'people/c$i',
+              state: ContactLinkState.held,
+              reason: reason,
+            ));
+          }
+
+          expect(
+            [for (final l in await store.links(pair.pairId)) l.reason],
+            ContactHeldReason.values,
+          );
         });
 
         test('a held link may name one side only', () async {
@@ -370,13 +388,13 @@ void main() {
             pairId: pair.pairId,
             googleName: 'people/c9',
             state: ContactLinkState.held,
-            reason: ContactHoldReason.waiting,
+            reason: ContactHeldReason.waiting,
           ));
           final other = await store.saveLink(ContactLink(
             pairId: pair.pairId,
             graphId: 'AAMk-9',
             state: ContactLinkState.held,
-            reason: ContactHoldReason.refused,
+            reason: ContactHeldReason.refused,
           ));
 
           expect(await store.links(pair.pairId), [held, other],
@@ -399,10 +417,10 @@ void main() {
             ContactLink(
               pairId: pair.pairId,
               state: ContactLinkState.held,
-              reason: ContactHoldReason.waiting,
+              reason: ContactHeldReason.waiting,
             ),
             paired(pair.pairId, 'people/c1', 'AAMk-1')
-                .copyWith(reason: ContactHoldReason.brake),
+                .copyWith(reason: ContactHeldReason.deletionBrake),
           ]) {
             await expectLater(store.saveLink(wrong), throwsArgumentError);
           }
@@ -418,7 +436,7 @@ void main() {
               pairId: pair.pairId,
               googleName: 'people/c1',
               state: ContactLinkState.held,
-              reason: ContactHoldReason.waiting,
+              reason: ContactHeldReason.waiting,
             )),
             throwsStateError,
           );
@@ -905,7 +923,7 @@ void main() {
             pairId: pair.pairId,
             googleName: 'people/c1',
             state: ContactLinkState.held,
-            reason: ContactHoldReason.waiting,
+            reason: ContactHeldReason.waiting,
           ));
           await store.journalCreates(pair.pairId, ContactSide.google, [
             (sourceKey: 'people/c2', tag: 'people/c2'),
@@ -944,7 +962,7 @@ void main() {
               await store.saveLinks([
                 link.copyWith(
                   state: ContactLinkState.held,
-                  reason: ContactHoldReason.brake,
+                  reason: ContactHeldReason.deletionBrake,
                 ),
                 paired(pair.pairId, 'people/c2', 'AAMk-2'),
               ]);
@@ -1036,7 +1054,59 @@ void main() {
       final link = (await store.links(pair.pairId)).single;
 
       expect(link.state, ContactLinkState.held);
-      expect(link.reason, ContactHoldReason.waiting);
+      expect(link.reason, ContactHeldReason.waiting);
+    });
+
+    test("a held link's reason is kept as the planner's code", () async {
+      // The planner reads the rows back through ContactHeldReason.fromCode:
+      // a name kept instead (leftOut, not left_out) would read as unknown,
+      // and every held contact would turn into one waiting under Needs a
+      // look.
+      final db = MailDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final store = DriftContactSyncStore(db);
+      final pair = await store.ensurePair(
+        googleAccountId: 'g',
+        googleAddress: 'a@gmail.com',
+        graphAccountId: 'm',
+        graphAddress: 'a@hadco.com',
+      );
+      for (final (i, reason) in ContactHeldReason.values.indexed) {
+        await store.saveLink(ContactLink(
+          pairId: pair.pairId,
+          graphId: 'AAMk-$i',
+          state: ContactLinkState.held,
+          reason: reason,
+        ));
+      }
+      await store.saveLink(ContactLink(
+        pairId: pair.pairId,
+        googleName: 'people/c1',
+        graphId: 'AAMk-p',
+        state: ContactLinkState.paired,
+      ));
+
+      final rows = await db
+          .customSelect(
+            'SELECT state, reason FROM contact_links ORDER BY link_id',
+          )
+          .get();
+
+      expect([for (final r in rows) r.read<String?>('reason')], [
+        'left_out',
+        'waiting',
+        'candidate',
+        'kept',
+        'moved_out',
+        'refused',
+        'brake_delete',
+        'brake_change',
+        null,
+      ]);
+      expect({for (final r in rows) r.read<String>('state')}, {
+        'held',
+        'paired',
+      });
     });
 
     test('a second connection sees what the first wrote', () async {

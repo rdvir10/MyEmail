@@ -314,7 +314,8 @@ class ContactLinks extends Table {
   TextColumn get googleBase => text().nullable()();
   TextColumn get graphBase => text().nullable()();
 
-  /// `ContactLinkState`'s name, and for a held one `ContactHoldReason`'s.
+  /// `ContactLinkState`'s name, and for a held one `ContactHeldReason`'s
+  /// code.
   TextColumn get state => text()();
   TextColumn get reason => text().nullable()();
   IntColumn get googleWrittenAt => integer().nullable()();

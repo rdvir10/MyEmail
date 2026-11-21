@@ -2,27 +2,15 @@ import 'package:collection/collection.dart';
 import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart' show immutable;
 
+import '../../domain/contact_sync_types.dart';
+import '../../domain/synced_contact.dart' show ContactSide;
 import '../cache/mail_database.dart';
 
-/// Which address book a contact is in: the Google account's, read through
-/// the People API, or the Microsoft account's, read through Graph.
-enum ContactSide {
-  google,
-  graph;
-
-  ContactSide get other => this == google ? graph : google;
-}
-
-/// Whether a contact contact sync has decided about is synced with its
-/// partner, or held back.
-enum ContactLinkState { paired, held }
-
-/// Why a contact is held: Ron's Leave it out; waiting under Needs a look;
-/// kept (a delete skipped because the contact had changed, or Ron's Don't
-/// delete them); moved out of the main Contacts folder in Hadco, its pair
-/// coming back if it returns; refused by a server; or held by a brake until
-/// it is answered.
-enum ContactHoldReason { leftOut, waiting, kept, movedOut, refused, brake }
+// The sides, a row's state and why it is held are the planner's kinds
+// (ContactSide, ContactLinkState, ContactHeldReason), kept by their codes,
+// so its rows and the planner's inputs are one vocabulary.
+export '../../domain/contact_sync_types.dart';
+export '../../domain/synced_contact.dart' show ContactSide;
 
 /// A bin row's state: written before the delete is sent, done once the
 /// server has it, or back because Ron brought the contact back himself.
@@ -248,8 +236,8 @@ class ContactLink {
   final String? graphBase;
   final ContactLinkState state;
 
-  /// Why it is held; null when paired.
-  final ContactHoldReason? reason;
+  /// Why it is held; null when paired. Kept as its [ContactHeldReason.code].
+  final ContactHeldReason? reason;
 
   /// When the sync last wrote the Google side: for the hour in which an
   /// absence from Google's listing is not taken as a deletion.
@@ -577,8 +565,10 @@ class ContactBinEntry {
       '${restore ? ', restore' : ''})';
 }
 
-/// A create about to be sent, for [ContactSyncStore.journalCreates].
-typedef ContactCreate = ({String sourceKey, String tag});
+/// A create about to be sent, for [ContactSyncStore.journalCreates]: the
+/// contact it copies, and the hidden tag it carries. (The planner's
+/// `ContactCreate` is the create itself.)
+typedef ContactCreateEntry = ({String sourceKey, String tag});
 
 /// What contact sync keeps between runs: the pairs, the links, the creates
 /// in flight, Needs a look and the bin.
@@ -696,7 +686,7 @@ abstract class ContactSyncStore {
   Future<List<ContactSyncOp>> journalCreates(
     int pairId,
     ContactSide side,
-    List<ContactCreate> creates,
+    List<ContactCreateEntry> creates,
   );
 
   /// Creates that have landed: each op cleared and its link saved, all in
@@ -1030,7 +1020,7 @@ class DriftContactSyncStore implements ContactSyncStore {
       googleBase: Value(link.googleBase),
       graphBase: Value(link.graphBase),
       state: Value(link.state.name),
-      reason: Value(link.reason?.name),
+      reason: Value(link.reason?.code),
       googleWrittenAt: Value(_ms(link.googleWrittenAt)),
       updatedAt: Value(at.millisecondsSinceEpoch),
     );
@@ -1068,7 +1058,7 @@ class DriftContactSyncStore implements ContactSyncStore {
   Future<List<ContactSyncOp>> journalCreates(
     int pairId,
     ContactSide side,
-    List<ContactCreate> creates,
+    List<ContactCreateEntry> creates,
   ) =>
       db.transaction(() async {
         final at = _now();
@@ -1451,9 +1441,7 @@ class DriftContactSyncStore implements ContactSyncStore {
 
   static ContactLink _linkOf(ContactLinkRow r) {
     final state = ContactLinkState.values.asNameMap()[r.state];
-    final reason = r.reason == null
-        ? null
-        : ContactHoldReason.values.asNameMap()[r.reason];
+    final reason = ContactHeldReason.fromCode(r.reason);
     return _linkRead(
       linkId: r.linkId,
       pairId: r.pairId,
@@ -1764,7 +1752,7 @@ class MemoryContactSyncStore implements ContactSyncStore {
   Future<List<ContactSyncOp>> journalCreates(
     int pairId,
     ContactSide side,
-    List<ContactCreate> creates,
+    List<ContactCreateEntry> creates,
   ) async {
     final at = _now();
     return [
@@ -1775,7 +1763,7 @@ class MemoryContactSyncStore implements ContactSyncStore {
   ContactSyncOp _journal(
     int pairId,
     ContactSide side,
-    ContactCreate create,
+    ContactCreateEntry create,
     DateTime at,
   ) {
     _ops.removeWhere((_, o) =>
@@ -2075,7 +2063,7 @@ ContactLink _linkRead({
   required String? googleBase,
   required String? graphBase,
   required ContactLinkState? state,
-  required ContactHoldReason? reason,
+  required ContactHeldReason? reason,
   required DateTime? googleWrittenAt,
   required DateTime? updatedAt,
 }) {
@@ -2092,7 +2080,7 @@ ContactLink _linkRead({
     googleBase: googleBase,
     graphBase: graphBase,
     state: paired ? ContactLinkState.paired : ContactLinkState.held,
-    reason: paired ? null : reason ?? ContactHoldReason.waiting,
+    reason: paired ? null : reason ?? ContactHeldReason.waiting,
     googleWrittenAt: googleWrittenAt,
     updatedAt: updatedAt,
   );
