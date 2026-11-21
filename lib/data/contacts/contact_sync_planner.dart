@@ -872,7 +872,8 @@ enum ContactReviewReason {
   /// It names a held contact.
   matchHeld,
 
-  /// It names a contact whose family name is another.
+  /// It names a contact whose family name is another: a unique email or
+  /// mobile does, or MyEmail's own link (the hidden tag) does.
   namesDisagree,
 
   /// Several contacts share the address (a family email) or the mobile.
@@ -3478,17 +3479,27 @@ class _Planner {
         : graphListed[id]?.tag;
     row?.done = true;
 
-    // A hidden tag naming a contact on the other side.
+    // A hidden tag naming a contact on the other side. It pairs them only
+    // while they are plainly one person still: names that agree, or an
+    // email or mobile in common. A copy Ron has since typed another
+    // person over keeps the tag, and is asked about instead.
     if (tag != null) {
       final target = other == ContactSide.google ? _newName(tag) : tag;
       final alive = other == ContactSide.google
           ? _googleAlive(target)
           : _graphAlive(target);
-      if (alive) {
-        final status = _status(other, target);
-        if (status == null ||
-            status == _Status.fresh ||
-            status == _Status.orphan) {
+      final status = alive ? _status(other, target) : null;
+      final free =
+          status == null || status == _Status.fresh || status == _Status.orphan;
+      final agrees = alive && _onePerson(details, _detailsOf(other, target));
+      if (alive && free && !agrees) {
+        // A contact due to be deleted is not offered: the usual rules.
+        if (status != _Status.orphan) {
+          _review(side, id, row, [target], ContactReviewReason.namesDisagree);
+          return;
+        }
+      } else if (alive) {
+        if (free) {
           _pair(side, id, target, row);
         } else {
           _review(
@@ -3523,7 +3534,10 @@ class _Planner {
             _wasRead(other, t))
           t,
     ];
-    if (taggedHere.length == 1) {
+    // Only while they are plainly one person still (see above); else the
+    // usual rules, which a stronger match may win.
+    if (taggedHere.length == 1 &&
+        _onePerson(details, _detailsOf(other, taggedHere.single))) {
       _pair(side, id, taggedHere.single, row);
       return;
     }
@@ -3610,6 +3624,19 @@ class _Planner {
     }
 
     _copy(side, id, linkId: row?.id);
+  }
+
+  /// Whether two contacts a hidden tag links are plainly one person
+  /// still: their names agree ([ContactNormaliser.namesAgree]), or they
+  /// share an email or a mobile.
+  bool _onePerson(SyncedContact a, SyncedContact b) {
+    if (ContactNormaliser.namesAgree(a.copyableName, b.copyableName)) {
+      return true;
+    }
+    final emails = _emailKeys(a).toSet();
+    if (_emailKeys(b).any(emails.contains)) return true;
+    final mobiles = _mobileKeys(a).toSet();
+    return _mobileKeys(b).any(mobiles.contains);
   }
 
   void _pair(ContactSide side, String id, String match, _Row? row) {

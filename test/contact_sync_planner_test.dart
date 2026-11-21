@@ -147,7 +147,7 @@ void main() {
         google: [
           g('people/c1', person(given: 'Ann', family: 'Cole'), tag: 'H1'),
         ],
-        graph: [h('H1', person(given: 'Annie', family: 'Smith'))],
+        graph: [h('H1', person(given: 'Annie', family: 'Cole'))],
       );
       final pair = byGoogle(plan, 'people/c1')!;
       expect(pair.graphId, 'H1');
@@ -156,6 +156,100 @@ void main() {
       expect(pair.create, isNull);
       expect(plan.counts.pairUp, 1);
       expect(plan.counts.addToGraph, 0);
+      // Renamed since, but sharing an email: one person still.
+      final renamed = run(
+        google: [
+          g(
+            'people/c1',
+            person(given: 'Ann', family: 'Cole', emails: ['ann@x.example']),
+            tag: 'H1',
+          ),
+        ],
+        graph: [
+          h(
+            'H1',
+            person(given: 'Ann', family: 'Lee', emails: ['ann@x.example']),
+          ),
+        ],
+      );
+      expect(byGoogle(renamed, 'people/c1')!.graphId, 'H1');
+      // Or a mobile.
+      final byMobile = run(
+        google: [
+          g(
+            'people/c1',
+            person(given: 'Ann', family: 'Cole', mobile: '212 555 0100'),
+            tag: 'H1',
+          ),
+        ],
+        graph: [
+          h(
+            'H1',
+            person(given: 'Ann', family: 'Lee', mobile: '+1 212 555 0100'),
+          ),
+        ],
+      );
+      expect(byGoogle(byMobile, 'people/c1')!.graphId, 'H1');
+    });
+
+    test('a tag between two people plainly different now is asked about',
+        () {
+      // A copy Ron typed another person over keeps MyEmail's link.
+      final plan = run(
+        google: [
+          g('people/c1', person(given: 'Ann', family: 'Cole'), tag: 'H1'),
+        ],
+        graph: [h('H1', person(given: 'Bob', family: 'Roe'))],
+      );
+      expect(plan.links.where((l) => l.state == ContactLinkState.paired),
+          isEmpty);
+      final item = plan.reviews.single;
+      expect(item.kind, ContactReviewKind.newContact);
+      expect(item.reason, ContactReviewReason.namesDisagree);
+      expect(item.googleName, 'people/c1');
+      expect(item.candidates, ['H1']);
+      expect(item.samePersonOffered, isTrue);
+      expect(byGraph(plan, 'H1')!.reason, ContactHeldReason.candidate);
+      // One due to be deleted is not offered: the usual rules follow.
+      final orphan = run(
+        google: [g('people/c5', ann)],
+        graph: [
+          h('H5', person(given: 'Bob', family: 'Roe'), tag: 'people/c5'),
+        ],
+        graphGone: {'X'},
+        links: [link(1, 'people/c5', 'X', base: ann)],
+      );
+      expect(orphan.reviews, isEmpty);
+      expect(byLink(orphan, 1)!.delete!.contactId, 'people/c5');
+      expect(byGraph(orphan, 'H5')!.create!.side, ContactSide.google);
+    });
+
+    test('a hand copy typed over as Bob does not take Ann by its tag', () {
+      // After a reinstall: Gmail Ann (ann@x); Outlook Ann, made by Ron
+      // with her email and no tag; and Bob Roe, a hand copy of the sync's
+      // Ann typed over, still tagged with Gmail Ann.
+      final ann = person(given: 'Ann', family: 'Cole', emails: ['ann@x']);
+      final bob = person(given: 'Bob', family: 'Roe', emails: ['bob@x']);
+      final plan = run(
+        google: [g('people/c1', ann)],
+        graph: [h('H-bob', bob, tag: 'people/c1'), h('H-ann', ann)],
+      );
+      expect(byGoogle(plan, 'people/c1')!.graphId, 'H-ann');
+      final item = plan.reviews.single;
+      expect(item.graphId, 'H-bob');
+      expect(item.reason, ContactReviewReason.taggedPaired);
+      // The hand copy alone: no silent pair either.
+      final alone = run(
+        google: [g('people/c1', ann)],
+        graph: [h('H-bob', bob, tag: 'people/c1')],
+      );
+      expect(
+        alone.links.where(
+          (l) => l.googleName == 'people/c1' && l.graphId == 'H-bob',
+        ),
+        isEmpty,
+      );
+      expect(alone.reviews.single.graphId, 'H-bob');
     });
 
     test('a tag the other side carries pairs them, whichever is placed first',
