@@ -3629,11 +3629,25 @@ class _Planner {
   }
 
   /// Whether two contacts a hidden tag links are plainly one person
-  /// still: their names agree ([ContactNormaliser.namesAgree]), or they
-  /// share an email or a mobile.
+  /// still: both have a name, and the same family name or, where either
+  /// has none, the same full name; or they share an email or a mobile.
+  /// Not [ContactNormaliser.namesAgree], which takes a missing family
+  /// name, or no name at all, for agreement: a hand copy retyped as
+  /// "Bob", or as a company only, is no longer the contact it copied.
   bool _onePerson(SyncedContact a, SyncedContact b) {
-    if (ContactNormaliser.namesAgree(a.copyableName, b.copyableName)) {
-      return true;
+    final na = a.copyableName;
+    final nb = b.copyableName;
+    if (na != null && nb != null) {
+      final fa = ContactNormaliser.textKey(na.family);
+      final fb = ContactNormaliser.textKey(nb.family);
+      if (fa != null && fb != null) {
+        if (fa == fb) return true;
+      } else {
+        final full = ContactNormaliser.fullNameKey(na);
+        if (full != null && full == ContactNormaliser.fullNameKey(nb)) {
+          return true;
+        }
+      }
     }
     final emails = _emailKeys(a).toSet();
     if (_emailKeys(b).any(emails.contains)) return true;
