@@ -1186,6 +1186,14 @@ class ContactSyncPlan {
 
   /// What became of each of the input's answers, in the same order. Empty
   /// when the run stopped.
+  ///
+  /// The runner removes the Needs a look item (and the answer) of every
+  /// answer applied or dropped before it saves this plan's [reviews]: a
+  /// contact a dropped answer names is placed again, and the item that
+  /// raises can have the same kind and ids as the dropped one, which the
+  /// store's saveReview would fold into the old item, keeping its old
+  /// answer, so it would run again and be dropped again. A waiting
+  /// answer and its item stay.
   final List<ContactAnswerOutcome> answers;
 
   /// Outlook contacts whose only read this run left out a synced property
@@ -2453,6 +2461,9 @@ class _Planner {
   /// rows pass keeps a waiting row until its contact is gone. It goes
   /// through the new-contact rules again instead: now, if it was read
   /// this run, else as a candidate, which every run reads and places.
+  /// The item raised again may have the dropped one's kind and ids, so
+  /// the runner removes the dropped answer's item before saving this
+  /// plan's (see [ContactSyncPlan.answers]).
   void _placeAgain(ContactAnswer answer) {
     final g = answer.googleName == null ? null : _newName(answer.googleName!);
     for (final (side, id) in [
