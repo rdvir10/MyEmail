@@ -706,14 +706,17 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
               : null,
         ),
       if (backupSaid != null) _Para(backupSaid),
-      _Para(
-        "Worth knowing: your Gmail contacts will be kept in $graphName's "
-        "mailbox too, where $graphName's IT can see them and where they "
-        "stay if you leave, and $graphName's contacts will be in your "
-        'Gmail. The backup files hold both address books.',
-        muted: true,
-        top: 12,
-      ),
+      // Only once there is a Microsoft account to name: "the Microsoft
+      // account's IT" says nothing.
+      if (graph != null)
+        _Para(
+          "Worth knowing: your Gmail contacts will be kept in $graphName's "
+          "mailbox too, where $graphName's IT can see them and where they "
+          "stay if you leave, and $graphName's contacts will be in your "
+          'Gmail. The backup files hold both address books.',
+          muted: true,
+          top: 12,
+        ),
       _Buttons([
         FilledButton.icon(
           key: const ValueKey('contact-sync-start'),

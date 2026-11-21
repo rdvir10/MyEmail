@@ -399,6 +399,8 @@ void main() {
       expect(button('contact-sync-access:acct-h'), findsNothing);
       expect(button('contact-sync-access:acct-m'), findsNothing);
       expect(button('contact-sync-choose-first'), findsOneWidget);
+      expect(find.textContaining('Worth knowing'), findsNothing,
+          reason: "no \"the Microsoft account's IT\" before one is chosen");
       for (final key in [
         'contact-sync-preview',
         'contact-sync-backup',
@@ -416,6 +418,8 @@ void main() {
       expect(button('contact-sync-access:acct-h'), findsOneWidget);
       expect(button('contact-sync-choose-first'), findsNothing);
       expect(enabled(tester, 'contact-sync-preview'), isTrue);
+      expect(find.textContaining("where Hadco's IT can see them"),
+          findsOneWidget);
     });
 
     testWidgets('with no pair yet and two Gmail accounts, Ron picks one',
