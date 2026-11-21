@@ -2210,7 +2210,39 @@ class _Planner {
 
   void _answer() {
     for (final answer in input.answers) {
-      answerOutcomes.add(_answerOne(answer));
+      final outcome = _answerOne(answer);
+      answerOutcomes.add(outcome);
+      if (outcome == ContactAnswerOutcome.dropped) _placeAgain(answer);
+    }
+  }
+
+  /// A dropped answer's item goes, so a contact it names that waited
+  /// under that item would be held with nothing on screen for good: the
+  /// rows pass keeps a waiting row until its contact is gone. It goes
+  /// through the new-contact rules again instead: now, if it was read
+  /// this run, else as a candidate, which every run reads and places.
+  void _placeAgain(ContactAnswer answer) {
+    final g = answer.googleName == null ? null : _newName(answer.googleName!);
+    for (final (side, id) in [
+      if (g != null) (ContactSide.google, g),
+      if (answer.graphId case final String h) (ContactSide.graph, h),
+    ]) {
+      final row = _rowOf(side, id);
+      if (row == null ||
+          row.done ||
+          row.state != ContactLinkState.held ||
+          row.reason != ContactHeldReason.waiting ||
+          !_alive(side, id)) {
+        continue;
+      }
+      waitingSubjects.remove((side, id));
+      if (_wasRead(side, id)) {
+        row.reopened = true;
+        _setStatus(side, id, _Status.fresh);
+      } else {
+        _hold(side, id, ContactHeldReason.candidate, linkId: row.id);
+        row.done = true;
+      }
     }
   }
 
@@ -2233,10 +2265,16 @@ class _Planner {
     // The plan's moved-out rule (both ids kept, the pair back when it
     // returns) is for a pair, and the rows pass applies it to the row; a
     // contact with one id held as moved out would read, on its return, as
-    // a pair whose Gmail side went, and be deleted.
-    ContactAnswerOutcome? unread(List<(ContactSide, String?)> contacts) {
+    // a pair whose Gmail side went, and be deleted. Copy it back on a
+    // kept contact away is the exception ([waitWhileAway]): a kept row
+    // goes through no rules again, so the answer waits for its return.
+    ContactAnswerOutcome? unread(
+      List<(ContactSide, String?)> contacts, {
+      bool waitWhileAway = false,
+    }) {
       for (final (side, id) in contacts) {
-        if (_isGone(side, id) || _movedOut(side, id)) return dropped;
+        if (_isGone(side, id)) return dropped;
+        if (_movedOut(side, id)) return waitWhileAway ? waiting : dropped;
       }
       for (final (side, id) in contacts) {
         if (id != null && !_wasRead(side, id)) return waiting;
@@ -2270,7 +2308,13 @@ class _Planner {
         _answered(named);
         return applied;
       case ContactAnswerKind.copyAnyway || ContactAnswerKind.copyBack:
-        if (unread(named) case final ContactAnswerOutcome o) return o;
+        if (unread(
+              named,
+              waitWhileAway: answer.kind == ContactAnswerKind.copyBack,
+            )
+            case final ContactAnswerOutcome o) {
+          return o;
+        }
         var any = false;
         for (final (side, id) in named) {
           final row = _rowOf(side, id);

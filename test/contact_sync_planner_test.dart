@@ -2504,7 +2504,90 @@ void main() {
       expect(pair.reason, ContactHeldReason.movedOut);
       expect(pair.graphId, 'H1');
       expect(pair.writes, isFalse);
-      expect(byLink(plan, 2), isNull, reason: 'H2 is not paired');
+      // H2 is not paired: its item went with the answer, and it is held
+      // as a candidate, to be placed again once it is back and read.
+      final away = byLink(plan, 2)!;
+      expect(away.reason, ContactHeldReason.candidate);
+      expect(away.graphId, 'H2');
+      expect(away.writes, isFalse);
+    });
+
+    test('a contact whose answer is dropped is placed again', () {
+      final annCole = person(given: 'Ann', family: 'Cole', emails: ['a@x']);
+      final annLee = person(given: 'Ann', family: 'Lee', emails: ['a@x']);
+      // Gmail c2 waits under "names disagree", Outlook H2 is its candidate.
+      final rows = [
+        link(
+          1,
+          'people/c2',
+          null,
+          base: annCole,
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.waiting,
+        ),
+        link(
+          2,
+          null,
+          'H2',
+          base: annLee,
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.candidate,
+        ),
+      ];
+      const same = [
+        ContactAnswer(
+          ContactAnswerKind.samePerson,
+          googleName: 'people/c2',
+          graphId: 'H2',
+        ),
+      ];
+      // Same person while H2 is in another folder: dropped, and c2, read
+      // this run, comes back under Needs a look at once.
+      final away = run(
+        google: [g('people/c2', annCole)],
+        graphMovedOut: {'H2'},
+        links: rows,
+        answers: same,
+      );
+      expect(away.answers, [ContactAnswerOutcome.dropped]);
+      final item = away.reviews.single;
+      expect(item.googleName, 'people/c2');
+      expect(item.candidates, ['H2']);
+      expect(byLink(away, 1)!.reason, ContactHeldReason.waiting);
+      // H2 deleted, and c2 not read this run: c2 is held as a candidate,
+      // which the next run reads and places.
+      final gone = run(graphGone: {'H2'}, links: rows, answers: same);
+      expect(gone.answers, [ContactAnswerOutcome.dropped]);
+      expect(byLink(gone, 1)!.reason, ContactHeldReason.candidate);
+      expect(contactsToRead(links: [
+        link(
+          1,
+          'people/c2',
+          null,
+          base: annCole,
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.candidate,
+        ),
+      ]).google, ['people/c2']);
+      // Copy it back on a kept contact away waits for its return.
+      final kept = run(
+        graphMovedOut: {'H1'},
+        links: [
+          link(
+            1,
+            null,
+            'H1',
+            base: ann,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.kept,
+          ),
+        ],
+        answers: const [
+          ContactAnswer(ContactAnswerKind.copyBack, graphId: 'H1'),
+        ],
+      );
+      expect(kept.answers, [ContactAnswerOutcome.waiting]);
+      expect(byLink(kept, 1), isNull);
     });
 
     test('Apply them holds a pair moved out of Contacts as moved out', () {
