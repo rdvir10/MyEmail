@@ -18,9 +18,11 @@ export '../domain/calendar_reads.dart' show KeptCalendar;
 export '../domain/account_calendars.dart' show CalendarInfo;
 export '../domain/calendar_change.dart' show EventChange, EventNotes;
 export 'contacts/account_people.dart' show PeopleSearchAccess, PeopleSearchState;
+export 'contacts/contact_sync_service.dart';
 import 'auth/microsoft_oauth.dart' show SignInUnreachable;
 import 'auth/oauth_token.dart';
 import 'contacts/account_people.dart' show PeopleSearchAccess;
+import 'contacts/contact_sync_service.dart' show ContactSyncService;
 import 'mailbox_settings/server_settings.dart';
 import '../domain/draft.dart';
 import '../domain/address_suggestions.dart';
@@ -226,6 +228,12 @@ abstract class MailEngine {
   /// for any other. Throws `SignInNeedsConsent` where the account has not
   /// allowed its profile to be read, and as [listAttachments] does.
   Future<PasswordAge> passwordAge(String accountId);
+
+  /// Contact sync between a Gmail account's contacts and a Microsoft
+  /// account's: its status, the accounts' access, the preview, the runs,
+  /// and Ron's answers. One member rather than many, so an engine that has
+  /// none hands back `NoContactSync`. See `ContactSyncService`.
+  ContactSyncService get contactSync;
 
   /// What is attached to a message. Cheap: no file is downloaded.
   Future<List<MailAttachment>> listAttachments(String messageId);

@@ -260,6 +260,10 @@ class FakeGooglePeople {
     return _json(p, null);
   }
 
+  /// The account's labels (user contact groups), resource name to name.
+  /// The system groups are listed beside them, as Google lists them.
+  final Map<String, String> labels = {};
+
   /// Every contact there now.
   List<Map<String, Object?>> get people => [
     for (final p in _current.values)
@@ -340,6 +344,25 @@ class FakeGooglePeople {
     try {
       if (request.method == 'GET' && path == '/v1/people/me/connections') {
         return _connections(q);
+      }
+      if (request.method == 'GET' && path == '/v1/contactGroups') {
+        return _ok({
+          'contactGroups': [
+            for (final system in const ['myContacts', 'starred'])
+              {
+                'resourceName': 'contactGroups/$system',
+                'groupType': 'SYSTEM_CONTACT_GROUP',
+                'name': system,
+              },
+            for (final MapEntry(:key, :value) in labels.entries)
+              {
+                'resourceName': key,
+                'groupType': 'USER_CONTACT_GROUP',
+                'name': value,
+              },
+          ],
+          'totalItems': labels.length + 2,
+        });
       }
       if (request.method == 'GET' && path == '/v1/people:batchGet') {
         return _batchGet(q);

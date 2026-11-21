@@ -352,6 +352,42 @@ class GoogleContactsApi {
     return true;
   }
 
+  /// The account's labels (Google's user contact groups), by resource name
+  /// to the name shown: for a Restore, which brings a contact back into the
+  /// labels that still exist, and for the vCard backup's CATEGORIES. The
+  /// system groups (My Contacts, Starred and the rest) are not labels.
+  Future<Map<String, String>> labels() async {
+    final labels = <String, String>{};
+    final pageTokens = <String>{};
+    String? pageToken;
+    do {
+      final uri = Uri.parse('$base/contactGroups').replace(
+        queryParameters: {
+          'pageSize': '1000',
+          'groupFields': 'name,groupType',
+          'pageToken': ?pageToken,
+        },
+      );
+      final response = await _exchange(() => http.Request('GET', uri));
+      if (response.statusCode >= 400) throw _failureFor(response, 'labels');
+      final json = _jsonOf(response);
+      final groups = json['contactGroups'];
+      for (final g in groups is List ? groups : const []) {
+        if (g is! Map || g['groupType'] != 'USER_CONTACT_GROUP') continue;
+        final name = _text(g['resourceName']);
+        final shown = _text(g['name']) ?? _text(g['formattedName']);
+        if (name != null && shown != null) labels[name] = shown;
+      }
+      pageToken = _text(json['nextPageToken']);
+      if (pageToken != null && !pageTokens.add(pageToken)) {
+        throw const ConnectionFailed(
+          'Google sent the same page of labels twice. Try again shortly.',
+        );
+      }
+    } while (pageToken != null);
+    return labels;
+  }
+
   /// [person] with [tag] as its hidden tag, every other app's `clientData`
   /// kept. [person] itself unchanged, and returned as it is without a tag.
   static Map<String, Object?> withTag(
