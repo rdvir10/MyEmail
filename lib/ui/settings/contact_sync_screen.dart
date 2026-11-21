@@ -72,9 +72,10 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   }
 
   /// The two accounts the screen is about: the pair the runner has, while
-  /// both are still in MyEmail; else those picked here, else the first of
-  /// each that could sync (a Gmail signed in with Google before one on an
-  /// app password).
+  /// both are still in MyEmail; else those picked here, else the only one
+  /// there is. Null where Ron still has to pick: with no pair yet and two
+  /// Microsoft accounts (or two Gmail ones), the screen does not guess
+  /// which he means, since Ron's steps never say to check.
   ///
   /// The runner's pair comes first, switched on or off: turning the switch
   /// off and on again (as Ron will before an Undo changes) must carry on
@@ -88,10 +89,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       return (runnerGoogle, runnerGraph);
     }
     return (
-      _byId(googles, _pickedGoogle) ??
-          googles.firstWhereOrNull((a) => a.authMethod == AuthMethod.oauth) ??
-          googles.firstOrNull,
-      _byId(graphs, _pickedGraph) ?? graphs.firstOrNull,
+      _byId(googles, _pickedGoogle) ?? googles.singleOrNull,
+      _byId(graphs, _pickedGraph) ?? graphs.singleOrNull,
     );
   }
 
@@ -115,7 +114,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   Future<void> _pick({
     required bool google,
     required List<Account> from,
-    required Account current,
+    required Account? current,
     required Account? other,
   }) async {
     final picked = await showDialog<Account>(
@@ -140,14 +139,14 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
                       ],
                     ),
                   ),
-                  if (a.id == current.id) const Icon(Icons.check, size: 20),
+                  if (a.id == current?.id) const Icon(Icons.check, size: 20),
                 ],
               ),
             ),
         ],
       ),
     );
-    if (picked == null || !mounted || picked.id == current.id) return;
+    if (picked == null || !mounted || picked.id == current?.id) return;
     setState(() {
       if (google) {
         _pickedGoogle = picked.id;
@@ -353,7 +352,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
               key: const ValueKey('contact-sync-off'),
               muted: true,
             )
-          else if (google == null || graph == null)
+          else if (_googleAccounts(accounts).isEmpty ||
+              _graphAccounts(accounts).isEmpty)
             const _Para(
               'Contact sync needs a Gmail account and a Microsoft account '
               'in MyEmail. Add them in Settings, Accounts.',
@@ -375,8 +375,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   List<Widget> _onFor(
     List<Account> accounts,
     AsyncValue<ContactSyncStatus> statusValue,
-    Account google,
-    Account graph,
+    Account? google,
+    Account? graph,
   ) {
     final googles = _googleAccounts(accounts);
     final graphs = _graphAccounts(accounts);
@@ -385,6 +385,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     // The runner's state is this pair's only once it has them; before that
     // the screen offers the first sync for the accounts shown.
     final ours = s != null &&
+        google != null &&
+        graph != null &&
         s.googleAccountId == google.id &&
         s.graphAccountId == graph.id;
     return [
@@ -392,7 +394,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         ListTile(
           key: const ValueKey('contact-sync-google'),
           title: const Text('Gmail account'),
-          subtitle: Text(google.emailAddress),
+          subtitle: Text(google?.emailAddress ?? 'Choose the Gmail account'),
           trailing: const Icon(Icons.arrow_drop_down),
           onTap: () => _pick(
             google: true,
@@ -404,7 +406,9 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       ListTile(
         key: const ValueKey('contact-sync-with'),
         title: const Text('Sync Gmail with'),
-        subtitle: Text(graphName),
+        subtitle: Text(
+          graph == null ? 'Choose the Microsoft account' : graphName,
+        ),
         trailing: graphs.length > 1 ? const Icon(Icons.arrow_drop_down) : null,
         onTap: graphs.length > 1
             ? () => _pick(
@@ -415,7 +419,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
                 )
             : null,
       ),
-      for (final account in [google, graph])
+      for (final account in [?google, ?graph])
         _AccessRow(
           account: account,
           busy: _allowing.contains(account.id),
@@ -439,7 +443,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
               child: Center(child: CircularProgressIndicator()),
             ),
         }
-      else if (s.isRunning && ours)
+      else if (ours && s.isRunning)
         ..._running(s.running!)
       else if (!ours || !s.firstStarted)
         ..._firstSync(google, graph, graphName)
@@ -499,13 +503,17 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       );
 
   /// Before the first sync: the preview, the backup, and Start, greyed out
-  /// until both are done.
-  List<Widget> _firstSync(Account google, Account graph, String graphName) {
-    final pair = ContactSyncFirstSteps.pairKey(google.id, graph.id);
+  /// until both are done; all three greyed out until both accounts are
+  /// known.
+  List<Widget> _firstSync(Account? google, Account? graph, String graphName) {
+    final both = google != null && graph != null;
     final all = ref.watch(contactSyncFirstStepsProvider);
-    final steps = all.pair == pair ? all : const ContactSyncFirstSteps();
+    final steps = both &&
+            all.pair == ContactSyncFirstSteps.pairKey(google.id, graph.id)
+        ? all
+        : const ContactSyncFirstSteps();
     final preview = steps.preview;
-    final ready = preview != null && steps.backupSaved;
+    final ready = both && preview != null && steps.backupSaved;
     final backupSaid = _backupSaid ??
         switch (steps.saved.length) {
           0 => null,
@@ -515,6 +523,13 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         };
     return [
       const _Heading('First sync'),
+      if (!both)
+        const _Para(
+          'Choose the accounts to sync first: Preview, Save backup and '
+          'Start sync wait for it.',
+          key: ValueKey('contact-sync-choose-first'),
+          strong: true,
+        ),
       const _Para(
         'Nothing changes until you have seen a preview of the first sync. '
         'It deletes nothing, and never overwrites a detail that differs '
@@ -524,7 +539,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       _Buttons([
         OutlinedButton.icon(
           key: const ValueKey('contact-sync-preview'),
-          onPressed: _previewing ? null : () => _preview(google, graph),
+          onPressed:
+              _previewing || !both ? null : () => _preview(google, graph),
           icon: const Icon(Icons.visibility_outlined),
           label: Text(preview == null ? 'Preview' : 'Preview again'),
         ),
@@ -534,7 +550,9 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         _Problem(
           doing: 'Previewing the first contact sync',
           error: e,
-          onRemedy: _remedy(e, google, graph, () => _preview(google, graph)),
+          onRemedy: both
+              ? _remedy(e, google, graph, () => _preview(google, graph))
+              : null,
         ),
       if (preview != null) _PreviewTable(preview: preview, graphName: graphName),
       const _Para(
@@ -545,8 +563,9 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       _Buttons([
         OutlinedButton.icon(
           key: const ValueKey('contact-sync-backup'),
-          onPressed:
-              _saving ? null : () => _saveBackup(google, graph, graphName),
+          onPressed: _saving || !both
+              ? null
+              : () => _saveBackup(google, graph, graphName),
           icon: const Icon(Icons.save_alt),
           label: const Text('Save backup'),
         ),
@@ -556,12 +575,14 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         _Problem(
           doing: 'Saving the contacts backup',
           error: e,
-          onRemedy: _remedy(
-            e,
-            google,
-            graph,
-            () => _saveBackup(google, graph, graphName),
-          ),
+          onRemedy: both
+              ? _remedy(
+                  e,
+                  google,
+                  graph,
+                  () => _saveBackup(google, graph, graphName),
+                )
+              : null,
         ),
       if (backupSaid != null) _Para(backupSaid),
       _Para(

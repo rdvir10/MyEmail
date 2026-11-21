@@ -323,6 +323,87 @@ void main() {
       expect(sync.chosen, isEmpty);
     });
 
+    testWidgets('with no pair yet and two Microsoft accounts, nothing is '
+        'guessed: Ron picks one before anything can start', (tester) async {
+      sync = FakeContactSync();
+      engine = _Engine(sync, const [gmail, studio, hadco]);
+      await pumpScreen(tester);
+
+      expect(
+        find.descendant(
+          of: button('contact-sync-with'),
+          matching: find.text('Choose the Microsoft account'),
+        ),
+        findsOneWidget,
+      );
+      expect(button('contact-sync-access:acct-g'), findsOneWidget);
+      expect(button('contact-sync-access:acct-h'), findsNothing);
+      expect(button('contact-sync-access:acct-m'), findsNothing);
+      expect(button('contact-sync-choose-first'), findsOneWidget);
+      for (final key in [
+        'contact-sync-preview',
+        'contact-sync-backup',
+        'contact-sync-start',
+      ]) {
+        expect(enabled(tester, key), isFalse, reason: key);
+      }
+      expect(sync.chosen, isEmpty);
+
+      await tester.tap(button('contact-sync-with'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Hadco'));
+      await tester.pumpAndSettle();
+      expect(sync.chosen, [(google: 'acct-g', graph: 'acct-h')]);
+      expect(button('contact-sync-access:acct-h'), findsOneWidget);
+      expect(button('contact-sync-choose-first'), findsNothing);
+      expect(enabled(tester, 'contact-sync-preview'), isTrue);
+    });
+
+    testWidgets('with no pair yet and two Gmail accounts, Ron picks one',
+        (tester) async {
+      const second = Account(
+        id: 'acct-g2',
+        displayName: 'Family',
+        emailAddress: 'family@gmail.example',
+        provider: MailProvider.gmail,
+        authMethod: AuthMethod.oauth,
+        colorValue: 0xFFC239B3,
+      );
+      sync = FakeContactSync();
+      engine = _Engine(sync, const [gmail, second, hadco]);
+      await pumpScreen(tester);
+
+      expect(
+        find.descendant(
+          of: button('contact-sync-google'),
+          matching: find.text('Choose the Gmail account'),
+        ),
+        findsOneWidget,
+      );
+      expect(button('contact-sync-access:acct-g'), findsNothing);
+      expect(enabled(tester, 'contact-sync-preview'), isFalse);
+      expect(sync.chosen, isEmpty);
+    });
+
+    testWidgets('with one account of each the pair is plain, and Preview '
+        'chooses it', (tester) async {
+      sync = FakeContactSync();
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+
+      expect(
+        find.descendant(
+          of: button('contact-sync-with'),
+          matching: find.text('Hadco'),
+        ),
+        findsOneWidget,
+      );
+      expect(sync.chosen, isEmpty);
+      await tester.tap(button('contact-sync-preview'));
+      await tester.pumpAndSettle();
+      expect(sync.chosen, [(google: 'acct-g', graph: 'acct-h')]);
+    });
+
     testWidgets('an account not allowed yet says so, with Allow',
         (tester) async {
       sync = FakeContactSync(status: chosenOnly, access: {
