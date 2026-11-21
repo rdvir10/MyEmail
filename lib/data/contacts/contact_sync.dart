@@ -464,6 +464,7 @@ class ContactSync implements ContactSyncService {
               },
               deletedAt: b.deletedAt,
               restoreAsked: b.restore,
+              restoreProblem: held.restoreProblems[b.binId],
             ),
       ],
       googleCount: pair.googleCount,
@@ -688,6 +689,13 @@ class ContactSync implements ContactSyncService {
   @override
   Future<void> restore(int deletedId) async {
     final entry = await store.askRestore(deletedId);
+    if (entry != null) {
+      await store.updatePair(entry.pairId, (p) {
+        final h = _Held.parse(p.held);
+        if (h.restoreProblems.remove(deletedId) == null) return p;
+        return p.copyWith(held: h.encode());
+      });
+    }
     _changed();
     if (entry != null) unawaited(_go(again: true));
   }
@@ -954,7 +962,81 @@ class _Run {
     await _readGraph(fresh: normaliserMoved || preview);
     _checkStop();
     await _readMore();
+    if (!preview) await _settleRestores();
     _checkStop();
+  }
+
+  /// Restores held back this run: a create of theirs whose answer was
+  /// lost has not shown yet, and may only be Google's lag. Still planned,
+  /// so that what they made is not placed as a new contact meanwhile, but
+  /// not carried out.
+  final restoreWaiting = <int>{};
+
+  /// A Restore's creates noted but not answered (the run stopped, or the
+  /// answer was lost): the contact made is looked for by its tag among
+  /// those read, and taken as made; not found, the Restore waits out the
+  /// hour Google's listings may lag, then the create counts as not made.
+  Future<void> _settleRestores() async {
+    if (held.restoring.isEmpty) return;
+    final rowGoogle = {for (final l in links) ?l.googleName};
+    final rowGraph = {for (final l in links) ?l.graphId};
+    final binIds = {for (final b in bin) b.binId};
+    final kept = <Map<String, Object?>>[];
+    var changed = false;
+    for (final note in held.restoring) {
+      final binId = note['binId'];
+      final side = _sideOf(note['side']);
+      if (binId is! int || side == null || !binIds.contains(binId)) {
+        changed = true;
+        continue;
+      }
+      if (_Held.madeBy(note) != null) {
+        kept.add(note);
+        continue;
+      }
+      final tag = note['tag'];
+      String? found;
+      if (tag is String) {
+        found = side == ContactSide.google
+            ? googleRead.entries
+                  .firstWhereOrNull(
+                    (e) =>
+                        !rowGoogle.contains(e.key) && googleTag(e.value) == tag,
+                  )
+                  ?.key
+            : graphRead.entries
+                  .firstWhereOrNull(
+                    (e) => !rowGraph.contains(e.key) && _tagOf(e.value) == tag,
+                  )
+                  ?.key;
+      }
+      if (found != null) {
+        kept.add({
+          ...note,
+          side == ContactSide.google ? 'googleName' : 'graphId': found,
+        });
+        changed = true;
+        continue;
+      }
+      final at = _time(note['at']);
+      if (at != null && now.difference(at) < contactGrace) {
+        restoreWaiting.add(binId);
+        kept.add(note);
+        continue;
+      }
+      changed = true;
+    }
+    if (!changed) return;
+    held.restoring
+      ..clear()
+      ..addAll(kept);
+    await store.updatePair(pairId, (p) {
+      final h = _Held.parse(p.held);
+      h.restoring
+        ..clear()
+        ..addAll(kept);
+      return p.copyWith(held: h.encode());
+    });
   }
 
   /// The device claim: another device's, younger than a week, stops the
@@ -1295,21 +1377,40 @@ class _Run {
   /// The bin as the planner reads it. Not the rows Ron brought back
   /// himself: the planner takes every id in its bin input for the sync's
   /// own deletion, and would ignore Ron deleting such a contact again.
+  ///
+  /// A Restore part made has the contacts it made in place of those the
+  /// row names (see [_Held.restoring]), so the planner finds them back by
+  /// id rather than make them again.
   List<ContactBinInput> _binInputs() => [
     for (final b in bin)
-      if (b.binId != null && b.state != ContactBinState.back)
-        ContactBinInput(
-          binId: b.binId!,
-          side: b.side,
-          contactId: b.contactId,
-          partnerId: b.partnerId,
-          done: b.state == ContactBinState.done,
-          raw: _decode(b.raw),
-          partnerBase: _decode(b.partnerBase),
-          title: b.title,
-          restore: b.restore,
-        ),
+      if (b.binId != null && b.state != ContactBinState.back) _binInput(b),
   ];
+
+  ContactBinInput _binInput(ContactBinEntry b) {
+    var contactId = b.contactId;
+    var partnerId = b.partnerId;
+    for (final note in held.restoring) {
+      if (note['binId'] != b.binId) continue;
+      final made = _Held.madeBy(note);
+      if (made == null) continue;
+      if (_sideOf(note['side']) == b.side) {
+        contactId = made;
+      } else {
+        partnerId = made;
+      }
+    }
+    return ContactBinInput(
+      binId: b.binId!,
+      side: b.side,
+      contactId: contactId,
+      partnerId: partnerId,
+      done: b.state == ContactBinState.done,
+      raw: _decode(b.raw),
+      partnerBase: _decode(b.partnerBase),
+      title: b.title,
+      restore: b.restore,
+    );
+  }
 
   /// Every answer queued: on Needs a look items, on the brakes' questions,
   /// and those planned by a run that stopped before it finished.
@@ -2300,44 +2401,66 @@ class _Run {
 
   // Restores.
 
+  /// A Restore: the contacts the plan says to make, Outlook's first, each
+  /// noted on the pair before it is sent and its contact noted when it
+  /// comes back, so that a run stopped in between, a lost answer or a
+  /// lagging listing never makes one twice; then the two paired as a new
+  /// pair is, merged without overwriting. A server's refusal is this
+  /// Restore's alone: it is taken back, says why in Recently deleted, and
+  /// the run carries on.
   Future<void> _restore(ContactRestorePlan r, Set<String> labels) async {
-    final entry = bin.firstWhereOrNull((b) => b.binId == r.binId);
-    if (entry == null) return;
+    final stored = bin.firstWhereOrNull((b) => b.binId == r.binId);
+    if (stored == null || restoreWaiting.contains(r.binId)) return;
+    // The ids the row names, with any contact made already in its place:
+    // read again before each create, so the second carries the first's.
+    ContactBinInput entry() => _binInput(stored);
     String? g = r.googleName;
     String? h = r.graphId;
     Map<String, Object?>? gMade;
     Map<String, Object?>? hMade;
-    // Tagged with the ids the bin row names, which is how the next run
-    // finds them back should this one stop between the two creates.
-    if (r.googleRaw case final raw?) {
-      gMade = await google<Map<String, Object?>>(
-        (a) => a.create(
+    try {
+      // Tagged with the ids the bin row names (the contacts made so far
+      // standing in for them), which is how a later run finds them back.
+      if (r.graphRaw case final raw?) {
+        hMade = await _restoreCreate(
+          r.binId,
+          ContactSide.graph,
+          graphRestoreBody(raw),
+          entry().partnerId,
+        );
+        h = hMade['id'] as String?;
+      } else if (r.graphDetails case final details? when h == null) {
+        hMade = await _restoreCreate(
+          r.binId,
+          ContactSide.graph,
+          graphCreateBody(details),
+          entry().contactId,
+        );
+        h = hMade['id'] as String?;
+      }
+      // Put away between the two: the next run makes only the other.
+      if (hMade != null) _checkStop();
+      if (r.googleRaw case final raw?) {
+        gMade = await _restoreCreate(
+          r.binId,
+          ContactSide.google,
           googleRestoreBody(raw, labelsThatExist: labels),
-          tag: entry.partnerId,
-        ),
-      );
-      g = gMade['resourceName'] as String?;
+          entry().partnerId,
+        );
+        g = gMade['resourceName'] as String?;
+      } else if (r.googleDetails case final details? when g == null) {
+        gMade = await _restoreCreate(
+          r.binId,
+          ContactSide.google,
+          googleCreateBody(details),
+          entry().contactId,
+        );
+        g = gMade['resourceName'] as String?;
+      }
+    } on ContactRefused catch (e) {
+      await _restoreRefused(r.binId, e);
+      return;
     }
-    if (r.graphRaw case final raw?) {
-      hMade = await graph<Map<String, Object?>>(
-        (a) => a.create(graphRestoreBody(raw), tag: entry.partnerId),
-      );
-      h = hMade['id'] as String?;
-    }
-    if (r.googleDetails case final details? when g == null) {
-      gMade = await google<Map<String, Object?>>(
-        (a) => a.create(googleCreateBody(details), tag: entry.contactId),
-      );
-      g = gMade['resourceName'] as String?;
-    }
-    if (r.graphDetails case final details? when h == null) {
-      hMade = await graph<Map<String, Object?>>(
-        (a) => a.create(graphCreateBody(details), tag: entry.contactId),
-      );
-      h = hMade['id'] as String?;
-    }
-    if (gMade != null) googleMade++;
-    if (hMade != null) graphMade++;
     tally.restored++;
     // One found back rather than made is paired as it is now.
     var googleNow = gMade ?? (g == null ? null : googleRead[g]);
@@ -2350,32 +2473,187 @@ class _Run {
     }
     final googleName = g;
     final graphId = h;
-    final googleOne = googleNow;
-    final graphOne = graphNow;
-    await store.transaction(() async {
+    final googleOne = googleNow == null
+        ? null
+        : GoogleContact.fromPerson(googleNow);
+    final graphOne = graphNow == null ? null : GraphContact.fromJson(graphNow);
+    if (googleName == null ||
+        graphId == null ||
+        googleOne == null ||
+        graphOne == null) {
+      // Only one side to bring back: it is back, and the next run places
+      // it as it would any contact.
+      await store.transaction(() async {
+        await store.dropBin([r.binId]);
+        await _forgetRestore(r.binId);
+      });
+      return;
+    }
+    // Paired as a new pair is: a detail left differing between the two is
+    // listed under Needs a look, not passed over for ever.
+    final pairPlan = planPairedContact(
+      googleNow: googleOne.details,
+      graphNow: graphOne.details,
+      googleUpdatedAt: googleOne.updatedAt,
+      graphUpdatedAt: graphOne.updatedAt,
+      normaliser: norm,
+      newPair: true,
+    );
+    final saved = await store.transaction(() async {
       await store.dropBin([r.binId]);
-      if (googleName == null ||
-          graphId == null ||
-          googleOne == null ||
-          graphOne == null) {
-        return;
-      }
+      await _forgetRestore(r.binId);
       await store.deleteLinks(r.alsoRemove);
-      await store.saveLink(
+      final link = await store.saveLink(
         ContactLink(
           linkId: r.linkId,
           pairId: pairId,
           googleName: googleName,
           graphId: graphId,
-          googleEtag: googleContactEtag(googleOne),
-          graphChangeKey: graphOne['changeKey'] as String?,
-          googleBase: _encode(syncedFromPerson(googleOne)),
-          graphBase: _encode(syncedFromGraph(graphOne)),
+          googleEtag: googleOne.etag,
+          graphChangeKey: graphOne.changeKey,
+          googleBase: _encode(pairPlan.googleBase),
+          graphBase: _encode(pairPlan.graphBase),
           state: ContactLinkState.paired,
           googleWrittenAt: gMade != null ? now : null,
         ),
       );
+      if (pairPlan.differing.isNotEmpty) {
+        final same = [
+          for (final f in ContactField.values)
+            if (!pairPlan.differing.contains(f)) f,
+        ];
+        await _saveReview(
+          ContactReviewItem(
+            kind: ContactReviewKind.differing,
+            googleName: googleName,
+            graphId: graphId,
+            fields: pairPlan.differing,
+            googleValues: googleOne.details.withFieldsFrom(
+              SyncedContact.empty,
+              same,
+            ),
+            graphValues: graphOne.details.withFieldsFrom(
+              SyncedContact.empty,
+              same,
+            ),
+            title: r.title,
+          ),
+        );
+      }
+      return link;
     });
+    if (!pairPlan.writes) return;
+    await _update(
+      ContactLinkPlan(
+        linkId: saved.linkId,
+        googleName: googleName,
+        graphId: graphId,
+        googleEtag: googleOne.etag,
+        graphChangeKey: graphOne.changeKey,
+        googleBase: pairPlan.googleBase,
+        graphBase: pairPlan.graphBase,
+        googleNow: googleOne.details,
+        graphNow: graphOne.details,
+        googleWrite: pairPlan.googleWrite(version: googleOne.etag),
+        graphWrite: pairPlan.graphWrite(version: graphOne.changeKey),
+        newPair: true,
+        fromAnswer: true,
+        title: r.title,
+        settings: ContactPairSettings(
+          normaliser: norm,
+          googleUpdatedAt: googleOne.updatedAt,
+          graphUpdatedAt: graphOne.updatedAt,
+          newPair: true,
+        ),
+      ),
+    );
+  }
+
+  /// One of a Restore's creates, noted on the pair before it goes and
+  /// with what it made once it comes back.
+  Future<Map<String, Object?>> _restoreCreate(
+    int binId,
+    ContactSide side,
+    Map<String, Object?> body,
+    String? tag,
+  ) async {
+    final note = <String, Object?>{
+      'binId': binId,
+      'side': side.name,
+      'tag': ?tag,
+      'at': _ms(now),
+    };
+    await _noteRestore(binId, side, note);
+    final made = side == ContactSide.google
+        ? await google<Map<String, Object?>>((a) => a.create(body, tag: tag))
+        : await graph<Map<String, Object?>>((a) => a.create(body, tag: tag));
+    final id = side == ContactSide.google ? made['resourceName'] : made['id'];
+    if (id is! String) {
+      throw const ConnectionFailed('A contact was made without an id.');
+    }
+    await _noteRestore(binId, side, {
+      ...note,
+      side == ContactSide.google ? 'googleName' : 'graphId': id,
+    });
+    if (side == ContactSide.google) {
+      googleMade++;
+    } else {
+      graphMade++;
+      if (folderId == null && made['parentFolderId'] is String) {
+        folderId = made['parentFolderId'] as String;
+      }
+    }
+    return made;
+  }
+
+  /// [note] in place of any note of the same Restore and side.
+  Future<void> _noteRestore(
+    int binId,
+    ContactSide side,
+    Map<String, Object?> note,
+  ) async {
+    bool same(Map<String, Object?> n) =>
+        n['binId'] == binId && n['side'] == side.name;
+    held.restoring
+      ..removeWhere(same)
+      ..add(note);
+    await store.updatePair(pairId, (p) {
+      final h = _Held.parse(p.held);
+      h.restoring
+        ..removeWhere(same)
+        ..add(note);
+      return p.copyWith(held: h.encode());
+    });
+  }
+
+  /// A Restore done with, or given up: its notes go.
+  Future<void> _forgetRestore(int binId) async {
+    held.restoring.removeWhere((n) => n['binId'] == binId);
+    await store.updatePair(pairId, (p) {
+      final h = _Held.parse(p.held);
+      h.restoring.removeWhere((n) => n['binId'] == binId);
+      h.restoreProblems.remove(binId);
+      return p.copyWith(held: h.encode());
+    });
+  }
+
+  /// A server would not take a contact a Restore made: the Restore is
+  /// taken back and says why in Recently deleted. A contact it made
+  /// before the refusal stays, and the next run places it as any other.
+  Future<void> _restoreRefused(int binId, ContactRefused refused) async {
+    await store.transaction(() async {
+      await store.askRestore(binId, restore: false);
+      held.restoring.removeWhere((n) => n['binId'] == binId);
+      await store.updatePair(pairId, (p) {
+        final h = _Held.parse(p.held);
+        h.restoring.removeWhere((n) => n['binId'] == binId);
+        h.restoreProblems[binId] = 'Could not restore. ${refused.message}';
+        return p.copyWith(held: h.encode());
+      });
+    });
+    tally.refused++;
+    debugPrint('[myemail] contacts: a Restore was refused '
+        '(HTTP ${refused.status})');
   }
 
   // --- the end ---------------------------------------------------------------
@@ -2403,6 +2681,7 @@ class _Run {
           id,
     };
     final rows = await store.links(pairId);
+    final binIds = {for (final b in await store.bin(pairId)) b.binId};
     final tallyNow = tally.toTally(at, complete: true);
     await store.updatePair(pairId, (p) {
       final h = _Held.parse(p.held);
@@ -2419,6 +2698,8 @@ class _Run {
         ..clear()
         ..addAll(plan.graphPassedOver);
       h.quotaUntil = null;
+      h.restoring.removeWhere((n) => !binIds.contains(n['binId']));
+      h.restoreProblems.removeWhere((id, _) => !binIds.contains(id));
       return p.copyWith(
         googleSyncToken: googleToken ?? p.googleSyncToken,
         googleMask: googleContactFieldsVersion,
@@ -2692,6 +2973,17 @@ class _Held {
     }
     held.quotaUntil = _time(map['quotaUntil']);
     held.noticeSeenAt = _time(map['noticeSeenAt']);
+    final restoring = map['restoring'];
+    for (final r in restoring is List ? restoring : const []) {
+      if (r is Map) held.restoring.add(r.cast<String, Object?>());
+    }
+    final problems = map['restoreProblems'];
+    if (problems is Map) {
+      for (final MapEntry(:key, :value) in problems.entries) {
+        final id = int.tryParse('$key');
+        if (id != null && value is String) held.restoreProblems[id] = value;
+      }
+    }
     return held;
   }
 
@@ -2700,6 +2992,20 @@ class _Held {
   final List<String> passedOver = [];
   DateTime? quotaUntil;
   DateTime? noticeSeenAt;
+
+  /// A Restore's creates, each noted before it is sent: the bin row, the
+  /// side, the hidden tag it carries, when, and once its answer came, the
+  /// contact it made (under `googleName` or `graphId`, where a re-key
+  /// reaches it). A note with no contact is a create whose answer was
+  /// lost: the next run looks for its tag before anything is made again.
+  final List<Map<String, Object?>> restoring = [];
+
+  /// Why a Restore could not be done, by bin row, in a sentence.
+  final Map<int, String> restoreProblems = {};
+
+  /// The contact a Restore's note says it made, if its answer came.
+  static String? madeBy(Map<String, Object?> note) =>
+      (note['googleName'] ?? note['graphId']) as String?;
 
   int get _nextId =>
       questions.fold(0, (n, q) => q.id > n ? q.id : n) + 1;
@@ -2777,6 +3083,12 @@ class _Held {
     if (passedOver.isNotEmpty) 'passedOver': passedOver,
     'quotaUntil': ?_ms(quotaUntil),
     'noticeSeenAt': ?_ms(noticeSeenAt),
+    if (restoring.isNotEmpty) 'restoring': restoring,
+    if (restoreProblems.isNotEmpty)
+      'restoreProblems': {
+        for (final MapEntry(:key, :value) in restoreProblems.entries)
+          '$key': value,
+      },
   });
 }
 

@@ -1517,6 +1517,148 @@ void main() {
       expect(h.contactWritesOf(), isEmpty);
     });
 
+    test('a Restore a server refuses is taken back, says why, and stops '
+        'nothing else', () async {
+      h = Harness(lagWrites: true);
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.google.publish();
+      h.graph.deleteFromOutlook(pairs[0].graph);
+      var status = await h.later();
+      h.google.publish();
+      final deleted = status.recentlyDeleted.single;
+      expect(deleted.side, ContactSide.google);
+
+      // Outlook will not take the partner made again.
+      h.graph.refuse = (c) => '${c['givenName']}' == 'P0';
+      h.graph.editFromOutlook(pairs[1].graph, {'companyName': 'Still on'});
+      await h.sync.restore(deleted.id);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      final entry = status.recentlyDeleted.single;
+      expect(entry.restoreAsked, isFalse);
+      expect(
+        entry.restoreProblem,
+        'Could not restore. Microsoft would not take the contact '
+        '(HTTP 400, ErrorInvalidProperty).',
+      );
+      // The rest of the run went on.
+      expect(companyOf(h.google.person(pairs[1].google)), 'Still on');
+      expect(h.google.nameWithEmail('p0@example.com'), isNull);
+
+      // Later runs do not try again by themselves.
+      h.requests.clear();
+      status = await h.later(after: const Duration(minutes: 10));
+      expect(status.halt, isNull);
+      expect(h.contactWritesOf(), isEmpty);
+
+      // Pressed again, once Outlook takes it: both back, paired, once.
+      h.graph.refuse = null;
+      await h.sync.restore(entry.id);
+      expect(
+        (await h.status()).recentlyDeleted.single.restoreProblem,
+        isNull,
+      );
+      await h.sync.syncNow();
+      h.google.publish();
+      status = await h.later(after: const Duration(minutes: 10));
+      expect(status.recentlyDeleted, isEmpty);
+      expect(h.graph.count, 2);
+      expect(h.google.count, 2);
+      expect(await h.paired(), hasLength(2));
+    });
+
+    test("a Restore's create whose answer was lost is found by its tag, "
+        'and not made again while Google lags', () async {
+      h = Harness(lagWrites: true);
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.google.publish();
+      h.graph.deleteFromOutlook(pairs[0].graph);
+      var status = await h.later();
+      h.google.publish();
+      h.after = (r) {
+        if (r.url.path.endsWith(':createContact')) {
+          throw http.ClientException('connection lost');
+        }
+      };
+      await h.sync.restore(status.recentlyDeleted.single.id);
+      await h.sync.syncNow();
+      expect((await h.status()).halt!.kind, ContactSyncHaltKind.failed);
+      expect(h.google.count, 2);
+      h.after = null;
+
+      // Ten minutes on, Google has not listed the contact made yet.
+      status = await h.later(after: const Duration(minutes: 10));
+      expect(status.halt, isNull);
+      expect(h.google.count, 2);
+      expect(h.requestsTo(':createContact'), hasLength(1));
+
+      // Once listed, it is taken as made, and paired with its partner.
+      h.google.publish();
+      status = await h.later(after: const Duration(minutes: 10));
+      expect(status.halt, isNull);
+      expect(status.recentlyDeleted, isEmpty);
+      expect(h.google.count, 2);
+      expect(h.graph.count, 2);
+      expect(await h.paired(), hasLength(2));
+      expect(h.requestsTo(':createContact'), hasLength(1));
+    });
+
+    test('a Restore stopped between its two creates makes only the one '
+        'left', () async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.google.deleteFromGmail(pairs[0].google);
+      var status = await h.later();
+      expect(h.graph.contact(pairs[0].graph), isNull);
+      h.before = (r) async {
+        if (r.method == 'POST' && r.url.path.endsWith('/me/contacts')) {
+          unawaited(h.sync.stop());
+        }
+      };
+      await h.sync.restore(status.recentlyDeleted.single.id);
+      await h.sync.syncNow();
+      expect((await h.status()).halt!.kind, ContactSyncHaltKind.putAway);
+      expect(h.graph.count, 2);
+      expect(h.google.count, 1);
+      h.before = null;
+      status = await h.later(after: const Duration(minutes: 1));
+      expect(status.halt, isNull);
+      expect(status.recentlyDeleted, isEmpty);
+      expect(h.graph.count, 2);
+      expect(h.google.count, 2);
+      expect(await h.paired(), hasLength(2));
+    });
+
+    test('a restored pair whose two sides differ is listed, as a new pair '
+        'is', () async {
+      final ann = h.google.seed(
+        person('Ann', 'Lee', email: 'ann@example.com', company: 'Acme'),
+      );
+      final annH = h.graph.seed(
+        outlook('Ann', 'Lee', email: 'ann@example.com', company: 'Acme Corp'),
+      );
+      await h.firstSync();
+      var status = await h.status();
+      await h.sync.answerLook(
+        status.needsALook.single.id,
+        ContactSyncChoice.leaveAsTheyAre,
+      );
+      h.graph.deleteFromOutlook(annH);
+      status = await h.later();
+      expect(h.google.person(ann), isNull);
+      await h.sync.restore(status.recentlyDeleted.single.id);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.recentlyDeleted, isEmpty);
+      expect(await h.paired(), hasLength(1));
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.differing);
+      expect(look.fields, [ContactField.company]);
+    });
+
     test('a contact Ron made again and the sync copied is Already back: '
         'Restore makes nothing', () async {
       final pairs = seedPairs(h, 1);

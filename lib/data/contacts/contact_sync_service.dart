@@ -659,6 +659,7 @@ class ContactSyncDeleted {
     required this.state,
     this.deletedAt,
     this.restoreAsked = false,
+    this.restoreProblem,
   });
 
   final int id;
@@ -671,6 +672,13 @@ class ContactSyncDeleted {
 
   /// Restore pressed, waiting for a run.
   final bool restoreAsked;
+
+  /// Why the last Restore could not be done, a sentence to show as it is:
+  /// "Could not restore. Google would not take the contact (HTTP 400,
+  /// INVALID_ARGUMENT)." (or Microsoft). The Restore is taken back
+  /// ([restoreAsked] false); pressing Restore again clears this and tries
+  /// once more. Null when nothing went wrong.
+  final String? restoreProblem;
 }
 
 // ---------------------------------------------------------------------------
