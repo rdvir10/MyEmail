@@ -291,6 +291,7 @@ void main() {
         'Quick Steps',
         'Keyboard shortcuts',
         'Accounts',
+        'Contact sync',
         'Signatures',
         'Backup',
         'About',
