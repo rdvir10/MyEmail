@@ -1876,6 +1876,16 @@ class _Orphan {
   bool rescued = false;
 }
 
+/// Copies of one person: see `_Planner._copies`.
+class _Copies {
+  _Copies(this.members, this.name);
+
+  final Set<(ContactSide, String)> members;
+
+  /// Their full name, as [ContactNormaliser.fullNameKey] gives it.
+  final String name;
+}
+
 /// A plan with the Needs a look items that go or stay with it.
 class _Planned {
   _Planned(this.plan, [this.reviews = const []]);
@@ -1941,6 +1951,7 @@ class _Planner {
     _answer();
     _restore();
     _rowsPass();
+    _placeCopies();
     _newContacts(ContactSide.google);
     _newContacts(ContactSide.graph);
     _orphansLeft();
@@ -3409,6 +3420,201 @@ class _Planner {
     );
   }
 
+  // ---- Copies of one person.
+
+  /// Copies of one person (R1): contacts joined by a shared email or
+  /// mobile key, every one of them, on both sides, with a name to copy
+  /// and the same full name, with more than one on a side (counting the
+  /// partner a member is paired with). A contact with no name never joins
+  /// one, and a contact of another name on the keys (a family on one
+  /// address) leaves the whole set to the usual rules. Built from what
+  /// each contact holds now: its read, or its row's base.
+  late final List<_Copies> _copies = _findCopies();
+
+  late final Map<(ContactSide, String), _Copies> _copiesByContact = {
+    for (final group in _copies)
+      for (final member in group.members) member: group,
+  };
+
+  /// Whether [a] and [b], both on [side], are copies of one person.
+  bool _copiesWith(ContactSide side, String a, String b) {
+    final group = _copiesByContact[(side, a)];
+    return group != null && identical(group, _copiesByContact[(side, b)]);
+  }
+
+  List<_Copies> _findCopies() {
+    final keysOf = <(ContactSide, String), List<String>>{};
+    final byKey = <String, List<(ContactSide, String)>>{};
+    for (final (prefix, index) in [('e', _emailIndex), ('m', _mobileIndex)]) {
+      for (final MapEntry(:key, :value) in index.entries) {
+        final k = '$prefix:$key';
+        byKey[k] = value;
+        for (final owner in value) {
+          keysOf.putIfAbsent(owner, () => []).add(k);
+        }
+      }
+    }
+    final seen = <(ContactSide, String)>{};
+    final groups = <_Copies>[];
+    for (final start in keysOf.keys) {
+      if (!seen.add(start)) continue;
+      final members = <(ContactSide, String)>{start};
+      final queue = [start];
+      while (queue.isNotEmpty) {
+        final next = queue.removeLast();
+        for (final k in keysOf[next]!) {
+          for (final owner in byKey[k]!) {
+            if (seen.add(owner)) {
+              members.add(owner);
+              queue.add(owner);
+            }
+          }
+        }
+      }
+      if (members.length < 2) continue;
+      final names = {
+        for (final (side, id) in members)
+          ContactNormaliser.fullNameKey(_detailsOf(side, id).copyableName),
+      };
+      if (names.length != 1 || names.single == null) continue;
+      // Copies on a side: the members there, and the partners there of
+      // members paired across.
+      final googles = {
+        for (final (side, id) in members)
+          if (side == ContactSide.google)
+            id
+          else if (_rowOf(side, id) case final row?
+              when row.state == ContactLinkState.paired &&
+                  row.googleName != null)
+            row.googleName!,
+      };
+      final graphs = {
+        for (final (side, id) in members)
+          if (side == ContactSide.graph)
+            id
+          else if (_rowOf(side, id) case final row?
+              when row.state == ContactLinkState.paired && row.graphId != null)
+            row.graphId!,
+      };
+      if (googles.length < 2 && graphs.length < 2) continue;
+      groups.add(_Copies(members, names.single!));
+    }
+    return groups;
+  }
+
+  /// How complete a copy is: its synced detail values, each list item
+  /// counted.
+  int _completeness(ContactSide side, String id) {
+    var n = 0;
+    for (final value in _detailsOf(side, id).values.values) {
+      n += value is List ? value.length : 1;
+    }
+    return n;
+  }
+
+  /// [ids] on [side], the most complete first, ties by id.
+  List<String> _mostComplete(ContactSide side, Iterable<String> ids) =>
+      [...ids]..sort((a, b) {
+        final byValues = _completeness(side, b).compareTo(
+          _completeness(side, a),
+        );
+        return byValues != 0 ? byValues : a.compareTo(b);
+      });
+
+  /// Copies of one person, placed (R2, R3): one copy each side synced,
+  /// the rest held as duplicates, never copied, written, deleted or asked
+  /// about. A member already paired keeps its pair, and every other copy
+  /// read this run is held. With no pair, the most complete copy read on
+  /// each side (one Ron's own link joins first, a copy due to be deleted
+  /// first of all) is paired like any new pair; with copies on one side
+  /// only, its most complete goes through the usual rules alone (its
+  /// copies are no other person to them), the rest held. A member held
+  /// for another reason, or not read, is left as it is.
+  void _placeCopies() {
+    for (final group in _copies) {
+      final members = group.members;
+      bool open((ContactSide, String) m) {
+        final (side, id) = m;
+        final row = _rowOf(side, id);
+        final status = _status(side, id);
+        return (status == null || status == _Status.fresh) &&
+            _wasRead(side, id) &&
+            (row == null || (row.reopened && !row.done));
+      }
+
+      final paired = members.any((m) => _status(m.$1, m.$2) == _Status.paired);
+      final waiting = [for (final m in members) if (open(m)) m];
+      if (!paired) {
+        // A copy due to be deleted (its partner gone) is paired first, so
+        // it is kept; it is no copy to place on its own.
+        List<String> due(ContactSide side) => _mostComplete(side, [
+          for (final (s, id) in members)
+            if (s == side && _status(s, id) == _Status.orphan) id,
+        ]);
+        List<String> unplaced(ContactSide side) => _mostComplete(side, [
+          for (final (s, id) in waiting)
+            if (s == side) id,
+        ]);
+        final gs = [
+          ...due(ContactSide.google),
+          ...unplaced(ContactSide.google),
+        ];
+        final hs = [
+          ...due(ContactSide.graph),
+          ...unplaced(ContactSide.graph),
+        ];
+        final pairs =
+            gs.isNotEmpty &&
+            hs.isNotEmpty &&
+            (unplaced(ContactSide.google).isNotEmpty ||
+                unplaced(ContactSide.graph).isNotEmpty);
+        if (pairs) {
+          var (g, h) = (gs.first, hs.first);
+          linked:
+          for (final gc in gs) {
+            for (final hc in hs) {
+              final hTag = graphListed[hc]?.tag;
+              if ((hTag != null && _newName(hTag) == gc) ||
+                  googleListed[gc]?.tag == hc) {
+                (g, h) = (gc, hc);
+                break linked;
+              }
+            }
+          }
+          final gRow = _rowOf(ContactSide.google, g);
+          final hRow = _rowOf(ContactSide.graph, h);
+          if (_status(ContactSide.google, g) == _Status.orphan) {
+            _pair(ContactSide.graph, h, g, hRow);
+          } else {
+            _pair(ContactSide.google, g, h, gRow);
+          }
+          gRow?.done = true;
+          hRow?.done = true;
+          _moveTag(ContactSide.google, g, h);
+          waiting.removeWhere(
+            (m) =>
+                (m.$1 == ContactSide.google && m.$2 == g) ||
+                (m.$1 == ContactSide.graph && m.$2 == h),
+          );
+        } else {
+          // Copies to place on one side only: the most complete is placed
+          // by the usual rules, after this.
+          final gOpen = unplaced(ContactSide.google);
+          final side = gOpen.isNotEmpty
+              ? ContactSide.google
+              : ContactSide.graph;
+          final first = unplaced(side).firstOrNull;
+          waiting.removeWhere((m) => m.$1 == side && m.$2 == first);
+        }
+      }
+      for (final (side, id) in waiting) {
+        final row = _rowOf(side, id);
+        _hold(side, id, ContactHeldReason.duplicate, linkId: row?.id);
+        row?.done = true;
+      }
+    }
+  }
+
   // ---- New contacts.
 
   late final Map<String, List<(ContactSide, String)>> _emailIndex =
@@ -3552,8 +3758,13 @@ class _Planner {
       final unique = <String>{};
       final shared = <String>{};
       for (final key in keys) {
+        // Its own copies on its side are no other person.
         final owners = (index[key] ?? const [])
-            .where((o) => !(o.$1 == side && o.$2 == id))
+            .where(
+              (o) =>
+                  o.$1 != side ||
+                  (o.$2 != id && !_copiesWith(side, id, o.$2)),
+            )
             .toList();
         final there = owners.where((o) => o.$1 == other).map((o) => o.$2);
         final here = owners.where((o) => o.$1 == side);

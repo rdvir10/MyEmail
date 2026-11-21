@@ -1358,6 +1358,7 @@ void main() {
         'refused',
         'brake_delete',
         'brake_change',
+        'duplicate',
         null,
       ]);
       expect({for (final r in rows) r.read<String>('state')}, {
