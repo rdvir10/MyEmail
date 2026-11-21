@@ -365,28 +365,49 @@ final contactSyncAccessProvider =
 );
 
 /// Before the first sync: the preview seen and the backup files saved, for
-/// the pair of accounts they were of.
+/// the pair of accounts they were of, and when.
 ///
 /// Kept while the app runs rather than on the screen, so that leaving the
-/// screen to look at the saved files does not grey Start out again. Not
-/// kept beyond that: the preview and the backup are of the address books
-/// as they were, and a day later they are not.
+/// screen to look at the saved files does not grey Start out again. But
+/// the preview and the files are of the address books as they were, and
+/// the app may run for days: Start takes them only within [freshFor].
 @immutable
 class ContactSyncFirstSteps {
   const ContactSyncFirstSteps({
     this.pair,
     this.preview,
+    this.previewedAt,
     this.saved = const {},
   });
+
+  /// How long a preview, or a backup, is taken as the address books as
+  /// they are.
+  static const freshFor = Duration(hours: 1);
 
   /// The accounts, as [pairKey] gives them.
   final String? pair;
   final ContactSyncPreview? preview;
+  final DateTime? previewedAt;
 
-  /// Whose backup file has been saved.
-  final Set<ContactSide> saved;
+  /// When each side's backup file was saved.
+  final Map<ContactSide, DateTime> saved;
 
-  bool get backupSaved => saved.containsAll(ContactSide.values);
+  bool get backupSaved => saved.keys.toSet().containsAll(ContactSide.values);
+
+  /// The preview is no older than [freshFor] at [now].
+  bool previewFresh(DateTime now) => _fresh(previewedAt, now);
+
+  /// Both backup files were saved no longer than [freshFor] before [now].
+  bool backupFresh(DateTime now) =>
+      ContactSide.values.every((side) => _fresh(saved[side], now));
+
+  /// Start may go: the preview seen and both files saved, all within the
+  /// hour.
+  bool readyAt(DateTime now) =>
+      preview != null && previewFresh(now) && backupFresh(now);
+
+  static bool _fresh(DateTime? at, DateTime now) =>
+      at != null && now.difference(at) < freshFor;
 
   static String pairKey(String googleAccountId, String graphAccountId) =>
       '$googleAccountId|$graphAccountId';
@@ -400,18 +421,20 @@ class ContactSyncFirstStepsNotifier extends Notifier<ContactSyncFirstSteps> {
   ContactSyncFirstSteps of(String pair) =>
       state.pair == pair ? state : const ContactSyncFirstSteps();
 
-  void previewed(String pair, ContactSyncPreview preview) =>
+  void previewed(String pair, ContactSyncPreview preview, {DateTime? at}) =>
       state = ContactSyncFirstSteps(
         pair: pair,
         preview: preview,
+        previewedAt: at ?? DateTime.now(),
         saved: of(pair).saved,
       );
 
-  void backupSaved(String pair, ContactSide side) =>
+  void backupSaved(String pair, ContactSide side, {DateTime? at}) =>
       state = ContactSyncFirstSteps(
         pair: pair,
         preview: of(pair).preview,
-        saved: {...of(pair).saved, side},
+        previewedAt: of(pair).previewedAt,
+        saved: {...of(pair).saved, side: at ?? DateTime.now()},
       );
 }
 

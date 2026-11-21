@@ -577,6 +577,51 @@ void main() {
       expect(sync.count('start'), 1);
     });
 
+    testWidgets('a preview or a backup over an hour old is asked for again',
+        (tester) async {
+      sync = FakeContactSync(status: chosenOnly);
+      engine = _Engine(sync, const [gmail, hadco]);
+      final c = await pumpScreen(tester);
+      final steps = c.read(contactSyncFirstStepsProvider.notifier);
+      const pair = 'acct-g|acct-h';
+      final now = DateTime.now();
+      final old = now.subtract(const Duration(minutes: 61));
+      String note() => tester
+          .widget<Text>(find.descendant(
+            of: button('contact-sync-start-note'),
+            matching: find.byType(Text),
+          ))
+          .data!;
+
+      steps.previewed(pair, const ContactSyncPreview(), at: old);
+      steps.backupSaved(pair, ContactSide.google, at: now);
+      steps.backupSaved(pair, ContactSide.graph, at: now);
+      await tester.pumpAndSettle();
+      expect(enabled(tester, 'contact-sync-start'), isFalse);
+      expect(
+        note(),
+        'The preview is over an hour old, and the address books may have '
+        'changed since: Preview again.',
+      );
+
+      steps.previewed(pair, const ContactSyncPreview(), at: now);
+      steps.backupSaved(pair, ContactSide.graph, at: old);
+      await tester.pumpAndSettle();
+      expect(enabled(tester, 'contact-sync-start'), isFalse);
+      expect(
+        note(),
+        'The backup files are over an hour old: Save backup again, so that '
+        'they hold the address books as they are now.',
+      );
+
+      steps.backupSaved(pair, ContactSide.graph, at: now);
+      await tester.pumpAndSettle();
+      expect(enabled(tester, 'contact-sync-start'), isTrue);
+      await tester.tap(button('contact-sync-start'));
+      await tester.pumpAndSettle();
+      expect(sync.count('start'), 1);
+    });
+
     testWidgets('a preview that fails says why, with the way out',
         (tester) async {
       sync = FakeContactSync(status: chosenOnly)

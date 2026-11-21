@@ -367,6 +367,14 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
 
   Future<void> _start(Account google, Account graph) async {
     final sync = _sync;
+    // The screen may have stood open since the button was last drawn.
+    final steps = ref
+        .read(contactSyncFirstStepsProvider.notifier)
+        .of(ContactSyncFirstSteps.pairKey(google.id, graph.id));
+    if (!steps.readyAt(DateTime.now())) {
+      setState(() {});
+      return;
+    }
     try {
       await _choose(google, graph);
     } catch (e) {
@@ -596,14 +604,30 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         ? all
         : const ContactSyncFirstSteps();
     final preview = steps.preview;
-    final ready = both && preview != null && steps.backupSaved;
+    final now = DateTime.now();
+    final ready = both && steps.readyAt(now);
     final backupSaid = _backupSaid ??
-        switch (steps.saved.length) {
-          0 => null,
-          1 => "${_sideName(steps.saved.single, graphName)}'s file is "
-              'saved. Start sync needs both files: Save backup again.',
+        switch (steps.saved.keys.toList()) {
+          [] => null,
+          [final side] => "${_sideName(side, graphName)}'s file is saved. "
+              'Start sync needs both files: Save backup again.',
           _ => 'Both files are saved.',
         };
+    // Why Start is greyed out, in Ron's order of steps: a preview or a
+    // backup from over an hour ago is of the address books as they were.
+    final whyNotYet = [
+      if (preview == null)
+        'Start sync is ready once you have seen the preview and saved both '
+            'backup files.'
+      else if (!steps.backupSaved)
+        'Start sync is ready once you have saved both backup files.',
+      if (preview != null && !steps.previewFresh(now))
+        'The preview is over an hour old, and the address books may have '
+            'changed since: Preview again.',
+      if (steps.backupSaved && !steps.backupFresh(now))
+        'The backup files are over an hour old: Save backup again, so that '
+            'they hold the address books as they are now.',
+    ].join(' ');
     return [
       const _Heading('First sync'),
       if (!both)
@@ -689,8 +713,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
             ? 'Keep MyEmail open until this says Synced. If it is closed '
                 'sooner, the first sync carries on the next time MyEmail is '
                 'opened.'
-            : 'Start sync is ready once you have seen the preview and saved '
-                'both backup files.',
+            : whyNotYet,
+        key: const ValueKey('contact-sync-start-note'),
         muted: true,
       ),
     ];
