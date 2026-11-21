@@ -909,13 +909,17 @@ void main() {
   group('a display name that is no name', () {
     // Outlook contacts as a whole read returns them: every synced
     // property there, null when empty.
-    GraphContact outlook(String id, Map<String, Object?> values) =>
-        GraphContact.fromJson({
-          'id': id,
-          'changeKey': 'key-$id-2',
-          for (final p in graphSyncedProperties) p: null,
-          ...values,
-        });
+    GraphContact outlook(
+      String id,
+      Map<String, Object?> values, {
+      DateTime? at,
+    }) => GraphContact.fromJson({
+      'id': id,
+      'changeKey': 'key-$id-2',
+      'lastModifiedDateTime': ?at?.toIso8601String(),
+      for (final p in graphSyncedProperties) p: null,
+      ...values,
+    });
     SyncedContact read(Map<String, Object?> values) =>
         outlook('H1', values).details;
     SyncedContact gmail(Map<String, Object?> person) =>
@@ -1048,6 +1052,137 @@ void main() {
         ContactName.of(display: 'bob@x.example'),
         reason: 'the base keeps the raw value',
       );
+    });
+
+    test('one remade from a new company is taken into the base', () {
+      // Outlook shows the company for want of a name; Ron renames the
+      // company and Outlook remakes the shown name with it.
+      final first = run(
+        graph: [
+          outlook('H1', {
+            'displayName': 'Acme Inc',
+            'companyName': 'Acme Inc',
+          }),
+        ],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: SyncedContact({ContactField.company: 'Acme'}),
+            graphBase: read({'displayName': 'Acme', 'companyName': 'Acme'}),
+          ),
+        ],
+      );
+      final pair = byLink(first, 1)!;
+      expect(pair.googleWrite!.fields, {ContactField.company});
+      final bases = pair.basesAfter(
+        googleAnswer: SyncedContact({ContactField.company: 'Acme Inc'}),
+      );
+      expect(bases.graph.name, ContactName.of(display: 'Acme Inc'));
+      // Later Ron types a name in Gmail, then edits the mobile in Outlook
+      // (the newer edit): the name goes to Outlook, with no clash.
+      final second = run(
+        google: [
+          g(
+            'people/c1',
+            person(
+              given: 'Ann',
+              family: 'Lee',
+              more: {ContactField.company: 'Acme Inc'},
+            ),
+            at: earlier,
+          ),
+        ],
+        graph: [
+          outlook('H1', {
+            'displayName': 'Acme Inc',
+            'companyName': 'Acme Inc',
+            'mobilePhone': '+1 212 555 0100',
+          }, at: later),
+        ],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: bases.google,
+            graphBase: bases.graph,
+          ),
+        ],
+      );
+      final now2 = byLink(second, 1)!;
+      expect(now2.graphWrite!.fields, contains(ContactField.name));
+      expect(
+        now2.googleWrite?.fields.contains(ContactField.name) ?? false,
+        isFalse,
+        reason: 'Gmail\'s new name is not cleared',
+      );
+      expect(second.reviews, isEmpty);
+    });
+
+    test('an old address still shown is no name', () {
+      // Outlook kept showing bob@x after Ron changed the address to
+      // bob@y: a new pair does not give Gmail the name "bob@x".
+      final paired = run(
+        google: [
+          g('people/c1', SyncedContact({
+            ContactField.emails: ['bob@y.example'],
+          })),
+        ],
+        graph: [
+          outlook('H1', {
+            'displayName': 'bob@x.example',
+            'emailAddresses': [
+              {'address': 'bob@y.example'},
+            ],
+          }),
+        ],
+      );
+      final pair = paired.links.singleWhere(
+        (l) => l.googleName == 'people/c1',
+      );
+      expect(pair.googleWrite, isNull);
+      // A base left showing the old address (from before it was taken
+      // in) is no name either: a name typed in Gmail goes to Outlook,
+      // with no clash.
+      final plan = run(
+        google: [
+          g(
+            'people/c1',
+            person(given: 'Ann', family: 'Lee', emails: ['ann@y.example']),
+            at: later,
+          ),
+        ],
+        graph: [
+          outlook('H1', {
+            'displayName': 'ann@y.example',
+            'emailAddresses': [
+              {'address': 'ann@y.example'},
+            ],
+          }, at: earlier),
+        ],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: SyncedContact({
+              ContactField.emails: ['ann@y.example'],
+            }),
+            graphBase: read({
+              'displayName': 'ann@x.example',
+              'emailAddresses': [
+                {'address': 'ann@y.example'},
+              ],
+            }),
+          ),
+        ],
+      );
+      final p = byLink(plan, 1)!;
+      expect(p.graphWrite!.fields, contains(ContactField.name));
+      expect(p.removes, isFalse);
+      expect(plan.reviews, isEmpty);
     });
 
     test('two contacts showing only their company are no same name', () {
@@ -1308,6 +1443,101 @@ void main() {
       expect(plan.graphTagMoves, {'H-b': 'people/m'});
     });
 
+    test('a held Gmail contact merged away loses its row, and nothing else',
+        () {
+      // j2, a second Gmail copy of Ann, waits under Needs a look; Ron
+      // merges it into j1, which is paired.
+      final plan = run(
+        google: [
+          g('people/j1', ann, previous: ['people/j2']),
+          gDeleted('people/j2'),
+        ],
+        graph: [h('H1', ann)],
+        links: [
+          link(1, 'people/j1', 'H1', base: ann),
+          link(
+            2,
+            'people/j2',
+            null,
+            base: ann,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.waiting,
+          ),
+        ],
+      );
+      final gone = byLink(plan, 2)!;
+      expect(gone.removeRow, isTrue);
+      expect(gone.writes, isFalse);
+      // The store refuses a row that names no contact.
+      expect(
+        plan.links.where(
+          (l) => !l.removeRow && l.googleName == null && l.graphId == null,
+        ),
+        isEmpty,
+      );
+      expect(plan.reviews, isEmpty);
+      expect(byLink(plan, 1)!.googleName, 'people/j1');
+      expect(plan.googleGone, isEmpty);
+      // The row held with no Outlook contact never wins over a pair, even
+      // when the merged contact shares nothing with its Outlook partner.
+      final heldWins = run(
+        google: [
+          g('people/j1', person(given: 'Zed', family: 'Quorn'),
+              previous: ['people/j2']),
+          gDeleted('people/j2'),
+        ],
+        links: [
+          link(
+            1,
+            'people/j1',
+            null,
+            base: ann,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.leftOut,
+          ),
+          link(2, 'people/j2', 'H2', base: ann),
+        ],
+      );
+      expect(byLink(heldWins, 1)!.removeRow, isTrue);
+      final pair = byLink(heldWins, 2)!;
+      expect(pair.googleName, 'people/j1');
+      expect(pair.graphId, 'H2');
+      expect(pair.state, ContactLinkState.paired);
+      expect(
+        heldWins.reviews.where(
+          (r) => r.kind == ContactReviewKind.mergedInGoogle,
+        ),
+        isEmpty,
+      );
+    });
+
+    test('a chain of re-keys maps each old name to the last', () {
+      // getBatchGet found a re-keyed to b; the listing says c was b.
+      final plan = run(
+        googleReKeys: {'people/a': 'people/b'},
+        google: [g('people/c', ann, previous: ['people/b'])],
+        links: [link(1, 'people/a', 'H1', base: ann)],
+      );
+      expect(plan.reKeys, {'people/a': 'people/c', 'people/b': 'people/c'});
+      expect(byLink(plan, 1)!.googleName, 'people/c');
+    });
+
+    test('no tag is moved on an Outlook contact that loses its row', () {
+      // c1 was re-keyed to c9, and its Outlook partner H1 is gone: c9 is
+      // deleted, the row with it, and H1 has no tag left to move.
+      final plan = run(
+        googleReKeys: {'people/c1': 'people/c9'},
+        google: [g('people/c9', ann)],
+        graphGone: {'H1'},
+        links: [
+          link(1, 'people/c1', 'H1', base: ann, etag: 'etag-people/c9'),
+        ],
+      );
+      expect(byLink(plan, 1)!.delete!.contactId, 'people/c9');
+      expect(plan.reKeys, {'people/c1': 'people/c9'});
+      expect(plan.graphTagMoves, isEmpty);
+    });
+
     test('a re-key renames the row and moves the partner\'s tag', () {
       final plan = run(
         googleReKeys: {'people/c1': 'people/c9'},
@@ -1410,7 +1640,8 @@ void main() {
           ),
         ],
       );
-      expect(plan.binAlreadyBack, [4]);
+      expect(plan.binToMarkBack, [4]);
+      expect(plan.binToDrop, isEmpty);
       expect(plan.binNotDue, [5]);
       // Brought back with no partner left: copied, and back all the same.
       final copied = run(
@@ -1424,7 +1655,57 @@ void main() {
         ],
       );
       expect(byGraph(copied, 'H1')!.create, isNotNull);
-      expect(copied.binAlreadyBack, [4]);
+      expect(copied.binToMarkBack, [4]);
+    });
+
+    test('a Restore found back is dropped, not marked back', () {
+      // Ron brought both back himself (Outlook's Recover deleted items,
+      // Gmail's Trash) and pressed Restore: the run pairs them, and the
+      // bin row is a Restore found already back.
+      final plan = run(
+        google: [g('people/c1', ann)],
+        graph: [h('H1', ann)],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H1',
+            partnerId: 'people/c1',
+            partnerBase: ann.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      expect(plan.restores.single.alreadyBack, isTrue);
+      expect(byGoogle(plan, 'people/c1')!.graphId, 'H1');
+      expect(plan.binToDrop, [9]);
+      expect(plan.binToMarkBack, isEmpty);
+    });
+
+    test('a bin row marked back is left out, so a later deletion counts', () {
+      final links = [link(1, 'people/c1', 'H1', base: ann)];
+      // Passed in, H1's id reads as the sync's own deletion: ignored.
+      final passed = run(
+        google: [g('people/c1', ann)],
+        graphGone: {'H1'},
+        links: links,
+        bin: [
+          const ContactBinInput(
+            binId: 4,
+            side: ContactSide.graph,
+            contactId: 'H1',
+          ),
+        ],
+      );
+      expect(passed.links.where((l) => l.delete != null), isEmpty);
+      // Left out, as the runner must once the row is marked back: Ron's
+      // deleting H1 again deletes its Gmail partner.
+      final leftOut = run(
+        google: [g('people/c1', ann)],
+        graphGone: {'H1'},
+        links: links,
+      );
+      expect(byLink(leftOut, 1)!.delete!.contactId, 'people/c1');
     });
   });
 
@@ -1922,6 +2203,91 @@ void main() {
       expect(plan.journalSettled, [3]);
       expect(byGoogle(plan, 'people/c1')!.create!.side, ContactSide.graph);
     });
+
+    test('found by the tag it was written with, after a re-key', () {
+      // Journalled under people/c1 with tag people/c1; the store then
+      // re-keyed the source to people/c9, and Google no longer reports
+      // the re-key. The Outlook copy still carries people/c1.
+      final plan = run(
+        google: [g('people/c9', ann)],
+        graph: [
+          h('H9', person(given: 'Ann', family: 'Cole'), tag: 'people/c1'),
+        ],
+        journal: [
+          ContactJournalEntry(
+            opId: 3,
+            side: ContactSide.graph,
+            sourceId: 'people/c9',
+            tag: 'people/c1',
+            startedAt: now.subtract(const Duration(hours: 3)),
+          ),
+        ],
+      );
+      expect(plan.journalSettled, [3]);
+      expect(byGoogle(plan, 'people/c9')!.graphId, 'H9');
+      expect(plan.links.where((l) => l.create != null), isEmpty);
+      expect(plan.reviews, isEmpty);
+      expect(plan.graphTagMoves, {'H9': 'people/c9'});
+    });
+
+    test('a copy whose source was merged into a pair keeps out of its row',
+        () {
+      // people/a is paired with H-a. people/c is new, and its copy Z was
+      // cut short. Ron merges a into c in Gmail.
+      final plan = run(
+        google: [
+          g('people/c', ann, previous: ['people/a']),
+          gDeleted('people/a'),
+        ],
+        graph: [h('H-a', ann), h('Z', ann, tag: 'people/c')],
+        links: [link(1, 'people/a', 'H-a', base: ann)],
+        journal: [
+          ContactJournalEntry(
+            opId: 7,
+            side: ContactSide.graph,
+            sourceId: 'people/c',
+            startedAt: now.subtract(const Duration(hours: 3)),
+          ),
+        ],
+      );
+      expect(plan.journalSettled, [7]);
+      final row = byLink(plan, 1)!;
+      expect(row.googleName, 'people/c');
+      expect(row.graphId, 'H-a', reason: 'H-a keeps its pair');
+      final copy = byGraph(plan, 'Z')!;
+      expect(copy.linkId, isNull);
+      expect(copy.state, ContactLinkState.held);
+      expect(copy.reason, ContactHeldReason.waiting);
+      final item = plan.reviews.single;
+      expect(item.kind, ContactReviewKind.mergedInGoogle);
+      expect(item.googleName, 'people/c');
+      expect(item.graphId, 'Z');
+      expect(plan.graphTagMoves, {'H-a': 'people/c'});
+      expect(plan.links.where((l) => l.create != null), isEmpty);
+    });
+
+    test('a Gmail copy whose source is paired goes through the rules', () {
+      // Outlook H5 is paired with Gmail c7 by the time its interrupted
+      // Gmail copy c9 is found.
+      final plan = run(
+        google: [g('people/c7', ann), g('people/c9', ann, tag: 'H5')],
+        graph: [h('H5', ann)],
+        links: [link(5, 'people/c7', 'H5', base: ann)],
+        journal: [
+          ContactJournalEntry(
+            opId: 8,
+            side: ContactSide.google,
+            sourceId: 'H5',
+            startedAt: now.subtract(const Duration(hours: 3)),
+          ),
+        ],
+      );
+      expect(plan.journalSettled, [8]);
+      expect(byLink(plan, 5)!.googleName, 'people/c7');
+      final item = plan.reviews.single;
+      expect(item.googleName, 'people/c9');
+      expect(item.reason, ContactReviewReason.taggedPaired);
+    });
   });
 
   group('Ron\'s answers', () {
@@ -2369,7 +2735,90 @@ void main() {
       expect(pair.reason, ContactHeldReason.movedOut);
       expect(pair.graphId, 'H1');
       expect(pair.writes, isFalse);
-      expect(byLink(plan, 2), isNull, reason: 'H2 is not paired');
+      // H2 is not paired: its item went with the answer, and it is held
+      // as a candidate, to be placed again once it is back and read.
+      final away = byLink(plan, 2)!;
+      expect(away.reason, ContactHeldReason.candidate);
+      expect(away.graphId, 'H2');
+      expect(away.writes, isFalse);
+    });
+
+    test('a contact whose answer is dropped is placed again', () {
+      final annCole = person(given: 'Ann', family: 'Cole', emails: ['a@x']);
+      final annLee = person(given: 'Ann', family: 'Lee', emails: ['a@x']);
+      // Gmail c2 waits under "names disagree", Outlook H2 is its candidate.
+      final rows = [
+        link(
+          1,
+          'people/c2',
+          null,
+          base: annCole,
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.waiting,
+        ),
+        link(
+          2,
+          null,
+          'H2',
+          base: annLee,
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.candidate,
+        ),
+      ];
+      const same = [
+        ContactAnswer(
+          ContactAnswerKind.samePerson,
+          googleName: 'people/c2',
+          graphId: 'H2',
+        ),
+      ];
+      // Same person while H2 is in another folder: dropped, and c2, read
+      // this run, comes back under Needs a look at once.
+      final away = run(
+        google: [g('people/c2', annCole)],
+        graphMovedOut: {'H2'},
+        links: rows,
+        answers: same,
+      );
+      expect(away.answers, [ContactAnswerOutcome.dropped]);
+      final item = away.reviews.single;
+      expect(item.googleName, 'people/c2');
+      expect(item.candidates, ['H2']);
+      expect(byLink(away, 1)!.reason, ContactHeldReason.waiting);
+      // H2 deleted, and c2 not read this run: c2 is held as a candidate,
+      // which the next run reads and places.
+      final gone = run(graphGone: {'H2'}, links: rows, answers: same);
+      expect(gone.answers, [ContactAnswerOutcome.dropped]);
+      expect(byLink(gone, 1)!.reason, ContactHeldReason.candidate);
+      expect(contactsToRead(links: [
+        link(
+          1,
+          'people/c2',
+          null,
+          base: annCole,
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.candidate,
+        ),
+      ]).google, ['people/c2']);
+      // Copy it back on a kept contact away waits for its return.
+      final kept = run(
+        graphMovedOut: {'H1'},
+        links: [
+          link(
+            1,
+            null,
+            'H1',
+            base: ann,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.kept,
+          ),
+        ],
+        answers: const [
+          ContactAnswer(ContactAnswerKind.copyBack, graphId: 'H1'),
+        ],
+      );
+      expect(kept.answers, [ContactAnswerOutcome.waiting]);
+      expect(byLink(kept, 1), isNull);
     });
 
     test('Apply them holds a pair moved out of Contacts as moved out', () {
@@ -2399,6 +2848,47 @@ void main() {
       expect(away.googleName, 'people/c2');
       expect(away.graphId, 'H2');
       expect(away.writes, isFalse);
+    });
+
+    test('Copy them back waits for a pair moved out of Contacts', () {
+      // Google's Undo changes took the company off both Gmail contacts and
+      // the change brake held them; H2 is in another folder when Ron
+      // answers Copy them back.
+      final base = ann.withValue(ContactField.company, 'Hadco');
+      final lost = ann;
+      List<ContactLinkInput> held(Iterable<int> ids) => [
+        for (final i in ids)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: base,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.changeBrake,
+          ),
+      ];
+      const copyBack = [ContactAnswer(ContactAnswerKind.copyHeldBack)];
+      final away = run(
+        google: [g('people/c1', lost), g('people/c2', lost)],
+        graph: [h('H1', base)],
+        graphMovedOut: {'H2'},
+        links: held([1, 2]),
+        answers: copyBack,
+      );
+      expect(away.answers, [ContactAnswerOutcome.waiting]);
+      expect(byLink(away, 1)!.googleWrite!.fields, {ContactField.company});
+      expect(byLink(away, 2), isNull, reason: 'still held by the brake');
+      // H2 is back: the queued answer copies it back too.
+      final back = run(
+        google: [g('people/c2', lost)],
+        graph: [h('H2', base)],
+        links: held([2]),
+        answers: copyBack,
+      );
+      expect(back.answers, [ContactAnswerOutcome.applied]);
+      final pair = byLink(back, 2)!;
+      expect(pair.googleWrite!.target.text(ContactField.company), 'Hadco');
+      expect(pair.graphWrite, isNull, reason: 'Hadco keeps its company');
     });
 
     test('a kept contact copied back, or deleted here too', () {
@@ -2512,7 +3002,7 @@ void main() {
       expect(restore.alreadyBack, isFalse);
       expect(restore.googleRaw, isNotNull, reason: 'made again');
       expect(restore.graphDetails, isNotNull);
-      expect(plan.binAlreadyBack, isEmpty);
+      expect(plan.binToDrop, isEmpty);
     });
 
     test('an address two contacts share finds neither back', () {
@@ -2583,6 +3073,51 @@ void main() {
       expect(restore.graphDetails, cy);
     });
 
+    test('another\'s held contact on the address is not used', () {
+      // Ann and Bob Cole share fam@x. Bob is only in Gmail, left out.
+      // Restoring Ann's Outlook copy must make her Gmail copy again, not
+      // take Bob's contact and row and fill him with Ann.
+      final annFam = person(given: 'Ann', family: 'Cole', emails: ['fam@x']);
+      final bob = person(given: 'Bob', family: 'Cole', emails: ['fam@x']);
+      final plan = run(
+        google: [g('people/c5', bob)],
+        links: [
+          link(
+            5,
+            'people/c5',
+            null,
+            base: bob,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.leftOut,
+          ),
+        ],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: const {
+              'id': 'H9',
+              'givenName': 'Ann',
+              'surname': 'Cole',
+              'emailAddresses': [
+                {'address': 'fam@x'},
+              ],
+            },
+            partnerBase: annFam.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      final restore = plan.restores.single;
+      expect(restore.googleName, isNull);
+      expect(restore.linkId, isNull, reason: 'Bob keeps his row');
+      expect(restore.googleDetails, annFam, reason: 'Ann made again');
+      expect(restore.graphRaw, isNotNull);
+      expect(byLink(plan, 5), isNull, reason: 'Bob left as he was');
+    });
+
     test('a contact back but held is used, its row carried', () {
       final heldC9 = link(
         5,
@@ -2650,7 +3185,7 @@ void main() {
         ],
       );
       expect(plan.restores.single.alreadyBack, isTrue);
-      expect(plan.binAlreadyBack, [9]);
+      expect(plan.binToDrop, [9]);
     });
 
     test('made again by Ron and copied by the sync, it is Already back', () {
@@ -2687,7 +3222,7 @@ void main() {
       expect(restore.alreadyBack, isTrue);
       expect(restore.graphRaw, isNull);
       expect(restore.googleDetails, isNull);
-      expect(plan.binAlreadyBack, [9]);
+      expect(plan.binToDrop, [9]);
       expect(plan.counts.restores, 0);
       expect(plan.links.where((l) => l.create != null), isEmpty);
 
@@ -2720,7 +3255,7 @@ void main() {
         ],
       );
       expect(apart.restores.single.alreadyBack, isFalse);
-      expect(apart.binAlreadyBack, isEmpty);
+      expect(apart.binToDrop, isEmpty);
 
       // Paired earlier in the same run, by Ron's Same person.
       final answered = run(
@@ -2764,6 +3299,133 @@ void main() {
       );
       expect(answered.answers, [ContactAnswerOutcome.applied]);
       expect(answered.restores.single.alreadyBack, isTrue);
+    });
+
+    test('a family member or namesake on the address is not it back', () {
+      ContactBinInput binOf(Map<String, Object?> raw, SyncedContact partner) =>
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: raw,
+            partnerBase: partner.toJson(),
+            restore: true,
+          );
+      // Ann and Bob Cole shared fam@x; Ron deleted Ann in Gmail and the
+      // sync deleted Outlook H9. Only Bob, paired, has fam@x now.
+      final annFam = person(given: 'Ann', family: 'Cole', emails: ['fam@x']);
+      final bob = person(given: 'Bob', family: 'Cole', emails: ['fam@x']);
+      final family = run(
+        google: [g('people/c5', bob)],
+        graph: [h('H5', bob)],
+        links: [link(5, 'people/c5', 'H5', base: bob)],
+        bin: [
+          binOf(const {
+            'id': 'H9',
+            'givenName': 'Ann',
+            'surname': 'Cole',
+            'emailAddresses': [
+              {'address': 'fam@x'},
+            ],
+          }, annFam),
+        ],
+      );
+      final restore = family.restores.single;
+      expect(restore.alreadyBack, isFalse, reason: 'the bin holds Ann');
+      expect(restore.graphRaw, isNotNull);
+      expect(restore.googleDetails, annFam);
+      expect(family.binToDrop, isEmpty);
+
+      // John Roe Jr. is not John Roe Sr. back.
+      SyncedContact roe(String suffix) => SyncedContact({
+        ContactField.name: ContactName.of(
+          given: 'John',
+          family: 'Roe',
+          suffix: suffix,
+        ),
+        ContactField.emails: ['roe@x'],
+      });
+      final namesake = run(
+        google: [g('people/c5', roe('Jr.'))],
+        graph: [h('H5', roe('Jr.'))],
+        links: [link(5, 'people/c5', 'H5', base: roe('Jr.'))],
+        bin: [
+          binOf(const {
+            'id': 'H9',
+            'givenName': 'John',
+            'surname': 'Roe',
+            'generation': 'Sr.',
+            'emailAddresses': [
+              {'address': 'roe@x'},
+            ],
+          }, roe('Sr.')),
+        ],
+      );
+      expect(namesake.restores.single.alreadyBack, isFalse);
+    });
+
+    test('a nameless contact made again and copied is Already back', () {
+      // info@acme, no name but the company shown. Ron made it again as
+      // c9b, which the sync copied to H9b and paired.
+      final info = SyncedContact({
+        ContactField.name: ContactName.of(display: 'Acme'),
+        ContactField.emails: ['info@acme.example'],
+        ContactField.company: 'Acme',
+      });
+      final plan = run(
+        google: [g('people/c9b', info)],
+        graph: [h('H9b', info, tag: 'people/c9b')],
+        links: [link(3, 'people/c9b', 'H9b', base: info)],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: const {
+              'id': 'H9',
+              'displayName': 'Acme',
+              'companyName': 'Acme',
+              'emailAddresses': [
+                {'address': 'info@acme.example'},
+              ],
+            },
+            partnerBase: info.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      expect(plan.restores.single.alreadyBack, isTrue);
+      expect(plan.binToDrop, [9]);
+      // Another company on the address is another contact.
+      final other = info
+          .withValue(ContactField.company, 'Beta')
+          .withValue(ContactField.name, ContactName.of(display: 'Beta'));
+      final beta = run(
+        google: [g('people/c9b', other)],
+        graph: [h('H9b', other, tag: 'people/c9b')],
+        links: [link(3, 'people/c9b', 'H9b', base: other)],
+        bin: [
+          ContactBinInput(
+            binId: 9,
+            side: ContactSide.graph,
+            contactId: 'H9',
+            partnerId: 'people/c9',
+            raw: const {
+              'id': 'H9',
+              'displayName': 'Acme',
+              'companyName': 'Acme',
+              'emailAddresses': [
+                {'address': 'info@acme.example'},
+              ],
+            },
+            partnerBase: info.toJson(),
+            restore: true,
+          ),
+        ],
+      );
+      expect(beta.restores.single.alreadyBack, isFalse);
     });
   });
 
@@ -2865,6 +3527,75 @@ void main() {
       expect(
         () => const ContactLinkPlan(linkId: 1, removeRow: true).replan(),
         throwsStateError,
+      );
+    });
+
+    test('never takes the sync\'s own write for Ron\'s', () {
+      final start = base.withValue(ContactField.company, 'A');
+      // Outlook changed the company to B, Gmail added a nickname.
+      final plan = run(
+        google: [
+          g(
+            'people/c1',
+            start.withValue(ContactField.nickname, 'Annie'),
+            etag: 'e1',
+            at: earlier,
+          ),
+        ],
+        graph: [
+          h('H1', start.withValue(ContactField.company, 'B'), key: 'k1'),
+        ],
+        links: [
+          link(1, 'people/c1', 'H1', base: start, etag: 'e0', key: 'k0'),
+        ],
+      );
+      final first = byLink(plan, 1)!;
+      expect(first.googleWrite!.fields, {ContactField.company});
+      expect(first.graphWrite!.fields, {ContactField.nickname});
+      // The Gmail write went through (etag e2). Outlook's read before the
+      // PATCH finds Ron changed the company to C meanwhile.
+      final written = g(
+        'people/c1',
+        start
+            .withValue(ContactField.nickname, 'Annie')
+            .withValue(ContactField.company, 'B'),
+        etag: 'e2',
+        at: now,
+      );
+      final again = first.replan(
+        graph: h('H1', start.withValue(ContactField.company, 'C'), key: 'k2'),
+        googleWritten: written,
+      );
+      expect(again.plan.googleWrite!.fields, {ContactField.company});
+      expect(
+        again.plan.googleWrite!.target.text(ContactField.company),
+        'C',
+        reason: 'Ron\'s newest value, one-sided: no clash',
+      );
+      expect(again.plan.googleWrite!.version, 'e2');
+      expect(again.plan.graphWrite!.fields, {ContactField.nickname});
+      expect(again.plan.graphWrite!.version, 'k2');
+      expect(again.reviews, isEmpty);
+      // The Gmail write of C meets a newer etag in turn (Ron set an
+      // office): planned again from that read, the sync's B is still not
+      // Ron's, and C still wins.
+      final third = again.plan.replan(
+        google: g(
+          'people/c1',
+          written.details.withValue(ContactField.office, 'B2'),
+          etag: 'e3',
+          at: now,
+        ),
+      );
+      expect(third.plan.googleWrite!.target.text(ContactField.company), 'C');
+      expect(third.plan.graphWrite!.fields, {
+        ContactField.nickname,
+        ContactField.office,
+      });
+      expect(third.reviews, isEmpty);
+      expect(
+        () => first.replan(google: written, googleWritten: written),
+        throwsArgumentError,
       );
     });
   });

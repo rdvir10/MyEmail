@@ -312,6 +312,38 @@ void main() {
       expect(await client.get(ann), isNull);
     });
 
+    test("a contact's version is its contact source's etag, the same in "
+        "every read; the Person's own etag is not", () async {
+      final ann = google.seed(person('Ann', 'Lee', 'ann@example.com'));
+      final client = api();
+
+      final listed = (await client.listAll()).people.single;
+      final byName = (await client.get(ann))!;
+      final whole = (await client.get(ann, everyField: true))!;
+      final batched = (await client.getBatch([ann])).found[ann]!;
+
+      // Google's top-level etag is the entity tag of one answer.
+      final topLevel = {
+        for (final p in [listed, byName, whole, batched]) p['etag'],
+      };
+      expect(topLevel, hasLength(4));
+      // The version the sync keeps is the same in all of them.
+      final versions = {
+        for (final p in [listed, byName, whole, batched])
+          GoogleContact.fromPerson(p).etag,
+      };
+      expect(versions, {googleContactEtag(listed)});
+      expect(versions.single, isNotNull);
+
+      google.editFromGmail(ann, {
+        'nicknames': [
+          {'value': 'Annie'},
+        ],
+      });
+      final edited = (await client.get(ann))!;
+      expect(googleContactEtag(edited), isNot(versions.single));
+    });
+
     test('getBatch asks 200 at a time; only NOT_FOUND is gone, and a '
         'contact under a new name is a re-key', () async {
       final ann = google.seed(person('Ann', 'Lee', 'ann@example.com'));
