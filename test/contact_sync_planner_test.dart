@@ -2955,6 +2955,33 @@ void main() {
       expect(away.writes, isFalse);
     });
 
+    test('Copy it anyway waits while its contact is away', () {
+      final waiting = [
+        link(
+          1,
+          null,
+          'H2',
+          base: ann,
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.waiting,
+        ),
+      ];
+      const copy = [
+        ContactAnswer(ContactAnswerKind.copyAnyway, graphId: 'H2'),
+      ];
+      final away = run(
+        graphMovedOut: {'H2'},
+        links: waiting,
+        answers: copy,
+      );
+      expect(away.answers, [ContactAnswerOutcome.waiting]);
+      expect(byLink(away, 1), isNull, reason: 'held as it was');
+      // Back in Contacts: Ron's choice is done.
+      final back = run(graph: [h('H2', ann)], links: waiting, answers: copy);
+      expect(back.answers, [ContactAnswerOutcome.applied]);
+      expect(byLink(back, 1)!.create!.side, ContactSide.google);
+    });
+
     test('a contact whose answer is dropped is placed again', () {
       final annCole = person(given: 'Ann', family: 'Cole', emails: ['a@x']);
       final annLee = person(given: 'Ann', family: 'Lee', emails: ['a@x']);

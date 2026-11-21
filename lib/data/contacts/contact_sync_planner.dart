@@ -2497,9 +2497,10 @@ class _Planner {
     // The plan's moved-out rule (both ids kept, the pair back when it
     // returns) is for a pair, and the rows pass applies it to the row; a
     // contact with one id held as moved out would read, on its return, as
-    // a pair whose Gmail side went, and be deleted. Copy it back on a
-    // kept contact away is the exception ([waitWhileAway]): a kept row
-    // goes through no rules again, so the answer waits for its return.
+    // a pair whose Gmail side went, and be deleted. Copy it anyway and
+    // Copy it back are the exception ([waitWhileAway]): Ron's choice is
+    // kept, and done when the contact is back, rather than dropped and
+    // asked again (a kept row goes through no rules again at all).
     ContactAnswerOutcome? unread(
       List<(ContactSide, String?)> contacts, {
       bool waitWhileAway = false,
@@ -2540,10 +2541,7 @@ class _Planner {
         _answered(named);
         return applied;
       case ContactAnswerKind.copyAnyway || ContactAnswerKind.copyBack:
-        if (unread(
-              named,
-              waitWhileAway: answer.kind == ContactAnswerKind.copyBack,
-            )
+        if (unread(named, waitWhileAway: true)
             case final ContactAnswerOutcome o) {
           return o;
         }
