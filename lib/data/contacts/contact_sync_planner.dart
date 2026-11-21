@@ -3503,6 +3503,31 @@ class _Planner {
       }
     }
 
+    // A contact on the other side whose hidden tag names this one: the
+    // sync's copy of it, from before a reinstall or a lost store. Placed
+    // first, this contact would otherwise never look at it, and one with
+    // no email or mobile would go under Needs a look. Only one that is
+    // free (not paired, held or due to be deleted), and only when one is.
+    final tagging = other == ContactSide.graph
+        ? [
+            for (final c in graphListed.values)
+              if (c.tag != null && _newName(c.tag!) == id) c.id,
+          ]
+        : [
+            for (final c in googleListed.values)
+              if (c.tag == id) c.resourceName,
+          ];
+    final taggedHere = [
+      for (final t in tagging)
+        if ((_status(other, t) ?? _Status.fresh) == _Status.fresh &&
+            _wasRead(other, t))
+          t,
+    ];
+    if (taggedHere.length == 1) {
+      _pair(side, id, taggedHere.single, row);
+      return;
+    }
+
     // A unique email address, else a unique mobile.
     for (final (keys, index) in [
       (_emailKeys(details), _emailIndex),

@@ -158,6 +158,55 @@ void main() {
       expect(plan.counts.addToGraph, 0);
     });
 
+    test('a tag the other side carries pairs them, whichever is placed first',
+        () {
+      // A reinstall: no rows. Each pair as the sync left it, its copy
+      // tagged with the original; only a name and a landline, nothing
+      // else to match by. Gmail's are placed first.
+      SyncedContact landline(String given, String phone) => SyncedContact({
+        ContactField.name: ContactName.of(given: given, family: 'Cole'),
+        ContactField.homePhones: [phone],
+      });
+      final ann = landline('Ann', '212 555 0101');
+      final bob = landline('Bob', '212 555 0102');
+      final plan = run(
+        google: [
+          // Gmail's original, with its Outlook copy tagged with it.
+          g('people/c1', ann),
+          // Gmail's copy of an Outlook original, tagged with it.
+          g('people/c2', bob, tag: 'H2'),
+        ],
+        graph: [h('H1', ann, tag: 'people/c1'), h('H2', bob)],
+      );
+      expect(byGoogle(plan, 'people/c1')!.graphId, 'H1');
+      expect(byGoogle(plan, 'people/c2')!.graphId, 'H2');
+      expect(plan.counts.pairUp, 2);
+      expect(plan.links.where((l) => l.create != null), isEmpty);
+      expect(plan.links.where((l) => l.state == ContactLinkState.held),
+          isEmpty);
+      expect(plan.reviews, isEmpty);
+      // Not a tagged copy paired with another, nor one of two.
+      final taken = run(
+        google: [g('people/c1', ann), g('people/c9', ann)],
+        graph: [h('H1', ann, tag: 'people/c1')],
+        links: [link(9, 'people/c9', 'H1', base: ann)],
+      );
+      expect(byGoogle(taken, 'people/c1')?.graphId, isNot('H1'));
+      final two = run(
+        google: [g('people/c1', ann)],
+        graph: [
+          h('H1', ann, tag: 'people/c1'),
+          h('H1b', ann, tag: 'people/c1'),
+        ],
+      );
+      expect(
+        two.links.where(
+          (l) => l.googleName == 'people/c1' && l.graphId != null,
+        ),
+        isEmpty,
+      );
+    });
+
     test('a tag naming a contact already paired waits under Needs a look', () {
       final plan = run(
         google: [g('people/new', ann, tag: 'H1')],
