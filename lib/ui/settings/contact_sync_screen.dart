@@ -559,9 +559,9 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           _QuestionCard(
             question: q,
             graphName: graphName,
-            onAnswer: (choice) => _act(
+            onAnswer: (choice, {items}) => _act(
               context,
-              () => _sync.answerQuestion(q.kind, choice),
+              () => _sync.answerQuestion(q.kind, choice, items: items),
             ),
           ),
         if (s.firstStarted ||
@@ -1162,7 +1162,16 @@ class _PreviewTable extends StatelessWidget {
   }
 }
 
-/// A brake's question: what is held, and the two answers.
+/// What answers a brake's question: the whole of it, with [items] null,
+/// or only the contacts those keys name.
+typedef _QuestionAnswer = void Function(
+  ContactSyncChoice choice, {
+  Set<String>? items,
+});
+
+/// A brake's question: what is held, contact by contact with what each
+/// would lose or have deleted, and the two answers, for all of them at
+/// once or for one contact alone.
 class _QuestionCard extends StatelessWidget {
   const _QuestionCard({
     required this.question,
@@ -1172,11 +1181,13 @@ class _QuestionCard extends StatelessWidget {
 
   final ContactSyncQuestion question;
   final String graphName;
-  final ValueChanged<ContactSyncChoice> onAnswer;
+  final _QuestionAnswer onAnswer;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final muted = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
     final q = question;
     String side(ContactSide s) => _sideName(s, graphName);
     final n = q.items.length;
@@ -1185,25 +1196,40 @@ class _QuestionCard extends StatelessWidget {
     // more than 5 (or 10) that raised it.
     final (these, they) =
         n == 1 ? ('this contact', 'it is') : ('these $n contacts', 'they are');
+    // The side every contact's change (or deletion) is about, where they
+    // share one: said once, rather than under every name.
+    final sides = {for (final i in q.items) i.side};
+    final oneSide = sides.length == 1 ? sides.single : null;
     final (String title, String body, String explain) = switch (q.kind) {
       ContactSyncQuestionKind.deletions => (
           _count(n, 'deletion needs your OK', 'deletions need your OK'),
           'One sync would delete $these at once, so $they held for your '
               'OK, and everything else carries on.',
-          'Delete them deletes those still due, each read again first. '
+          'Delete them deletes '
+              '${oneSide == null ? "each one's copy on the other side" : 'their copies in ${side(oneSide.other)}'}'
+              ', each read again first. '
               "Don't delete them: ${_staySide(q.items, graphName)} but "
               'stop syncing, and each waits under Needs a look, where it '
               'can still be copied back.',
         ),
       ContactSyncQuestionKind.changes => (
           'Changes to ${_count(n, 'contact', 'contacts')} need your OK',
-          'One sync would remove or replace details on $these at once, '
-              "as Google's Undo changes, a backup imported again or a bulk "
-              'edit can, so $they held for your OK, and everything else '
-              'carries on.',
-          'Copy them back puts the details back where they were removed or '
-              'replaced, from the other side. Either way each is read again '
-              'first.',
+          'One sync would remove or replace details '
+              '${oneSide == null ? '' : 'in ${side(oneSide)} '}on $these at '
+              "once, as Google's Undo changes, a backup imported again or a "
+              'bulk edit can, so $they held for your OK, and everything else '
+              'carries on. Under each name, each detail as it is '
+              '${oneSide == null ? 'now on the side named' : 'in ${side(oneSide)} now'}'
+              ', and what it would become.',
+          oneSide == null
+              ? 'Apply makes each change on the side named. Copy back keeps '
+                  "that side's details as they are and copies them back to "
+                  'the other side. Either way each contact is read again '
+                  'first.'
+              : 'Apply makes these changes in ${side(oneSide)}. Copy back '
+                  "keeps ${side(oneSide)}'s details as they are and copies "
+                  'them back to ${side(oneSide.other)}. Either way each '
+                  'contact is read again first.',
         ),
       ContactSyncQuestionKind.emptyAnswer => (
           q.listed == null
@@ -1227,14 +1253,14 @@ class _QuestionCard extends StatelessWidget {
               'waiting leaves it stopped, and the next sync looks again.',
         ),
     };
-    String item(ContactSyncQuestionItem i) => switch (q.kind) {
-          ContactSyncQuestionKind.deletions =>
-            '${_title(i.title)}: ${_goneFrom(i.side, graphName, lower: true)}',
-          ContactSyncQuestionKind.changes =>
-            '${_title(i.title)}: would lose details in ${side(i.side)}',
-          ContactSyncQuestionKind.emptyAnswer => _title(i.title),
-        };
-    final answer = q.answer;
+    final whole = q.answer;
+    // Contacts answered one by one: in a question of more than one, whose
+    // contacts the runner names. Not an empty answer, which is a count.
+    final oneByOne = n > 1 &&
+        q.kind != ContactSyncQuestionKind.emptyAnswer &&
+        q.items.every((i) => i.key.isNotEmpty);
+    final open = q.items.where((i) => i.answer == null).length;
+    final someAnswered = open < n;
     return Card(
       key: ValueKey('contact-sync-question:${q.kind.name}'),
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -1248,22 +1274,31 @@ class _QuestionCard extends StatelessWidget {
             Text(title, style: theme.textTheme.titleSmall),
             const SizedBox(height: 6),
             Text(body),
-            if (q.items.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              for (final i in q.items)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 2),
-                  child: Text(item(i)),
-                ),
-            ],
             const SizedBox(height: 8),
-            if (answer != null)
+            // The answer for all comes first: with 58 contacts below, at
+            // their foot it would be a long way down.
+            if (whole != null)
               Text(
-                'You chose ${_choiceLabel(answer, graphName)}. The next sync '
+                'You chose ${_choiceLabel(whole, graphName)}'
+                '${someAnswered ? ' for the rest' : ''}. The next sync '
                 'carries it out.',
+                key: const ValueKey('contact-sync-question-answer'),
                 style: TextStyle(color: theme.colorScheme.primary),
               )
-            else ...[
+            // Open while any contact is (a question of none, an empty
+            // answer, is open until answered).
+            else if (n == 0 || open > 0) ...[
+              if (oneByOne)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(
+                    someAnswered
+                        ? 'For the $open not yet answered:'
+                        : 'For all $n at once:',
+                    key: const ValueKey('contact-sync-question-for'),
+                    style: theme.textTheme.labelLarge,
+                  ),
+                ),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
@@ -1277,11 +1312,21 @@ class _QuestionCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 8),
-              Text(
-                explain,
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-              ),
+              Text(explain, style: muted),
+            ],
+            if (q.items.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              for (final i in q.items) ...[
+                const Divider(height: 17),
+                _QuestionItemTile(
+                  item: i,
+                  kind: q.kind,
+                  graphName: graphName,
+                  namesSide: oneSide == null,
+                  choices: oneByOne && whole == null ? q.choices : const [],
+                  onAnswer: (c) => onAnswer(c, items: {i.key}),
+                ),
+              ],
             ],
           ],
         ),
@@ -1299,6 +1344,136 @@ class _QuestionCard extends StatelessWidget {
         ? 'they stay in ${_sideName(sides.single, graphName)}'
         : 'they stay where they are';
   }
+}
+
+/// One contact in a brake's question: its name, what the held change
+/// would do to it detail by detail (or, for a deletion, an email or mobile
+/// to tell it apart), and its own two answers, or the one given to it.
+/// Compact, as a question may hold dozens.
+class _QuestionItemTile extends StatelessWidget {
+  const _QuestionItemTile({
+    required this.item,
+    required this.kind,
+    required this.graphName,
+    required this.namesSide,
+    required this.choices,
+    required this.onAnswer,
+  });
+
+  final ContactSyncQuestionItem item;
+  final ContactSyncQuestionKind kind;
+  final String graphName;
+
+  /// The question's contacts are not all about one side, so each names
+  /// its own.
+  final bool namesSide;
+
+  /// The answers it may have on its own; none where it cannot be answered
+  /// alone.
+  final List<ContactSyncChoice> choices;
+  final ValueChanged<ContactSyncChoice> onAnswer;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final i = item;
+    final answer = i.answer;
+    final after = switch (kind) {
+      ContactSyncQuestionKind.deletions =>
+        ': ${_goneFrom(i.side, graphName, lower: true)}',
+      ContactSyncQuestionKind.changes =>
+        namesSide ? ': in ${_sideName(i.side, graphName)}' : '',
+      ContactSyncQuestionKind.emptyAnswer => '',
+    };
+    return Column(
+      key: i.key.isEmpty ? null : ValueKey('contact-sync-item:${i.key}'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text.rich(TextSpan(children: [
+          TextSpan(
+            text: _title(i.title),
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          if (after.isNotEmpty) TextSpan(text: after),
+        ])),
+        for (final c in i.changes)
+          Padding(
+            padding: const EdgeInsets.only(left: 12, top: 2),
+            child: Text(contactSyncChangeLine(c)),
+          ),
+        if (kind == ContactSyncQuestionKind.changes && i.changes.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(left: 12, top: 2),
+            child: Text(
+              'The details show after the next sync.',
+              style: muted,
+            ),
+          ),
+        if (i.hint case final hint?)
+          Padding(
+            padding: const EdgeInsets.only(left: 12, top: 2),
+            child: Text(hint, style: muted),
+          ),
+        if (answer != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              'You chose ${_itemChoiceLabel(answer, graphName)}: the next '
+              'sync carries it out.',
+              style: TextStyle(color: theme.colorScheme.primary),
+            ),
+          )
+        else if (choices.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Wrap(
+              spacing: 4,
+              children: [
+                for (final c in choices)
+                  TextButton(
+                    key: ValueKey('contact-sync-item:${i.key}:${c.name}'),
+                    onPressed: () => onAnswer(c),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 36),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    child: Text(_itemChoiceLabel(c, graphName)),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// A brake's answer for one contact: the question's own, said of one.
+String _itemChoiceLabel(ContactSyncChoice c, String graphName) => switch (c) {
+      ContactSyncChoice.applyThem => 'Apply',
+      ContactSyncChoice.copyThemBack => 'Copy back',
+      ContactSyncChoice.deleteThem => 'Delete',
+      ContactSyncChoice.dontDelete => "Don't delete",
+      _ => _choiceLabel(c, graphName),
+    };
+
+/// One detail a held change would remove or replace: "Job title: Sales
+/// manager → Purchasing manager", "Mobile: +1 555 123 4567 → removed".
+/// A long value is shortened to one line.
+String contactSyncChangeLine(ContactSyncDetailChange c) =>
+    '${_fieldLabel(c.field)}: ${_shortValue(c.before)} → '
+    '${c.after == null ? 'removed' : _shortValue(c.after)}';
+
+/// A value on one line, and no longer than about half a phone's width.
+String _shortValue(String? value) {
+  final one = (value ?? '').trim().replaceAll(RegExp(r'\s+'), ' ');
+  if (one.isEmpty) return '(none)';
+  const most = 60;
+  final chars = one.characters;
+  if (chars.length <= most) return one;
+  return '${chars.take(most - 1).toString().trimRight()}…';
 }
 
 /// Needs a look: each contact the sync could not settle on its own, with
