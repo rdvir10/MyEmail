@@ -218,33 +218,39 @@ void main() {
       expect(none.patch, {'personalNotes': 'Two dogs. A cat.'});
     });
 
-    test('held only as a run of whole words', () {
-      // "art" is in "Martin's partner", but not as a word.
-      final inside = merge(copy('A', {'personalNotes': "Martin's partner"}), [
-        copy('B', {'personalNotes': 'art'}),
-      ]);
-      expect(inside.outcome, CopiesOutcome.differs);
-      expect(inside.differences.single.label, 'Notes');
+    test('held only as whole sentences or lines', () {
+      CopiesOutcome held(String mine, String theirs) => merge(
+        copy('A', {'personalNotes': mine}),
+        [
+          copy('B', {'personalNotes': theirs}),
+        ],
+      ).outcome;
+      // A line, a sentence, or a run of them, punctuation aside.
+      const same = CopiesOutcome.same;
+      expect(held('Met at the fair.\nLikes golf.', 'likes golf'), same);
+      expect(held('Met at the fair. Likes golf!', 'Likes golf.'), same);
+      expect(
+        held(
+          'Met at the fair. Likes golf. Two dogs.',
+          'Met at the fair. Likes golf.',
+        ),
+        same,
+      );
+      // Words inside a sentence, or a word inside a word: not held.
+      const differs = CopiesOutcome.differs;
+      expect(held('Not a VIP', 'VIP'), differs);
+      expect(held('Do not call', 'Call'), differs);
+      expect(held('Met at the fair.', 'the fair'), differs);
+      expect(held("Martin's partner", 'art'), differs);
       // Nor, the other way, is the longer taken.
-      final outside = merge(copy('A', {'personalNotes': 'art'}), [
-        copy('B', {'personalNotes': "Martin's partner"}),
-      ]);
-      expect(outside.outcome, CopiesOutcome.differs);
-      // Words in a row, punctuation aside: held.
-      final run = merge(copy('A', {'personalNotes': 'Met at the fair.'}), [
-        copy('B', {'personalNotes': 'THE FAIR'}),
-      ]);
-      expect(run.outcome, CopiesOutcome.same);
-      final apart = merge(copy('A', {'personalNotes': 'Met at the fair.'}), [
-        copy('B', {'personalNotes': 'met the fair'}),
-      ]);
-      expect(apart.outcome, CopiesOutcome.differs);
+      expect(held('VIP', 'Not a VIP'), differs);
     });
 
     test('notes neither holds: a difference, a long note not shown', () {
       final merged = merge(copy('A', {'personalNotes': 'Two dogs.'}), [
         copy('B', {'personalNotes': 'A cat.'}),
-        copy('C', {'personalNotes': 'Moved to Ohio.\nStill two dogs.'}),
+        // C holds the synced copy's, as a line, but not B's.
+        copy('C', {'personalNotes': 'Moved to Ohio.\nTwo dogs.'}),
         copy('D', {'personalNotes': 'x' * 61}),
       ]);
       expect(merged.outcome, CopiesOutcome.differs);
@@ -476,6 +482,45 @@ void main() {
           email('a@x.example'),
         ],
       });
+    });
+
+    test('the others by id, never as given', () {
+      final kept = copy('A', {
+        'emailAddresses': [email('a@x.example'), email('b@x.example')],
+      });
+      final b = copy(
+        'B',
+        {
+          'emailAddresses': [email('c@x.example')],
+          'companyName': 'Acme Steel',
+        },
+        'p1',
+      );
+      final c = copy(
+        'C',
+        {
+          'emailAddresses': [email('d@x.example')],
+          'companyName': 'ACME STEEL',
+        },
+        'p1',
+      );
+      for (final keep in [null, 'A']) {
+        final given = merge(kept, [b, c], keep: keep);
+        final turned = merge(kept, [c, b], keep: keep);
+        expect(turned.patch, given.patch, reason: keep);
+        expect(turned.photoFrom, given.photoFrom, reason: keep);
+        expect(turned.fingerprint, given.fingerprint, reason: keep);
+      }
+      final answered = merge(kept, [c, b], keep: 'A');
+      expect(answered.patch, {
+        'emailAddresses': [
+          email('a@x.example'),
+          email('b@x.example'),
+          email('c@x.example'),
+        ],
+        'companyName': 'Acme Steel',
+      });
+      expect(answered.photoFrom, 'B');
     });
 
     test('children and categories have no room: never a difference', () {
@@ -849,31 +894,41 @@ void main() {
         'mobilePhone': null,
         'emailAddresses': [email('ann@x.example')],
       });
-      final other = copy('B', {
-        'mobilePhone': null,
-        'emailAddresses': [email('ann.cole@other.example')],
-        'homeAddress': address(street: '9 Elm St', city: 'Oakland'),
-      });
+      final other = copy(
+        'B',
+        {
+          'mobilePhone': null,
+          'emailAddresses': [email('ann.cole@other.example')],
+          'homeAddress': address(street: '9 Elm St', city: 'Oakland'),
+          'jobTitle': 'Clerk',
+        },
+        'p1',
+      );
       final copyOfAnn = copy('C', {
         'mobilePhone': null,
         'emailAddresses': [email('ANN@x.example')],
+        'jobTitle': 'Buyer',
       });
       final merged = merge(ann, [other, copyOfAnn]);
       expect(merged.outcome, CopiesOutcome.differs);
-      expect(merged.differences, [
+      expect(
+        merged.differences.first,
         const CopiesDifference(
           label: 'Same name only',
           others: {'B': 'no email or mobile in common', 'C': null},
         ),
-      ]);
-      // Merged on Ron's answer only.
-      expect(merge(ann, [other, copyOfAnn], keep: 'A').patch, {
-        'emailAddresses': [
-          email('ann@x.example'),
-          email('ann.cole@other.example'),
-        ],
-        'homeAddress': address(street: '9 Elm St', city: 'Oakland'),
-      });
+      );
+      // Nothing to write, whatever the answer: the synced copy's, the
+      // other's, or one joined to it.
+      for (final keep in [null, 'A', 'B', 'C']) {
+        final answered = merge(ann, [other, copyOfAnn], keep: keep);
+        expect(answered.outcome, CopiesOutcome.differs, reason: keep);
+        expect(answered.patch, isEmpty, reason: keep);
+        expect(answered.photoFrom, isNull, reason: keep);
+        expect(answered.adds, isEmpty, reason: keep);
+        expect(answered.differences, merged.differences, reason: keep);
+        expect(answered.fingerprint, merged.fingerprint, reason: keep);
+      }
     });
 
     test('joined through another copy that is', () {
