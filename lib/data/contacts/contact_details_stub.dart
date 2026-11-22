@@ -1,31 +1,14 @@
-import 'package:flutter/foundation.dart' show immutable;
-
-import '../../domain/synced_contact.dart' show ContactField;
+import '../../domain/synced_contact.dart' show ContactSide;
 import 'contact_sync_planner.dart';
 
-// Stand-ins for the planner's round on what a held change would do (the
-// details hand-out), so the runner can be written against its names
-// before that round is merged. This file goes when it is: the planner
-// then defines ContactDetailChange, ContactBrakeItem.changes and
-// ContactBrakeItem.hint itself, in toJson and fromJson.
+// Stand-ins for the planner's round that gives each held change its side
+// and its clash (ContactDetailChange.side and .clash), so the runner can
+// map them before that round is merged. This file goes when it is: the
+// planner's fields then take the place of these getters.
 
-/// One detail a held change would remove or replace (the hand-out's
-/// shape).
-@immutable
-class ContactDetailChange {
-  const ContactDetailChange({required this.field, this.before, this.after});
-
-  final ContactField field;
-
-  /// On the side that would lose it, as shown.
-  final String? before;
-
-  /// What it would become; null when it would be removed.
-  final String? after;
-}
-
-/// Until the planner gives them: none.
-extension ContactBrakeItemDetails on ContactBrakeItem {
-  List<ContactDetailChange> get changes => const [];
-  String? get hint => null;
+/// Until the planner gives them: no side of its own (the item's stands
+/// in), and no clash.
+extension ContactDetailChangeSides on ContactDetailChange {
+  ContactSide? get side => null;
+  bool get clash => false;
 }

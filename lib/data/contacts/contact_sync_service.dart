@@ -105,9 +105,17 @@ abstract interface class ContactSyncService {
   /// With [items] (their [ContactSyncQuestionItem.key]s), only those
   /// contacts are answered, each showing its answer
   /// ([ContactSyncQuestionItem.answer]) until a run carries it out; the
-  /// rest of the question stays open. Without, the whole question: every
-  /// item not answered on its own. The choices are the question's own
-  /// ([ContactSyncQuestion.choices]), for one contact as for all.
+  /// rest of the question stays open. The screen names the items it
+  /// shows, for one contact and for its "for all" buttons alike, so an
+  /// item raised after it last read the status is never answered unseen.
+  /// Should a key name no item of the question any more (its contact
+  /// gone, or answered meanwhile), nothing is answered and
+  /// [ContactSyncRefused] says so ("That question has changed since it
+  /// was shown. Look at it again."), for the screen to read the status
+  /// again. Without [items] (for a caller that cannot name them), every
+  /// item not answered on its own, those raised since included. The
+  /// choices are the question's own ([ContactSyncQuestion.choices]), for
+  /// one contact as for all.
   Future<void> answerQuestion(
     ContactSyncQuestionKind kind,
     ContactSyncChoice choice, {
@@ -647,8 +655,9 @@ class ContactSyncQuestionItem {
   final ContactSide side;
 
   /// Names this contact within its question, for
-  /// [ContactSyncService.answerQuestion]'s items: stable from run to run
-  /// while its contacts keep their ids. The runner always sets it.
+  /// [ContactSyncService.answerQuestion]'s items: minted once when the
+  /// item is raised and never changed, whatever happens to its contacts'
+  /// ids (a Gmail re-key). The runner always sets it.
   final String key;
 
   /// For changes: each detail that would be removed or replaced on
@@ -672,7 +681,13 @@ class ContactSyncQuestionItem {
 /// never written to a log.
 @immutable
 class ContactSyncDetailChange {
-  const ContactSyncDetailChange({required this.field, this.before, this.after});
+  const ContactSyncDetailChange({
+    required this.field,
+    this.before,
+    this.after,
+    this.side,
+    this.clash = false,
+  });
 
   final ContactField field;
 
@@ -682,6 +697,14 @@ class ContactSyncDetailChange {
 
   /// What it would become, as shown; null when it would be removed.
   final String? after;
+
+  /// The side this change lands on; null means its contact's side, the
+  /// item's.
+  final ContactSide? side;
+
+  /// A detail changed on both sides: Copy back does not undo it, the newer
+  /// edit stays.
+  final bool clash;
 }
 
 /// One Needs a look item.
