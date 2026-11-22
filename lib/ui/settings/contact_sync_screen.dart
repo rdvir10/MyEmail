@@ -667,7 +667,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           ]),
           const _Para(
             'Two files, one Google Contacts can import and one Outlook on the '
-            'web can import. Turn contact sync off before importing either.',
+            'web can import.',
             muted: true,
           ),
           if (_saving && _backupFrom(google, graph, forStart: false))

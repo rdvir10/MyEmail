@@ -875,8 +875,7 @@ void main() {
       expect(find.text('First sync'), findsNothing);
       expect(
         find.text('Two files, one Google Contacts can import and one Outlook '
-            'on the web can import. Turn contact sync off before importing '
-            'either.'),
+            'on the web can import.'),
         findsOneWidget,
       );
       await tester.tap(button('contact-sync-backup-later'));
