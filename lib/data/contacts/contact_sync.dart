@@ -18,6 +18,7 @@ import '../mail_engine.dart' show AuthenticationFailed, ConnectionFailed;
 import '../ui_state_store.dart';
 import 'account_people.dart' show AccountPeople;
 import 'contact_backup.dart';
+import 'contact_details_stub.dart';
 import 'contact_mapping.dart';
 import 'contact_sync_planner.dart';
 import 'contact_sync_service.dart';
@@ -495,10 +496,13 @@ class ContactSync implements ContactSyncService {
     DateTime? at = stopped?.at;
     for (final q in held.questions) {
       if (q.answer != null || !fresh(q.at)) continue;
+      // Items answered on their own wait for a run, not for Ron.
+      final open = q.items.where((i) => _Question.answerOf(i) == null).length;
+      if (open == 0) continue;
       if (q.kind == ContactSyncQuestionKind.deletions) {
-        deletions += q.items.length;
+        deletions += open;
       } else if (q.kind == ContactSyncQuestionKind.changes) {
-        changes += q.items.length;
+        changes += open;
       } else {
         continue;
       }
@@ -543,7 +547,17 @@ class ContactSync implements ContactSyncService {
     await store.updatePair(pair.pairId, (p) {
       final held = _Held.parse(p.held);
       for (final q in held.questions) {
-        if (q.kind == kind && q.answer == null) q.answer = choice;
+        if (q.kind != kind) continue;
+        if (items == null) {
+          // The whole question: every item not answered on its own.
+          q.answer ??= choice;
+          continue;
+        }
+        for (final item in q.items) {
+          if (items.contains(_Question.keyOf(item))) {
+            item['answer'] = choice.name;
+          }
+        }
       }
       return p.copyWith(held: held.encode());
     });
@@ -1523,28 +1537,53 @@ class _Run {
       add(a, _AnswerSource.pending(i));
     }
     for (final q in held.questions) {
-      final kind = switch (q.answer) {
-        ContactSyncChoice.deleteThem => ContactAnswerKind.deleteHeld,
-        ContactSyncChoice.dontDelete => ContactAnswerKind.keepHeld,
-        ContactSyncChoice.applyThem => ContactAnswerKind.applyHeld,
-        ContactSyncChoice.copyThemBack => ContactAnswerKind.copyHeldBack,
-        ContactSyncChoice.carryOn => ContactAnswerKind.carryOn,
-        _ => null,
-      };
-      if (kind == null) continue;
-      // Only the contacts the question named: a later brake of the same
-      // kind holds others, under a question of its own.
-      final items = [
-        for (final i in q.items) ?ContactBrakeItem.fromJson(i),
-      ];
-      answers.add(
-        ContactAnswer(
-          kind,
-          side: q.side,
-          held: kind == ContactAnswerKind.carryOn ? null : items,
-        ),
-      );
-      answerSources.add(_AnswerSource.question(q.id));
+      if (q.kind == ContactSyncQuestionKind.emptyAnswer) {
+        if (q.answer == ContactSyncChoice.carryOn) {
+          answers.add(ContactAnswer(ContactAnswerKind.carryOn, side: q.side));
+          answerSources.add(
+            _AnswerSource.question(q.id, q.answer!, const {}, whole: true),
+          );
+        }
+        continue;
+      }
+      // Each choice given, the whole question's or an item's own, acts
+      // only on the contacts it was given for: never a sweep of every
+      // row the brake holds (held is never null), nor of the items
+      // answered otherwise, nor of a later brake's, held under a question
+      // of its own.
+      final byChoice = <ContactSyncChoice, List<Map<String, Object?>>>{};
+      final wholeFor = <ContactSyncChoice>{};
+      for (final item in q.items) {
+        final own = _Question.answerOf(item);
+        final choice = own ?? q.answer;
+        if (choice == null) continue;
+        if (own == null) wholeFor.add(choice);
+        byChoice.putIfAbsent(choice, () => []).add(item);
+      }
+      for (final MapEntry(key: choice, value: items) in byChoice.entries) {
+        final kind = switch (choice) {
+          ContactSyncChoice.deleteThem => ContactAnswerKind.deleteHeld,
+          ContactSyncChoice.dontDelete => ContactAnswerKind.keepHeld,
+          ContactSyncChoice.applyThem => ContactAnswerKind.applyHeld,
+          ContactSyncChoice.copyThemBack => ContactAnswerKind.copyHeldBack,
+          _ => null,
+        };
+        if (kind == null) continue;
+        answers.add(
+          ContactAnswer(
+            kind,
+            held: [for (final i in items) ?ContactBrakeItem.fromJson(i)],
+          ),
+        );
+        answerSources.add(
+          _AnswerSource.question(
+            q.id,
+            choice,
+            {for (final i in items) _Question.keyOf(i)},
+            whole: wholeFor.contains(choice),
+          ),
+        );
+      }
     }
   }
 
@@ -2812,13 +2851,30 @@ class _Run {
                 at < held.pending.length)
           held.pending[at],
     ];
-    final answeredQuestions = <int>{
+    // Brake answers this run carried out (or found nothing left to act
+    // on), by question and choice: their answers are cleared. Which items
+    // stay is the rows' to say (prune): one still held under its brake is
+    // shown again, open, never left held with nothing to answer.
+    // An answer given while this run went is not among them: only the
+    // items each answer was planned for, by key and choice, and the whole
+    // question's answer where it was.
+    final carried = [
       for (final (i, source) in answerSources.indexed)
-        if (source.questionId case final id?
-            when i < outcomes.length &&
-                outcomes[i] != ContactAnswerOutcome.waiting)
-          id,
-    };
+        if (source.questionId != null &&
+            i < outcomes.length &&
+            outcomes[i] != ContactAnswerOutcome.waiting)
+          source,
+    ];
+    bool carriedItem(int question, ContactSyncChoice choice, String key) =>
+        carried.any(
+          (s) =>
+              s.questionId == question &&
+              s.questionChoice == choice &&
+              s.questionItems.contains(key),
+        );
+    bool carriedWhole(int question, ContactSyncChoice choice) => carried.any(
+      (s) => s.questionId == question && s.questionChoice == choice && s.whole,
+    );
     final binIds = {for (final b in await store.bin(pairId)) b.binId};
     final tallyNow = tally.toTally(at, complete: true);
     await store.transaction(() async {
@@ -2834,10 +2890,20 @@ class _Run {
           ..clear()
           ..addAll(waitingPending);
         h.questions.removeWhere(
-          (q) =>
-              answeredQuestions.contains(q.id) ||
-              q.kind == ContactSyncQuestionKind.emptyAnswer,
+          (q) => q.kind == ContactSyncQuestionKind.emptyAnswer,
         );
+        for (final q in h.questions) {
+          for (final item in q.items) {
+            final choice = _Question.answerOf(item);
+            if (choice != null &&
+                carriedItem(q.id, choice, _Question.keyOf(item))) {
+              item.remove('answer');
+            }
+          }
+          if (q.answer case final choice? when carriedWhole(q.id, choice)) {
+            q.answer = null;
+          }
+        }
         h.prune(rows);
         h.passedOver
           ..clear()
@@ -3032,16 +3098,33 @@ class _OtherDevice implements Exception {
 class _AnswerSource {
   const _AnswerSource.review(int this.reviewId)
     : questionId = null,
+      questionChoice = null,
+      questionItems = const {},
+      whole = false,
       pendingIndex = null;
-  const _AnswerSource.question(int this.questionId)
-    : reviewId = null,
-      pendingIndex = null;
+
+  /// A brake question's answer: the choice given, the keys of the items
+  /// it acts on, and whether the whole question's answer is among them
+  /// (else only items' own).
+  const _AnswerSource.question(
+    int this.questionId,
+    ContactSyncChoice this.questionChoice,
+    this.questionItems, {
+    required this.whole,
+  }) : reviewId = null,
+       pendingIndex = null;
   const _AnswerSource.pending(int this.pendingIndex)
     : reviewId = null,
-      questionId = null;
+      questionId = null,
+      questionChoice = null,
+      questionItems = const {},
+      whole = false;
 
   final int? reviewId;
   final int? questionId;
+  final ContactSyncChoice? questionChoice;
+  final Set<String> questionItems;
+  final bool whole;
   final int? pendingIndex;
 }
 
@@ -3174,11 +3257,36 @@ class _Held {
 
   /// A brake raised this run: added to its kind's open question, or asked
   /// anew where that one already has an answer queued.
+  ///
+  /// Every run's plan lists every row its brakes hold, those held before
+  /// among them, with what each would do as that run read it: an item
+  /// already asked about takes those details where it stands, keeping its
+  /// question and any answer given to it, and is not news; only the rest
+  /// are added, and make the question news again.
   void raise(ContactBrake brake, DateTime at) {
     final kind = brake.kind == ContactBrakeKind.deletions
         ? ContactSyncQuestionKind.deletions
         : ContactSyncQuestionKind.changes;
-    final items = [for (final i in brake.items) i.toJson()];
+    final asked = <String, Map<String, Object?>>{
+      for (final q in questions)
+        if (q.kind == kind)
+          for (final item in q.items) _Question.keyOf(item): item,
+    };
+    final items = <Map<String, Object?>>[];
+    for (final i in brake.items) {
+      final json = i.toJson();
+      final known = asked[_Question.keyOf(json)];
+      if (known == null) {
+        items.add(json);
+        continue;
+      }
+      final answer = known['answer'];
+      known
+        ..clear()
+        ..addAll(json);
+      if (answer != null) known['answer'] = answer;
+    }
+    if (items.isEmpty) return;
     final open = questions.firstWhereOrNull(
       (q) => q.kind == kind && q.answer == null,
     );
@@ -3384,20 +3492,46 @@ class _Question {
     'answer': ?answer?.name,
   };
 
+  /// An item's key within its question: its Outlook contact, which never
+  /// changes id, else its Gmail one.
+  static String keyOf(Map<String, Object?> item) =>
+      (item['graphId'] ?? item['googleName'] ?? '') as String;
+
+  /// The answer given to an item on its own, if any.
+  static ContactSyncChoice? answerOf(Map<String, Object?> item) =>
+      ContactSyncChoice.values.firstWhereOrNull(
+        (c) => c.name == item['answer'],
+      );
+
   ContactSyncQuestion shown() => ContactSyncQuestion(
     kind: kind,
     items: [
-      for (final i in items)
-        ContactSyncQuestionItem(
-          title: i['title'] as String? ?? '',
-          side: _sideOf(i['side']) ?? ContactSide.google,
-        ),
+      for (final i in items) _itemShown(i),
     ],
     side: side,
     listed: listed,
     expected: expected,
     answer: answer,
   );
+
+  ContactSyncQuestionItem _itemShown(Map<String, Object?> json) {
+    final item = ContactBrakeItem.fromJson(json);
+    return ContactSyncQuestionItem(
+      title: json['title'] as String? ?? '',
+      side: _sideOf(json['side']) ?? ContactSide.google,
+      key: keyOf(json),
+      changes: [
+        for (final c in item?.changes ?? const <ContactDetailChange>[])
+          ContactSyncDetailChange(
+            field: c.field,
+            before: c.before,
+            after: c.after,
+          ),
+      ],
+      hint: item?.hint,
+      answer: answerOf(json),
+    );
+  }
 }
 
 /// `ContactPair.lastResult`: the last run's numbers, and why it stopped.
