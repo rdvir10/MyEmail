@@ -565,15 +565,22 @@ class ContactSync implements ContactSyncService {
           );
         }
       }
+      // An item answered anew no longer says why its last answer waited
+      // ([_Held.waits]): no run has tried this one.
       for (final q in questions) {
         if (whole) {
           // Every item not answered on its own.
-          q.answer ??= choice;
+          if (q.answer != null) continue;
+          q.answer = choice;
+          for (final item in q.items) {
+            if (_Question.answerOf(item) == null) item.remove(_Held.waits);
+          }
           continue;
         }
         for (final item in q.items) {
           if (items.contains(_Question.keyOf(item))) {
             item['answer'] = choice.name;
+            item.remove(_Held.waits);
           }
         }
       }

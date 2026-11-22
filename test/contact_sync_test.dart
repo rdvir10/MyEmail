@@ -4152,6 +4152,38 @@ void main() {
       );
       expect(mobileOf(h.google.person(bad)), isNotNull);
     });
+
+    test('an answer changed after a run said why the last one waited shows '
+        'no reason before a run has tried it', () async {
+      await heldChanges();
+      // Hadco's batch reads fail (no connection): the held pairs unread.
+      h.answer = (r) =>
+          r.url.path.endsWith(r'$batch') && r.body.contains('"method":"GET"')
+          ? http.Response('{}', 503)
+          : null;
+      final key = (await h.status()).questions.single.items.first.key;
+      ContactSyncQuestionItem itemOf(ContactSyncStatus s) =>
+          s.questions.single.items.firstWhere((i) => i.key == key);
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.applyThem,
+        items: {key},
+      );
+      await h.sync.syncNow();
+      expect(itemOf(await h.status()).answerProblem, isNotNull);
+      // Hadco's permission lapses: the next run stops before planning.
+      h.refusing.add(Harness.hadco.id);
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.copyThemBack,
+        items: {key},
+      );
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.halt!.kind, ContactSyncHaltKind.notAllowed);
+      expect(itemOf(status).answer, ContactSyncChoice.copyThemBack);
+      expect(itemOf(status).answerProblem, isNull);
+    });
   });
 
   group('privacy', () {
