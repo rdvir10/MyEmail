@@ -19,7 +19,7 @@ import '../mail_engine.dart' show AuthenticationFailed, ConnectionFailed;
 import '../ui_state_store.dart';
 import 'account_people.dart' show AccountPeople;
 import 'contact_backup.dart';
-import 'contact_copies_stub.dart' as cp;
+import 'contact_copies.dart' as cp;
 import 'contact_mapping.dart';
 import 'contact_sync_planner.dart';
 import 'contact_sync_service.dart';
@@ -3117,11 +3117,9 @@ class _Run {
         if (l.isPaired && l.graphId != null) l.graphId!: l,
     };
     final groups = [
-      for (final g in plan.duplicates)
-        if (g.graphSynced case final synced?
-            when paired.containsKey(synced) &&
-                g.graphCopies.isNotEmpty &&
-                (asked != null || answered.contains(synced)))
+      for (final g in _Copies.bySynced(plan.duplicates))
+        if (paired.containsKey(g.graphSynced) &&
+            (asked != null || answered.contains(g.graphSynced)))
           g,
     ];
     final pass = _CopiesCounts();
@@ -3288,7 +3286,7 @@ class _Run {
           ..addAll(
             plan.duplicates.map((d) => _Duplicates.of(d, made: copiedFrom)),
           );
-        h.copies.count(plan.duplicates, rows, merged: copiesMerged);
+        h.copies.count(plan.duplicates, rows, norm, merged: copiesMerged);
         return p.copyWith(
           googleSyncToken: googleToken ?? p.googleSyncToken,
           googleMask: googleContactFieldsVersion,
@@ -3863,14 +3861,25 @@ class _Copies {
   /// A person listed or left whose copies are no longer there to merge
   /// (merged in Outlook, or its synced copy no longer paired) goes from
   /// the list, any answer with it.
+  ///
+  /// Only the copies joined to the synced copy by an email or a mobile
+  /// ([joined], from what the rows hold of each) are the merge's: a person
+  /// with a copy that shares only the name with it (a group joined by
+  /// name) counts among those left as they are ([notSynced]), as does one
+  /// with no synced copy.
   void count(
     List<ContactDuplicateGroup> groups,
-    List<ContactLink> rows, {
+    List<ContactLink> rows,
+    ContactNormaliser norm, {
     Set<String> merged = const {},
   }) {
     final paired = {
       for (final l in rows)
         if (l.isPaired) ?l.graphId,
+    };
+    final base = {
+      for (final l in rows)
+        ?l.graphId: SyncedContact.fromJson(_Run._decode(l.graphBase)),
     };
     final there = {
       for (final g in groups)
@@ -3882,23 +3891,76 @@ class _Copies {
     left.removeWhere((key, _) => !there.contains(key));
     people = 0;
     extras = 0;
-    notSynced = 0;
-    for (final g in groups) {
-      if (g.graphCopies.isEmpty) continue;
-      final synced = g.graphSynced;
-      if (synced == null) {
-        notSynced++;
-        continue;
-      }
-      if (!paired.contains(synced) ||
-          merged.contains(synced) ||
-          left.containsKey(synced) ||
-          listed(synced) != null) {
+    notSynced = groups
+        .where((g) => g.graphSynced == null && g.graphCopies.isNotEmpty)
+        .length;
+    for (final g in bySynced(groups)) {
+      final synced = g.graphSynced!;
+      if (!paired.contains(synced) || merged.contains(synced)) continue;
+      final ours = joined(norm, base[synced], {
+        for (final id in g.graphCopies) id: ?base[id],
+      });
+      if (ours.length < g.graphCopies.length) notSynced++;
+      if (ours.isEmpty || left.containsKey(synced) || listed(synced) != null) {
         continue;
       }
       people++;
-      extras += g.graphCopies.length;
+      extras += ours.length;
     }
+  }
+
+  /// [groups] with a synced Hadco copy and held copies there, one to a
+  /// synced copy: a group joined to the pair by name only (copies no
+  /// longer joined to it by an address) folded into the pair's own.
+  static List<ContactDuplicateGroup> bySynced(
+    List<ContactDuplicateGroup> groups,
+  ) {
+    final by = <String, ContactDuplicateGroup>{};
+    for (final g in groups) {
+      final synced = g.graphSynced;
+      if (synced == null || g.graphCopies.isEmpty) continue;
+      final had = by[synced];
+      by[synced] = had == null
+          ? g
+          : ContactDuplicateGroup(
+              title: had.title ?? g.title,
+              googleSynced: had.googleSynced ?? g.googleSynced,
+              graphSynced: synced,
+              googleCopies: [...had.googleCopies, ...g.googleCopies],
+              graphCopies: {...had.graphCopies, ...g.graphCopies}.toList(),
+            );
+    }
+    return [...by.values];
+  }
+
+  /// Which of [others] are joined to [synced] by an email or a mobile,
+  /// directly or through another that is, as the plan joins copies of one
+  /// person. One sharing only the name is not.
+  static Set<String> joined(
+    ContactNormaliser norm,
+    SyncedContact? synced,
+    Map<String, SyncedContact> others,
+  ) {
+    Set<String> keys(SyncedContact d) => {
+      for (final e in d.list(ContactField.emails))
+        if (norm.itemKey(ContactField.emails, e) case final k?) 'e $k',
+      if (norm.phoneKey(d.text(ContactField.mobile)) case final k?) 'm $k',
+    };
+    if (synced == null) return const {};
+    final have = keys(synced);
+    final found = <String>{};
+    for (var grew = true; grew;) {
+      grew = false;
+      for (final MapEntry(key: id, value: d) in others.entries) {
+        if (found.contains(id)) continue;
+        final k = keys(d);
+        if (!k.any(have.contains)) continue;
+        found.add(id);
+        have.addAll(k);
+        grew = true;
+      }
+    }
+    return found;
   }
 
   Map<String, Object?> toJson() => {
@@ -4011,6 +4073,12 @@ class _CopyNotHeld implements Exception {
   const _CopyNotHeld();
 }
 
+/// A photo of the person's could not be read this time: the person is
+/// passed over, to be merged at a later pass.
+class _PassOver implements Exception {
+  const _PassOver();
+}
+
 /// One run's merge of the Microsoft side's copies ([_Run._copies]): what
 /// it reads, does and lists, kept on the pair as it goes ([save]).
 class _CopiesStep {
@@ -4106,14 +4174,14 @@ class _CopiesStep {
       for (final c in await run.graph(
         (a) => a.listAll(folderId: folder, whole: true),
       )) {
-        if (c['id'] case final String id) read[id] = c;
+        if (c['id'] case final String id) read[id] = _compared(c);
       }
     } else {
       for (final g in groups) {
         for (final id in [g.graphSynced!, ...g.graphCopies]) {
           run._checkStop();
           final c = await run.graph((a) => a.get(id, whole: true));
-          if (c != null && run._inContacts(c)) read[id] = c;
+          if (c != null && run._inContacts(c)) read[id] = _compared(c);
         }
       }
     }
@@ -4146,22 +4214,26 @@ class _CopiesStep {
       if (run.sync._stopAsked && !run.preview) await _flush();
       run._checkStop();
       final key = g.graphSynced!;
-      final copies = [
-        for (final id in g.graphCopies)
-          if (read.containsKey(id)) id,
-      ];
-      if (!read.containsKey(key) || copies.isEmpty) {
-        // Not in Contacts as they were read: passed over this time.
-        _personDone();
-        continue;
-      }
-      if ([key, ...copies].any(unknown.contains)) {
-        _count(failed: 1);
+      // Only the copies joined to the synced one by an email or a mobile:
+      // one sharing only the name is left as it is.
+      final copies = read.containsKey(key)
+          ? _Copies.joined(run.norm, syncedFromGraph(read[key]!), {
+              for (final id in g.graphCopies)
+                if (read[id] case final c?) id: syncedFromGraph(c),
+            })
+          : const <String>{};
+      // A copy whose photo could not be checked is not taken as having
+      // none.
+      if (copies.isEmpty || [key, ...copies].any(unknown.contains)) {
+        // Passed over this time: not in Contacts as read, none of its own
+        // to merge, or a photo not known.
         _personDone();
         continue;
       }
       try {
-        await _person(g, copies, read, photo, paired[key]!);
+        await _person(g, [...copies], read, photo, paired[key]!);
+      } on _PassOver {
+        _personDone();
       } on Exception catch (e) {
         if (e is! _CopyNotHeld && !_Run._failsAlone(e)) rethrow;
         _count(failed: 1);
@@ -4170,6 +4242,24 @@ class _CopiesStep {
     }
     await _flush();
   }
+
+  /// The emails a whole read gives twice: `emailAddresses`, and its first
+  /// three again, one to a property.
+  static const _emailMirrors = {
+    'primaryEmailAddress',
+    'secondaryEmailAddress',
+    'tertiaryEmailAddress',
+  };
+
+  /// [contact], read whole, as the merge rules compare it: without the
+  /// mirrors of its emails ([_emailMirrors]), which would read as other
+  /// details wherever an email's own name or case differs, though the
+  /// rules compare `emailAddresses` itself as they should. Nor is any
+  /// written back from here: a patch carries `emailAddresses` whole.
+  static Map<String, Object?> _compared(Map<String, Object?> contact) => {
+    for (final MapEntry(:key, :value) in contact.entries)
+      if (!_emailMirrors.contains(key)) key: value,
+  };
 
   /// One person: its copies read whole in [read], those with a photo
   /// among [photo]; [pair] its synced copy's row.
@@ -4185,8 +4275,16 @@ class _CopiesStep {
     final hashes = <String, String>{};
     for (final id in [key, ...copies]) {
       if (!photo.contains(id)) continue;
-      final got = await run.graph((a) => a.photoBytes(id));
-      if (got == null) continue;
+      // A photo that cannot be read now passes the person over, rather
+      // than reading as none.
+      final ({List<int> bytes, String type})? got;
+      try {
+        got = await run.graph((a) => a.photoBytes(id));
+      } on Exception catch (e) {
+        if (!_Run._failsAlone(e)) rethrow;
+        throw const _PassOver();
+      }
+      if (got == null) throw const _PassOver();
       bytes[id] = got;
       hashes[id] = await _Run._photoHash(got.bytes);
     }
