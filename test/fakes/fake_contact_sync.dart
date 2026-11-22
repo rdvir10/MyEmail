@@ -34,6 +34,13 @@ class FakeContactSync implements ContactSyncService {
   /// What [answerQuestion] throws, as the runner refuses an answer to a
   /// question that has changed since it was drawn.
   Object? answerFailure;
+
+  /// What [backup] throws, as when an address book cannot be read.
+  Object? backupFailure;
+
+  /// What [answerCopies] throws, as the runner refuses an answer for a
+  /// person or a copy no longer listed.
+  Object? copiesFailure;
   List<ContactSyncBackupFile> backupFiles;
 
   /// The clock [startIfDue] judges by.
@@ -115,6 +122,7 @@ class FakeContactSync implements ContactSyncService {
   @override
   Future<List<ContactSyncBackupFile>> backup() async {
     calls.add('backup');
+    if (backupFailure case final failure?) throw failure;
     return backupFiles;
   }
 
@@ -188,6 +196,7 @@ class FakeContactSync implements ContactSyncService {
   @override
   Future<void> answerCopies(String person, String? keep) async {
     calls.add('answerCopies');
+    if (copiesFailure case final failure?) throw failure;
     copiesAnswers.add((person: person, keep: keep));
   }
 

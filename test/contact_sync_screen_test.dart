@@ -79,6 +79,7 @@ void main() {
     int? graphCount,
     ContactSyncNotice? notice,
     List<ContactSyncDuplicates> duplicates = const [],
+    ContactSyncCopies copies = const ContactSyncCopies(),
   }) =>
       ContactSyncStatus(
         googleAccountId: gmail.id,
@@ -99,6 +100,7 @@ void main() {
         graphCount: graphCount,
         notice: notice,
         duplicates: duplicates,
+        copies: copies,
       );
 
   const chosenOnly = ContactSyncStatus(
@@ -1055,6 +1057,43 @@ void main() {
       await tester.pump();
       await tester.pump();
       expect(find.text('Reading both address books…'), findsOneWidget);
+      expect(
+        tester
+            .widget<LinearProgressIndicator>(button('contact-sync-progress'))
+            .value,
+        isNull,
+      );
+    });
+
+    testWidgets("running: merging Hadco's copies, a person at a time",
+        (tester) async {
+      sync = FakeContactSync(status: synced(
+        running: const ContactSyncProgress(
+          step: ContactSyncStep.merging,
+          done: 120,
+          total: 1336,
+        ),
+      ));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+
+      expect(find.text("Merging Hadco's copies: 120 of 1336 people"),
+          findsOneWidget);
+      expect(
+        tester
+            .widget<LinearProgressIndicator>(button('contact-sync-progress'))
+            .value,
+        closeTo(120 / 1336, 1e-9),
+      );
+      expect(find.text('Reading both address books…'), findsNothing);
+
+      sync.set(synced(
+        running: const ContactSyncProgress(step: ContactSyncStep.merging),
+      ));
+      // Not settled: a bar with no end to it moves for ever.
+      await tester.pump();
+      await tester.pump();
+      expect(find.text("Merging Hadco's copies…"), findsOneWidget);
       expect(
         tester
             .widget<LinearProgressIndicator>(button('contact-sync-progress'))
@@ -2338,15 +2377,19 @@ void main() {
       await tester.pumpAndSettle();
       expect(
         find.text('These are copies of the same person. One copy on each side '
-            'is synced; the others are left as they are. Merge them when you '
-            'like: Merge & fix in Google Contacts, or delete the extra ones '
-            'in Outlook. Where a side holds more than one copy, whichever '
-            'one you remove there, the sync moves to one that is left, and '
-            "nothing is deleted on the other side. Removing a person's last "
-            'copy on one side deletes it on the other too, as any deletion '
-            'does.'),
+            "is synced; the others are left as they are. Merge Gmail's "
+            'copies with Merge & fix in Google Contacts. Where a side holds '
+            'more than one copy, whichever one you remove there, the sync '
+            'moves to one that is left, and nothing is deleted on the other '
+            "side. Removing a person's last copy on one side deletes it on "
+            'the other too, as any deletion does. In Outlook on the web, '
+            'deleting a contact can delete its hidden copies too, and the '
+            'sync then deletes the person in Gmail.'),
         findsOneWidget,
       );
+      expect(button('contact-sync-copies'), findsNothing,
+          reason: "nothing for the merge of Hadco's copies to do");
+      expect(find.text('People with copies (5)'), findsOneWidget);
       final lines = [
         'Ann Cole: 2 in Gmail, 3 in Hadco; one of each is synced',
         'Bob Day: 3 in Gmail; one is synced, and its copy in Hadco is still '
@@ -2478,6 +2521,663 @@ void main() {
         ),
       );
       expect(last, findsOneWidget);
+    });
+
+    /// The Duplicates screen over [copies], a person with copies on each
+    /// side to open it by.
+    Future<void> openDuplicates(
+      WidgetTester tester, {
+      required ContactSyncCopies copies,
+      ContactSyncProgress? running,
+      Size size = const Size(800, 3000),
+    }) async {
+      sync = FakeContactSync(
+        status: synced(
+          running: running,
+          copies: copies,
+          duplicates: const [
+            ContactSyncDuplicates(
+              title: 'Ann Cole',
+              googleCopies: 1,
+              graphCopies: 3,
+              googleSynced: true,
+              graphSynced: true,
+            ),
+          ],
+        ),
+        backupFiles: _backupFiles,
+      );
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester, size: size);
+      await tester.scrollUntilVisible(
+        button('contact-sync-duplicates'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(
+        find.text('Duplicates to merge when you like (1 person)'),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    double top(WidgetTester tester, Finder f) => tester.getTopLeft(f).dy;
+
+    /// [lines] all within [of], each under the one before.
+    void inOrder(WidgetTester tester, Finder of, List<String> lines) {
+      Finder line(String text) =>
+          find.descendant(of: of, matching: find.text(text));
+      for (final text in lines) {
+        expect(line(text), findsOneWidget, reason: text);
+      }
+      for (var i = 1; i < lines.length; i++) {
+        expect(
+          top(tester, line(lines[i])),
+          greaterThan(top(tester, line(lines[i - 1]))),
+          reason: lines[i],
+        );
+      }
+    }
+
+    testWidgets("Hadco's copies: what the merge does, and the counts",
+        (tester) async {
+      await openDuplicates(
+        tester,
+        copies: const ContactSyncCopies(
+          people: 1336,
+          extras: 1515,
+          notSynced: 12,
+        ),
+      );
+
+      expect(
+        find.text('These are copies of the same person. One copy on each side '
+            'is synced; the others are left as they are. Merge Gmail\'s '
+            "copies with Merge & fix in Google Contacts, and Hadco's with "
+            'the merge below. Where a side holds more than one copy, '
+            'whichever one you remove there, the sync moves to one that is '
+            'left, and nothing is deleted on the other side. Removing a '
+            "person's last copy on one side deletes it on the other too, as "
+            'any deletion does. In Outlook on the web, deleting a contact can '
+            'delete its hidden copies too, and the sync then deletes the '
+            'person in Gmail.'),
+        findsOneWidget,
+      );
+      final panel = button('contact-sync-copies');
+      inOrder(tester, panel, [
+        "Merge Hadco's copies",
+        'Keeps the synced copy of each person, adds to it any detail only '
+            'another copy has, and deletes the other copies, which Outlook '
+            'keeps in Deleted Items. Copies that differ are left for you to '
+            'choose.',
+        '1336 people have 1515 other copies in Hadco.',
+        '12 people with copies in Hadco but none synced there are left as '
+            'they are.',
+        "It starts once you have saved Hadco's backup file, which Outlook on "
+            'the web can import.',
+        'Save backup and merge',
+      ]);
+      expect(enabled(tester, 'contact-sync-copies-merge'), isTrue);
+      expect(find.textContaining('Copies that differ ('), findsNothing);
+      expect(
+        top(tester, find.text('People with copies (1)')),
+        greaterThan(top(tester, panel)),
+      );
+
+      sync.set(synced(
+        copies: const ContactSyncCopies(people: 1, extras: 1, notSynced: 1),
+        duplicates: const [
+          ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 2),
+        ],
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('1 person has 1 other copy in Hadco.'), findsOneWidget);
+      expect(
+        find.text('1 person with copies in Hadco but none synced there is '
+            'left as it is.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets("Save backup and merge saves only Hadco's file, then asks for "
+        'the merge', (tester) async {
+      await openDuplicates(
+        tester,
+        copies: const ContactSyncCopies(people: 3, extras: 4),
+      );
+
+      await tester.tap(button('contact-sync-copies-merge'));
+      await tester.pumpAndSettle();
+      expect(sync.count('backup'), 1);
+      expect(
+        [
+          for (final f in files.saved) (f.fileName, f.mimeType, f.dialogTitle),
+        ],
+        [
+          (
+            'myemail-outlook-contacts-2026-11-21.csv',
+            'text/csv',
+            "Save Hadco's contacts",
+          ),
+        ],
+      );
+      expect(sync.count('mergeCopies'), 1);
+      expect(
+        find.text('Saved myemail-outlook-contacts-2026-11-21.csv, 412 '
+            'contacts, which Outlook on the web can import. The merge starts '
+            'now.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a backup not saved merges nothing, and says so',
+        (tester) async {
+      await openDuplicates(
+        tester,
+        copies: const ContactSyncCopies(people: 3, extras: 4),
+      );
+
+      files.answers.add(false);
+      await tester.tap(button('contact-sync-copies-merge'));
+      await tester.pumpAndSettle();
+      expect(files.saved, hasLength(1), reason: 'the save dialog was shown');
+      expect(sync.count('mergeCopies'), 0);
+      expect(
+        find.text("Hadco's backup file was not saved, so nothing is merged."),
+        findsOneWidget,
+      );
+      expect(enabled(tester, 'contact-sync-copies-merge'), isTrue);
+
+      // Saved the second time: merged then.
+      await tester.tap(button('contact-sync-copies-merge'));
+      await tester.pumpAndSettle();
+      expect(sync.count('mergeCopies'), 1);
+      expect(find.textContaining('was not saved'), findsNothing);
+    });
+
+    testWidgets('a backup that cannot be made merges nothing, and says so',
+        (tester) async {
+      await openDuplicates(
+        tester,
+        copies: const ContactSyncCopies(people: 3, extras: 4),
+      );
+      sync.backupFailure = const ContactSyncFailed(
+        'Hadco could not be reached.',
+      );
+
+      await tester.tap(button('contact-sync-copies-merge'));
+      await tester.pumpAndSettle();
+      expect(files.saved, isEmpty);
+      expect(sync.count('mergeCopies'), 0);
+      inOrder(tester, button('contact-sync-copies'), [
+        'Save backup and merge',
+        'Hadco could not be reached.',
+        'Nothing is merged.',
+      ]);
+      expect(enabled(tester, 'contact-sync-copies-merge'), isTrue);
+    });
+
+    testWidgets('while the merge is asked for, how far it has got',
+        (tester) async {
+      final asked = ContactSyncCopies(
+        people: 1336,
+        extras: 1515,
+        asked: true,
+        last: ContactSyncCopiesResult(at: at1042, people: 4),
+      );
+      await openDuplicates(
+        tester,
+        copies: asked,
+        running: const ContactSyncProgress(
+          step: ContactSyncStep.merging,
+          done: 120,
+          total: 1336,
+        ),
+      );
+
+      expect(find.text('Merging: 120 of 1336 people'), findsOneWidget);
+      expect(
+        tester
+            .widget<LinearProgressIndicator>(
+              button('contact-sync-copies-progress'),
+            )
+            .value,
+        closeTo(120 / 1336, 1e-9),
+      );
+      expect(
+        find.text('Keep MyEmail open until it is done. If it is closed '
+            'sooner, the merge carries on the next time MyEmail is opened.'),
+        findsOneWidget,
+      );
+      expect(button('contact-sync-copies-merge'), findsNothing);
+      expect(button('contact-sync-copies-last'), findsNothing,
+          reason: 'the last merge waits until this one is done');
+      expect(find.text('1336 people have 1515 other copies in Hadco.'),
+          findsOneWidget);
+
+      // Asked for, while the sync is still at its own changes.
+      sync.set(synced(
+        copies: asked,
+        running: const ContactSyncProgress(
+          step: ContactSyncStep.writing,
+          done: 1,
+          total: 4,
+        ),
+        duplicates: const [
+          ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 3),
+        ],
+      ));
+      // Not settled: a bar with no end to it moves for ever.
+      await tester.pump();
+      await tester.pump();
+      expect(
+        find.text('Merge asked for: it starts once the sync has made its '
+            'changes.'),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<LinearProgressIndicator>(
+              button('contact-sync-copies-progress'),
+            )
+            .value,
+        isNull,
+      );
+
+      // Asked for, and no sync going.
+      sync.set(synced(
+        copies: asked,
+        duplicates: const [
+          ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 3),
+        ],
+      ));
+      await tester.pump();
+      await tester.pump();
+      expect(
+        find.text('Merge asked for: the next sync carries it out.'),
+        findsOneWidget,
+      );
+      expect(button('contact-sync-copies-progress'), findsNothing);
+    });
+
+    testWidgets('the last merge, in a sentence', (tester) async {
+      await openDuplicates(
+        tester,
+        copies: ContactSyncCopies(
+          people: 79,
+          extras: 129,
+          last: ContactSyncCopiesResult(
+            at: at1042,
+            people: 1089,
+            deleted: 1143,
+            added: 210,
+            differing: 79,
+            failed: 2,
+          ),
+        ),
+      );
+      final clock = formatClock(at1042, use24h: false);
+      inOrder(tester, button('contact-sync-copies'), [
+        "Merge Hadco's copies",
+        'Merged at $clock: 1089 people, 1143 copies deleted, 210 details '
+            'added. 79 people whose copies differ are left for you. 2 people '
+            'could not be merged, and nothing of theirs was deleted.',
+        '79 people have 129 other copies in Hadco.',
+        'Save backup and merge',
+      ]);
+
+      // All merged: the panel stays for what the merge did, with nothing
+      // left to merge.
+      sync.set(synced(
+        copies: ContactSyncCopies(
+          last: ContactSyncCopiesResult(
+            at: at1042,
+            people: 1,
+            deleted: 1,
+          ),
+        ),
+        duplicates: const [
+          ContactSyncDuplicates(title: 'Ann Cole', googleCopies: 2),
+        ],
+      ));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Merged at $clock: 1 person, 1 copy deleted, no details '
+            'added.'),
+        findsOneWidget,
+      );
+      expect(button('contact-sync-copies-merge'), findsNothing);
+      expect(button('contact-sync-copies-counts'), findsNothing);
+    });
+
+    test('the last merge: one of each, and nobody merged', () {
+      final clock = formatClock(at1042, use24h: false);
+      expect(
+        contactSyncMergedLine(
+          ContactSyncCopiesResult(
+            at: at1042,
+            people: 1,
+            deleted: 2,
+            differing: 1,
+            failed: 1,
+          ),
+          today,
+          use24h: false,
+        ),
+        'Merged at $clock: 1 person, 2 copies deleted, no details added. 1 '
+        'person whose copies differ is left for you. 1 person could not be '
+        'merged, and nothing of theirs was deleted.',
+      );
+      expect(
+        contactSyncMergedLine(
+          ContactSyncCopiesResult(at: at1042, differing: 3),
+          today,
+          use24h: false,
+        ),
+        'The merge at $clock merged nobody. 3 people whose copies differ are '
+        'left for you.',
+      );
+    });
+
+    const annDiffers = ContactSyncCopiesPerson(
+      key: 'p1',
+      title: 'Ann Cole',
+      copies: [
+        ContactSyncCopy(
+          key: 'a1',
+          synced: true,
+          details: [
+            ContactSyncCopyDetail(label: 'Job title', value: 'Buyer'),
+            ContactSyncCopyDetail(label: 'Work address'),
+          ],
+        ),
+        ContactSyncCopy(
+          key: 'a2',
+          details: [
+            ContactSyncCopyDetail(label: 'Job title', value: 'Head buyer'),
+            ContactSyncCopyDetail(
+              label: 'Work address',
+              value: '12 Main St, Atlanta GA 30301',
+            ),
+          ],
+        ),
+      ],
+    );
+    const benDiffers = ContactSyncCopiesPerson(
+      key: 'p2',
+      title: 'Ben Day',
+      copies: [
+        ContactSyncCopy(
+          key: 'b1',
+          synced: true,
+          details: [
+            ContactSyncCopyDetail(label: 'Notes', value: 'Met at the fair'),
+          ],
+        ),
+        ContactSyncCopy(
+          key: 'b2',
+          details: [ContactSyncCopyDetail(label: 'Notes', value: '(long note)')],
+        ),
+        ContactSyncCopy(
+          key: 'b3',
+          details: [ContactSyncCopyDetail(label: 'Notes', value: ' ')],
+        ),
+      ],
+    );
+
+    testWidgets("copies that differ: each copy's values, and Keep these or "
+        'Leave them', (tester) async {
+      await openDuplicates(
+        tester,
+        copies: const ContactSyncCopies(
+          people: 2,
+          extras: 3,
+          differing: [annDiffers, benDiffers],
+        ),
+      );
+
+      expect(find.text('Copies that differ (2)'), findsOneWidget);
+      expect(
+        find.text("Keep these keeps that copy's values where it has one, and "
+            'still adds the details only another copy has; the other copies '
+            'are then deleted, to Deleted Items. Leave them leaves every copy '
+            'as it is. An answer is carried out in the next sync, which '
+            'starts at once.'),
+        findsOneWidget,
+      );
+      final ann = button('contact-sync-copies-person:p1');
+      final ben = button('contact-sync-copies-person:p2');
+      inOrder(tester, ann, [
+        'Ann Cole',
+        'Synced copy',
+        'Job title: Buyer',
+        'Work address: (none)',
+        'Other copy',
+        'Job title: Head buyer',
+        'Work address: 12 Main St, Atlanta GA 30301',
+        'Leave them',
+      ]);
+      inOrder(tester, ben, [
+        'Ben Day',
+        'Synced copy',
+        'Notes: Met at the fair',
+        'Copy 2',
+        'Notes: (long note)',
+        'Copy 3',
+        'Notes: (none)',
+        'Leave them',
+      ]);
+      expect(find.descendant(of: ann, matching: find.text('Keep these')),
+          findsNWidgets(2));
+      expect(find.descendant(of: ben, matching: find.text('Keep these')),
+          findsNWidgets(3));
+      // Under the merge, and above everyone with copies.
+      expect(top(tester, find.text('Copies that differ (2)')),
+          greaterThan(top(tester, button('contact-sync-copies'))));
+      expect(top(tester, find.text('People with copies (1)')),
+          greaterThan(top(tester, ben)));
+
+      await tester.tap(button('contact-sync-copies-keep:p1:a2'));
+      await tester.pumpAndSettle();
+      await tester.tap(button('contact-sync-copies-leave:p2'));
+      await tester.pumpAndSettle();
+      expect(sync.copiesAnswers, [
+        (person: 'p1', keep: 'a2'),
+        (person: 'p2', keep: null),
+      ]);
+    });
+
+    testWidgets('a person answered shows the answer, and no buttons',
+        (tester) async {
+      ContactSyncCopiesPerson answered(
+        ContactSyncCopiesPerson p,
+        String key,
+        String answer,
+      ) =>
+          ContactSyncCopiesPerson(
+            key: key,
+            title: p.title,
+            copies: p.copies,
+            answer: answer,
+          );
+      await openDuplicates(
+        tester,
+        copies: ContactSyncCopies(
+          people: 4,
+          extras: 6,
+          differing: [
+            answered(annDiffers, 'p1', 'a2'),
+            answered(benDiffers, 'p2', 'b3'),
+            answered(annDiffers, 'p3', 'a1'),
+            answered(benDiffers, 'p4', ContactSyncCopiesPerson.leave),
+          ],
+        ),
+      );
+
+      for (final (key, said) in [
+        ('p1', "You chose the other copy's details; the next sync carries it "
+            'out.'),
+        ('p2', "You chose Copy 3's details; the next sync carries it out."),
+        ('p3', "You chose the synced copy's details; the next sync carries "
+            'it out.'),
+        ('p4', 'You chose to leave them as they are; the next sync carries '
+            'it out.'),
+      ]) {
+        final person = button('contact-sync-copies-person:$key');
+        expect(find.descendant(of: person, matching: find.text(said)),
+            findsOneWidget, reason: key);
+        expect(
+          find.descendant(of: person, matching: find.byType(OutlinedButton)),
+          findsNothing,
+          reason: key,
+        );
+      }
+      expect(button('contact-sync-copies-all'), findsNothing);
+    });
+
+    testWidgets("Keep the synced copy's for all, asked first",
+        (tester) async {
+      await openDuplicates(
+        tester,
+        copies: ContactSyncCopies(
+          people: 3,
+          extras: 4,
+          differing: [
+            const ContactSyncCopiesPerson(
+              key: 'p0',
+              title: 'Abe Ash',
+              copies: [ContactSyncCopy(key: 'x1', synced: true)],
+              answer: ContactSyncCopiesPerson.leave,
+            ),
+            annDiffers,
+            benDiffers,
+          ],
+        ),
+      );
+
+      expect(find.text('Copies that differ (3)'), findsOneWidget);
+      expect(find.text("Keep the synced copy's for all 2"), findsOneWidget,
+          reason: 'those not yet answered');
+      expect(
+        top(tester, button('contact-sync-copies-all')),
+        lessThan(top(tester, button('contact-sync-copies-person:p0'))),
+      );
+      await tester.tap(button('contact-sync-copies-all'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text("Keep the synced copy's details for all 2?"),
+        findsOneWidget,
+      );
+      expect(
+        find.text('For each of the 2 people, the synced copy keeps its values '
+            'and gains the details only another copy has, and the other '
+            'copies are deleted, to Deleted Items, at the next sync, which '
+            'starts at once.'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(sync.count('answerAllCopies'), 0);
+
+      await tester.tap(button('contact-sync-copies-all'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text("Keep the synced copy's"));
+      await tester.pumpAndSettle();
+      expect(sync.count('answerAllCopies'), 1);
+      expect(sync.copiesAnswers, isEmpty);
+
+      // One left to answer: its own buttons are enough.
+      sync.set(synced(
+        copies: const ContactSyncCopies(
+          people: 1,
+          extras: 1,
+          differing: [annDiffers],
+        ),
+        duplicates: const [
+          ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 2),
+        ],
+      ));
+      await tester.pumpAndSettle();
+      expect(button('contact-sync-copies-all'), findsNothing);
+    });
+
+    testWidgets('an answer refused because the person changed is said, and '
+        'the list read again', (tester) async {
+      await openDuplicates(
+        tester,
+        copies: const ContactSyncCopies(
+          people: 1,
+          extras: 1,
+          differing: [annDiffers],
+        ),
+      );
+      sync.copiesFailure = const ContactSyncRefused(
+        "This person's copies have changed since they were shown. Look "
+        'again.',
+      );
+      final readsBefore = sync.statusReads;
+
+      await tester.tap(button('contact-sync-copies-keep:p1:a1'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text("This person's copies have changed since they were shown. "
+            'Look again.'),
+        findsOneWidget,
+      );
+      expect(sync.statusReads, greaterThan(readsBefore),
+          reason: 'read again, to be answered as it is now');
+    });
+
+    testWidgets('a few hundred people whose copies differ scroll to the last',
+        (tester) async {
+      await openDuplicates(
+        tester,
+        size: const Size(412, 915),
+        copies: ContactSyncCopies(
+          people: 300,
+          extras: 300,
+          differing: [
+            for (var i = 0; i < 300; i++)
+              ContactSyncCopiesPerson(
+                key: 'k$i',
+                title: 'Person ${i.toString().padLeft(3, '0')}',
+                copies: const [
+                  ContactSyncCopy(
+                    key: 's',
+                    synced: true,
+                    details: [ContactSyncCopyDetail(label: 'Job title')],
+                  ),
+                  ContactSyncCopy(
+                    key: 'o',
+                    details: [
+                      ContactSyncCopyDetail(label: 'Job title', value: 'Buyer'),
+                    ],
+                  ),
+                ],
+              ),
+          ],
+        ),
+      );
+
+      final last = button('contact-sync-copies-person:k299');
+      expect(
+        find.byKey(
+          const ValueKey('contact-sync-copies-person:k299'),
+          skipOffstage: false,
+        ),
+        findsNothing,
+        reason: 'built as it scrolls, not all three hundred at once',
+      );
+      await tester.scrollUntilVisible(
+        last,
+        900,
+        maxScrolls: 200,
+        scrollable: find.descendant(
+          of: button('contact-sync-duplicates-list'),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      expect(find.descendant(of: last, matching: find.text('Person 299')),
+          findsOneWidget);
     });
 
     testWidgets('Recently deleted, with Restore', (tester) async {
@@ -2796,6 +3496,53 @@ void main() {
             googleSynced: true,
           ),
         ],
+        copies: ContactSyncCopies(
+          people: 1336,
+          extras: 1515,
+          notSynced: 12,
+          last: ContactSyncCopiesResult(
+            at: at1042,
+            people: 1089,
+            deleted: 1143,
+            added: 210,
+            differing: 79,
+            failed: 2,
+          ),
+          differing: [
+            for (final key in ['a', 'b'])
+              ContactSyncCopiesPerson(
+                key: key,
+                title: 'Alexandra Rosenblum-Katzenellenbogen',
+                copies: const [
+                  ContactSyncCopy(
+                    key: 's',
+                    synced: true,
+                    details: [
+                      ContactSyncCopyDetail(
+                        label: 'Work address',
+                        value: '1200 Peachtree Industrial Boulevard, Suite '
+                            '400, Atlanta GA 30341',
+                      ),
+                      ContactSyncCopyDetail(label: 'Job title'),
+                    ],
+                  ),
+                  ContactSyncCopy(
+                    key: 'o',
+                    details: [
+                      ContactSyncCopyDetail(
+                        label: 'Work address',
+                        value: '88 Harbor Road, Smyrna GA 30080',
+                      ),
+                      ContactSyncCopyDetail(
+                        label: 'Job title',
+                        value: 'Purchasing and logistics coordinator',
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+          ],
+        ),
       ));
       engine = _Engine(sync, const [gmail, hadco]);
       tester.view.physicalSize = const Size(412, 915);
@@ -2867,19 +3614,25 @@ void main() {
         find.text('Duplicates to merge when you like (1 person)'),
       );
       await tester.pumpAndSettle();
+      final duplicates = find.descendant(
+        of: button('contact-sync-duplicates-list'),
+        matching: find.byType(Scrollable),
+      );
+      for (final part in [
+        button('contact-sync-copies-merge'),
+        button('contact-sync-copies-all'),
+        button('contact-sync-copies-keep:b:o'),
+        button('contact-sync-copies-leave:b'),
+      ]) {
+        await tester.scrollUntilVisible(part, 300, scrollable: duplicates);
+        expect(part, findsOneWidget);
+      }
       // Under the text, which at this size fills most of the screen.
       final person = find.text(
         'Alexandra Rosenblum-Katzenellenbogen: 12 in Gmail, 1 in Hadco; one '
         'in Gmail is synced',
       );
-      await tester.scrollUntilVisible(
-        person,
-        300,
-        scrollable: find.descendant(
-          of: button('contact-sync-duplicates-list'),
-          matching: find.byType(Scrollable),
-        ),
-      );
+      await tester.scrollUntilVisible(person, 300, scrollable: duplicates);
       expect(person, findsOneWidget);
     });
   });
