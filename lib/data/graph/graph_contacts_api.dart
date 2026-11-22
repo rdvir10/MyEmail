@@ -17,6 +17,8 @@ import '../mail_engine.dart' show AuthenticationFailed, ConnectionFailed;
 /// twenty to a `$batch`), changed and deleted, and the device claim kept on
 /// the folder.
 ///
+/// Contacts read by id may also go twenty to a `$batch` ([getBatch]).
+///
 /// It takes and gives Graph's JSON as it is; what a contact holds, and how
 /// it maps to Google's, is the mapping's. What it does know is the wire:
 /// one `Prefer` header on every request and on every request inside a
@@ -264,6 +266,90 @@ class GraphContactsApi {
     final response = await _exchange(() => http.Request('GET', uri));
     if (response.statusCode == 404) return null;
     return _json(response, 'get');
+  }
+
+  /// The contacts [ids] read as [get] reads them (the sync's properties),
+  /// [batchLimit] to a `$batch`: which are there, wherever each is in the
+  /// mailbox; which are not (404); and which no answer said either of,
+  /// their own answer a failure. One throttled (a 429, or a 503: a read
+  /// can be asked again) is asked again after the longest wait any asked
+  /// for, as a request alone would be. A batch that fails as a whole
+  /// throws, as [get] would, and what the batches before it read is not
+  /// kept: a caller that wants it asks [batchLimit] at a time.
+  Future<GraphBatchRead> getBatch(Iterable<String> ids) async {
+    final asked = ids.toSet().toList();
+    final found = <String, Map<String, Object?>>{};
+    final notFound = <String>{};
+    for (var start = 0; start < asked.length; start += batchLimit) {
+      var asking = asked.sublist(
+        start,
+        start + batchLimit < asked.length ? start + batchLimit : asked.length,
+      );
+      for (var attempt = 0; asking.isNotEmpty; attempt++) {
+        final body = jsonEncode({
+          'requests': [
+            for (final (i, id) in asking.indexed)
+              {
+                'id': '$i',
+                'method': 'GET',
+                'url': Uri.parse('$base/me/contacts/${_id(id)}')
+                    .replace(
+                      queryParameters: {r'$select': graphContactSelect},
+                    )
+                    .toString()
+                    .substring(base.length),
+                'headers': {'Prefer': prefer},
+              },
+          ],
+        });
+        final json = _json(
+          await _exchange(
+            () => http.Request('POST', Uri.parse('$base/\$batch'))
+              ..headers['Content-Type'] = 'application/json'
+              ..body = body,
+          ),
+          'batch read',
+        );
+        final responses = json['responses'];
+        final byId = {
+          for (final r in responses is List ? responses : const [])
+            if (r is Map) '${r['id']}': r,
+        };
+        final again = <String>[];
+        var wait = Duration.zero;
+        for (final (i, id) in asking.indexed) {
+          final r = byId['$i'];
+          final status = r?['status'];
+          final contact = r?['body'];
+          if (status is int && status >= 200 && status < 300) {
+            if (contact is Map) found[id] = contact.cast<String, Object?>();
+          } else if (status == 404) {
+            notFound.add(id);
+          } else if (status == 429 || status == 503) {
+            again.add(id);
+            final wanted = _innerRetryAfter(r?['headers']);
+            if (wanted > wait) wait = wanted;
+          }
+        }
+        if (again.isEmpty ||
+            attempt >= maxThrottleRetries ||
+            wait > maxThrottleWait) {
+          break;
+        }
+        debugPrint('[myemail] contacts: Microsoft throttled ${again.length} '
+            'of a batch read, waiting ${wait.inSeconds} s');
+        await (sleep ?? _realSleep)(wait);
+        asking = again;
+      }
+    }
+    final unknown = {
+      for (final id in asked)
+        if (!found.containsKey(id) && !notFound.contains(id)) id,
+    };
+    debugPrint('[myemail] contacts: Microsoft batch read ${asked.length}: '
+        '${found.length} there, ${notFound.length} not, '
+        '${unknown.length} unanswered');
+    return GraphBatchRead(found: found, notFound: notFound, unknown: unknown);
   }
 
   /// The contacts in the main Contacts folder with [address] among their
@@ -817,6 +903,27 @@ class GraphContactsApi {
     }
     return ContactRefused.by('Microsoft', status, code);
   }
+}
+
+/// What [GraphContactsApi.getBatch] read.
+@immutable
+class GraphBatchRead {
+  const GraphBatchRead({
+    required this.found,
+    required this.notFound,
+    required this.unknown,
+  });
+
+  /// The id asked for to the contact, wherever it is in the mailbox (its
+  /// `parentFolderId` says where).
+  final Map<String, Map<String, Object?>> found;
+
+  /// Ids Graph answered 404: not in the mailbox.
+  final Set<String> notFound;
+
+  /// Ids whose own answer was a failure, or none came: neither there nor
+  /// gone.
+  final Set<String> unknown;
 }
 
 /// A whole `$batch` failed after some of it may have been answered: the

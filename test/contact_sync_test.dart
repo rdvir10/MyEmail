@@ -3166,6 +3166,1026 @@ void main() {
     });
   });
 
+  group('answered contact by contact', () {
+    /// Eleven pairs whose Gmail mobiles Ron removed: a change brake of
+    /// eleven, each would lose its mobile in Hadco.
+    Future<List<({String google, String graph})>> heldChanges() async {
+      final pairs = seedPairs(h, 11, mobiles: true);
+      await h.firstSync();
+      for (final p in pairs) {
+        h.google.editFromGmail(p.google, {'phoneNumbers': null});
+      }
+      final status = await h.later();
+      expect(status.questions.single.kind, ContactSyncQuestionKind.changes);
+      expect(status.questions.single.items, hasLength(11));
+      return pairs;
+    }
+
+    ({String google, String graph}) pairOf(
+      List<({String google, String graph})> pairs,
+      ContactSyncQuestionItem item,
+    ) => pairs[int.parse(RegExp(r'^P(\d+) ').firstMatch(item.title)![1]!)];
+
+    test('each item has a key of its own', () async {
+      final pairs = await heldChanges();
+      final items = (await h.status()).questions.single.items;
+      final keys = {for (final i in items) i.key};
+      expect(keys, hasLength(11));
+      expect(keys, isNot(contains('')));
+      // Minted for it, not taken from its contacts, whose ids can change.
+      expect(
+        keys.intersection({
+          for (final p in pairs) ...[p.google, p.graph],
+        }),
+        isEmpty,
+      );
+    });
+
+    test('Copy them back for one contact: only it, the others stay held '
+        'and open', () async {
+      final pairs = await heldChanges();
+      var q = (await h.status()).questions.single;
+      final one = pairOf(pairs, q.items.first);
+      final firstTitle = q.items.first.title;
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.copyThemBack,
+        items: {q.items.first.key},
+      );
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.halt, isNull);
+      q = status.questions.single;
+      expect(q.items, hasLength(10));
+      expect(q.answer, isNull);
+      expect(q.items.every((i) => i.answer == null), isTrue);
+      expect(q.items.map((i) => i.title), isNot(contains(firstTitle)));
+      // Its mobile is back in Gmail, and kept in Hadco.
+      expect(mobileOf(h.google.person(one.google)), isNotNull);
+      expect(mobileOf(h.graph.contact(one.graph)), isNotNull);
+      expect(
+        (await h.links()).firstWhere((l) => l.graphId == one.graph).isPaired,
+        isTrue,
+      );
+      // The others are as they were: nothing written for them.
+      for (final p in pairs.where((p) => p != one)) {
+        expect(mobileOf(h.google.person(p.google)), isNull);
+        expect(mobileOf(h.graph.contact(p.graph)), isNotNull);
+      }
+      expect(status.notice!.heldChanges, 10);
+    });
+
+    test('Apply them for one contact: only it loses the detail', () async {
+      final pairs = await heldChanges();
+      final q = (await h.status()).questions.single;
+      final one = pairOf(pairs, q.items.last);
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.applyThem,
+        items: {q.items.last.key},
+      );
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.questions.single.items, hasLength(10));
+      expect(mobileOf(h.graph.contact(one.graph)), isNull);
+      for (final p in pairs.where((p) => p != one)) {
+        expect(mobileOf(h.graph.contact(p.graph)), isNotNull);
+      }
+    });
+
+    test("an item's answer shows until a run carries it out, after a "
+        'restart too; the whole answer covers the rest', () async {
+      final pairs = await heldChanges();
+      var q = (await h.status()).questions.single;
+      final one = pairOf(pairs, q.items.first);
+      final key = q.items.first.key;
+      // Hadco's permission lapses: the runs these answers start stop
+      // before carrying them out.
+      h.refusing.add(Harness.hadco.id);
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.copyThemBack,
+        items: {q.items.first.key},
+      );
+      await h.sync.syncNow();
+      // The message counts only what still waits for Ron.
+      expect((await h.status()).notice!.heldChanges, 10);
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.applyThem,
+      );
+      await h.sync.syncNow();
+      var status = await h.status();
+      expect(status.halt!.kind, ContactSyncHaltKind.notAllowed);
+      q = status.questions.single;
+      expect(q.answer, ContactSyncChoice.applyThem);
+      expect(
+        q.items.firstWhere((i) => i.key == key).answer,
+        ContactSyncChoice.copyThemBack,
+      );
+      expect(q.items.where((i) => i.answer != null), hasLength(1));
+      expect(status.notice!.heldChanges, 0);
+
+      // MyEmail restarted: the same, from what the device keeps.
+      final restarted = h.make();
+      q = (await restarted.status()).questions.single;
+      expect(
+        q.items.firstWhere((i) => i.key == key).answer,
+        ContactSyncChoice.copyThemBack,
+      );
+      expect(q.answer, ContactSyncChoice.applyThem);
+      await restarted.close();
+
+      // Allowed again: the item's own answer for it, the whole's for the
+      // rest, and the question done with.
+      h.refusing.clear();
+      h.pass(const Duration(minutes: 6));
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.questions, isEmpty);
+      expect(mobileOf(h.google.person(one.google)), isNotNull);
+      expect(mobileOf(h.graph.contact(one.graph)), isNotNull);
+      for (final p in pairs.where((p) => p != one)) {
+        expect(mobileOf(h.graph.contact(p.graph)), isNull);
+      }
+    });
+
+    test('an answer given while a run carries out another is kept, and '
+        'carried out next', () async {
+      final pairs = await heldChanges();
+      final q = (await h.status()).questions.single;
+      final a = pairOf(pairs, q.items[0]);
+      final b = pairOf(pairs, q.items[1]);
+      var given = false;
+      h.before = (r) async {
+        // As the run writes A back to Gmail, Ron answers B the same way.
+        if (!given &&
+            r.method == 'PATCH' &&
+            r.url.path.endsWith('/v1/${a.google}:updateContact')) {
+          given = true;
+          await h.sync.answerQuestion(
+            ContactSyncQuestionKind.changes,
+            ContactSyncChoice.copyThemBack,
+            items: {q.items[1].key},
+          );
+        }
+      };
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.copyThemBack,
+        items: {q.items[0].key},
+      );
+      await h.sync.syncNow();
+      h.before = null;
+      expect(given, isTrue);
+      final status = await h.status();
+      expect(status.questions.single.items, hasLength(9));
+      expect(mobileOf(h.google.person(a.google)), isNotNull);
+      expect(mobileOf(h.google.person(b.google)), isNotNull);
+    });
+
+    test('an answer given while a run goes is not said to wait before a '
+        'run has tried it', () async {
+      final pairs = seedPairs(h, 8);
+      await h.firstSync();
+      for (var i = 0; i < 6; i++) {
+        h.google.deleteFromGmail(pairs[i].google);
+      }
+      final q = (await h.later()).questions.single;
+      final key = q.items.first.key;
+      var given = false;
+      ContactSyncQuestionItem? between;
+      h.before = (r) async {
+        if (!given && r.url.path.endsWith('/delta')) {
+          given = true;
+          await h.sync.answerQuestion(
+            ContactSyncQuestionKind.deletions,
+            ContactSyncChoice.deleteThem,
+            items: {key},
+          );
+        } else if (given &&
+            between == null &&
+            r.method == 'PATCH' &&
+            r.url.path.contains('contactFolders')) {
+          // That run is done (its claim goes last), and the one it starts
+          // for the answer has not begun.
+          between = (await h.sync.status()).questions.single.items
+              .firstWhere((i) => i.key == key);
+        }
+      };
+      h.pass(const Duration(hours: 2));
+      await h.sync.syncNow();
+      h.before = null;
+      expect(between!.answer, ContactSyncChoice.deleteThem);
+      expect(between!.answerProblem, isNull);
+      // The run it started carried it out.
+      expect((await h.status()).questions.single.items, hasLength(5));
+    });
+
+    test('deletions one by one: Delete one, keep another, the rest wait',
+        () async {
+      final pairs = seedPairs(h, 8);
+      await h.firstSync();
+      for (var i = 0; i < 6; i++) {
+        h.google.deleteFromGmail(pairs[i].google);
+      }
+      var q = (await h.later()).questions.single;
+      expect(q.kind, ContactSyncQuestionKind.deletions);
+      expect(q.items, hasLength(6));
+      final gone = pairOf(pairs, q.items[0]);
+      final kept = pairOf(pairs, q.items[1]);
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.deletions,
+        ContactSyncChoice.deleteThem,
+        items: {q.items[0].key},
+      );
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.deletions,
+        ContactSyncChoice.dontDelete,
+        items: {q.items[1].key},
+      );
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.halt, isNull);
+      expect(h.graph.contact(gone.graph), isNull);
+      expect(status.recentlyDeleted, hasLength(1));
+      expect(h.graph.contact(kept.graph), isNotNull);
+      expect(
+        status.needsALook.where((l) => l.kind == ContactReviewKind.kept),
+        hasLength(1),
+      );
+      q = status.questions.single;
+      expect(q.items, hasLength(4));
+      expect(q.items.every((i) => i.answer == null), isTrue);
+      expect(h.graph.count, 7);
+    });
+
+    test('Delete them for the contacts shown leaves those raised since open',
+        () async {
+      final pairs = seedPairs(h, 14);
+      await h.firstSync();
+      for (var i = 0; i < 6; i++) {
+        h.google.deleteFromGmail(pairs[i].google);
+      }
+      var q = (await h.later()).questions.single;
+      final shown = {for (final i in q.items) i.key};
+      expect(shown, hasLength(6));
+      // Six more go in Gmail, and a run holds them in the same question
+      // before Ron answers what his screen shows.
+      for (var i = 6; i < 12; i++) {
+        h.google.deleteFromGmail(pairs[i].google);
+      }
+      q = (await h.later()).questions.single;
+      expect(q.items, hasLength(12));
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.deletions,
+        ContactSyncChoice.deleteThem,
+        items: shown,
+      );
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.halt, isNull);
+      for (var i = 0; i < 6; i++) {
+        expect(h.graph.contact(pairs[i].graph), isNull);
+      }
+      for (var i = 6; i < 12; i++) {
+        expect(h.graph.contact(pairs[i].graph), isNotNull);
+      }
+      q = status.questions.single;
+      expect(q.items, hasLength(6));
+      expect(q.items.every((i) => i.answer == null), isTrue);
+      expect(q.items.map((i) => i.key).toSet().intersection(shown), isEmpty);
+    });
+
+    test("an item's key stays the same through a Gmail re-key, and a key "
+        'the question no longer has is refused', () async {
+      final pairs = seedPairs(h, 8);
+      await h.firstSync();
+      // Ron deletes six in Outlook: the copies held are Gmail contacts.
+      for (var i = 0; i < 6; i++) {
+        h.graph.deleteFromOutlook(pairs[i].graph);
+      }
+      var q = (await h.later()).questions.single;
+      final item = q.items.first;
+      final answered = pairOf(pairs, item);
+      final now = h.google.rekeyFromGmail(answered.google);
+      q = (await h.later()).questions.single;
+      expect(q.items, hasLength(6));
+      expect(q.items.map((i) => i.key), contains(item.key));
+
+      // Keys from a screen read before the question changed: nothing is
+      // answered, and the screen is told.
+      await expectLater(
+        h.sync.answerQuestion(
+          ContactSyncQuestionKind.deletions,
+          ContactSyncChoice.deleteThem,
+          items: {item.key, 'no-such-item'},
+        ),
+        throwsA(isA<ContactSyncRefused>()),
+      );
+      q = (await h.status()).questions.single;
+      expect(q.items.every((i) => i.answer == null), isTrue);
+      expect(q.answer, isNull);
+
+      // The key shown before the re-key still answers that contact.
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.deletions,
+        ContactSyncChoice.deleteThem,
+        items: {item.key},
+      );
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.halt, isNull);
+      q = status.questions.single;
+      expect(q.items, hasLength(5));
+      expect(q.items.map((i) => i.key), isNot(contains(item.key)));
+      expect(q.items.every((i) => i.answer == null), isTrue);
+      // Carried out on it under its new name, read again before the
+      // delete and kept: the re-key moved its version (as for Delete them
+      // for all), so it is asked about.
+      expect(h.google.person(now), isNotNull);
+      final kept = await h.store.reviews((await h.pair()).pairId);
+      expect(kept.where((r) => r.kind == 'kept').single.googleName, now);
+      // The others are not answered: still there.
+      for (final p in pairs.take(6)) {
+        if (p == answered) continue;
+        expect(h.google.person(p.google), isNotNull);
+      }
+    });
+
+    test('an item held before keys were keeps the key it was first shown '
+        'with, through a Gmail re-key', () async {
+      final pairs = seedPairs(h, 8);
+      await h.firstSync();
+      for (var i = 0; i < 6; i++) {
+        h.graph.deleteFromOutlook(pairs[i].graph);
+      }
+      await h.later();
+      // As 3.20.0 kept the question: no keys.
+      final pairId = (await h.pair()).pairId;
+      await h.store.updatePair(pairId, (p) {
+        final held = jsonDecode(p.held!) as Map<String, Object?>;
+        held.remove('lastKey');
+        for (final q in held['questions']! as List) {
+          for (final i in (q as Map)['items']! as List) {
+            (i as Map).remove('key');
+          }
+        }
+        return p.copyWith(held: jsonEncode(held));
+      });
+      var q = (await h.status()).questions.single;
+      final item = q.items.first;
+      final answered = pairOf(pairs, item);
+      // Keyed by its Gmail contact's name, which a re-key then changes.
+      expect(item.key, answered.google);
+      final now = h.google.rekeyFromGmail(answered.google);
+      q = (await h.later()).questions.single;
+      expect(q.items.map((i) => i.key), contains(item.key));
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.deletions,
+        ContactSyncChoice.deleteThem,
+        items: {item.key},
+      );
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.questions.single.items, hasLength(5));
+      final kept = await h.store.reviews(pairId);
+      expect(kept.where((r) => r.kind == 'kept').single.googleName, now);
+    });
+  });
+
+  group('what a held change would do', () {
+    /// Eleven pairs with a mobile and a job title; Ron changes each job
+    /// title in Gmail and takes each mobile out: a change brake of eleven,
+    /// each would lose its mobile and its title in Hadco.
+    Future<List<({String google, String graph})>> heldChanges({
+      String title = 'Sales manager',
+      String newTitle = 'Purchasing manager',
+    }) async {
+      final pairs = [
+        for (var i = 0; i < 11; i++)
+          (
+            google: h.google.seed({
+              ...person(
+                'P$i',
+                'Fam$i',
+                email: 'p$i@example.com',
+                mobile: '+1 202 555 01${10 + i}',
+              ),
+              'organizations': [
+                {'name': 'Acme', 'title': title},
+              ],
+            }),
+            graph: h.graph.seed({
+              ...outlook(
+                'P$i',
+                'Fam$i',
+                email: 'p$i@example.com',
+                mobile: '+1 202 555 01${10 + i}',
+                company: 'Acme',
+              ),
+              'jobTitle': title,
+            }),
+          ),
+      ];
+      await h.firstSync();
+      for (final p in pairs) {
+        h.google.editFromGmail(p.google, {
+          'phoneNumbers': null,
+          'organizations': [
+            {'name': 'Acme', 'title': newTitle},
+          ],
+        });
+      }
+      final status = await h.later();
+      expect(status.questions.single.items, hasLength(11));
+      return pairs;
+    }
+
+    test('each held change says what it would remove or replace', () async {
+      await heldChanges();
+      final q = (await h.status()).questions.single;
+      final item = q.items.firstWhere((i) => i.title == 'P0 Fam0');
+      expect(item.side, ContactSide.graph);
+      expect(item.hint, isNull);
+      final byField = {for (final c in item.changes) c.field: c};
+      expect(
+        byField.keys,
+        containsAll([ContactField.mobile, ContactField.jobTitle]),
+      );
+      expect(byField[ContactField.mobile]!.before, '+1 202 555 0110');
+      expect(byField[ContactField.mobile]!.after, isNull);
+      expect(byField[ContactField.jobTitle]!.before, 'Sales manager');
+      expect(byField[ContactField.jobTitle]!.after, 'Purchasing manager');
+      // Each says the side it lands on (here the item's), and none is a
+      // detail changed on both sides.
+      for (final c in item.changes) {
+        expect(c.side, ContactSide.graph);
+        expect(c.clash, isFalse);
+      }
+    });
+
+    test('a question held before details were kept gets them at the next '
+        'run, not doubled, and keeps them after a restart', () async {
+      await heldChanges();
+      // As a question stored by 3.20.0: its items with no details, and
+      // no keys of their own.
+      final pairId = (await h.pair()).pairId;
+      await h.store.updatePair(pairId, (p) {
+        final held = jsonDecode(p.held!) as Map<String, Object?>;
+        held.remove('lastKey');
+        for (final q in held['questions']! as List) {
+          for (final i in (q as Map)['items']! as List) {
+            (i as Map)
+              ..remove('changes')
+              ..remove('key');
+          }
+        }
+        return p.copyWith(held: jsonEncode(held));
+      });
+      var q = (await h.status()).questions.single;
+      expect(q.items.every((i) => i.changes.isEmpty), isTrue);
+      // Each keyed by its contacts meanwhile, and from then on.
+      final keys = [for (final i in q.items) i.key];
+      expect(keys.toSet(), hasLength(11));
+
+      // MyEmail updated and opened: the next run fills them in.
+      final restarted = h.make();
+      h.pass(const Duration(hours: 2));
+      await restarted.syncNow();
+      var status = await restarted.status();
+      expect(status.halt, isNull);
+      q = status.questions.single;
+      expect(q.items, hasLength(11));
+      expect([for (final i in q.items) i.key], keys);
+      expect(q.items.every((i) => i.changes.length == 2), isTrue);
+      // Still news only once: nothing new was held.
+      await restarted.close();
+
+      // And after another restart, from what the device keeps, with no
+      // network.
+      final again = h.make();
+      h.requests.clear();
+      status = await again.status();
+      expect(h.requests, isEmpty);
+      expect(
+        status.questions.single.items.every((i) => i.changes.length == 2),
+        isTrue,
+      );
+      expect([for (final i in status.questions.single.items) i.key], keys);
+      await again.close();
+    });
+
+    test('an item whose answer waits keeps it, and the details it had, as '
+        'the others are refreshed', () async {
+      final pairs = await heldChanges();
+      var q = (await h.status()).questions.single;
+      final first = q.items.first;
+      final had = first.changes;
+      // Its Outlook contact moved out of Contacts: Copy them back waits
+      // for it, and no run reads it whole meanwhile.
+      h.graph.moveFromOutlook(
+        pairs[int.parse(RegExp(r'^P(\d+) ').firstMatch(first.title)![1]!)]
+            .graph,
+        h.graph.addFolder(),
+      );
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.copyThemBack,
+        items: {first.key},
+      );
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.halt, isNull);
+      q = status.questions.single;
+      expect(q.items, hasLength(11));
+      final waiting = q.items.firstWhere((i) => i.key == first.key);
+      expect(waiting.answer, ContactSyncChoice.copyThemBack);
+      expect(
+        waiting.answerProblem,
+        'Its Outlook contact is not in Contacts: it is carried out once it '
+        'is back.',
+      );
+      expect(
+        q.items.where((i) => i != waiting).every((i) => i.answerProblem == null),
+        isTrue,
+      );
+      expect(waiting.changes.map((c) => c.field), had.map((c) => c.field));
+      expect(
+        q.items.where((i) => i.key != first.key).every(
+          (i) => i.changes.length == 2 && i.answer == null,
+        ),
+        isTrue,
+      );
+    });
+
+    test("an answer changed while a run goes loses the old one's reason "
+        'until a run has tried it', () async {
+      final pairs = await heldChanges();
+      var q = (await h.status()).questions.single;
+      final first = q.items.firstWhere((i) => i.title == 'P0 Fam0');
+      // Copy them back waits for P0's Outlook contact, moved out.
+      h.graph.moveFromOutlook(pairs[0].graph, h.graph.addFolder());
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.copyThemBack,
+        items: {first.key},
+      );
+      await h.sync.syncNow();
+      q = (await h.status()).questions.single;
+      expect(
+        q.items.firstWhere((i) => i.key == first.key).answerProblem,
+        isNotNull,
+      );
+      // At the next run Ron makes it Apply them, as the run goes.
+      var given = false;
+      ContactSyncQuestionItem? between;
+      h.before = (r) async {
+        if (!given && r.url.path.endsWith('/delta')) {
+          given = true;
+          await h.sync.answerQuestion(
+            ContactSyncQuestionKind.changes,
+            ContactSyncChoice.applyThem,
+            items: {first.key},
+          );
+        } else if (given &&
+            between == null &&
+            r.method == 'PATCH' &&
+            r.url.path.contains('contactFolders')) {
+          between = (await h.sync.status()).questions.single.items
+              .firstWhere((i) => i.key == first.key);
+        }
+      };
+      h.pass(const Duration(hours: 2));
+      await h.sync.syncNow();
+      h.before = null;
+      expect(between!.answer, ContactSyncChoice.applyThem);
+      expect(between!.answerProblem, isNull);
+    });
+
+    test('a held change lists what it would take on both sides, each '
+        'with its side, and flags a detail changed on both', () async {
+      final pairs = [
+        for (var i = 0; i < 11; i++)
+          (
+            google: h.google.seed({
+              ...person(
+                'P$i',
+                'Fam$i',
+                email: 'p$i@example.com',
+                mobile: '+1 202 555 01${10 + i}',
+              ),
+              'organizations': [
+                {'name': 'Acme', 'title': 'Buyer'},
+              ],
+            }),
+            graph: h.graph.seed({
+              ...outlook(
+                'P$i',
+                'Fam$i',
+                email: 'p$i@example.com',
+                mobile: '+1 202 555 01${10 + i}',
+                company: 'Acme',
+              ),
+              'jobTitle': 'Buyer',
+            }),
+          ),
+      ];
+      await h.firstSync();
+      // Hadco takes each mobile out and gives another title; later, Gmail
+      // renames the company and gives a title of its own.
+      for (final p in pairs) {
+        h.graph.editFromOutlook(p.graph, {
+          'mobilePhone': null,
+          'jobTitle': 'Lead buyer',
+        });
+      }
+      h.pass(const Duration(minutes: 10));
+      for (final p in pairs) {
+        h.google.editFromGmail(p.google, {
+          'organizations': [
+            {'name': 'Acme Corp', 'title': 'Manager'},
+          ],
+        });
+      }
+      final q = (await h.later()).questions.single;
+      expect(q.items, hasLength(11));
+      final item = q.items.firstWhere((i) => i.title == 'P0 Fam0');
+      expect(item.side, ContactSide.graph, reason: 'Hadco loses more');
+      expect(
+        [
+          for (final c in item.changes)
+            (c.side, c.field, c.before, c.after, c.clash),
+        ],
+        [
+          (
+            ContactSide.google,
+            ContactField.mobile,
+            '+1 202 555 0110',
+            null,
+            false,
+          ),
+          (ContactSide.graph, ContactField.company, 'Acme', 'Acme Corp', false),
+          (
+            ContactSide.graph,
+            ContactField.jobTitle,
+            'Lead buyer',
+            'Manager',
+            true,
+          ),
+        ],
+      );
+    });
+
+    test("a held deletion says which contact it is: its first email",
+        () async {
+      final pairs = seedPairs(h, 7);
+      await h.firstSync();
+      for (var i = 0; i < 6; i++) {
+        h.google.deleteFromGmail(pairs[i].google);
+      }
+      final q = (await h.later()).questions.single;
+      expect(q.kind, ContactSyncQuestionKind.deletions);
+      for (final item in q.items) {
+        final i = int.parse(RegExp(r'^P(\d+) ').firstMatch(item.title)![1]!);
+        expect(item.hint, 'p$i@example.com');
+        expect(item.changes, isEmpty);
+      }
+    });
+
+    test('the details are never in the log', () async {
+      final logged = <String>[];
+      final was = debugPrint;
+      debugPrint = (String? message, {int? wrapWidth}) =>
+          logged.add(message ?? '');
+      addTearDown(() => debugPrint = was);
+      await heldChanges(
+        title: 'Zanzibar Quartermaster',
+        newTitle: 'Xylophone Curator',
+      );
+      final q = (await h.status()).questions.single;
+      expect(q.items.first.changes, isNotEmpty);
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.applyThem,
+        items: {q.items.first.key},
+      );
+      await h.sync.syncNow();
+      await h.later();
+      final all = logged.join('\n');
+      for (final secret in [
+        'Zanzibar',
+        'Quartermaster',
+        'Xylophone',
+        'Curator',
+        '555 0110',
+        '5550110',
+        'p0@example.com',
+        'Fam0',
+      ]) {
+        expect(all, isNot(contains(secret)), reason: secret);
+      }
+    });
+
+    /// The job title each held change shows Hadco's taking.
+    String? titleAfter(ContactSyncQuestionItem item) => item.changes
+        .firstWhere((c) => c.field == ContactField.jobTitle)
+        .after;
+
+    test('an item whose pair this run could not read keeps the details it '
+        'had; one whose row is held no longer goes', () async {
+      final pairs = await heldChanges();
+      // P0's Outlook contact moved out of Contacts: its row still held,
+      // its pair not read whole this run.
+      h.graph.moveFromOutlook(pairs[0].graph, h.graph.addFolder());
+      // P1 deleted in Gmail: its row is held no more.
+      h.google.deleteFromGmail(pairs[1].google);
+      // The rest given another title in Gmail.
+      for (final p in pairs.skip(2)) {
+        h.google.editFromGmail(p.google, {
+          'organizations': [
+            {'name': 'Acme', 'title': 'Buyer'},
+          ],
+        });
+      }
+      final status = await h.later();
+      expect(status.halt, isNull);
+      final q = status.questions.single;
+      expect(q.items, hasLength(10));
+      expect(q.items.map((i) => i.title), isNot(contains('P1 Fam1')));
+      final away = q.items.singleWhere((i) => i.title == 'P0 Fam0');
+      expect(away.changes, hasLength(2));
+      expect(titleAfter(away), 'Purchasing manager');
+      expect(away.answer, isNull);
+      for (final i in q.items.where((i) => i != away)) {
+        expect(i.changes, hasLength(2), reason: i.title);
+        expect(titleAfter(i), 'Buyer', reason: i.title);
+      }
+    });
+
+    test("Hadco's reads of the held pairs go twenty to a batch; one that "
+        'fails leaves their items as they were, and the run goes on',
+        () async {
+      final pairs = await heldChanges();
+      for (final p in pairs) {
+        h.google.editFromGmail(p.google, {
+          'organizations': [
+            {'name': 'Acme', 'title': 'Buyer'},
+          ],
+        });
+      }
+      h.google.addFromGmail(person('New', 'Person', email: 'n@example.com'));
+      h.requests.clear();
+      var refused = 0;
+      h.answer = (r) {
+        if (!r.url.path.endsWith(r'$batch') ||
+            !r.body.contains('"method":"GET"')) {
+          return null;
+        }
+        refused++;
+        return http.Response('{}', 500);
+      };
+      var status = await h.later();
+      h.answer = null;
+      expect(refused, greaterThan(0));
+      expect(status.halt, isNull);
+      // The rest of the run was done: the new contact is in Hadco.
+      expect(h.graph.count, 12);
+      var q = status.questions.single;
+      expect(q.items, hasLength(11));
+      expect(
+        q.items.every((i) => titleAfter(i) == 'Purchasing manager'),
+        isTrue,
+      );
+      // Each contact asked for inside a batch, none by a GET of its own.
+      final held = {for (final p in pairs) p.graph};
+      expect(
+        h.requests.where(
+          (r) => r.method == 'GET' && held.contains(r.url.pathSegments.last),
+        ),
+        isEmpty,
+      );
+
+      // Answered at the next run: the details as they now are.
+      h.requests.clear();
+      status = await h.later();
+      expect(status.halt, isNull);
+      q = status.questions.single;
+      expect(q.items.every((i) => titleAfter(i) == 'Buyer'), isTrue);
+      expect(
+        h.requests.where((r) => r.url.path.endsWith(r'$batch')),
+        hasLength(1),
+      );
+    });
+
+    test("a failed read of the held pairs' Gmail contacts does not stop "
+        'the run either', () async {
+      await heldChanges();
+      h.google.addFromGmail(person('New', 'Person', email: 'n@example.com'));
+      var refused = 0;
+      h.answer = (r) {
+        if (!r.url.path.endsWith('people:batchGet')) return null;
+        refused++;
+        return http.Response('{}', 500);
+      };
+      final status = await h.later();
+      h.answer = null;
+      expect(refused, greaterThan(0));
+      expect(status.halt, isNull);
+      expect(h.graph.count, 12);
+      final q = status.questions.single;
+      expect(q.items, hasLength(11));
+      expect(
+        q.items.every((i) => titleAfter(i) == 'Purchasing manager'),
+        isTrue,
+      );
+    });
+  });
+
+  group('reads of the held pairs refused', () {
+    /// Eleven pairs whose Gmail mobiles Ron removed and whose Gmail job
+    /// titles he changed: a change brake of eleven.
+    Future<List<({String google, String graph})>> heldChanges() async {
+      final pairs = [
+        for (var i = 0; i < 11; i++)
+          (
+            google: h.google.seed({
+              ...person(
+                'P$i',
+                'Fam$i',
+                email: 'p$i@example.com',
+                mobile: '+1 202 555 01${10 + i}',
+              ),
+              'organizations': [
+                {'name': 'Acme', 'title': 'Sales manager'},
+              ],
+            }),
+            graph: h.graph.seed({
+              ...outlook(
+                'P$i',
+                'Fam$i',
+                email: 'p$i@example.com',
+                mobile: '+1 202 555 01${10 + i}',
+                company: 'Acme',
+              ),
+              'jobTitle': 'Sales manager',
+            }),
+          ),
+      ];
+      await h.firstSync();
+      for (final p in pairs) {
+        h.google.editFromGmail(p.google, {
+          'phoneNumbers': null,
+          'organizations': [
+            {'name': 'Acme', 'title': 'Purchasing manager'},
+          ],
+        });
+      }
+      expect((await h.later()).questions.single.items, hasLength(11));
+      return pairs;
+    }
+
+    http.Response refusal(String code) => http.Response(
+      '{"error":{"code":$code,"message":"x"}}',
+      400,
+      headers: {'content-type': 'application/json'},
+    );
+
+    test('a batch read Graph refuses is read a contact at a time: an answer '
+        'is carried out all the same', () async {
+      final pairs = await heldChanges();
+      var refused = 0;
+      h.answer = (r) {
+        if (!r.url.path.endsWith(r'$batch') ||
+            !r.body.contains('"method":"GET"')) {
+          return null;
+        }
+        refused++;
+        return refusal('"BadRequest"');
+      };
+      var q = (await h.status()).questions.single;
+      final one = q.items.firstWhere((i) => i.title == 'P0 Fam0');
+      h.requests.clear();
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.applyThem,
+        items: {one.key},
+      );
+      await h.sync.syncNow();
+      h.answer = null;
+      final status = await h.status();
+      expect(refused, greaterThan(0));
+      expect(status.halt, isNull);
+      q = status.questions.single;
+      expect(q.items, hasLength(10));
+      expect(q.items.map((i) => i.key), isNot(contains(one.key)));
+      expect(q.items.every((i) => i.answerProblem == null), isTrue);
+      // Applied: Hadco lost the mobile and took Gmail's title.
+      final hadco = h.graph.contact(pairs[0].graph)!;
+      expect(mobileOf(hadco), isNull);
+      expect(hadco['jobTitle'], 'Purchasing manager');
+      // Each held contact asked for with a GET of its own.
+      for (final p in pairs) {
+        expect(
+          h.requests.any(
+            (r) => r.method == 'GET' && r.url.pathSegments.last == p.graph,
+          ),
+          isTrue,
+        );
+      }
+    });
+
+    test("a Gmail name that spoils Google's batch read: the others are read "
+        'alone, and the answer waiting on it says why', () async {
+      final pairs = await heldChanges();
+      final bad = pairs[0].google;
+      h.answer = (r) {
+        if (r.url.host != 'people.googleapis.com' || r.method != 'GET') {
+          return null;
+        }
+        final inBatch =
+            r.url.path.endsWith('people:batchGet') &&
+            r.url.queryParametersAll['resourceNames']!.contains(bad);
+        if (!inBatch && !r.url.path.endsWith('/$bad')) return null;
+        return refusal('400,"status":"INVALID_ARGUMENT"');
+      };
+      var q = (await h.status()).questions.single;
+      String keyOf(int i) =>
+          q.items.firstWhere((x) => x.title == 'P$i Fam$i').key;
+      final waiting = keyOf(0);
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.copyThemBack,
+        items: {waiting, keyOf(1)},
+      );
+      await h.sync.syncNow();
+      var status = await h.status();
+      expect(status.halt, isNull);
+      q = status.questions.single;
+      // P1, read alone, was copied back; P0 waits, answered, and says why.
+      expect(q.items, hasLength(10));
+      expect(mobileOf(h.google.person(pairs[1].google)), isNotNull);
+      expect(mobileOf(h.google.person(bad)), isNull);
+      final item = q.items.singleWhere((i) => i.key == waiting);
+      expect(item.answer, ContactSyncChoice.copyThemBack);
+      expect(
+        item.answerProblem,
+        'Could not be read just now: it is carried out when it can be.',
+      );
+      expect(
+        q.items
+            .where((i) => i.key != waiting)
+            .every((i) => i.answerProblem == null),
+        isTrue,
+      );
+
+      // Read again: carried out, and nothing more to say.
+      h.answer = null;
+      status = await h.later();
+      q = status.questions.single;
+      expect(q.items, hasLength(9));
+      expect(
+        q.items.every((i) => i.answer == null && i.answerProblem == null),
+        isTrue,
+      );
+      expect(mobileOf(h.google.person(bad)), isNotNull);
+    });
+
+    test('an answer changed after a run said why the last one waited shows '
+        'no reason before a run has tried it', () async {
+      await heldChanges();
+      // Hadco's batch reads fail (no connection): the held pairs unread.
+      h.answer = (r) =>
+          r.url.path.endsWith(r'$batch') && r.body.contains('"method":"GET"')
+          ? http.Response('{}', 503)
+          : null;
+      final key = (await h.status()).questions.single.items.first.key;
+      ContactSyncQuestionItem itemOf(ContactSyncStatus s) =>
+          s.questions.single.items.firstWhere((i) => i.key == key);
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.applyThem,
+        items: {key},
+      );
+      await h.sync.syncNow();
+      expect(itemOf(await h.status()).answerProblem, isNotNull);
+      // Hadco's permission lapses: the next run stops before planning.
+      h.refusing.add(Harness.hadco.id);
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.copyThemBack,
+        items: {key},
+      );
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.halt!.kind, ContactSyncHaltKind.notAllowed);
+      expect(itemOf(status).answer, ContactSyncChoice.copyThemBack);
+      expect(itemOf(status).answerProblem, isNull);
+    });
+  });
+
   group('privacy', () {
     test('a run logs no name, address or number', () async {
       final logged = <String>[];
