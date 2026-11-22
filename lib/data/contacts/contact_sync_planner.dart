@@ -4427,6 +4427,12 @@ class _Planner {
       final row = orphan.row;
       final side = orphan.side;
       final id = orphan.id;
+      if (orphan.cause == ContactDeleteCause.deletedInGoogle) {
+        if (_mergedInto(row) case final survivor?) {
+          _heldAsMerged(row, id, survivor);
+          continue;
+        }
+      }
       final listedVersion = side == ContactSide.google
           ? googleListed[id]?.etag
           : graphListed[id]?.changeKey;
@@ -4478,6 +4484,76 @@ class _Planner {
         ),
       );
     }
+  }
+
+  /// The Gmail contact [row]'s gone Gmail side was most likely merged
+  /// into: Google reports Merge & fix as plain deletions of the contacts
+  /// merged away, with no re-key, so a contact that went while an email
+  /// or mobile of its (its row's base) is on another Gmail contact still
+  /// there (read this run, or known from a row's base) is taken as merged
+  /// into that one, whatever its name (Google merges by name too). One
+  /// read this run first (a merge changes the survivor), then the one
+  /// sharing the most, then by name. A wrong guess (a family member
+  /// really deleted) only asks Ron rather than deleting.
+  String? _mergedInto(_Row row) {
+    final gone = row.googleName ?? row.input.googleName;
+    final base = row.input.googleDetails;
+    final shared = <String, int>{};
+    for (final (keys, index) in [
+      (_emailKeys(base), _emailIndex),
+      (_mobileKeys(base), _mobileIndex),
+    ]) {
+      for (final key in keys) {
+        final owners = index[key] ?? const <(ContactSide, String)>[];
+        for (final (side, id) in owners) {
+          if (side != ContactSide.google || id == gone) continue;
+          if (!_googleAlive(id)) continue;
+          shared[id] = (shared[id] ?? 0) + 1;
+        }
+      }
+    }
+    if (shared.isEmpty) return null;
+    return (shared.keys.toList()..sort((a, b) {
+          final byRead = (googleListed.containsKey(a) ? 0 : 1).compareTo(
+            googleListed.containsKey(b) ? 0 : 1,
+          );
+          if (byRead != 0) return byRead;
+          final byShared = shared[b]!.compareTo(shared[a]!);
+          return byShared != 0 ? byShared : a.compareTo(b);
+        }))
+        .first;
+  }
+
+  /// The Outlook contact [id] of [row], whose Gmail side was merged into
+  /// [survivor]: held under the "Merged in Gmail" item (delete it in
+  /// Hadco too, or keep it only there), as a merge Google reports as a
+  /// re-key is, never deleted unasked and never counted by the deletion
+  /// brake. The gone Gmail side is kept as its partner, so a delete
+  /// answered later puts it in the bin with it.
+  void _heldAsMerged(_Row row, String id, String survivor) {
+    final details = _detailsOf(ContactSide.graph, id);
+    _setStatus(ContactSide.graph, id, _Status.held);
+    _add(
+      ContactLinkPlan(
+        linkId: row.id,
+        graphId: id,
+        state: ContactLinkState.held,
+        reason: ContactHeldReason.waiting,
+        graphChangeKey: graphListed[id]?.changeKey ?? row.input.graphChangeKey,
+        graphBase: details,
+        title: details.title,
+        partnerId: row.googleName ?? row.input.googleName,
+        partnerBase: row.input.googleDetails,
+      ),
+      [
+        ContactReviewItem(
+          kind: ContactReviewKind.mergedInGoogle,
+          googleName: survivor,
+          graphId: id,
+          title: details.title,
+        ),
+      ],
+    );
   }
 
   // ---- The brakes.
