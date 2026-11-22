@@ -358,11 +358,19 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         saved.add(file);
         if (forStart) steps.backupSaved(pair, file.side);
       }
-      // Two tries that saved one file each have saved both.
-      final both = forStart && steps.of(pair).backupSaved;
+      // Two tries that saved one file each have saved both: said when both
+      // are from the last hour, else left to the note under Start.
+      final kept = steps.of(pair);
+      final both = forStart && kept.backupSaved;
+      final fresh = forStart && kept.backupFresh(DateTime.now());
       if (mounted) {
         setState(
-          () => _backupSaid = _savedSaid(saved, forStart: forStart, both: both),
+          () => _backupSaid = _savedSaid(
+            saved,
+            forStart: forStart,
+            both: both,
+            fresh: fresh,
+          ),
         );
       }
     } catch (e) {
@@ -374,11 +382,13 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
 
   /// What was saved. Both files are one for each side, whatever number
   /// of files the runner handed over; [both]: the first sync's two files
-  /// are saved, counting one an earlier Save backup saved.
+  /// are saved, counting one an earlier Save backup saved, and [fresh]:
+  /// both within the hour.
   static String? _savedSaid(
     List<ContactSyncBackupFile> saved, {
     required bool forStart,
     bool both = false,
+    bool fresh = false,
   }) {
     if (saved.isEmpty) return null;
     String one(ContactSyncBackupFile f) =>
@@ -392,9 +402,10 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     if (!forStart) {
       return '$said The other file was not saved: Save backup again for both.';
     }
-    return both
-        ? '$said Both files are saved.'
-        : '$said Start sync needs both files: Save backup again.';
+    if (fresh) return '$said Both files are saved.';
+    // Both, but one over an hour old: the note under Start says so.
+    if (both) return said;
+    return '$said Start sync needs both files: Save backup again.';
   }
 
   Future<void> _start(Account google, Account graph) async {
@@ -1371,6 +1382,23 @@ class _QuestionCard extends StatelessWidget {
               if (i.answer == null) i.key,
           }
         : null;
+    // What held up the question's answer at the last run, for the contacts
+    // it covers: under that answer, as the runner says it; once where one
+    // reason holds up all of them, else each with its contact's name.
+    final covered = whole == null
+        ? const <ContactSyncQuestionItem>[]
+        : [
+            for (final i in q.items)
+              if (i.answer == null) i,
+          ];
+    final reasons = {for (final i in covered) ?i.answerProblem};
+    final heldUp = reasons.length == 1 &&
+            covered.every((i) => i.answerProblem == reasons.single)
+        ? [reasons.single]
+        : [
+            for (final i in covered)
+              if (i.answerProblem case final p?) '${_title(i.title)}: $p',
+          ];
     return Card(
       key: ValueKey('contact-sync-question:${q.kind.name}'),
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -1387,14 +1415,20 @@ class _QuestionCard extends StatelessWidget {
             const SizedBox(height: 8),
             // The answer for all comes first: with 58 contacts below, at
             // their foot it would be a long way down.
-            if (whole != null)
+            if (whole != null) ...[
               Text(
                 'You chose ${_choiceLabel(whole, graphName)}'
                 '${someAnswered ? ' for the rest' : ''}. The next sync '
                 'carries it out.',
                 key: const ValueKey('contact-sync-question-answer'),
                 style: TextStyle(color: theme.colorScheme.primary),
-              )
+              ),
+              for (final line in heldUp)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(line, style: muted),
+                ),
+            ]
             // Open while any contact is (a question of none, an empty
             // answer, is open until answered).
             else if (n == 0 || open > 0) ...[
@@ -1539,6 +1573,12 @@ class _QuestionItemTile extends StatelessWidget {
             'sync carries it out.',
             style: TextStyle(color: theme.colorScheme.primary),
           ),
+        ),
+      // Held up at the last run: why, as the runner says it.
+      if (i.answerProblem case final problem? when answer != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Text(problem, style: muted),
         ),
     ];
     final buttons = answer != null || choices.isEmpty

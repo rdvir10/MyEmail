@@ -963,6 +963,46 @@ void main() {
       expect(find.textContaining('Saved myemail-'), findsNothing);
     });
 
+    testWidgets('one file saved over an hour ago is left to the note under '
+        'Start', (tester) async {
+      sync = FakeContactSync(status: chosenOnly, backupFiles: _backupFiles);
+      engine = _Engine(sync, const [gmail, hadco]);
+      final c = await pumpScreen(tester);
+      const pair = 'acct-g|acct-h';
+      c.read(contactSyncFirstStepsProvider.notifier)
+        ..previewed(pair, const ContactSyncPreview())
+        ..backupSaved(
+          pair,
+          ContactSide.google,
+          at: DateTime.now().subtract(const Duration(minutes: 61)),
+        );
+      await tester.pumpAndSettle();
+
+      files.answers.addAll([false, true]);
+      await tester.tap(button('contact-sync-backup'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Saved myemail-outlook-contacts-2026-11-21.csv, 412 contacts, which '
+          'Outlook on the web can import.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Both files are saved'), findsNothing);
+      expect(find.textContaining('Start sync needs both files'), findsNothing);
+      expect(enabled(tester, 'contact-sync-start'), isFalse);
+      expect(
+        tester
+            .widget<Text>(find.descendant(
+              of: button('contact-sync-start-note'),
+              matching: find.byType(Text),
+            ))
+            .data,
+        'The backup files are over an hour old: Save backup again, so that '
+        'they hold the address books as they are now.',
+      );
+    });
+
     testWidgets("a Save backup's message stays with its pair",
         (tester) async {
       sync = FakeContactSync(status: chosenOnly, backupFiles: _backupFiles);
@@ -1549,6 +1589,111 @@ void main() {
         expect(sync.questionItems, [
           {'a'},
         ]);
+      });
+
+      testWidgets('an answer held up at the last run says why, under that '
+          'answer', (tester) async {
+        const unread =
+            'Could not be read just now: it is carried out when it can be.';
+        const away = 'Its Outlook contact is not in Contacts: it is carried '
+            'out once it is back.';
+        ContactSyncQuestionItem person(
+          String key,
+          String title, {
+          ContactSide side = ContactSide.graph,
+          ContactSyncChoice? answer,
+          String? problem,
+        }) =>
+            ContactSyncQuestionItem(
+              title: title,
+              side: side,
+              key: key,
+              answer: answer,
+              answerProblem: problem,
+            );
+        ContactSyncQuestion deletions(List<ContactSyncQuestionItem> items) =>
+            ContactSyncQuestion(
+              kind: ContactSyncQuestionKind.deletions,
+              answer: ContactSyncChoice.deleteThem,
+              items: items,
+            );
+        sync = FakeContactSync(status: synced(questions: [
+          // Answered one by one: under the contact's own answer.
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.changes,
+            items: [
+              person(
+                'a',
+                'Ann Cole',
+                answer: ContactSyncChoice.applyThem,
+                problem: unread,
+              ),
+              person('b', 'Ben Day'),
+            ],
+          ),
+          // Answered as a whole, held up for one reason: said once, under
+          // the question's answer.
+          deletions([
+            person('c', 'Cy Fox', side: ContactSide.google, problem: away),
+            person('d', 'Di Ray', side: ContactSide.google, problem: away),
+          ]),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+
+        double top(Finder f) => tester.getTopLeft(f).dy;
+        final ann = button('contact-sync-item:a');
+        final annChose = find.descendant(
+          of: ann,
+          matching: find.text('You chose Apply: the next sync carries it out.'),
+        );
+        expect(find.descendant(of: ann, matching: find.text(unread)),
+            findsOneWidget);
+        expect(top(find.text(unread)), greaterThan(top(annChose)));
+        expect(
+          tester.widget<Text>(find.text(unread)).style?.color,
+          Theme.of(tester.element(find.text(unread)))
+              .colorScheme
+              .onSurfaceVariant,
+          reason: 'muted',
+        );
+        expect(
+          find.descendant(
+            of: button('contact-sync-item:b'),
+            matching: find.textContaining('carried out'),
+          ),
+          findsNothing,
+        );
+
+        final card = button('contact-sync-question:deletions');
+        expect(find.descendant(of: card, matching: find.text(away)),
+            findsOneWidget);
+        expect(top(find.text(away)),
+            greaterThan(top(button('contact-sync-question-answer'))));
+        expect(top(find.text(away)), lessThan(top(button('contact-sync-item:c'))));
+
+        // Two reasons, and a contact not held up: each named.
+        sync.set(synced(questions: [
+          deletions([
+            person('c', 'Cy Fox', side: ContactSide.google, problem: away),
+            person('d', 'Di Ray', side: ContactSide.google, problem: unread),
+            person('e', 'Ed Kim', side: ContactSide.google),
+          ]),
+        ]));
+        await tester.pumpAndSettle();
+        expect(find.text('Cy Fox: $away'), findsOneWidget);
+        expect(find.text('Di Ray: $unread'), findsOneWidget);
+        // Its name in a line of its own: not the contact's own line.
+        expect(
+          find.byWidgetPredicate(
+            (w) => w is Text && (w.data?.startsWith('Ed Kim') ?? false),
+          ),
+          findsNothing,
+          reason: 'Ed Kim was not held up',
+        );
+        expect(find.text(away), findsNothing);
+        expect(top(find.text('Cy Fox: $away')),
+            greaterThan(top(button('contact-sync-question-answer'))));
       });
 
       testWidgets('a contact answered alone shows its answer, and the buttons '
