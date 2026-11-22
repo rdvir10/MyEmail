@@ -649,6 +649,7 @@ void main() {
       await pumpScreen(tester);
 
       expect(find.text('First sync'), findsOneWidget);
+      expect(button('contact-sync-backup-later'), findsNothing);
       expect(enabled(tester, 'contact-sync-start'), isFalse);
       expect(find.textContaining('Start sync is ready once'), findsOneWidget);
 
@@ -860,6 +861,128 @@ void main() {
         ),
         findsOneWidget,
       );
+    });
+
+    testWidgets('after the first sync, Save backup is still offered',
+        (tester) async {
+      sync = FakeContactSync(
+        status: synced(googleCount: 340, graphCount: 412),
+        backupFiles: _backupFiles,
+      );
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+
+      expect(find.text('First sync'), findsNothing);
+      expect(
+        find.text('Two files, one Google Contacts can import and one Outlook '
+            'on the web can import. Turn contact sync off before importing '
+            'either.'),
+        findsOneWidget,
+      );
+      await tester.tap(button('contact-sync-backup-later'));
+      await tester.pumpAndSettle();
+      expect(sync.count('backup'), 1);
+      expect(
+        [
+          for (final f in files.saved) (f.fileName, f.mimeType),
+        ],
+        [
+          ('myemail-google-contacts-2026-11-21.vcf', 'text/x-vcard'),
+          ('myemail-outlook-contacts-2026-11-21.csv', 'text/csv'),
+        ],
+      );
+      expect(
+        find.text(
+          'Saved myemail-google-contacts-2026-11-21.vcf, 340 contacts, which '
+          'Google Contacts can import, and '
+          'myemail-outlook-contacts-2026-11-21.csv, 412 contacts, which '
+          'Outlook on the web can import.',
+        ),
+        findsOneWidget,
+      );
+
+      // One file backed out of: said, and nothing about Start.
+      files.answers.addAll([true, false]);
+      await tester.tap(button('contact-sync-backup-later'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Saved myemail-google-contacts-2026-11-21.vcf, 340 contacts, which '
+          'Google Contacts can import. The other file was not saved: Save '
+          'backup again for both.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('two tries that saved one file each have saved both, and '
+        "the first sync's message stays with its own Save backup",
+        (tester) async {
+      sync = FakeContactSync(
+        status: chosenOnly,
+        previewAnswer: const ContactSyncPreview(
+          googleListed: 340,
+          graphListed: 412,
+        ),
+        backupFiles: _backupFiles,
+      );
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(button('contact-sync-preview'));
+      await tester.pumpAndSettle();
+
+      files.answers.addAll([true, false]);
+      await tester.tap(button('contact-sync-backup'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Saved myemail-google-contacts-2026-11-21.vcf, 340 contacts, which '
+          'Google Contacts can import. Start sync needs both files: Save '
+          'backup again.',
+        ),
+        findsOneWidget,
+      );
+      files.answers.addAll([false, true]);
+      await tester.tap(button('contact-sync-backup'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Saved myemail-outlook-contacts-2026-11-21.csv, 412 contacts, which '
+          'Outlook on the web can import. Both files are saved.',
+        ),
+        findsOneWidget,
+      );
+      expect(enabled(tester, 'contact-sync-start'), isTrue);
+
+      // Started: the later Save backup has no message of its own yet.
+      await tester.tap(button('contact-sync-start'));
+      await tester.pumpAndSettle();
+      expect(sync.count('start'), 1);
+      sync.set(synced(googleCount: 340, graphCount: 412));
+      await tester.pumpAndSettle();
+      expect(button('contact-sync-backup-later'), findsOneWidget);
+      expect(find.textContaining('Saved myemail-'), findsNothing);
+    });
+
+    testWidgets("a Save backup's message stays with its pair",
+        (tester) async {
+      sync = FakeContactSync(status: chosenOnly, backupFiles: _backupFiles);
+      engine = _Engine(sync, const [gmail, hadco, studio]);
+      await pumpScreen(tester);
+
+      await tester.tap(button('contact-sync-backup'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Saved myemail-'), findsOneWidget);
+
+      await tester.tap(button('contact-sync-with'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Myhomestudio'));
+      await tester.pumpAndSettle();
+      expect(sync.chosen.last, (google: 'acct-g', graph: 'acct-m'));
+      expect(find.text('First sync'), findsOneWidget);
+      expect(find.textContaining('Saved myemail-'), findsNothing,
+          reason: "Myhomestudio's files are not saved");
+      expect(enabled(tester, 'contact-sync-start'), isFalse);
     });
 
     testWidgets('running: how far it has got', (tester) async {

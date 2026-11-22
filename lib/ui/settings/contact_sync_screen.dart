@@ -61,6 +61,12 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   Object? _backupError;
   String? _backupSaid;
 
+  /// The Save backup that [_backupError] or [_backupSaid] came from: its
+  /// pair, and whether it was the first sync's. Shown only under that
+  /// button, so that the first sync's message never stands under the later
+  /// one once Start has gone, nor one pair's under another's.
+  ({String pair, bool forStart})? _backupFor;
+
   ContactSyncService get _sync => ref.read(mailEngineProvider).contactSync;
 
   @override
@@ -318,11 +324,14 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
 
   /// Both address books read in full and saved as two files, each where
   /// Ron chooses: a vCard Google Contacts imports, and Outlook's CSV.
+  /// [forStart]: the first sync's backup, which Start waits for; else one
+  /// saved later, whenever Ron wants a copy.
   Future<void> _saveBackup(
     Account google,
     Account graph,
-    String graphName,
-  ) async {
+    String graphName, {
+    bool forStart = true,
+  }) async {
     final steps = ref.read(contactSyncFirstStepsProvider.notifier);
     final files = ref.read(backupFilesProvider);
     final sync = _sync;
@@ -331,6 +340,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       _saving = true;
       _backupError = null;
       _backupSaid = null;
+      _backupFor = (pair: pair, forStart: forStart);
     });
     try {
       await _choose(google, graph);
@@ -346,10 +356,14 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         );
         if (!ok) continue;
         saved.add(file);
-        steps.backupSaved(pair, file.side);
+        if (forStart) steps.backupSaved(pair, file.side);
       }
+      // Two tries that saved one file each have saved both.
+      final both = forStart && steps.of(pair).backupSaved;
       if (mounted) {
-        setState(() => _backupSaid = _savedSaid(saved));
+        setState(
+          () => _backupSaid = _savedSaid(saved, forStart: forStart, both: both),
+        );
       }
     } catch (e) {
       if (mounted) setState(() => _backupError = e);
@@ -359,8 +373,13 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   }
 
   /// What was saved. Both files are one for each side, whatever number
-  /// of files the runner handed over.
-  static String? _savedSaid(List<ContactSyncBackupFile> saved) {
+  /// of files the runner handed over; [both]: the first sync's two files
+  /// are saved, counting one an earlier Save backup saved.
+  static String? _savedSaid(
+    List<ContactSyncBackupFile> saved, {
+    required bool forStart,
+    bool both = false,
+  }) {
     if (saved.isEmpty) return null;
     String one(ContactSyncBackupFile f) =>
         '${f.fileName}, ${_count(f.count, 'contact', 'contacts')}, which '
@@ -370,7 +389,12 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     if ({for (final f in saved) f.side}.length == ContactSide.values.length) {
       return said;
     }
-    return '$said Start sync needs both files: Save backup again.';
+    if (!forStart) {
+      return '$said The other file was not saved: Save backup again for both.';
+    }
+    return both
+        ? '$said Both files are saved.'
+        : '$said Start sync needs both files: Save backup again.';
   }
 
   Future<void> _start(Account google, Account graph) async {
@@ -623,9 +647,58 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
             muted: true,
             top: 12,
           ),
+        // A backup whenever Ron wants one, not only before the first sync:
+        // the same two files, named with the day.
+        if (s.firstStarted) ...[
+          _Buttons([
+            OutlinedButton.icon(
+              key: const ValueKey('contact-sync-backup-later'),
+              onPressed: _saving
+                  ? null
+                  : () => _saveBackup(
+                        google,
+                        graph,
+                        graphName,
+                        forStart: false,
+                      ),
+              icon: const Icon(Icons.save_alt),
+              label: const Text('Save backup'),
+            ),
+          ]),
+          const _Para(
+            'Two files, one Google Contacts can import and one Outlook on the '
+            'web can import. Turn contact sync off before importing either.',
+            muted: true,
+          ),
+          if (_saving && _backupFrom(google, graph, forStart: false))
+            const _Working(),
+          if (_backupError case final e?
+              when _backupFrom(google, graph, forStart: false))
+            _Problem(
+              doing: 'Saving the contacts backup',
+              error: e,
+              onRemedy: _remedy(
+                e,
+                google,
+                graph,
+                () => _saveBackup(google, graph, graphName, forStart: false),
+              ),
+            ),
+          if (_backupSaid case final said?
+              when _backupFrom(google, graph, forStart: false))
+            _Para(said, key: const ValueKey('contact-sync-backup-said')),
+        ],
       ],
     ];
   }
+
+  /// The last Save backup's message is this pair's, and this button's.
+  bool _backupFrom(Account google, Account graph, {required bool forStart}) =>
+      _backupFor ==
+      (
+        pair: ContactSyncFirstSteps.pairKey(google.id, graph.id),
+        forStart: forStart,
+      );
 
   void _push(Widget screen) => Navigator.of(context).push(
         MaterialPageRoute<void>(builder: (_) => screen),
@@ -644,7 +717,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     final preview = steps.preview;
     final now = DateTime.now();
     final ready = both && steps.readyAt(now);
-    final backupSaid = _backupSaid ??
+    final mine = both && _backupFrom(google, graph, forStart: true);
+    final backupSaid = (mine ? _backupSaid : null) ??
         switch (steps.saved.keys.toList()) {
           [] => null,
           [final side] => "${_sideName(side, graphName)}'s file is saved. "
@@ -715,8 +789,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           label: const Text('Save backup'),
         ),
       ]),
-      if (_saving) const _Working(),
-      if (_backupError case final e?)
+      if (_saving && mine) const _Working(),
+      if (_backupError case final e? when mine)
         _Problem(
           doing: 'Saving the contacts backup',
           error: e,
