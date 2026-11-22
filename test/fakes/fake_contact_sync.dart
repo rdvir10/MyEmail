@@ -34,6 +34,23 @@ class FakeContactSync implements ContactSyncService {
   /// What [answerQuestion] throws, as the runner refuses an answer to a
   /// question that has changed since it was drawn.
   Object? answerFailure;
+
+  /// What [backup] throws, as when an address book cannot be read.
+  Object? backupFailure;
+
+  /// Holds [backup] until completed, as reading an address book takes.
+  Completer<void>? backupGate;
+
+  /// What [mergeCopies] throws, as when the runner cannot be reached.
+  Object? mergeFailure;
+
+  /// What [mergeCopies] does to the status, as the runner asks for a
+  /// merge; nothing when null, as with nothing to merge.
+  void Function()? onMergeCopies;
+
+  /// What [answerCopies] and [answerAllCopies] throw, as the runner
+  /// refuses an answer for a person no longer listed as shown.
+  Object? copiesFailure;
   List<ContactSyncBackupFile> backupFiles;
 
   /// The clock [startIfDue] judges by.
@@ -54,6 +71,17 @@ class FakeContactSync implements ContactSyncService {
       lookAnswers = [];
   final List<ContactSyncChoice> allDiffering = [];
   final List<int> restored = [];
+
+  /// Each [answerCopies] call: the person, the copy kept (null: leave
+  /// them), and the version shown.
+  final List<({String person, String? keep, String version})> copiesAnswers =
+      [];
+
+  /// Each [answerAllCopies] call: the people shown, key to version.
+  final List<Map<String, String>> allCopiesAnswers = [];
+
+  /// Each [backup] call's side asked for alone (null: both).
+  final List<ContactSide?> backupsOf = [];
   final List<DateTime> noticesSeen = [];
   final List<String> accessAsked = [];
 
@@ -74,9 +102,13 @@ class FakeContactSync implements ContactSyncService {
     _changes.add(null);
   }
 
+  /// What [status] throws, as when this device's record cannot be read.
+  Object? statusFailure;
+
   @override
   Future<ContactSyncStatus> status() async {
     statusReads++;
+    if (statusFailure case final failure?) throw failure;
     return current;
   }
 
@@ -109,9 +141,15 @@ class FakeContactSync implements ContactSyncService {
   }
 
   @override
-  Future<List<ContactSyncBackupFile>> backup() async {
+  Future<List<ContactSyncBackupFile>> backup({ContactSide? only}) async {
     calls.add('backup');
-    return backupFiles;
+    backupsOf.add(only);
+    await backupGate?.future;
+    if (backupFailure case final failure?) throw failure;
+    return [
+      for (final f in backupFiles)
+        if (only == null || f.side == only) f,
+    ];
   }
 
   @override
@@ -179,6 +217,27 @@ class FakeContactSync implements ContactSyncService {
   Future<void> syncHere() async => calls.add('syncHere');
 
   @override
+  Future<void> mergeCopies() async {
+    calls.add('mergeCopies');
+    if (mergeFailure case final failure?) throw failure;
+    onMergeCopies?.call();
+  }
+
+  @override
+  Future<void> answerCopies(String person, String? keep, String version) async {
+    calls.add('answerCopies');
+    if (copiesFailure case final failure?) throw failure;
+    copiesAnswers.add((person: person, keep: keep, version: version));
+  }
+
+  @override
+  Future<void> answerAllCopies(Map<String, String> people) async {
+    calls.add('answerAllCopies');
+    if (copiesFailure case final failure?) throw failure;
+    allCopiesAnswers.add(people);
+  }
+
+  @override
   Future<void> noticeSeen(DateTime at) async {
     calls.add('noticeSeen');
     noticesSeen.add(at);
@@ -210,5 +269,6 @@ class FakeContactSync implements ContactSyncService {
         graphCount: s.graphCount,
         notice: dropNotice ? null : s.notice,
         duplicates: s.duplicates,
+        copies: s.copies,
       );
 }

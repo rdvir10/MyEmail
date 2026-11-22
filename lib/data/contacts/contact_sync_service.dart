@@ -64,8 +64,11 @@ abstract interface class ContactSyncService {
   /// Both address books of the pair chosen last, read in full, as the two
   /// backup files: exactly two, Google's first (a vCard Google Contacts
   /// imports), then Microsoft's (a CSV Outlook on the web imports), one
-  /// per [ContactSyncBackupFile.side]. Throws as [preview].
-  Future<List<ContactSyncBackupFile>> backup();
+  /// per [ContactSyncBackupFile.side]. With [only], that side's file
+  /// alone, the other side not read: the merge of Hadco's copies saves
+  /// Hadco's, with no Gmail read and none of Google's quota spent. Throws
+  /// as [preview].
+  Future<List<ContactSyncBackupFile>> backup({ContactSide? only});
 
   /// Start: the first sync, from Start only. Sets
   /// [ContactSyncStatus.firstStartedAt] before anything that can stop the
@@ -155,6 +158,43 @@ abstract interface class ContactSyncService {
   /// The shell showed [ContactSyncStatus.notice]: it is not shown again.
   /// Fires [changed].
   Future<void> noticeSeen(DateTime at);
+
+  /// Merge the Microsoft side's copies of one person
+  /// ([ContactSyncStatus.copies]), queued for a run that starts at once:
+  /// for each person whose synced Microsoft copy is paired and has held
+  /// copies beside it, the synced copy stays, takes any detail only
+  /// another copy has, and the other copies are deleted (Outlook keeps
+  /// them in Deleted Items). People whose copies differ are listed
+  /// ([ContactSyncCopies.differing]) and touched only on Ron's answer.
+  /// Gmail's copies are not touched. The screen calls this only once
+  /// Hadco's backup file is saved. Before the first sync is done, or with
+  /// nothing to merge, it does nothing.
+  Future<void> mergeCopies();
+
+  /// Ron's answer for a person whose copies differ
+  /// ([ContactSyncCopiesPerson.key]), given on the differences shown
+  /// ([version], the person's [ContactSyncCopiesPerson.version]) and
+  /// queued for a run that starts at once: [keep] a copy's key
+  /// ([ContactSyncCopy.key]) to keep that copy's details (the synced
+  /// copy's, or another's, whose values win where it has one; the details
+  /// only some copy has are still added), or null to leave them as they
+  /// are: the person goes off the list, and later merges pass it over
+  /// until its copies change. Throws [ContactSyncRefused] when the person
+  /// or the copy is no longer listed, or the person is listed with other
+  /// differences than [version], for the screen to read the status again:
+  /// an answer never lands on differences Ron did not see. Should the
+  /// copies change before a run carries it out, the person is listed
+  /// again as it is, the answer dropped.
+  Future<void> answerCopies(String person, String? keep, String version);
+
+  /// Keep the synced copy's details for the people the screen showed
+  /// ([people]: each one's [ContactSyncCopiesPerson.key] to the
+  /// [ContactSyncCopiesPerson.version] shown), queued for a run that
+  /// starts at once: each still listed, with no answer yet, and at that
+  /// version. The others are left as they are, and a person listed since
+  /// the screen was drawn is never answered by it. Throws
+  /// [ContactSyncRefused] when none could be answered.
+  Future<void> answerAllCopies(Map<String, String> people);
 }
 
 /// A [ContactSyncService] that has nothing to sync: the browser preview's,
@@ -183,7 +223,7 @@ class NoContactSync implements ContactSyncService {
       throw const ContactSyncRefused(_unavailable);
 
   @override
-  Future<List<ContactSyncBackupFile>> backup() async =>
+  Future<List<ContactSyncBackupFile>> backup({ContactSide? only}) async =>
       throw const ContactSyncRefused(_unavailable);
 
   @override
@@ -223,6 +263,19 @@ class NoContactSync implements ContactSyncService {
 
   @override
   Future<void> noticeSeen(DateTime at) async {}
+
+  @override
+  Future<void> mergeCopies() async {}
+
+  @override
+  Future<void> answerCopies(
+    String person,
+    String? keep,
+    String version,
+  ) async {}
+
+  @override
+  Future<void> answerAllCopies(Map<String, String> people) async {}
 
   static const _unavailable = 'Contact sync is not available here.';
 }
@@ -288,6 +341,7 @@ class ContactSyncStatus {
     this.graphCount,
     this.notice,
     this.duplicates = const [],
+    this.copies = const ContactSyncCopies(),
   });
 
   /// A run is due when the last completed one is this old.
@@ -350,6 +404,13 @@ class ContactSyncStatus {
   /// are none, and before the first run.
   final List<ContactSyncDuplicates> duplicates;
 
+  /// The merge of the Microsoft side's copies of one person: how many
+  /// people it would act on, whether one is asked, the people whose
+  /// copies differ, and what the last one did. Always there: zeros when
+  /// there is nothing to merge. Kept between runs and app restarts, and
+  /// read here with no network.
+  final ContactSyncCopies copies;
+
   bool get chosen => googleAccountId != null && graphAccountId != null;
   bool get firstStarted => firstStartedAt != null;
   bool get firstDone => firstDoneAt != null;
@@ -367,6 +428,10 @@ enum ContactSyncStep {
 
   /// Carrying out the plan, one write at a time.
   writing,
+
+  /// Merging the Microsoft side's copies of one person, a person at a
+  /// time ([ContactSyncService.mergeCopies]).
+  merging,
 }
 
 @immutable
@@ -380,7 +445,8 @@ class ContactSyncProgress {
 
   final ContactSyncStep step;
 
-  /// Writes done of [total], while [step] is writing.
+  /// Writes done of [total], while [step] is writing; people done of
+  /// [total], while it is merging.
   final int done;
   final int total;
 
@@ -892,6 +958,163 @@ class ContactSyncDuplicates {
   /// on the other.
   final bool googleSynced;
   final bool graphSynced;
+}
+
+/// The merge of the Microsoft side's copies of one person
+/// ([ContactSyncService.mergeCopies]).
+@immutable
+class ContactSyncCopies {
+  const ContactSyncCopies({
+    this.people = 0,
+    this.extras = 0,
+    this.notSynced = 0,
+    this.asked = false,
+    this.shortStops = 0,
+    this.last,
+    this.differing = const [],
+  });
+
+  /// The people a merge would act on: a synced Microsoft copy, paired,
+  /// with held copies beside it.
+  final int people;
+
+  /// Their other copies on the Microsoft side.
+  final int extras;
+
+  /// People with copies on the Microsoft side that a merge leaves as they
+  /// are: there is no synced copy there, or a copy shares only the name
+  /// with it (no email or mobile joins them).
+  final int notSynced;
+
+  /// A merge is queued or running: from [ContactSyncService.mergeCopies]
+  /// until one pass has dealt with every person.
+  final bool asked;
+
+  /// How many passes in a row stopped short because Hadco could not be
+  /// read, while the merge is asked. After one, the next pass waits the
+  /// usual hour; after three, the merge is given up
+  /// ([ContactSyncCopiesResult.stoppedShort]).
+  final int shortStops;
+
+  /// What the last merge did, if one has run.
+  final ContactSyncCopiesResult? last;
+
+  /// The people whose copies differ, for Ron to choose
+  /// ([ContactSyncService.answerCopies]).
+  final List<ContactSyncCopiesPerson> differing;
+}
+
+/// What a merge did.
+@immutable
+class ContactSyncCopiesResult {
+  const ContactSyncCopiesResult({
+    required this.at,
+    this.people = 0,
+    this.deleted = 0,
+    this.added = 0,
+    this.differing = 0,
+    this.failed = 0,
+    this.passedOver = 0,
+    this.stoppedShort = false,
+  });
+
+  /// When it ended.
+  final DateTime at;
+
+  /// People merged: their other copies deleted.
+  final int people;
+
+  /// Copies deleted.
+  final int deleted;
+
+  /// Details added to synced copies.
+  final int added;
+
+  /// People whose copies differ, listed for Ron and not yet answered when
+  /// the pass ended.
+  final int differing;
+
+  /// People the pass could not finish: a write failed (nothing of theirs
+  /// deleted), or a delete failed (the copies left are as they were). The
+  /// next merge tries them again.
+  final int failed;
+
+  /// People the pass left for the next merge: a copy changed in Outlook
+  /// while the merge went, a photo that could not be read, a contact no
+  /// longer in Contacts, or Hadco not read again just then. Nothing of
+  /// theirs was deleted, though details may already have been added to
+  /// the synced copy.
+  final int passedOver;
+
+  /// The merge was given up: three passes in a row stopped short because
+  /// Hadco could not be read. Merging again starts afresh.
+  final bool stoppedShort;
+}
+
+/// A person whose copies on the Microsoft side differ.
+@immutable
+class ContactSyncCopiesPerson {
+  const ContactSyncCopiesPerson({
+    required this.key,
+    required this.title,
+    this.copies = const [],
+    this.answer,
+    this.version = '',
+  });
+
+  /// [answer] when Ron chose to leave them as they are.
+  static const leave = 'leave';
+
+  /// Names the person for [ContactSyncService.answerCopies].
+  final String key;
+
+  /// The person's name, for show.
+  final String title;
+
+  /// The copies, the synced one first.
+  final List<ContactSyncCopy> copies;
+
+  /// Ron's answer, waiting for a run: the key of the copy whose details he
+  /// keeps, or [leave]. Null when he has not answered.
+  final String? answer;
+
+  /// The differences as listed, a short stable form of them: an answer
+  /// ([ContactSyncService.answerCopies], [ContactSyncService
+  /// .answerAllCopies]) counts only on these.
+  final String version;
+}
+
+/// One copy of a person whose copies differ.
+@immutable
+class ContactSyncCopy {
+  const ContactSyncCopy({
+    required this.key,
+    this.synced = false,
+    this.details = const [],
+  });
+
+  /// Names the copy for [ContactSyncService.answerCopies].
+  final String key;
+
+  /// The copy the sync keeps paired (it always stays).
+  final bool synced;
+
+  /// Its values of the details that differ, in the same order on every
+  /// copy of the person. Contact data: shown on screen and kept on this
+  /// device, never written to a log.
+  final List<ContactSyncCopyDetail> details;
+}
+
+/// One detail that differs between the copies, as one copy holds it.
+@immutable
+class ContactSyncCopyDetail {
+  const ContactSyncCopyDetail({required this.label, this.value});
+
+  /// The detail's name, as the screen names details ("Job title").
+  final String label;
+
+  /// As shown, on one line; null when this copy has none.
+  final String? value;
 }
 
 /// One of the two backup files, for `BackupFiles.save`.

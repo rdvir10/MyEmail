@@ -26,6 +26,10 @@ import 'package:myemail/data/contacts/contact_mapping.dart'
 /// `$select` again is refused; and so is a `$batch` request with a body
 /// and no Content-Type of its own.
 ///
+/// A contact's photo is kept apart from its properties, as Graph keeps it:
+/// GET .../photo answers its details or 404, GET and PUT .../photo/$value
+/// its bytes ([photoOf], [setPhotoFromOutlook]).
+///
 /// Tests seed and inspect contacts directly, and change them as Ron would
 /// in Outlook ([addFromOutlook], [editFromOutlook], [deleteFromOutlook],
 /// [moveFromOutlook]).
@@ -167,6 +171,22 @@ class FakeGraphContacts {
   }
 
   /// Delete [id] for good, as emptying Deleted Items does.
+  /// Give [id] a photo, as Ron would in Outlook (a new `changeKey`).
+  void setPhotoFromOutlook(
+    String id,
+    List<int> bytes, {
+    String type = 'image/jpeg',
+  }) {
+    final c = _there(id);
+    c.photo = (bytes: List.of(bytes), type: type);
+    c.changeKey = _newKey();
+    c.modified = now;
+    _record(id, c.folder, c.folder, {'photo'});
+  }
+
+  /// [id]'s photo, if it has one.
+  ({List<int> bytes, String type})? photoOf(String id) => _contacts[id]?.photo;
+
   void purgeFromOutlook(String id) {
     final c = _there(id);
     _contacts.remove(id);
@@ -331,6 +351,35 @@ class FakeGraphContacts {
           return _update(id, request.body);
         case ['contacts', final id] when m == 'DELETE':
           return _delete(id);
+        case ['contacts', final id, 'photo'] when m == 'GET':
+          final photo = _contacts[id]?.photo;
+          if (photo == null) return _notFound();
+          return _ok({
+            '@odata.mediaContentType': photo.type,
+            'id': '96X96',
+            'height': 96,
+            'width': 96,
+          });
+        case ['contacts', final id, 'photo', r'$value'] when m == 'GET':
+          final photo = _contacts[id]?.photo;
+          if (photo == null) return _notFound();
+          return http.Response.bytes(
+            photo.bytes,
+            200,
+            headers: {'content-type': photo.type},
+          );
+        case ['contacts', final id, 'photo', r'$value'] when m == 'PUT':
+          final c = _contacts[id];
+          if (c == null) return _notFound();
+          final type = _header(request, 'Content-Type') ?? '';
+          if (!type.startsWith('image/') || request.bodyBytes.isEmpty) {
+            return _error(400, 'ErrorInvalidRequest', 'Not a photo.');
+          }
+          c.photo = (bytes: List.of(request.bodyBytes), type: type);
+          c.changeKey = _newKey();
+          c.modified = now;
+          _record(id, c.folder, c.folder, {'photo'});
+          return http.Response('', 200);
         case ['contactFolders', final f, 'contacts'] when m == 'GET':
           if (!_folders.contains(f)) return _notFound();
           return _list(f, q, listPage);
@@ -990,6 +1039,7 @@ class _Contact {
   DateTime modified;
   final Map<String, Object?> fields = {};
   final Map<String, String> properties = {};
+  ({List<int> bytes, String type})? photo;
 }
 
 class _Pages {
