@@ -61,6 +61,12 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   Object? _backupError;
   String? _backupSaid;
 
+  /// The Save backup that [_backupError] or [_backupSaid] came from: its
+  /// pair, and whether it was the first sync's. Shown only under that
+  /// button, so that the first sync's message never stands under the later
+  /// one once Start has gone, nor one pair's under another's.
+  ({String pair, bool forStart})? _backupFor;
+
   ContactSyncService get _sync => ref.read(mailEngineProvider).contactSync;
 
   @override
@@ -318,11 +324,14 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
 
   /// Both address books read in full and saved as two files, each where
   /// Ron chooses: a vCard Google Contacts imports, and Outlook's CSV.
+  /// [forStart]: the first sync's backup, which Start waits for; else one
+  /// saved later, whenever Ron wants a copy.
   Future<void> _saveBackup(
     Account google,
     Account graph,
-    String graphName,
-  ) async {
+    String graphName, {
+    bool forStart = true,
+  }) async {
     final steps = ref.read(contactSyncFirstStepsProvider.notifier);
     final files = ref.read(backupFilesProvider);
     final sync = _sync;
@@ -331,6 +340,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       _saving = true;
       _backupError = null;
       _backupSaid = null;
+      _backupFor = (pair: pair, forStart: forStart);
     });
     try {
       await _choose(google, graph);
@@ -346,10 +356,22 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         );
         if (!ok) continue;
         saved.add(file);
-        steps.backupSaved(pair, file.side);
+        if (forStart) steps.backupSaved(pair, file.side);
       }
+      // Two tries that saved one file each have saved both: said when both
+      // are from the last hour, else left to the note under Start.
+      final kept = steps.of(pair);
+      final both = forStart && kept.backupSaved;
+      final fresh = forStart && kept.backupFresh(DateTime.now());
       if (mounted) {
-        setState(() => _backupSaid = _savedSaid(saved));
+        setState(
+          () => _backupSaid = _savedSaid(
+            saved,
+            forStart: forStart,
+            both: both,
+            fresh: fresh,
+          ),
+        );
       }
     } catch (e) {
       if (mounted) setState(() => _backupError = e);
@@ -359,8 +381,15 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   }
 
   /// What was saved. Both files are one for each side, whatever number
-  /// of files the runner handed over.
-  static String? _savedSaid(List<ContactSyncBackupFile> saved) {
+  /// of files the runner handed over; [both]: the first sync's two files
+  /// are saved, counting one an earlier Save backup saved, and [fresh]:
+  /// both within the hour.
+  static String? _savedSaid(
+    List<ContactSyncBackupFile> saved, {
+    required bool forStart,
+    bool both = false,
+    bool fresh = false,
+  }) {
     if (saved.isEmpty) return null;
     String one(ContactSyncBackupFile f) =>
         '${f.fileName}, ${_count(f.count, 'contact', 'contacts')}, which '
@@ -370,6 +399,12 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     if ({for (final f in saved) f.side}.length == ContactSide.values.length) {
       return said;
     }
+    if (!forStart) {
+      return '$said The other file was not saved: Save backup again for both.';
+    }
+    if (fresh) return '$said Both files are saved.';
+    // Both, but one over an hour old: the note under Start says so.
+    if (both) return said;
     return '$said Start sync needs both files: Save backup again.';
   }
 
@@ -559,9 +594,14 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           _QuestionCard(
             question: q,
             graphName: graphName,
-            onAnswer: (choice) => _act(
+            onAnswer: (choice, {items}) => _act(
               context,
-              () => _sync.answerQuestion(q.kind, choice),
+              () => _sync.answerQuestion(q.kind, choice, items: items),
+              // Refused, perhaps because the question changed since it was
+              // drawn: said, and read again, to be answered as it is now.
+              onFailure: () {
+                if (mounted) ref.invalidate(contactSyncStatusProvider);
+              },
             ),
           ),
         if (s.firstStarted ||
@@ -618,9 +658,58 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
             muted: true,
             top: 12,
           ),
+        // A backup whenever Ron wants one, not only before the first sync:
+        // the same two files, named with the day.
+        if (s.firstStarted) ...[
+          _Buttons([
+            OutlinedButton.icon(
+              key: const ValueKey('contact-sync-backup-later'),
+              onPressed: _saving
+                  ? null
+                  : () => _saveBackup(
+                        google,
+                        graph,
+                        graphName,
+                        forStart: false,
+                      ),
+              icon: const Icon(Icons.save_alt),
+              label: const Text('Save backup'),
+            ),
+          ]),
+          const _Para(
+            'Two files, one Google Contacts can import and one Outlook on the '
+            'web can import.',
+            muted: true,
+          ),
+          if (_saving && _backupFrom(google, graph, forStart: false))
+            const _Working(),
+          if (_backupError case final e?
+              when _backupFrom(google, graph, forStart: false))
+            _Problem(
+              doing: 'Saving the contacts backup',
+              error: e,
+              onRemedy: _remedy(
+                e,
+                google,
+                graph,
+                () => _saveBackup(google, graph, graphName, forStart: false),
+              ),
+            ),
+          if (_backupSaid case final said?
+              when _backupFrom(google, graph, forStart: false))
+            _Para(said, key: const ValueKey('contact-sync-backup-said')),
+        ],
       ],
     ];
   }
+
+  /// The last Save backup's message is this pair's, and this button's.
+  bool _backupFrom(Account google, Account graph, {required bool forStart}) =>
+      _backupFor ==
+      (
+        pair: ContactSyncFirstSteps.pairKey(google.id, graph.id),
+        forStart: forStart,
+      );
 
   void _push(Widget screen) => Navigator.of(context).push(
         MaterialPageRoute<void>(builder: (_) => screen),
@@ -639,7 +728,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     final preview = steps.preview;
     final now = DateTime.now();
     final ready = both && steps.readyAt(now);
-    final backupSaid = _backupSaid ??
+    final mine = both && _backupFrom(google, graph, forStart: true);
+    final backupSaid = (mine ? _backupSaid : null) ??
         switch (steps.saved.keys.toList()) {
           [] => null,
           [final side] => "${_sideName(side, graphName)}'s file is saved. "
@@ -710,8 +800,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           label: const Text('Save backup'),
         ),
       ]),
-      if (_saving) const _Working(),
-      if (_backupError case final e?)
+      if (_saving && mine) const _Working(),
+      if (_backupError case final e? when mine)
         _Problem(
           doing: 'Saving the contacts backup',
           error: e,
@@ -1162,7 +1252,16 @@ class _PreviewTable extends StatelessWidget {
   }
 }
 
-/// A brake's question: what is held, and the two answers.
+/// What answers a brake's question: the whole of it, with [items] null,
+/// or only the contacts those keys name.
+typedef _QuestionAnswer = void Function(
+  ContactSyncChoice choice, {
+  Set<String>? items,
+});
+
+/// A brake's question: what is held, contact by contact with what each
+/// would lose or have deleted, and the two answers, for all of them at
+/// once or for one contact alone.
 class _QuestionCard extends StatelessWidget {
   const _QuestionCard({
     required this.question,
@@ -1172,38 +1271,75 @@ class _QuestionCard extends StatelessWidget {
 
   final ContactSyncQuestion question;
   final String graphName;
-  final ValueChanged<ContactSyncChoice> onAnswer;
+  final _QuestionAnswer onAnswer;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final muted = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
     final q = question;
     String side(ContactSide s) => _sideName(s, graphName);
     final n = q.items.length;
-    // The held contacts by their number, not the brakes' thresholds: a
-    // question stays until answered, and may by then hold fewer than the
-    // more than 5 (or 10) that raised it.
+    // No number, neither the brakes' thresholds (a question stays until
+    // answered, and may by then hold fewer than the more than 5 or 10 that
+    // raised it) nor a count the title, counting only those still waiting,
+    // would contradict.
     final (these, they) =
-        n == 1 ? ('this contact', 'it is') : ('these $n contacts', 'they are');
+        n == 1 ? ('this contact', 'it is') : ('these contacts', 'they are');
+    // The side every contact's change (or deletion) is about, where they
+    // share one: said once, rather than under every name.
+    final sides = {for (final i in q.items) ..._sidesOf(i)};
+    final oneSide = sides.length == 1 ? sides.single : null;
+    // Counted as the Settings row and the one-line message count them:
+    // only the contacts still waiting for Ron.
+    final waiting = _waiting(q);
     final (String title, String body, String explain) = switch (q.kind) {
       ContactSyncQuestionKind.deletions => (
-          _count(n, 'deletion needs your OK', 'deletions need your OK'),
+          waiting > 0
+              ? _count(
+                  waiting,
+                  'deletion needs your OK',
+                  'deletions need your OK',
+                )
+              : '${_count(n, 'deletion', 'deletions')}, '
+                  '${n == 1 ? 'answered' : 'all answered'}',
           'One sync would delete $these at once, so $they held for your '
               'OK, and everything else carries on.',
-          'Delete them deletes those still due, each read again first. '
+          'Delete them deletes '
+              '${oneSide == null ? "each one's copy on the other side" : 'their copies in ${side(oneSide.other)}'}'
+              ', each read again first. '
               "Don't delete them: ${_staySide(q.items, graphName)} but "
               'stop syncing, and each waits under Needs a look, where it '
               'can still be copied back.',
         ),
       ContactSyncQuestionKind.changes => (
-          'Changes to ${_count(n, 'contact', 'contacts')} need your OK',
-          'One sync would remove or replace details on $these at once, '
-              "as Google's Undo changes, a backup imported again or a bulk "
-              'edit can, so $they held for your OK, and everything else '
-              'carries on.',
-          'Copy them back puts the details back where they were removed or '
-              'replaced, from the other side. Either way each is read again '
-              'first.',
+          waiting > 0
+              ? 'Changes to ${_count(waiting, 'contact', 'contacts')} need '
+                  'your OK'
+              : 'Changes to ${_count(n, 'contact', 'contacts')}, '
+                  '${n == 1 ? 'answered' : 'all answered'}',
+          'One sync would remove or replace details '
+              '${oneSide == null ? '' : 'in ${side(oneSide)} '}on $these at '
+              "once, as Google's Undo changes, a backup imported again or a "
+              'bulk edit can, so $they held for your OK, and everything else '
+              'carries on. Under each name, each detail as it is '
+              '${oneSide == null ? 'now on the side named' : 'in ${side(oneSide)} now'}'
+              ', and what it would become.',
+          // Copy back puts back what the side would lose, from that
+          // side; but a detail changed on both sides keeps its newer
+          // edit, and a list only gains (a replaced address leaves both).
+          oneSide == null
+              ? 'Apply makes each change on the side named. Copy back '
+                  'keeps what that side has and puts it back on the other, '
+                  'except a detail changed on both sides; a list only '
+                  'gains, so a replaced address leaves both. Either way '
+                  'each contact is read again first.'
+              : 'Apply makes these changes in ${side(oneSide)}. Copy back '
+                  'keeps what ${side(oneSide)} has and puts it back in '
+                  '${side(oneSide.other)}, except a detail changed on both '
+                  'sides; a list only gains, so a replaced address leaves '
+                  'both. Either way each contact is read again first.',
         ),
       ContactSyncQuestionKind.emptyAnswer => (
           q.listed == null
@@ -1227,14 +1363,42 @@ class _QuestionCard extends StatelessWidget {
               'waiting leaves it stopped, and the next sync looks again.',
         ),
     };
-    String item(ContactSyncQuestionItem i) => switch (q.kind) {
-          ContactSyncQuestionKind.deletions =>
-            '${_title(i.title)}: ${_goneFrom(i.side, graphName, lower: true)}',
-          ContactSyncQuestionKind.changes =>
-            '${_title(i.title)}: would lose details in ${side(i.side)}',
-          ContactSyncQuestionKind.emptyAnswer => _title(i.title),
-        };
-    final answer = q.answer;
+    final whole = q.answer;
+    // Contacts answered one by one: in a question of more than one, whose
+    // contacts the runner names. Not an empty answer, which is a count.
+    final oneByOne = n > 1 &&
+        q.kind != ContactSyncQuestionKind.emptyAnswer &&
+        q.items.every((i) => i.key.isNotEmpty);
+    final open = q.items.where((i) => i.answer == null).length;
+    final someAnswered = open < n;
+    // What the buttons for all answer: the contacts shown here with no
+    // answer of their own, by name, so that one held since Ron last looked
+    // is not answered by a tap made before he saw it. A question of none
+    // (an empty answer), or one whose contacts carry no keys, is answered
+    // whole.
+    final forAll = n > 0 && q.items.every((i) => i.key.isNotEmpty)
+        ? {
+            for (final i in q.items)
+              if (i.answer == null) i.key,
+          }
+        : null;
+    // What held up the question's answer at the last run, for the contacts
+    // it covers: under that answer, as the runner says it; once where one
+    // reason holds up all of them, else each with its contact's name.
+    final covered = whole == null
+        ? const <ContactSyncQuestionItem>[]
+        : [
+            for (final i in q.items)
+              if (i.answer == null) i,
+          ];
+    final reasons = {for (final i in covered) ?i.answerProblem};
+    final heldUp = reasons.length == 1 &&
+            covered.every((i) => i.answerProblem == reasons.single)
+        ? [reasons.single]
+        : [
+            for (final i in covered)
+              if (i.answerProblem case final p?) '${_title(i.title)}: $p',
+          ];
     return Card(
       key: ValueKey('contact-sync-question:${q.kind.name}'),
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -1248,22 +1412,37 @@ class _QuestionCard extends StatelessWidget {
             Text(title, style: theme.textTheme.titleSmall),
             const SizedBox(height: 6),
             Text(body),
-            if (q.items.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              for (final i in q.items)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 2),
-                  child: Text(item(i)),
-                ),
-            ],
             const SizedBox(height: 8),
-            if (answer != null)
+            // The answer for all comes first: with 58 contacts below, at
+            // their foot it would be a long way down.
+            if (whole != null) ...[
               Text(
-                'You chose ${_choiceLabel(answer, graphName)}. The next sync '
+                'You chose ${_choiceLabel(whole, graphName)}'
+                '${someAnswered ? ' for the rest' : ''}. The next sync '
                 'carries it out.',
+                key: const ValueKey('contact-sync-question-answer'),
                 style: TextStyle(color: theme.colorScheme.primary),
-              )
-            else ...[
+              ),
+              for (final line in heldUp)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(line, style: muted),
+                ),
+            ]
+            // Open while any contact is (a question of none, an empty
+            // answer, is open until answered).
+            else if (n == 0 || open > 0) ...[
+              if (oneByOne)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(
+                    someAnswered
+                        ? 'For the $open not yet answered:'
+                        : 'For all $n at once:',
+                    key: const ValueKey('contact-sync-question-for'),
+                    style: theme.textTheme.labelLarge,
+                  ),
+                ),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
@@ -1271,17 +1450,27 @@ class _QuestionCard extends StatelessWidget {
                   for (final c in q.choices)
                     OutlinedButton(
                       key: ValueKey('contact-sync-answer:${c.name}'),
-                      onPressed: () => onAnswer(c),
+                      onPressed: () => onAnswer(c, items: forAll),
                       child: Text(_choiceLabel(c, graphName)),
                     ),
                 ],
               ),
               const SizedBox(height: 8),
-              Text(
-                explain,
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-              ),
+              Text(explain, style: muted),
+            ],
+            if (q.items.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              for (final i in q.items) ...[
+                const Divider(height: 17),
+                _QuestionItemTile(
+                  item: i,
+                  kind: q.kind,
+                  graphName: graphName,
+                  namesSide: oneSide == null,
+                  choices: oneByOne && whole == null ? q.choices : const [],
+                  onAnswer: (c) => onAnswer(c, items: {i.key}),
+                ),
+              ],
             ],
           ],
         ),
@@ -1299,6 +1488,209 @@ class _QuestionCard extends StatelessWidget {
         ? 'they stay in ${_sideName(sides.single, graphName)}'
         : 'they stay where they are';
   }
+}
+
+/// One contact in a brake's question: its name, what the held change
+/// would do to it detail by detail (or, for a deletion, an email or mobile
+/// to tell it apart), and its own two answers, or the one given to it.
+/// Compact, as a question may hold dozens.
+class _QuestionItemTile extends StatelessWidget {
+  const _QuestionItemTile({
+    required this.item,
+    required this.kind,
+    required this.graphName,
+    required this.namesSide,
+    required this.choices,
+    required this.onAnswer,
+  });
+
+  final ContactSyncQuestionItem item;
+  final ContactSyncQuestionKind kind;
+  final String graphName;
+
+  /// The question's contacts are not all about one side, so each names
+  /// its own.
+  final bool namesSide;
+
+  /// The answers it may have on its own; none where it cannot be answered
+  /// alone.
+  final List<ContactSyncChoice> choices;
+  final ValueChanged<ContactSyncChoice> onAnswer;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final i = item;
+    final answer = i.answer;
+    // Where its changes land: one side, said once (or by the question),
+    // or both, said on each line.
+    final itsSides = _sidesOf(i);
+    final eachLine = itsSides.length > 1;
+    final after = switch (kind) {
+      ContactSyncQuestionKind.deletions =>
+        ': ${_goneFrom(i.side, graphName, lower: true)}',
+      ContactSyncQuestionKind.changes => namesSide && !eachLine
+          ? ': in ${_sideName(itsSides.single, graphName)}'
+          : '',
+      ContactSyncQuestionKind.emptyAnswer => '',
+    };
+    final about = [
+      Text.rich(TextSpan(children: [
+        TextSpan(
+          text: _title(i.title),
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        if (after.isNotEmpty) TextSpan(text: after),
+      ])),
+      for (final c in i.changes)
+        Padding(
+          padding: const EdgeInsets.only(left: 12, top: 2),
+          child: Text(contactSyncChangeLine(
+            c,
+            inSide: eachLine ? _sideName(_landsOn(c, i), graphName) : null,
+          )),
+        ),
+      if (kind == ContactSyncQuestionKind.changes && i.changes.isEmpty)
+        Padding(
+          padding: const EdgeInsets.only(left: 12, top: 2),
+          child: Text(
+            'The details show after the next sync.',
+            style: muted,
+          ),
+        ),
+      if (i.hint case final hint?)
+        Padding(
+          padding: const EdgeInsets.only(left: 12, top: 2),
+          child: Text(hint, style: muted),
+        ),
+      if (answer != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            'You chose ${_itemChoiceLabel(answer, graphName, i)}: the next '
+            'sync carries it out.',
+            style: TextStyle(color: theme.colorScheme.primary),
+          ),
+        ),
+      // Held up at the last run: why, as the runner says it.
+      if (i.answerProblem case final problem? when answer != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Text(problem, style: muted),
+        ),
+    ];
+    final buttons = answer != null || choices.isEmpty
+        ? null
+        : Wrap(
+            spacing: 4,
+            children: [
+              for (final c in choices)
+                TextButton(
+                  key: ValueKey('contact-sync-item:${i.key}:${c.name}'),
+                  onPressed: () => onAnswer(c),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    minimumSize: const Size(0, 36),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  child: Text(_itemChoiceLabel(c, graphName, i)),
+                ),
+            ],
+          );
+    return LayoutBuilder(
+      key: i.key.isEmpty ? null : ValueKey('contact-sync-item:${i.key}'),
+      builder: (context, box) {
+        final column = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: about,
+        );
+        if (buttons == null) return column;
+        // Wide, as on the tablet, the two buttons sit beside the contact
+        // rather than under it: a line less for each of dozens.
+        if (box.maxWidth >= 560) {
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: column),
+              const SizedBox(width: 12),
+              buttons,
+            ],
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ...about,
+            Padding(padding: const EdgeInsets.only(top: 2), child: buttons),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// A brake's answer for one contact: the question's own, said of one. Its
+/// Delete names the side the copy is deleted from, the other from where
+/// the contact went, since the body names none.
+String _itemChoiceLabel(
+  ContactSyncChoice c,
+  String graphName,
+  ContactSyncQuestionItem i,
+) =>
+    switch (c) {
+      ContactSyncChoice.applyThem => 'Apply',
+      ContactSyncChoice.copyThemBack => 'Copy back',
+      ContactSyncChoice.deleteThem =>
+        'Delete in ${_sideName(i.side.other, graphName)}',
+      ContactSyncChoice.dontDelete => "Don't delete",
+      _ => _choiceLabel(c, graphName),
+    };
+
+/// One detail a held change would remove or replace: "Job title: Sales
+/// manager → Purchasing manager", "Mobile: +1 555 123 4567 → removed".
+/// A long value is shortened to one line; a note too long to show comes
+/// with no value at all, and is said to be changed or removed. [inSide]
+/// names the side it lands on, for a contact whose changes land on both
+/// ("In Hadco, Company: …"). A detail changed on both sides keeps its
+/// newer edit whichever answer is given, and says so.
+String contactSyncChangeLine(ContactSyncDetailChange c, {String? inSide}) {
+  final where = inSide == null ? '' : 'In $inSide, ';
+  final what = _fieldLabel(c.field);
+  final clash = c.clash
+      ? ' (changed on both sides: the newer edit stays whichever you '
+          'choose; the other value goes under Needs a look)'
+      : '';
+  // No value shown: never "(none)", which would read as nothing lost.
+  if (c.before == null) {
+    return '$where$what: '
+        '${c.after == null ? 'removed (too long to show here)' : 'changed'}'
+        '$clash';
+  }
+  return '$where$what: ${_shortValue(c.before)} \u2192 '
+      '${c.after == null ? 'removed' : _shortValue(c.after)}$clash';
+}
+
+/// The side a change lands on: its own, where the runner says, else its
+/// contact's. The one place that reads [ContactSyncDetailChange.side].
+ContactSide _landsOn(ContactSyncDetailChange c, ContactSyncQuestionItem i) =>
+    c.side ?? i.side;
+
+/// The sides a contact's held changes land on: its own side where it
+/// lists none.
+Set<ContactSide> _sidesOf(ContactSyncQuestionItem i) => i.changes.isEmpty
+    ? {i.side}
+    : {for (final c in i.changes) _landsOn(c, i)};
+
+/// A value on one line, and no longer than about half a phone's width.
+String _shortValue(String? value) {
+  final one = (value ?? '').trim().replaceAll(RegExp(r'\s+'), ' ');
+  if (one.isEmpty) return '(none)';
+  const most = 60;
+  final chars = one.characters;
+  if (chars.length <= most) return one;
+  return '${chars.take(most - 1).toString().trimRight()}…';
 }
 
 /// Needs a look: each contact the sync could not settle on its own, with
@@ -1745,16 +2137,22 @@ String contactSyncSubtitle({
   final pair = 'Gmail and $graphName';
   for (final q in s.questions) {
     if (q.answer != null) continue;
+    // Only the contacts still waiting for Ron: one answered on its own
+    // waits for the next sync, not for him.
+    final waiting = _waiting(q);
     switch (q.kind) {
-      case ContactSyncQuestionKind.deletions:
+      case ContactSyncQuestionKind.deletions when waiting > 0:
         return _count(
-          q.items.length,
+          waiting,
           'deletion needs your OK',
           'deletions need your OK',
         );
-      case ContactSyncQuestionKind.changes:
-        return 'Changes to ${_count(q.items.length, 'contact', 'contacts')} '
+      case ContactSyncQuestionKind.changes when waiting > 0:
+        return 'Changes to ${_count(waiting, 'contact', 'contacts')} '
             'need your OK';
+      case ContactSyncQuestionKind.deletions:
+      case ContactSyncQuestionKind.changes:
+        continue;
       case ContactSyncQuestionKind.emptyAnswer:
         return 'Stopped: ${_bookOrNot(q.side, graphName)} listed too few '
             'contacts';
@@ -1831,6 +2229,11 @@ String contactSyncAccountName(Account? account) {
   final name = account.displayName.trim();
   return name.isEmpty ? account.emailAddress : name;
 }
+
+/// The contacts of a brake's question still waiting for Ron: none once
+/// the whole question is answered, else those with no answer of their own.
+int _waiting(ContactSyncQuestion q) =>
+    q.answer != null ? 0 : q.items.where((i) => i.answer == null).length;
 
 String _sideName(ContactSide side, String graphName) =>
     side == ContactSide.google ? 'Gmail' : graphName;
@@ -2096,7 +2499,11 @@ List<Account> _graphAccounts(List<Account> accounts) => [
 
 /// An answer or a Restore, queued: a failure said along the bottom,
 /// after whatever is there now.
-Future<void> _act(BuildContext context, Future<void> Function() action) async {
+Future<void> _act(
+  BuildContext context,
+  Future<void> Function() action, {
+  VoidCallback? onFailure,
+}) async {
   final messenger = ScaffoldMessenger.maybeOf(context);
   try {
     await action();
@@ -2105,6 +2512,7 @@ Future<void> _act(BuildContext context, Future<void> Function() action) async {
       duration: kBottomMessage,
       content: Text(e is ReadableError ? e.message : '$e'),
     ));
+    onFailure?.call();
   }
 }
 

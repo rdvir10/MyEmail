@@ -206,6 +206,40 @@ void main() {
         'Gmail and Hadco, synced at 10:42',
         reason: 'an answered question is no longer waiting',
       );
+      ContactSyncQuestionItem item(String key, {ContactSyncChoice? answer}) =>
+          ContactSyncQuestionItem(
+            title: 'Person $key',
+            side: ContactSide.graph,
+            key: key,
+            answer: answer,
+          );
+      expect(
+        say(synced(questions: [
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.changes,
+            items: [
+              item('a', answer: ContactSyncChoice.copyThemBack),
+              item('b'),
+              item('c'),
+            ],
+          ),
+        ])),
+        'Changes to 2 contacts need your OK',
+        reason: 'one answered on its own waits for the sync, not for Ron',
+      );
+      expect(
+        say(synced(questions: [
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.deletions,
+            items: [
+              item('a', answer: ContactSyncChoice.deleteThem),
+              item('b', answer: ContactSyncChoice.dontDelete),
+            ],
+          ),
+        ])),
+        'Gmail and Hadco, synced at 10:42',
+        reason: 'every contact answered on its own',
+      );
     });
 
     test('why it stopped', () {
@@ -615,6 +649,7 @@ void main() {
       await pumpScreen(tester);
 
       expect(find.text('First sync'), findsOneWidget);
+      expect(button('contact-sync-backup-later'), findsNothing);
       expect(enabled(tester, 'contact-sync-start'), isFalse);
       expect(find.textContaining('Start sync is ready once'), findsOneWidget);
 
@@ -826,6 +861,167 @@ void main() {
         ),
         findsOneWidget,
       );
+    });
+
+    testWidgets('after the first sync, Save backup is still offered',
+        (tester) async {
+      sync = FakeContactSync(
+        status: synced(googleCount: 340, graphCount: 412),
+        backupFiles: _backupFiles,
+      );
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+
+      expect(find.text('First sync'), findsNothing);
+      expect(
+        find.text('Two files, one Google Contacts can import and one Outlook '
+            'on the web can import.'),
+        findsOneWidget,
+      );
+      await tester.tap(button('contact-sync-backup-later'));
+      await tester.pumpAndSettle();
+      expect(sync.count('backup'), 1);
+      expect(
+        [
+          for (final f in files.saved) (f.fileName, f.mimeType),
+        ],
+        [
+          ('myemail-google-contacts-2026-11-21.vcf', 'text/x-vcard'),
+          ('myemail-outlook-contacts-2026-11-21.csv', 'text/csv'),
+        ],
+      );
+      expect(
+        find.text(
+          'Saved myemail-google-contacts-2026-11-21.vcf, 340 contacts, which '
+          'Google Contacts can import, and '
+          'myemail-outlook-contacts-2026-11-21.csv, 412 contacts, which '
+          'Outlook on the web can import.',
+        ),
+        findsOneWidget,
+      );
+
+      // One file backed out of: said, and nothing about Start.
+      files.answers.addAll([true, false]);
+      await tester.tap(button('contact-sync-backup-later'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Saved myemail-google-contacts-2026-11-21.vcf, 340 contacts, which '
+          'Google Contacts can import. The other file was not saved: Save '
+          'backup again for both.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('two tries that saved one file each have saved both, and '
+        "the first sync's message stays with its own Save backup",
+        (tester) async {
+      sync = FakeContactSync(
+        status: chosenOnly,
+        previewAnswer: const ContactSyncPreview(
+          googleListed: 340,
+          graphListed: 412,
+        ),
+        backupFiles: _backupFiles,
+      );
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(button('contact-sync-preview'));
+      await tester.pumpAndSettle();
+
+      files.answers.addAll([true, false]);
+      await tester.tap(button('contact-sync-backup'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Saved myemail-google-contacts-2026-11-21.vcf, 340 contacts, which '
+          'Google Contacts can import. Start sync needs both files: Save '
+          'backup again.',
+        ),
+        findsOneWidget,
+      );
+      files.answers.addAll([false, true]);
+      await tester.tap(button('contact-sync-backup'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Saved myemail-outlook-contacts-2026-11-21.csv, 412 contacts, which '
+          'Outlook on the web can import. Both files are saved.',
+        ),
+        findsOneWidget,
+      );
+      expect(enabled(tester, 'contact-sync-start'), isTrue);
+
+      // Started: the later Save backup has no message of its own yet.
+      await tester.tap(button('contact-sync-start'));
+      await tester.pumpAndSettle();
+      expect(sync.count('start'), 1);
+      sync.set(synced(googleCount: 340, graphCount: 412));
+      await tester.pumpAndSettle();
+      expect(button('contact-sync-backup-later'), findsOneWidget);
+      expect(find.textContaining('Saved myemail-'), findsNothing);
+    });
+
+    testWidgets('one file saved over an hour ago is left to the note under '
+        'Start', (tester) async {
+      sync = FakeContactSync(status: chosenOnly, backupFiles: _backupFiles);
+      engine = _Engine(sync, const [gmail, hadco]);
+      final c = await pumpScreen(tester);
+      const pair = 'acct-g|acct-h';
+      c.read(contactSyncFirstStepsProvider.notifier)
+        ..previewed(pair, const ContactSyncPreview())
+        ..backupSaved(
+          pair,
+          ContactSide.google,
+          at: DateTime.now().subtract(const Duration(minutes: 61)),
+        );
+      await tester.pumpAndSettle();
+
+      files.answers.addAll([false, true]);
+      await tester.tap(button('contact-sync-backup'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Saved myemail-outlook-contacts-2026-11-21.csv, 412 contacts, which '
+          'Outlook on the web can import.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Both files are saved'), findsNothing);
+      expect(find.textContaining('Start sync needs both files'), findsNothing);
+      expect(enabled(tester, 'contact-sync-start'), isFalse);
+      expect(
+        tester
+            .widget<Text>(find.descendant(
+              of: button('contact-sync-start-note'),
+              matching: find.byType(Text),
+            ))
+            .data,
+        'The backup files are over an hour old: Save backup again, so that '
+        'they hold the address books as they are now.',
+      );
+    });
+
+    testWidgets("a Save backup's message stays with its pair",
+        (tester) async {
+      sync = FakeContactSync(status: chosenOnly, backupFiles: _backupFiles);
+      engine = _Engine(sync, const [gmail, hadco, studio]);
+      await pumpScreen(tester);
+
+      await tester.tap(button('contact-sync-backup'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Saved myemail-'), findsOneWidget);
+
+      await tester.tap(button('contact-sync-with'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Myhomestudio'));
+      await tester.pumpAndSettle();
+      expect(sync.chosen.last, (google: 'acct-g', graph: 'acct-m'));
+      expect(find.text('First sync'), findsOneWidget);
+      expect(find.textContaining('Saved myemail-'), findsNothing,
+          reason: "Myhomestudio's files are not saved");
+      expect(enabled(tester, 'contact-sync-start'), isFalse);
     });
 
     testWidgets('running: how far it has got', (tester) async {
@@ -1256,20 +1452,540 @@ void main() {
         expect(find.text('Changes to 11 contacts need your OK'),
             findsOneWidget);
         expect(
-          find.text('One sync would remove or replace details on these 11 '
-              "contacts at once, as Google's Undo changes, a backup imported "
-              'again or a bulk edit can, so they are held for your OK, and '
-              'everything else carries on.'),
+          find.text('One sync would remove or replace details in Hadco on '
+              "these contacts at once, as Google's Undo changes, a backup "
+              'imported again or a bulk edit can, so they are held for your '
+              'OK, and everything else carries on. Under each name, each '
+              'detail as it is in Hadco now, and what it would become.'),
           findsOneWidget,
         );
-        expect(find.text('Person 0: would lose details in Hadco'),
-            findsOneWidget);
+        expect(find.text('Person 0'), findsOneWidget);
         expect(find.text('Apply them'), findsOneWidget);
         await tester.tap(find.text('Copy them back'));
         await tester.pumpAndSettle();
         expect(sync.questionAnswers, [
           (ContactSyncQuestionKind.changes, ContactSyncChoice.copyThemBack),
         ]);
+      });
+
+      testWidgets('changes: each contact says what it would lose, and can be '
+          'answered alone', (tester) async {
+        sync = FakeContactSync(status: synced(questions: const [
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.changes,
+            items: [
+              ContactSyncQuestionItem(
+                title: 'Ann Cole',
+                side: ContactSide.graph,
+                key: 'a',
+                changes: [
+                  ContactSyncDetailChange(
+                    field: ContactField.jobTitle,
+                    before: 'Sales manager',
+                    after: 'Purchasing manager',
+                  ),
+                  ContactSyncDetailChange(
+                    field: ContactField.mobile,
+                    before: '+1 555 123 4567',
+                  ),
+                  // A note too long to show, as the planner sends it.
+                  ContactSyncDetailChange(
+                    field: ContactField.notes,
+                    after: 'changed',
+                  ),
+                ],
+              ),
+              ContactSyncQuestionItem(
+                title: 'Ben Day',
+                side: ContactSide.graph,
+                key: 'b',
+                changes: [
+                  ContactSyncDetailChange(
+                    field: ContactField.company,
+                    before: 'Hadco Metal',
+                    after: 'Hadco Metals Inc',
+                  ),
+                  ContactSyncDetailChange(
+                    field: ContactField.workAddress,
+                    before: '1200 Peachtree Industrial Boulevard, Suite 400, '
+                        'Building C, Atlanta GA 30341',
+                  ),
+                  ContactSyncDetailChange(field: ContactField.notes),
+                ],
+              ),
+              // Held before details were kept: shown after the next run.
+              ContactSyncQuestionItem(
+                title: 'Cy Fox',
+                side: ContactSide.graph,
+                key: 'c',
+              ),
+            ],
+          ),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+
+        expect(
+          find.text('One sync would remove or replace details in Hadco on '
+              "these contacts at once, as Google's Undo changes, a backup "
+              'imported again or a bulk edit can, so they are held for your '
+              'OK, and everything else carries on. Under each name, each '
+              'detail as it is in Hadco now, and what it would become.'),
+          findsOneWidget,
+        );
+        expect(
+          find.text('Apply makes these changes in Hadco. Copy back keeps '
+              'what Hadco has and puts it back in Gmail, except a detail '
+              'changed on both sides; a list only gains, so a replaced address '
+              'leaves both. Either way each contact is read again first.'),
+          findsOneWidget,
+        );
+        expect(find.text('For all 3 at once:'), findsOneWidget);
+
+        Finder under(String key, String text) => find.descendant(
+              of: button('contact-sync-item:$key'),
+              matching: find.text(text),
+            );
+        expect(under('a', 'Ann Cole'), findsOneWidget);
+        expect(
+          under('a', 'Job title: Sales manager → Purchasing manager'),
+          findsOneWidget,
+        );
+        expect(under('a', 'Mobile: +1 555 123 4567 → removed'),
+            findsOneWidget);
+        expect(under('a', 'Notes: changed'), findsOneWidget,
+            reason: 'a note too long to show: changed, not "(none)"');
+        expect(under('b', 'Notes: removed (too long to show here)'),
+            findsOneWidget);
+        expect(
+          under(
+            'b',
+            'Work address: 1200 Peachtree Industrial Boulevard, Suite 400, '
+                'Building C,… → removed',
+          ),
+          findsOneWidget,
+          reason: 'a long value on one line, shortened',
+        );
+        expect(find.textContaining('(none)'), findsNothing);
+        expect(
+          under('b', 'Company: Hadco Metal → Hadco Metals Inc'),
+          findsOneWidget,
+        );
+        expect(under('c', 'The details show after the next sync.'),
+            findsOneWidget);
+        // Wide, its buttons sit beside the contact, not under its details.
+        expect(
+          tester.getTopLeft(button('contact-sync-item:a:copyThemBack')).dy,
+          lessThan(tester.getTopLeft(under('a',
+                  'Job title: Sales manager → Purchasing manager')).dy),
+        );
+
+        // Ann alone, put back as she is in Hadco.
+        await tester.tap(button('contact-sync-item:a:copyThemBack'));
+        await tester.pumpAndSettle();
+        expect(sync.questionAnswers, [
+          (ContactSyncQuestionKind.changes, ContactSyncChoice.copyThemBack),
+        ]);
+        expect(sync.questionItems, [
+          {'a'},
+        ]);
+      });
+
+      testWidgets('an answer held up at the last run says why, under that '
+          'answer', (tester) async {
+        const unread =
+            'Could not be read just now: it is carried out when it can be.';
+        const away = 'Its Outlook contact is not in Contacts: it is carried '
+            'out once it is back.';
+        ContactSyncQuestionItem person(
+          String key,
+          String title, {
+          ContactSide side = ContactSide.graph,
+          ContactSyncChoice? answer,
+          String? problem,
+        }) =>
+            ContactSyncQuestionItem(
+              title: title,
+              side: side,
+              key: key,
+              answer: answer,
+              answerProblem: problem,
+            );
+        ContactSyncQuestion deletions(List<ContactSyncQuestionItem> items) =>
+            ContactSyncQuestion(
+              kind: ContactSyncQuestionKind.deletions,
+              answer: ContactSyncChoice.deleteThem,
+              items: items,
+            );
+        sync = FakeContactSync(status: synced(questions: [
+          // Answered one by one: under the contact's own answer.
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.changes,
+            items: [
+              person(
+                'a',
+                'Ann Cole',
+                answer: ContactSyncChoice.applyThem,
+                problem: unread,
+              ),
+              person('b', 'Ben Day'),
+            ],
+          ),
+          // Answered as a whole, held up for one reason: said once, under
+          // the question's answer.
+          deletions([
+            person('c', 'Cy Fox', side: ContactSide.google, problem: away),
+            person('d', 'Di Ray', side: ContactSide.google, problem: away),
+          ]),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+
+        double top(Finder f) => tester.getTopLeft(f).dy;
+        final ann = button('contact-sync-item:a');
+        final annChose = find.descendant(
+          of: ann,
+          matching: find.text('You chose Apply: the next sync carries it out.'),
+        );
+        expect(find.descendant(of: ann, matching: find.text(unread)),
+            findsOneWidget);
+        expect(top(find.text(unread)), greaterThan(top(annChose)));
+        expect(
+          tester.widget<Text>(find.text(unread)).style?.color,
+          Theme.of(tester.element(find.text(unread)))
+              .colorScheme
+              .onSurfaceVariant,
+          reason: 'muted',
+        );
+        expect(
+          find.descendant(
+            of: button('contact-sync-item:b'),
+            matching: find.textContaining('carried out'),
+          ),
+          findsNothing,
+        );
+
+        final card = button('contact-sync-question:deletions');
+        expect(find.descendant(of: card, matching: find.text(away)),
+            findsOneWidget);
+        expect(top(find.text(away)),
+            greaterThan(top(button('contact-sync-question-answer'))));
+        expect(top(find.text(away)), lessThan(top(button('contact-sync-item:c'))));
+
+        // Two reasons, and a contact not held up: each named.
+        sync.set(synced(questions: [
+          deletions([
+            person('c', 'Cy Fox', side: ContactSide.google, problem: away),
+            person('d', 'Di Ray', side: ContactSide.google, problem: unread),
+            person('e', 'Ed Kim', side: ContactSide.google),
+          ]),
+        ]));
+        await tester.pumpAndSettle();
+        expect(find.text('Cy Fox: $away'), findsOneWidget);
+        expect(find.text('Di Ray: $unread'), findsOneWidget);
+        // Its name in a line of its own: not the contact's own line.
+        expect(
+          find.byWidgetPredicate(
+            (w) => w is Text && (w.data?.startsWith('Ed Kim') ?? false),
+          ),
+          findsNothing,
+          reason: 'Ed Kim was not held up',
+        );
+        expect(find.text(away), findsNothing);
+        expect(top(find.text('Cy Fox: $away')),
+            greaterThan(top(button('contact-sync-question-answer'))));
+      });
+
+      testWidgets('a contact answered alone shows its answer, and the buttons '
+          'for all answer the rest', (tester) async {
+        ContactSyncQuestionItem person(
+          String key,
+          String title, {
+          ContactSyncChoice? answer,
+        }) =>
+            ContactSyncQuestionItem(
+              title: title,
+              side: ContactSide.graph,
+              key: key,
+              answer: answer,
+              changes: const [
+                ContactSyncDetailChange(
+                  field: ContactField.jobTitle,
+                  before: 'Buyer',
+                ),
+              ],
+            );
+        sync = FakeContactSync(status: synced(questions: [
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.changes,
+            items: [
+              person('a', 'Ann Cole', answer: ContactSyncChoice.copyThemBack),
+              person('b', 'Ben Day'),
+              person('c', 'Cy Fox'),
+            ],
+          ),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+
+        expect(
+          find.descendant(
+            of: button('contact-sync-item:a'),
+            matching: find.text(
+              'You chose Copy back: the next sync carries it out.',
+            ),
+          ),
+          findsOneWidget,
+        );
+        expect(button('contact-sync-item:a:applyThem'), findsNothing);
+        expect(button('contact-sync-item:b:applyThem'), findsOneWidget);
+        expect(find.text('For the 2 not yet answered:'), findsOneWidget);
+        expect(find.text('Changes to 2 contacts need your OK'), findsOneWidget,
+            reason: 'only those still waiting for Ron');
+
+        await tester.tap(find.text('Apply them'));
+        await tester.pumpAndSettle();
+        expect(sync.questionAnswers, [
+          (ContactSyncQuestionKind.changes, ContactSyncChoice.applyThem),
+        ]);
+        expect(
+          sync.questionItems,
+          [
+            {'b', 'c'},
+          ],
+          reason: 'the contacts shown with no answer of their own, never '
+              'one held since',
+        );
+
+        // Answered for the rest: Ann keeps her own answer.
+        sync.set(synced(questions: [
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.changes,
+            answer: ContactSyncChoice.applyThem,
+            items: [
+              person('a', 'Ann Cole', answer: ContactSyncChoice.copyThemBack),
+              person('b', 'Ben Day'),
+              person('c', 'Cy Fox'),
+            ],
+          ),
+        ]));
+        await tester.pumpAndSettle();
+        expect(
+          find.text('You chose Apply them for the rest. The next sync '
+              'carries it out.'),
+          findsOneWidget,
+        );
+        expect(find.text('Changes to 3 contacts, all answered'),
+            findsOneWidget);
+        expect(button('contact-sync-item:b:applyThem'), findsNothing);
+        expect(
+          find.text('You chose Copy back: the next sync carries it out.'),
+          findsOneWidget,
+        );
+      });
+
+      testWidgets('deletions: each contact told apart, and answered alone',
+          (tester) async {
+        sync = FakeContactSync(status: synced(questions: const [
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.deletions,
+            items: [
+              ContactSyncQuestionItem(
+                title: 'Ann Cole',
+                side: ContactSide.google,
+                key: 'a',
+                hint: 'ann@cole.example',
+              ),
+              ContactSyncQuestionItem(
+                title: 'Ann Cole',
+                side: ContactSide.google,
+                key: 'a2',
+                hint: '+1 555 000 1111',
+              ),
+            ],
+          ),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+
+        expect(
+          find.descendant(
+            of: button('contact-sync-item:a'),
+            matching: find.text('ann@cole.example'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: button('contact-sync-item:a2'),
+            matching: find.text('+1 555 000 1111'),
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Ann Cole: deleted in Gmail'), findsNWidgets(2));
+        // Its own Delete says where: the body names no side.
+        expect(
+          find.descendant(
+            of: button('contact-sync-item:a:deleteThem'),
+            matching: find.text('Delete in Hadco'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.text('One sync would delete these contacts at once, so they '
+              'are held for your OK, and everything else carries on.'),
+          findsOneWidget,
+          reason: 'no count beside the title, which counts those waiting',
+        );
+        expect(
+          find.textContaining('Delete them deletes their copies in Hadco'),
+          findsOneWidget,
+        );
+
+        await tester.tap(button('contact-sync-item:a2:dontDelete'));
+        await tester.pumpAndSettle();
+        expect(sync.questionAnswers, [
+          (ContactSyncQuestionKind.deletions, ContactSyncChoice.dontDelete),
+        ]);
+        expect(sync.questionItems, [
+          {'a2'},
+        ]);
+      });
+
+      testWidgets('a contact with changes on both sides names the side on '
+          'each line, and a clash says its newer edit stays',
+          (tester) async {
+        sync = FakeContactSync(status: synced(questions: const [
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.changes,
+            items: [
+              ContactSyncQuestionItem(
+                title: 'Ann Cole',
+                side: ContactSide.graph,
+                key: 'a',
+                changes: [
+                  ContactSyncDetailChange(
+                    field: ContactField.company,
+                    before: 'Acme',
+                    after: 'Acme Corp',
+                  ),
+                  ContactSyncDetailChange(
+                    field: ContactField.mobile,
+                    before: '+1 555 0101',
+                    side: ContactSide.google,
+                    clash: true,
+                  ),
+                ],
+              ),
+              ContactSyncQuestionItem(
+                title: 'Ben Day',
+                side: ContactSide.graph,
+                key: 'b',
+                changes: [
+                  ContactSyncDetailChange(
+                    field: ContactField.jobTitle,
+                    before: 'Buyer',
+                    after: 'Senior buyer',
+                    clash: true,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+
+        Finder under(String key, String text) => find.descendant(
+              of: button('contact-sync-item:$key'),
+              matching: find.text(text),
+            );
+        expect(under('a', 'Ann Cole'), findsOneWidget,
+            reason: 'its lines name their sides');
+        expect(under('a', 'In Hadco, Company: Acme \u2192 Acme Corp'),
+            findsOneWidget);
+        expect(
+          under(
+            'a',
+            'In Gmail, Mobile: +1 555 0101 \u2192 removed (changed on both '
+                'sides: the newer edit stays whichever you choose; the other '
+                'value goes under Needs a look)',
+          ),
+          findsOneWidget,
+        );
+        expect(under('b', 'Ben Day: in Hadco'), findsOneWidget);
+        expect(
+          under(
+            'b',
+            'Job title: Buyer \u2192 Senior buyer (changed on both sides: '
+                'the newer edit stays whichever you choose; the other value '
+                'goes under Needs a look)',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('Under each name, each detail as it is now on '
+              'the side named, and what it would become.'),
+          findsOneWidget,
+          reason: 'changes land on both sides',
+        );
+      });
+
+      testWidgets('contacts of both sides each name theirs, and one alone has '
+          'only the buttons for all', (tester) async {
+        sync = FakeContactSync(status: synced(questions: const [
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.changes,
+            items: [
+              ContactSyncQuestionItem(
+                title: 'Ann Cole',
+                side: ContactSide.graph,
+                key: 'a',
+              ),
+              ContactSyncQuestionItem(
+                title: 'Ben Day',
+                side: ContactSide.google,
+                key: 'b',
+              ),
+            ],
+          ),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+
+        expect(find.text('Ann Cole: in Hadco'), findsOneWidget);
+        expect(find.text('Ben Day: in Gmail'), findsOneWidget);
+        expect(
+          find.textContaining('Under each name, each detail as it is now on '
+              'the side named, and what it would become.'),
+          findsOneWidget,
+        );
+        expect(
+          find.text('Apply makes each change on the side named. Copy back '
+              'keeps what that side has and puts it back on the other, except '
+              'a detail changed on both sides; a list only gains, so a '
+              'replaced address leaves both. Either way each contact is read '
+              'again first.'),
+          findsOneWidget,
+        );
+
+        sync.set(synced(questions: const [
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.changes,
+            items: [
+              ContactSyncQuestionItem(
+                title: 'Ann Cole',
+                side: ContactSide.graph,
+                key: 'a',
+              ),
+            ],
+          ),
+        ]));
+        await tester.pumpAndSettle();
+        expect(button('contact-sync-item:a:applyThem'), findsNothing,
+            reason: 'the same as the buttons for all');
+        expect(button('contact-sync-question-for'), findsNothing);
+        expect(find.text('Apply them'), findsOneWidget);
       });
 
       testWidgets("empty answers: That's right, carry on, or Keep waiting",
@@ -1682,6 +2398,44 @@ void main() {
       );
     });
 
+    testWidgets('an answer refused because the question changed is said, '
+        'and the question read again', (tester) async {
+      sync = FakeContactSync(status: synced(questions: const [
+        ContactSyncQuestion(
+          kind: ContactSyncQuestionKind.changes,
+          items: [
+            ContactSyncQuestionItem(
+              title: 'Ann Cole',
+              side: ContactSide.graph,
+              key: 'a',
+            ),
+            ContactSyncQuestionItem(
+              title: 'Ben Day',
+              side: ContactSide.graph,
+              key: 'b',
+            ),
+          ],
+        ),
+      ]))
+        ..answerFailure = const ContactSyncRefused(
+          'These contacts have changed since they were shown. Look again.',
+        );
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      final readsBefore = sync.statusReads;
+
+      await tester.tap(find.text('Apply them'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'These contacts have changed since they were shown. Look again.',
+        ),
+        findsOneWidget,
+      );
+      expect(sync.statusReads, greaterThan(readsBefore),
+          reason: 'read again, to be answered as it is now');
+    });
+
     testWidgets('a few hundred copies of people scroll to the last',
         (tester) async {
       sync = FakeContactSync(status: synced(duplicates: [
@@ -1977,11 +2731,32 @@ void main() {
               side: ContactSide.graph,
               listed: 3,
               expected: 120,
-              items: const [
-                ContactSyncQuestionItem(
-                  title: 'Alexandra Rosenblum-Katzenellenbogen',
-                  side: ContactSide.graph,
-                ),
+              // Two, each answerable alone, with long details and hints.
+              items: [
+                for (final key in ['a', 'b'])
+                  ContactSyncQuestionItem(
+                    title: 'Alexandra Rosenblum-Katzenellenbogen',
+                    side: ContactSide.graph,
+                    key: key,
+                    hint: kind == ContactSyncQuestionKind.deletions
+                        ? 'alexandra.rosenblum-katzenellenbogen@'
+                            'northwind-steel.example'
+                        : null,
+                    changes: kind == ContactSyncQuestionKind.changes
+                        ? const [
+                            ContactSyncDetailChange(
+                              field: ContactField.workAddress,
+                              before: '1200 Peachtree Industrial Boulevard, '
+                                  'Suite 400, Atlanta GA 30341',
+                              after: '88 Harbor Road, Smyrna GA 30080',
+                            ),
+                            ContactSyncDetailChange(
+                              field: ContactField.mobile,
+                              before: '+1 404 555 0199',
+                            ),
+                          ]
+                        : const [],
+                  ),
               ],
             ),
         ],
@@ -2047,7 +2822,9 @@ void main() {
       final list = find.byType(Scrollable).first;
       for (final part in [
         find.text('Delete them'),
+        button('contact-sync-item:b:dontDelete'),
         find.text('Copy them back'),
+        button('contact-sync-item:b:copyThemBack'),
         find.text("That's right, carry on"),
         find.textContaining("Turn this off before using Google's Undo"),
       ]) {
