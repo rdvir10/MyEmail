@@ -1387,65 +1387,88 @@ class _QuestionItemTile extends StatelessWidget {
         namesSide ? ': in ${_sideName(i.side, graphName)}' : '',
       ContactSyncQuestionKind.emptyAnswer => '',
     };
-    return Column(
-      key: i.key.isEmpty ? null : ValueKey('contact-sync-item:${i.key}'),
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text.rich(TextSpan(children: [
-          TextSpan(
-            text: _title(i.title),
-            style: const TextStyle(fontWeight: FontWeight.w600),
+    final about = [
+      Text.rich(TextSpan(children: [
+        TextSpan(
+          text: _title(i.title),
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        if (after.isNotEmpty) TextSpan(text: after),
+      ])),
+      for (final c in i.changes)
+        Padding(
+          padding: const EdgeInsets.only(left: 12, top: 2),
+          child: Text(contactSyncChangeLine(c)),
+        ),
+      if (kind == ContactSyncQuestionKind.changes && i.changes.isEmpty)
+        Padding(
+          padding: const EdgeInsets.only(left: 12, top: 2),
+          child: Text(
+            'The details show after the next sync.',
+            style: muted,
           ),
-          if (after.isNotEmpty) TextSpan(text: after),
-        ])),
-        for (final c in i.changes)
-          Padding(
-            padding: const EdgeInsets.only(left: 12, top: 2),
-            child: Text(contactSyncChangeLine(c)),
+        ),
+      if (i.hint case final hint?)
+        Padding(
+          padding: const EdgeInsets.only(left: 12, top: 2),
+          child: Text(hint, style: muted),
+        ),
+      if (answer != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            'You chose ${_itemChoiceLabel(answer, graphName)}: the next '
+            'sync carries it out.',
+            style: TextStyle(color: theme.colorScheme.primary),
           ),
-        if (kind == ContactSyncQuestionKind.changes && i.changes.isEmpty)
-          Padding(
-            padding: const EdgeInsets.only(left: 12, top: 2),
-            child: Text(
-              'The details show after the next sync.',
-              style: muted,
-            ),
-          ),
-        if (i.hint case final hint?)
-          Padding(
-            padding: const EdgeInsets.only(left: 12, top: 2),
-            child: Text(hint, style: muted),
-          ),
-        if (answer != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text(
-              'You chose ${_itemChoiceLabel(answer, graphName)}: the next '
-              'sync carries it out.',
-              style: TextStyle(color: theme.colorScheme.primary),
-            ),
-          )
-        else if (choices.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Wrap(
-              spacing: 4,
-              children: [
-                for (final c in choices)
-                  TextButton(
-                    key: ValueKey('contact-sync-item:${i.key}:${c.name}'),
-                    onPressed: () => onAnswer(c),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      minimumSize: const Size(0, 36),
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    child: Text(_itemChoiceLabel(c, graphName)),
+        ),
+    ];
+    final buttons = answer != null || choices.isEmpty
+        ? null
+        : Wrap(
+            spacing: 4,
+            children: [
+              for (final c in choices)
+                TextButton(
+                  key: ValueKey('contact-sync-item:${i.key}:${c.name}'),
+                  onPressed: () => onAnswer(c),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    minimumSize: const Size(0, 36),
+                    visualDensity: VisualDensity.compact,
                   ),
-              ],
-            ),
-          ),
-      ],
+                  child: Text(_itemChoiceLabel(c, graphName)),
+                ),
+            ],
+          );
+    return LayoutBuilder(
+      key: i.key.isEmpty ? null : ValueKey('contact-sync-item:${i.key}'),
+      builder: (context, box) {
+        final column = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: about,
+        );
+        if (buttons == null) return column;
+        // Wide, as on the tablet, the two buttons sit beside the contact
+        // rather than under it: a line less for each of dozens.
+        if (box.maxWidth >= 560) {
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: column),
+              const SizedBox(width: 12),
+              buttons,
+            ],
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ...about,
+            Padding(padding: const EdgeInsets.only(top: 2), child: buttons),
+          ],
+        );
+      },
     );
   }
 }

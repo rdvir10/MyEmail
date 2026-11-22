@@ -1367,6 +1367,12 @@ void main() {
         );
         expect(under('c', 'The details show after the next sync.'),
             findsOneWidget);
+        // Wide, its buttons sit beside the contact, not under its details.
+        expect(
+          tester.getTopLeft(button('contact-sync-item:a:copyThemBack')).dy,
+          lessThan(tester.getTopLeft(under('a',
+                  'Job title: Sales manager → Purchasing manager')).dy),
+        );
 
         // Ann alone, put back as she is in Hadco.
         await tester.tap(button('contact-sync-item:a:copyThemBack'));
