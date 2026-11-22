@@ -38,6 +38,16 @@ class FakeContactSync implements ContactSyncService {
   /// What [backup] throws, as when an address book cannot be read.
   Object? backupFailure;
 
+  /// Holds [backup] until completed, as reading an address book takes.
+  Completer<void>? backupGate;
+
+  /// What [mergeCopies] throws, as when the runner cannot be reached.
+  Object? mergeFailure;
+
+  /// What [mergeCopies] does to the status, as the runner asks for a
+  /// merge; nothing when null, as with nothing to merge.
+  void Function()? onMergeCopies;
+
   /// What [answerCopies] throws, as the runner refuses an answer for a
   /// person or a copy no longer listed.
   Object? copiesFailure;
@@ -122,6 +132,7 @@ class FakeContactSync implements ContactSyncService {
   @override
   Future<List<ContactSyncBackupFile>> backup() async {
     calls.add('backup');
+    await backupGate?.future;
     if (backupFailure case final failure?) throw failure;
     return backupFiles;
   }
@@ -191,7 +202,11 @@ class FakeContactSync implements ContactSyncService {
   Future<void> syncHere() async => calls.add('syncHere');
 
   @override
-  Future<void> mergeCopies() async => calls.add('mergeCopies');
+  Future<void> mergeCopies() async {
+    calls.add('mergeCopies');
+    if (mergeFailure case final failure?) throw failure;
+    onMergeCopies?.call();
+  }
 
   @override
   Future<void> answerCopies(String person, String? keep) async {

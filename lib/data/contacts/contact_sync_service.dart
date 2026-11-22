@@ -966,8 +966,9 @@ class ContactSyncCopies {
   /// Their other copies on the Microsoft side.
   final int extras;
 
-  /// People with copies on the Microsoft side but no synced copy there:
-  /// left as they are.
+  /// People with copies on the Microsoft side that a merge leaves as they
+  /// are: there is no synced copy there, or a copy shares only the name
+  /// with it (no email or mobile joins them).
   final int notSynced;
 
   /// A merge is queued or running: from [ContactSyncService.mergeCopies]

@@ -16,6 +16,7 @@ import '../accounts/microsoft_sign_in_screen.dart';
 import '../common/bottom_message.dart';
 import '../common/problem_view.dart';
 import '../messages/date_format.dart';
+import '../shell/put_away.dart' show isInFront;
 
 /// Settings, Contact sync: Gmail's contacts and a Microsoft account's
 /// (Hadco's) kept the same, both ways, by the engine's runner.
@@ -1954,23 +1955,54 @@ class _DuplicatesScreen extends ConsumerStatefulWidget {
 }
 
 class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
-  /// Save backup and merge: the backup file being saved, or the merge
-  /// asked for.
+  /// Save backup and merge: the backup file being read or saved, or the
+  /// merge asked for.
   bool _saving = false;
 
-  /// What the last Save backup and merge did: the file saved and the merge
-  /// asked for, or nothing merged because the file was not saved.
+  /// A merge asked for here that the status does not show yet: the button
+  /// stays off until it does, or a newer result shows, since a second tap
+  /// would read the address book and ask for the file again.
+  bool _askedHere = false;
+
+  /// What the last Save backup and merge said.
   String? _said;
 
-  /// Why the last Save backup and merge merged nothing, and what it was
-  /// doing then.
-  ({String doing, Object error})? _problem;
+  /// Why the last Save backup and merge merged nothing, what it was doing
+  /// then, and Try again: the whole of it, or only the asking where the
+  /// file was saved.
+  ({String doing, Object error, VoidCallback retry})? _problem;
+
+  /// The last merge's time when [_said] or [_problem] was said: they go
+  /// once a merge is asked for, its progress taking over, or a newer result
+  /// shows.
+  DateTime? _saidWith;
+
+  /// The people whose copies differ, in the order first shown, each as
+  /// last listed, and the answers given here: one the next sync carries
+  /// out stays where it was, shown as answered, until the screen is left,
+  /// so that nothing moves under the finger.
+  final List<String> _order = [];
+  final Map<String, ContactSyncCopiesPerson> _seen = {};
+  final Map<String, String> _gaveHere = {};
 
   ContactSyncService get _sync => ref.read(mailEngineProvider).contactSync;
 
+  DateTime? _lastNow() =>
+      ref.read(contactSyncStatusProvider).value?.copies.last?.at;
+
+  void _say(String said) => setState(() {
+        _said = said;
+        _saidWith = _lastNow();
+      });
+
+  /// In front, or, as under test, nothing has said otherwise.
+  static bool _inFront() =>
+      isInFront() || WidgetsBinding.instance.lifecycleState == null;
+
   /// The merge is asked for only once the Microsoft side's backup file is
   /// saved, through the save dialog as Save backup saves it: a save backed
-  /// out of, or one that fails, asks for nothing.
+  /// out of, or one that fails, asks for nothing, and so does leaving the
+  /// screen or putting MyEmail away before the file is saved.
   Future<void> _saveAndMerge(String graphName) async {
     final files = ref.read(backupFilesProvider);
     final sync = _sync;
@@ -1979,33 +2011,92 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
       _said = null;
       _problem = null;
     });
-    var doing = "Saving $graphName's backup file for the merge";
     try {
       final backup = await sync.backup();
-      final file =
-          backup.firstWhereOrNull((f) => f.side == ContactSide.graph);
-      if (file == null ||
-          !await files.save(
-            fileName: file.fileName,
-            contents: file.contents,
-            mimeType: file.mimeType,
-            dialogTitle: "Save $graphName's contacts",
-          )) {
-        if (mounted) {
-          setState(() => _said = "$graphName's backup file was not saved, "
-              'so nothing is merged.');
-        }
+      // No save dialog over whatever is in front now.
+      if (!mounted) return;
+      if (!_inFront()) {
+        _say("MyEmail was put away before $graphName's backup file was "
+            'saved, so nothing is merged.');
         return;
       }
-      doing = "Asking for the merge of $graphName's copies";
-      await sync.mergeCopies();
-      if (mounted) {
-        setState(() => _said = 'Saved ${file.fileName}, '
-            '${_count(file.count, 'contact', 'contacts')}, which Outlook on '
-            'the web can import. The merge starts now.');
+      final file =
+          backup.firstWhereOrNull((f) => f.side == ContactSide.graph);
+      if (file == null) {
+        _say("$graphName's backup file was not made, so nothing is merged.");
+        return;
       }
+      final saved = await files.save(
+        fileName: file.fileName,
+        contents: file.contents,
+        mimeType: file.mimeType,
+        dialogTitle: "Save $graphName's contacts",
+      );
+      if (!mounted) return;
+      if (!saved) {
+        _say("$graphName's backup file was not saved, so nothing is merged.");
+        return;
+      }
+      await _askMerge(graphName, file, sync);
     } catch (e) {
-      if (mounted) setState(() => _problem = (doing: doing, error: e));
+      if (mounted) {
+        setState(() {
+          _problem = (
+            doing: "Saving $graphName's backup file for the merge",
+            error: e,
+            retry: () => _saveAndMerge(graphName),
+          );
+          _saidWith = _lastNow();
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  /// The merge asked for, [file] saved; then the status read again, to say
+  /// whether one is asked for now: there may be nothing to merge by then.
+  /// Failing, Try again asks again, without reading or saving the file
+  /// again.
+  Future<void> _askMerge(
+    String graphName,
+    ContactSyncBackupFile file,
+    ContactSyncService sync,
+  ) async {
+    final saved = 'Saved ${file.fileName}, '
+        '${_count(file.count, 'contact', 'contacts')}, which Outlook on the '
+        'web can import.';
+    // Try again's: from Save backup and merge, the button is off already.
+    if (!_saving) {
+      setState(() {
+        _saving = true;
+        _problem = null;
+      });
+    }
+    try {
+      await sync.mergeCopies();
+      final now = await sync.status();
+      if (!mounted) return;
+      final asked = now.copies.asked;
+      setState(() {
+        _askedHere = asked;
+        _said = asked
+            ? '$saved The merge starts now.'
+            : '$saved There is nothing to merge just now.';
+        _saidWith = now.copies.last?.at;
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _said = saved;
+          _problem = (
+            doing: "Asking for the merge of $graphName's copies",
+            error: e,
+            retry: () => _askMerge(graphName, file, sync),
+          );
+          _saidWith = _lastNow();
+        });
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -2015,7 +2106,10 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
   /// longer listed: said, and read again, to be answered as it is now.
   Future<void> _answer(String person, String? keep) => _act(
         context,
-        () => _sync.answerCopies(person, keep),
+        () async {
+          await _sync.answerCopies(person, keep);
+          _gaveHere[person] = keep ?? ContactSyncCopiesPerson.leave;
+        },
         onFailure: _readAgain,
       );
 
@@ -2053,6 +2147,27 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     await _act(context, _sync.answerAllCopies, onFailure: _readAgain);
   }
 
+  /// The people whose copies differ as shown: those listed, each where it
+  /// was first shown, and those answered that the runner no longer lists,
+  /// carried out since; new ones under them.
+  List<({ContactSyncCopiesPerson person, String? answer})> _shownDiffering(
+    List<ContactSyncCopiesPerson> differing,
+  ) {
+    final listed = {for (final p in differing) p.key: p};
+    for (final p in differing) {
+      if (!_seen.containsKey(p.key)) _order.add(p.key);
+      _seen[p.key] = p;
+    }
+    return [
+      for (final key in _order)
+        if (listed[key] case final p?)
+          (person: p, answer: p.answer)
+        else if (_seen[key] case final p?
+            when (p.answer ?? _gaveHere[key]) != null)
+          (person: p, answer: p.answer ?? _gaveHere[key]),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final status = ref.watch(contactSyncStatusProvider).value;
@@ -2060,7 +2175,12 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     final graphName =
         contactSyncAccountName(_byId(accounts, status?.graphAccountId));
     final copies = status?.copies ?? const ContactSyncCopies();
+    // Asked for here, and now shown so, or done already.
+    if (_askedHere && (copies.asked || copies.last?.at != _saidWith)) {
+      _askedHere = false;
+    }
     final differing = copies.differing;
+    final shown = _shownDiffering(differing);
     final open = differing.where((p) => p.answer == null).length;
     // By name, to find someone among a few hundred.
     final people = [...?status?.duplicates]..sort(
@@ -2092,8 +2212,7 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     // the copies that differ, under their heading; then everyone with
     // copies, under theirs.
     const differFrom = 1;
-    final peopleFrom =
-        differFrom + (differing.isEmpty ? 0 : differing.length + 1);
+    final peopleFrom = differFrom + (shown.isEmpty ? 0 : shown.length + 1);
     return Scaffold(
       appBar: AppBar(
         title: const Text('Duplicates to merge'),
@@ -2120,11 +2239,12 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
                 if (i == differFrom) {
                   return _differingHead(differing.length, open);
                 }
-                final p = differing[i - differFrom - 1];
+                final (:person, :answer) = shown[i - differFrom - 1];
                 return _CopiesPerson(
-                  key: ValueKey('contact-sync-copies-person:${p.key}'),
-                  person: p,
-                  onAnswer: (keep) => _answer(p.key, keep),
+                  key: ValueKey('contact-sync-copies-person:${person.key}'),
+                  person: person,
+                  answer: answer,
+                  onAnswer: (keep) => _answer(person.key, keep),
                 );
               }
               if (i == peopleFrom) {
@@ -2165,8 +2285,12 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     final running = s?.running;
     final merging = running?.step == ContactSyncStep.merging ? running : null;
     final last = c.last;
-    final problem = _problem;
     final left = c.notSynced;
+    // What Save backup and merge said, until a merge is asked for or a
+    // newer result shows.
+    final fresh = !c.asked && last?.at == _saidWith;
+    final said = fresh ? _said : null;
+    final problem = fresh ? _problem : null;
     return Container(
       key: const ValueKey('contact-sync-copies'),
       margin: const EdgeInsets.fromLTRB(16, 4, 16, 12),
@@ -2185,6 +2309,11 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
             'only another copy has, and deletes the other copies, which '
             'Outlook keeps in Deleted Items. Copies that differ are left for '
             'you to choose.',
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Nothing is deleted in Gmail; it gets the added details at the '
+            'next sync.',
           ),
           // What the last one did; while another is asked for, how far that
           // one has got instead.
@@ -2211,9 +2340,9 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
           if (left > 0) ...[
             const SizedBox(height: 4),
             Text(
-              '${_count(left, 'person', 'people')} with copies in $graphName '
-              'but none synced there '
-              '${left == 1 ? 'is left as it is' : 'are left as they are'}.',
+              "${left == 1 ? "1 person's" : "$left people's"} copies in "
+              '$graphName are left as they are: none is synced there, or a '
+              'copy shares only the name.',
               style: muted,
             ),
           ],
@@ -2247,24 +2376,38 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
             ),
           ] else if (c.people > 0) ...[
             const SizedBox(height: 8),
-            Text(
-              "It starts once you have saved $graphName's backup file, which "
-              'Outlook on the web can import.',
-              style: muted,
-            ),
-            const SizedBox(height: 8),
-            FilledButton.icon(
-              key: const ValueKey('contact-sync-copies-merge'),
-              onPressed: _saving ? null : () => _saveAndMerge(graphName),
-              icon: const Icon(Icons.merge_type),
-              label: const Text('Save backup and merge'),
-            ),
+            // The first sync pairs the copies the merge keeps.
+            if (s?.firstDone ?? false) ...[
+              Text(
+                "It starts once you have saved $graphName's backup file, "
+                'which Outlook on the web can import.',
+                style: muted,
+              ),
+              const SizedBox(height: 8),
+              FilledButton.icon(
+                key: const ValueKey('contact-sync-copies-merge'),
+                onPressed: _saving || _askedHere
+                    ? null
+                    : () => _saveAndMerge(graphName),
+                icon: const Icon(Icons.merge_type),
+                label: const Text('Save backup and merge'),
+              ),
+            ] else
+              Text(
+                'Offered once the first sync is done.',
+                key: const ValueKey('contact-sync-copies-later'),
+                style: muted,
+              ),
           ],
           if (_saving)
             const Padding(
               padding: EdgeInsets.only(top: 8),
               child: LinearProgressIndicator(),
             ),
+          if (said != null) ...[
+            const SizedBox(height: 8),
+            Text(said, key: const ValueKey('contact-sync-copies-said')),
+          ],
           if (problem != null) ...[
             const SizedBox(height: 8),
             ProblemView(
@@ -2272,18 +2415,12 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
                 doing: problem.doing,
                 error: problem.error,
               ),
-              onRemedy: problem.error is Retryable
-                  ? () => _saveAndMerge(graphName)
-                  : null,
+              onRemedy: problem.error is Retryable ? problem.retry : null,
             ),
             const Text(
               'Nothing is merged.',
               key: ValueKey('contact-sync-copies-nothing'),
             ),
-          ],
-          if (_said case final said?) ...[
-            const SizedBox(height: 8),
-            Text(said, key: const ValueKey('contact-sync-copies-said')),
           ],
         ],
       ),
@@ -2297,11 +2434,12 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
         children: [
           _Heading('Copies that differ ($n)'),
           const _Para(
-            "Keep these keeps that copy's values where it has one, and still "
-            'adds the details only another copy has; the other copies are '
-            'then deleted, to Deleted Items. Leave them leaves every copy as '
-            'it is. An answer is carried out in the next sync, which starts '
-            'at once.',
+            "Keep these puts that copy's values in the synced copy, which "
+            'always stays, and in Gmail at the next sync; then every other '
+            'copy is deleted, to Deleted Items. Values the synced copy loses '
+            'are kept only in your backup file. Leave them leaves every copy '
+            'as it is. An answer is carried out in the next sync, which '
+            'starts at once.',
             muted: true,
           ),
           if (open > 1)
@@ -2317,16 +2455,21 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
 }
 
 /// One person whose copies on the Microsoft side differ: each copy's
-/// values of what differs, with Keep these under each, and Leave them; or
+/// values of what differs, with Keep these beside each, and Leave them; or
 /// the answer given.
 class _CopiesPerson extends StatelessWidget {
   const _CopiesPerson({
     super.key,
     required this.person,
+    required this.answer,
     required this.onAnswer,
   });
 
   final ContactSyncCopiesPerson person;
+
+  /// The answer shown: the person's, or, once the runner no longer lists
+  /// the person, the one given here.
+  final String? answer;
 
   /// A copy's key, or null: leave them as they are.
   final ValueChanged<String?> onAnswer;
@@ -2335,7 +2478,7 @@ class _CopiesPerson extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final p = person;
-    final answer = p.answer;
+    final answer = this.answer;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -2377,6 +2520,8 @@ class _CopiesPerson extends StatelessWidget {
                   Text('${d.label}: ${_LookTile._valueOf(d.value)}'),
               ],
               const SizedBox(height: 10),
+              // As drawn while listed, carried out since or not: a line
+              // of another length would move those under it.
               if (answer != null)
                 Text(
                   'You chose ${_copiesChoice(p, answer)}; the next sync '
@@ -2440,8 +2585,9 @@ String contactSyncMergedLine(
       '${_count(r.differing, 'person', 'people')} whose copies differ '
           '${r.differing == 1 ? 'is' : 'are'} left for you.',
     if (r.failed > 0)
-      '${_count(r.failed, 'person', 'people')} could not be merged, and '
-          'nothing of theirs was deleted.',
+      '${_count(r.failed, 'person', 'people')} could not be merged in full: '
+          'what is left of their copies is as it was, and the next merge '
+          'tries again.',
   ].join(' ');
 }
 
