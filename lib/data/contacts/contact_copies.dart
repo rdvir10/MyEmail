@@ -165,8 +165,9 @@ class CopiesMerge {
 /// [kept], the synced copy, which always stays.
 ///
 /// A copy not joined to the synced one by an email or a mobile, directly
-/// or through another copy that is, is never merged without Ron: two
-/// people of one name may be. The person then differs ("Same name only").
+/// or through another copy that is, is never merged: two people of one
+/// name may be. The person then differs ("Same name only"), whatever
+/// [keep] says, with nothing to write.
 ///
 /// Per Graph contact property (v1.0), as `_rules` lists them:
 /// - Not compared: ids, times, the folder, the names Outlook makes
@@ -174,16 +175,17 @@ class CopiesMerge {
 ///   (`@odata.*`), and the name parts, which copies of one person share
 ///   by construction: the synced copy's stay.
 /// - A single value (text, by its words, case and spaces aside; notes by
-///   their words, the longer holding the shorter as a run of whole words;
-///   a phone by its number; an address by its words, punctuation and line
-///   breaks aside, and the United States in the country or as the last
-///   words; a birthday by its day): the others' that the synced copy's
-///   covers change nothing; with one value that covers the synced copy's
-///   and all the others' (the synced copy having none; for notes, the
-///   longer holding the others; for a birthday, its year) the synced copy
-///   takes it; anything else is a difference. A mobile or a birthday it
-///   would take from copies sharing no mobile with another copy (joined
-///   only by an email, as a family's copies may be) is a difference too.
+///   their words, the longer holding the shorter as a whole sentence or
+///   line, or a run of them; a phone by its number; an address by its
+///   words, punctuation and line breaks aside, and the United States in
+///   the country or as the last words; a birthday by its day): the
+///   others' that the synced copy's covers change nothing; with one
+///   value that covers the synced copy's and all the others' (the
+///   synced copy having none; for notes, the longer holding the others;
+///   for a birthday, its year) the synced copy takes it; anything else
+///   is a difference. A mobile or a birthday it would take from copies
+///   sharing no mobile with another copy (joined only by an email, as a
+///   family's copies may be) is a difference too.
 /// - A list: the synced copy's values first, then each value another copy
 ///   adds, while within Outlook's room (two work and two home phones,
 ///   three emails, three IM names); more than fits is a difference.
@@ -208,7 +210,9 @@ class CopiesMerge {
 /// no differences, and the [CopiesMerge.fingerprint] that of the
 /// differences it settled, so the runner can check they are those Ron
 /// saw. An answer naming no copy is no answer. A copy given twice, or
-/// [kept] among [others], counts once.
+/// [kept] among [others], counts once. The other copies are taken by id,
+/// never as given: which of them fills a list's room, or gives a value
+/// they hold alike in other forms.
 CopiesMerge mergeCopies(
   OutlookCopy kept,
   List<OutlookCopy> others, {
@@ -411,6 +415,14 @@ class _Merger {
   /// What an answer naming a copy does to each difference.
   final answers = <void Function(OutlookCopy chosen)>[];
 
+  /// A copy is not joined to the synced one: nothing is merged.
+  var unjoined = false;
+
+  /// The other copies by id: where a value comes from, or which fill a
+  /// list's room, never hangs on the order they were given in.
+  late final List<OutlookCopy> _byId = [...others]
+    ..sort((a, b) => a.id.compareTo(b.id));
+
   List<OutlookCopy> get _all => [kept, ...others];
 
   /// Each copy's mobile, by its number; null for none.
@@ -437,8 +449,8 @@ class _Merger {
             property,
             rule,
             read: _notesKey,
-            // A run of whole words.
-            covers: (a, b) => ' $a '.contains(' $b '),
+            covers: _notesCover,
+            fixedOf: (k) => k.replaceAll('\n', ' '),
             shown: _shownNotes,
           );
         case _Kind.birthday:
@@ -503,6 +515,15 @@ class _Merger {
 
   CopiesMerge result(OutlookCopy? chosen) {
     final fingerprint = differences.isEmpty ? '' : _fingerprint(fixed);
+    // With a copy not joined, the person differs whatever the answer, and
+    // nothing is written: an answer cannot say two people are one.
+    if (unjoined) {
+      return CopiesMerge(
+        outcome: CopiesOutcome.differs,
+        differences: List.unmodifiable(differences),
+        fingerprint: fingerprint,
+      );
+    }
     if (chosen != null && differences.isNotEmpty) {
       for (final answer in answers) {
         answer(chosen);
@@ -541,8 +562,9 @@ class _Merger {
   }
 
   /// The copies joined to the synced one by an email or a mobile, directly
-  /// or through another copy that is. Any other is never merged without
-  /// Ron, however alike: a difference, "Same name only".
+  /// or through another copy that is. With any other, however alike, the
+  /// person is never merged, whatever the answer ([unjoined]): a
+  /// difference, "Same name only".
   void _joined() {
     Set<String> keys(OutlookCopy c) => {
       for (final k in _itemsOf(c, _emailsFrom, _emailKey).keys) 'email $k',
@@ -563,6 +585,7 @@ class _Merger {
       }
     }
     if (others.every((c) => joined.contains(c.id))) return;
+    unjoined = true;
     String? shown(OutlookCopy c) => joined.contains(c.id) ? null : _notJoined;
     _differ(
       '@joined',
@@ -636,7 +659,7 @@ class _Merger {
           if (m == null || !cover(m, v)) v,
     ];
     if (theirs.isEmpty) return;
-    final taken = others.firstWhereOrNull((c) {
+    final taken = _byId.firstWhereOrNull((c) {
       final v = cells[c.id]!.value;
       return v != null &&
           (m == null || cover(v, m)) &&
@@ -687,7 +710,7 @@ class _Merger {
     });
     final have = {...mineKeys};
     final gained = [
-      for (final c in others)
+      for (final c in _byId)
         for (final (k, v) in cells[c.id]!.items)
           if (have.add(k)) (k, v),
     ];
@@ -729,7 +752,7 @@ class _Merger {
         // others', while within the room.
         final seen = <String>{};
         final merged = [
-          for (final c in [chosen, kept, ...others])
+          for (final c in [chosen, kept, ..._byId])
             for (final (k, v) in itemsOf(c).items)
               if (seen.add(k)) (k, v),
         ];
@@ -763,7 +786,7 @@ class _Merger {
     };
     if (theirs.isEmpty) return;
     if (mine == null && theirs.length == 1) {
-      photoFrom = others.firstWhere((c) => c.photo == theirs.single).id;
+      photoFrom = _byId.firstWhere((c) => c.photo == theirs.single).id;
       adds.add(const CopiesDetail(label: _photoLabel, value: 'a photo'));
       return;
     }
@@ -836,11 +859,10 @@ class _Merger {
         others: {for (final c in others) c.id: shown(c)},
       ),
     );
-    final byId = [...others]..sort((a, b) => a.id.compareTo(b.id));
     fixed.add([
       property,
       [kept.id, fixedOf(kept)],
-      for (final c in byId) [c.id, fixedOf(c)],
+      for (final c in _byId) [c.id, fixedOf(c)],
     ]);
     answers.add(answer);
   }
@@ -945,12 +967,35 @@ List<String> _words(String? text) => text == null
           .where((w) => w.isNotEmpty)
           .toList();
 
-/// Notes by their words; with none in them, as they are.
+/// Notes as their sentences and lines, each by its words, one a line;
+/// with no word in them, as they are.
 String? _notesKey(Object? v) {
   final text = _string(v)?.trim();
   if (text == null) return null;
-  final words = _words(text);
-  return words.isEmpty ? text : words.join(' ');
+  final sentences = [
+    for (final sentence in text.split(RegExp(r'[.!?]+(?=\s|$)|\r?\n')))
+      if (_words(sentence) case final words when words.isNotEmpty)
+        words.join(' '),
+  ];
+  return sentences.isEmpty ? text : sentences.join('\n');
+}
+
+/// Whether the notes [a] hold the notes [b] (as [_notesKey] gives them):
+/// [b]'s words those of a whole sentence or line of [a], or of a run of
+/// them, so that "Likes golf" is held in "Met at the fair. Likes golf.",
+/// but "VIP" is not in "Not a VIP".
+bool _notesCover(String a, String b) {
+  final words = b.replaceAll('\n', ' ');
+  final sentences = a.split('\n');
+  for (var i = 0; i < sentences.length; i++) {
+    var run = '';
+    for (var j = i; j < sentences.length; j++) {
+      run = j == i ? sentences[j] : '$run ${sentences[j]}';
+      if (run.length > words.length) break;
+      if (run == words) return true;
+    }
+  }
+  return false;
 }
 
 /// [text] as one line, cut to [contactDetailShownLength] with an
