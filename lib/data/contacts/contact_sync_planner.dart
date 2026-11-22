@@ -4167,6 +4167,10 @@ class _Planner {
     (d) => [?ContactNormaliser.fullNameKey(d.copyableName)],
   );
 
+  /// Every phone, for the merge guess only ([_mergedInto]).
+  late final Map<String, List<(ContactSide, String)>> _phoneIndex =
+      _index(_phoneKeys);
+
   Iterable<String> _emailKeys(SyncedContact d) => {
     for (final e in d.list(ContactField.emails))
       ?norm.itemKey(ContactField.emails, e),
@@ -4175,6 +4179,13 @@ class _Planner {
   Iterable<String> _mobileKeys(SyncedContact d) => [
     ?norm.phoneKey(d.text(ContactField.mobile)),
   ];
+
+  /// Every phone number's key: the mobile, home and work phones.
+  Iterable<String> _phoneKeys(SyncedContact d) => {
+    ?norm.phoneKey(d.text(ContactField.mobile)),
+    for (final f in [ContactField.homePhones, ContactField.workPhones])
+      for (final v in d.list(f)) ?norm.phoneKey(v),
+  };
 
   /// Every contact still there on either side, by [keys].
   Map<String, List<(ContactSide, String)>> _index(
@@ -4620,37 +4631,51 @@ class _Planner {
   /// The Gmail contact [row]'s gone Gmail side was most likely merged
   /// into: Google reports Merge & fix as plain deletions of the contacts
   /// merged away, with no re-key, so a contact that went while an email
-  /// or mobile of its (its row's base) is on another Gmail contact still
-  /// there (read this run, or known from a row's base) is taken as merged
-  /// into that one, whatever its name (Google merges by name too). One
-  /// read this run first (a merge changes the survivor), then the one
-  /// sharing the most, then by name. A wrong guess (a family member
+  /// or phone number (mobile, home or work) of its (its row's base) is on
+  /// another Gmail contact still there (read this run, or known from a
+  /// row's base), whatever its name (Google merges by name too), or while
+  /// a Gmail contact of the same full name was read this run (a merge
+  /// changes the survivor), is taken as merged into that one. One read
+  /// this run first, then the one sharing the most, then one of the same
+  /// full name, then by id. A wrong guess (a family member or a colleague
   /// really deleted) only asks Ron rather than deleting.
   String? _mergedInto(_Row row) {
     final gone = row.googleName ?? row.input.googleName;
     final base = row.input.googleDetails;
+    bool other(ContactSide side, String id) =>
+        side == ContactSide.google && id != gone && _googleAlive(id);
     final shared = <String, int>{};
     for (final (keys, index) in [
       (_emailKeys(base), _emailIndex),
-      (_mobileKeys(base), _mobileIndex),
+      (_phoneKeys(base), _phoneIndex),
     ]) {
       for (final key in keys) {
         final owners = index[key] ?? const <(ContactSide, String)>[];
         for (final (side, id) in owners) {
-          if (side != ContactSide.google || id == gone) continue;
-          if (!_googleAlive(id)) continue;
-          shared[id] = (shared[id] ?? 0) + 1;
+          if (other(side, id)) shared[id] = (shared[id] ?? 0) + 1;
         }
       }
     }
-    if (shared.isEmpty) return null;
-    return (shared.keys.toList()..sort((a, b) {
-          final byRead = (googleListed.containsKey(a) ? 0 : 1).compareTo(
-            googleListed.containsKey(b) ? 0 : 1,
-          );
+    final name = ContactNormaliser.fullNameKey(base.copyableName);
+    final named = {
+      for (final (side, id)
+          in _nameIndex[name] ?? const <(ContactSide, String)>[])
+        if (other(side, id) && googleListed.containsKey(id)) id,
+    };
+    final found = {...shared.keys, ...named};
+    if (found.isEmpty) return null;
+    int first(bool yes) => yes ? 0 : 1;
+    return (found.toList()..sort((a, b) {
+          final byRead = first(
+            googleListed.containsKey(a),
+          ).compareTo(first(googleListed.containsKey(b)));
           if (byRead != 0) return byRead;
-          final byShared = shared[b]!.compareTo(shared[a]!);
-          return byShared != 0 ? byShared : a.compareTo(b);
+          final byShared = (shared[b] ?? 0).compareTo(shared[a] ?? 0);
+          if (byShared != 0) return byShared;
+          final byName = first(
+            named.contains(a),
+          ).compareTo(first(named.contains(b)));
+          return byName != 0 ? byName : a.compareTo(b);
         }))
         .first;
   }

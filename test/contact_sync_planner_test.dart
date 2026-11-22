@@ -1735,6 +1735,164 @@ void main() {
       );
     });
 
+    test('a contact merged away sharing only a home or work phone is asked '
+        'about', () {
+      // Bob Roe's home phone, merged into Robert Smith (read this run);
+      // Cal Poe's work phone, on Carl Moe (known from his row's base).
+      // Dee Fox shares only a company: deleted.
+      final bob = SyncedContact({
+        ContactField.name: ContactName.of(given: 'Bob', family: 'Roe'),
+        ContactField.homePhones: ['+1 212 555 0101'],
+        ContactField.company: 'Roe Ltd',
+      });
+      final cal = SyncedContact({
+        ContactField.name: ContactName.of(given: 'Cal', family: 'Poe'),
+        ContactField.workPhones: ['+1 212 555 0202'],
+      });
+      final dee = SyncedContact({
+        ContactField.name: ContactName.of(given: 'Dee', family: 'Fox'),
+        ContactField.company: 'Roe Ltd',
+      });
+      final robert = person(
+        given: 'Robert',
+        family: 'Smith',
+        emails: ['rob@y.example'],
+        more: {
+          ContactField.homePhones: ['+1 212 555 0101'],
+          ContactField.company: 'Roe Ltd',
+        },
+      );
+      final carl = person(
+        given: 'Carl',
+        family: 'Moe',
+        emails: ['carl@y.example'],
+        more: {
+          ContactField.workPhones: ['+1 212 555 0202'],
+        },
+      );
+      final plan = run(
+        google: [
+          gDeleted('people/bob'),
+          gDeleted('people/cal'),
+          gDeleted('people/dee'),
+          g('people/rob', robert, etag: 'etag-2'),
+        ],
+        links: [
+          link(1, 'people/bob', 'H-bob', base: bob),
+          link(2, 'people/cal', 'H-cal', base: cal),
+          link(3, 'people/dee', 'H-dee', base: dee),
+          link(
+            4,
+            'people/rob',
+            'H-rob',
+            base: robert.withValue(ContactField.homePhones, null),
+          ),
+          link(5, 'people/carl', 'H-carl', base: carl),
+        ],
+      );
+      expect(
+        {
+          for (final r in plan.reviews)
+            if (r.kind == ContactReviewKind.mergedInGoogle)
+              (r.googleName, r.graphId),
+        },
+        {('people/rob', 'H-bob'), ('people/carl', 'H-cal')},
+      );
+      expect(
+        [for (final l in plan.links) ?l.delete?.contactId],
+        ['H-dee'],
+      );
+    });
+
+    test('a contact merged into one of its full name read this run is asked '
+        'about', () {
+      // Bob Smith shares nothing with the other Bob Smith but the name.
+      final bob = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@x.example'],
+      );
+      final other = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@y.example'],
+      );
+      List<ContactLinkInput> rows() => [
+        link(1, 'people/bob', 'H-bob', base: bob),
+        link(2, 'people/other', 'H-other', base: other),
+      ];
+      final plan = run(
+        google: [
+          gDeleted('people/bob'),
+          g(
+            'people/other',
+            other.withValue(ContactField.jobTitle, 'Buyer'),
+            etag: 'etag-2',
+          ),
+        ],
+        links: rows(),
+      );
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      final item = plan.reviews.singleWhere(
+        (r) => r.kind == ContactReviewKind.mergedInGoogle,
+      );
+      expect((item.googleName, item.graphId), ('people/other', 'H-bob'));
+      // Not read this run, it is no sign: deleted.
+      final unread = run(google: [gDeleted('people/bob')], links: rows());
+      expect(byLink(unread, 1)!.delete!.contactId, 'H-bob');
+      // Of two read this run that share his email, the one of his name.
+      final two = run(
+        google: [
+          gDeleted('people/bob'),
+          g(
+            'people/a',
+            person(
+              given: 'Robert',
+              family: 'Smith',
+              emails: ['rob@y.example', 'bob@x.example'],
+            ),
+          ),
+          g(
+            'people/z',
+            person(
+              given: 'Bob',
+              family: 'Smith',
+              emails: ['bob@z.example', 'bob@x.example'],
+            ),
+          ),
+        ],
+        links: [
+          rows().first,
+          link(
+            2,
+            'people/a',
+            'H-a',
+            base: person(
+              given: 'Robert',
+              family: 'Smith',
+              emails: ['rob@y.example'],
+            ),
+          ),
+          link(
+            3,
+            'people/z',
+            'H-z',
+            base: person(
+              given: 'Bob',
+              family: 'Smith',
+              emails: ['bob@z.example'],
+            ),
+          ),
+        ],
+      );
+      expect(
+        two.reviews
+            .singleWhere((r) => r.kind == ContactReviewKind.mergedInGoogle)
+            .googleName,
+        'people/z',
+      );
+    });
+
     test('a contact deleted in Gmail is deleted in Outlook', () {
       // Its email is on no other Gmail contact: a deletion, not a merge.
       final plan = run(
@@ -1900,8 +2058,12 @@ void main() {
         ],
       );
       expect(byGoogle(plan, 'people/c2')!.create!.side, ContactSide.graph);
-      expect(byLink(plan, 1)!.delete!.contactId, 'H1');
-      expect(plan.reviews, isEmpty);
+      // Not deleted, though: a Gmail contact of its name read this run is
+      // taken as the one it was merged into.
+      expect(byLink(plan, 1)!.delete, isNull);
+      final item = plan.reviews.single;
+      expect(item.kind, ContactReviewKind.mergedInGoogle);
+      expect((item.googleName, item.graphId), ('people/c2', 'H1'));
     });
 
     test('merged in Gmail: the closer row stays, the other is asked about', () {
