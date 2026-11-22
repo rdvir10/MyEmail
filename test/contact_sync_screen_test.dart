@@ -3483,14 +3483,15 @@ void main() {
           passedOver: 12,
         )),
         'Merged at $clock: 40 people, 52 copies deleted, 9 details added. 12 '
-        'people were left for the next merge: a copy changed meanwhile, a '
-        'photo could not be read, or a copy is no longer in Contacts.',
+        'people were left for the next merge: a copy changed meanwhile, '
+        'Hadco could not be read just then, a photo could not be read, or a '
+        'copy is no longer in Contacts.',
       );
       expect(
         say(ContactSyncCopiesResult(at: at1042, passedOver: 1)),
         'The merge at $clock merged nobody. 1 person was left for the next '
-        'merge: a copy changed meanwhile, a photo could not be read, or a '
-        'copy is no longer in Contacts.',
+        'merge: a copy changed meanwhile, Hadco could not be read just then, '
+        'a photo could not be read, or a copy is no longer in Contacts.',
       );
       // Given up, with what it did before, and the way to try again.
       expect(
