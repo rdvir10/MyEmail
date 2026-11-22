@@ -2852,7 +2852,6 @@ void main() {
           field: ContactField.emails,
           side: ContactSide.graph,
           before: 'b@x.example',
-          after: 'c@x.example',
         ),
         const ContactDetailChange(
           field: ContactField.mobile,
@@ -2916,8 +2915,9 @@ void main() {
         ],
         ContactField.homePhones: ['+1 212 555 0101', '+1 212 555 0102'],
       });
-      // Gmail lost its last email, and changed its second home phone.
-      final gmail = emails
+      // Hadco lost its last email, and changed its second home phone in
+      // its slot: Gmail's is changed in place.
+      final hadco = emails
           .withValue(ContactField.emails, [
             'ann.cole@hadcometals.example',
             'ann.cole.personal@gmail.example',
@@ -2927,8 +2927,8 @@ void main() {
             '+1 212 555 0199',
           ]);
       final plan = run(
-        google: [for (var i = 0; i < 11; i++) g('people/c$i', gmail)],
-        graph: [for (var i = 0; i < 11; i++) h('H$i', emails)],
+        google: [for (var i = 0; i < 11; i++) g('people/c$i', emails)],
+        graph: [for (var i = 0; i < 11; i++) h('H$i', hadco)],
         links: [
           for (var i = 0; i < 11; i++)
             link(
@@ -2944,17 +2944,75 @@ void main() {
       expect(plan.heldBrakes.single.items.first.changes, [
         const ContactDetailChange(
           field: ContactField.emails,
-          side: ContactSide.graph,
+          side: ContactSide.google,
           before:
               'ann.cole.purchasing.department.second.floor.office@hadcomet'
               '\u2026',
         ),
         const ContactDetailChange(
           field: ContactField.homePhones,
-          side: ContactSide.graph,
+          side: ContactSide.google,
           before: '+1 212 555 0102',
           after: '+1 212 555 0199',
         ),
+      ]);
+    });
+
+    test('a value is shown replaced only by the one put in its place', () {
+      // Hadco put d in b's slot and removed a, c moving up into a's slot:
+      // Apply them removes a from Gmail and changes b to d there, though
+      // d stands where a stood.
+      final base = person(
+        given: 'Ann',
+        family: 'Cole',
+        emails: ['a@x.example', 'b@x.example', 'c@x.example'],
+      );
+      final hadco = base.withValue(ContactField.emails, [
+        'c@x.example',
+        'd@x.example',
+      ]);
+      final row = link(
+        1,
+        'people/c1',
+        'H1',
+        base: base,
+        state: ContactLinkState.held,
+        reason: ContactHeldReason.changeBrake,
+      );
+      final plan = run(
+        google: [g('people/c1', base)],
+        graph: [h('H1', hadco)],
+        links: [row],
+      );
+      final item = plan.heldBrakes.single.items.single;
+      expect(item.changes, [
+        const ContactDetailChange(
+          field: ContactField.emails,
+          side: ContactSide.google,
+          before: 'a@x.example',
+        ),
+        const ContactDetailChange(
+          field: ContactField.emails,
+          side: ContactSide.google,
+          before: 'b@x.example',
+          after: 'd@x.example',
+        ),
+      ]);
+      final applied = run(
+        google: [g('people/c1', base)],
+        graph: [h('H1', hadco)],
+        links: [row],
+        answers: [
+          ContactAnswer(ContactAnswerKind.applyHeld, held: [item]),
+        ],
+      );
+      final write = byLink(applied, 1)!.googleWrite!;
+      expect(write.replaced[ContactField.emails], {
+        'b@x.example': 'd@x.example',
+      });
+      expect(write.target.list(ContactField.emails), [
+        'd@x.example',
+        'c@x.example',
       ]);
     });
 
