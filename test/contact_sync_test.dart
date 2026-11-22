@@ -5099,6 +5099,115 @@ void main() {
       expect(h.graph.contact(a.others.single), isNull);
     });
 
+    test("a merge's answer waiting while Gmail is out of reach is dropped "
+        'once Ron edits that contact in Gmail: his newer edit stands',
+        () async {
+      String? gmailNotes(String name) {
+        final bio = h.google.person(name)?['biographies'];
+        if (bio is! List || bio.isEmpty) return null;
+        return (bio.first as Map)['value'] as String?;
+      }
+
+      final ann = copiesOf('Ann', 'Cole', notes: 'Met at the fair.');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      h.graph.editFromOutlook(a.others.single, {
+        'personalNotes': 'Met at the fair. Likes tea.',
+      });
+      await h.later();
+      // Gmail goes out of reach as the merge deletes: the run after it
+      // cannot carry the merge's answer out.
+      h.before = (r) async {
+        if (r.url.path.endsWith(r'$batch') &&
+            r.body.contains('"method":"DELETE"')) {
+          h.refusing.add(Harness.gmail.id);
+        }
+      };
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.before = null;
+      expect(gmailNotes(ann.google), 'Met at the fair.');
+      expect((await h.pair()).held, contains('useGraph'));
+      // Days later, Ron edits the note in Gmail.
+      h.pass(const Duration(days: 2));
+      h.google.editFromGmail(ann.google, {
+        'biographies': [
+          {
+            'value': 'Met at the fair. Moved to Leeds.',
+            'contentType': 'TEXT_PLAIN',
+          },
+        ],
+      });
+      h.refusing.clear();
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(gmailNotes(ann.google), 'Met at the fair. Moved to Leeds.');
+      expect((await h.pair()).held, isNot(contains('useGraph')));
+    });
+
+    test('short stops count only the passes of a merge asked, and a new '
+        'ask starts afresh', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      http.Response? unread(http.Request r) => r.method == 'GET' &&
+              [c.synced, ...c.others].contains(r.url.pathSegments.last)
+          ? http.Response(
+              '{"error":{"code":"x","message":"x"}}',
+              503,
+              headers: {'content-type': 'application/json'},
+            )
+          : null;
+      // Ron answers; the runs for his answer cannot read Cat's copies.
+      h.answer = unread;
+      await h.sync.answerCopies(listed.key, c.others.single, listed.version);
+      await h.sync.syncNow();
+      for (var i = 0; i < 3; i++) {
+        h.pass(const Duration(hours: 2));
+        await h.sync.syncNow();
+      }
+      h.answer = null;
+      var status = await h.status();
+      expect(status.copies.shortStops, 0);
+      expect(status.copies.differing.single.answer, c.others.single);
+
+      // A merge asked anew starts its short stops afresh, whatever count
+      // was left: its first pass that stops short is one, not a give-up.
+      copiesOf('Dan', 'Lee');
+      await h.later();
+      expect((await h.status()).copies.differing, isEmpty);
+      final pairId = (await h.pair()).pairId;
+      await h.store.updatePair(pairId, (p) {
+        final held = jsonDecode(p.held!) as Map<String, Object?>;
+        (held['copies']! as Map)['shortStops'] = 2;
+        return p.copyWith(held: jsonEncode(held));
+      });
+      expect((await h.status()).copies.shortStops, 2);
+      h.answer = (r) => r.method == 'GET' &&
+              r.url.path.contains('/contactFolders/') &&
+              r.url.path.endsWith('/contacts') &&
+              !r.url.queryParameters.containsKey(r'$select')
+          ? http.Response(
+              '{"error":{"code":"x","message":"x"}}',
+              503,
+              headers: {'content-type': 'application/json'},
+            )
+          : null;
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.answer = null;
+      status = await h.status();
+      expect(status.copies.asked, isTrue);
+      expect(status.copies.shortStops, 1);
+      expect(status.copies.last?.stoppedShort ?? false, isFalse);
+    });
+
     test('a person no longer listed, or a copy not its own, is refused',
         () async {
       final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
