@@ -4227,14 +4227,14 @@ class _CopiesStep {
       for (final c in await run.graph(
         (a) => a.listAll(folderId: folder, whole: true),
       )) {
-        if (c['id'] case final String id) read[id] = _compared(c);
+        if (c['id'] case final String id) read[id] = c;
       }
     } else {
       for (final g in groups) {
         for (final id in [g.graphSynced!, ...g.graphCopies]) {
           run._checkStop();
           final c = await run.graph((a) => a.get(id, whole: true));
-          if (c != null && run._inContacts(c)) read[id] = _compared(c);
+          if (c != null && run._inContacts(c)) read[id] = c;
         }
       }
     }
@@ -4295,24 +4295,6 @@ class _CopiesStep {
     }
     await _flush();
   }
-
-  /// The emails a whole read gives twice: `emailAddresses`, and its first
-  /// three again, one to a property.
-  static const _emailMirrors = {
-    'primaryEmailAddress',
-    'secondaryEmailAddress',
-    'tertiaryEmailAddress',
-  };
-
-  /// [contact], read whole, as the merge rules compare it: without the
-  /// mirrors of its emails ([_emailMirrors]), which would read as other
-  /// details wherever an email's own name or case differs, though the
-  /// rules compare `emailAddresses` itself as they should. Nor is any
-  /// written back from here: a patch carries `emailAddresses` whole.
-  static Map<String, Object?> _compared(Map<String, Object?> contact) => {
-    for (final MapEntry(:key, :value) in contact.entries)
-      if (!_emailMirrors.contains(key)) key: value,
-  };
 
   /// One person: its copies read whole in [read], those with a photo
   /// among [photo]; [pair] its synced copy's row.
