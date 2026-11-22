@@ -2896,6 +2896,40 @@ void main() {
       expect(find.text('Nothing is merged.'), findsNothing);
       expect(enabled(tester, 'contact-sync-copies-merge'), isFalse,
           reason: 'until the status shows it');
+
+      // The next status: nothing asked, nothing newer. The runner asked
+      // for nothing; the button is back.
+      sync.set(synced(
+        copies: const ContactSyncCopies(people: 3, extras: 4),
+        duplicates: const [
+          ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 3),
+        ],
+      ));
+      await tester.pumpAndSettle();
+      expect(enabled(tester, 'contact-sync-copies-merge'), isTrue);
+    });
+
+    testWidgets('an ask read back as asked keeps the button off until the '
+        'status here shows it', (tester) async {
+      await openDuplicates(
+        tester,
+        copies: const ContactSyncCopies(people: 3, extras: 4),
+      );
+      sync.onMergeCopies = () => sync.current = asked(sync.current);
+      await tester.tap(button('contact-sync-copies-merge'));
+      await tester.pumpAndSettle();
+      expect(enabled(tester, 'contact-sync-copies-merge'), isFalse);
+
+      // A status with nothing asked and nothing newer, from before the ask:
+      // the button stays off.
+      sync.set(synced(
+        copies: const ContactSyncCopies(people: 3, extras: 4),
+        duplicates: const [
+          ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 3),
+        ],
+      ));
+      await tester.pumpAndSettle();
+      expect(enabled(tester, 'contact-sync-copies-merge'), isFalse);
     });
 
     testWidgets('leaving the screen while the save dialog is open asks '
@@ -3094,14 +3128,43 @@ void main() {
       expect(find.text('Copies that differ (5)'), findsOneWidget,
           reason: 'as many as are shown');
 
-      // Di gone with no answer: not kept.
+      // Left as they are, by Ron, and no longer listed: done.
+      sync.set(listing([
+        person('b', 'Ben Day'),
+        person('c', 'Cy Fox'),
+        person('d', 'Di Ray', answer: ContactSyncCopiesPerson.leave),
+        person('e', 'Eve Ash'),
+      ]));
+      await tester.pumpAndSettle();
       sync.set(listing([
         person('b', 'Ben Day'),
         person('c', 'Cy Fox'),
         person('e', 'Eve Ash'),
       ]));
       await tester.pumpAndSettle();
-      expect(of('d'), findsNothing, reason: 'not answered: not kept');
+      expect(
+        find.descendant(
+          of: of('d'),
+          matching: find.text('You chose to leave them as they are; done.'),
+        ),
+        findsOneWidget,
+      );
+
+      // Fay gone with no answer: not kept.
+      sync.set(listing([
+        person('b', 'Ben Day'),
+        person('c', 'Cy Fox'),
+        person('e', 'Eve Ash'),
+        person('f', 'Fay Gil'),
+      ]));
+      await tester.pumpAndSettle();
+      sync.set(listing([
+        person('b', 'Ben Day'),
+        person('c', 'Cy Fox'),
+        person('e', 'Eve Ash'),
+      ]));
+      await tester.pumpAndSettle();
+      expect(of('f'), findsNothing, reason: 'not answered: not kept');
       expect(top(tester, of('b')), b);
 
       // Ben answered here: shown so at once, before the status says so,
@@ -3263,6 +3326,8 @@ void main() {
         findsOneWidget,
       );
       expect(button('contact-sync-copies-progress'), findsNothing);
+      expect(find.textContaining('Keep MyEmail open'), findsNothing,
+          reason: 'only while a sync runs');
     });
 
     const annDiffers = ContactSyncCopiesPerson(
@@ -3520,6 +3585,8 @@ void main() {
       );
       expect(find.text('Merge asked for: the next sync carries it out.'),
           findsNothing);
+      expect(find.textContaining('Keep MyEmail open'), findsNothing,
+          reason: 'the next pass may wait the hour');
       expect(button('contact-sync-copies-merge'), findsNothing,
           reason: 'asked: no button, as before');
 

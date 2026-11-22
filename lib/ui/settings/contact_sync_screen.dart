@@ -1964,6 +1964,12 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
   /// would read the address book and ask for the file again.
   bool _askedHere = false;
 
+  /// The status the screen had when the merge was asked for but the status
+  /// after it could not be read, so that whether anything was asked is not
+  /// known: the next status the screen gets decides.
+  ContactSyncStatus? _askUnread;
+  bool _askUnsure = false;
+
   /// What the last Save backup and merge said.
   String? _said;
 
@@ -2117,6 +2123,8 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
       final asked = now?.copies.asked ?? true;
       setState(() {
         _askedHere = asked;
+        _askUnsure = now == null;
+        _askUnread = ref.read(contactSyncStatusProvider).value;
         _said = switch (now) {
           null => '$saved The merge is asked for.',
           _ when asked => '$saved The merge starts now.',
@@ -2244,9 +2252,14 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     final graphName =
         contactSyncAccountName(_byId(accounts, status?.graphAccountId));
     final copies = status?.copies ?? const ContactSyncCopies();
-    // Asked for here, and now shown so, or done already.
-    if (_askedHere && (copies.asked || copies.last?.at != _saidWith)) {
+    // Asked for here, and now shown so, or done already; or, not known to
+    // be asked for, any status since says.
+    if (_askedHere &&
+        (copies.asked ||
+            copies.last?.at != _saidWith ||
+            (_askUnsure && !identical(status, _askUnread)))) {
       _askedHere = false;
+      _askUnsure = false;
     }
     final differing = copies.differing;
     final shown = _shownDiffering(differing);
@@ -2454,12 +2467,16 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
               },
               key: const ValueKey('contact-sync-copies-running'),
             ),
-            const SizedBox(height: 4),
-            Text(
-              'Keep MyEmail open until it is done. If it is closed sooner, '
-              'the merge carries on the next time MyEmail is opened.',
-              style: muted,
-            ),
+            // Only while a sync runs: with none, as after a short stop,
+            // the next pass may wait the hour.
+            if (running != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Keep MyEmail open until it is done. If it is closed sooner, '
+                'the merge carries on the next time MyEmail is opened.',
+                style: muted,
+              ),
+            ],
           ] else if (c.people > 0) ...[
             const SizedBox(height: 8),
             // The first sync pairs the copies the merge keeps.
@@ -2620,14 +2637,18 @@ class _CopiesPerson extends StatelessWidget {
               const SizedBox(height: 10),
               // No longer listed: done, or dropped with its write failed, so
               // a line that promises nothing, of about the same length, so
-              // as not to move those under it.
+              // as not to move those under it. Left as they are, there is
+              // nothing to write, so it is done.
               if (answer != null)
                 Text(
-                  listed
-                      ? 'You chose ${_copiesChoice(p, answer)}; the next sync '
-                          'carries it out.'
-                      : 'You chose ${_copiesChoice(p, answer)}; see the '
-                          'result above.',
+                  switch ((listed, answer)) {
+                    (true, _) => 'You chose ${_copiesChoice(p, answer)}; the '
+                        'next sync carries it out.',
+                    (false, ContactSyncCopiesPerson.leave) =>
+                      'You chose ${_copiesChoice(p, answer)}; done.',
+                    (false, _) => 'You chose ${_copiesChoice(p, answer)}; see '
+                        'the result above.',
+                  },
                   style: TextStyle(color: theme.colorScheme.primary),
                 )
               else
