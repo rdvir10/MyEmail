@@ -1735,6 +1735,64 @@ void main() {
       );
     });
 
+    test('a contact new this run is never the one merged into', () {
+      // Bob merged into Robert; the same run brings a new Gmail Bob, made
+      // again by hand with Bob's mobile, which Bob's held Hadco copy also
+      // has. Robert is the one merged into, and the new Bob is placed by
+      // the new-contact rules: asked about, his mobile on two contacts.
+      final bob = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@x.example'],
+        mobile: '+1 212 555 0100',
+      );
+      final robert = person(
+        given: 'Robert',
+        family: 'Smith',
+        emails: ['rob@y.example'],
+      );
+      final plan = run(
+        google: [
+          gDeleted('people/bob'),
+          g(
+            'people/rob',
+            robert.withValue(ContactField.emails, [
+              'rob@y.example',
+              'bob@x.example',
+            ]),
+          ),
+          g(
+            'people/new',
+            person(given: 'Bob', family: 'Smith', mobile: '+1 212 555 0100'),
+          ),
+        ],
+        links: [
+          link(1, 'people/bob', 'H-bob', base: bob),
+          link(
+            2,
+            null,
+            'H-bob2',
+            base: bob,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+          link(3, 'people/rob', 'H-rob', base: robert),
+        ],
+      );
+      expect(
+        {
+          for (final r in plan.reviews)
+            if (r.kind == ContactReviewKind.mergedInGoogle)
+              (r.googleName, r.graphId),
+        },
+        {('people/rob', 'H-bob'), ('people/rob', 'H-bob2')},
+      );
+      final asked = plan.reviews.singleWhere(
+        (r) => r.kind == ContactReviewKind.newContact,
+      );
+      expect(asked.googleName, 'people/new');
+    });
+
     test('a contact merged away sharing only a home or work phone is asked '
         'about', () {
       // Bob Roe's home phone, merged into Robert Smith (read this run);
@@ -2058,12 +2116,9 @@ void main() {
         ],
       );
       expect(byGoogle(plan, 'people/c2')!.create!.side, ContactSide.graph);
-      // Not deleted, though: a Gmail contact of its name read this run is
-      // taken as the one it was merged into.
-      expect(byLink(plan, 1)!.delete, isNull);
-      final item = plan.reviews.single;
-      expect(item.kind, ContactReviewKind.mergedInGoogle);
-      expect((item.googleName, item.graphId), ('people/c2', 'H1'));
+      // Nor the one it was merged into, new this run: deleted.
+      expect(byLink(plan, 1)!.delete!.contactId, 'H1');
+      expect(plan.reviews, isEmpty);
     });
 
     test('merged in Gmail: the closer row stays, the other is asked about', () {

@@ -4635,15 +4635,21 @@ class _Planner {
   /// another Gmail contact still there (read this run, or known from a
   /// row's base), whatever its name (Google merges by name too), or while
   /// a Gmail contact of the same full name was read this run (a merge
-  /// changes the survivor), is taken as merged into that one. One read
-  /// this run first, then the one sharing the most, then one of the same
-  /// full name, then by id. A wrong guess (a family member or a colleague
-  /// really deleted) only asks Ron rather than deleting.
+  /// changes the survivor), is taken as merged into that one. Only a
+  /// contact known before this run (one with a row) is taken: one new
+  /// this run (Ron deleted Ann and made her again by hand) is placed by
+  /// the new-contact rules instead. One read this run first, then the one
+  /// sharing the most, then one of the same full name, then by id. A
+  /// wrong guess (a family member or a colleague really deleted) only
+  /// asks Ron rather than deleting.
   String? _mergedInto(_Row row) {
     final gone = row.googleName ?? row.input.googleName;
     final base = row.input.googleDetails;
     bool other(ContactSide side, String id) =>
-        side == ContactSide.google && id != gone && _googleAlive(id);
+        side == ContactSide.google &&
+        id != gone &&
+        googleRow.containsKey(id) &&
+        _googleAlive(id);
     final shared = <String, int>{};
     for (final (keys, index) in [
       (_emailKeys(base), _emailIndex),
