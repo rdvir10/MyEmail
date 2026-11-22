@@ -2328,8 +2328,8 @@ void main() {
         const ContactDetailChange(
           field: ContactField.emails,
           side: ContactSide.graph,
-          before: 'a@x.example, b@x.example',
-          after: 'a@x.example, c@x.example',
+          before: 'b@x.example',
+          after: 'c@x.example',
         ),
         const ContactDetailChange(
           field: ContactField.mobile,
@@ -2378,6 +2378,61 @@ void main() {
           ),
         ],
       );
+    });
+
+    test('a list shows only the values it would lose, each on its own', () {
+      const long =
+          'ann.cole.purchasing.department.second.floor.office@hadcometals'
+          '.example';
+      final emails = SyncedContact({
+        ContactField.name: ContactName.of(given: 'Ann', family: 'Cole'),
+        ContactField.emails: [
+          'ann.cole@hadcometals.example',
+          'ann.cole.personal@gmail.example',
+          long,
+        ],
+        ContactField.homePhones: ['+1 212 555 0101', '+1 212 555 0102'],
+      });
+      // Gmail lost its last email, and changed its second home phone.
+      final gmail = emails
+          .withValue(ContactField.emails, [
+            'ann.cole@hadcometals.example',
+            'ann.cole.personal@gmail.example',
+          ])
+          .withValue(ContactField.homePhones, [
+            '+1 212 555 0101',
+            '+1 212 555 0199',
+          ]);
+      final plan = run(
+        google: [for (var i = 0; i < 11; i++) g('people/c$i', gmail)],
+        graph: [for (var i = 0; i < 11; i++) h('H$i', emails)],
+        links: [
+          for (var i = 0; i < 11; i++)
+            link(
+              i,
+              'people/c$i',
+              'H$i',
+              base: emails,
+              state: ContactLinkState.held,
+              reason: ContactHeldReason.changeBrake,
+            ),
+        ],
+      );
+      expect(plan.heldBrakes.single.items.first.changes, [
+        const ContactDetailChange(
+          field: ContactField.emails,
+          side: ContactSide.graph,
+          before:
+              'ann.cole.purchasing.department.second.floor.office@hadcomet'
+              '\u2026',
+        ),
+        const ContactDetailChange(
+          field: ContactField.homePhones,
+          side: ContactSide.graph,
+          before: '+1 212 555 0102',
+          after: '+1 212 555 0199',
+        ),
+      ]);
     });
 
     test('an item lists the details lost on both sides', () {

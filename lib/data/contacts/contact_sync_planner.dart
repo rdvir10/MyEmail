@@ -4727,7 +4727,8 @@ class _Planner {
 
   /// Each detail [write] would remove or replace on its side, held there
   /// as [now]: not one added where there was none, a list only joined, or
-  /// a year given to a birthday on the same day.
+  /// a year given to a birthday on the same day. A list gives each value
+  /// it would lose on its own, with the value new in its place, if any.
   List<ContactDetailChange> _losses(ContactWrite? write, SyncedContact? now) {
     if (write == null || now == null) return const [];
     final side = write.side;
@@ -4739,17 +4740,23 @@ class _Planner {
       if (before == null) continue;
       final after = write.target[f];
       if (before is List<String>) {
-        final kept = {
-          for (final v in (after as List<String>?) ?? const <String>[])
-            ?norm.itemKey(f, v),
-        };
-        // A value with no key (a phone with no digits) is never removed.
-        if (before.every((v) {
+        final afterList = (after as List<String>?) ?? const <String>[];
+        final kept = {for (final v in afterList) ?norm.itemKey(f, v)};
+        final had = {for (final v in before) ?norm.itemKey(f, v)};
+        for (final (i, v) in before.indexed) {
           final k = norm.itemKey(f, v);
-          return k == null || kept.contains(k);
-        })) {
-          continue;
+          // A value with no key (a phone with no digits) is never removed.
+          if (k == null || kept.contains(k)) continue;
+          // A new value in its place replaces it (as a value put in an
+          // Outlook slot keeps its Gmail entry's place).
+          String? instead;
+          if (i < afterList.length) {
+            final there = norm.itemKey(f, afterList[i]);
+            if (there != null && !had.contains(there)) instead = afterList[i];
+          }
+          lost.add(_detailChange(f, side, v, instead));
         }
+        continue;
       }
       if (before is ContactBirthday &&
           after is ContactBirthday &&
