@@ -2003,13 +2003,44 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
   static bool _inFront() =>
       isInFront() || WidgetsBinding.instance.lifecycleState == null;
 
+  /// Waiting for MyEmail to be in front again, to open the save dialog:
+  /// false once the screen closes.
+  Completer<bool>? _front;
+
+  /// True once MyEmail is in front, now or later (the screen off, a call,
+  /// the shade, another app focused beside it); false if the screen closes
+  /// first. Put away, MyEmail closes the screen.
+  Future<bool> _untilInFront() async {
+    if (_inFront()) return true;
+    final front = _front = Completer<bool>();
+    final back = AppLifecycleListener(onResume: () {
+      if (!front.isCompleted) front.complete(true);
+    });
+    try {
+      return await front.future;
+    } finally {
+      back.dispose();
+      if (identical(_front, front)) _front = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_front case final front? when !front.isCompleted) front.complete(false);
+    super.dispose();
+  }
+
   /// The merge is asked for only once the Microsoft side's backup file is
   /// saved, through the save dialog as Save backup saves it: a save backed
   /// out of, or one that fails, asks for nothing, and so does leaving the
-  /// screen or putting MyEmail away before the file is saved.
+  /// screen before the file is saved. A read that ends while MyEmail is out
+  /// of sight is kept, and the dialog opens once it is back.
   Future<void> _saveAndMerge(String graphName) async {
     final files = ref.read(backupFilesProvider);
     final sync = _sync;
+    // Open still: neither closed nor on its way out.
+    final route = ModalRoute.of(context);
+    bool open() => mounted && (route?.isActive ?? true);
     setState(() {
       _saving = true;
       _said = null;
@@ -2018,13 +2049,8 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     try {
       // Hadco's file alone: Gmail is not read for it.
       final backup = await sync.backup(only: ContactSide.graph);
-      // No save dialog over whatever is in front now.
-      if (!mounted) return;
-      if (!_inFront()) {
-        _say("MyEmail was put away before $graphName's backup file was "
-            'saved, so nothing is merged.');
-        return;
-      }
+      // No save dialog over whatever is in front now: it waits for MyEmail.
+      if (!open() || !await _untilInFront() || !open()) return;
       final file =
           backup.firstWhereOrNull((f) => f.side == ContactSide.graph);
       if (file == null) {
@@ -2037,7 +2063,7 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
         mimeType: file.mimeType,
         dialogTitle: "Save $graphName's contacts",
       );
-      if (!mounted) return;
+      if (!open()) return;
       if (!saved) {
         _say("$graphName's backup file was not saved, so nothing is merged.");
         return;
@@ -2080,15 +2106,23 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     }
     try {
       await sync.mergeCopies();
-      final now = await sync.status();
+      // Asked for: a read that fails now does not undo it.
+      ContactSyncStatus? now;
+      try {
+        now = await sync.status();
+      } catch (_) {
+        now = null;
+      }
       if (!mounted) return;
-      final asked = now.copies.asked;
+      final asked = now?.copies.asked ?? true;
       setState(() {
         _askedHere = asked;
-        _said = asked
-            ? '$saved The merge starts now.'
-            : '$saved There is nothing to merge just now.';
-        _saidWith = now.copies.last?.at;
+        _said = switch (now) {
+          null => '$saved The merge is asked for.',
+          _ when asked => '$saved The merge starts now.',
+          _ => '$saved There is nothing to merge just now.',
+        };
+        _saidWith = now == null ? _lastNow() : now.copies.last?.at;
       });
     } catch (e) {
       if (mounted) {
@@ -2184,11 +2218,11 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
   }
 
   /// The people whose copies differ as shown: those listed, each where it
-  /// was first shown, and those answered that the runner no longer lists,
-  /// carried out since; new ones under them.
-  List<({ContactSyncCopiesPerson person, String? answer})> _shownDiffering(
-    List<ContactSyncCopiesPerson> differing,
-  ) {
+  /// was first shown, and those answered that the runner no longer lists
+  /// ([listed] false: done, or their write failed and the answer was
+  /// dropped); new ones under them.
+  List<({ContactSyncCopiesPerson person, String? answer, bool listed})>
+      _shownDiffering(List<ContactSyncCopiesPerson> differing) {
     final listed = {for (final p in differing) p.key: p};
     for (final p in differing) {
       if (!_seen.containsKey(p.key)) _order.add(p.key);
@@ -2197,9 +2231,9 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     return [
       for (final key in _order)
         if (listed[key] case final p?)
-          (person: p, answer: _answerOf(p))
+          (person: p, answer: _answerOf(p), listed: true)
         else if (_seen[key] case final p? when _answerOf(p) != null)
-          (person: p, answer: _answerOf(p)),
+          (person: p, answer: _answerOf(p), listed: false),
     ];
   }
 
@@ -2275,13 +2309,18 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
               }
               if (i < peopleFrom) {
                 if (i == differFrom) {
-                  return _differingHead(differing.length, open);
+                  return _differingHead(
+                    shown.length,
+                    open,
+                    asked: copies.asked,
+                  );
                 }
-                final (:person, :answer) = shown[i - differFrom - 1];
+                final (:person, :answer, :listed) = shown[i - differFrom - 1];
                 return _CopiesPerson(
                   key: ValueKey('contact-sync-copies-person:${person.key}'),
                   person: person,
                   answer: answer,
+                  listed: listed,
                   onAnswer: (keep) => _answer(person, keep),
                 );
               }
@@ -2361,7 +2400,10 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
               contactSyncMergedLine(
                 last,
                 DateTime.now(),
+                graphName: graphName,
                 use24h: MediaQuery.alwaysUse24HourFormatOf(context),
+                // Given up: the way to try again, where it is offered.
+                tryAgain: c.people > 0 && (s?.firstDone ?? false),
               ),
               key: const ValueKey('contact-sync-copies-last'),
             ),
@@ -2402,6 +2444,12 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
                 null when running != null =>
                   'Merge asked for: it starts once the sync has made its '
                       'changes.',
+                // The pass before stopped short, and the next waits the
+                // usual hour.
+                null when c.shortStops > 0 =>
+                  'The last try stopped short: $graphName could not be read. '
+                      'The next sync tries again (in about an hour, or Sync '
+                      'now).',
                 null => 'Merge asked for: the next sync carries it out.',
               },
               key: const ValueKey('contact-sync-copies-running'),
@@ -2467,7 +2515,11 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
 
   /// The heading of the copies that differ, what the answers do, and the
   /// answer for all of them, set apart from each person's own.
-  Widget _differingHead(int n, List<ContactSyncCopiesPerson> open) =>
+  Widget _differingHead(
+    int n,
+    List<ContactSyncCopiesPerson> open, {
+    required bool asked,
+  }) =>
       Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -2485,7 +2537,9 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
             _Buttons([
               FilledButton.tonal(
                 key: const ValueKey('contact-sync-copies-all'),
-                onPressed: () => _keepSyncedForAll(open),
+                // Off while a merge is asked for: it lists people as it
+                // goes, under those Ron has seen.
+                onPressed: asked ? null : () => _keepSyncedForAll(open),
                 child: Text("Keep the synced copy's for all ${open.length}"),
               ),
             ]),
@@ -2501,6 +2555,7 @@ class _CopiesPerson extends StatelessWidget {
     super.key,
     required this.person,
     required this.answer,
+    required this.listed,
     required this.onAnswer,
   });
 
@@ -2509,6 +2564,10 @@ class _CopiesPerson extends StatelessWidget {
   /// The answer shown: the person's, or, once the runner no longer lists
   /// the person, the one given here.
   final String? answer;
+
+  /// Listed by the runner still; not, once its answer is done, or dropped
+  /// because its write failed.
+  final bool listed;
 
   /// A copy's key, or null: leave them as they are.
   final ValueChanged<String?> onAnswer;
@@ -2559,12 +2618,16 @@ class _CopiesPerson extends StatelessWidget {
                   Text('${d.label}: ${_LookTile._valueOf(d.value)}'),
               ],
               const SizedBox(height: 10),
-              // As drawn while listed, carried out since or not: a line
-              // of another length would move those under it.
+              // No longer listed: done, or dropped with its write failed, so
+              // a line that promises nothing, of about the same length, so
+              // as not to move those under it.
               if (answer != null)
                 Text(
-                  'You chose ${_copiesChoice(p, answer)}; the next sync '
-                  'carries it out.',
+                  listed
+                      ? 'You chose ${_copiesChoice(p, answer)}; the next sync '
+                          'carries it out.'
+                      : 'You chose ${_copiesChoice(p, answer)}; see the '
+                          'result above.',
                   style: TextStyle(color: theme.colorScheme.primary),
                 )
               else
@@ -2603,23 +2666,33 @@ String _copiesChoice(ContactSyncCopiesPerson p, String answer) {
 }
 
 /// What the last merge of the Microsoft side's copies did: "Merged at
-/// 10:42: 1089 people, 1143 copies deleted, 210 details added.", then the
-/// people whose copies differ and those that failed, if any.
+/// 10:42: 1089 people, 1143 copies deleted, 210 details added.", or that it
+/// was given up, with what it did before; then the people whose copies
+/// differ, those that failed and those left for the next merge, if any;
+/// and, given up, the way to try again where [tryAgain] offers it.
 String contactSyncMergedLine(
   ContactSyncCopiesResult r,
   DateTime now, {
+  required String graphName,
   bool use24h = true,
+  bool tryAgain = false,
 }) {
   String no(int n, String one, String many) =>
       n == 0 ? 'no $many' : _count(n, one, many);
   final when = _when(r.at, now, use24h);
+  final did = '${no(r.deleted, 'copy', 'copies')} deleted, '
+      '${no(r.added, 'detail', 'details')} added';
+  final some = r.people > 0 || r.deleted > 0 || r.added > 0;
   return [
-    if (r.people == 0)
+    if (r.stoppedShort) ...[
+      'The merge was given up $when: $graphName could not be read three '
+          'times in a row.',
+      if (some)
+        'Before that: ${_count(r.people, 'person', 'people')} merged, $did.',
+    ] else if (r.people == 0)
       'The merge $when merged nobody.'
     else
-      'Merged $when: ${_count(r.people, 'person', 'people')}, '
-          '${no(r.deleted, 'copy', 'copies')} deleted, '
-          '${no(r.added, 'detail', 'details')} added.',
+      'Merged $when: ${_count(r.people, 'person', 'people')}, $did.',
     if (r.differing > 0)
       '${_count(r.differing, 'person', 'people')} whose copies differ '
           '${r.differing == 1 ? 'is' : 'are'} left for you.',
@@ -2627,6 +2700,11 @@ String contactSyncMergedLine(
       '${_count(r.failed, 'person', 'people')} could not be merged in full: '
           'what is left of their copies is as it was, and the next merge '
           'tries again.',
+    if (r.passedOver > 0)
+      '${_count(r.passedOver, 'person was', 'people were')} left for the '
+          'next merge: a copy changed meanwhile, a photo could not be read, '
+          'or a copy is no longer in Contacts.',
+    if (r.stoppedShort && tryAgain) 'Save backup and merge to try again.',
   ].join(' ');
 }
 

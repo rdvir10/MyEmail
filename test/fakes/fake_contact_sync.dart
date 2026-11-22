@@ -102,9 +102,13 @@ class FakeContactSync implements ContactSyncService {
     _changes.add(null);
   }
 
+  /// What [status] throws, as when this device's record cannot be read.
+  Object? statusFailure;
+
   @override
   Future<ContactSyncStatus> status() async {
     statusReads++;
+    if (statusFailure case final failure?) throw failure;
     return current;
   }
 
