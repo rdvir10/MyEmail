@@ -1936,6 +1936,30 @@ void main() {
         link(i, 'people/c$i', 'H$i', base: person(given: 'P$i', family: 'X')),
     ];
 
+    test('each item tells its contact apart by its email, else mobile', () {
+      SyncedContact who(int i) => person(
+        given: 'P$i',
+        family: 'X',
+        emails: i == 0 ? null : ['p$i@x.example', 'other$i@x.example'],
+        mobile: '+1 212 555 010$i',
+      );
+      final plan = run(
+        google: [for (var i = 0; i < 6; i++) g('people/c$i', who(i))],
+        graphGone: {for (var i = 0; i < 6; i++) 'H$i'},
+        links: [
+          for (var i = 0; i < 6; i++)
+            link(i, 'people/c$i', 'H$i', base: who(i)),
+        ],
+      );
+      final items = plan.brakes.single.items;
+      expect(items.first.hint, '+1 212 555 0100', reason: 'no email');
+      expect(items[1].hint, 'p1@x.example');
+      expect(items.every((i) => i.changes.isEmpty), isTrue);
+      final back = ContactBrakeItem.fromJson(items[1].toJson())!;
+      expect(back.hint, 'p1@x.example');
+      expect(back.googleName, 'people/c1');
+    });
+
     test('Delete them keeps the partner for the bin, and Restore makes both',
         () {
       // Run one: Ron deleted six Outlook contacts; the brake holds their
@@ -2137,6 +2161,110 @@ void main() {
       family: 'X',
       more: {ContactField.company: 'Old'},
     );
+
+    test('each item says what Apply them would do, detail by detail', () {
+      final note = ContactNotes('Met at the trade fair.\nKeeps two dogs.');
+      final address = ContactAddress.of(
+        street: '1200 Industrial Parkway, Building 7, Loading Dock Entrance B',
+        city: 'Springfield',
+      );
+      final full = person(
+        given: 'P',
+        family: 'X',
+        emails: ['a@x.example', 'b@x.example'],
+        mobile: '+1 212 555 0100',
+        more: {
+          ContactField.company: 'Old',
+          ContactField.jobTitle: 'Sales manager',
+          ContactField.notes: note,
+          ContactField.workAddress: address,
+          ContactField.birthday: const ContactBirthday(month: 7, day: 4),
+        },
+      );
+      // Gmail lost, or changed, many of them at once (an Undo changes).
+      final changed = SyncedContact({
+        ...full.values,
+        ContactField.emails: ['a@x.example', 'c@x.example'],
+        ContactField.mobile: null,
+        ContactField.jobTitle: 'Purchasing manager',
+        ContactField.company: 'New',
+        ContactField.notes: ContactNotes('Moved to Ohio.\nStill two dogs.'),
+        ContactField.workAddress: ContactAddress.of(city: 'Springfield'),
+        ContactField.birthday: const ContactBirthday(
+          year: 1980,
+          month: 7,
+          day: 4,
+        ),
+      });
+      final plan = run(
+        google: [
+          g('people/c0', changed),
+          // An email only added is no loss.
+          g(
+            'people/c1',
+            full
+                .withValue(ContactField.company, 'New')
+                .withValue(ContactField.emails, [
+                  'a@x.example',
+                  'b@x.example',
+                  'c@x.example',
+                ]),
+          ),
+          for (var i = 2; i < 11; i++)
+            g('people/c$i', full.withValue(ContactField.company, 'New')),
+        ],
+        links: [
+          for (var i = 0; i < 11; i++) link(i, 'people/c$i', 'H$i', base: full),
+        ],
+      );
+      final item = plan.brakes.single.items.first;
+      expect(item.side, ContactSide.graph, reason: 'Hadco would lose them');
+      expect(item.changes, [
+        const ContactDetailChange(
+          field: ContactField.emails,
+          before: 'a@x.example, b@x.example',
+          after: 'a@x.example, c@x.example',
+        ),
+        const ContactDetailChange(
+          field: ContactField.mobile,
+          before: '+1 212 555 0100',
+        ),
+        const ContactDetailChange(
+          field: ContactField.workAddress,
+          before:
+              '1200 Industrial Parkway, Building 7, Loading Dock '
+              'Entrance\u2026',
+          after: 'Springfield',
+        ),
+        const ContactDetailChange(
+          field: ContactField.company,
+          before: 'Old',
+          after: 'New',
+        ),
+        const ContactDetailChange(
+          field: ContactField.jobTitle,
+          before: 'Sales manager',
+          after: 'Purchasing manager',
+        ),
+        const ContactDetailChange(field: ContactField.notes, after: 'changed'),
+      ], reason: 'a year added to the birthday is no loss');
+      // Kept with the question, and never in a log.
+      final back = ContactBrakeItem.fromJson(item.toJson())!;
+      expect(back.changes, item.changes);
+      expect(back.side, ContactSide.graph);
+      expect('${item.changes[3]}', 'ContactDetailChange(company)');
+      expect(
+        plan.brakes.single.items[1].changes,
+        [
+          const ContactDetailChange(
+            field: ContactField.company,
+            before: 'Old',
+            after: 'New',
+          ),
+        ],
+      );
+    });
+
     List<ContactLinkInput> pairs(int n) => [
       for (var i = 0; i < n; i++) link(i, 'people/c$i', 'H$i', base: base),
     ];
@@ -2239,6 +2367,68 @@ void main() {
       expect(plan.links.where((l) => l.graphWrite != null), hasLength(10));
     });
 
+    test('a change held before shows its details at the next run', () {
+      // Held before details were kept (the tablet's 58): every run the
+      // question's items are rebuilt from the pairs' reads.
+      final heldRows = [
+        for (var i = 0; i < 11; i++)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: base,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.changeBrake,
+          ),
+      ];
+      final reads = contactsToRead(links: heldRows);
+      expect(reads.google, hasLength(11), reason: 'read every run');
+      expect(reads.graph, hasLength(11));
+      final plan = run(
+        // Pair 10 read on its Gmail side only: left out.
+        google: renamed(11),
+        graph: unchanged(10),
+        links: heldRows,
+      );
+      expect(plan.brakes, isEmpty, reason: 'nothing raised anew');
+      expect(plan.links, isEmpty, reason: 'still held');
+      final items = plan.heldBrakes.single.items;
+      expect(plan.heldBrakes.single.kind, ContactBrakeKind.changes);
+      expect(items, hasLength(10));
+      expect(items.first.googleName, 'people/c0');
+      expect(items.first.side, ContactSide.graph);
+      expect(items.first.changes, [
+        const ContactDetailChange(
+          field: ContactField.company,
+          before: 'Old',
+          after: 'New',
+        ),
+      ]);
+      // A deletion held before keeps its hint, read or not.
+      final deletion = run(
+        links: [
+          link(
+            20,
+            'people/c20',
+            null,
+            base: person(given: 'P', family: 'X', emails: ['p@x.example']),
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.deletionBrake,
+          ),
+        ],
+      );
+      final held = deletion.heldBrakes.single;
+      expect(held.kind, ContactBrakeKind.deletions);
+      expect(held.items.single.hint, 'p@x.example');
+      expect(held.items.single.side, ContactSide.graph);
+      // A question raised this run is there too.
+      final raised = run(google: renamed(11), links: pairs(11));
+      expect(
+        raised.heldBrakes.single.items.map((i) => i.googleName),
+        raised.brakes.single.items.map((i) => i.googleName),
+      );
+    });
+
     test('Copy them back writes the other side\'s values back', () {
       final plan = run(
         google: renamed(11),
@@ -2259,6 +2449,101 @@ void main() {
       final first = byLink(plan, 0)!;
       expect(first.graphWrite, isNull);
       expect(first.googleWrite!.target.text(ContactField.company), 'Old');
+    });
+
+    test('each of the four answers given to one item acts on it alone', () {
+      ContactBrakeItem one(int i) => ContactBrakeItem(
+        title: 'P X',
+        side: ContactSide.graph,
+        googleName: 'people/c$i',
+        graphId: 'H$i',
+      );
+      final changeRows = [
+        for (var i = 0; i < 3; i++)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: base,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.changeBrake,
+          ),
+      ];
+      for (final kind in [
+        ContactAnswerKind.applyHeld,
+        ContactAnswerKind.copyHeldBack,
+      ]) {
+        final plan = run(
+          google: renamed(3),
+          graph: unchanged(3),
+          links: changeRows,
+          answers: [
+            ContactAnswer(kind, held: [one(1)]),
+          ],
+        );
+        expect(plan.answers, [ContactAnswerOutcome.applied], reason: '$kind');
+        final answered = byLink(plan, 1)!;
+        expect(answered.state, ContactLinkState.paired, reason: '$kind');
+        expect(
+          kind == ContactAnswerKind.applyHeld
+              ? answered.graphWrite?.target.text(ContactField.company)
+              : answered.googleWrite?.target.text(ContactField.company),
+          kind == ContactAnswerKind.applyHeld ? 'New' : 'Old',
+        );
+        expect(byLink(plan, 0), isNull, reason: '$kind: still held');
+        expect(byLink(plan, 2), isNull, reason: '$kind: still held');
+        // The rest of the question stands, with its details.
+        expect(
+          plan.heldBrakes.single.items.map((i) => i.googleName),
+          ['people/c0', 'people/c2'],
+        );
+      }
+      final deletionRows = [
+        for (var i = 0; i < 3; i++)
+          link(
+            i,
+            'people/c$i',
+            null,
+            base: base,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.deletionBrake,
+          ),
+      ];
+      for (final kind in [
+        ContactAnswerKind.deleteHeld,
+        ContactAnswerKind.keepHeld,
+      ]) {
+        final plan = run(
+          google: renamed(3),
+          graphGone: {'H0', 'H1', 'H2'},
+          links: deletionRows,
+          answers: [
+            ContactAnswer(
+              kind,
+              held: [
+                const ContactBrakeItem(
+                  title: 'P X',
+                  side: ContactSide.graph,
+                  googleName: 'people/c1',
+                ),
+              ],
+            ),
+          ],
+        );
+        expect(plan.answers, [ContactAnswerOutcome.applied], reason: '$kind');
+        final answered = byLink(plan, 1)!;
+        if (kind == ContactAnswerKind.deleteHeld) {
+          expect(answered.delete!.contactId, 'people/c1');
+        } else {
+          expect(answered.reason, ContactHeldReason.kept);
+        }
+        expect(byLink(plan, 0), isNull, reason: '$kind: still held');
+        expect(byLink(plan, 2), isNull, reason: '$kind: still held');
+        expect(
+          plan.heldBrakes.single.items.map((i) => i.googleName),
+          ['people/c0', 'people/c2'],
+        );
+      }
     });
 
     test('an answer acts only on the rows its question listed', () {

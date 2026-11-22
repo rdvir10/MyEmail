@@ -976,6 +976,68 @@ class ContactReviewItem {
 
 enum ContactBrakeKind { deletions, changes }
 
+/// The longest value a [ContactDetailChange] shows; a longer one is cut,
+/// with an ellipsis.
+const contactDetailShownLength = 60;
+
+/// One detail a held change would remove or replace, on the side that
+/// would lose it: what is there now, and what it would become, each as
+/// one line as the screen shows it ([SyncedContact.describe], lists
+/// joined, line breaks as ", ", cut to [contactDetailShownLength]).
+///
+/// [after] is null when the detail would be removed. A note longer than a
+/// line is not shown: [before] null, and [after] the word 'changed', or
+/// null when it would be removed. The values are contact data: kept with
+/// the question like a Needs a look item's, never logged ([toString]
+/// names the field only).
+@immutable
+class ContactDetailChange {
+  const ContactDetailChange({required this.field, this.before, this.after});
+
+  final ContactField field;
+
+  /// On the side that would lose it, as shown.
+  final String? before;
+
+  /// What it would become; null when it would be removed.
+  final String? after;
+
+  Map<String, Object?> toJson() => {
+    'field': field.name,
+    'before': ?before,
+    'after': ?after,
+  };
+
+  /// A change as [toJson] wrote it; null for anything else.
+  static ContactDetailChange? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final field = json['field'] is String
+        ? ContactField.byName(json['field'] as String)
+        : null;
+    if (field == null) return null;
+    String? s(String key) => json[key] is String ? json[key] as String : null;
+    return ContactDetailChange(
+      field: field,
+      before: s('before'),
+      after: s('after'),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is ContactDetailChange &&
+      other.field == field &&
+      other.before == before &&
+      other.after == after;
+
+  @override
+  int get hashCode => Object.hash(field, before, after);
+
+  // The field only: the values are contact data.
+  @override
+  String toString() => 'ContactDetailChange(${field.name})';
+}
+
 /// One contact a brake holds: its name, and where it went or changed.
 @immutable
 class ContactBrakeItem {
@@ -984,6 +1046,8 @@ class ContactBrakeItem {
     required this.side,
     this.googleName,
     this.graphId,
+    this.changes = const [],
+    this.hint,
   });
 
   final String title;
@@ -994,11 +1058,21 @@ class ContactBrakeItem {
   final String? googleName;
   final String? graphId;
 
+  /// For a change: every detail Apply them would remove or replace on
+  /// [side], in the order of [ContactField].
+  final List<ContactDetailChange> changes;
+
+  /// For a deletion: enough to tell the contact apart, its first email,
+  /// else its mobile, as typed. Contact data, like [changes].
+  final String? hint;
+
   Map<String, Object?> toJson() => {
     'title': title,
     'side': side.name,
     'googleName': ?googleName,
     'graphId': ?graphId,
+    if (changes.isNotEmpty) 'changes': [for (final c in changes) c.toJson()],
+    'hint': ?hint,
   };
 
   /// An item as [toJson] wrote it; null for anything else.
@@ -1009,11 +1083,17 @@ class ContactBrakeItem {
     );
     if (side == null) return null;
     String? s(String key) => json[key] is String ? json[key] as String : null;
+    final changes = json['changes'];
     return ContactBrakeItem(
       title: s('title') ?? '',
       side: side,
       googleName: s('googleName'),
       graphId: s('graphId'),
+      changes: [
+        for (final c in changes is List ? changes : const [])
+          ?ContactDetailChange.fromJson(c),
+      ],
+      hint: s('hint'),
     );
   }
 }
@@ -1214,6 +1294,7 @@ class ContactSyncPlan {
     this.graphPassedOver = const {},
     this.mergedAway = const [],
     this.duplicates = const [],
+    this.heldBrakes = const [],
   });
 
   /// The empty-answers brake: when set, nothing else is planned.
@@ -1307,6 +1388,18 @@ class ContactSyncPlan {
   /// too), by title.
   final List<ContactDuplicateGroup> duplicates;
 
+  /// Every row a brake holds once the plan is carried out, one
+  /// [ContactBrake] per kind, each item's details as this run sees them:
+  /// the items raised this run (also in [brakes]), and those held before,
+  /// rebuilt every run so a question shows what it would do however long
+  /// it waits (and a question raised before details were kept gets them).
+  /// A deletion's [ContactBrakeItem.hint] comes from its row; a change's
+  /// [ContactBrakeItem.changes] from its pair's reads ([contactsToRead]
+  /// names both contacts every run), and a held change whose pair was not
+  /// read on both sides is left out, so the runner keeps what it has. The
+  /// runner refreshes its questions' items from these, by their ids.
+  final List<ContactBrake> heldBrakes;
+
   /// The normaliser this plan compared with, for the pair to store.
   int get normaliserVersion => contactNormaliserVersion;
 }
@@ -1369,9 +1462,10 @@ ContactChecks contactsToConfirm({
 
 /// Contacts the runner must read by id before planning, because the plan
 /// acts on them and a feed brings only what changed: the contacts of
-/// queued answers (both sides of a pair, and of every pair the change
-/// brake holds when it is answered), every contact held as a candidate,
-/// the source of every journal entry, and both sides of every Restore.
+/// queued answers (both sides of a pair), both sides of every pair the
+/// change brake holds (its question shows what Apply them would do, from
+/// these reads), every contact held as a candidate, the source of every
+/// journal entry, and both sides of every Restore.
 /// Found, each goes into the listing; not found (Gmail's NOT_FOUND; for
 /// Outlook a 404 or Deleted Items), into the gone sets; elsewhere, as a
 /// move or a re-key. An answer whose contacts were not read stays queued
@@ -1423,9 +1517,14 @@ ContactChecks contactsToRead({
     (entry.side == ContactSide.google ? graph : google).add(entry.sourceId);
   }
   // Contacts held as candidates are placed again each run, which needs
-  // them read (see ContactHeldReason.candidate).
+  // them read (see ContactHeldReason.candidate); so are the pairs the
+  // change brake holds, whose questions show what Apply them would do
+  // (ContactSyncPlan.heldBrakes).
   for (final link in links) {
-    if (link.reason == ContactHeldReason.candidate) both(link);
+    if (link.reason == ContactHeldReason.candidate ||
+        link.reason == ContactHeldReason.changeBrake) {
+      both(link);
+    }
   }
   for (final b in bin) {
     if (!b.restore) continue;
@@ -4400,6 +4499,7 @@ class _Planner {
             side: delete.side.other,
             googleName: onGoogle ? delete.contactId : null,
             graphId: onGoogle ? null : delete.contactId,
+            hint: _hintOf(delete.side, delete.contactId),
           ),
         );
         p.plan = ContactLinkPlan(
@@ -4431,16 +4531,7 @@ class _Planner {
       for (final p in changes) {
         final plan = p.plan;
         final row = byId[plan.linkId]!;
-        items.add(
-          ContactBrakeItem(
-            title: plan.title,
-            side: plan.googleWrite != null
-                ? ContactSide.google
-                : ContactSide.graph,
-            googleName: plan.googleName,
-            graphId: plan.graphId,
-          ),
-        );
+        items.add(_changeItem(plan));
         p.plan = ContactLinkPlan(
           linkId: plan.linkId,
           googleName: plan.googleName,
@@ -4457,6 +4548,167 @@ class _Planner {
       }
       brakes.add(ContactBrake(ContactBrakeKind.changes, items));
     }
+  }
+
+  /// The brakes' items as they stand after this run (see
+  /// [ContactSyncPlan.heldBrakes]); [touched] are the rows this run plans.
+  List<ContactBrake> _heldBrakes(Set<int> touched) {
+    final deletions = [
+      for (final b in brakes)
+        if (b.kind == ContactBrakeKind.deletions) ...b.items,
+    ];
+    final changes = [
+      for (final b in brakes)
+        if (b.kind == ContactBrakeKind.changes) ...b.items,
+    ];
+    for (final row in rows) {
+      if (touched.contains(row.id) || row.state != ContactLinkState.held) {
+        continue;
+      }
+      final g = row.googleName;
+      final h = row.graphId;
+      switch (row.reason) {
+        case ContactHeldReason.deletionBrake:
+          final side = g != null ? ContactSide.google : ContactSide.graph;
+          final id = g ?? h;
+          if (id == null || !_alive(side, id)) continue;
+          deletions.add(
+            ContactBrakeItem(
+              title: _detailsOf(side, id).title,
+              side: side.other,
+              googleName: g,
+              graphId: h,
+              hint: _hintOf(side, id),
+            ),
+          );
+        case ContactHeldReason.changeBrake:
+          final gc = googleListed[g];
+          final hc = graphListed[h];
+          if (g == null || h == null || gc == null || hc == null) continue;
+          // As Apply them would plan it.
+          final made = _comparePair(
+            settings: ContactPairSettings(
+              normaliser: norm,
+              googleBase: row.input.googleDetails,
+              graphBase: row.input.graphDetails,
+              googleUpdatedAt: gc.updatedAt,
+              graphUpdatedAt: hc.updatedAt,
+              firstSync: input.firstSync,
+            ),
+            linkId: row.id,
+            googleName: g,
+            graphId: h,
+            googleNow: gc.details,
+            graphNow: hc.details,
+            googleEtag: gc.etag,
+            graphChangeKey: hc.changeKey,
+          );
+          changes.add(_changeItem(made.plan));
+        default:
+          break;
+      }
+    }
+    return [
+      if (deletions.isNotEmpty)
+        ContactBrake(ContactBrakeKind.deletions, deletions),
+      if (changes.isNotEmpty) ContactBrake(ContactBrakeKind.changes, changes),
+    ];
+  }
+
+  /// A change brake's item for [plan], a pair's writes: the side that
+  /// would lose details (the one losing more, Gmail on a tie; with none
+  /// lost, the side written, Gmail first) and each detail lost there.
+  ContactBrakeItem _changeItem(ContactLinkPlan plan) {
+    final google = _losses(plan.googleWrite, plan.googleNow);
+    final graph = _losses(plan.graphWrite, plan.graphNow);
+    final onGoogle = google.isEmpty && graph.isEmpty
+        ? plan.googleWrite != null
+        : google.length >= graph.length;
+    return ContactBrakeItem(
+      title: plan.title,
+      side: onGoogle ? ContactSide.google : ContactSide.graph,
+      googleName: plan.googleName,
+      graphId: plan.graphId,
+      changes: onGoogle ? google : graph,
+    );
+  }
+
+  /// Each detail [write] would remove or replace on its side, held there
+  /// as [now]: not one added where there was none, a list only joined, or
+  /// a year given to a birthday on the same day.
+  List<ContactDetailChange> _losses(ContactWrite? write, SyncedContact? now) {
+    if (write == null || now == null) return const [];
+    final lost = <ContactDetailChange>[];
+    for (final f in ContactField.values) {
+      if (!write.fields.contains(f)) continue;
+      // A display name that is no name is no detail to lose.
+      final before = f == ContactField.name ? now.copyableName : now[f];
+      if (before == null) continue;
+      final after = write.target[f];
+      if (before is List<String>) {
+        final kept = {
+          for (final v in (after as List<String>?) ?? const <String>[])
+            ?norm.itemKey(f, v),
+        };
+        // A value with no key (a phone with no digits) is never removed.
+        if (before.every((v) {
+          final k = norm.itemKey(f, v);
+          return k == null || kept.contains(k);
+        })) {
+          continue;
+        }
+      }
+      if (before is ContactBirthday &&
+          after is ContactBirthday &&
+          !before.hasYear &&
+          before.sameDay(after)) {
+        continue;
+      }
+      lost.add(_detailChange(f, before, after));
+    }
+    return lost;
+  }
+
+  /// [field] going from [before] to [after] as the screen shows it (see
+  /// [ContactDetailChange]).
+  static ContactDetailChange _detailChange(
+    ContactField field,
+    Object before,
+    Object? after,
+  ) {
+    String? shown(Object? value) {
+      if (value == null) return null;
+      final line = SyncedContact.describe(field, value)
+          .trim()
+          .replaceAll(RegExp(r'\s*\r?\n\s*'), ', ');
+      if (line.length <= contactDetailShownLength) return line;
+      final cut = line.substring(0, contactDetailShownLength - 1);
+      return '${cut.trimRight()}\u2026';
+    }
+
+    bool long(Object? value) =>
+        value is ContactNotes &&
+        (value.text.trim().contains('\n') ||
+            value.text.trim().length > contactDetailShownLength);
+    if (field == ContactField.notes && (long(before) || long(after))) {
+      return ContactDetailChange(
+        field: field,
+        after: after == null ? null : 'changed',
+      );
+    }
+    return ContactDetailChange(
+      field: field,
+      before: shown(before),
+      after: shown(after),
+    );
+  }
+
+  /// What tells the contact [id] on [side] apart: its first email, else
+  /// its mobile.
+  String? _hintOf(ContactSide side, String id) {
+    final details = _detailsOf(side, id);
+    return details.list(ContactField.emails).firstOrNull ??
+        details.text(ContactField.mobile);
   }
 
   // ---- The result.
@@ -4517,6 +4769,7 @@ class _Planner {
       graphPassedOver: Set.unmodifiable(graphPassedOver),
       mergedAway: List.unmodifiable(mergedAway),
       duplicates: duplicates,
+      heldBrakes: _heldBrakes(touched),
       counts: ContactSyncCounts(
         addToGoogle: count((l) => l.create?.side == ContactSide.google),
         addToGraph: count((l) => l.create?.side == ContactSide.graph),
